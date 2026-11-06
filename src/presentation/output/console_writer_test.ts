@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { setColorEnabled } from "@std/fmt/colors";
+import { assert, assertEquals } from "@std/assert";
+import { unicodeWidth } from "@std/cli/unicode-width";
+import { getColorEnabled, setColorEnabled } from "@std/fmt/colors";
 import {
   blankLine,
   contentLine,
@@ -419,4 +420,144 @@ Deno.test("isUserFacingArtifact: hides reports, logs and display-hidden data", (
     }),
     true,
   );
+});
+
+// deno-lint-ignore no-control-regex
+const SGR = /\x1b\[[0-9;]*m/g;
+
+function boxWidths(lines: string[]): number[] {
+  const plain = lines.map((line) => line.replace(SGR, ""));
+  const top = plain.findIndex((line) => line.trimStart().startsWith("┌"));
+  const bottom = plain.findIndex((line) => line.trimStart().startsWith("└"));
+  return plain.slice(top, bottom + 1).map((line) => unicodeWidth(line));
+}
+
+function assertBoxAligned(lines: string[]): void {
+  const widths = boxWidths(lines);
+  assertEquals(new Set(widths).size, 1, lines.join("\n"));
+  assert(widths[0] <= 86, lines.join("\n"));
+}
+
+Deno.test("renderDataBox: an argument row under a long key fits the box", () => {
+  noColor(() => {
+    const lines = renderDataBox([], {
+      globalArguments: {
+        releaseAuthors: "x".repeat(100),
+        mergeMethod: "squash",
+      },
+    });
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("x...")), true);
+  });
+});
+
+Deno.test("renderDataBox: an attribute row under a long key fits the box", () => {
+  noColor(() => {
+    const lines = renderDataBox([
+      { name: "d", attributes: { aVeryLongKeyName: "y".repeat(100) } },
+    ]);
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("y...")), true);
+  });
+});
+
+Deno.test("renderDataBox: a long artifact header is cut to fit the box", () => {
+  noColor(() => {
+    const lines = renderDataBox([
+      { name: "n".repeat(60), source: "s".repeat(40), attributes: { a: 1 } },
+    ]);
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("from sss")), true);
+  });
+});
+
+Deno.test("renderDataBox: wide characters are measured by display width", () => {
+  noColor(() => {
+    const lines = renderDataBox([], {
+      globalArguments: { k: "日本語テキスト🎉" },
+    });
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("日本語テキスト🎉")), true);
+  });
+});
+
+Deno.test("renderDataBox: a wide-character key pads the key column by display width", () => {
+  noColor(() => {
+    const lines = renderDataBox([], {
+      globalArguments: { "名前": "alpha", region: "beta" },
+    });
+    assertBoxAligned(lines);
+    const column = (value: string) => {
+      const line = lines.find((l) => l.includes(value))!;
+      return unicodeWidth(line.slice(0, line.indexOf(value)));
+    };
+    assertEquals(column("alpha"), column("beta"));
+  });
+});
+
+Deno.test("renderDataBox: a wide character straddling the cut is dropped and the row still fits", () => {
+  noColor(() => {
+    const lines = renderDataBox([], {
+      globalArguments: { k: "語".repeat(50) },
+    });
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("語...")), true);
+  });
+});
+
+Deno.test("renderDataBox: a key wider than the box is cut with an ellipsis", () => {
+  noColor(() => {
+    const lines = renderDataBox([], {
+      globalArguments: { ["k".repeat(100)]: "value" },
+    });
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("k...")), true);
+    assertEquals(lines.some((line) => line.includes("value")), false);
+  });
+});
+
+Deno.test("renderDataBox: a multi-line value shows its first line and an ellipsis", () => {
+  noColor(() => {
+    const lines = renderDataBox([], {
+      globalArguments: { script: "line one\nline two" },
+    });
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("line one...")), true);
+    assertEquals(lines.some((line) => line.includes("line two")), false);
+  });
+});
+
+Deno.test("renderDataBox: color codes inside a value are dropped and the row fits", () => {
+  noColor(() => {
+    const lines = renderDataBox([
+      {
+        name: "out",
+        attributes: { stdout: `\x1b[31m${"r".repeat(100)}\x1b[0m` },
+      },
+    ]);
+    assertBoxAligned(lines);
+    assertEquals(lines.some((line) => line.includes("\x1b")), false);
+  });
+});
+
+Deno.test("renderDataBox: a cut row with colors enabled leaves no style open at the border", () => {
+  const enabled = getColorEnabled();
+  setColorEnabled(true);
+  try {
+    const lines = renderDataBox([], {
+      globalArguments: { releaseAuthors: "x".repeat(100) },
+    });
+    assertBoxAligned(lines);
+    const sideEnd = "\x1b[2m│\x1b[22m";
+    for (const line of lines.filter((l) => l.endsWith(sideEnd))) {
+      let open = 0;
+      for (const [code] of line.slice(0, -sideEnd.length).matchAll(SGR)) {
+        if (code === "\x1b[1m" || code === "\x1b[2m") open++;
+        if (code === "\x1b[22m") open = 0;
+      }
+      assertEquals(open, 0, JSON.stringify(line));
+    }
+  } finally {
+    setColorEnabled(enabled);
+  }
 });
