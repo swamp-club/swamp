@@ -993,3 +993,80 @@ Deno.test("authenticateServerToken: a refusal log without serve's node state sti
   assertEquals(refusal?.properties.reason, "secret-mismatch");
   assertEquals(refusal?.properties.node, null);
 });
+
+Deno.test("authenticateServerToken: returns the client the token records", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve({
+          ...activeToken(),
+          client: "integration:ops-slack",
+        }),
+    }),
+  );
+  assertEquals(result.ok && result.client, "integration:ops-slack");
+});
+
+Deno.test("authenticateServerToken: a token from before clients authenticates with none", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps(),
+  );
+  assertEquals(result.ok, true);
+  assertEquals("client" in result, false);
+});
+
+Deno.test("authenticateServerToken: a malformed client is refused, not passed on", async () => {
+  for (
+    const client of ["cli", "direct:ops-slack", "agent:cli", "integration:"]
+  ) {
+    const events: AuditEvent[] = [];
+    const result = await authenticateWithDeps(
+      "test-token.secret-value",
+      makeAuthDeps({
+        readToken: () => Promise.resolve({ ...activeToken(), client }),
+      }),
+      events,
+    );
+    assertEquals(
+      result,
+      { ok: false, error: "Authentication failed", reason: "invalid-client" },
+      client,
+    );
+    assertEquals(events, []);
+  }
+});
+
+Deno.test("authenticateServerToken: the token-use audit event names the client", async () => {
+  const events: AuditEvent[] = [];
+  await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve({ ...activeToken(), client: "direct:cli" }),
+    }),
+    events,
+  );
+  assertEquals(events[0].client, "direct:cli");
+});
+
+Deno.test("authenticateDashboardSession: returns the client its token records, and refuses a malformed one", async () => {
+  const session = (client: string) => {
+    const token = activeToken({ client });
+    return authenticateDashboardSession(
+      { tokenName: token.name, tokenCreatedAt: token.createdAt },
+      fakeTokenRepoContext(
+        { id: "token-id" },
+        new TextEncoder().encode(JSON.stringify(token)),
+      ),
+    );
+  };
+  const accepted = await session("direct:dashboard");
+  assertEquals(accepted.ok && accepted.client, "direct:dashboard");
+  const refused = await session("direct:nonsense");
+  assertEquals(
+    !refused.ok && refused.reason,
+    "invalid-client",
+  );
+});

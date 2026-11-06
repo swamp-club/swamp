@@ -73,6 +73,7 @@ export const ApprovalDecisionSchema = z.object({
   approved: z.boolean(),
   reason: z.string().optional(),
   decidedBy: z.string().optional(),
+  client: z.string().optional(),
   decidedAt: z.string().datetime(),
 });
 
@@ -296,6 +297,7 @@ export const WorkflowRunSchema = z.object({
   // workflow on disk
   replayedEvaluatedCache: z.literal(true).optional(),
   initiatedBy: z.string().optional(),
+  client: z.string().optional(),
   instanceId: z.string().optional(),
   // pid and instanceId name the live process only while it runs, otherwise the
   // run's owner, which cancel routing and supersede read; kept while a resume
@@ -1254,6 +1256,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       undefined,
     private _allowedVaults: string[] | undefined = undefined,
     private _recovered: boolean = false,
+    private _client: string | undefined = undefined,
   ) {}
 
   /**
@@ -1334,6 +1337,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     tags?: Record<string, string>,
     initiatedBy?: string,
     triggerSource?: string,
+    client?: string,
   ): WorkflowRun {
     const id = crypto.randomUUID();
     const jobs = workflow.jobs.map((job) =>
@@ -1360,6 +1364,18 @@ export class WorkflowRun implements TriggerEvaluationContext {
       initiatedBy,
       undefined,
       triggerSource,
+      undefined,
+      undefined,
+      [],
+      [],
+      undefined,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      client,
     );
   }
 
@@ -1395,6 +1411,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.triggeringPrincipal,
       validated.allowedVaults,
       validated.recovered ?? false,
+      validated.client,
     );
     run._replayedEvaluatedCache = validated.replayedEvaluatedCache === true;
     if (validated.resumedAt) run._resumedAt = new Date(validated.resumedAt);
@@ -1424,6 +1441,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get initiatedBy(): string | undefined {
     return this._initiatedBy;
+  }
+
+  get client(): string | undefined {
+    return this._client;
   }
 
   get triggeringPrincipal(): RunTriggeringPrincipal | undefined {
@@ -2163,6 +2184,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._initiatedBy !== undefined) {
       data.initiatedBy = this._initiatedBy;
+    }
+    if (this._client !== undefined) {
+      data.client = this._client;
     }
     if (this._instanceId !== undefined) {
       data.instanceId = this._instanceId;

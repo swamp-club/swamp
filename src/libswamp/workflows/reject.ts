@@ -67,6 +67,7 @@ export interface WorkflowRejectData {
   stepName: string;
   approved: false;
   decidedBy: string;
+  client?: string;
   reason: string | null;
   runStatus: string;
   /**
@@ -101,6 +102,7 @@ export interface WorkflowRejectInput {
   reason?: string;
   runId?: string;
   decidedBy?: string;
+  client?: string;
 }
 
 export interface WorkflowRejectDeps {
@@ -239,6 +241,7 @@ async function rejectClaimedRun(
     approved: false,
     reason: input.reason,
     decidedBy,
+    ...(input.client !== undefined ? { client: input.client } : {}),
     decidedAt: new Date().toISOString(),
   });
   step.fail(input.reason ?? "Approval rejected");
@@ -330,6 +333,7 @@ export async function* workflowReject(
             stepName: input.stepName,
             approved: false,
             decidedBy,
+            ...(input.client !== undefined ? { client: input.client } : {}),
             reason: input.reason ?? null,
             runStatus: "failed",
             ...(nested ? nestedCascadeFields(nested) : {}),

@@ -665,6 +665,42 @@ Deno.test("toRunData: maps approved approval decision", () => {
   assertEquals(typeof stepView.approval?.approvalDuration, "number");
 });
 
+Deno.test("toRunData: carries the client of the run and of a decision, only when recorded", () => {
+  const workflow = Workflow.create({
+    name: "client-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(
+    workflow,
+    {},
+    "user:alice",
+    "api",
+    "integration:ops-slack",
+  );
+  run.getJob("main")!.getStep("gate")!.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:bob",
+    client: "direct:cli",
+    decidedAt: "2026-09-10T02:18:20.696Z",
+  });
+  const data = toRunData(run);
+  assertEquals(data.client, "integration:ops-slack");
+  assertEquals(data.jobs[0].steps[0].approval?.client, "direct:cli");
+
+  const plain = toRunData(WorkflowRun.create(workflow));
+  assertEquals("client" in plain, false);
+});
+
 Deno.test("toRunData: maps rejected approval decision", () => {
   const workflow = Workflow.create({
     name: "reject-wf",

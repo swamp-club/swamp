@@ -103,6 +103,7 @@ import {
   redactServeOptions,
 } from "../../serve/handlers/admin_handlers.ts";
 import {
+  bindAuthenticatedConnection,
   cancelActor,
   cancelReasonFor,
   closeConnectionsForPrincipal,
@@ -115,11 +116,8 @@ import {
   removeConnection,
   resolveConnectionCompression,
   sanitizeErrorForClient,
-  setConnectionCollectives,
   setConnectionCompression,
-  setConnectionLoginIdentity,
   setConnectionSourceIp,
-  setConnectionToken,
   terminateTokenSessions,
   updateCollectivesForPrincipal,
 } from "../../serve/handlers/shared.ts";
@@ -735,6 +733,7 @@ export interface CancelDeps {
 export interface CancelAuthorizationRequest {
   principal: Principal;
   loginIdentity?: ActorIdentity;
+  client?: string;
   collectives: readonly string[];
   groups: readonly string[];
   sourceIp: string;
@@ -762,6 +761,7 @@ export function authorizeCancelRequest(
       resourceName: request.execution?.id ?? "*",
       principal: request.principal,
       loginIdentity: request.loginIdentity,
+      client: request.client,
       sourceIp: request.sourceIp,
       requestId: crypto.randomUUID(),
       outcome: "denied",
@@ -7040,18 +7040,7 @@ export const serveCommand = new Command()
               req,
               upgradeOpts,
             );
-            setConnectionCollectives(
-              socket,
-              result.collectives,
-              result.groups,
-              result.principalId,
-            );
-            setConnectionToken(socket, {
-              name: result.tokenName,
-              createdAt: result.tokenCreatedAt,
-              principalId: result.principalId,
-            });
-            setConnectionLoginIdentity(socket, result.oauthIdentity);
+            bindAuthenticatedConnection(socket, result);
             setConnectionSourceIp(socket, remoteAddr);
             setConnectionCompression(
               socket,
@@ -7198,6 +7187,7 @@ export const serveCommand = new Command()
           let cancelAuditPrincipal: ReturnType<typeof parsePrincipal> | null =
             null;
           let cancelLoginIdentity: ActorIdentity | undefined;
+          let cancelClient: string | undefined;
           const cancelRemoteAddr = trustProxy
             ? (req.headers.get("x-forwarded-for")
               ?.split(",")[0]?.trim() ??
@@ -7284,12 +7274,14 @@ export const serveCommand = new Command()
               const cancelPrincipal = parsePrincipal(authResult.principalId);
               cancelAuditPrincipal = cancelPrincipal;
               cancelLoginIdentity = authResult.oauthIdentity;
+              cancelClient = authResult.client;
               const refusal = authorizeCancelRequest(
                 connectionCtx,
                 policySnapshotLoader,
                 {
                   principal: cancelPrincipal,
                   loginIdentity: authResult.oauthIdentity,
+                  client: authResult.client,
                   collectives: authResult.collectives,
                   groups: authResult.groups,
                   sourceIp: cancelRemoteAddr,
@@ -7342,6 +7334,7 @@ export const serveCommand = new Command()
               resourceName: executionId,
               principal: cancelAuditPrincipal,
               loginIdentity: cancelLoginIdentity,
+              client: cancelClient,
               sourceIp: cancelRemoteAddr,
               requestId: crypto.randomUUID(),
             };
@@ -7452,6 +7445,7 @@ export const serveCommand = new Command()
               resourceName: "*",
               principal: cancelAuditPrincipal,
               loginIdentity: cancelLoginIdentity,
+              client: cancelClient,
               sourceIp: cancelRemoteAddr,
               requestId: crypto.randomUUID(),
               outcome: "success",

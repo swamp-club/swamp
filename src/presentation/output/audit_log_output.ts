@@ -22,7 +22,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AuditQueryResponse } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
 
-const COL_WIDTHS = [16, 9, 12, 30, 20, 30];
+const COL_WIDTHS = [16, 9, 12, 30, 20, 30, 24];
 const HEADERS = [
   "TIME",
   "OUTCOME",
@@ -30,6 +30,7 @@ const HEADERS = [
   "ACTION",
   "PRINCIPAL",
   "RESOURCE",
+  "CLIENT",
 ];
 
 function formatTimestamp(iso: string): string {
@@ -66,18 +67,19 @@ function formatEventRow(e: Record<string, string>): string {
   const action = e.action ?? "";
   const principal = e.principalId ?? "";
   const resource = `${e.resourceKind ?? ""}:${e.resourceName ?? ""}`;
+  const client = e.client ?? "";
 
   return `${dim(time.padEnd(COL_WIDTHS[0]))}  ${
     outcome.padEnd(COL_WIDTHS[1] + (outcome.length - (e.outcome ?? "").length))
   }  ${category.padEnd(COL_WIDTHS[2])}  ${action.padEnd(COL_WIDTHS[3])}  ${
     principal.padEnd(COL_WIDTHS[4])
-  }  ${resource}`;
+  }  ${resource.padEnd(COL_WIDTHS[5])}  ${client}`.trimEnd();
 }
 
 export function renderAuditLogHeader(mode: OutputMode): void {
   if (mode === "json") return;
   writeOutput(bold(dim(
-    HEADERS.map((h, i) => h.padEnd(COL_WIDTHS[i])).join("  "),
+    HEADERS.map((h, i) => h.padEnd(COL_WIDTHS[i])).join("  ").trimEnd(),
   )));
 }
 

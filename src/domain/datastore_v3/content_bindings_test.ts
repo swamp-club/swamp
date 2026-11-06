@@ -464,7 +464,7 @@ Deno.test("judgeRunRecord: a nested step may hold only a decision its linked chi
   const rejected = run([
     step("call", { status: "failed", nestedRun, approvalDecision: DENIED }),
   ]);
-  const judged = (decisions: readonly unknown[] | undefined) =>
+  const judged = (decisions: readonly typeof DENIED[] | undefined) =>
     judge(waiting, rejected, {
       storedStepIsNested: () => true,
       heldChild: () => decisions === undefined ? undefined : { decisions },
@@ -736,4 +736,90 @@ Deno.test("runInitiatorRefusal: a serve with no authenticated caller checks noth
     runInitiatorRefusal({ initiatedBy: "ghost", caller: undefined }),
     undefined,
   );
+});
+
+Deno.test("judgeRunRecord: a forwarded first record cannot set a client", () => {
+  assert(
+    judge(undefined, run([], { client: "integration:ops-slack" })).refusal !==
+      undefined,
+  );
+  assertEquals(judge(undefined, run([])).refusal, undefined);
+});
+
+Deno.test("judgeRunRecord: a forwarded record cannot add or change a client", () => {
+  assert(
+    judge(run([]), run([], { client: "direct:cli" })).refusal !== undefined,
+  );
+  assert(
+    judge(
+      run([], { client: "direct:cli" }),
+      run([], {
+        client: "integration:ops-slack",
+      }),
+    ).refusal !== undefined,
+  );
+});
+
+const gateOf = (fields: Partial<StepRunData>) =>
+  run([step("gate", { startedAt: STARTED, ...fields })]);
+const DECIDED_VIA = { ...DECIDED, client: "integration:ops-slack" };
+
+Deno.test("judgeRunRecord: an older CLI that strips a decision's client can still resume", () => {
+  assertEquals(
+    judge(
+      gateOf({ status: "waiting_approval", approvalDecision: DECIDED_VIA }),
+      gateOf({ status: "succeeded", approvalDecision: DECIDED }),
+    ).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: only a missing client is tolerated on a decision", () => {
+  const held = gateOf({
+    status: "waiting_approval",
+    approvalDecision: DECIDED_VIA,
+  });
+  for (
+    const forwarded of [
+      { ...DECIDED, client: "direct:cli" },
+      DENIED,
+      { ...DECIDED, decidedBy: "user:someone-else" },
+      { ...DECIDED, reason: "changed" },
+    ]
+  ) {
+    assert(
+      judge(held, gateOf({ status: "succeeded", approvalDecision: forwarded }))
+        .refusal !== undefined,
+      JSON.stringify(forwarded),
+    );
+  }
+  assert(
+    judge(
+      gateOf({ status: "waiting_approval", approvalDecision: DECIDED }),
+      gateOf({ status: "succeeded", approvalDecision: DECIDED_VIA }),
+    ).refusal !== undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a nested step may hold its child's decision without the client an older CLI stripped", () => {
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
+  const judged = (forwarded: StepRunData["approvalDecision"]) =>
+    judge(
+      run([step("call", { status: "waiting_approval", nestedRun })]),
+      run([
+        step("call", {
+          status: "failed",
+          nestedRun,
+          approvalDecision: forwarded,
+        }),
+      ]),
+      {
+        storedStepIsNested: () => true,
+        heldChild: () => ({
+          decisions: [{ ...DENIED, client: "direct:cli" }],
+        }),
+      },
+    );
+  assertEquals(judged(DENIED).refusal, undefined);
+  assert(judged({ ...DENIED, reason: "changed" }).refusal !== undefined);
 });

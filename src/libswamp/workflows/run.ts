@@ -414,6 +414,7 @@ export interface WorkflowRunInput {
   tracestate?: string;
   assertFailOnSeverity?: AssertSeverity;
   initiatedBy?: string;
+  client?: string;
   instanceId?: string;
   triggerSource?: string;
   noSupersede?: boolean;
@@ -465,6 +466,7 @@ function mapApprovalDecision(
       status: "approved",
       approvedBy: decision.decidedBy,
       approvedAt: decision.decidedAt,
+      ...(decision.client !== undefined ? { client: decision.client } : {}),
     };
     if (stepStartedAt) {
       const decidedMs = new Date(decision.decidedAt).getTime();
@@ -477,6 +479,7 @@ function mapApprovalDecision(
     rejectedBy: decision.decidedBy,
     rejectedAt: decision.decidedAt,
     reason: decision.reason,
+    ...(decision.client !== undefined ? { client: decision.client } : {}),
   };
 }
 
@@ -755,6 +758,7 @@ export function toRunData(
       }))
       : undefined,
     initiatedBy: run.initiatedBy,
+    ...(run.client !== undefined ? { client: run.client } : {}),
     references: run.references,
     ...(run.parentRun?.kind === "valid"
       ? {
@@ -1070,6 +1074,7 @@ export async function* workflowRun(
                   skipAllChecks: resolvedInput.skipAllChecks,
                   assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
                   initiatedBy: resolvedInput.initiatedBy,
+                  client: resolvedInput.client,
                   instanceId: resolvedInput.instanceId,
                   triggerSource: resolvedInput.triggerSource,
                 }),

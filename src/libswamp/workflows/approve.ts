@@ -56,6 +56,7 @@ export interface WorkflowApproveData {
   stepName: string;
   approved: true;
   decidedBy: string;
+  client?: string;
   reason: string | null;
   allGatesDecided: boolean;
   /**
@@ -87,6 +88,7 @@ export interface WorkflowApproveInput {
   reason?: string;
   runId?: string;
   decidedBy?: string;
+  client?: string;
 }
 
 export interface WorkflowApproveDeps {
@@ -192,6 +194,7 @@ async function approveClaimedRun(
     approved: true,
     reason: input.reason,
     decidedBy,
+    ...(input.client !== undefined ? { client: input.client } : {}),
     decidedAt: new Date().toISOString(),
   });
   step.succeed();
@@ -279,6 +282,7 @@ export async function* workflowApprove(
             stepName: input.stepName,
             approved: true,
             decidedBy,
+            ...(input.client !== undefined ? { client: input.client } : {}),
             reason: input.reason ?? null,
             allGatesDecided,
             ...(awaitingParent ? { awaitingParent } : {}),

@@ -205,8 +205,10 @@ steps:
 2. `swamp workflow approve <workflow> <step> --run <id>` marks the step
    succeeded in the saved record; nothing executes. The local command does no
    authorization. It records `decidedBy` from `$USER`/`$USERNAME`, or
-   `"unknown"` (`src/libswamp/workflows/approve.ts`). Only the `--server` path
-   authorizes: the `workflow.approve` handler checks the `approve` action, not
+   `"unknown"` (`src/libswamp/workflows/approve.ts`), and no client. Through
+   serve, the decision also records the `client` of the caller's token, as the
+   run records the client that started it (see "Clients" in
+   `design/enablers/access-control.md`). Only the `--server` path authorizes: the `workflow.approve` handler checks the `approve` action, not
    `run`. A `run` grant implies `approve`, so existing grants keep working, and
    an `approve`-only grant can decide gates without being able to execute the
    workflow. With `--approve-requires-explicit-grant`, serve stops counting
@@ -244,7 +246,8 @@ When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
 
 The resume uses the workflow name and run id the approval resolved, not the
 request fields. It counts against the approver's principal for the
-`ActiveRunRegistry` caps, and the run keeps its original `initiatedBy`. With
+`ActiveRunRegistry` caps, and the run keeps its original `initiatedBy` and
+`client`. With
 auto-resume on, an `approve` grant releases a run that was authorized when it
 started; that is the point of the opt-in. The approver cannot supply inputs on
 this path.

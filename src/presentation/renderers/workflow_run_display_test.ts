@@ -202,3 +202,63 @@ Deno.test("renderWorkflowRunDisplay: json mode carries the key and the held mark
   const output = captureOutput(() => renderWorkflowRunDisplay(view, "json"));
   assertEquals(JSON.parse(output), view);
 });
+
+function decided(
+  approval: NonNullable<
+    WorkflowRunView["jobs"][number]["steps"][number]["approval"]
+  >,
+): WorkflowRunView {
+  return {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "release",
+    status: "succeeded",
+    jobs: [{
+      name: "main",
+      status: "succeeded",
+      steps: [{ name: "review", status: "succeeded", approval }],
+    }],
+  };
+}
+
+Deno.test("renderWorkflowRunDisplay: a decision names the client it came through", () => {
+  const approved = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      decided({
+        status: "approved",
+        approvedBy: "user:bob",
+        approvedAt: "2026-11-05T14:03:00.000Z",
+        client: "direct:cli",
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(approved, "by user:bob via direct:cli at");
+  const rejected = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      decided({
+        status: "rejected",
+        rejectedBy: "user:bob",
+        rejectedAt: "2026-11-05T14:03:00.000Z",
+        client: "integration:ops-slack",
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(rejected, "by user:bob via integration:ops-slack at");
+});
+
+Deno.test("renderWorkflowRunDisplay: a decision with no client reads as before", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      decided({
+        status: "approved",
+        approvedBy: "user:bob",
+        approvedAt: "2026-11-05T14:03:00.000Z",
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(output, "by user:bob at");
+  assertEquals(output.includes(" via "), false);
+});

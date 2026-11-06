@@ -28,6 +28,7 @@ import {
 import { generateOpaqueToken } from "../../remote/session_credential.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { parseCredentialPrincipal } from "../../access/service_principal.ts";
+import { DIRECT_TOKEN_CLIENT } from "../../access/client.ts";
 
 export const SERVER_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/server-token",
@@ -51,6 +52,11 @@ export const ServerTokenSchema = z.object({
     username: z.string().min(1).optional(),
   }).optional().describe(
     "Identity the OAuth provider supplied at login; set only by OAuth login, never by a manual mint (swamp-club#3076)",
+  ),
+  // loose so a bad value cannot hide a record from listing and revocation, which
+  // skip what fails this parse; authentication parses it strictly
+  client: z.string().optional().describe(
+    "How serve issued this token, as <kind>:<id>; absent on tokens issued before clients were recorded",
   ),
   collectives: z.array(z.string()).default([]).describe(
     "Collective memberships snapshotted at login time (from OAuth userinfo)",
@@ -227,6 +233,7 @@ async function mint(
     state: "active",
     principalId: args.principalId,
     principalEmail: args.principalEmail,
+    client: DIRECT_TOKEN_CLIENT,
     collectives: args.collectives,
     groups: args.groups,
     createdAt: new Date(now).toISOString(),
@@ -304,6 +311,7 @@ async function rotate(
     ...(existing.oauthIdentity
       ? { oauthIdentity: existing.oauthIdentity }
       : {}),
+    ...(existing.client !== undefined ? { client: existing.client } : {}),
     collectives: existing.collectives,
     groups: existing.groups,
     createdAt: new Date(now).toISOString(),

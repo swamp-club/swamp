@@ -387,3 +387,22 @@ Deno.test("audited: records the actor's username and email on success and failur
   assertEquals("principalEmail" in sink.events[2], false);
   assertEquals("principalUsername" in sink.events[2], false);
 });
+
+Deno.test("audited: passes the client through on success and on failure", async () => {
+  const sink = createCaptureSink();
+  const emitter = new AuditEmitter([sink]);
+  await audited(Promise.resolve(), {
+    ...baseOptions,
+    emitter,
+    client: "direct:cli",
+  });
+  await assertRejects(() =>
+    audited(Promise.reject(new Error("boom")), {
+      ...baseOptions,
+      emitter,
+      client: "direct:cli",
+    })
+  );
+  await emitter.flush();
+  assertEquals(sink.events.map((e) => e.client), ["direct:cli", "direct:cli"]);
+});

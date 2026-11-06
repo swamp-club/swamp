@@ -192,6 +192,7 @@ function authenticatedCaller(
       groups: auth.groups,
       sourceIp,
       loginIdentity: auth.oauthIdentity,
+      client: auth.client,
     },
     principal: auth.principalId,
     token: {

@@ -52,6 +52,7 @@ export interface ApprovalView {
   timeoutAt?: string;
   reason?: string;
   approvalDuration?: number;
+  client?: string;
 }
 
 /**
@@ -163,6 +164,7 @@ export interface WorkflowRunView {
   reports?: ReportResultView[];
   workflowDataArtifacts?: DataArtifactRefData[];
   initiatedBy?: string;
+  client?: string;
   references?: Record<string, string>;
   parentRun?: {
     workflowId: string;

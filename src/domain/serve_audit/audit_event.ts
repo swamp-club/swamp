@@ -64,6 +64,7 @@ export interface AuditEvent {
   readonly initiatedBy: string;
   readonly principalUsername?: string;
   readonly principalEmail?: string;
+  readonly client?: string;
   readonly sourceIp: string;
   readonly requestId: string;
   readonly methodName?: string;

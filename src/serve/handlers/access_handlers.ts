@@ -103,6 +103,7 @@ import {
 import {
   authorizeOrReject,
   type ConnectionContext,
+  getConnectionClient,
   getConnectionCollectives,
   getConnectionGroups,
   handlerLibSwampContext,
@@ -1274,6 +1275,7 @@ export async function handleAccessTokenRevoke(
           reason: TOKEN_REVOKED_REASON,
           cause: "revoked",
           initiatedBy: initiatorOf(principal, ctx),
+          client: getConnectionClient(socket),
           requestId,
           audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
         });
@@ -1341,7 +1343,13 @@ export async function handleAccessTokenRotate(
         }
 
         // the rotation is persisted even if the request was cancelled
-        await terminateRotatedSessions(payload.name, ctx, requestId, principal);
+        await terminateRotatedSessions(
+          payload.name,
+          ctx,
+          requestId,
+          principal,
+          getConnectionClient(socket),
+        );
       } catch (error) {
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "access_token_rotate_failed", message);
@@ -1367,6 +1375,7 @@ async function terminateRotatedSessions(
   ctx: ConnectionContext,
   requestId: string,
   principal: Principal | null,
+  client: string | undefined,
 ): Promise<void> {
   let newMint: string | undefined;
   try {
@@ -1383,6 +1392,7 @@ async function terminateRotatedSessions(
     reason: TOKEN_ROTATED_REASON,
     cause: "rotated",
     initiatedBy: initiatorOf(principal, ctx),
+    client,
     requestId,
     audit: { emitter: ctx.auditEmitter, instanceId: ctx.instanceId },
   });

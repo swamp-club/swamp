@@ -1917,6 +1917,15 @@ Deno.test("authorizeCancelRequest: refuses without a policy snapshot and audits 
   assertEquals(events[0].initiatedBy, "user:alice");
 });
 
+Deno.test("authorizeCancelRequest: the refusal records the caller's client", () => {
+  const events: AuditEvent[] = [];
+  authorizeCancelRequest(cancelAuthCtx(events), undefined, {
+    ...cancelAuthRequest,
+    client: "integration:ops-slack",
+  });
+  assertEquals(events[0].client, "integration:ops-slack");
+});
+
 Deno.test("authorizeCancelRequest: the refusal records the caller's login identity (swamp-club#3076)", () => {
   const events: AuditEvent[] = [];
 

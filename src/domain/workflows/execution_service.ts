@@ -3120,6 +3120,7 @@ interface StepOptions {
   skipAllChecks?: boolean;
   assertFailOnSeverity?: AssertSeverity;
   initiatedBy?: string;
+  client?: string;
   /**
    * `root.key` binding paths (e.g. `inputs.token`, `self.item`) whose values
    * came from resume-time inputs. Those are audited by key only and must
@@ -3385,6 +3386,7 @@ export class WorkflowExecutionService {
       skipAllChecks?: boolean;
       assertFailOnSeverity?: AssertSeverity;
       initiatedBy?: string;
+      client?: string;
       instanceId?: string;
       triggerSource?: string;
       references?: Record<string, string>;
@@ -3722,6 +3724,7 @@ export class WorkflowExecutionService {
           mergedTags,
           options?.initiatedBy,
           options?.triggerSource,
+          options?.client,
         );
         this.startedRunIds.add(run.id);
         // a serve run records who triggered it, so a resume is held to that
@@ -3875,6 +3878,7 @@ export class WorkflowExecutionService {
         workflowTags: workflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: options?.initiatedBy,
+        client: options?.client,
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
@@ -4797,6 +4801,7 @@ export class WorkflowExecutionService {
         workflowTags: resolvedWorkflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: existingRun.initiatedBy,
+        client: existingRun.client,
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
@@ -7191,6 +7196,7 @@ export class WorkflowExecutionService {
       // same place (a serve-owned child is never killed by pid from the CLI).
       instanceId: options.instanceId,
       initiatedBy: options.initiatedBy,
+      client: options.client,
       signal: options.signal,
       secretRedactor: options.secretRedactor,
       sensitiveValues: options.sensitiveValues,

@@ -235,6 +235,7 @@ import {
   type ConnectionContext,
   exceptionTypeForClient,
   filterByResources,
+  getConnectionClient,
   handlerLibSwampContext,
   isAuthorized,
   LibSwampStreamError,
@@ -396,6 +397,7 @@ export async function handleWorkflowRun(
           tracestate: payload.tracestate,
           noSupersede: payload.noSupersede,
           initiatedBy,
+          client: getConnectionClient(socket),
           instanceId: ctx.instanceId,
         },
         controller.signal,
@@ -543,6 +545,7 @@ export async function handleWorkflowRun(
           tracestate: payload.tracestate,
           noSupersede: payload.noSupersede,
           initiatedBy,
+          client: getConnectionClient(socket),
           instanceId: ctx.instanceId,
         },
         runController.signal,
@@ -1613,6 +1616,7 @@ export async function handleWorkflowApprove(
             decidedBy: principal
               ? principalToString(principal)
               : payload.decidedBy,
+            client: getConnectionClient(socket),
           }),
           {
             resolving: () => {},
@@ -2043,6 +2047,7 @@ export async function handleWorkflowReject(
             decidedBy: principal
               ? principalToString(principal)
               : payload.decidedBy,
+            client: getConnectionClient(socket),
           }),
           {
             resolving: () => {},

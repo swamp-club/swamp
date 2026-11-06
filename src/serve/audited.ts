@@ -44,6 +44,7 @@ export interface AuditedOptions {
   readonly methodName?: string;
   readonly resolvedUserNames?: Record<string, string>;
   readonly actor?: ActorIdentity;
+  readonly client?: string;
   readonly socket?: WebSocket;
 }
 
@@ -91,6 +92,7 @@ export function audited(
       principalId,
       initiatedBy,
       actor: options.actor,
+      client: options.client,
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,
@@ -112,6 +114,7 @@ export function audited(
       principalId,
       initiatedBy,
       actor: options.actor,
+      client: options.client,
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,

@@ -82,6 +82,7 @@ function formatRfc5424(
     `category="${escapeSD(event.category)}"`,
     `outcome="${escapeSD(event.outcome)}"`,
     `principal="${escapeSD(`${event.principalKind}:${event.principalId}`)}"`,
+    ...(event.client ? [`client="${escapeSD(event.client)}"`] : []),
     `resource="${escapeSD(`${event.resourceKind}:${event.resourceName}`)}"`,
   ];
 

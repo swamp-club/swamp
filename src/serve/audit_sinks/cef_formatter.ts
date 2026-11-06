@@ -108,6 +108,11 @@ export function formatCefLine(
     extensions.push("cs2Label=grantId");
   }
 
+  if (event.client) {
+    extensions.push(`cs4=${escapeExtension(event.client)}`);
+    extensions.push("cs4Label=client");
+  }
+
   if (event.sourceIp) {
     extensions.push(`src=${escapeExtension(event.sourceIp)}`);
   }

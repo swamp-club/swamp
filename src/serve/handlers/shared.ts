@@ -496,6 +496,7 @@ const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
 const connectionPrincipalId = new WeakMap<WebSocket, string>();
 const connectionSourceIp = new WeakMap<WebSocket, string>();
 const connectionLoginIdentity = new WeakMap<WebSocket, ActorIdentity>();
+const connectionClient = new WeakMap<WebSocket, string>();
 const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
@@ -653,6 +654,8 @@ export interface TerminateTokenSessionsOptions {
   readonly reason: string;
   readonly cause: TokenSessionTerminationCause;
   readonly initiatedBy: string;
+  /** of the request ending the sessions; serve's own revalidation has none */
+  readonly client?: string;
   readonly requestId?: string;
   readonly audit?: TokenSessionAuditContext;
 }
@@ -854,6 +857,7 @@ function emitSessionTerminated(
       principalKind: principal.kind,
       principalId: principal.id,
       initiatedBy: options.initiatedBy,
+      client: options.client,
       sourceIp,
       requestId: options.requestId ?? crypto.randomUUID(),
       detail: options.cause,
@@ -928,6 +932,48 @@ export function getConnectionLoginIdentity(
   return connectionLoginIdentity.get(socket);
 }
 
+export function setConnectionClient(
+  socket: WebSocket,
+  client: string | undefined,
+): void {
+  if (client !== undefined) connectionClient.set(socket, client);
+}
+
+export function getConnectionClient(socket: WebSocket): string | undefined {
+  return connectionClient.get(socket);
+}
+
+/**
+ * Binds what a credential proved to its connection. A follower forwards the
+ * credential, so the leader binds the same values from its own read of it.
+ */
+export function bindAuthenticatedConnection(
+  socket: WebSocket,
+  auth: {
+    readonly principalId: string;
+    readonly collectives: readonly string[];
+    readonly groups: readonly string[];
+    readonly tokenName: string;
+    readonly tokenCreatedAt: string;
+    readonly oauthIdentity?: ActorIdentity;
+    readonly client?: string;
+  },
+): void {
+  setConnectionCollectives(
+    socket,
+    auth.collectives,
+    auth.groups,
+    auth.principalId,
+  );
+  setConnectionToken(socket, {
+    name: auth.tokenName,
+    createdAt: auth.tokenCreatedAt,
+    principalId: auth.principalId,
+  });
+  setConnectionLoginIdentity(socket, auth.oauthIdentity);
+  setConnectionClient(socket, auth.client);
+}
+
 export function connectionActorIdentity(
   socket: WebSocket,
   principal: Principal | null,
@@ -962,9 +1008,11 @@ export interface AccessCaller {
   readonly groups: readonly string[];
   readonly sourceIp: string;
   readonly loginIdentity?: ActorIdentity;
+  /** no access decision reads it */
+  readonly client?: string;
 }
 
-type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity">;
+type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity" | "client">;
 
 export function accessCallerOf(
   socket: WebSocket,
@@ -976,6 +1024,7 @@ export function accessCallerOf(
     groups: connectionGroups.get(socket) ?? [],
     sourceIp: getConnectionSourceIp(socket),
     loginIdentity: connectionLoginIdentity.get(socket),
+    client: connectionClient.get(socket),
   };
 }
 
@@ -1551,6 +1600,7 @@ function emitDenialFrom(
       ctx.resolvedUserNames,
       origin.loginIdentity,
     ),
+    client: origin.client,
     sourceIp: origin.sourceIp,
     requestId,
     detail,
@@ -2582,6 +2632,7 @@ export interface RunCancelAudit {
   resourceName: string;
   principal: Principal | null;
   loginIdentity?: ActorIdentity;
+  client?: string;
   sourceIp: string;
   requestId: string;
   outcome: AuditOutcome;
@@ -2612,6 +2663,7 @@ export function emitRunCancelAudit(
       ctx.resolvedUserNames,
       audit.loginIdentity,
     ),
+    client: audit.client,
     sourceIp: audit.sourceIp,
     requestId: audit.requestId,
     detail: audit.detail,
