@@ -98,3 +98,23 @@ Deno.test("renderServerTokenReveal: log mode shows expiry warning when expired",
   const output = captureLogs(() => renderServerTokenReveal(expiredData, "log"));
   assertStringIncludes(output, "this token has expired");
 });
+
+Deno.test("renderServerTokenCreate: the reveal hint keeps the command's --server", () => {
+  const output = captureLogs(() =>
+    renderServerTokenCreate(createData, "log", " --server wss://serve.example")
+  );
+  assertStringIncludes(
+    output,
+    `swamp access token reveal ${createData.name} --server wss://serve.example --yes`,
+  );
+});
+
+Deno.test("renderServerTokenRotate: the reveal hint keeps the command's --repo-dir", () => {
+  const output = captureLogs(() =>
+    renderServerTokenRotate(rotateData, "log", " --repo-dir /srv/team")
+  );
+  assertStringIncludes(
+    output,
+    `swamp access token reveal ${rotateData.name} --repo-dir /srv/team --yes`,
+  );
+});

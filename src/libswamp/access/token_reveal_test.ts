@@ -178,3 +178,69 @@ Deno.test("serverTokenReveal: refuses a token whose secret is from another mint"
   );
   assertEquals(JSON.stringify(events).includes("abc123secret"), false);
 });
+
+for (
+  const [label, name, overrides] of [
+    [
+      "a token minted by OAuth login",
+      "alice-login",
+      { oauthIdentity: { email: "alice@example.com" } },
+    ],
+    ["a login token minted before its marker existed", "oauth-1a2b3c4d", {}],
+  ] as const
+) {
+  Deno.test(`serverTokenReveal: refuses ${label} when login tokens are refused`, async () => {
+    let secretRead = false;
+    const deps = makeDeps({
+      query: () => Promise.resolve([tokenRecord(name, overrides)]),
+      readSecret: () => {
+        secretRead = true;
+        return Promise.resolve("abc123secret");
+      },
+    });
+    const events = await collect<ServerTokenRevealEvent>(
+      serverTokenReveal(createLibSwampContext(), deps, name, {
+        refuseLoginTokens: true,
+      }),
+    );
+    const error = events[1] as Extract<
+      ServerTokenRevealEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertEquals(error.error.code, "token_not_revealable");
+    assertStringIncludes(error.error.message, `'${name}'`);
+    assertEquals(secretRead, false);
+  });
+}
+
+Deno.test("serverTokenReveal: a minted token whose name only resembles a login token is revealed", async () => {
+  for (
+    const name of ["oauth-1a2b3c4", "oauth-1a2b3c4d5", "my-oauth-1a2b3c4d"]
+  ) {
+    const deps = makeDeps({
+      query: () => Promise.resolve([tokenRecord(name)]),
+    });
+    const events = await collect<ServerTokenRevealEvent>(
+      serverTokenReveal(createLibSwampContext(), deps, name, {
+        refuseLoginTokens: true,
+      }),
+    );
+    assertEquals(events[1].kind, "completed", name);
+  }
+});
+
+Deno.test("serverTokenReveal: a local reveal still reveals a login token", async () => {
+  const deps = makeDeps({
+    query: () =>
+      Promise.resolve([
+        tokenRecord("oauth-1a2b3c4d", {
+          oauthIdentity: { email: "alice@example.com" },
+        }),
+      ]),
+  });
+  const events = await collect<ServerTokenRevealEvent>(
+    serverTokenReveal(createLibSwampContext(), deps, "oauth-1a2b3c4d"),
+  );
+  assertEquals(events[1].kind, "completed");
+});
