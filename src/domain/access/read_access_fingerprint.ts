@@ -29,8 +29,11 @@ import type { AccessPrincipal } from "./access_decision_service.ts";
 import type { Action } from "./action.ts";
 import { principalToString } from "./principal.ts";
 
-/** Bumped when the inputs change shape, so old and new never compare equal. */
-const FINGERPRINT_FORMAT = 3;
+/**
+ * bumped when the inputs change shape or the same inputs decide differently, so
+ * a copy filtered under the old rule resets
+ */
+const FINGERPRINT_FORMAT = 4;
 
 const READ_ACTIONS: readonly Action[] = ["read", "admin"];
 

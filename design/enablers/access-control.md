@@ -1060,6 +1060,17 @@ has loaded it, so `access grant list` is the way to find them beforehand. An old
 CLI and an older serve together still accept what this release refuses, so upgrade
 serve before relying on the refusal.
 
+Review stored denies on `admin` too. One whose condition always errors, such as one
+reading `principal.email`, did nothing before and now refuses its subjects `admin`,
+including the access to revoke it. If those subjects hold every admin, nobody can
+revoke it through serve, so fix it before upgrading.
+
+The read-access fingerprint changes with this rule, so a member's local copy of a
+serve datastore resets once on the first command after the upgrade, and copies
+filtered under the old rule do not keep what a deny now refuses. While instances of
+both versions answer, the fingerprint differs between them; the reset cooldown
+limits how often a copy rebuilds.
+
 Implementation: `withRunCondition` and `withRunPending` in
 `src/domain/access/access_resources.ts`, `AccessResource.pending` in
 `src/domain/access/access_decision_service.ts`, and `runDecisionGuard` in
