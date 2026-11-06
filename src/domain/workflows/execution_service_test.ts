@@ -4454,6 +4454,149 @@ class TrackingRunRepository implements WorkflowRunRepository {
   }
 }
 
+/** holds the save of a step start until the iterations behind it have finished */
+class BacklogRunRepository extends InMemoryWorkflowRunRepository {
+  readonly landed: Map<string, string>[] = [];
+  holdUntilSucceeded = 0;
+
+  override async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    const steps = () => run.jobs.flatMap((job) => job.steps);
+    const expected = this.holdUntilSucceeded;
+    if (expected > 0 && steps().some((step) => step.status === "running")) {
+      this.holdUntilSucceeded = 0;
+      await waitFor(
+        () =>
+          steps().filter((step) => step.status === "succeeded").length >=
+            expected,
+        "every iteration to finish behind the held save",
+      );
+    }
+    this.landed.push(
+      new Map(steps().map((step) => [step.stepName, step.status])),
+    );
+    return super.save(workflowId, run);
+  }
+}
+
+const BACKLOG_ITEMS = 200;
+
+function backlogWorkflow(): Workflow {
+  return Workflow.create({
+    name: "foreach-save-backlog",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "item-${{ self._index }}",
+            task: StepTask.model("test-model", "run"),
+            forEach: { item: "id", in: "${{ inputs.ids }}" },
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+const backlogIds = Array.from({ length: BACKLOG_ITEMS }, (_, i) => `${i}`);
+
+/** each step event against the newest record landed when it was read */
+function assertEventsFollowTheirSave(
+  event: WorkflowExecutionEvent,
+  runRepo: BacklogRunRepository,
+): void {
+  if (event.kind !== "step_started" && event.kind !== "step_completed") return;
+  const status = runRepo.landed.at(-1)?.get(event.stepId);
+  const allowed = event.kind === "step_started"
+    ? ["running", "succeeded"]
+    : ["succeeded"];
+  assert(
+    status !== undefined && allowed.includes(status),
+    `${event.kind} of ${event.stepId} read before a save holding it landed (saved as ${status})`,
+  );
+}
+
+Deno.test("execute: a parallel forEach whose iterations all finish behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new BacklogRunRepository();
+    const workflow = backlogWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    runRepo.holdUntilSucceeded = BACKLOG_ITEMS;
+
+    let stepEvents = 0;
+    let completed: WorkflowRun | undefined;
+    for await (
+      const event of service.run(workflow.name, { inputs: { ids: backlogIds } })
+    ) {
+      assertEventsFollowTheirSave(event, runRepo);
+      if (event.kind === "step_started" || event.kind === "step_completed") {
+        stepEvents++;
+      }
+      if (event.kind === "completed") completed = event.run;
+    }
+
+    assertEquals(completed?.status, "succeeded");
+    assertEquals(stepEvents, BACKLOG_ITEMS * 2);
+    assert(
+      runRepo.landed.length < 10,
+      `expected a handful of saves for ${stepEvents} step events, got ${runRepo.landed.length}`,
+    );
+  });
+});
+
+Deno.test("resume: a failed parallel forEach whose retried iterations all finish behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new BacklogRunRepository();
+    const executor = new CountingStepExecutor();
+    const workflow = backlogWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    for (let i = 0; i < BACKLOG_ITEMS; i++) executor.failing.add(`item-${i}`);
+    const failed = await service.execute(workflow.name, {
+      inputs: { ids: backlogIds },
+    });
+    assertEquals(failed.status, "failed");
+
+    executor.failing.clear();
+    runRepo.holdUntilSucceeded = BACKLOG_ITEMS;
+    const savesBefore = runRepo.landed.length;
+    let stepEvents = 0;
+    let completed: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, failed.id)) {
+      assertEventsFollowTheirSave(event, runRepo);
+      if (event.kind === "step_started" || event.kind === "step_completed") {
+        stepEvents++;
+      }
+      if (event.kind === "completed") completed = event.run;
+    }
+
+    assertEquals(completed?.status, "succeeded");
+    assertEquals(stepEvents, BACKLOG_ITEMS * 2);
+    const saves = runRepo.landed.length - savesBefore;
+    assert(
+      saves < 10,
+      `expected a handful of saves for ${stepEvents} step events, got ${saves}`,
+    );
+  });
+});
+
 Deno.test("CONTRACT: success run emits events in exact order", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
