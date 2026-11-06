@@ -1089,6 +1089,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
    * so; a write is refused
    */
   let contactRecorded = false;
+  let reachedServe = false;
   const catchUpFromServe = async (
     signal: AbortSignal,
     mode: "read" | "write",
@@ -1100,6 +1101,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     if (serveOfflineAt(options.datastorePath) !== undefined) return;
     try {
       await serveCatchUp.catchUp(signal);
+      reachedServe = true;
       // a catch-up that read serve's feed heard serve, whatever its features
       const initiator = serveClient!.initiatorMode() ?? { kind: "not-checked" };
       noteServeInitiator(options.datastorePath, initiator);
@@ -1493,6 +1495,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         configLoaded(partition) {
           readModel.clearConfigBases(unitNamespace.toString(), partition);
         },
+        reachedServe: () =>
+          reachedServe && serveOfflineAt(options.datastorePath) === undefined,
         committedBeforeThrowing(error: unknown): boolean {
           return wasThrownAfterCommit(error);
         },
