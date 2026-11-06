@@ -58,8 +58,10 @@ function formatPruneLines(
       const verb = item.action === "delete"
         ? (willDelete ? "delete" : "deleted")
         : (willDelete ? "edit" : "edited");
+      // a check mark would read as done, so a preview gets a plain bullet
+      const mark = willDelete ? dim("•") : green("✓");
       lines.push(
-        `  ${green("✓")} ${bold(item.path)} ${dim(`${verb} (${item.tool})`)}`,
+        `  ${mark} ${bold(item.path)} ${dim(`${verb} (${item.tool})`)}`,
       );
       for (const removed of item.removed) {
         lines.push(`      ${dim("-")} ${removed}`);

@@ -21,7 +21,10 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { PrunePlan } from "../../domain/repo/tool_settings_pruner.ts";
+import { join } from "@std/path";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
+  createRepoPruneDeps,
   repoPrune,
   type RepoPruneDeps,
   type RepoPruneEvent,
@@ -153,4 +156,37 @@ Deno.test("repoPrune: an apply failure becomes an error event", async () => {
   const last = events[events.length - 1];
   if (last.kind !== "error") throw new Error(`got ${last.kind}`);
   assertStringIncludes(last.error.message, "permission denied");
+});
+
+async function enrolledToolsFor(
+  marker: string | null,
+): Promise<string[] | null> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_prune_marker_" });
+  try {
+    if (marker !== null) {
+      await Deno.writeTextFile(join(dir, ".swamp.yaml"), marker);
+    }
+    return await createRepoPruneDeps().readEnrolledTools(RepoPath.create(dir));
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("createRepoPruneDeps: a marker without tools counts claude as enrolled", async () => {
+  assertEquals(await enrolledToolsFor('swampVersion: "0.1.0"\n'), ["claude"]);
+});
+
+Deno.test("createRepoPruneDeps: an explicit empty tool list enrolls nothing", async () => {
+  assertEquals(
+    await enrolledToolsFor('swampVersion: "0.1.0"\ntools: []\n'),
+    [],
+  );
+});
+
+Deno.test("createRepoPruneDeps: no marker means not a repository", async () => {
+  assertEquals(await enrolledToolsFor(null), null);
 });

@@ -51,7 +51,7 @@ async function withRepo(
   }
 }
 
-/** settings files (json and ts) still wiring swamp's audit hook or managed plugins */
+// skills/ and the test home quote the hook command in documentation, not settings
 async function swampWiring(dir: string): Promise<string[]> {
   const found: string[] = [];
   for await (

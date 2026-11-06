@@ -220,6 +220,11 @@ Deno.test("ToolSettingsPruner.find: removes kiro hooks, agent and default agent,
       version: "v1",
       hooks: [userHook, kiroHook],
     });
+    await writeJson(dir, ".kiro/hooks/described.json", {
+      version: "v1",
+      description: "kept",
+      hooks: [kiroHook],
+    });
     await Deno.writeTextFile(join(dir, ".kiro/hooks/broken.json"), "{");
     await writeJson(dir, ".kiro/agents/swamp.json", { name: "swamp" });
     await writeJson(dir, ".kiro/agents/other.json", { name: "other" });
@@ -235,6 +240,11 @@ Deno.test("ToolSettingsPruner.find: removes kiro hooks, agent and default agent,
     assertEquals(await readJson(dir, ".kiro/hooks/mine.json"), {
       version: "v1",
       hooks: [userHook],
+    });
+    assertEquals(await readJson(dir, ".kiro/hooks/described.json"), {
+      version: "v1",
+      description: "kept",
+      hooks: [],
     });
     assertEquals(await exists(dir, ".kiro/hooks/broken.json"), true);
     assertEquals(await exists(dir, ".kiro/agents/swamp.json"), false);
@@ -325,6 +335,13 @@ Deno.test({
       const outside = await Deno.makeTempDir({ prefix: "swamp_prune_out_" });
       try {
         await writeJson(outside, "agents/swamp.json", { name: "swamp" });
+        await writeJson(outside, "hooks/swamp-audit.json", {
+          version: "v1",
+          hooks: [{
+            trigger: "PostToolUse",
+            action: { command: "swamp audit record --from-hook --tool kiro" },
+          }],
+        });
         await writeJson(outside, "settings/cli.json", {
           "chat.defaultAgent": "swamp",
         });
@@ -333,10 +350,11 @@ Deno.test({
           .find([]);
         assertEquals(plan.actions, []);
         assertEquals(
-          plan.skipped.map((s) => s.reason),
+          plan.skipped.map((s) => [s.path, s.reason]),
           [
-            "it resolves outside the repository",
-            "it resolves outside the repository",
+            [".kiro/hooks", "it resolves outside the repository"],
+            [".kiro/agents/swamp.json", "it resolves outside the repository"],
+            [".kiro/settings/cli.json", "it resolves outside the repository"],
           ],
         );
         assertEquals(await exists(outside, "agents/swamp.json"), true);
@@ -367,4 +385,23 @@ Deno.test("ToolSettingsPruner.find: a second run after apply finds nothing", () 
     const pruner = new ToolSettingsPruner(dir, atomicWriteTextFile);
     await pruner.apply(await pruner.find([]));
     assertEquals(await pruner.find([]), { actions: [], skipped: [] });
+  }));
+
+Deno.test("ToolSettingsPruner.apply: a file that cannot be written is skipped and the rest are still applied", () =>
+  withTempDir(async (dir) => {
+    await writeJson(dir, ".claude/settings.local.json", swampClaudeSettings);
+    await writeJson(dir, ".kiro/agents/swamp.json", { name: "swamp" });
+    const pruner = new ToolSettingsPruner(
+      dir,
+      () => Promise.reject(new Error("read-only file system")),
+    );
+    const outcome = await pruner.apply(await pruner.find([]));
+    assertEquals(outcome.applied.map((a) => a.path), [
+      ".kiro/agents/swamp.json",
+    ]);
+    assertEquals(outcome.skipped, [{
+      tool: "claude",
+      path: ".claude/settings.local.json",
+      reason: "it could not be changed: read-only file system",
+    }]);
   }));

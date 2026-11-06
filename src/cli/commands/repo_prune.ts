@@ -33,6 +33,7 @@ import {
 } from "../../presentation/renderers/repo_prune.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -49,6 +50,7 @@ export const repoPruneCommand = new Command()
   .arguments("[path:string]")
   .option("--dry-run", "Show what would be removed without changing anything")
   .option("-y, --yes", "Skip confirmation prompt")
+  .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
   .action(async function (options: AnyOptions, pathArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["repo", "prune"]);
     const path = pathArg ?? ".";
@@ -56,9 +58,17 @@ export const repoPruneCommand = new Command()
     const deps = createRepoPruneDeps();
 
     let preview: RepoPrunePreview | undefined;
-    if (cliCtx.outputMode === "log" && !options.yes && !options.dryRun) {
-      // outside a repository the preview is null and repoPrune reports it
-      const found = await repoPrunePreview(ctx, deps, { path });
+    const skipPrompt = options.yes || options.force || options.dryRun;
+    if (cliCtx.outputMode === "log" && !skipPrompt) {
+      let found: RepoPrunePreview | null;
+      try {
+        // outside a repository the preview is null and repoPrune reports it
+        found = await repoPrunePreview(ctx, deps, { path });
+      } catch (error) {
+        throw new UserError(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       if (found !== null) {
         renderRepoPrunePreview(found);
         if (found.items.length === 0) return;

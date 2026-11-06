@@ -29,9 +29,10 @@ Deno.test("repoPruneCommand is registered as a repo subcommand", async () => {
   assertEquals(prune !== undefined, true);
 });
 
-Deno.test("repoPruneCommand offers --dry-run and -y/--yes", () => {
+Deno.test("repoPruneCommand offers --dry-run, -y/--yes and its -f/--force alias", () => {
   assertEquals(repoPruneCommand.getOption("dry-run")?.flags, ["--dry-run"]);
   assertEquals(repoPruneCommand.getOption("yes")?.flags, ["-y", "--yes"]);
+  assertEquals(repoPruneCommand.getOption("force")?.flags, ["-f", "--force"]);
 });
 
 Deno.test("repoPruneCommand takes an optional path argument", () => {

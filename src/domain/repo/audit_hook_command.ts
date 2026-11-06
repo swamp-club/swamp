@@ -17,11 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// the binary may be bare, quoted or an absolute path, and nothing may follow
-// the command, so a command the user extended is never taken for swamp's
+// bare, quoted or an absolute path
 const SWAMP_BINARY = String
   .raw`(?:swamp|"[^"]*swamp(?:\.exe)?"|\S*[\\/]swamp(?:\.exe)?)`;
 
+// anchored at both ends, so a command the user extended is never taken for swamp's
 export function swampAuditCommandPattern(toolSuffix: string): RegExp {
   return new RegExp(
     `^${SWAMP_BINARY} audit record --from-hook${toolSuffix}$`,

@@ -38,7 +38,7 @@ import { ToolSettingsPruner } from "../../domain/repo/tool_settings_pruner.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-/** settings swamp manages for a tool that is not enrolled; swamp repo prune removes them */
+
 export interface PrunableToolSettings {
   tool: string;
   paths: string[];

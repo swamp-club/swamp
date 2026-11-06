@@ -166,6 +166,20 @@ function droppedToolLines(
   return lines;
 }
 
+// leftovers from a tool dropped in an earlier run, which droppedToolLines misses
+function leftoverSettingsLines(
+  prunable: readonly PrunableToolSettings[],
+  removedTools: readonly string[],
+): string[] {
+  return prunable
+    .filter((p) => !removedTools.includes(p.tool))
+    .map((p) =>
+      `${yellow("⚠")} swamp's settings for ${p.tool}, which is not enrolled, ` +
+      `remain in ${p.paths.join(", ")}. ` +
+      `Run \`swamp repo prune\` to remove them.`
+    );
+}
+
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
   handlers(): EventHandlers<RepoInitEvent> {
     return {
@@ -232,6 +246,14 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
           ) {
             writeOutput(line);
           }
+        }
+        for (
+          const line of leftoverSettingsLines(
+            data.prunableSettings,
+            data.removedTools,
+          )
+        ) {
+          writeOutput(line);
         }
 
         const knownTools = data.tools.filter((t) => t in TOOL_GUIDANCE);
@@ -329,6 +351,14 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
                 `for all enrolled tools: ${list}`,
             );
           }
+        }
+        for (
+          const line of leftoverSettingsLines(
+            data.prunableSettings,
+            data.removedTools,
+          )
+        ) {
+          writeOutput(`  ${line}`);
         }
 
         if (data.localSkillCopies.length > 0) {

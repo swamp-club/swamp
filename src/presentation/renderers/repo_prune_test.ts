@@ -72,7 +72,7 @@ Deno.test("createRepoPruneRenderer: log mode lists each pruned file and what was
   const out = render("log", makeData());
   assertStringIncludes(out, "Pruned swamp settings for tools not enrolled");
   assertStringIncludes(out, "(enrolled: codex)");
-  assertStringIncludes(out, ".claude/settings.local.json edited (claude)");
+  assertStringIncludes(out, "✓ .claude/settings.local.json edited (claude)");
   assertStringIncludes(out, "PostToolUse: swamp audit record --from-hook");
 });
 
@@ -132,5 +132,6 @@ Deno.test("renderRepoPrunePreview: shows the plan in the future tense", () => {
     })
   );
   assertStringIncludes(out, "Will prune swamp settings");
-  assertStringIncludes(out, ".claude/settings.local.json edit (claude)");
+  assertStringIncludes(out, "• .claude/settings.local.json edit (claude)");
+  assertEquals(out.includes("✓"), false);
 });

@@ -699,3 +699,28 @@ Deno.test(
     assertStringIncludes(output, "Run `swamp repo prune`");
   },
 );
+
+Deno.test(
+  "LogRepoUpgradeRenderer: notes leftovers from a tool dropped in an earlier upgrade",
+  () => {
+    const event = makeDroppedClaudeUpgrade([
+      { tool: "claude", paths: [".claude/settings.local.json"] },
+    ]);
+    if (event.kind !== "completed") throw new Error("expected completed");
+    const output = captureUpgradeLog({
+      ...event,
+      data: {
+        ...event.data,
+        previousTools: ["codex"],
+        addedTools: [],
+        removedTools: [],
+      },
+    });
+    assertStringIncludes(
+      output,
+      "swamp's settings for claude, which is not enrolled, remain in " +
+        ".claude/settings.local.json. Run `swamp repo prune` to remove them.",
+    );
+    assertEquals(output.includes("was dropped"), false);
+  },
+);

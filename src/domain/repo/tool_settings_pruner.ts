@@ -86,6 +86,11 @@ function isRecord(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isInside(realRoot: string, realPath: string): boolean {
+  const prefix = realRoot.endsWith(SEPARATOR) ? realRoot : realRoot + SEPARATOR;
+  return realPath === realRoot || realPath.startsWith(prefix);
+}
+
 function describeCommand(command: unknown): string {
   return typeof command === "string" ? command.trim() : String(command);
 }
@@ -172,9 +177,12 @@ function pruneKiroHookFile(file: JsonObject): RuleResult | undefined {
     return !ours;
   });
   if (removed.length === 0) return undefined;
-  const result: JsonObject = { ...file, hooks: kept };
-  if (kept.length === 0) delete result.hooks;
-  return { result, removed };
+  const onlyHooks = Object.keys(file).every((key) =>
+    key === "version" || key === "hooks"
+  );
+  // as upgrade does, a file that keeps other keys keeps an empty hooks array
+  if (kept.length === 0 && onlyHooks) return { result: {}, removed };
+  return { result: { ...file, hooks: kept }, removed };
 }
 
 function pruneLegacyKiroHook(file: JsonObject): RuleResult | undefined {
@@ -195,11 +203,7 @@ function pruneKiroCliDefaultAgent(file: JsonObject): RuleResult | undefined {
   return { result: rest, removed: ['chat.defaultAgent: "swamp"'] };
 }
 
-/**
- * finds and removes the settings swamp manages for built-in tools that are not
- * enrolled: audit hook entries that are exactly swamp's command, files swamp
- * overwrites on every upgrade, and the Kiro default agent when it is swamp's
- */
+/** for tools not enrolled, removes only exact swamp audit commands and files swamp overwrites on upgrade */
 export class ToolSettingsPruner {
   constructor(
     private readonly repoRoot: string,
@@ -234,10 +238,21 @@ export class ToolSettingsPruner {
         });
         continue;
       }
-      if (action.kind === "delete") {
-        await Deno.remove(target.abs);
-      } else {
-        await this.writeTextFile(target.abs, action.content);
+      try {
+        if (action.kind === "delete") {
+          await Deno.remove(target.abs);
+        } else {
+          await this.writeTextFile(target.abs, action.content);
+        }
+      } catch (error) {
+        skipped.push({
+          tool: action.tool,
+          path: action.path,
+          reason: `it could not be changed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+        continue;
       }
       applied.push(action);
     }
@@ -329,6 +344,20 @@ export class ToolSettingsPruner {
       return;
     }
     if (!info.isDirectory) return;
+    let realDir: string;
+    try {
+      realDir = await Deno.realPath(abs);
+    } catch {
+      return;
+    }
+    if (!isInside(realRoot, realDir)) {
+      plan.skipped.push({
+        tool: "kiro",
+        path: dir,
+        reason: "it resolves outside the repository",
+      });
+      return;
+    }
     const names: string[] = [];
     try {
       for await (const entry of Deno.readDir(abs)) {
@@ -352,7 +381,7 @@ export class ToolSettingsPruner {
         realRoot,
         `${dir}/${name}`,
         pruneKiroHookFile,
-        ["version"],
+        [],
         true,
         plan,
       );
@@ -473,10 +502,7 @@ export class ToolSettingsPruner {
     } catch {
       return { kind: "skip", reason: "its directory could not be resolved" };
     }
-    const prefix = realRoot.endsWith(SEPARATOR)
-      ? realRoot
-      : realRoot + SEPARATOR;
-    if (realParent !== realRoot && !realParent.startsWith(prefix)) {
+    if (!isInside(realRoot, realParent)) {
       return { kind: "skip", reason: "it resolves outside the repository" };
     }
     try {
