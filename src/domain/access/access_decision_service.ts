@@ -26,6 +26,8 @@ export interface AccessPrincipal {
   readonly principal: Principal;
   readonly collectives: readonly string[];
   readonly groups: readonly string[];
+  /** read by a condition on `client`; a run's decisions leave it unset on purpose */
+  readonly client?: string;
 }
 
 export interface AccessResource {
@@ -36,6 +38,11 @@ export interface AccessResource {
   // a request whose method cannot be known, which any method of a scoped allow
   // could have made; set only by datastore commit authorization
   readonly anyMethod?: true;
+  /**
+   * fields not known yet: a deny needing only these waits, and an allow needing
+   * them counts as possible, so the caller must decide again once it has them
+   */
+  readonly pending?: readonly string[];
 }
 
 /**
@@ -53,6 +60,8 @@ export interface AccessDecision {
   readonly subject: Subject;
   readonly condition?: string;
   readonly impliedBy?: "run" | "write";
+  /** the grant's condition needs these fields, so this does not decide yet */
+  readonly dependsOn?: readonly string[];
 }
 
 export interface AccessDecisionService {

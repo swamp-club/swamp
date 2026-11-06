@@ -17,6 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  explainedForAction,
+  runConditionValue,
+  withRunCondition,
+  withRunPending,
+} from "./access_resources.ts";
 import { assertEquals } from "@std/assert";
 import {
   isVaultMethod,
@@ -142,4 +148,58 @@ Deno.test("tagsChanged: a value, an added key or a removed key is a change", () 
   assertEquals(tagsChanged({ team: "a" }, { team: "a", env: "x" }), true);
   assertEquals(tagsChanged({ team: "a", env: "x" }, { team: "a" }), true);
   assertEquals(tagsChanged({ team: "a" }, { owner: "a" }), true);
+});
+
+Deno.test("runConditionValue: a user's sub is their id, so it compares with principal.sub", () => {
+  assertEquals(
+    runConditionValue({ initiatedBy: "user:alice", serveDriven: true }),
+    {
+      initiator: { kind: "user", id: "alice", sub: "alice" },
+      serveDriven: true,
+    },
+  );
+});
+
+Deno.test("runConditionValue: a service run has an empty sub, so no person matches it", () => {
+  assertEquals(
+    runConditionValue({ initiatedBy: "service:scheduler", serveDriven: true })
+      ?.initiator,
+    { kind: "service", id: "scheduler", sub: "" },
+  );
+});
+
+Deno.test("runConditionValue: no usable initiator gives nothing", () => {
+  for (const initiatedBy of [undefined, "ghost", "alice", "user:", "bot:x"]) {
+    assertEquals(
+      runConditionValue({ initiatedBy, serveDriven: false }),
+      undefined,
+    );
+  }
+});
+
+Deno.test("withRunCondition: omits the field with no usable initiator and clears pending", () => {
+  const pending = withRunPending({
+    kind: "workflow",
+    name: "w",
+    fields: { name: "w" },
+  });
+  assertEquals(pending.pending, ["run"]);
+  const none = withRunCondition(pending, { serveDriven: true });
+  assertEquals(none, { kind: "workflow", name: "w", fields: { name: "w" } });
+  const some = withRunCondition(pending, {
+    initiatedBy: "user:a",
+    serveDriven: false,
+  });
+  assertEquals(some.pending, undefined);
+  assertEquals("run" in some.fields, true);
+});
+
+Deno.test("explainedForAction: only approve on a workflow with no run named depends on one", () => {
+  const workflow = { kind: "workflow" as const, name: "w", fields: {} };
+  assertEquals(explainedForAction(workflow, "approve").pending, ["run"]);
+  assertEquals(explainedForAction(workflow, "run").pending, undefined);
+  assertEquals(
+    explainedForAction({ ...workflow, fields: { run: {} } }, "approve").pending,
+    undefined,
+  );
 });

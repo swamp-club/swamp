@@ -721,7 +721,7 @@ async function saveVaults(repo: ServeRepo): Promise<void> {
 Deno.test("serve condition-fields conformance: vault requests are classified under the vault kind's fields, a name and the request's key", () => {
   assertEquals(
     CONDITION_FIELDS.vault.map((f) => `${f.name}:${f.role}`),
-    ["name:resource", "key:request"],
+    ["name:resource", "key:request", "client:request"],
   );
   const vaultTypes = [...serverRequestPayloadFields()]
     .map(([type]) => type)

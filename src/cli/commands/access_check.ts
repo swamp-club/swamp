@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { explainedForAction } from "../../domain/access/access_resources.ts";
+import { clientToString, parseClient } from "../../domain/access/client.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -99,6 +101,10 @@ export const accessCheckCommand = new Command()
   .option(
     "--method <method:string>",
     "Method to check against method-scoped grants: a behavior method, or a vault verb such as get or put",
+  )
+  .option(
+    "--client <client:string>",
+    "Client to simulate for CEL conditions on client, as <kind>:<id>; omitted reads as direct",
   )
   .option(
     "--collectives <collectives:string>",
@@ -211,6 +217,14 @@ export const accessCheckCommand = new Command()
       );
     }
     const action: Action = actionResult.data;
+    let client: string | undefined;
+    if (options.client) {
+      try {
+        client = clientToString(parseClient(options.client as string));
+      } catch (error) {
+        throw new UserError((error as Error).message);
+      }
+    }
     const resource = parseResourceFlag(options.on as string);
 
     const collectives = options.collectives
@@ -237,6 +251,7 @@ export const accessCheckCommand = new Command()
         principal,
         collectives,
         groups,
+        client,
       };
       // resolve the resource from the repo as serve does, so a grant on its
       // stored type or a condition on its tags applies.
@@ -262,7 +277,7 @@ export const accessCheckCommand = new Command()
       const decisions = service.explain(
         accessPrincipal,
         action,
-        accessResource,
+        explainedForAction(accessResource, action),
       );
 
       const result = {

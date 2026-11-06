@@ -79,6 +79,7 @@ import {
   ACTION_LIST,
   ActionSchema,
 } from "../../domain/access/action.ts";
+import { explainedForAction } from "../../domain/access/access_resources.ts";
 import type { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { decideRunVaultAccess } from "../run_vault_access_policy.ts";
 import {
@@ -531,11 +532,13 @@ export async function handleAccessCheck(
       principal: targetPrincipal,
       collectives,
       groups,
+      // another subject is explained as direct: a request cannot name a client
+      client: isSelfCheck ? getConnectionClient(socket) : undefined,
     };
     const decisions = service.explain(
       targetAccessPrincipal,
       actionResult.data,
-      explained,
+      explainedForAction(explained, actionResult.data),
     );
     const runVaultAccess = runVaultAccessReport(
       service,
@@ -602,7 +605,12 @@ export async function handleAccessCanI(
     const snapshot = ctx.policySnapshotLoader.snapshot;
     const collectives = getConnectionCollectives(socket);
     const groups = getConnectionGroups(socket);
-    const accessPrincipal = { principal, collectives, groups };
+    const accessPrincipal = {
+      principal,
+      collectives,
+      groups,
+      client: getConnectionClient(socket),
+    };
     const principalStr = principalToString(principal);
 
     if (payload.action && payload.resource) {
@@ -632,7 +640,7 @@ export async function handleAccessCanI(
       const decisions = service.explain(
         accessPrincipal,
         actionResult.data,
-        explained,
+        explainedForAction(explained, actionResult.data),
       );
       const runVaultAccess = runVaultAccessReport(
         service,
@@ -656,6 +664,7 @@ export async function handleAccessCanI(
             via: `${d.subject.kind}:${d.subject.name}`,
             ...(d.condition ? { condition: d.condition } : {}),
             ...(d.impliedBy ? { impliedBy: d.impliedBy } : {}),
+            ...(d.dependsOn ? { dependsOn: d.dependsOn } : {}),
           })),
           approveRequiresExplicitGrant: !service.runImpliesApprove,
           signalRequiresExplicitGrant: !service.runImpliesSignal,
@@ -1499,7 +1508,8 @@ function runVaultAccessReport(
   try {
     decision = decideRunVaultAccess(
       service,
-      principal,
+      // a run's own decisions read no client
+      { ...principal, client: undefined },
       explained.name,
       action,
       runVaultMethodOf(explained),

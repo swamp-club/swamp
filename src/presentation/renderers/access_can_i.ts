@@ -38,6 +38,7 @@ export interface CanIDecision {
   grantId: string;
   via: string;
   condition?: string;
+  dependsOn?: readonly string[];
   /**
    * Set when the grant covers the action only through another it grants:
    * approve or signal through run, tag through write.
@@ -115,7 +116,11 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       for (const d of result.decisions) {
         const e = d.effect.toUpperCase().padEnd(5);
         const g = d.grantId.slice(0, 8);
-        const cond = d.condition ? ` [when: ${d.condition}]` : "";
+        const cond = d.condition
+          ? ` [when: ${d.condition}]${
+            d.dependsOn ? " (depends on the run)" : ""
+          }`
+          : "";
         writeOutput(`  ${e}  ${g}…  via ${d.via}${cond}${impliedMarker(d)}`);
       }
     }

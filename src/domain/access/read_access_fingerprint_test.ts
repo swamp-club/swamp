@@ -243,3 +243,22 @@ Deno.test("readAccessFingerprint: serve's restricted behavior types change it, i
   );
   assertEquals(service.readAccessFingerprint(ADAM, []), none);
 });
+
+Deno.test("readAccessFingerprint: differs by client, so tokens of one person never share a read view", () => {
+  const principal = {
+    principal: { kind: "user" as const, id: "alice" },
+    collectives: [],
+    groups: [],
+  };
+  const direct = readAccessFingerprint(principal, [], [], []);
+  assertNotEquals(
+    direct,
+    readAccessFingerprint(
+      { ...principal, client: "integration:s" },
+      [],
+      [],
+      [],
+    ),
+  );
+  assertEquals(direct, readAccessFingerprint(principal, [], [], []));
+});

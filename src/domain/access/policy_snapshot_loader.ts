@@ -60,7 +60,8 @@ import { PolicySnapshot } from "./policy_snapshot.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 import {
   CONDITION_FIELDS,
-  conditionFieldZeroValue,
+  conditionFieldAbsentValue,
+  conditionFieldsUnavailableForActions,
   MissingConditionFieldError,
   referencedConditionFields,
 } from "./condition_fields.ts";
@@ -133,7 +134,7 @@ export function createConditionEvaluator(): ConditionEvaluator {
     for (const field of CONDITION_FIELDS[resourceKind]) {
       if (!referenced.includes(field.name) || field.name in context) continue;
       if (field.role === "request") {
-        context[field.name] = conditionFieldZeroValue(field.type);
+        context[field.name] = conditionFieldAbsentValue(field);
       } else {
         missing.push(field.name);
       }
@@ -190,6 +191,25 @@ function grantsReferencingUnsupplied(grants: readonly Grant[]): Grant[] {
       return referencedConditionFields(parsed.ast, kind).some((name) =>
         unsupplied.includes(name)
       );
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** names no decision on the grant's actions can supply, so a deny refuses and an allow never matches */
+function grantsNamingUnavailableFields(grants: readonly Grant[]): Grant[] {
+  return grants.filter((grant) => {
+    if (!grant.condition) return false;
+    try {
+      const parsed = buildCelEnvironment(grant.resource.kind).parse(
+        grant.condition,
+      ) as unknown as { ast: unknown };
+      return conditionFieldsUnavailableForActions(
+        parsed.ast,
+        grant.resource.kind,
+        grant.actions,
+      ).length > 0;
     } catch {
       return false;
     }
@@ -594,6 +614,10 @@ export class PolicySnapshotLoader {
     for (const grant of retry ? [] : grantsReferencingUnsupplied(grants)) {
       logger
         .warn`Grant ${grant.id} has a condition on collective or owner, which serve does not supply yet: as a deny it refuses every ${grant.resource.kind} request of its subject, and as an allow it never matches (${grant.condition})`;
+    }
+    for (const grant of retry ? [] : grantsNamingUnavailableFields(grants)) {
+      logger
+        .warn`Grant ${grant.id} has a condition naming a field its actions cannot supply: as a deny it refuses, and as an allow it never matches (${grant.condition})`;
     }
     this.#reportSpellings(grants);
     const snapshot = new PolicySnapshot(

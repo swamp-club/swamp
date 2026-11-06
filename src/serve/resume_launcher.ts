@@ -23,6 +23,7 @@ import {
   mapWorkflowExecutionEvent,
 } from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
+import { withRunCondition } from "../domain/access/access_resources.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
 import { isWireEvent, serializeEvent } from "./serializer.ts";
 import {
@@ -739,7 +740,18 @@ export async function autoResumeParentAfterChild(
     return skip("policy");
   }
   if (
-    !(await decideSubjectAccess(ctx, subject, grant, resolution.resource))
+    !(await decideSubjectAccess(
+      ctx,
+      subject,
+      grant,
+      // serve decided a gate on the child; the parent's own run is what it moves
+      grant === "approve"
+        ? withRunCondition(resolution.resource, {
+          initiatedBy: parent.initiatedBy,
+          serveDriven: isServeDrivenRun(parent),
+        })
+        : resolution.resource,
+    ))
   ) {
     return skip("not_authorized");
   }

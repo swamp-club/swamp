@@ -370,3 +370,90 @@ Deno.test("readConditionTypeLiterals: reads name on access resources only", () =
 Deno.test("readConditionTypeLiterals: returns no literals for a condition that does not parse", () => {
   assertEquals(readConditionTypeLiterals(`modelType == `, "model"), []);
 });
+
+const APPROVE_DENY = { actions: ["approve"], effect: "deny" } as const;
+
+Deno.test("validateGrantCondition: the run is valid only for a workflow's approve", () => {
+  const condition = "principal.sub == run.initiator.sub";
+  assertEquals(
+    validateGrantCondition(condition, "workflow", APPROVE_DENY).valid,
+    true,
+  );
+  for (
+    const actions of [["run"], ["approve", "read"], ["signal"]] as const
+  ) {
+    const result = validateGrantCondition(condition, "workflow", {
+      actions,
+      effect: "deny",
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error!, "names run");
+  }
+  assertEquals(validateGrantCondition(condition, "model").valid, false);
+  assertEquals(validateGrantCondition(condition, "data").valid, false);
+});
+
+Deno.test("validateGrantCondition: the client is valid on every kind and every action", () => {
+  for (
+    const kind of ["workflow", "model", "data", "access", "vault"] as const
+  ) {
+    const result = validateGrantCondition(
+      'client != "integration:slack"',
+      kind,
+      { actions: ["read", "write", "run"], effect: "deny" },
+    );
+    assertEquals(result, { valid: true });
+  }
+});
+
+Deno.test("validateGrantCondition: a client literal no token can hold is refused, and a direct id warns", () => {
+  assertEquals(
+    validateGrantCondition('client == "integration:Slack"', "workflow").valid,
+    false,
+  );
+  assertEquals(
+    validateGrantCondition('client == "slack"', "data").valid,
+    false,
+  );
+  const direct = validateGrantCondition('client != "direct:cli"', "data");
+  assertEquals(direct.valid, true);
+  assertStringIncludes(direct.warnings![0], "not a security boundary");
+  assertEquals(
+    validateGrantCondition('client.startsWith("direct:")', "data").warnings,
+    undefined,
+  );
+});
+
+Deno.test("validateGrantCondition: a vault allow on the client warns that it limits runs and never matches in one", () => {
+  const allow = validateGrantCondition(
+    'client == "integration:slack"',
+    "vault",
+    { actions: ["read"], effect: "allow" },
+  );
+  assertEquals(allow.valid, true);
+  assertStringIncludes(allow.warnings![0], "inside a run");
+  assertEquals(
+    validateGrantCondition('client == "integration:slack"', "vault", {
+      actions: ["read"],
+      effect: "deny",
+    }).warnings,
+    undefined,
+  );
+});
+
+Deno.test("validateGrantCondition: a binder named client or run names no new field", () => {
+  for (
+    const condition of [
+      'tags.exists(client, client == "x")',
+      'tags.exists(run, run == "x")',
+    ]
+  ) {
+    assertEquals(
+      validateGrantCondition(condition, "workflow", {
+        actions: ["read"],
+        effect: "deny",
+      }),
+      { valid: true },
+    );
+  }
+});

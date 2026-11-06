@@ -105,6 +105,8 @@ export interface WorkflowApproveDeps {
   fetchMissing?: (
     run: { workflowId: string; runId: string },
   ) => Promise<void>;
+  /** decides the run about to be acted on; set by serve, which replies itself */
+  authorizeRun?: (run: WorkflowRun) => boolean;
 }
 
 export function createWorkflowApproveDeps(
@@ -146,6 +148,11 @@ async function approveClaimedRun(
   const { run, workflowName, workflow } = resolved;
   // decided only under the claim of the id as stored
   if (run.id !== claimKey) return { storedAs: run.id };
+
+  // first, on the record this claim holds, before anything here writes
+  if (deps.authorizeRun && !deps.authorizeRun(run)) {
+    return { error: validationFailed("Not authorized to decide this run") };
+  }
 
   const orphaned = await settleOrphanedNestedRun(deps, run, workflow);
   if (orphaned) return { error: orphanedNestedRunError(orphaned) };

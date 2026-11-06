@@ -160,7 +160,15 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
-import { isGuardedRunRecord } from "../../domain/workflows/workflow_run.ts";
+import {
+  isGuardedRunRecord,
+  isServeDrivenRun,
+  type WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
+import {
+  withRunCondition,
+  withRunPending,
+} from "../../domain/access/access_resources.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import {
   NestedRunPendingError,
@@ -283,6 +291,7 @@ import {
   resolveRunAccess,
   resolveWorkflowTarget,
   type ResourceResolution,
+  type SettledResolution,
   targetArgument,
   unresolvedAccessResource,
   workflowAccessResource,
@@ -751,12 +760,16 @@ interface ApprovalsRow {
   workflowName: string;
   parentRun?: NamedWorkflow;
   parentWaiting?: boolean;
+  initiatedBy?: string;
+  serveDriven?: boolean;
   /**
-   * whether this caller holds approve on the workflow; answers for the caller
-   * only and never says who else may decide, since approve and reject authorize
+   * whether this caller may decide this run; answers for the caller only and
+   * never says who else may decide, since approve and reject authorize
    * themselves
    */
   canDecide?: boolean;
+  /** set when the caller could decide other runs of this workflow, not this one */
+  canDecideReason?: "grant-condition";
 }
 
 export async function handleWorkflowApprovals(
@@ -840,9 +853,24 @@ export async function handleWorkflowApprovals(
     };
     // Set only on gates the caller may read, by the same owners the read
     // filter uses, and unaudited like it: a refetch adds no audit events.
+    const ownersOfRow = (item: ApprovalsRow) =>
+      canonical.workflowOwners(item.workflowId, item.workflowName);
     const mayDecide = resourceReadability(
-      (item: ApprovalsRow) =>
-        canonical.workflowOwners(item.workflowId, item.workflowName),
+      async (item: ApprovalsRow) =>
+        (await ownersOfRow(item)).map((owner) =>
+          withRunCondition(owner, {
+            initiatedBy: item.initiatedBy,
+            serveDriven: item.serveDriven === true,
+          })
+        ),
+      socket,
+      principal,
+      "approve",
+      ctx,
+    );
+    const mayDecideSomeRun = resourceReadability(
+      async (item: ApprovalsRow) =>
+        (await ownersOfRow(item)).map(withRunPending),
       socket,
       principal,
       "approve",
@@ -852,6 +880,9 @@ export async function handleWorkflowApprovals(
       const approvals = await readable(listed.approvals);
       for (const item of approvals) {
         item.canDecide = await mayDecide(item);
+        if (!item.canDecide && await mayDecideSomeRun(item)) {
+          item.canDecideReason = "grant-condition";
+        }
       }
       return { approvals, expired: await readable(listed.expired) };
     });
@@ -1537,6 +1568,38 @@ function gateRefusalDetails(
     : undefined;
 }
 
+/** the refusal is replied to and audited here, once; the handler then stays silent */
+function runDecisionGuard(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  target: SettledResolution,
+  ctx: ConnectionContext,
+): { authorize: (run: WorkflowRun) => boolean; refused: () => boolean } {
+  let refused = false;
+  return {
+    authorize: (run) => {
+      const { allowed } = authorizeOrReject(
+        socket,
+        requestId,
+        principal,
+        "approve",
+        withRunCondition(target.resource, conditionRunOf(run)),
+        ctx,
+      );
+      if (!allowed) refused = true;
+      return allowed;
+    },
+    refused: () => refused,
+  };
+}
+
+function conditionRunOf(
+  run: Pick<WorkflowRun, "initiatedBy" | "triggeringPrincipal" | "instanceId">,
+): { initiatedBy?: string; serveDriven: boolean } {
+  return { initiatedBy: run.initiatedBy, serveDriven: isServeDrivenRun(run) };
+}
+
 export async function handleWorkflowApprove(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1557,9 +1620,11 @@ export async function handleWorkflowApprove(
       "workflow",
       ctx,
       "workflow_approve_failed",
+      true,
     )
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
+  const decideRun = runDecisionGuard(socket, requestId, principal, target, ctx);
 
   // The approval runs in the request's root unit of work, which pushes once
   // it ends, before the auto-resume and the reply below.
@@ -1596,6 +1661,7 @@ export async function handleWorkflowApprove(
         deps.runTracker = ctx.runTracker;
         deps.runRecordCurrency = ctx.repoContext.runRecordCurrency;
         deps.fetchMissing = (run) => fetchMissingRunUnderGate(ctx, run);
+        deps.authorizeRun = decideRun.authorize;
         // Built only when a run nothing waits on has to be cancelled.
         deps.findEvaluatedWorkflow = (runId) =>
           new YamlEvaluatedWorkflowRepository(
@@ -1653,6 +1719,7 @@ export async function handleWorkflowApprove(
         }
         return approved;
       } catch (error) {
+        if (decideRun.refused()) return undefined;
         const message = sanitizeErrorForClient(error);
         sendError(
           socket,
@@ -1977,9 +2044,11 @@ export async function handleWorkflowReject(
       "workflow",
       ctx,
       "workflow_reject_failed",
+      true,
     )
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
+  const decideRun = runDecisionGuard(socket, requestId, principal, target, ctx);
 
   // Set as soon as the rejection is saved, outside the root, so the parent
   // still resumes if the reply fails after the save.
@@ -2021,6 +2090,7 @@ export async function handleWorkflowReject(
         );
         deps.runRecordCurrency = ctx.repoContext.runRecordCurrency;
         deps.fetchMissing = (run) => fetchMissingRunUnderGate(ctx, run);
+        deps.authorizeRun = decideRun.authorize;
         // the suspended nested runs the rejected run waited on are cancelled in
         // this gated unit of work
         if (ctx.activeRunRegistry) {
@@ -2102,6 +2172,7 @@ export async function handleWorkflowReject(
           payload: { data: result },
         });
       } catch (error) {
+        if (decideRun.refused()) return;
         const message = sanitizeErrorForClient(error);
         sendError(
           socket,

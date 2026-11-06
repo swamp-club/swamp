@@ -172,6 +172,11 @@ export function renderApprovals(
             { inputs: inputsDigest },
           );
         }
+        if (item.canDecideReason === "grant-condition") {
+          cliCtx.logger.info(
+            "  You can't decide this run: a grant condition refuses you, for example if you started it",
+          );
+        }
         // commands go through writeOutput because LogTape quotes values and the
         // pretty sink wraps lines, breaking copy-pasted commands; step names
         // are shell-quoted since any non-empty string is valid

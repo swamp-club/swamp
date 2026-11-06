@@ -23,6 +23,7 @@
  * id-deny conformance tests
  */
 
+import { setConnectionClient } from "../src/serve/handlers/shared.ts";
 import { join } from "@std/path";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -213,7 +214,7 @@ export async function sendRequest(
   ctx: ConnectionContext,
   request: ServeRequest,
   principal: Principal | null = CALLER,
-  options: { awaitRuns?: boolean } = {},
+  options: { awaitRuns?: boolean; client?: string } = {},
 ): Promise<Frame[]> {
   const sent: string[] = [];
   const socket = {
@@ -223,6 +224,8 @@ export async function sendRequest(
     },
     close() {},
   } as unknown as WebSocket;
+  // Nothing in production issues an integration client yet, so tests set it here.
+  if (options.client !== undefined) setConnectionClient(socket, options.client);
   const active = new Map<string, AbortController>();
   handleMessage(
     socket,

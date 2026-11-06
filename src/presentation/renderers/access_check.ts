@@ -277,7 +277,11 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
         const e = decision.effect.toUpperCase().padEnd(5);
         const g = decision.grantId.slice(0, 8);
         const s = formatSubject(decision.subject);
-        const cond = decision.condition ? ` [when: ${decision.condition}]` : "";
+        const cond = decision.condition
+          ? ` [when: ${decision.condition}]${
+            decision.dependsOn ? " (depends on the run)" : ""
+          }`
+          : "";
         writeOutput(`  ${e}  ${g}…  via ${s}${cond}${impliedMarker(decision)}`);
       }
     }

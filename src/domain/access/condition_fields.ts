@@ -22,6 +22,8 @@
  * condition on it does not match
  */
 
+import type { Action } from "./action.ts";
+import { ABSENT_CLIENT_CONDITION_VALUE } from "./client.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 
 export type ConditionFieldType = "string" | "map";
@@ -37,6 +39,10 @@ export interface ConditionField {
    * grant conditions may not reference it
    */
   readonly supplied: boolean;
+  /** the only actions whose decisions can supply it; unset means every action */
+  readonly actions?: readonly Action[];
+  /** what a request field reads as when absent, instead of its zero value */
+  readonly absent?: unknown;
 }
 
 function field(
@@ -48,6 +54,17 @@ function field(
   return { name, type, role, supplied };
 }
 
+const CLIENT_FIELD: ConditionField = {
+  ...field("client", "string", "request"),
+  absent: ABSENT_CLIENT_CONDITION_VALUE,
+};
+
+// left out when the run names no usable initiator, so allow and deny fail closed
+const RUN_FIELD: ConditionField = {
+  ...field("run", "map"),
+  actions: ["approve"],
+};
+
 export const CONDITION_FIELDS: Readonly<
   Record<ResourceKind, readonly ConditionField[]>
 > = {
@@ -55,6 +72,8 @@ export const CONDITION_FIELDS: Readonly<
     field("name", "string"),
     field("tags", "map"),
     field("collective", "string", "resource", false),
+    CLIENT_FIELD,
+    RUN_FIELD,
   ],
   model: [
     field("name", "string"),
@@ -62,19 +81,22 @@ export const CONDITION_FIELDS: Readonly<
     field("tags", "map"),
     field("collective", "string", "resource", false),
     field("methodName", "string", "request"),
+    CLIENT_FIELD,
   ],
   data: [
     field("name", "string"),
     field("ns", "string"),
     field("tags", "map"),
     field("owner", "map", "resource", false),
+    CLIENT_FIELD,
   ],
-  access: [field("name", "string")],
+  access: [field("name", "string"), CLIENT_FIELD],
   // key is the secret a request names, evaluated as empty when none, so a key
   // condition never fails closed on a request without a key
   vault: [
     field("name", "string"),
     field("key", "string", "request"),
+    CLIENT_FIELD,
   ],
 };
 
@@ -82,9 +104,13 @@ export function conditionFieldZeroValue(type: ConditionFieldType): unknown {
   return type === "map" ? {} : "";
 }
 
+export function conditionFieldAbsentValue(field: ConditionField): unknown {
+  return field.absent ?? conditionFieldZeroValue(field.type);
+}
+
 export function suppliedResourceFields(kind: ResourceKind): string[] {
   return CONDITION_FIELDS[kind]
-    .filter((f) => f.role === "resource" && f.supplied)
+    .filter((f) => f.role === "resource" && f.supplied && !f.actions)
     .map((f) => f.name);
 }
 
@@ -157,6 +183,28 @@ export function referencedConditionFields(
   };
   walk(ast, new Set());
   return [...found];
+}
+
+/** fields a condition names that a decision on one of these actions cannot supply */
+export function conditionFieldsUnavailableForActions(
+  ast: unknown,
+  kind: ResourceKind,
+  actions: readonly Action[],
+): { field: string; allowed: readonly Action[]; action: Action }[] {
+  const referenced = new Set(referencedConditionFields(ast, kind));
+  const unavailable: {
+    field: string;
+    allowed: readonly Action[];
+    action: Action;
+  }[] = [];
+  for (const f of CONDITION_FIELDS[kind]) {
+    if (!f.actions || !referenced.has(f.name)) continue;
+    const action = actions.find((a) => !f.actions!.includes(a));
+    if (action) {
+      unavailable.push({ field: f.name, allowed: f.actions, action });
+    }
+  }
+  return unavailable;
 }
 
 /**

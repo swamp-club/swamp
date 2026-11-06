@@ -43,7 +43,12 @@ function alwaysFalse(): boolean {
  * missing-field means the condition needs a resource field the resource does
  * not carry
  */
-export type ConditionOutcome = "match" | "no-match" | "missing-field" | "error";
+export type ConditionOutcome =
+  | "match"
+  | "no-match"
+  | "missing-field"
+  | "pending"
+  | "error";
 
 export class PolicySnapshot {
   readonly #grantsBySubject: Map<string, Grant[]>;
@@ -127,6 +132,7 @@ export class PolicySnapshot {
     resourceKind: ResourceKind,
     resourceFields: Record<string, unknown>,
     principalContext: PrincipalContext,
+    pending?: readonly string[],
   ): ConditionOutcome {
     const deadline = Date.now() + 100;
     try {
@@ -142,6 +148,9 @@ export class PolicySnapshot {
       return result ? "match" : "no-match";
     } catch (error) {
       if (error instanceof MissingConditionFieldError) {
+        if (pending && error.fields.every((f) => pending.includes(f))) {
+          return "pending";
+        }
         logger
           .debug`Condition ${condition} needs missing field(s) ${
           error.fields.join(", ")

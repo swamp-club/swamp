@@ -452,3 +452,71 @@ Deno.test("decide: a deny that matched as written still denies", () => {
     ),
   );
 });
+
+const CONDITIONS_WITHOUT_NEW_FIELDS = [
+  undefined,
+  'name == "w"',
+  'name != "w"',
+  'tags.env == "prod"',
+  '"env" in tags',
+  'principal.sub == "alice"',
+  "principal.groups.size() > 0",
+  'tags.exists(client, client == "env")',
+  'tags.exists(run, run == "env")',
+  "collective == 'x'",
+];
+
+const arbUnrelatedGrant: fc.Arbitrary<Grant> = fc.record({
+  id: fc.uuid(),
+  subject: fc.constant({ kind: "user" as const, name: "alice" }),
+  effect: fc.constantFrom("allow" as const, "deny" as const),
+  actions: fc.subarray([...ACTIONS], { minLength: 1 }),
+  resource: fc.constant({ kind: "workflow" as const, pattern: "*" }),
+  condition: fc.constantFrom(...CONDITIONS_WITHOUT_NEW_FIELDS),
+  state: fc.constant("active" as const),
+  source: fc.constant("method" as const),
+  createdBy: fc.constant({ kind: "user" as const, id: "admin" }),
+  createdAt: fc.constant("2026-01-01T00:00:00Z"),
+}) as fc.Arbitrary<Grant>;
+
+Deno.test("GrantBasedAccessDecisionService: a grant not naming client or run decides the same with any client, run or pending field", () => {
+  const principal: AccessPrincipal = {
+    principal: { kind: "user", id: "alice" },
+    collectives: [],
+    groups: [],
+  };
+  const base: AccessResource = {
+    kind: "workflow",
+    name: "w",
+    fields: { name: "w", tags: { env: "prod" } },
+  };
+  fc.assert(fc.property(
+    fc.array(arbUnrelatedGrant, { maxLength: 8 }),
+    fc.constantFrom(...ACTIONS),
+    fc.constantFrom(undefined, "direct:cli", "integration:slack"),
+    fc.constantFrom(
+      undefined,
+      { initiator: { kind: "user", id: "alice", sub: "alice" } },
+    ),
+    fc.boolean(),
+    (grants, action, client, run, pending) => {
+      const service = new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+      );
+      const before = service.decide(principal, action, base);
+      const after = service.decide({ ...principal, client }, action, {
+        ...base,
+        fields: { ...base.fields, ...(run ? { run } : {}) },
+        ...(pending ? { pending: ["run"] } : {}),
+      });
+      assertEquals(after, before);
+      assertEquals(
+        service.explain({ ...principal, client }, action, {
+          ...base,
+          ...(pending ? { pending: ["run"] } : {}),
+        }),
+        service.explain(principal, action, base),
+      );
+    },
+  ));
+});
