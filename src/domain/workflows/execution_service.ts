@@ -392,6 +392,7 @@ import {
   observeExecution,
 } from "../remote/observability.ts";
 import { StepStartUnrecordedError } from "./step_start.ts";
+import { RunSaveHorizon } from "./run_save_horizon.ts";
 import {
   currentVaultAccess,
   runGeneratorWithVaultAccess,
@@ -3201,6 +3202,9 @@ export class WorkflowExecutionService {
    */
   runWriteFence: RunWriteFence = OPEN_RUN_WRITE_FENCE;
 
+  /** step events queue behind the run loop's saves; one landed save holds them all */
+  readonly #runSaveHorizon = new RunSaveHorizon();
+
   /**
    * the continuation claims a resume of a suspended run takes; unset where the
    * datastore has no store every host reads directly, so a resume there takes
@@ -3981,24 +3985,24 @@ export class WorkflowExecutionService {
             // Saved so a run whose owner is killed mid-step still shows the
             // step started: `workflow cancel` settles it from this record,
             // and interrupting the run marks it unknown rather than pending.
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_failed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "failed");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           }
           if (event.kind === "job_completed" && event.status === "failed") {
             anyJobFailed = true;
@@ -4914,24 +4918,24 @@ export class WorkflowExecutionService {
             // Saved so a run whose owner is killed mid-step still shows the
             // step started: `workflow cancel` settles it from this record,
             // and interrupting the run marks it unknown rather than pending.
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_failed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "failed");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           }
           if (event.kind === "job_completed" && event.status === "failed") {
             anyJobFailed = true;
@@ -5598,7 +5602,7 @@ export class WorkflowExecutionService {
         "job.name": job.name,
       },
     });
-    const generator = bindGeneratorToSpan(
+    const generator = this.#stamped(bindGeneratorToSpan(
       stepSpan,
       this.runStepInSpan(
         stepSpan,
@@ -5614,7 +5618,7 @@ export class WorkflowExecutionService {
         forEachIndex,
         forEachTemplate,
       ),
-    );
+    ));
     if (!progress) {
       yield* generator;
       return;
@@ -7789,6 +7793,7 @@ export class WorkflowExecutionService {
       );
       return;
     }
+    const mark = this.#runSaveHorizon.begin();
     await this.runWriteFence.track(
       run.id,
       (async () => {
@@ -7816,8 +7821,28 @@ export class WorkflowExecutionService {
           }
           throw error;
         }
+        this.#runSaveHorizon.landed(run, mark);
       })(),
     );
+  }
+
+  /** a step event a landed save already holds needs no save of its own */
+  private async saveRunForEvent(
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+    event: WorkflowExecutionEvent,
+  ): Promise<void> {
+    if (this.#runSaveHorizon.covers(run, event)) return;
+    await this.saveRun(workflowId, run);
+  }
+
+  async *#stamped(
+    events: AsyncGenerator<WorkflowExecutionEvent>,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    for await (const event of events) {
+      this.#runSaveHorizon.stamp(event);
+      yield event;
+    }
   }
 
   /**
