@@ -28,6 +28,7 @@ import {
 } from "../../infrastructure/tracing/span_test_helpers.ts";
 import { withSpan } from "../../infrastructure/tracing/mod.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
+import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { GrantsDirectoryPoller } from "./grants_directory_poller.ts";
 import type { FileGrantStore } from "./grant_file_reconciler.ts";
 import type { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
@@ -517,6 +518,7 @@ async function reconcileOnce(
     externalGrantsFile?: string;
     externalGrantsDir?: string;
     store: FileGrantStore;
+    validateCondition?: typeof validateGrantCondition;
     commitReconcile?: (
       reconcile: () => Promise<void>,
     ) => Promise<void | "deferred">;
@@ -529,6 +531,7 @@ async function reconcileOnce(
     grantsDir: options.grantsDir,
     externalGrantsFile: options.externalGrantsFile,
     externalGrantsDir: options.externalGrantsDir,
+    validateCondition: options.validateCondition,
     fileGrantStore: options.store,
     policySnapshotLoader: mock.loader,
     pollIntervalMs: 20,
@@ -568,6 +571,30 @@ Deno.test("GrantsDirectoryPoller: keeps the grants of a file with invalid YAML w
 
     assertEquals(store.written.has("deny-1"), false);
     assertEquals(store.written.get("team-1")?.state, "revoked");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller: keeps all grants of a file with a run condition whose types cannot evaluate", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    await Deno.writeTextFile(join(grantsDir, "deny.yaml"), DENY_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", "file:deny.yaml", aliceDeny),
+    ]);
+
+    await reconcileOnce({
+      grantsDir,
+      store,
+      validateCondition: validateGrantCondition,
+    }, async () => {
+      await Deno.writeTextFile(
+        join(grantsDir, "deny.yaml"),
+        `${DENY_GRANT_YAML}\n  - subject: "user:bob"\n    effect: deny\n    actions: [approve]\n    resource: "workflow:*"\n    condition: "!run.initiator.sub"`,
+      );
+    });
+
+    assertEquals(store.written.size, 0);
   });
 });
 

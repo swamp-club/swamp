@@ -41,6 +41,7 @@ import {
 } from "../../access/subject.ts";
 import { parsePrincipal, PrincipalSchema } from "../../access/principal.ts";
 import {
+  readConditionFindings,
   readConditionTypeLiterals,
   validateGrantCondition,
 } from "../../../infrastructure/cel/grant_condition_environment.ts";
@@ -110,6 +111,12 @@ export function checkGrantCreateInputs(
         `Invalid grant condition: ${validation.error}`,
       );
     }
+    // a file or stored grant with one keeps loading and warns; a new grant is refused
+    const { typeIssue } = readConditionFindings(
+      inputs.condition,
+      resource.kind,
+    );
+    if (typeIssue) throw new Error(`Invalid grant condition: ${typeIssue}`);
     conditionWarnings = validation.warnings ?? [];
   }
 

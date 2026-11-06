@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { MAX_AGGREGATE_CONDITIONS } from "../../infrastructure/cel/grant_condition_environment.ts";
+import {
+  MAX_AGGREGATE_CONDITIONS,
+  validateGrantCondition,
+} from "../../infrastructure/cel/grant_condition_environment.ts";
 import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
 import type { Grant } from "../models/access/grant_model.ts";
 import type { Group } from "../models/access/group_model.ts";
@@ -1531,7 +1534,7 @@ Deno.test("explain: omits the service default when a deny matches", () => {
   assertEquals(decisions.map((d) => d.grantId), [deny.id]);
 });
 
-Deno.test("decide: a deny whose condition errors withholds the service default", () => {
+Deno.test("decide: a deny whose condition errors refuses a service principal", () => {
   // The workflow has no `trigger` tag, so CEL throws "No such key".
   const deny = makeGrant({
     subject: { kind: "service", name: "webhook" },
@@ -1547,8 +1550,11 @@ Deno.test("decide: a deny whose condition errors withholds the service default",
   const untagged = makeResource({
     fields: { name: "@acme/deploy", tags: { env: "prod" }, collective: "" },
   });
-  assertEquals(service.decide(webhook, "run", untagged), null);
-  assertEquals(service.explain(webhook, "run", untagged), []);
+  assertEquals(service.decide(webhook, "run", untagged)?.grantId, deny.id);
+  assertEquals(
+    service.explain(webhook, "run", untagged).map((d) => d.grantId),
+    [deny.id],
+  );
 
   const tagged = makeResource({
     fields: {
@@ -1589,13 +1595,69 @@ Deno.test("decide: a deny that needs a resource field the resource lacks fails c
   assertEquals(result?.effect, "deny");
 });
 
-Deno.test("decide: a deny over a tag the resource does not have decides nothing", () => {
-  const snapshot = new PolicySnapshot(
-    allowAndConditionalDeny('tags.env == "prod"'),
-    [],
-    celEvaluator,
+Deno.test("decide: a deny over a tag the resource does not have refuses, and a guard keeps it to tagged resources", () => {
+  const untagged = {
+    kind: "model" as const,
+    name: "db",
+    fields: { name: "db", modelType: "t", tags: {} },
+  };
+  const decideWith = (condition: string) =>
+    new GrantBasedAccessDecisionService(
+      new PolicySnapshot(allowAndConditionalDeny(condition), [], celEvaluator),
+    ).decide(makePrincipal("adam"), "read", untagged)?.effect;
+  assertEquals(decideWith('tags.env == "prod"'), "deny");
+  assertEquals(decideWith('"env" in tags && tags.env == "prod"'), "allow");
+  assertEquals(decideWith('has(tags.env) && tags.env == "prod"'), "allow");
+});
+
+for (
+  const [label, condition] of [
+    ["a type that cannot evaluate", "principal.sub > 1"],
+    ["a field no decision supplies", 'principal.email == "x"'],
+    ["a value failure", "1 / 0 == 1"],
+  ]
+) {
+  Deno.test(`decide: a deny refuses and an allow does not match on ${label}`, () => {
+    const resource = {
+      kind: "model" as const,
+      name: "db",
+      fields: { name: "db", modelType: "t", tags: {} },
+    };
+    const principal = makePrincipal("adam");
+    const withDeny = new GrantBasedAccessDecisionService(
+      new PolicySnapshot(allowAndConditionalDeny(condition), [], celEvaluator),
+    );
+    assertEquals(withDeny.decide(principal, "read", resource)?.effect, "deny");
+    assertEquals(
+      withDeny.explain(principal, "read", resource).map((d) => d.effect),
+      ["deny", "allow"],
+    );
+    const onlyAllow = new GrantBasedAccessDecisionService(
+      new PolicySnapshot(
+        [
+          makeGrant({
+            effect: "allow",
+            resource: { kind: "model", pattern: "*" },
+            condition,
+          }),
+        ],
+        [],
+        celEvaluator,
+      ),
+    );
+    assertEquals(onlyAllow.decide(principal, "read", resource), null);
+    assertEquals(onlyAllow.explain(principal, "read", resource), []);
+  });
+}
+
+Deno.test("decide: a wrong-typed deny that evaluates false still does not fire", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      allowAndConditionalDeny("principal.sub == 1"),
+      [],
+      celEvaluator,
+    ),
   );
-  const service = new GrantBasedAccessDecisionService(snapshot);
   const result = service.decide(makePrincipal("adam"), "read", {
     kind: "model",
     name: "db",
@@ -1603,6 +1665,74 @@ Deno.test("decide: a deny over a tag the resource does not have decides nothing"
   });
   assertEquals(result?.effect, "allow");
 });
+
+Deno.test("decide: a kind-level check still decides nothing on a tag deny, and the deny still withholds the service default", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      allowAndConditionalDeny('tags.env == "prod"'),
+      [],
+      celEvaluator,
+    ),
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", kindResource("model"))
+      ?.effect,
+    "allow",
+  );
+  const webhook = makeServicePrincipal("webhook");
+  const withheld = new GrantBasedAccessDecisionService(
+    new PolicySnapshot(
+      [
+        makeGrant({
+          subject: { kind: "service", name: "webhook" },
+          effect: "deny",
+          actions: ["run"],
+          resource: { kind: "workflow", pattern: "*" },
+          condition: 'tags.trigger != "webhook"',
+        }),
+      ],
+      [],
+      celEvaluator,
+    ),
+  );
+  assertEquals(withheld.decide(webhook, "run", kindResource("workflow")), null);
+  assertEquals(withheld.explain(webhook, "run", kindResource("workflow")), []);
+});
+
+for (
+  const [condition, tags, effect] of [
+    ['tags.env == "prod"', { env: "prod" }, "deny"],
+    ['tags.env == "prod"', { env: "dev" }, "allow"],
+    ['"env" in tags && tags.env == "prod"', {}, "allow"],
+    ['!("env" in tags) || tags.env != "x"', {}, "deny"],
+    ['name == "db"', {}, "deny"],
+    ['name != "db"', {}, "allow"],
+    ['"ops" in principal.groups', {}, "allow"],
+    ['principal.sub == "adam"', {}, "deny"],
+  ] as const
+) {
+  Deno.test(
+    `decide: a condition from before run and client decides as it did: ${condition} on ${
+      JSON.stringify(tags)
+    }`,
+    () => {
+      const service = new GrantBasedAccessDecisionService(
+        new PolicySnapshot(
+          allowAndConditionalDeny(condition),
+          [],
+          celEvaluator,
+        ),
+      );
+      const result = service.decide(makePrincipal("adam"), "read", {
+        kind: "model",
+        name: "db",
+        fields: { name: "db", modelType: "t", tags },
+      });
+      assertEquals(result?.effect, effect);
+      assertEquals(validateGrantCondition(condition, "model").valid, true);
+    },
+  );
+}
 
 Deno.test("decide: an allow that needs a missing resource field does not match", () => {
   const grant = makeGrant({

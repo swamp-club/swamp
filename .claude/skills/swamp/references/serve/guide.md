@@ -283,6 +283,11 @@ swamp access grant create --subject group:ops --deny run \
 - Upgrade every serve instance before writing these grants: an older one does
   not enforce the deny.
 
+A condition whose types cannot evaluate is refused when written. A deny whose
+condition errors at decision time refuses, and an allow does not match. That
+includes reading a tag the resource lacks, so guard a deny meant only for tagged
+resources: `"env" in tags && tags.env == "prod"`.
+
 Check a condition locally, since a server reads the client from the caller's own
 session:
 

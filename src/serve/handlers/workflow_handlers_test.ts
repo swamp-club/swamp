@@ -944,7 +944,7 @@ Deno.test("handleWorkflowHistoryGet: a tag deny on an owner whose tags changed b
     const deny = {
       ...grantFor("deny-prod", "data", "*"),
       effect: "deny",
-      condition: 'tags.env == "prod"',
+      condition: '"env" in tags && tags.env == "prod"',
     } as Grant;
     const { ctx, repo } = await makeIndexedHistoryCtx(dir, workflow, [
       ...indexedHistoryGrants(),

@@ -41,13 +41,15 @@ function alwaysFalse(): boolean {
 
 /**
  * missing-field means the condition needs a resource field the resource does
- * not carry
+ * not carry; undecided means the check is on a kind as a whole, which no
+ * resource field applies to, so the condition decides nothing
  */
 export type ConditionOutcome =
   | "match"
   | "no-match"
   | "missing-field"
   | "pending"
+  | "undecided"
   | "error";
 
 export class PolicySnapshot {

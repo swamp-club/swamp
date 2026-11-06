@@ -62,8 +62,10 @@ import {
   CONDITION_FIELDS,
   conditionFieldAbsentValue,
   conditionFieldsUnavailableForActions,
+  type ConditionFindingsReader,
   MissingConditionFieldError,
   referencedConditionFields,
+  unguardedTagMessage,
 } from "./condition_fields.ts";
 import {
   failedAccessData,
@@ -314,6 +316,7 @@ export class PolicySnapshotLoader {
    */
   readonly #checkedSpellings = new Map<string, string>();
   readonly #readTypeLiterals: ConditionTypeLiteralReader | undefined;
+  readonly #readConditionFindings: ConditionFindingsReader | undefined;
 
   constructor(
     dataRepo: UnifiedDataRepository,
@@ -321,9 +324,11 @@ export class PolicySnapshotLoader {
     mode: PolicyReloadMode = "auto",
     decisionOptions: GrantBasedAccessDecisionServiceOptions = {},
     readTypeLiterals?: ConditionTypeLiteralReader,
+    readConditionFindings?: ConditionFindingsReader,
   ) {
     this.#dataRepo = dataRepo;
     this.#readTypeLiterals = readTypeLiterals;
+    this.#readConditionFindings = readConditionFindings;
     this.#decisionOptions = decisionOptions;
     this.#conditionEvaluator = createConditionEvaluator();
 
@@ -723,7 +728,25 @@ export class PolicySnapshotLoader {
         logger
           .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${finding.message}`;
       }
+      for (const message of this.#conditionMessages(grant)) {
+        logger
+          .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${message}. Revoke it and write it again`;
+      }
     }
+  }
+
+  #conditionMessages(grant: Grant): string[] {
+    if (!grant.condition || !this.#readConditionFindings) return [];
+    const { typeIssue, unguardedTags } = this.#readConditionFindings(
+      grant.condition,
+      grant.resource.kind,
+    );
+    return [
+      ...(typeIssue ? [typeIssue] : []),
+      ...(grant.effect === "deny" && unguardedTags.length > 0
+        ? [unguardedTagMessage(unguardedTags)]
+        : []),
+    ];
   }
 
   /**

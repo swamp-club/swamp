@@ -220,7 +220,7 @@ function evaluateGrant(
   // A kind-level check touches no resource, so a condition on resource
   // fields decides nothing there.
   return outcome === "missing-field" && resource.scope === "kind"
-    ? "error"
+    ? "undecided"
     : outcome;
 }
 
@@ -399,8 +399,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
 
     let conditionsEvaluated = 0;
     let pendingAllow: AccessDecision | undefined;
-    // A deny whose condition could not be evaluated decides nothing, but it
-    // must not let the service trigger default allow what it meant to stop.
+    // a deny undecided on a kind must not let the service trigger default allow
+    // what it meant to stop
     let denyUndecided = false;
 
     for (const { grant, match } of denies) {
@@ -423,11 +423,14 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         principalContext,
         principal.client,
       );
-      // a deny that needs a field the resource does not carry fails closed
-      if (outcome === "match" || outcome === "missing-field") {
+      // authorization fails closed: a deny that cannot be evaluated refuses
+      if (
+        outcome === "match" || outcome === "missing-field" ||
+        outcome === "error"
+      ) {
         return toDecision(grant, match);
       }
-      if (outcome === "error") denyUndecided = true;
+      if (outcome === "undecided") denyUndecided = true;
     }
 
     for (const { grant, match } of allows) {
@@ -505,7 +508,9 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
         principalContext,
         principal.client,
       );
-      if (outcome === "error" && grant.effect === "deny") denyUndecided = true;
+      if (outcome === "undecided" && grant.effect === "deny") {
+        denyUndecided = true;
+      }
       if (outcome === "pending") {
         const decision = toDecision(grant, match, resource.pending);
         if (grant.effect === "deny") pendingDenies.push(decision);
@@ -513,7 +518,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       }
       if (
         outcome === "match" ||
-        (outcome === "missing-field" && grant.effect === "deny")
+        ((outcome === "missing-field" || outcome === "error") &&
+          grant.effect === "deny")
       ) {
         if (grant.effect === "deny") {
           denyDecisions.push(toDecision(grant, match));

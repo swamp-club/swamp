@@ -498,6 +498,7 @@ import {
   usernameSubjectsNeedOAuthMessage,
 } from "../../domain/access/grant_username_resolution.ts";
 import {
+  readConditionFindings,
   readConditionTypeLiterals,
   validateGrantCondition,
 } from "../../infrastructure/cel/grant_condition_environment.ts";
@@ -4806,6 +4807,7 @@ export const serveCommand = new Command()
         writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
       },
       readConditionTypeLiterals,
+      readConditionFindings,
     );
     // created before the boot load so on a filesystem datastore it fingerprints
     // the access data first, and a peer write landing after the load still

@@ -1337,7 +1337,7 @@ Deno.test("handleModelOutputSearch: with a definition index, a repeat request re
         grant({
           effect: "deny",
           actions: ["read"],
-          condition: 'tags.env == "prod"',
+          condition: '"env" in tags && tags.env == "prod"',
         }),
       ]),
       definitionIndex,

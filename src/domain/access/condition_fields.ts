@@ -30,6 +30,9 @@ export type ConditionFieldType = "string" | "map";
 
 export type ConditionFieldRole = "resource" | "request";
 
+/** a CEL type name, or the members of a variable with named members */
+export type ConditionCheckedType = string | Readonly<Record<string, string>>;
+
 export interface ConditionField {
   readonly name: string;
   readonly type: ConditionFieldType;
@@ -43,6 +46,11 @@ export interface ConditionField {
   readonly actions?: readonly Action[];
   /** what a request field reads as when absent, instead of its zero value */
   readonly absent?: unknown;
+  /**
+   * narrower than type, for checking a condition when it is written; a schema
+   * wraps values at evaluation, so evaluation never uses it
+   */
+  readonly checkedAs?: ConditionCheckedType;
 }
 
 function field(
@@ -59,18 +67,37 @@ const CLIENT_FIELD: ConditionField = {
   absent: ABSENT_CLIENT_CONDITION_VALUE,
 };
 
+// a map rather than named members, so "sub" in run.initiator still checks
+const RUN_CHECKED_AS = {
+  initiator: "map<string, string>",
+  serveDriven: "bool",
+} as const;
+
 // left out when the run names no usable initiator, so allow and deny fail closed
 const RUN_FIELD: ConditionField = {
   ...field("run", "map"),
   actions: ["approve"],
+  checkedAs: RUN_CHECKED_AS,
 };
+
+const TAGS_FIELD: ConditionField = {
+  ...field("tags", "map"),
+  checkedAs: "map<string, string>",
+};
+
+// email is left out: no decision supplies it, so reading it always errors
+export const PRINCIPAL_CHECKED_AS = {
+  sub: "string",
+  groups: "list<string>",
+  collectives: "list<string>",
+} as const;
 
 export const CONDITION_FIELDS: Readonly<
   Record<ResourceKind, readonly ConditionField[]>
 > = {
   workflow: [
     field("name", "string"),
-    field("tags", "map"),
+    TAGS_FIELD,
     field("collective", "string", "resource", false),
     CLIENT_FIELD,
     RUN_FIELD,
@@ -78,7 +105,7 @@ export const CONDITION_FIELDS: Readonly<
   model: [
     field("name", "string"),
     field("modelType", "string"),
-    field("tags", "map"),
+    TAGS_FIELD,
     field("collective", "string", "resource", false),
     field("methodName", "string", "request"),
     CLIENT_FIELD,
@@ -86,7 +113,7 @@ export const CONDITION_FIELDS: Readonly<
   data: [
     field("name", "string"),
     field("ns", "string"),
-    field("tags", "map"),
+    TAGS_FIELD,
     field("owner", "map", "resource", false),
     CLIENT_FIELD,
   ],
@@ -247,6 +274,28 @@ export function unknownRunPaths(ast: unknown): string[] {
   };
   walk(ast, false);
   return [...unknown];
+}
+
+/**
+ * typeIssue says why the condition's types cannot evaluate; unguardedTags are
+ * the tags it reads without checking they exist
+ */
+export interface ConditionFindings {
+  readonly typeIssue?: string;
+  readonly unguardedTags: readonly string[];
+}
+
+export type ConditionFindingsReader = (
+  condition: string,
+  kind: ResourceKind,
+) => ConditionFindings;
+
+/** a deny refuses when its condition errors, as reading an absent tag does */
+export function unguardedTagMessage(tags: readonly string[]): string {
+  const [tag] = tags;
+  return `Condition reads ${
+    tags.map((t) => `tags.${t}`).join(", ")
+  } without checking the tag exists, so as a deny it refuses any resource without it: to apply only to tagged resources, write "${tag}" in tags && ...`;
 }
 
 /** fields a condition names that a decision on one of these actions cannot supply */

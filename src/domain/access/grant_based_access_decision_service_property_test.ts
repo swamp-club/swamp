@@ -303,7 +303,7 @@ Deno.test("GrantBasedAccessDecisionService: a service deny that cannot be evalua
   );
 });
 
-Deno.test("property: a tags deny refuses exactly the resources carrying the tag, and fails closed without tags", () => {
+Deno.test("property: a tags deny refuses the resources carrying the tag and, failing closed, any without it", () => {
   const evaluator = createConditionEvaluator();
   const tagValue = fc.constantFrom("prod", "dev", "stage");
   fc.assert(
@@ -354,10 +354,68 @@ Deno.test("property: a tags deny refuses exactly the resources carrying the tag,
           name: "m",
           fields,
         });
-        const expected = tags === undefined || tags.env === "prod"
+        const expected = tags === undefined || tags.env === undefined ||
+            tags.env === "prod"
           ? "deny"
           : "allow";
         assertEquals(decision?.effect, expected);
+      },
+    ),
+  );
+});
+
+Deno.test("property: a deny whose condition errors never yields an allow", () => {
+  const evaluator = createConditionEvaluator();
+  const erroring = fc.constantFrom(
+    'tags.absent == "x"',
+    "!tags.absent",
+    "tags.env > 1",
+    "principal.sub > 1",
+    'principal.email == "x"',
+    "1 / 0 == 1",
+  );
+  fc.assert(
+    fc.property(
+      erroring,
+      fc.constantFrom("read", "write", "run"),
+      (condition, action) => {
+        const base = {
+          subject: { kind: "user", name: "p" },
+          actions: [action],
+          resource: { kind: "model", pattern: "*" },
+          state: "active",
+          source: "method",
+          createdBy: { kind: "user", id: "admin" },
+          createdAt: "2026-01-01T00:00:00Z",
+        };
+        const service = new GrantBasedAccessDecisionService(
+          new PolicySnapshot(
+            [
+              { ...base, id: "allow", effect: "allow" },
+              { ...base, id: "deny", effect: "deny", condition },
+            ] as Grant[],
+            [],
+            evaluator,
+          ),
+        );
+        const principal = {
+          principal: { kind: "user" as const, id: "p" },
+          collectives: [],
+          groups: [],
+        };
+        const resource = {
+          kind: "model" as const,
+          name: "m",
+          fields: { name: "m", modelType: "t", tags: { env: "prod" } },
+        };
+        assertEquals(
+          service.decide(principal, action as Action, resource)?.grantId,
+          "deny",
+        );
+        assertEquals(
+          service.explain(principal, action as Action, resource)[0].grantId,
+          "deny",
+        );
       },
     ),
   );
