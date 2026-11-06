@@ -88,23 +88,47 @@ Deno.test("Dockerfile base image matches the .tool-versions deno pin", async () 
   const pinned = await readPinnedVersion();
   const dockerfile = await Deno.readTextFile(DOCKERFILE);
 
-  const matches = [...dockerfile.matchAll(/^FROM denoland\/deno:(\S+)/gm)];
+  // The base is the swamp-club golden image, pinned by digest. Its deno
+  // version can't be read from the FROM line, so GOLDEN_DENO declares it and
+  // the build checks the base's deno against it.
+  const bases = [
+    ...dockerfile.matchAll(
+      /^FROM us-west1-docker\.pkg\.dev\/swamp-club-archive\/golden\/base@sha256:[0-9a-f]{64}$/gm,
+    ),
+  ];
   assertEquals(
-    matches.length,
+    bases.length,
     1,
-    `expected exactly one "FROM denoland/deno:" line in ` +
-      `${repoRelative(DOCKERFILE)}, found ${matches.length} — if the ` +
+    `expected exactly one "FROM <golden base>@sha256:<digest>" line in ` +
+      `${repoRelative(DOCKERFILE)}, found ${bases.length} — if the ` +
       `Dockerfile changed shape, update this test rather than deleting it`,
   );
 
+  const declared = [...dockerfile.matchAll(/^ARG GOLDEN_DENO=(\S+)$/gm)];
   assertEquals(
-    matches[0][1],
+    declared.length,
+    1,
+    `expected exactly one "ARG GOLDEN_DENO=<version>" line in ` +
+      `${repoRelative(DOCKERFILE)}, found ${declared.length}`,
+  );
+  assertEquals(
+    declared[0][1],
     pinned,
-    `${repoRelative(DOCKERFILE)} pins deno ${matches[0][1]} but ` +
+    `${repoRelative(DOCKERFILE)} declares deno ${declared[0][1]} but ` +
       `.tool-versions pins ${pinned}. The Dockerfile cannot read ` +
       `.tool-versions at build time (release.yml copies only the Dockerfile ` +
       `and the binary into the build context), so the two are kept in step by ` +
-      `this test. Update the Dockerfile to match .tool-versions.`,
+      `this test. Use a golden image built with that deno and update both.`,
+  );
+
+  assertEquals(
+    /^\s*&& deno --version \| grep -q "\^deno \$\{GOLDEN_DENO\} "$/m.test(
+      dockerfile,
+    ),
+    true,
+    `${repoRelative(DOCKERFILE)} must check at build time that the base's ` +
+      `deno is GOLDEN_DENO, so a golden image with another deno fails the ` +
+      `build instead of shipping`,
   );
 });
 
