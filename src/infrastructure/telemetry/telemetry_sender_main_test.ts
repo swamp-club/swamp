@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { TelemetryService } from "../../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../persistence/json_telemetry_repository.ts";
 import { JsonTelemetryFlushRecordRepository } from "../persistence/json_telemetry_flush_record_repository.ts";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { runTelemetrySenderMain } from "./telemetry_sender_main.ts";
 import {
   claimSenderLock,
@@ -29,23 +30,17 @@ import {
   senderArgs,
 } from "./telemetry_sender_process.ts";
 
+const INGEST = "http://ingest.test";
+
 async function withIngest(
   respond: (req: Request) => Promise<Response>,
   fn: (url: string, received: unknown[]) => Promise<void>,
 ): Promise<void> {
   const received: unknown[] = [];
-  const server = Deno.serve(
-    { hostname: "127.0.0.1", port: 0, onListen: () => {} },
-    async (req) => {
-      received.push(await req.json());
-      return await respond(req);
-    },
-  );
-  try {
-    await fn(`http://127.0.0.1:${server.addr.port}`, received);
-  } finally {
-    await server.shutdown();
-  }
+  await withMockedFetch(async (req) => {
+    received.push(await req.clone().json());
+    return await respond(req);
+  }, () => fn(INGEST, received));
 }
 
 async function withSpool(
@@ -137,35 +132,30 @@ Deno.test("runTelemetrySenderMain: a sender that does not hold the lock sends no
 });
 
 Deno.test("runTelemetrySenderMain: an ingest that never answers is given up on per request, and the lock is freed", async () => {
-  let release!: () => void;
-  const hung = new Promise<void>((resolve) => release = resolve);
   await withIngest(
-    async () => {
-      await hung;
-      return new Response(null, { status: 202 });
-    },
+    // answers only by failing once the sender gives up on it
+    (req) =>
+      new Promise<Response>((_resolve, reject) => {
+        req.signal.addEventListener("abort", () => reject(req.signal.reason));
+      }),
     async (url) => {
-      try {
-        await withSpool(url, 3, async (dir) => {
-          const lock = join(dir, SENDER_LOCK_FILE);
-          const token = await claimSenderLock(lock);
-          assert(token !== undefined);
-          await runTelemetrySenderMain(
-            senderArgs(token, {
-              endpoint: url,
-              userAgent: "swamp-cli/test",
-              keepFlushed: false,
-            }),
-            { ...deps(dir), requestTimeoutMs: 200 },
-          );
-          const record = await new JsonTelemetryFlushRecordRepository(dir)
-            .read();
-          assertEquals(record?.lastAttemptOk, false);
-          assert(await claimSenderLock(lock) !== undefined);
-        });
-      } finally {
-        release();
-      }
+      await withSpool(url, 3, async (dir) => {
+        const lock = join(dir, SENDER_LOCK_FILE);
+        const token = await claimSenderLock(lock);
+        assert(token !== undefined);
+        await runTelemetrySenderMain(
+          senderArgs(token, {
+            endpoint: url,
+            userAgent: "swamp-cli/test",
+            keepFlushed: false,
+          }),
+          { ...deps(dir), requestTimeoutMs: 200 },
+        );
+        const record = await new JsonTelemetryFlushRecordRepository(dir)
+          .read();
+        assertEquals(record?.lastAttemptOk, false);
+        assert(await claimSenderLock(lock) !== undefined);
+      });
     },
   );
 });
