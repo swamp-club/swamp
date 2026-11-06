@@ -68,7 +68,7 @@ another caller's explicit lease outlasts the wait, a command that needs the
 behavior is refused at once (exit 75), naming the holder and when the lease
 ends; a run's renewing lease is waited for. An explicit lease survives a serve
 leader takeover; an admin ends an abandoned one with
-`swamp datastore lock release --force --behavior type/id`.
+`swamp datastore lock release --force --behavior <name>` (or `type/id`).
 
 ### Working offline
 
@@ -101,7 +101,7 @@ in):
 ```bash
 swamp datastore lock status                          # show who holds locks
 swamp datastore lock release --force                 # release the global lock
-swamp datastore lock release --force --model type/id # release a per-behavior lock
+swamp datastore lock release --force --behavior <name> # release a per-behavior lock (or type/id)
 ```
 
 The `--force` flag is required. These commands bypass normal acquire/release and
