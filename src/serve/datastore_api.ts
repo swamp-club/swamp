@@ -842,10 +842,8 @@ class DatastoreApi {
   }
 
   /**
-   * `POST authorize`: `{commits: [{partition, ops}]}`, tombstones only. Runs
-   * the check a commit's first pass runs on each, and appends nothing, so a
-   * command that commits several partitions in turn learns before the first
-   * whether a later one is refused. Refusals are audited as a commit's are.
+   * checks tombstones without appending, so a multi-partition delete learns of
+   * a refusal before its first commit; refusals are audited as commits' are
    */
   async authorize(req: Request): Promise<Response> {
     const body = await readJson(req, MAX_AUTHORIZE_BODY_BYTES);
@@ -1584,12 +1582,8 @@ class DatastoreApi {
   }
 
   /**
-   * `GET locks?prefix=`: the leases serve holds on locks the caller could
-   * take itself (swamp-club#4121), each as its key, who holds it (`caller`
-   * or `other`, and the holder's principal), whether it is explicit, and
-   * when it ends unless renewed. Each lock is
-   * decided without a refusal audit, since a listing refuses nothing. At
-   * most {@link MAX_LISTED_LEASES}, with `truncated` set past it.
+   * only locks the caller could take itself, each decided without a refusal
+   * audit, since a listing refuses nothing
    */
   async listLocks(req: Request): Promise<Response> {
     const prefix = new URL(req.url).searchParams.get("prefix") ?? "";

@@ -155,7 +155,7 @@ export const OFFLINE_PRINCIPAL_UNKNOWN_CODE =
 
 /**
  * a serve-mode checkout names the principal serve checks a new run against;
- * a serve that checks none, or one not heard from, gets today's value
+ * otherwise the swamp-club username, or ghost
  */
 export async function resolveCliInitiatedBy(
   datastorePath?: string,

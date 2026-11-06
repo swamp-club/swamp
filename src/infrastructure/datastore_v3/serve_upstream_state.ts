@@ -103,9 +103,8 @@ const MIGRATIONS: readonly string[] = [
      at TEXT NOT NULL,
      clock_offset_ms INTEGER
    );`,
-  // whether serve checks a new run record's initiator and the principal it
-  // stamps for this caller's token, which an offline run names; no row is
-  // not heard from since this swamp was upgraded
+  // whether serve checks run initiators, and this token's principal, which an
+  // offline run names; no row: serve not heard from since the upgrade
   `CREATE TABLE IF NOT EXISTS initiator (
      id INTEGER PRIMARY KEY CHECK (id = 1),
      mode TEXT NOT NULL,

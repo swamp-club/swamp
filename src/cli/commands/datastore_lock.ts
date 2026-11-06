@@ -242,10 +242,8 @@ const datastoreLockReleaseCommand = new Command()
       // a checkout written through serve asks serve to end the lease on the
       // behavior, whoever holds it: admin only.
       if (resolution.serveUpstream !== undefined) {
-        // An id needs no definition lookup, and a name is looked up at serve,
-        // so the checkout's copy is never opened: rebuilding it for this
-        // caller would wait for a running command's writer lock, and with it
-        // for the very lease to end.
+        // never open the checkout's copy: rebuilding it would wait on the
+        // writer lock of the very command whose lease is being ended
         if (parsed !== null && isUuid(parsed.modelId)) {
           await releaseServeLeaseById(
             cliCtx,
