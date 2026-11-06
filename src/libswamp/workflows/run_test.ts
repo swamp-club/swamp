@@ -2855,6 +2855,7 @@ Deno.test("RunAttributeBudget.resolveChild: a child step too large for one JSON 
   );
 
   assertEquals(resolved.outputs, { small: { ok: true } });
+  assertEquals(resolved.sources?.map((group) => group.path), [["small"]]);
   assertEquals(budget.takeStepOmitted(), ["data-big"]);
   const read = budget.wrap(() => Promise.resolve({ tail: true }));
   assertEquals(

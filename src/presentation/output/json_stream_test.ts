@@ -39,6 +39,8 @@ Deno.test("prettyJsonChunks: joins to JSON.stringify with two-space indent, skip
     d: new Date(0),
     e: () => 1,
     "__proto__x": null,
+    f: { toJSON: () => undefined },
+    g: [{ toJSON: () => undefined }],
   };
   assertEquals(
     [...prettyJsonChunks(value)].join(""),

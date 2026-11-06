@@ -21,20 +21,25 @@ const FLUSH_CHARS = 64 * 1024;
 
 type Sink = (bytes: Uint8Array) => Promise<number>;
 
+function viaToJSON(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null &&
+      typeof (value as { toJSON?: unknown }).toJSON === "function"
+    ? (value as { toJSON: (key: string) => unknown }).toJSON(key)
+    : value;
+}
+
+function skipped(value: unknown): boolean {
+  return value === undefined || typeof value === "function" ||
+    typeof value === "symbol";
+}
+
 /** the pieces of JSON.stringify(value, null, 2), never joined into one string */
-export function* prettyJsonChunks(
-  value: unknown,
-  key = "",
-  indent = "",
-): Generator<string> {
-  if (
-    typeof value === "object" && value !== null &&
-    typeof (value as { toJSON?: unknown }).toJSON === "function"
-  ) {
-    value = (value as { toJSON: (key: string) => unknown }).toJSON(key);
-  }
-  const skipped = (v: unknown) =>
-    v === undefined || typeof v === "function" || typeof v === "symbol";
+export function* prettyJsonChunks(value: unknown): Generator<string> {
+  yield* chunksOf(viaToJSON(value, ""), "");
+}
+
+// toJSON is already applied, so a value it turns to undefined is skipped first
+function* chunksOf(value: unknown, indent: string): Generator<string> {
   const inner = indent + "  ";
   if (Array.isArray(value)) {
     if (value.length === 0) {
@@ -43,16 +48,19 @@ export function* prettyJsonChunks(
     }
     yield "[\n";
     for (let i = 0; i < value.length; i++) {
+      const item = viaToJSON(value[i], String(i));
       yield inner;
-      if (skipped(value[i])) yield "null";
-      else yield* prettyJsonChunks(value[i], String(i), inner);
+      if (skipped(item)) yield "null";
+      else yield* chunksOf(item, inner);
       yield i < value.length - 1 ? ",\n" : "\n";
     }
     yield `${indent}]`;
     return;
   }
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).filter(([, v]) => !skipped(v));
+    const entries = Object.entries(value)
+      .map(([k, v]) => [k, viaToJSON(v, k)] as const)
+      .filter(([, v]) => !skipped(v));
     if (entries.length === 0) {
       yield "{}";
       return;
@@ -61,7 +69,7 @@ export function* prettyJsonChunks(
     for (let i = 0; i < entries.length; i++) {
       const [k, v] = entries[i];
       yield `${inner}${JSON.stringify(k)}: `;
-      yield* prettyJsonChunks(v, k, inner);
+      yield* chunksOf(v, inner);
       yield i < entries.length - 1 ? ",\n" : "\n";
     }
     yield `${indent}}`;

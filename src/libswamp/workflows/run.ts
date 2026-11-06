@@ -548,6 +548,7 @@ export class RunAttributeBudget {
     }
     if (!resolved.outputs) return resolved;
     const kept: Record<string, unknown> = {};
+    const refused = new Set<string>();
     for (const [stepName, value] of Object.entries(resolved.outputs)) {
       const remaining = this.#budget.capBytes - this.#budget.admittedBytes;
       const bytes = this.#budget.exhausted
@@ -563,14 +564,20 @@ export class RunAttributeBudget {
         });
         continue;
       }
+      refused.add(stepName);
       for (const group of resolved.sources ?? []) {
         if (group.path[0] !== stepName) continue;
         for (const record of group.records) this.#stepOmitted.push(record.id);
       }
     }
+    // a refused step's records hold its attributes; dropped so they are freed
+    const sources = resolved.sources?.filter((group) =>
+      !refused.has(group.path[0])
+    );
     return {
       ...resolved,
       outputs: Object.keys(kept).length > 0 ? kept : undefined,
+      sources: sources && sources.length > 0 ? sources : undefined,
     };
   }
 
