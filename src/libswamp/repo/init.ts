@@ -35,6 +35,8 @@ import {
 } from "../extensions/install.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { ToolSettingsPruner } from "../../domain/repo/tool_settings_pruner.ts";
+import { enrolledTools } from "../../domain/repo/primary_tool.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -46,12 +48,15 @@ export interface PrunableToolSettings {
 
 export type FindPrunableSettings = (
   repoRoot: string,
-  enrolledTools: string[],
 ) => Promise<PrunableToolSettings[]>;
 
-async function findPrunableSettings(repoRoot: string, enrolledTools: string[]) {
+async function findPrunableSettings(repoRoot: string) {
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoRoot),
+  );
+  if (!marker) return [];
   const plan = await new ToolSettingsPruner(repoRoot, atomicWriteTextFile)
-    .find(enrolledTools);
+    .find(enrolledTools(marker));
   const byTool = new Map<string, string[]>();
   for (const action of plan.actions) {
     byTool.set(action.tool, [...byTool.get(action.tool) ?? [], action.path]);
@@ -64,11 +69,10 @@ async function prunableSettingsFor(
   ctx: LibSwampContext,
   find: FindPrunableSettings | undefined,
   repoRoot: string,
-  enrolledTools: string[],
 ): Promise<PrunableToolSettings[]> {
   if (!find) return [];
   try {
-    return await find(repoRoot, enrolledTools);
+    return await find(repoRoot);
   } catch (error) {
     ctx.logger.debug`Could not look for prunable tool settings: ${
       error instanceof Error ? error.message : String(error)
@@ -208,7 +212,6 @@ export async function* repoInit(
           ctx,
           deps.findPrunableSettings,
           result.path,
-          result.tools,
         ),
         vault: result.vault,
         tool: legacyToolField(result.tools),
@@ -429,7 +432,6 @@ export async function* repoUpgrade(
           ctx,
           deps.findPrunableSettings,
           result.path,
-          result.tools,
         ),
         extensionsToReinstall: result.extensionsToReinstall,
         localSkillCopies: result.localSkillCopies,

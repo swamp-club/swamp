@@ -696,10 +696,10 @@ Deno.test("repoUpgrade: an unpublished lockfile change from the install pass is 
 });
 
 Deno.test("repoUpgrade: reports prunable settings for tools that are not enrolled", async () => {
-  const seen: string[][] = [];
+  const seen: string[] = [];
   const deps = makeUpgradeDeps({
-    findPrunableSettings: (_root, tools) => {
-      seen.push(tools);
+    findPrunableSettings: (root) => {
+      seen.push(root);
       return Promise.resolve([
         { tool: "claude", paths: [".claude/settings.local.json"] },
       ]);

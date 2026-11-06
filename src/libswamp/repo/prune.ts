@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { enrolledTools } from "../../domain/repo/primary_tool.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   type PruneAction,
@@ -86,9 +86,7 @@ export function createRepoPruneDeps(): RepoPruneDeps {
   return {
     readEnrolledTools: async (repoPath) => {
       const marker = await markerRepo.read(repoPath);
-      if (!marker) return null;
-      // a marker without tools predates enrollment, and swamp audits it as claude
-      return marker.tools ?? [resolvePrimaryTool(marker)];
+      return marker ? enrolledTools(marker) : null;
     },
     find: (repoRoot, enrolledTools) =>
       new ToolSettingsPruner(repoRoot, atomicWriteTextFile).find(enrolledTools),

@@ -25,6 +25,9 @@ import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { atomicWriteTextFile } from "../src/infrastructure/persistence/atomic_write.ts";
 import { ToolSettingsPruner } from "../src/domain/repo/tool_settings_pruner.ts";
 import { BUILT_IN_TOOL_NAMES } from "../src/domain/repo/custom_tool.ts";
+import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
+import { createRepoPruneDeps } from "../src/libswamp/repo/prune.ts";
+import { createRepoUpgradeDeps } from "../src/libswamp/repo/init.ts";
 
 const TOOLS = BUILT_IN_TOOL_NAMES.filter((t) => t !== "none");
 const MANAGED_MARKER = "This is a managed file";
@@ -133,4 +136,42 @@ Deno.test("repo prune: finds nothing to remove while every tool is enrolled", ()
       ...TOOLS,
     ]);
     assertEquals(plan, { actions: [], skipped: [] });
+  }));
+
+Deno.test("repo prune: a marker without tools keeps its claude hooks through a plain upgrade", () =>
+  withRepo(async (dir, service) => {
+    const repoPath = RepoPath.create(dir);
+    await service.init(repoPath, { tools: ["claude"] });
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    delete marker!.tools;
+    await markerRepo.write(repoPath, marker!);
+    const hooksBefore = await swampWiring(dir);
+
+    await service.upgrade(repoPath, {});
+
+    assertEquals((await markerRepo.read(repoPath))!.tools, undefined);
+    assertEquals(
+      await createRepoUpgradeDeps("0.1.0").findPrunableSettings!(dir),
+      [],
+    );
+    const pruneDeps = createRepoPruneDeps();
+    const enrolled = await pruneDeps.readEnrolledTools(repoPath);
+    assertEquals(enrolled, ["claude"]);
+    assertEquals((await pruneDeps.find(dir, enrolled!)).actions, []);
+    assertEquals(await swampWiring(dir), hooksBefore);
+  }));
+
+Deno.test("repo prune: an upgrade that passes --tool still writes the tool list to a marker without one", () =>
+  withRepo(async (dir, service) => {
+    const repoPath = RepoPath.create(dir);
+    await service.init(repoPath, { tools: ["claude"] });
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    delete marker!.tools;
+    await markerRepo.write(repoPath, marker!);
+
+    await service.upgrade(repoPath, { tools: ["codex"] });
+
+    assertEquals((await markerRepo.read(repoPath))!.tools, ["codex"]);
   }));

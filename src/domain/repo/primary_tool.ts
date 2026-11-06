@@ -26,3 +26,8 @@ import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marke
 export function resolvePrimaryTool(marker: RepoMarkerData | null): string {
   return marker?.tools?.[0] ?? "claude";
 }
+
+/** a marker without tools predates enrollment, and swamp treats claude as its tool */
+export function enrolledTools(marker: RepoMarkerData): string[] {
+  return marker.tools ?? [resolvePrimaryTool(marker)];
+}

@@ -605,7 +605,11 @@ export class RepoService {
       existingMarker,
       this.currentVersion,
     );
-    updatedMarker.tools = tools;
+    // writing [] for a marker that never had tools would turn its implicit
+    // claude into an explicit none
+    if (options.tools !== undefined || existingMarker.tools !== undefined) {
+      updatedMarker.tools = tools;
+    }
 
     let skillsUpdated = await this.installGlobalSkills(tools);
 
