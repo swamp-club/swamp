@@ -173,16 +173,12 @@ import {
   createAutoResolveOutputAdapter,
   isBundleArtifactPath,
 } from "./auto_resolver_adapters.ts";
-import {
-  type TelemetryFlushOutcome,
-  TelemetryService,
-} from "../domain/telemetry/telemetry_service.ts";
-import type { TelemetrySender } from "../domain/telemetry/telemetry_sender.ts";
+import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { isTelemetryDisabledByEnv } from "../infrastructure/telemetry/telemetry_opt_out_env.ts";
 import { JsonTelemetryFlushRecordRepository } from "../infrastructure/persistence/json_telemetry_flush_record_repository.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
 import { YamlVaultConfigRepository } from "../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
+import { startTelemetrySender } from "../infrastructure/telemetry/telemetry_sender_process.ts";
 import {
   buildInvocationContext,
   clearActiveTelemetryContext,
@@ -2064,50 +2060,26 @@ async function recordAndFlushError(
     sensitiveValues,
   );
 
-  await flushTelemetryIfDue(telemetryCtx);
+  await startTelemetrySenderIfSpooled(telemetryCtx);
 }
 
-export const TELEMETRY_FLUSH_INTERVAL_MS = 5 * 60_000;
-const MAX_FLUSH_BATCHES = 4;
-
-export async function flushTelemetryIfDue(
+/** the spool is sent by a detached sender, so no command waits on the ingest */
+async function startTelemetrySenderIfSpooled(
   telemetryCtx: TelemetryContext,
-  options: { readonly now?: Date; readonly sender?: TelemetrySender } = {},
-): Promise<TelemetryFlushOutcome | undefined> {
-  // distinct_id is required by the sender; if neither userId nor repoId
-  // resolved, skip the flush and leave the entry spooled for a future run
-  const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
-  if (!distinctId) return undefined;
-  if (
-    !await telemetryCtx.service.flushDue(
-      TELEMETRY_FLUSH_INTERVAL_MS,
-      options.now,
-    )
-  ) {
-    return undefined;
-  }
-  const sender = options.sender ??
-    new HttpTelemetrySender(telemetryCtx.telemetryEndpoint, USER_AGENT);
-  const signal = AbortSignal.timeout(2000);
-  let outcome: TelemetryFlushOutcome | undefined;
-  for (let batch = 0; batch < MAX_FLUSH_BATCHES; batch++) {
-    outcome = await telemetryCtx.service.flushTelemetry({
-      sender,
-      distinctId,
-      repoId: telemetryCtx.repoId,
-      authToken: telemetryCtx.authToken ?? undefined,
+): Promise<void> {
+  try {
+    if (!await telemetryCtx.service.hasUnflushed()) return;
+    await startTelemetrySender(globalTelemetryDir(), {
+      endpoint: telemetryCtx.telemetryEndpoint,
+      userAgent: USER_AGENT,
+      ...(telemetryCtx.repoId !== undefined
+        ? { repoId: telemetryCtx.repoId }
+        : {}),
       keepFlushed: telemetryCtx.keepFlushed,
-      signal,
-      ...(options.now !== undefined ? { at: options.now } : {}),
     });
-    if (!outcome.result.ok || outcome.sentCount === 0 || signal.aborted) break;
+  } catch {
+    // Best effort: the entry stays spooled for the next command's sender.
   }
-  // Cleanup with bounded timeout so Deno.exit() doesn't kill it
-  await Promise.race([
-    telemetryCtx.service.cleanupOldTelemetry(),
-    new Promise<void>((r) => setTimeout(r, 3000)),
-  ]);
-  return outcome;
 }
 
 function endInvocation(): void {
@@ -2779,15 +2751,7 @@ async function runInvocation(
             startTime,
           );
 
-          const flushResult = await flushTelemetryIfDue(telemetryCtx);
-          if (flushResult !== undefined && !flushResult.result.ok) {
-            const detail = flushResult.result.reason
-              ? ` (${flushResult.result.reason})`
-              : "";
-            logger.warn(
-              `Telemetry flush failed${detail} — entries are queued locally and will retry on a later invocation`,
-            );
-          }
+          await startTelemetrySenderIfSpooled(telemetryCtx);
         } catch {
           // Best effort — never break the CLI for telemetry failures
         }

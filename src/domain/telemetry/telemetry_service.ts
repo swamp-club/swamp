@@ -55,7 +55,6 @@ export interface TelemetryFlushConfig {
    * sending the same invocation once per attempt
    */
   skipIds?: ReadonlySet<string>;
-  at?: Date;
 }
 
 export interface TelemetrySingleFlushConfig {
@@ -305,6 +304,10 @@ export class TelemetryService {
     }
   }
 
+  async hasUnflushed(): Promise<boolean> {
+    return (await this.repository.findUnflushed(1, this.endpoint)).length > 0;
+  }
+
   async quarantineEntry(entry: TelemetryEntry): Promise<void> {
     await this.repository.quarantine(entry);
   }
@@ -331,7 +334,6 @@ export class TelemetryService {
           config.authToken,
           config.signal,
           config.skipIds,
-          config.at,
         );
       } catch {
         return {
@@ -397,40 +399,17 @@ export class TelemetryService {
     });
   }
 
-  /**
-   * whether a command should send the spool now: the last attempt is at least
-   * minIntervalMs old, or none is known. Entries stay spooled between flushes
-   */
-  async flushDue(
-    minIntervalMs: number,
-    now: Date = new Date(),
-  ): Promise<boolean> {
-    if (!this.flushRecords) return true;
-    try {
-      const record = await this.flushRecords.read();
-      if (record === null) return true;
-      const last = Date.parse(record.lastAttemptAt);
-      // a record from the future is a clock that moved back: flush rather than
-      // wait for it
-      return !Number.isFinite(last) || last > now.getTime() ||
-        now.getTime() - last >= minIntervalMs;
-    } catch {
-      return true;
-    }
-  }
-
   /** best-effort: the record is advisory, so it never changes a flush outcome */
   async #recordFlushAttempt(
     result: TelemetryFlushResult,
     attempted: number,
-    at: Date = new Date(),
   ): Promise<void> {
     if (!this.flushRecords) return;
     try {
       const previous = await this.flushRecords.read();
       await this.flushRecords.write(
         applyFlushAttempt(previous, {
-          at,
+          at: new Date(),
           ok: result.ok,
           reason: result.reason,
           sentCount: result.ok ? attempted : 0,
@@ -457,7 +436,6 @@ export class TelemetryService {
     authToken?: string,
     signal?: AbortSignal,
     skipIds?: ReadonlySet<string>,
-    at?: Date,
   ): Promise<TelemetryFlushOutcome> {
     const found = await this.repository.findUnflushed(
       batchSize,
@@ -479,7 +457,7 @@ export class TelemetryService {
       authToken,
       signal,
     );
-    await this.#recordFlushAttempt(result, entries.length, at);
+    await this.#recordFlushAttempt(result, entries.length);
     const unmarkedIds: string[] = [];
     if (result.ok) {
       for (const entry of entries) {

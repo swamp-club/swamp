@@ -56,6 +56,8 @@ import {
   isBundleProbeHostInvocation,
   runBundleProbeHost,
 } from "./src/infrastructure/runtime/bundle_probe_host.ts";
+import { isTelemetrySenderInvocation } from "./src/infrastructure/telemetry/telemetry_sender_process.ts";
+import { runTelemetrySenderMain } from "./src/infrastructure/telemetry/telemetry_sender_main.ts";
 
 if (import.meta.main) {
   // A v3 writer's Litestream supervisor (swamp-club#3416) runs none of the
@@ -68,6 +70,10 @@ if (import.meta.main) {
   // the parent's SWAMP_BUILD_VERSION, so it runs before that is set below.
   if (isBundleProbeHostInvocation(Deno.args)) {
     Deno.exit(await runBundleProbeHost(VERSION));
+  }
+  // The detached telemetry sender a command starts: no tracing, no CLI.
+  if (isTelemetrySenderInvocation(Deno.args)) {
+    Deno.exit(await runTelemetrySenderMain(Deno.args));
   }
   Deno.env.set("SWAMP_BUILD_VERSION", VERSION);
   // The dispatch runner's stdout is an RPC frame stream; nothing, including
