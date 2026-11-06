@@ -703,6 +703,10 @@ export interface AccessTokenMintPayload {
   durationMs: number;
 }
 
+export interface AccessTokenRevealPayload {
+  name: string;
+}
+
 export interface ModelEditPayload {
   modelIdOrName: string;
   content?: string;
@@ -1111,6 +1115,11 @@ export type ServerRequest =
     type: "access.token.mint";
     id: string;
     payload: AccessTokenMintPayload;
+  }
+  | {
+    type: "access.token.reveal";
+    id: string;
+    payload: AccessTokenRevealPayload;
   }
   | { type: "model.edit"; id: string; payload: ModelEditPayload }
   | {
@@ -1899,6 +1908,10 @@ export interface AccessTokenMintResponse {
   data: Record<string, unknown>;
 }
 
+export interface AccessTokenRevealResponse {
+  data: Record<string, unknown>;
+}
+
 export interface ModelEditResponse {
   data: Record<string, unknown>;
 }
@@ -2324,6 +2337,11 @@ export type ServerMessage =
     type: "access.token.mint";
     id: string;
     payload: AccessTokenMintResponse;
+  }
+  | {
+    type: "access.token.reveal";
+    id: string;
+    payload: AccessTokenRevealResponse;
   }
   | { type: "model.edit"; id: string; payload: ModelEditResponse }
   | {

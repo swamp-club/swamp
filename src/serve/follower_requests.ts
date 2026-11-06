@@ -57,6 +57,8 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
   "serve.reload",
   "audit.rotate-key",
   "run.attach",
+  // a follower can lag a mint or rotate it just forwarded
+  "access.token.reveal",
 ]);
 
 export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([

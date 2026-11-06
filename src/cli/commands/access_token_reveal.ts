@@ -39,97 +39,124 @@ import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import {
+  requestNewerServerResponse,
+  resolveServerTokenFromOptions,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { AccessTokenRevealResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const accessTokenRevealCommand = new Command()
-  .name("reveal")
-  .description(
-    "Show the full authentication credential for a server token",
-  )
-  .example(
-    "Reveal a token (interactive confirmation)",
-    "swamp access token reveal adam-token",
-  )
-  .example(
-    "Reveal a token (skip confirmation)",
-    "swamp access token reveal adam-token --yes",
-  )
-  .arguments("<name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "-y, --yes",
-    "Skip confirmation prompt",
-  )
-  .option(
-    "-f, --force",
-    "Skip confirmation prompt (alias for --yes)",
-  )
-  .action(async function (options: AnyOptions, name: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "access",
-      "token",
-      "reveal",
-    ]);
+export const accessTokenRevealCommand = withRemoteOptions(
+  new Command()
+    .name("reveal")
+    .description(
+      "Show the full authentication credential for a server token",
+    )
+    .example(
+      "Reveal a token (interactive confirmation)",
+      "swamp access token reveal adam-token",
+    )
+    .example(
+      "Reveal a token (skip confirmation)",
+      "swamp access token reveal adam-token --yes",
+    )
+    .arguments("<name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "-y, --yes",
+      "Skip confirmation prompt",
+    )
+    .option(
+      "-f, --force",
+      "Skip confirmation prompt (alias for --yes)",
+    ),
+).action(async function (options: AnyOptions, name: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "access",
+    "token",
+    "reveal",
+  ]);
 
-    const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+  const skipConfirm = !!(options.yes || options.force);
+  const confirmReveal = async (): Promise<boolean> => {
+    if (cliCtx.outputMode !== "log" || skipConfirm) return true;
+    const confirmed = await promptConfirmation(
+      `This will reveal the secret for token '${name}'. Continue?`,
+    );
+    if (!confirmed) writeOutput("Reveal cancelled.");
+    return confirmed;
+  };
 
-    const namespace = isCustomDatastoreConfig(datastoreConfig)
-      ? datastoreConfig.namespace
-      : undefined;
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerTokenFromOptions(server, options);
+    if (!(await confirmReveal())) return;
+    const response = await requestNewerServerResponse<
+      AccessTokenRevealResponse
+    >(
+      "revealing a token",
+      { server, token },
+      { type: "access.token.reveal", payload: { name } },
+    );
+    renderServerTokenReveal(
+      response.data as unknown as ServerTokenRevealData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
 
-    await initializeControlPlaneVaultForCli(repoDir, syncService, {
-      namespace,
-      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+  const { repoDir, repoContext, datastoreConfig, syncService, vaultsDir } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
     });
 
-    const vaultService = await VaultService.fromRepository(repoDir, {
-      vaultsDir,
-    });
-    const deps = createServerTokenRevealDeps(
-      repoContext.dataQueryService,
-      vaultService,
-    );
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
 
-    const skipConfirm = !!(options.yes || options.force);
-    if (cliCtx.outputMode === "log" && !skipConfirm) {
-      const confirmed = await promptConfirmation(
-        `This will reveal the secret for token '${name}'. Continue?`,
-      );
-      if (!confirmed) {
-        writeOutput("Reveal cancelled.");
-        return;
-      }
-    }
-
-    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
-    let data: ServerTokenRevealData | undefined;
-    await consumeStream(
-      serverTokenReveal(libCtx, deps, name),
-      withDefaults<ServerTokenRevealEvent>({
-        completed: (event) => {
-          data = event.data;
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
-    );
-    if (data === undefined) {
-      throw new UserError(
-        `Revealing token '${name}' ended without completing`,
-      );
-    }
-
-    renderServerTokenReveal(data, cliCtx.outputMode);
-
-    cliCtx.logger.debug("Server token reveal command completed");
+  await initializeControlPlaneVaultForCli(repoDir, syncService, {
+    namespace,
+    catalogInvalidate: () => repoContext.catalogStore.invalidate(),
   });
+
+  const vaultService = await VaultService.fromRepository(repoDir, {
+    vaultsDir,
+  });
+  const deps = createServerTokenRevealDeps(
+    repoContext.dataQueryService,
+    vaultService,
+  );
+
+  if (!(await confirmReveal())) return;
+
+  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  let data: ServerTokenRevealData | undefined;
+  await consumeStream(
+    serverTokenReveal(libCtx, deps, name),
+    withDefaults<ServerTokenRevealEvent>({
+      completed: (event) => {
+        data = event.data;
+      },
+      error: (event) => {
+        throw new UserError(event.error.message);
+      },
+    }),
+  );
+  if (data === undefined) {
+    throw new UserError(
+      `Revealing token '${name}' ended without completing`,
+    );
+  }
+
+  renderServerTokenReveal(data, cliCtx.outputMode);
+
+  cliCtx.logger.debug("Server token reveal command completed");
+});

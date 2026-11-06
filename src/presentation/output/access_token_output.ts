@@ -69,6 +69,7 @@ function colorTokenState(state: string): string {
 export function renderServerTokenCreate(
   data: ServerTokenCreateData,
   mode: OutputMode,
+  commandTarget = "",
 ): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
@@ -83,7 +84,7 @@ export function renderServerTokenCreate(
     }`,
     "",
     `Retrieve the token with: ${
-      bold(`swamp access token reveal ${data.name} --yes`)
+      bold(`swamp access token reveal ${data.name}${commandTarget} --yes`)
     }`,
   ];
   writeOutput(lines.join("\n"));
@@ -145,6 +146,7 @@ export function renderServerTokenRevoke(
 export function renderServerTokenRotate(
   data: ServerTokenRotateData,
   mode: OutputMode,
+  commandTarget = "",
 ): void {
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
@@ -159,7 +161,7 @@ export function renderServerTokenRotate(
     }`,
     "",
     `Retrieve the new token with: ${
-      bold(`swamp access token reveal ${data.name} --yes`)
+      bold(`swamp access token reveal ${data.name}${commandTarget} --yes`)
     }`,
   ];
   writeOutput(lines.join("\n"));

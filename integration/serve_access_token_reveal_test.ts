@@ -310,7 +310,7 @@ Deno.test("access.token.reveal: an admin reveals a rotated token through serve, 
   });
 });
 
-Deno.test("access.token.reveal: a caller without admin on access is forbidden and sees no secret", async () => {
+Deno.test("access.token.reveal: a caller without admin on access is refused and sees no secret", async () => {
   await withTokenRepo(async (repo) => {
     await repo.mint("member-token", "user:member");
     const secret = await secretOf(repo.repoDir, "member-token");
@@ -319,7 +319,7 @@ Deno.test("access.token.reveal: a caller without admin on access is forbidden an
 
     assertEquals(frames.length, 1, JSON.stringify(frames));
     assertEquals(frames[0].type, "error");
-    assertEquals(frames[0].error?.code, "forbidden");
+    assertEquals(frames[0].error?.code, "unauthorized");
     assert(!JSON.stringify(frames).includes(secret));
   });
 });

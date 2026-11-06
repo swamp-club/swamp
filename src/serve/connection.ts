@@ -164,6 +164,7 @@ import {
   handleAccessReload,
   handleAccessTokenList,
   handleAccessTokenMint,
+  handleAccessTokenReveal,
   handleAccessTokenRevoke,
   handleAccessTokenRotate,
   withServerTokenWriteLock,
@@ -1271,6 +1272,14 @@ const AccessTokenMintRequestSchema = z.object({
   }),
 });
 
+const AccessTokenRevealRequestSchema = z.object({
+  type: z.literal("access.token.reveal"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+  }),
+});
+
 const ModelEditRequestSchema = z.object({
   type: z.literal("model.edit"),
   id: z.string().min(1).max(256),
@@ -1632,6 +1641,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AccessTokenRevokeRequestSchema,
   AccessTokenRotateRequestSchema,
   AccessTokenMintRequestSchema,
+  AccessTokenRevealRequestSchema,
   ModelEditRequestSchema,
   ModelTypeDescribeRequestSchema,
   ModelTypeSearchRequestSchema,
@@ -3949,6 +3959,19 @@ export function handleMessage(
           )
         ),
         auditOpts("access", "access", request.payload.name),
+      );
+      break;
+    case "access.token.reveal":
+      task = audited(
+        handleAccessTokenReveal(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "access", request.payload.name),
       );
       break;
     case "model.edit":
