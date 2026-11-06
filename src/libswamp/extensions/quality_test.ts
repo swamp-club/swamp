@@ -524,7 +524,7 @@ Deno.test("extensionQuality: a listing over the registry's model limit is a regi
         ) => w.ruleId === "registry-listing-limit");
         assertEquals(findings.length, 1, run);
         assertEquals(findings[0].file, "(extension)", run);
-        assertStringIncludes(findings[0].message, "at most 50 models");
+        assertStringIncludes(findings[0].message, "at most 50 behaviors");
         assertEquals(data.cacheHit, run === "cache hit", run);
       }
     },

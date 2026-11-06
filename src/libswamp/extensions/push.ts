@@ -1955,15 +1955,19 @@ async function readUnlessSymlink(file: string): Promise<string | undefined> {
   }
 }
 
-export function registryListingLimitMessage(
-  breach: ListingLimitBreach,
-): string {
+const LISTING_LIST_LABELS: Readonly<Record<string, string>> = {
+  models: "behaviors",
+  extensions: "model extensions",
+  globalArguments: "global arguments",
+  configFields: "config fields",
+};
+
+function registryListingLimitMessage(breach: ListingLimitBreach): string {
+  const list = LISTING_LIST_LABELS[breach.list] ?? breach.list;
   const where = breach.owner ? ` for ${breach.owner}` : "";
-  return `The registry lists at most ${breach.limit} ${breach.list}${where}; ` +
-    `this push sends ${breach.count}. Over any limit the registry discards ` +
-    "the whole listing and falls back to reading the archive, which can " +
-    "leave the published page listing no behaviors, methods or arguments, " +
-    "although the extension still installs and runs.";
+  return `The registry lists at most ${breach.limit} ${list}${where}; this ` +
+    `extension has ${breach.count}, so its page can list none of its ` +
+    "behaviors, methods or arguments.";
 }
 
 /**
@@ -2100,8 +2104,7 @@ export async function runQualityFindings(
     }
   }
 
-  // the registry rejects the whole listing on any breach, so the published page
-  // would list nothing; one finding per over-limit list.
+  // the registry discards the whole listing on any breach
   for (
     const breach of contentMetadata
       ? registryListingLimitBreaches(contentMetadata)

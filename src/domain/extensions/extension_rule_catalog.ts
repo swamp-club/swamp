@@ -189,7 +189,7 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     scope: "extension",
     acceptable: false,
     remediation:
-      "Split the extension into several, each under the limit (for example one extension per API domain, @acme/thing/<domain>), or fold related methods into fewer behaviors.",
+      "Over any limit the registry discards the whole listing, though the extension still installs and runs. Split it into several extensions, each under the limit (for example one per API domain, @acme/thing/<domain>), or fold related methods into fewer behaviors.",
   },
   // acceptable: an author targeting only current releases may acknowledge that
   // older clients and workers cannot load the extension

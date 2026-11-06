@@ -2982,21 +2982,30 @@ Deno.test("extensionPushPrepare: an acceptance for uncatalogued-model is invalid
   });
 });
 
-function listingModel(i: number, methodCount = 1, argCount = 0) {
+function listingArguments(count: number) {
+  return Array.from({ length: count }, (_, k) => ({
+    name: `a${k}`,
+    type: "string",
+    description: "",
+    required: false,
+  }));
+}
+
+function listingModel(
+  i: number,
+  methodCount = 1,
+  argCount = 0,
+  globalArgCount = 0,
+) {
   return {
     fileName: `m${i}.ts`,
     type: `@testuser/test-ext/m${i}`,
     version: "2026.09.25.1",
-    globalArguments: [],
+    globalArguments: listingArguments(globalArgCount),
     methods: Array.from({ length: methodCount }, (_, j) => ({
       name: j === 0 ? "run" : `run${j}`,
       description: "",
-      arguments: Array.from({ length: argCount }, (_, k) => ({
-        name: `a${k}`,
-        type: "string",
-        description: "",
-        required: false,
-      })),
+      arguments: listingArguments(argCount),
     })),
     resources: [],
     files: [],
@@ -3037,17 +3046,18 @@ Deno.test("extensionPushPrepare: a listing over the registry's model limit is on
       assertEquals(findings[0].file, "(extension)");
       assertEquals(findings[0].line, undefined);
       assertEquals(findings[0].dimension, "Registry catalog");
-      assertStringIncludes(
+      assertEquals(
         findings[0].message,
-        "The registry lists at most 50 models; this push sends 51.",
+        "The registry lists at most 50 behaviors; this extension has 51, so " +
+          "its page can list none of its behaviors, methods or arguments.",
       );
       assertStringIncludes(
-        findings[0].message,
+        findings[0].remediation ?? "",
         "the extension still installs and runs",
       );
       assertStringIncludes(
         findings[0].remediation ?? "",
-        "Split the extension",
+        "Split it into several",
       );
       assertEquals(result.reviewRulesResult.errors, []);
     },
@@ -3069,7 +3079,28 @@ Deno.test("extensionPushPrepare: a method over the argument limit names the meth
       assertEquals(messages.length, 1);
       assertStringIncludes(
         messages[0],
-        "at most 30 arguments for method run of behavior @testuser/test-ext/m7 (m7.ts); this push sends 31.",
+        "at most 30 arguments for method run of behavior @testuser/test-ext/m7 (m7.ts); this extension has 31,",
+      );
+    },
+  );
+});
+
+Deno.test("extensionPushPrepare: a registry-listing-limit message names a camelCase list in words", async () => {
+  await withAcceptanceFixture(
+    { "models/a.ts": "export {};\n" },
+    async (dir, paths) => {
+      const result = await extensionPushPrepare(
+        ctx,
+        listingDeps([listingModel(3, 1, 0, 31)]),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      );
+      const messages = result.reviewRulesResult.warnings
+        .filter((w) => w.ruleId === "registry-listing-limit")
+        .map((w) => w.message);
+      assertEquals(messages.length, 1);
+      assertStringIncludes(
+        messages[0],
+        "at most 30 global arguments for behavior @testuser/test-ext/m3 (m3.ts)",
       );
     },
   );

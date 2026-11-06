@@ -269,13 +269,22 @@ Deno.test("registryListingLimitBreaches: nested workflow, vault, datastore, repo
     fileName: "ext.ts",
     extendsType: "@acme/thing",
     methods: methods(51),
-    resources: [],
+    resources: Array.from(
+      { length: REGISTRY_LISTING_LIMITS.resourcesPerModel + 1 },
+      (_, i) => ({ key: `r${i}`, description: "", lifetime: "" }),
+    ),
   }];
   assertEquals(registryListingLimitBreaches(metadata), [
     {
       list: "methods",
       limit: 50,
       count: 51,
+      owner: "extension of @acme/thing (ext.ts)",
+    },
+    {
+      list: "resources",
+      limit: 100,
+      count: 101,
       owner: "extension of @acme/thing (ext.ts)",
     },
     {

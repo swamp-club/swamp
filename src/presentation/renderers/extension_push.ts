@@ -613,8 +613,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         if (options?.report) {
           renderFindingsReport(this.logger, options.report, this.reportPaths());
         }
-        // last, so a problem with what was just published is the final word
-        // rather than a footnote between the counts and the local findings
+        // last, so a registry problem is the final word
         if (e.data.registryWarnings) {
           const { messages, omitted } = e.data.registryWarnings;
           const total = messages.length + omitted;
@@ -626,8 +625,10 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
             this.textBlock("warn", message, "  ");
           }
           if (omitted > 0) {
-            const noun = omitted === 1 ? "warning" : "warnings";
-            this.logger.warn(`  ${omitted} more registry ${noun} omitted`);
+            const omittedNoun = omitted === 1 ? "warning" : "warnings";
+            this.logger.warn(
+              `  ${omitted} more registry ${omittedNoun} omitted`,
+            );
           }
         }
       },
