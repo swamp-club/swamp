@@ -1256,16 +1256,35 @@ const completedWithRegistryWarnings = {
   },
 } satisfies ExtensionPushEvent;
 
-Deno.test("extensionPushRenderer: log completed summary prints registry warnings after the counts, braces verbatim", async () => {
+Deno.test("extensionPushRenderer: log completed summary prints registry warnings after the counts with their total, braces verbatim", async () => {
   const renderer = createExtensionPushRenderer("log");
   const logs = await capture(() =>
     renderer.handlers().completed(completedWithRegistryWarnings)
   );
-  const header = logs.findIndex((l) => l.includes("Registry warnings:"));
+  const header = logs.findIndex((l) =>
+    l.includes("Pushed, but the registry reported 2 warnings:")
+  );
   assert(header > logs.findIndex((l) => l.includes("Bundles: 1")));
   assertStringIncludes(logs[header + 1], `  ${registryWarning}`);
   assertStringIncludes(logs[header + 2], "  two");
   assertEquals(logs.some((l) => l.includes("omitted")), false);
+});
+
+Deno.test("extensionPushRenderer: log completed summary prints registry warnings last, after the accepted warnings", async () => {
+  const renderer = createExtensionPushRenderer("log");
+  const logs = await capture(() =>
+    renderer.handlers({ accepted: { warnings: accepted, waivedBy: "--yes" } })
+      .completed(completedWithRegistryWarnings)
+  );
+  const acceptedAt = logs.findIndex((l) =>
+    l.includes("Accepted 2 warnings with --yes:")
+  );
+  const registryAt = logs.findIndex((l) =>
+    l.includes("Pushed, but the registry reported 2 warnings:")
+  );
+  assert(acceptedAt >= 0);
+  assert(registryAt > acceptedAt);
+  assertStringIncludes(logs[logs.length - 1], "  two");
 });
 
 for (
@@ -1285,7 +1304,9 @@ for (
         },
       })
     );
-    const header = logs.findIndex((l) => l.includes("Registry warnings:"));
+    const header = logs.findIndex((l) =>
+      l.includes(`the registry reported ${1 + omitted} warnings:`)
+    );
     assertStringIncludes(logs[header + 1], "  one");
     assertStringIncludes(logs[header + 2], line);
   });
@@ -1296,7 +1317,7 @@ Deno.test("extensionPushRenderer: log completed summary says nothing about the r
   const logs = await capture(() =>
     renderer.handlers().completed(completedEvent)
   );
-  assertEquals(logs.some((l) => l.includes("Registry warnings")), false);
+  assertEquals(logs.some((l) => l.includes("the registry reported")), false);
 });
 
 Deno.test("extensionPushRenderer: JSON push carries registry warnings as the registry family, not at the top level", async () => {

@@ -484,6 +484,53 @@ Deno.test("extensionQuality: a model without a literal version is reported as un
   );
 });
 
+Deno.test("extensionQuality: a listing over the registry's model limit is a registry-listing-limit finding on a fresh run and on a cache hit", async () => {
+  await withQualityFixture(
+    UNCATALOGUED_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest);
+      const models = Array.from({ length: 51 }, (_, i) => ({
+        fileName: `m${i}.ts`,
+        type: `@testuser/echo/m${i}`,
+        version: "2026.09.25.1",
+        globalArguments: [],
+        methods: [],
+        resources: [],
+        files: [],
+      }));
+      const deps = makeQualityDeps(cacheRoot, {
+        pushPrepareOverrides: {
+          extractContentMetadata: () =>
+            Promise.resolve({
+              models,
+              extensions: [],
+              workflows: [],
+              vaults: [],
+              datastores: [],
+              reports: [],
+              webhooks: [],
+              skills: [],
+            }),
+        },
+      });
+
+      for (const run of ["fresh", "cache hit"]) {
+        const data = completedData(
+          await collect(extensionQuality(ctx, deps, input)),
+        );
+        const findings = data.findings.reviewRulesResult.warnings.filter((
+          w,
+        ) => w.ruleId === "registry-listing-limit");
+        assertEquals(findings.length, 1, run);
+        assertEquals(findings[0].file, "(extension)", run);
+        assertStringIncludes(findings[0].message, "at most 50 behaviors");
+        assertEquals(data.cacheHit, run === "cache hit", run);
+      }
+    },
+  );
+});
+
 const BARE_IMPORT_MODEL_SOURCE =
   'import { z } from "zod";\nexport const schema = z.string();\n';
 

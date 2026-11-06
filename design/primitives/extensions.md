@@ -221,8 +221,9 @@ when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
 summary at the top level. The `registry` family is what the registry said
 about a push it accepted, such as client `contentMetadata` it discarded in
 favour of its own extraction (swamp-club#2900): one `{ "message": ... }`
-object per warning. Log mode prints it as a `Registry warnings:` block after
-the summary. The API client reduces that text to at most 20 printable single
+object per warning. Log mode prints it last, after the accepted warnings and
+findings report, as a block headed `Pushed, but the registry reported N
+warnings:`. The API client reduces that text to at most 20 printable single
 lines before anything prints it; the number it left out is
 `registryWarningsOmitted` beside the summary, present only when above zero,
 and a closing line of the log block. The family appears only when the confirm
@@ -1964,7 +1965,8 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
 - **One pass, shared** (`runQualityFindings` in
   `src/libswamp/extensions/push.ts`): push runs it at stage 10b and
   `swamp extension quality` on every run including a cache hit. The review
-  rules, the bare-specifier check, the `uncatalogued-model` check and
+  rules, the bare-specifier check, the `uncatalogued-model` and
+  `registry-listing-limit` checks and
   `applyAcceptances` (pure, property-tested: accepted plus remaining is
   exactly the input) produce the
   unaccepted findings the warnings gate counts, the `stale-acceptance`
@@ -1983,6 +1985,15 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   an interactive push, but it changes no extractor and no error gate: the
   extractors stay as they are, since the version-drift and upgrade-chain checks
   read the same version (swamp-club#2486).
+- **Registry listing limits** (`registryListingLimitBreaches` in
+  `src/domain/extensions/registry_listing_limits.ts`): the registry rejects the
+  whole content metadata on the first list over one of its limits and falls
+  back to its own archive extraction, which can list nothing. The module copies
+  those limits from swamp-club and reports every breach;
+  `runQualityFindings` turns each into an extension-scoped
+  `registry-listing-limit` warning. It is not acceptable, so only `--yes` or
+  `--force` waives it, and it warns rather than blocks because the copied limits
+  can drift from the registry's.
 - **Reporting.** The dry-run, completed and quality summaries close with
   `Accepted warnings:` and `Unresolved warnings:` (each warning neither fixed
   nor accepted, with its remediation and one line saying how to accept it).

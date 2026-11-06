@@ -784,9 +784,12 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    replacement is added to the review warnings, prompting the user to confirm
    before push. It cannot be accepted. An `uncatalogued-model` warning is added
    the same way for each behavior entry point the registry catalog would leave
-   out (see "How Content Maps to Manifest"). A `behavior-spelling` warning is
-   added once when the extension uses the behavior spelling (see "Warnings
-   (prompted)").
+   out (see "How Content Maps to Manifest"). A `registry-listing-limit` warning
+   is added for each list over a registry listing limit (more than 50 behaviors,
+   50 methods per behavior, 30 arguments per method, and so on): the registry
+   discards the whole listing on any breach, so the published page can list
+   nothing. A `behavior-spelling` warning is added once when the extension uses
+   the behavior spelling (see "Warnings (prompted)").
 9. **Bundle TypeScript** — compiles each entry point (behaviors, vaults,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
@@ -892,14 +895,18 @@ to use `swamp vault put <vault> <key>` (it prompts) and
 
 The review rules (`credentials-sensitive-field`, `schema-strictness`,
 `testing-completeness`), the extension-scoped `bare-specifiers` and
-`behavior-spelling` findings and the file-scoped `uncatalogued-model` finding
-are warnings too. `bare-specifiers` cannot be accepted: the registry cannot
-score the extension however it is justified, and the fix is to write each
-import's `npm:`/`jsr:` target. `uncatalogued-model` cannot be accepted either:
-it names a behavior entry point the registry catalog would not list (a
-type-annotated or non-object export, or no string-literal `type` or `version` in
-it), and the fix is to write those literals in a plain
-`export const behavior = { ... }` object. `behavior-spelling` can be accepted
+`behavior-spelling` and `registry-listing-limit` findings and the file-scoped
+`uncatalogued-model` finding are warnings too. `bare-specifiers` cannot be
+accepted: the registry cannot score the extension however it is justified, and
+the fix is to write each import's `npm:`/`jsr:` target. `uncatalogued-model`
+cannot be accepted either: it names a behavior entry point the registry catalog
+would not list (a type-annotated or non-object export, or no string-literal
+`type` or `version` in it), and the fix is to write those literals in a plain
+`export const behavior = { ... }` object. `registry-listing-limit` cannot be
+accepted in source or `quality.yaml`, only waived per push with `--yes` or
+`--force`: the extension still installs and runs, but its registry page can list
+no behaviors, methods or arguments. The fix is to split the extension, for
+example one extension per API domain. `behavior-spelling` can be accepted
 (`--yes`, or a `quality.yaml` entry with no `file`): swamp clients and workers
 older than the release that added the behavior spelling cannot load the
 extension. Keep the model spelling when older clients or workers must install
