@@ -135,3 +135,67 @@ Deno.test("renderRepoPrunePreview: shows the plan in the future tense", () => {
   assertStringIncludes(out, "• .claude/settings.local.json edit (claude)");
   assertEquals(out.includes("✓"), false);
 });
+
+const REENROLL_HINT =
+  "⚠ If you still use claude, enroll it with `swamp repo upgrade --tool claude` " +
+  "instead of pruning.";
+const RESTORE_HINT =
+  "⚠ If you still use claude, run `swamp repo upgrade --tool claude` to " +
+  "restore them.";
+
+Deno.test("renderRepoPrunePreview: suggests enrolling claude when no tools are enrolled", () => {
+  const data = makeData({ enrolledTools: [] });
+  const out = captureLog(() =>
+    renderRepoPrunePreview({
+      path: data.path,
+      enrolledTools: [],
+      items: data.pruned,
+      skipped: [],
+      plan: { actions: [], skipped: [] },
+    })
+  );
+  assertStringIncludes(out, REENROLL_HINT);
+});
+
+Deno.test("createRepoPruneRenderer: a dry run with no tools enrolled suggests enrolling claude", () => {
+  const out = render("log", makeData({ enrolledTools: [], dryRun: true }));
+  assertStringIncludes(out, REENROLL_HINT);
+});
+
+Deno.test("createRepoPruneRenderer: a prune with no tools enrolled says how to restore claude", () => {
+  const out = render("log", makeData({ enrolledTools: [] }));
+  assertStringIncludes(out, RESTORE_HINT);
+});
+
+Deno.test("createRepoPruneRenderer: no enroll hint when a tool is enrolled", () => {
+  const out = render("log", makeData({ dryRun: true }));
+  assertEquals(out.includes("If you still use"), false);
+});
+
+Deno.test("createRepoPruneRenderer: no enroll hint when only a non-default tool is pruned", () => {
+  const out = render(
+    "log",
+    makeData({
+      enrolledTools: [],
+      dryRun: true,
+      pruned: [{
+        tool: "kiro",
+        path: ".kiro/agents/swamp.json",
+        action: "delete",
+        removed: [],
+      }],
+    }),
+  );
+  assertEquals(out.includes("If you still use"), false);
+});
+
+Deno.test("createRepoPruneRenderer: no enroll hint when nothing is prunable", () => {
+  const out = render("log", makeData({ enrolledTools: [], pruned: [] }));
+  assertStringIncludes(out, "No swamp settings to prune");
+  assertEquals(out.includes("If you still use"), false);
+});
+
+Deno.test("createRepoPruneRenderer: json mode adds no hint", () => {
+  const data = makeData({ enrolledTools: [], dryRun: true });
+  assertEquals(JSON.parse(render("json", data)), data);
+});
