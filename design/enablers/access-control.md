@@ -809,9 +809,8 @@ workflow, and a conditioned deny such as
 only the named workflows.
 
 A deny whose condition cannot be evaluated (for example a `tags.<key>` the
-workflow does not have) withholds the default: the run is refused rather than
-allowed, so a broken restriction fails closed. Write tag conditions defensively,
-e.g. `!("trigger" in tags) || tags.trigger != "webhook"`. In a mixed-version
+workflow does not have) refuses, so a broken restriction fails closed. Write tag
+conditions defensively, e.g. `!("trigger" in tags) || tags.trigger != "webhook"`. In a mixed-version
 fleet, instances older than the service principal skip `service:` grants when
 loading policy; they also do not authorize trigger runs.
 
@@ -912,9 +911,9 @@ does not parse) has no `run` at all, so a deny needing it refuses and an allow
 needing it does not match. A grant naming `run` on any other action is refused
 when written, because no other decision can supply it, including `[run]` and
 `[approve, read]`. So is a path `run` does not have, such as
-`run.initiatr.sub`: at run time it would error, and a deny that errors does not
-fire. A stored grant that reaches a node anyway warns at load and
-decides by the rule above.
+`run.initiatr.sub`, and a condition whose types cannot evaluate (see below). A
+stored grant that reaches a node anyway warns at load and decides by the rules
+here.
 
 **Missing fields fail closed** (swamp-club#2675). Serve authorizes every
 resource with all of its resource fields — `tags` is `{}` and `ns` is `""` when
@@ -922,13 +921,67 @@ the resource has none, and `name` is always the resource name. A condition that
 references a resource field the resource does not carry cannot be evaluated: a
 deny that needs it refuses, and an allow that needs it does not match. The check
 is structural — the fields a condition references are read from its parsed
-expression — never inferred from an error message. A condition that reads a tag
-the resource does not have (`tags.env` on a resource with no `env` tag) is a
-different case: the resource carries its tags, so the condition decides nothing
-and other grants decide, as described above; guard such conditions with `in`.
+expression — never inferred from an error message.
+
+**A condition that errors fails closed.** Authorization does not read an error as
+no match: a deny whose condition errors at decision time refuses, whatever allow
+applies, and an allow whose condition errors does not match, so it grants
+nothing. `access check` and `access can-i` report the same. An unmatched request
+can still reach the admin fallback.
+
+This covers reading a tag the resource does not have. A deny on `tags.env ==
+"prod"` refuses `prod` resources and every resource with no `env` tag, in reads
+and listings too. A resource being created has no tags, so such a deny on `write`
+refuses creating one. A vault request is decided as a data resource with no tags,
+so such a data deny also refuses that subject's vault requests, `vault.search`
+included. To apply a deny only to resources carrying the tag, guard it: `"env" in
+tags && tags.env == "prod"`, or `has(tags.env) && ...`.
+
 A check on a resource kind as a whole (`kindResource`: type and schema
 endpoints, extensions, datastores) touches no resource, so a condition on
-resource fields decides nothing there either.
+resource fields decides nothing there; it is not an error.
+
+**Types are checked when a condition is written.** A condition is checked against
+declared types, without evaluating it, so a part a decision would skip is checked
+too: `run.initiator.kind`, `.id` and `.sub`, `principal.sub`, `client` and tag
+values are strings, `run.serveDriven` is a bool, and `principal.groups` and
+`principal.collectives` are lists of strings. `principal.email` is never supplied.
+A condition fails the check if its types cannot evaluate, or if it gives anything
+but true or false. One naming `run` or `client` also fails on `dyn()`, and on
+converting a `run` or `client` value with `int`, `uint`, `double`, `bool`,
+`timestamp` or `duration`.
+
+| Where the condition is                     | Names `run` or `client`                               | Names neither                                |
+| ------------------------------------------ | ----------------------------------------------------- | -------------------------------------------- |
+| `access grant create`, `@swamp/grant` create | Refused                                               | Refused                                      |
+| Grant file                                 | Refused: the whole file, as any grant file error      | Warning from `serve check-config`; it loads  |
+| Stored grant                               | Warning when serve loads it; decides as evaluated     | Warning when serve loads it; decides as evaluated |
+
+A stored grant is never rewritten or dropped. The warning appears once per grant
+per serve process, and again after a restart or when the grant changes, in the
+serve log only. Fix a grant written by a method by revoking it and writing it
+again, and one from a file by editing the file. A deny reading a tag with no guard
+warns at `access grant create`, from `serve check-config` for a grant file, and
+when serve loads it, and is never refused for that. That warning looks for
+an `in` or `has` on the same tag anywhere in the condition, so it does not prove
+the guard is in the right place.
+
+The check cannot catch everything, and a condition that passes is not proven to
+decide as intended:
+
+- A wrong-typed stored condition can evaluate to false rather than erroring, such
+  as a comparison of different types. As a deny it never fires, and `access check`
+  reports allow with no mention of it. The load warning is the only signal.
+- Failures that depend on values still pass, and refuse at decision time as a
+  deny: a division by zero, an index out of range, a converted tag, a value
+  converted after `cel.bind` renamed it, or a tag no guard covers.
+- A comparison of `run.initiator` with a map type-checks, and matches only a map
+  holding all three of its keys.
+- An admin's direct commit of a grant record to the datastore, such as from an
+  older CLI, is not validated when it lands. The load warning reports it.
+
+Check what a condition does on a real resource with `access check` before relying
+on it.
 
 Each request has an **aggregate condition budget** of 100 CEL evaluations. If it
 runs out, the request is denied whatever grants remain.
@@ -996,6 +1049,27 @@ load such an entry from a grant file. Approve is decided on the leader, so an
 older leader misses self-approval; reads are decided where they arrive, so an
 older follower misses client denies on reads. Do not downgrade while such a grant
 exists.
+
+Failing closed on a condition that errors takes effect per instance, so a mixed
+fleet decides differently until every instance is upgraded: an older one skips the
+deny, a newer one refuses. Before upgrading, run `swamp serve check-config` with
+the new binary, since a grant file holding a refused condition stops serve
+starting. Review deny grants that read a tag and guard any that should not apply
+to untagged resources. A stored grant's warnings appear only once a new instance
+has loaded it, so `access grant list` is the way to find them beforehand. An older
+CLI and an older serve together still accept what this release refuses, so upgrade
+serve before relying on the refusal.
+
+Review stored denies on `admin` too. One whose condition always errors, such as one
+reading `principal.email`, did nothing before and now refuses its subjects `admin`,
+including the access to revoke it. If those subjects hold every admin, nobody can
+revoke it through serve, so fix it before upgrading.
+
+The read-access fingerprint changes with this rule, so a member's local copy of a
+serve datastore resets once on the first command after the upgrade, and copies
+filtered under the old rule do not keep what a deny now refuses. While instances of
+both versions answer, the fingerprint differs between them; the reset cooldown
+limits how often a copy rebuilds.
 
 Implementation: `withRunCondition` and `withRunPending` in
 `src/domain/access/access_resources.ts`, `AccessResource.pending` in

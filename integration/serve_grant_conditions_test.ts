@@ -342,6 +342,53 @@ Deno.test("grant conditions: serveDriven lets an operator refuse a member-driven
   });
 });
 
+Deno.test("grant conditions: a stored deny that errors now refuses the approval, an allow alongside it notwithstanding", async () => {
+  await withServeRepo(async (repo) => {
+    const workflow = await saveGatedWorkflow(repo, "deploy", "gate");
+    const run = await suspendedRun(repo, workflow, {
+      initiatedBy: "user:alice",
+      instanceId: "instance-1",
+    });
+    const ctx = createServeCtx(repo, [
+      onWorkflows("alice"),
+      onWorkflows("alice", {
+        id: "stored-deny",
+        effect: "deny",
+        actions: ["approve"],
+        condition: "!run.initiator.sub",
+      }),
+    ]);
+    assertEquals(
+      refusal(await decide(ctx, "workflow.approve", workflow, run.id, ALICE)),
+      "unauthorized",
+    );
+    assertEquals(await gateStatus(repo, workflow, run.id), "waiting_approval");
+  });
+});
+
+Deno.test("grant conditions: a stored wrong-typed deny that evaluates false decides as it did", async () => {
+  await withServeRepo(async (repo) => {
+    const workflow = await saveGatedWorkflow(repo, "deploy", "gate");
+    const run = await suspendedRun(repo, workflow, {
+      initiatedBy: "user:alice",
+      instanceId: "instance-1",
+    });
+    const ctx = createServeCtx(repo, [
+      onWorkflows("alice"),
+      onWorkflows("alice", {
+        id: "stored-deny",
+        effect: "deny",
+        actions: ["approve"],
+        condition: 'run.serveDriven == "false"',
+      }),
+    ]);
+    assertEquals(
+      refusal(await decide(ctx, "workflow.approve", workflow, run.id, ALICE)),
+      undefined,
+    );
+  });
+});
+
 Deno.test("grant conditions: the approvals list says per run who may decide, with a reason only for a run-level refusal", async () => {
   await withServeRepo(async (repo) => {
     const workflow = await saveGatedWorkflow(repo, "deploy", "gate");

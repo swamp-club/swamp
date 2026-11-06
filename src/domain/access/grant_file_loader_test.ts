@@ -123,6 +123,37 @@ Deno.test("readServeGrantFiles: a grants-dir that is the repository grants/ is r
   });
 });
 
+Deno.test("checkServeGrantFiles: a refused run condition is an error; an older one and an unguarded tag deny are warnings", async () => {
+  await withTempDir(async (repoDir) => {
+    await ensureDir(join(repoDir, "grants"));
+    await Deno.writeTextFile(
+      join(repoDir, "grants", "conditions.yaml"),
+      `grants:
+  - subject: "user:a"
+    effect: deny
+    actions: [approve]
+    resource: "workflow:*"
+    condition: "!run.initiator.sub"
+  - subject: "user:b"
+    effect: deny
+    actions: [read]
+    resource: "workflow:*"
+    condition: "principal.sub > 1"
+  - subject: "user:c"
+    effect: deny
+    actions: [read]
+    resource: "workflow:*"
+    condition: 'tags.env == "prod"'
+`,
+    );
+    const { errors, warnings } = checkServeGrantFiles(
+      await readServeGrantFiles(repoDir, OPTIONS),
+    );
+    assertEquals(errors.map((e) => e.entry), [1]);
+    assertEquals(warnings.map((w) => w.entry), [2, 3]);
+  });
+});
+
 Deno.test("checkServeGrantFiles: an invalid entry is an error, a misspelled type a warning", async () => {
   await withTempDir(async (repoDir) => {
     await ensureDir(join(repoDir, "grants"));

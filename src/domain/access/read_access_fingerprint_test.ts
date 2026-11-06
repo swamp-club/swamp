@@ -71,6 +71,18 @@ Deno.test("readAccessFingerprint: is a hex SHA-256 digest", () => {
   assertMatch(fingerprintOf([READ_DATA]), /^[0-9a-f]{64}$/);
 });
 
+Deno.test("readAccessFingerprint: is pinned, so a change to how the same inputs decide must bump the format", () => {
+  assertEquals(
+    readAccessFingerprint(
+      { principal: { kind: "user", id: "adam" }, collectives: [], groups: [] },
+      [],
+      [],
+      [],
+    ),
+    "379220434c2d47fd758f02bb3d6339abcfc655f4d04ae586130c81e825eeb8e7",
+  );
+});
+
 Deno.test("readAccessFingerprint: ignores grant order and metadata", () => {
   const other = makeGrant({
     id: "g-other",

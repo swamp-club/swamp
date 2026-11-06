@@ -20,9 +20,240 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   MAX_AST_DEPTH,
+  MAX_CONDITION_LENGTH,
+  readConditionFindings,
   readConditionTypeLiterals,
   validateGrantCondition,
 } from "./grant_condition_environment.ts";
+
+const EFFECTS = ["allow", "deny"] as const;
+
+for (const effect of EFFECTS) {
+  for (
+    const condition of [
+      "!run.initiator.sub",
+      'run.serveDriven == "false"',
+      "run.initiator.sub > 1",
+      'principal.sub == "x" && !run.initiator.sub',
+      'principal.sub == "x" || !run.initiator.sub',
+      "false && !run.initiator.sub",
+      'run.initiator == "alice"',
+      'run.initiator in ["a"]',
+      "run.initiator != null",
+      "run.initiator.sub == null",
+      'run.serveDriven in ["a"]',
+      "run.initiator.sub ? true : false",
+      "size(run.serveDriven) > 0",
+      'run.serveDriven.startsWith("a")',
+      'run.initiator.sub + 1 == "a"',
+      "[run.initiator.sub].exists(x, x > 1)",
+      "cel.bind(x, run.initiator.sub, !x)",
+      "run.initiator.sub",
+      "run.initiator",
+      'run.serveDriven ? "a" : "b"',
+      "dyn(run.initiator.sub) > 1",
+      "!dyn(run.initiator.sub)",
+      "int(run.initiator.sub) > 1",
+      'timestamp(run.initiator.sub) > timestamp("2020-01-01T00:00:00Z")',
+      "tags.env > 1 && run.serveDriven",
+      "principal.sub > 1 && run.serveDriven",
+      'principal.email == "a" && run.serveDriven',
+    ]
+  ) {
+    Deno.test(`validateGrantCondition: refuses on a ${effect}, naming run: ${condition}`, () => {
+      const result = validateGrantCondition(condition, "workflow", {
+        actions: ["approve"],
+        effect,
+      });
+      assertEquals(result.valid, false);
+      assertStringIncludes(result.error!, "Condition");
+    });
+  }
+
+  for (
+    const condition of [
+      "dyn(client) > 1",
+      "client",
+      'client == "direct:" && principal.sub > 1',
+      'client == "direct:" && tags.env > 1',
+      "int(client) > 1",
+    ]
+  ) {
+    Deno.test(`validateGrantCondition: refuses on a ${effect}, naming client: ${condition}`, () => {
+      const result = validateGrantCondition(condition, "workflow", {
+        actions: ["read"],
+        effect,
+      });
+      assertEquals(result.valid, false);
+    });
+  }
+
+  for (
+    const condition of [
+      "principal.sub == run.initiator.sub",
+      "run.serveDriven",
+      "!run.serveDriven",
+      "run.serveDriven == true",
+      "principal.sub == run.initiator.sub || !run.serveDriven",
+      'run.initiator.kind == "user"',
+      'run.initiator.id.startsWith("a")',
+      'run.initiator.sub in ["a", "b"]',
+      "run.initiator.sub in principal.groups",
+      "has(run.initiator.sub)",
+      '"sub" in run.initiator',
+      "size(run.initiator) > 0",
+      "size(run.initiator.sub) > 0",
+      "run.serveDriven ? true : false",
+      '(run.serveDriven ? run.initiator.sub : run.initiator.id) == "a"',
+      'run.initiator.sub.matches("a")',
+      'run.initiator == {"kind": "user"}',
+      '"env" in tags && tags.env == "a" && run.serveDriven',
+      'int(tags.count) > 5 && run.initiator.kind == "user"',
+      "1 / 0 == 1 && run.serveDriven",
+      "cel.bind(x, run.initiator.sub, int(x) > 1)",
+    ]
+  ) {
+    Deno.test(`validateGrantCondition: accepts on a ${effect}: ${condition}`, () => {
+      const result = validateGrantCondition(condition, "workflow", {
+        actions: ["approve"],
+        effect,
+      });
+      assertEquals(result.error, undefined);
+      assertEquals(result.valid, true);
+    });
+  }
+
+  for (
+    const condition of [
+      "!principal.sub",
+      "principal.sub > 1",
+      "principal.sub == 1",
+      'principal.subb == "a"',
+      'principal.email == "a"',
+      '"a" in principal.sub',
+      'principal.groups == "a"',
+      "principal.sub ? true : false",
+      "!tags.env",
+      "tags.env > 1",
+      "tags.env == 1",
+      "tags.env ? true : false",
+      "tags.exists(k, k > 1)",
+      "name",
+      "tags.env",
+      "principal.sub",
+    ]
+  ) {
+    Deno.test(`validateGrantCondition: a ${effect} on older fields stays valid and warns: ${condition}`, () => {
+      const result = validateGrantCondition(condition, "workflow", {
+        actions: ["read"],
+        effect,
+      });
+      assertEquals(result.valid, true);
+      assertEquals(
+        result.warnings?.some((w) => w.startsWith("Condition")),
+        true,
+      );
+      assertEquals(
+        readConditionFindings(condition, "workflow").typeIssue !== undefined,
+        true,
+      );
+    });
+  }
+}
+
+Deno.test("validateGrantCondition: a variable a macro binds is not the run", () => {
+  assertEquals(
+    validateGrantCondition("[1].exists(run, run > 0)", "workflow", {
+      actions: ["read"],
+      effect: "deny",
+    }),
+    { valid: true },
+  );
+});
+
+Deno.test("validateGrantCondition: existing refusals keep their messages over the type check", () => {
+  assertStringIncludes(
+    validateGrantCondition("!run.initiatr.sub", "workflow", {
+      actions: ["approve"],
+      effect: "deny",
+    }).error!,
+    "which a run does not have",
+  );
+  assertStringIncludes(
+    validateGrantCondition("!run.initiator.sub", "workflow", {
+      actions: ["read"],
+      effect: "deny",
+    }).error!,
+    "names run",
+  );
+});
+
+Deno.test("validateGrantCondition: the refusal says what is wrong and how to fix it", () => {
+  const { error } = validateGrantCondition("!run.initiator.sub", "workflow", {
+    actions: ["approve"],
+    effect: "deny",
+  });
+  assertStringIncludes(error!, "cannot evaluate");
+  assertStringIncludes(error!, "as a deny");
+  assertStringIncludes(error!, "principal.sub == run.initiator.sub");
+});
+
+Deno.test("validateGrantCondition: a deny reading a tag with no guard warns; an allow or a guard does not", () => {
+  const warningsFor = (condition: string, effect: "allow" | "deny") =>
+    validateGrantCondition(condition, "workflow", {
+      actions: ["read"],
+      effect,
+    }).warnings;
+  assertStringIncludes(
+    warningsFor('tags.env == "prod"', "deny")![0],
+    "tags.env without checking the tag exists",
+  );
+  assertStringIncludes(
+    warningsFor('tags["env"] == "prod"', "deny")![0],
+    "tags.env",
+  );
+  assertEquals(warningsFor('tags.env == "prod"', "allow"), undefined);
+  assertEquals(
+    warningsFor('"env" in tags && tags.env == "prod"', "deny"),
+    undefined,
+  );
+  assertEquals(
+    warningsFor('has(tags.env) && tags.env == "prod"', "deny"),
+    undefined,
+  );
+  assertEquals(
+    warningsFor('tags.exists(k, tags[k] == "x")', "deny"),
+    undefined,
+  );
+  assertStringIncludes(
+    warningsFor('"env" in tags && tags.team == "a"', "deny")![0],
+    "tags.team",
+  );
+});
+
+Deno.test("readConditionFindings: reads as nothing for a condition it cannot parse or that is too long", () => {
+  assertEquals(readConditionFindings("tags.env ==", "workflow"), {
+    unguardedTags: [],
+  });
+  assertEquals(
+    readConditionFindings(`"${"a".repeat(MAX_CONDITION_LENGTH)}"`, "workflow"),
+    { unguardedTags: [] },
+  );
+  assertEquals(readConditionFindings('name == "x"', "workflow"), {
+    unguardedTags: [],
+  });
+});
+
+Deno.test("readConditionFindings: names a stored condition that would not be accepted now", () => {
+  assertStringIncludes(
+    readConditionFindings("!run.initiator.sub", "workflow").typeIssue!,
+    "cannot evaluate",
+  );
+  assertEquals(
+    readConditionFindings('tags.env == "x"', "workflow").unguardedTags,
+    ["env"],
+  );
+});
 
 Deno.test("validateGrantCondition: workflow tags condition", () => {
   const result = validateGrantCondition(

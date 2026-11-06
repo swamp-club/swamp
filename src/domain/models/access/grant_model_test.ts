@@ -511,6 +511,50 @@ Deno.test("checkGrantCreateInputs: refuses the run on any action but approve, an
     Error,
     "names run",
   );
+  for (
+    const condition of [
+      "!run.initiator.sub",
+      'run.serveDriven == "false"',
+      "run.initiator.sub > 1",
+      'principal.sub == "x" && !run.initiator.sub',
+    ]
+  ) {
+    for (const effect of ["allow", "deny"] as const) {
+      assertThrows(
+        () =>
+          checkGrantCreateInputs({
+            ...self,
+            effect,
+            actions: ["approve"],
+            condition,
+          }),
+        Error,
+        "Invalid grant condition: Condition",
+      );
+    }
+  }
+  for (
+    const condition of ["principal.sub > 1", "tags.env > 1", "!name == true"]
+  ) {
+    assertThrows(
+      () =>
+        checkGrantCreateInputs({
+          ...VALID_CREATE_ARGS,
+          effect: "deny",
+          condition,
+        }),
+      Error,
+      "Invalid grant condition",
+    );
+  }
+  assertStringIncludes(
+    checkGrantCreateInputs({
+      ...VALID_CREATE_ARGS,
+      effect: "deny",
+      condition: 'tags.env == "prod"',
+    }).warnings[0].message,
+    "without checking the tag exists",
+  );
   assertEquals(
     checkGrantCreateInputs({ ...self, actions: ["approve"] }).warnings,
     [],
