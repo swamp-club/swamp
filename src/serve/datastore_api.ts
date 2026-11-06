@@ -58,8 +58,12 @@ import {
 import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
 import {
   setActiveSpanAttributes,
+  type Span,
+  withRootSpan,
   withSpan,
 } from "../infrastructure/tracing/tracer.ts";
+import { adoptAuthenticatedParent } from "../infrastructure/tracing/adopted_parent.ts";
+import { withHttpServerSpan } from "./http_request_span.ts";
 import type { BlobRef } from "../domain/datastore_v3/blob_ref.ts";
 import { Commit, MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
 import {
@@ -361,12 +365,55 @@ export async function handleDatastoreRequest(
   sourceIp: string,
   deps: DatastoreApiDeps,
 ): Promise<Response> {
-  const authenticated = await authenticateHttpCaller(req, sourceIp, {
-    authMode: deps.ctx.authConfig.mode,
-    authenticate: deps.authenticate,
-    now: deps.now,
-  });
-  if (authenticated instanceof Response) return authenticated;
+  const arrived = performance.timeOrigin + performance.now();
+  // in serve's own trace: the caller's is adopted only once this passes
+  let authSpan: Span | undefined;
+  const authenticated = await withRootSpan(
+    "swamp.serve.datastore.authenticate",
+    {},
+    (span) => {
+      authSpan = span;
+      return authenticateHttpCaller(req, sourceIp, {
+        authMode: deps.ctx.authConfig.mode,
+        authenticate: deps.authenticate,
+        now: deps.now,
+      });
+    },
+  );
+  const authMs = performance.timeOrigin + performance.now() - arrived;
+  const links = authSpan === undefined
+    ? []
+    : [{ context: authSpan.spanContext() }];
+  if (authenticated instanceof Response) {
+    return await withHttpServerSpan(req, () => authenticated, {
+      startTime: arrived,
+      links,
+    });
+  }
+  return await withHttpServerSpan(
+    req,
+    () => {
+      setActiveSpanAttributes({ "swamp.serve.auth_ms": Math.round(authMs) });
+      return answerAuthenticated(req, route, sourceIp, deps, authenticated);
+    },
+    {
+      startTime: arrived,
+      links,
+      // auth mode none authenticates nobody, so no caller picks the trace
+      parent: deps.ctx.authConfig.mode === "none"
+        ? undefined
+        : adoptAuthenticatedParent(req.headers),
+    },
+  );
+}
+
+async function answerAuthenticated(
+  req: Request,
+  route: DatastoreRoute,
+  sourceIp: string,
+  deps: DatastoreApiDeps,
+  authenticated: ApiCaller,
+): Promise<Response> {
   // A follower in team mode passes a write on to the leader with the
   // caller's own credentials (swamp-club#4120), and answers reads only
   // while its copy is fresh (swamp-club#4096); after authentication, so

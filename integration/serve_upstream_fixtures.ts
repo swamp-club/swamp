@@ -147,6 +147,8 @@ export interface ServeOptions {
   readonly grants?: readonly GrantSpec[];
   readonly models?: readonly string[];
   readonly managedConfig?: boolean;
+  /** answers commits.head and commits.subscribe, so a member's feed watch runs */
+  readonly commitFeed?: boolean;
 }
 
 export interface ClientOptions {
@@ -210,6 +212,7 @@ async function startServe(options: ServeOptions): Promise<Serve> {
         grants: options.grants ?? MEMBER,
         models: options.models ?? [],
         managedConfig: options.managedConfig === true,
+        commitFeed: options.commitFeed === true,
       } satisfies ServeWorkerRequest,
     );
     await waitFor(

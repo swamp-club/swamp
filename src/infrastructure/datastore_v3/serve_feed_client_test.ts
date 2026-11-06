@@ -130,3 +130,108 @@ Deno.test("watchServeFeed: a heartbeat with no commits starts no catch-up beyond
     assertEquals(seen.auth, null);
   });
 });
+
+function feedOf(changes: unknown[], cursor: number) {
+  return {
+    type: "commits.subscribe",
+    id: "feed",
+    payload: { changes, cursor, head: cursor, done: false },
+  };
+}
+
+// serve closes the socket after the last frame: once the client sees the
+// close, it has handled every frame before it
+async function catchUpsFor(
+  frames: unknown[],
+  options: {
+    readonly appliedCursor?: () => number;
+    readonly sentHere?: (txnId: string) => boolean;
+  },
+  locals: { count: number } = { count: 0 },
+): Promise<number> {
+  let catchUps = 0;
+  const http = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (event) => {
+        const frame = JSON.parse(String(event.data));
+        if (frame.type === "commits.head") {
+          socket.send(JSON.stringify({
+            type: "commits.head",
+            id: frame.id,
+            payload: { cursor: 41 },
+          }));
+        } else if (frame.type === "commits.subscribe") {
+          for (const f of frames) socket.send(JSON.stringify(f));
+          socket.close(1000, "done");
+        }
+      };
+      return response;
+    },
+  );
+  let closed = false;
+  try {
+    const watch = watchServeFeed({
+      target: {
+        serverUrl: `http://127.0.0.1:${http.addr.port}`,
+        token: undefined,
+        caCerts: undefined,
+        extraHeaders: {},
+      },
+      catchUp: () => {
+        catchUps++;
+        return Promise.resolve();
+      },
+      catchUpLocally: () => {
+        locals.count++;
+        return Promise.resolve();
+      },
+      openSocket: (url, headers) => {
+        const socket = new WebSocket(url, { headers } as unknown as string[]);
+        socket.addEventListener("close", () => closed = true);
+        return socket;
+      },
+      ...options,
+    });
+    try {
+      await waitFor(() => closed, "serve closing the feed");
+    } finally {
+      await watch.stop();
+    }
+  } finally {
+    await http.shutdown();
+  }
+  return catchUps;
+}
+
+const theirs = (cursor: number) =>
+  feedOf([{ cursor, commit: { txnId: "theirs" } }], cursor);
+
+Deno.test("watchServeFeed: a head the copy already applied starts no catch-up; one past it does (swamp-club#4457)", async () => {
+  assertEquals(await catchUpsFor([theirs(42)], { appliedCursor: () => 41 }), 1);
+  assertEquals(await catchUpsFor([theirs(42)], { appliedCursor: () => 40 }), 2);
+});
+
+Deno.test("watchServeFeed: a frame holding only commits this process sent brings up only the read model; one with another writer's catches up from serve (swamp-club#4457)", async () => {
+  const sentHere = (txnId: string) => txnId === "mine";
+  const own = feedOf([{ cursor: 42, commit: { txnId: "mine" } }], 42);
+  const mixed = feedOf([
+    { cursor: 43, commit: { txnId: "mine" } },
+    { cursor: 44, commit: { txnId: "theirs" } },
+  ], 44);
+  const locals = { count: 0 };
+  assertEquals(
+    await catchUpsFor(
+      [own, mixed],
+      { appliedCursor: () => 41, sentHere },
+      locals,
+    ),
+    1,
+  );
+  assertEquals(locals.count, 1);
+  assertEquals(
+    await catchUpsFor([own, theirs(43)], { appliedCursor: () => 41 }),
+    2,
+  );
+});

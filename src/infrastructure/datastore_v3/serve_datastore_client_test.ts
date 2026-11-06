@@ -45,6 +45,7 @@ import {
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
+import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import {
   ChunkHashMismatchError,
   FramedReader,
@@ -121,6 +122,25 @@ Deno.test("ServeDatastoreClient: normalizes the origin and defaults the namespac
   assertEquals(client.namespace, "_default");
   await client.hasChunks(["a".repeat(64)], signal());
   assertEquals(requests[0].url, `${PREFIX}/chunks/has`);
+});
+
+Deno.test("ServeDatastoreClient: names its request span in a traceparent, so serve's spans join the member's trace", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { client, requests } = clientWith(() => Response.json({ held: [] }));
+    await client.hasChunks(["a".repeat(64)], signal());
+    const span = findSpan(spans, "swamp.datastore.v3.serve.request");
+    const context = span.spanContext();
+    assertEquals(
+      requests[0].headers.get("traceparent"),
+      `00-${context.traceId}-${context.spanId}-01`,
+    );
+  });
+});
+
+Deno.test("ServeDatastoreClient: sends no traceparent when nothing is traced", async () => {
+  const { client, requests } = clientWith(() => Response.json({ held: [] }));
+  await client.hasChunks(["a".repeat(64)], signal());
+  assertEquals(requests[0].headers.get("traceparent"), null);
 });
 
 Deno.test("ServeDatastoreClient: sends a bearer token only when it has one, beside the extra headers", async () => {

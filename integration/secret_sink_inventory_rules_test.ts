@@ -330,6 +330,9 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       TOOLING,
     "src/infrastructure/datastore_v3/litestream/litestream_processes.ts: hostLitestreamProcesses":
       TOOLING,
+    "src/infrastructure/telemetry/telemetry_sender_process.ts: launchDetached":
+      "Re-runs swamp as its telemetry sender with a lock token, endpoint and " +
+      "user agent on argv; the repo id, which may be evaluated, goes in its env.",
     "src/infrastructure/datastore_v3/litestream/litestream_restorer.ts: runRestore":
       TOOLING,
     "src/infrastructure/datastore_v3/litestream/replica_snapshot.ts: listLtx":
@@ -419,7 +422,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       VALUE_FREE_STATUS,
     "src/infrastructure/persistence/datastore_sync_coordinator.ts: registerDatastoreSyncNamed":
       VALUE_FREE_STATUS,
-    "src/serve/http_request_span.ts: traceHttpRequests": VALUE_FREE_STATUS,
+    "src/serve/http_request_span.ts: withHttpServerSpan": VALUE_FREE_STATUS,
     "src/serve/sync_gate.ts: runGated": VALUE_FREE_STATUS,
   },
   "file-write": {

@@ -304,6 +304,10 @@ export class TelemetryService {
     }
   }
 
+  async hasUnflushed(): Promise<boolean> {
+    return (await this.repository.findUnflushed(1, this.endpoint)).length > 0;
+  }
+
   async quarantineEntry(entry: TelemetryEntry): Promise<void> {
     await this.repository.quarantine(entry);
   }

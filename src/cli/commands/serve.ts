@@ -144,7 +144,10 @@ import {
 import {
   ControlPlaneDashboardSessionStore,
 } from "../../serve/dashboard_session_store.ts";
-import { traceHttpRequests } from "../../serve/http_request_span.ts";
+import {
+  traceHttpRequests,
+  withHttpServerSpan,
+} from "../../serve/http_request_span.ts";
 import {
   resolveOAuthClientCredentials,
   SECRET_WITHOUT_CLIENT_ID_MESSAGE,
@@ -7121,9 +7124,13 @@ export const serveCommand = new Command()
             "No-auth HTTP API request rejected: {reason} from {ip}",
             { reason: requestTrust.reason, ip: clientAddress() },
           );
-          return new Response(`Forbidden: ${requestTrust.reason}`, {
+          const forbidden = new Response(`Forbidden: ${requestTrust.reason}`, {
             status: 403,
           });
+          // refused before handleDatastoreRequest, which opens a datastore route's span
+          return matchDatastoreRoute(apiUrl.pathname) === undefined
+            ? forbidden
+            : await withHttpServerSpan(req, () => forbidden);
         }
 
         const datastoreRoute = matchDatastoreRoute(apiUrl.pathname);

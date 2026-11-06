@@ -574,6 +574,8 @@ export interface V3Datastore {
   ): Promise<void>;
   /** the read model alone, for a copy just caught up with catchUpForWrite */
   catchUpReadModel?(signal?: AbortSignal): Promise<void>;
+  serveFeedCursor?(): number;
+  sentToServe?(txnId: string): boolean;
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   readonly offlineFlushPort?: OfflineFlushPort;
   readonly serveCopyId?: string;
@@ -670,6 +672,8 @@ interface CheckoutUnits {
 }
 
 const checkoutUnits = new Map<string, CheckoutUnits>();
+
+const MAX_FORWARDED_REMEMBERED = 4096;
 
 /**
  * a sweep runs only under the writer lease, so a writer that may overlap one is
@@ -1077,10 +1081,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const faultedSink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
   // noted before it is sent: serve's feed can bring the commit to a catch-up
   // before its reply does. One that never lands never comes back in the feed
+  const forwarded = new Set<string>();
   const sink: OutboxCommitSink = serveSink === undefined ? faultedSink : {
     ...faultedSink,
     append: (commit) => {
       units.sent.add(commit.txnId);
+      forwarded.add(commit.txnId);
+      // a long-lived process keeps only its recent sends
+      if (forwarded.size > MAX_FORWARDED_REMEMBERED) {
+        forwarded.delete(forwarded.values().next().value!);
+      }
       return faultedSink.append(commit);
     },
   };
@@ -1249,7 +1259,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       ? { serveUpstreamStore: serveSink.upstream }
       : {}),
     ...(offlineFlushPort !== undefined ? { offlineFlushPort } : {}),
-    ...(serveState !== undefined ? { serveCopyId: serveState.copyId() } : {}),
+    ...(serveState !== undefined
+      ? {
+        serveCopyId: serveState.copyId(),
+        serveFeedCursor: () => serveState.feedCursor(),
+        sentToServe: (txnId: string) => forwarded.has(txnId),
+      }
+      : {}),
     async catchUp(signal) {
       await catchUpFromServe(signal ?? lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>

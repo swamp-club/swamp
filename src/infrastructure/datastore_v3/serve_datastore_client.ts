@@ -48,6 +48,7 @@ import {
   encodeCommitBody,
 } from "./chunk_ingest.ts";
 import { type Span, withSpan } from "../tracing/tracer.ts";
+import { injectTraceContext } from "../tracing/propagation.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import { recordServeClock } from "./serve_offline.ts";
 import {
@@ -1107,6 +1108,9 @@ export class ServeDatastoreClient {
     }
     if (this.#token !== undefined) {
       headers.set("authorization", `Bearer ${this.#token}`);
+    }
+    for (const [name, value] of Object.entries(injectTraceContext())) {
+      headers.set(name, value);
     }
     return headers;
   }

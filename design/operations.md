@@ -11,8 +11,22 @@ something a primitive depends on, move it to `enablers/` and give it an
 `enables:` header.
 
 - **Telemetry**: product telemetry, spooled under the user config dir and sent
-  over HTTP. The CLI flushes once at teardown; `swamp serve` runs its own flush
-  loop (`src/serve/telemetry_flush.ts`). Entries carry an `insert_id` for dedup
+  over HTTP. A command only appends its entry to the spool; when the spool has
+  entries and no sender holds `sender.lock` there, it starts a detached
+  internal sender (`__swamp_telemetry_sender`, spawned as the Litestream
+  supervisor is, `src/infrastructure/telemetry/telemetry_sender_process.ts`)
+  and exits without waiting (swamp-club#4457). The awaited send cost a
+  command up to its 2 s timeout. The sender drains the spool in batches with
+  a timeout per request, records the flush result, cleans the spool, and
+  exits once the spool is empty, a send fails or another sender took the
+  lock; a lock not touched for 60 s was left by a dead sender and is taken
+  over. The repo id reaches the sender through its environment, never argv,
+  since it may be an evaluated value. On Windows a command still sends the
+  spool itself at its end, awaited as before: detached processes there are
+  untested, and switching Windows over needs the live check run on a Windows
+  host (`sendTelemetryAtCommandEnd` in `src/cli/telemetry_end_of_command.ts`).
+  `swamp serve` runs its own flush loop
+  (`src/serve/telemetry_flush.ts`). Entries carry an `insert_id` for dedup
   and are quarantined after a bounded number of retries. `swamp completions`
   records no event: shell rc files run it at every shell start and its scripts
   call it on every Tab press, so it must not wait on the teardown flush.
@@ -51,7 +65,16 @@ something a primitive depends on, move it to `enablers/` and give it an
   (`toRecordedInvocation`); the auth gate reads the resolution as typed.
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
-  `src/infrastructure/tracing/`.
+  `src/infrastructure/tracing/`. A team member's requests to serve's datastore
+  API carry a `traceparent`, and a follower re-sends a forwarded request with
+  its own. Serve opens a datastore request's span once the caller is
+  authenticated, then adopts the caller's trace and parent ids only
+  (`adoptAuthenticatedParent`): the sampled flag is replaced by serve's own
+  root decision from `OTEL_TRACES_SAMPLER`, so a member can neither force nor
+  suppress serve's recording. Authentication runs in its own root span,
+  `swamp.serve.datastore.authenticate`, which the request span links to and
+  whose time it records as `swamp.serve.auth_ms`. A refused or unauthenticated
+  request keeps a root span, as every other HTTP route's does.
   Application execution metrics opt in separately with
   `OTEL_METRICS_EXPORTER=otlp`; see the
   [remote telemetry contract](enablers/remote-execution-telemetry.md) for native
