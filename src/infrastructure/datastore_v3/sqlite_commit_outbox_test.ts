@@ -338,7 +338,8 @@ async function schemaOneOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN state; " +
+    "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state; " +
       "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
       "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
       "DROP TABLE outbox_versions; " +
@@ -367,7 +368,8 @@ async function schemaTwoOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN state; " +
+    "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state; " +
       "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
       "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
       "DROP TABLE outbox_versions; " +
@@ -864,7 +866,8 @@ Deno.test("SqliteCommitOutbox: a schema 5 outbox migrates to 6, its entries pend
     await outbox.close();
     const db = new DatabaseSync(path);
     db.exec(
-      "ALTER TABLE outbox_entries DROP COLUMN state; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+        "ALTER TABLE outbox_entries DROP COLUMN state; " +
         "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
         "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
         "DROP TABLE outbox_versions; " +
@@ -872,12 +875,12 @@ Deno.test("SqliteCommitOutbox: a schema 5 outbox migrates to 6, its entries pend
         "PRAGMA user_version=5",
     );
     db.close();
-    assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 6);
+    assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 7);
     const migrated = new SqliteCommitOutbox(path);
     try {
       const { entries } = await migrated.entries();
       assertEquals(entries.map((entry) => entry.state), [undefined]);
-      assertEquals(schemaOf(path), 6);
+      assertEquals(schemaOf(path), 7);
       await migrated.markState([outboxKeyOf(commit)], "offline");
       assertEquals(
         await migrated.queuedDataHighWater(
@@ -961,7 +964,8 @@ Deno.test("SqliteCommitOutbox: one schema 5 entry whose body does not parse leav
     await outbox.close();
     const db = new DatabaseSync(path);
     db.exec(
-      "ALTER TABLE outbox_entries DROP COLUMN state; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+        "ALTER TABLE outbox_entries DROP COLUMN state; " +
         "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
         "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
         "DROP TABLE outbox_versions; " +
@@ -974,7 +978,7 @@ Deno.test("SqliteCommitOutbox: one schema 5 entry whose body does not parse leav
     const migrated = new SqliteCommitOutbox(path);
     try {
       const listing = await migrated.entries();
-      assertEquals(schemaOf(path), 6);
+      assertEquals(schemaOf(path), 7);
       assertEquals(listing.entries.map((entry) => entry.commit.txnId), [
         good.txnId,
       ]);

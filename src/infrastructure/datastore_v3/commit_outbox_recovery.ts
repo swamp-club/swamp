@@ -23,6 +23,10 @@
  * writer that may still run are left, marked
  */
 
+import {
+  RUN_INITIATOR_MISMATCH_CODE,
+  RUN_INITIATOR_MISMATCH_REASON,
+} from "../../domain/datastore_v3/commit_authorization.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import type { Namespace } from "../../domain/data/namespace.ts";
 import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
@@ -278,6 +282,28 @@ export async function recoverCommitOutbox(
     const outcome = deferredPartitions.has(commit.partition.toString())
       ? { kind: "deferred" as const }
       : await recoverEntry(target, entry, options, clock, signal);
+    if (outcome.kind === "rejected") {
+      // kept with its code, and its partition waits with it, as a deferred
+      // entry's does
+      const withIt = dropsAfterRefusal(entry, remaining);
+      remaining = remaining.filter((other) => !withIt.includes(other));
+      deferredPartitions.add(commit.partition.toString());
+      await outbox.markState(
+        [outboxKeyOf(commit)],
+        "rejected",
+        outcome.reason,
+        outcome.code,
+      );
+      if (withIt.length > 0) {
+        await outbox.markLeft(
+          withIt.map((left) => outboxKeyOf(left.commit)),
+          options.fence,
+        );
+      }
+      logger
+        .warn`Serve refused a run record this checkout saved because it names another initiator; it is kept in this checkout's outbox. Run the work again: ${outcome.reason}`;
+      continue;
+    }
     if (outcome.kind === "deferred") {
       // Left for a later recovery, and marked so the floor never drops it.
       // Its unit's run entries wait with it: a run record never lands
@@ -345,6 +371,11 @@ export async function recoverCommitOutbox(
 type EntryOutcome =
   | { readonly kind: "landed" | "settled" }
   | { readonly kind: "deferred" }
+  | {
+    readonly kind: "rejected";
+    readonly reason: string;
+    readonly code: string;
+  }
   | {
     readonly kind: "dropped";
     readonly reason: OutboxDropReason;
@@ -485,6 +516,18 @@ async function recoverEntry(
     // serve refusing a forwarded commit on the caller's access or content is
     // final: it never landed, and a narrowed grant refuses it every time. If an
     // earlier attempt landed it, the next catch-up brings it back
+    // a run record an older swamp wrote is kept and reported, never dropped
+    // silently: its work is run again
+    if (
+      error instanceof ServeCommitRefusedError &&
+      error.reason === RUN_INITIATOR_MISMATCH_REASON
+    ) {
+      return {
+        kind: "rejected",
+        reason: error.message,
+        code: RUN_INITIATOR_MISMATCH_CODE,
+      };
+    }
     if (
       error instanceof CommitRejectedError ||
       error instanceof ServeCommitRefusedError

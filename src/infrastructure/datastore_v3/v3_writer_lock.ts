@@ -23,6 +23,7 @@
  * a long workflow run
  */
 
+import { lockHolderName } from "../persistence/lock_holder_name.ts";
 import { join, resolve } from "@std/path";
 import {
   type DistributedLock,
@@ -626,12 +627,11 @@ export async function v3WriterLease(
   ttlMs: number,
 ): Promise<WriterLease> {
   const host = Deno.hostname();
-  const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
   const local = await localProcess();
   return new WriterLease({
     store,
     holder: {
-      holder: `${user}@${host}`,
+      holder: `${lockHolderName()}@${host}`,
       hostname: host,
       pid: local.pid,
       process: local.identity,

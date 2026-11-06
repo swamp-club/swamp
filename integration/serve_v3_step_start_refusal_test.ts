@@ -68,7 +68,7 @@ async function resumeGateRun(
       }),
     ],
   });
-  const run = WorkflowRun.create(workflow);
+  const run = WorkflowRun.create(workflow, undefined, "user:caller");
   run.start();
   const job = run.getJob("main")!;
   job.start();

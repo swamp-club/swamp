@@ -18,12 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
-import type { ContentRefusal } from "../domain/datastore_v3/commit_authorization.ts";
+import {
+  type ContentRefusal,
+  RUN_INITIATOR_MISMATCH_REASON,
+} from "../domain/datastore_v3/commit_authorization.ts";
+import { principalToString } from "../domain/access/principal.ts";
 import {
   type HeldChildRun,
   judgeRunRecord,
   judgeRunStart,
   runIdentityRefusal,
+  runInitiatorRefusal,
   type RunRecordJudgement,
 } from "../domain/datastore_v3/content_bindings.ts";
 import type { PutOp } from "../domain/datastore_v3/op.ts";
@@ -130,6 +135,10 @@ export async function checkRunRecord(
   );
   // A run id names one run: some lookups and deletes select by it alone, so a
   // first record reusing one would reach the run that holds it, in any workflow.
+  if (before === undefined) {
+    const initiator = await initiatorRefusal(context, op, after.data);
+    if (initiator !== undefined) return initiator;
+  }
   if (before === undefined) {
     const isOurs = async () => {
       const holder = await ctx.repoContext.workflowRunRepo.findGlobalById(
@@ -392,35 +401,75 @@ async function additionsRefusal(
  * link back is required here; the cascade checks both directions before it acts
  * on a parent
  */
-async function parentRefusal(
+type StoredParent =
+  | { readonly refusal: string }
+  | { readonly parent: WorkflowRunData };
+
+async function storedParentOf(
   context: ContentCheckContext,
   raw: unknown,
-): Promise<string | undefined> {
+): Promise<StoredParent> {
   const link = parseParentRunLink(raw);
   if (link === undefined || link.kind !== "valid") {
-    return "its parent run is not a run reference";
+    return { refusal: "its parent run is not a run reference" };
   }
   const { workflowId, runId } = link.ref;
   const parent = await context.prior(
     partitionOf({ kind: "run", workflowId, runId }),
     runRecordKey(workflowId, runId),
   );
-  if (parent.kind !== "present") return "its parent run does not exist";
+  if (parent.kind !== "present") {
+    return { refusal: "its parent run does not exist" };
+  }
   const parsed = WorkflowRunSchema.safeParse(parseRecord(parent.bytes));
-  if (!parsed.success) return "its parent run cannot be read";
-  if (["succeeded", "failed", "cancelled"].includes(parsed.data.status)) {
+  if (!parsed.success) return { refusal: "its parent run cannot be read" };
+  return { parent: parsed.data };
+}
+
+async function parentRefusal(
+  context: ContentCheckContext,
+  raw: unknown,
+): Promise<string | undefined> {
+  const stored = await storedParentOf(context, raw);
+  if ("refusal" in stored) return stored.refusal;
+  const { parent } = stored;
+  if (["succeeded", "failed", "cancelled"].includes(parent.status)) {
     return "its parent run has finished";
   }
   const workflow = await findWorkflowById(
     context.deps.ctx.repoContext.workflowRepo,
-    workflowId,
+    parent.workflowId,
   );
   const resource = workflow === null
-    ? unresolvedAccessResource("workflow", workflowId)
+    ? unresolvedAccessResource("workflow", parent.workflowId)
     : workflowAccessResource(workflow);
   return context.authority.allows("run", resource)
     ? undefined
     : `not authorized to run workflow:${resource.name}`;
+}
+
+/** a parent that cannot be read is refused by parentRefusal, not here */
+async function initiatorRefusal(
+  context: ContentCheckContext,
+  op: PutOp,
+  after: WorkflowRunData,
+): Promise<ContentRefusal | undefined> {
+  const caller = context.deps.caller.principal;
+  let parent: WorkflowRunData | undefined;
+  if (after.parentRun !== undefined) {
+    const stored = await storedParentOf(context, after.parentRun);
+    if ("refusal" in stored) return undefined;
+    parent = stored.parent;
+  }
+  const refusal = runInitiatorRefusal({
+    initiatedBy: after.initiatedBy,
+    caller: caller === null ? undefined : principalToString(caller),
+    ...(parent === undefined ? {} : { parent }),
+  });
+  return refusal === undefined ? undefined : {
+    ...refused(op, refusal),
+    reason: RUN_INITIATOR_MISMATCH_REASON,
+  };
 }
 
 function isReference(

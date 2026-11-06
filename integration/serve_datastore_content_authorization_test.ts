@@ -2088,12 +2088,39 @@ Deno.test({
               victim,
             ),
         );
+        const forgedRecord = (runId: string, initiatedBy: string) =>
+          runRecord(runId, {
+            status: "suspended",
+            initiatedBy,
+            jobs: [{
+              jobName: "main",
+              status: "running",
+              steps: [{
+                stepName: "call",
+                status: "waiting_approval",
+                startedAt: "2020-01-01T00:00:00.000Z",
+                nestedRun: {
+                  workflowId: victimWorkflow.id,
+                  workflowName: "victim",
+                  runId: victim.id,
+                },
+              }],
+            }],
+          });
+        // naming the victim's initiator, which a back link would match, is
+        // refused outright (swamp-club#4454)
+        const impersonated = await forwardRun(
+          server,
+          forgedRecord(crypto.randomUUID(), "user:alice"),
+        );
+        assertEquals(impersonated.status, 403);
+        assertEquals(impersonated.json.reason, "run-initiator-mismatch");
         const parent = crypto.randomUUID();
         const started = await forwardRun(
           server,
           runRecord(parent, {
             status: "suspended",
-            initiatedBy: "user:alice",
+            initiatedBy: "user:caller",
             jobs: [{
               jobName: "main",
               status: "running",
@@ -2560,7 +2587,10 @@ Deno.test({
       };
       const older = await read("lease-ops");
       assertEquals(older.kinds, ["run.create"]);
-      assertEquals(older.replyFeatures, "step-starts");
+      assert(
+        (older.replyFeatures ?? "").split(",").includes("step-starts"),
+        String(older.replyFeatures),
+      );
       const current = await read("lease-ops,step-starts");
       assertEquals(current.kinds, ["run.create", "run-start.save"]);
     });

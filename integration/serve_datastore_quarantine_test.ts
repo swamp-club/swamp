@@ -1284,7 +1284,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "datastore quarantine: an accepted run record that names another initiator cannot land, and the reply says why and to run the work again",
+    "datastore quarantine: a run record an older serve kept that names another initiator cannot land on accept, and the reply says why and to run the work again",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1320,13 +1320,18 @@ Deno.test({
           }),
         ],
       });
-      assertEquals(
-        (await deposit(server, "bob-token", {
-          commit: commit.toJSON(),
-          base: { seq: 0 },
-          chunks: [],
-        })).status,
-        201,
+      // one an older serve kept before it checked initiators
+      await server.quarantine.deposit(
+        {
+          txnId: commit.txnId,
+          partition: commit.partition.toString(),
+          principal: "user:bob",
+          reason: "Not authorized to run workflow:deploy",
+          depositedAt: new Date().toISOString(),
+          bytes: bytes.byteLength,
+          state: "held",
+        },
+        { commit: commit.toJSON(), base: { seq: 0 }, chunks: [] },
       );
       const refused = await call(
         server,

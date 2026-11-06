@@ -169,6 +169,30 @@ export interface RunRecordContext {
 }
 
 /**
+ * a new run names the principal serve stamps on its commit, or a child its
+ * parent's initiator, so a resumed child keeps who began the run; a serve with
+ * no authenticated caller checks nothing
+ */
+export function runInitiatorRefusal(input: {
+  readonly initiatedBy: string | undefined;
+  readonly caller: string | undefined;
+  readonly parent?: { readonly initiatedBy?: string };
+}): string | undefined {
+  if (input.caller === undefined) return undefined;
+  const expected = input.parent !== undefined
+    ? input.parent.initiatedBy
+    : input.caller;
+  if (input.initiatedBy === expected) return undefined;
+  return `its initiator is ${
+    input.initiatedBy === undefined ? "missing" : `"${input.initiatedBy}"`
+  }, not ${
+    input.parent !== undefined
+      ? `its parent run's ${expected ?? "(none)"}`
+      : expected
+  }: it was written by a swamp CLI older than this serve; upgrade your swamp CLI and run the work again`;
+}
+
+/**
  * serve does not stop a member forging the record of a run they drive, only
  * that forgery reaching anything outside their run; statuses, outputs and
  * timings they report are out of scope

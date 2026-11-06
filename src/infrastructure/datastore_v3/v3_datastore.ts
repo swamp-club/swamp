@@ -105,7 +105,11 @@ import {
   SERVE_UPSTREAM_STATE_FILE,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
-import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import {
+  noteServeInitiator,
+  serveInitiatorAt,
+  serveUpstreamAt,
+} from "./serve_upstream_registry.ts";
 import type { OfflineFlushPort } from "./offline_flush.ts";
 import { createQuarantineDeposit } from "./quarantine_deposit.ts";
 import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
@@ -856,6 +860,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     );
     serveClient.checkAccess(serveAccessCheck(serveState, serveClient.baseUrl));
   }
+  // seeded from the checkout, which an offline command runs on; a catch-up
+  // that reaches serve replaces it
+  if (serveState !== undefined) {
+    try {
+      const stored = serveState.initiator();
+      if (
+        stored !== undefined &&
+        serveInitiatorAt(options.datastorePath) === undefined
+      ) {
+        noteServeInitiator(options.datastorePath, stored);
+      }
+    } catch (readError) {
+      logger
+        .debug`Could not read what serve said of run initiators: ${readError}`;
+    }
+  }
   const serveCatchUp = serveClient !== undefined && serveState !== undefined
     ? new ServeCatchUp({
       client: serveClient,
@@ -969,7 +989,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             await batch.discard();
           }
         },
-        mark: (keys, state, reason) => outbox.markState(keys, state, reason),
+        mark: (keys, state, reason, code) =>
+          outbox.markState(keys, state, reason, code),
         settle: (keys) => outbox.settle(keys),
         recordOwnLanded: (key, at, carry) =>
           outbox.recordLandedOffline(
@@ -1079,6 +1100,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     if (serveOfflineAt(options.datastorePath) !== undefined) return;
     try {
       await serveCatchUp.catchUp(signal);
+      // a catch-up that read serve's feed heard serve, whatever its features
+      const initiator = serveClient!.initiatorMode() ?? { kind: "not-checked" };
+      noteServeInitiator(options.datastorePath, initiator);
+      try {
+        serveState?.recordInitiator(initiator);
+      } catch (recordError) {
+        logger
+          .debug`Could not record what serve said of run initiators: ${recordError}`;
+      }
       // Once per command: the last contact, and serve's clock then, are what
       // a later offline command judges its leases and times by.
       if (!contactRecorded && serveState !== undefined) {

@@ -74,6 +74,7 @@ import {
   partitionReadAccessOf,
   partitionWriteAccessOf,
   type RequiredAccess,
+  RUN_INITIATOR_MISMATCH_REASON,
 } from "../domain/datastore_v3/commit_authorization.ts";
 import { storageNamespaceOf } from "../domain/datastore_v3/chunk_store.ts";
 import {
@@ -151,9 +152,11 @@ import type {
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
 import {
   LEASE_OPS_FEATURE,
+  RUN_INITIATOR_FEATURE,
   SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_FEATURES_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
+  SERVE_DATASTORE_PRINCIPAL_HEADER,
   STEP_STARTS_FEATURE,
 } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
@@ -390,8 +393,35 @@ export async function handleDatastoreRequest(
     : [[SERVE_DATASTORE_ACCESS_HEADER, access]];
   const logId = logIdOf(deps.v3);
   if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
-  headers.push([SERVE_DATASTORE_FEATURES_HEADER, STEP_STARTS_FEATURE]);
+  for (
+    const header of callerReplyHeaders(
+      deps.ctx.authConfig.mode,
+      authenticated.principal,
+    )
+  ) {
+    headers.push(header);
+  }
   return withHeaders(response, headers);
+}
+
+/**
+ * the principal is the one serve stamps on the caller's commits, which a new
+ * run record must name; encoded, as a principal id may hold any character
+ */
+export function callerReplyHeaders(
+  authMode: string,
+  principal: string,
+): [string, string][] {
+  if (authMode === "none") {
+    return [[SERVE_DATASTORE_FEATURES_HEADER, STEP_STARTS_FEATURE]];
+  }
+  return [
+    [
+      SERVE_DATASTORE_FEATURES_HEADER,
+      [STEP_STARTS_FEATURE, RUN_INITIATOR_FEATURE].join(","),
+    ],
+    [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
+  ];
 }
 
 /**
@@ -1916,6 +1946,20 @@ class DatastoreApi {
           signal: req.signal,
         },
       );
+      if (outcome.initiatorRefused !== undefined) {
+        // a record an older CLI wrote names an initiator serve now refuses;
+        // nothing can make it land, so the work is run again
+        this.#auditAccept(
+          record,
+          "failure",
+          `initiator refused under ${record.principal}'s access: ${outcome.initiatorRefused}`,
+        );
+        return failure(
+          403,
+          "quarantine_content_refused",
+          `The quarantined change cannot land: its run record does not name its author ${record.principal} as its initiator (${outcome.initiatorRefused}). Discard it with \`swamp datastore quarantine discard ${txnId}\`, then run the work again.`,
+        );
+      }
       if (outcome.contentRefused !== undefined) {
         // The author's own access refuses what the change carries or
         // names: an admin's accept overrides the write grant it lacked,
@@ -2232,6 +2276,9 @@ class DatastoreApi {
     if (!checked.ok) {
       if (checked.reason === "content-refused") {
         outcome.contentRefused = checked.message;
+      }
+      if (checked.reason === RUN_INITIATOR_MISMATCH_REASON) {
+        outcome.initiatorRefused = checked.message;
       }
       throw refusedError(checked);
     }
@@ -3088,9 +3135,7 @@ function parsePartition(segment: string): PartitionKey | undefined {
 /** A refusal as the flush reads it: the error serve's reply maps to. */
 function refusedError(refusal: CommitRefusal): ServeCommitRefusedError {
   return new ServeCommitRefusedError(
-    refusal.reason === "forbidden" || refusal.reason === "content-refused"
-      ? "forbidden"
-      : "commit_refused",
+    refusalCode(refusal),
     refusal.reason,
     refusal.opIndex,
     refusal.message,
@@ -3116,6 +3161,8 @@ interface AcceptOutcome {
   reason?: string;
   /** Set when the author's own access refused the change's content. */
   contentRefused?: string;
+  /** Set when its run record names someone other than its author. */
+  initiatorRefused?: string;
 }
 
 /**
@@ -3178,12 +3225,18 @@ function quarantineTooLarge(): Response {
   );
 }
 
+function refusalCode(refusal: CommitRefusal): "forbidden" | "commit_refused" {
+  return refusal.reason === "forbidden" ||
+      refusal.reason === "content-refused" ||
+      refusal.reason === RUN_INITIATOR_MISMATCH_REASON
+    ? "forbidden"
+    : "commit_refused";
+}
+
 /** The 403 a refused commit is answered with. */
 function refusalResponse(refusal: CommitRefusal): Response {
   return Response.json({
-    code: refusal.reason === "forbidden" || refusal.reason === "content-refused"
-      ? "forbidden"
-      : "commit_refused",
+    code: refusalCode(refusal),
     reason: refusal.reason,
     opIndex: refusal.opIndex,
     message: refusal.message,

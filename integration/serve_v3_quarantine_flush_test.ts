@@ -425,7 +425,7 @@ Deno.test({
             }),
           ],
         });
-        const run = WorkflowRun.create(workflow);
+        const run = WorkflowRun.create(workflow, undefined, "user:bob");
         run.start();
         const job = run.getJob("main")!;
         job.start();

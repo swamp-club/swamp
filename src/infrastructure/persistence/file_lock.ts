@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { lockHolderName } from "./lock_holder_name.ts";
 import { hostname } from "node:os";
 import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -97,9 +98,8 @@ function buildLockInfo(
   skipping?: readonly string[],
 ): LockInfo {
   const host = hostname();
-  const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
   return {
-    holder: `${user}@${host}`,
+    holder: `${lockHolderName()}@${host}`,
     hostname: host,
     pid: Deno.pid,
     acquiredAt: new Date().toISOString(),

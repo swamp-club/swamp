@@ -101,7 +101,7 @@ Deno.test({
       const serve = await scratch.serve({ grants: GRANTS });
       const client = await scratch.client("a");
       const workflow = gatedWorkflow();
-      const run = WorkflowRun.create(workflow);
+      const run = WorkflowRun.create(workflow, undefined, "user:caller");
       run.start();
       const job = run.getJob("main")!;
       job.start();

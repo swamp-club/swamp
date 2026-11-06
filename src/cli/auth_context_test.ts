@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   assertRunInitiatorKnown,
   isAuthenticated,
+  nameLockHolder,
   requireAuthenticated,
   requireScope,
   resolveCliInitiatedBy,
@@ -308,7 +309,7 @@ Deno.test("resolveCliInitiatedBy: a serve that checks no initiator, or one not h
 });
 
 Deno.test("assertRunInitiatorKnown: refuses a run before it starts only in a serve-mode checkout that has not heard from serve", async () => {
-  await withServeModeCheckout(async (datastorePath) => {
+  await withServeModeCheckout((datastorePath) => {
     const refusal = assertThrows(
       () => assertRunInitiatorKnown(datastorePath),
       UserError,
@@ -317,6 +318,7 @@ Deno.test("assertRunInitiatorKnown: refuses a run before it starts only in a ser
     assertStringIncludes(refusal.message, "serve");
     noteServeInitiator(datastorePath, { kind: "not-checked" });
     assertRunInitiatorKnown(datastorePath);
+    return Promise.resolve();
   });
   assertRunInitiatorKnown("/not/a/serve/mode/checkout");
   assertRunInitiatorKnown(undefined);

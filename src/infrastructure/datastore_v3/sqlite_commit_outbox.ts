@@ -151,6 +151,9 @@ const MIGRATIONS: readonly string[] = [
       AND json_type(op.value, '$.metadata.name') = 'text'
       AND json_type(op.value, '$.metadata.version') = 'integer';
   `,
+  // the code a rejected entry was refused with, so status can say what to do
+  // about it: a run record refused for its initiator is run again
+  `ALTER TABLE outbox_entries ADD COLUMN state_code TEXT;`,
 ];
 
 export const COMMIT_OUTBOX_SCHEMA_VERSION = MIGRATIONS.length;
@@ -192,6 +195,7 @@ interface EntryRow {
   readonly lease_fence: number | null;
   readonly state: string | null;
   readonly state_reason: string | null;
+  readonly state_code: string | null;
   readonly sent_maybe_at: number | null;
 }
 
@@ -416,7 +420,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
     const rows = this.#read((db) =>
       db.prepare(
         "SELECT sequence, namespace, partition, txn_id, unit_id, base_seq, base_txn_id, created_at, body, " +
-          "writer_process, left_at_fence, abandoned_at, lease_id, lease_fence, state, state_reason, sent_maybe_at " +
+          "writer_process, left_at_fence, abandoned_at, lease_id, lease_fence, state, state_reason, state_code, sent_maybe_at " +
           "FROM outbox_entries ORDER BY sequence",
       ).all() as unknown as EntryRow[]
     ) ?? [];
@@ -456,6 +460,7 @@ export class SqliteCommitOutbox implements CommitOutbox {
             ? { lease: { leaseId: row.lease_id, fence: row.lease_fence } }
             : {}),
           ...(state !== undefined ? { state } : {}),
+          ...(row.state_code !== null ? { stateCode: row.state_code } : {}),
           ...(row.state_reason !== null
             ? { stateReason: row.state_reason }
             : {}),
@@ -606,18 +611,21 @@ export class SqliteCommitOutbox implements CommitOutbox {
     keys: readonly OutboxKey[],
     state: OutboxEntryState,
     reason?: string,
+    code?: string,
   ): Promise<void> {
     if (keys.length === 0) return Promise.resolve();
     // The mark is what keeps the entry from every drop rule: fsynced.
     return this.#write((db) => {
       const mark = db.prepare(
-        "UPDATE outbox_entries SET state = ?, state_reason = ? " +
+        "UPDATE outbox_entries SET state = ?, state_reason = ?, " +
+          "state_code = ? " +
           "WHERE namespace = ? AND partition = ? AND txn_id = ?",
       );
       for (const key of keys) {
         mark.run(
           state,
           reason ?? null,
+          code ?? null,
           key.namespace,
           key.partition,
           key.txnId,

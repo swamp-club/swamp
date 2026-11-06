@@ -19,6 +19,11 @@
 
 import { UserError } from "../domain/errors.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
+import { setLockHolderName } from "../infrastructure/persistence/lock_holder_name.ts";
+import {
+  serveInitiatorAt,
+  serveUpstreamAt,
+} from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import {
   hasApiKeySource,
   resolveApiKey,
@@ -145,7 +150,20 @@ export function requireScope(scope: string): void {
   );
 }
 
-export async function resolveCliInitiatedBy(): Promise<string> {
+export const OFFLINE_PRINCIPAL_UNKNOWN_CODE =
+  "datastore_v3_offline_principal_unknown";
+
+/**
+ * a serve-mode checkout names the principal serve checks a new run against;
+ * a serve that checks none, or one not heard from, gets today's value
+ */
+export async function resolveCliInitiatedBy(
+  datastorePath?: string,
+): Promise<string> {
+  const mode = datastorePath === undefined
+    ? undefined
+    : serveInitiatorAt(datastorePath);
+  if (mode?.kind === "checked") return mode.principal;
   if (!state().authenticated || state().collectiveToken) return "ghost";
   let username: string | undefined;
   try {
@@ -156,4 +174,30 @@ export async function resolveCliInitiatedBy(): Promise<string> {
   }
   if (username) return `user:${username}`;
   return "ghost";
+}
+
+/**
+ * before any run record is written: a serve-mode checkout that has not heard
+ * from serve since this swamp was upgraded cannot name the principal serve
+ * checks, so a run it queued would be refused when sent
+ */
+export function assertRunInitiatorKnown(
+  datastorePath: string | undefined,
+): void {
+  if (datastorePath === undefined) return;
+  if (serveUpstreamAt(datastorePath) === undefined) return;
+  if (serveInitiatorAt(datastorePath) !== undefined) return;
+  throw new UserError(
+    "This checkout has not reached serve since swamp was upgraded, so it " +
+      "cannot yet name you on a run serve will accept. Run any command " +
+      "while serve is reachable, then run this again.",
+    OFFLINE_PRINCIPAL_UNKNOWN_CODE,
+  );
+}
+
+/** later locks this command takes name the principal, not the OS login */
+export function nameLockHolder(datastorePath: string | undefined): void {
+  if (datastorePath === undefined) return;
+  const mode = serveInitiatorAt(datastorePath);
+  if (mode?.kind === "checked") setLockHolderName(mode.principal);
 }

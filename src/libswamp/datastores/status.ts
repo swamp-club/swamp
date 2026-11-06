@@ -73,6 +73,8 @@ export interface DatastoreOutboxEntryStatus {
   partition: string;
   txnId: string;
   reason?: string;
+  /** what the refusal was, when it has a code of its own */
+  code?: string;
   savedAt: string;
 }
 
@@ -133,6 +135,7 @@ export function outboxEntryStatusesOf(
       partition: entry.commit.partition.toString(),
       txnId: entry.commit.txnId,
       ...(entry.stateReason === undefined ? {} : { reason: entry.stateReason }),
+      ...(entry.stateCode === undefined ? {} : { code: entry.stateCode }),
       savedAt: new Date(entry.createdAt).toISOString(),
     });
   }

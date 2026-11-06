@@ -23,7 +23,10 @@
  * ServeUnreachableError, saying whether the request may have reached serve
  */
 
-import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
+import type {
+  ServeInitiatorMode,
+  ServeUpstreamTarget,
+} from "../../domain/datastore_v3/serve_upstream.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
 import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
@@ -142,6 +145,27 @@ export const LEASE_OPS_FEATURE = "lease-ops";
 
 /** without it in serve's replies, a member commits each start as the whole record */
 export const STEP_STARTS_FEATURE = "step-starts";
+
+/** serve refuses a new run record that does not name the principal it stamps */
+export const RUN_INITIATOR_FEATURE = "run-initiator";
+
+/** the principal serve stamps on the caller's commits, percent-encoded */
+export const SERVE_DATASTORE_PRINCIPAL_HEADER = "x-swamp-datastore-principal";
+
+/** the check advertised with no principal is no check this client can meet */
+function initiatorModeOf(
+  features: readonly string[],
+  encodedPrincipal: string | null,
+): ServeInitiatorMode {
+  if (!features.includes(RUN_INITIATOR_FEATURE) || encodedPrincipal === null) {
+    return { kind: "not-checked" };
+  }
+  try {
+    return { kind: "checked", principal: decodeURIComponent(encodedPrincipal) };
+  } catch {
+    return { kind: "not-checked" };
+  }
+}
 
 export function serveRequestTimeoutMs(): number {
   const env = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
@@ -271,6 +295,7 @@ export class ServeDatastoreClient {
   #logCheck: ((logId: string | undefined) => void) | undefined;
   #accessCheck: ((fingerprint: string) => void) | undefined;
   #takesStepStarts = false;
+  #initiatorMode: ServeInitiatorMode | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
     this.baseUrl = normalizeServerUrl(options.baseUrl);
@@ -825,6 +850,11 @@ export class ServeDatastoreClient {
     });
   }
 
+  /** undefined until a reply from serve itself has been read */
+  initiatorMode(): ServeInitiatorMode | undefined {
+    return this.#initiatorMode;
+  }
+
   takesStepStarts(): boolean {
     return this.#takesStepStarts;
   }
@@ -911,10 +941,14 @@ export class ServeDatastoreClient {
         }
       }
       if (logId !== undefined) {
-        this.#takesStepStarts =
-          (response.headers.get(SERVE_DATASTORE_FEATURES_HEADER) ?? "")
-            .split(",")
-            .some((feature) => feature.trim() === STEP_STARTS_FEATURE);
+        const features = (response.headers.get(
+          SERVE_DATASTORE_FEATURES_HEADER,
+        ) ?? "").split(",").map((feature) => feature.trim());
+        this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
+        this.#initiatorMode = initiatorModeOf(
+          features,
+          response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),
+        );
       }
       const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
       if (this.#accessCheck !== undefined && access !== null) {

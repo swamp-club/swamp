@@ -53,6 +53,10 @@ import { type DefinitionKind, partitionOf } from "./partition_key.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";
 
+export const RUN_INITIATOR_MISMATCH_REASON = "run-initiator-mismatch";
+
+export const RUN_INITIATOR_MISMATCH_CODE = "run_initiator_mismatch";
+
 export type CommitRefusalReason =
   | KeyBindingRefusal
   | "lease-op"
@@ -61,7 +65,8 @@ export type CommitRefusalReason =
   | "definition-type-mismatch"
   | "key-owned-elsewhere"
   | "forbidden"
-  | "content-refused";
+  | "content-refused"
+  | typeof RUN_INITIATOR_MISMATCH_REASON;
 
 export interface CommitRefusal {
   readonly ok: false;
@@ -142,6 +147,7 @@ export function isContentChecked(op: Op): op is PutOp {
 
 export interface ContentRefusal {
   readonly message: string;
+  readonly reason?: typeof RUN_INITIATOR_MISMATCH_REASON;
 }
 
 /**
@@ -272,7 +278,11 @@ export async function authorizeCommit(
     if (!isContentChecked(op)) continue;
     const refusal = await content.check(op, ops);
     if (refusal !== undefined) {
-      return refuse("content-refused", index, refusal.message);
+      return refuse(
+        refusal.reason ?? "content-refused",
+        index,
+        refusal.message,
+      );
     }
   }
   return { ok: true };
