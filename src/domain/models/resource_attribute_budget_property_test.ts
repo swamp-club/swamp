@@ -19,7 +19,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
+import {
+  jsonByteLengthWithin,
+  ResourceAttributeBudget,
+} from "./resource_attribute_budget.ts";
 
 const arbCap = fc.integer({ min: 0, max: 1_000_000 });
 const arbSizes = fc.array(fc.integer({ min: 0, max: 200_000 }), {
@@ -53,4 +56,18 @@ Deno.test("ResourceAttributeBudget: a run that fits admits everything", () => {
     assert(sizes.every((size) => budget.admit(size)));
     assertEquals(budget.admittedBytes, total);
   }));
+});
+
+Deno.test("jsonByteLengthWithin: matches JSON.stringify within the limit and refuses past it", () => {
+  fc.assert(fc.property(
+    fc.jsonValue(),
+    fc.integer({ min: 0, max: 2_000 }),
+    (value, limit) => {
+      const bytes = new TextEncoder().encode(JSON.stringify(value)).length;
+      assertEquals(
+        jsonByteLengthWithin(value, limit),
+        bytes <= limit ? bytes : undefined,
+      );
+    },
+  ));
 });

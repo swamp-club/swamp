@@ -26,6 +26,7 @@ import {
   mapWorkflowExecutionEvent,
   resolveCompletedRunOutputs,
   resolveRunStepOutputs,
+  RunAttributeBudget,
   type RunStepOutputs,
   toRunData,
   withRunStepOutputs,
@@ -2670,11 +2671,25 @@ Deno.test("resolveCompletedRunOutputs: a recorded size of 0 is measured after th
   assertEquals(resolved!.job1.step1.attributesOmitted, ["data-1", "data-2"]);
 });
 
-Deno.test("resolveCompletedRunOutputs: a workflow step whose child run passes the budget has partial outputs", async () => {
-  const runRepo = new InMemoryWorkflowRunRepository();
-  const child = createBulkRun(BULK_CONTENTS, true);
-  await runRepo.save(createWorkflowId(child.workflowId), child);
-  const parent = WorkflowRun.create(createTestWorkflow());
+function createParentRun(child: WorkflowRun, tailContent: string): WorkflowRun {
+  const parent = WorkflowRun.create(Workflow.create({
+    name: "parent-workflow",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("test-model", "run"),
+          }),
+          Step.create({
+            name: "tail",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  }));
   parent.start();
   const job = parent.getJob("job1")!;
   job.start();
@@ -2685,20 +2700,177 @@ Deno.test("resolveCompletedRunOutputs: a workflow step whose child run passes th
     workflowId: child.workflowId,
     runId: child.id,
   });
+  const tail = job.getStep("tail")!;
+  tail.start();
+  tail.addDataArtifact({
+    dataId: "tail-data",
+    name: "tail-item",
+    version: 1,
+    tags: {},
+  });
+  tail.succeed({
+    type: "model_method",
+    model: "test-model",
+    method: "run",
+    resources: {
+      item: {
+        "tail-item": {
+          id: "tail-data",
+          name: "tail-item",
+          version: 1,
+          modelType: "test/model",
+          modelId: "model-1",
+          contentType: "application/json",
+          tags: {},
+          attributes: null,
+          content: null,
+          size: new TextEncoder().encode(tailContent).length,
+        },
+      },
+    },
+  });
   job.succeed();
   parent.complete();
+  return parent;
+}
+
+function namedDataRepo(
+  contents: Record<string, string>,
+  reads: string[],
+): UnifiedDataRepository {
+  return {
+    namespace: createNamespace("team-a"),
+    getContent: (_type: unknown, _id: unknown, name: string) => {
+      reads.push(name);
+      return Promise.resolve(new TextEncoder().encode(contents[name]));
+    },
+  } as unknown as UnifiedDataRepository;
+}
+
+const TAIL_ITEM = JSON.stringify({ ok: true });
+
+Deno.test("resolveCompletedRunOutputs: a child run's reads are charged by its merged outputs, so a later step keeps its attributes", async () => {
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const child = createBulkRun(BULK_CONTENTS, true);
+  await runRepo.save(createWorkflowId(child.workflowId), child);
+  const parent = createParentRun(child, TAIL_ITEM);
+  const reads: string[] = [];
 
   const resolved = await resolveCompletedRunOutputs(
     parent,
-    bulkDataRepo(BULK_CONTENTS, []),
+    namedDataRepo({
+      "item-0": BULK_ITEM,
+      "item-1": BULK_ITEM,
+      "item-2": BULK_ITEM,
+      "tail-item": TAIL_ITEM,
+    }, reads),
     runRepo,
     undefined,
     undefined,
     undefined,
-    BULK_ITEM.length + 1,
+    BULK_ITEM.length * 2,
   );
 
-  assertEquals(resolved!.job1.step1.attributesOmitted, ["data-1", "data-2"]);
+  assertEquals(reads, ["item-0", "item-1", "item-2", "tail-item"]);
+  assertEquals(resolved!.job1.step1.outputs, {
+    step1: { blob: "x".repeat(40) },
+  });
+  assertEquals(resolved!.job1.step1.attributesOmitted, undefined);
+  assertEquals(resolved!.job1.tail.attributesByDataId, {
+    "tail-data": { ok: true },
+  });
+  assertEquals(resolved!.job1.tail.attributesOmitted, undefined);
+  const view = toRunData(parent, undefined, false, resolved);
+  assertEquals(view.jobs[0].steps[0].outputsPartial, undefined);
+  assertEquals(view.jobs[0].steps[1].outputsPartial, undefined);
+  assertEquals(view.jobs[0].steps[1].dataArtifacts![0].attributes, {
+    ok: true,
+  });
+});
+
+Deno.test("resolveCompletedRunOutputs: a child step whose merged outputs pass the budget is left out with its records omitted", async () => {
+  const contents = [
+    JSON.stringify({ a: "x".repeat(40) }),
+    JSON.stringify({ b: "x".repeat(40) }),
+    JSON.stringify({ c: "x".repeat(40) }),
+  ];
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const child = createBulkRun(contents, true);
+  await runRepo.save(createWorkflowId(child.workflowId), child);
+  const parent = createParentRun(child, TAIL_ITEM);
+  const reads: string[] = [];
+
+  const resolved = await resolveCompletedRunOutputs(
+    parent,
+    namedDataRepo({
+      "item-0": contents[0],
+      "item-1": contents[1],
+      "item-2": contents[2],
+      "tail-item": TAIL_ITEM,
+    }, reads),
+    runRepo,
+    undefined,
+    undefined,
+    undefined,
+    contents[0].length * 2,
+  );
+
+  assertEquals(reads, ["item-0", "item-1", "item-2"]);
+  assertEquals(resolved!.job1.step1.outputs, undefined);
+  assertEquals(resolved!.job1.step1.attributesOmitted, [
+    "data-0",
+    "data-1",
+    "data-2",
+  ]);
+  assertEquals(resolved!.job1.tail.attributesOmitted, ["tail-data"]);
   const view = toRunData(parent, undefined, false, resolved);
   assertEquals(view.jobs[0].steps[0].outputsPartial, true);
+  assertEquals(view.jobs[0].steps[1].outputsPartial, true);
+});
+
+Deno.test("RunAttributeBudget.resolveChild: a child step too large for one JSON string is refused, not thrown, and a later read is omitted", async () => {
+  const mebibyte = "x".repeat(1024 * 1024);
+  // about 1 GiB of JSON from shared strings, past V8's string limit
+  const huge = { rows: Array.from({ length: 1024 }, () => mebibyte) };
+  const budget = new RunAttributeBudget(16 * 1024 * 1024);
+  const record = (id: string) => ({
+    id,
+    name: id,
+    version: 1,
+    namespace: "",
+    modelName: "m",
+    tags: {},
+    attributes: {},
+  });
+
+  const resolved = await budget.resolveChild(() =>
+    Promise.resolve({
+      outputs: { small: { ok: true }, big: huge },
+      attributesByDataId: {},
+      sources: [
+        { path: ["small"], records: [record("data-small")] },
+        { path: ["big"], records: [record("data-big")] },
+      ],
+    })
+  );
+
+  assertEquals(resolved.outputs, { small: { ok: true } });
+  assertEquals(budget.takeStepOmitted(), ["data-big"]);
+  const read = budget.wrap(() => Promise.resolve({ tail: true }));
+  assertEquals(
+    await read({
+      dataId: "tail-data",
+      name: "tail-item",
+      version: 1,
+      modelType: "test/model",
+      modelId: "model-1",
+      modelName: "",
+      specName: "",
+      contentType: "application/json",
+      tags: {},
+      size: 13,
+    }),
+    undefined,
+  );
+  assertEquals(budget.takeStepOmitted(), ["tail-data"]);
 });

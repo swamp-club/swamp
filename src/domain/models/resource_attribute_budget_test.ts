@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  jsonByteLengthWithin,
   RESOURCE_ATTRIBUTE_CAP_BYTES,
   ResourceAttributeBudget,
 } from "./resource_attribute_budget.ts";
@@ -65,4 +66,18 @@ Deno.test("ResourceAttributeBudget: refuses a size that is not a byte count, and
 Deno.test("ResourceAttributeBudget: rejects a negative or fractional cap", () => {
   assertThrows(() => new ResourceAttributeBudget(-1), RangeError);
   assertThrows(() => new ResourceAttributeBudget(1.5), RangeError);
+});
+
+Deno.test("jsonByteLengthWithin: counts the UTF-8 bytes JSON.stringify would produce", () => {
+  const value = { a: [1, null, "é\n", { b: undefined }], c: true, d: "💧" };
+  assertEquals(
+    jsonByteLengthWithin(value, 1000),
+    new TextEncoder().encode(JSON.stringify(value)).length,
+  );
+});
+
+Deno.test("jsonByteLengthWithin: a value too large for one string is refused without throwing", () => {
+  const mebibyte = "x".repeat(1024 * 1024);
+  const huge = Array.from({ length: 1024 }, () => mebibyte);
+  assertEquals(jsonByteLengthWithin(huge, 16 * 1024 * 1024), undefined);
 });

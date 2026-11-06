@@ -29,6 +29,7 @@ import { markErrorPaths } from "../../domain/errors.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
 import {
+  jsonByteLengthWithin,
   RESOURCE_ATTRIBUTE_CAP_BYTES,
   ResourceAttributeBudget,
 } from "../../domain/models/resource_attribute_budget.ts";
@@ -503,6 +504,7 @@ export type RunStepOutputs = Record<
 export class RunAttributeBudget {
   readonly #budget: ResourceAttributeBudget;
   #stepOmitted: string[] = [];
+  #childReads = false;
 
   constructor(capBytes: number = RESOURCE_ATTRIBUTE_CAP_BYTES) {
     this.#budget = new ResourceAttributeBudget(capBytes);
@@ -518,6 +520,7 @@ export class RunAttributeBudget {
     };
     return async (ref) => {
       if (this.#budget.exhausted) return omit(ref);
+      if (this.#childReads) return await read(ref);
       if (ref.size !== undefined && ref.size > 0) {
         return this.#budget.admit(ref.size) ? await read(ref) : omit(ref);
       }
@@ -528,11 +531,59 @@ export class RunAttributeBudget {
     };
   }
 
+  /**
+   * a parent renders a child run's merged outputs, never its artifacts, so the
+   * child's reads go uncharged and each child step's merged outputs are charged
+   * instead; a child step refused here is left out with its records omitted
+   */
+  async resolveChild(
+    resolve: () => Promise<ResolvedStepOutputs>,
+  ): Promise<ResolvedStepOutputs> {
+    this.#childReads = true;
+    let resolved: ResolvedStepOutputs;
+    try {
+      resolved = await resolve();
+    } finally {
+      this.#childReads = false;
+    }
+    if (!resolved.outputs) return resolved;
+    const kept: Record<string, unknown> = {};
+    for (const [stepName, value] of Object.entries(resolved.outputs)) {
+      const remaining = this.#budget.capBytes - this.#budget.admittedBytes;
+      const bytes = this.#budget.exhausted
+        ? undefined
+        : jsonByteLengthWithin(value, remaining);
+      if (this.#budget.admit(bytes ?? remaining + 1)) {
+        // An own key: a step may be named __proto__.
+        Object.defineProperty(kept, stepName, {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+        continue;
+      }
+      for (const group of resolved.sources ?? []) {
+        if (group.path[0] !== stepName) continue;
+        for (const record of group.records) this.#stepOmitted.push(record.id);
+      }
+    }
+    return {
+      ...resolved,
+      outputs: Object.keys(kept).length > 0 ? kept : undefined,
+    };
+  }
+
   takeStepOmitted(): string[] | undefined {
     const omitted = this.#stepOmitted;
     this.#stepOmitted = [];
     return omitted.length > 0 ? omitted : undefined;
   }
+}
+
+function isWorkflowStepOutput(output: unknown): boolean {
+  return typeof output === "object" && output !== null &&
+    (output as { type?: unknown }).type === "workflow";
 }
 
 /** with a budget, its resolver must read through budget.wrap */
@@ -546,7 +597,9 @@ export async function resolveRunStepOutputs(
     const steps: Record<string, ResolvedStepOutputs> = {};
     for (const step of job.steps) {
       budget?.takeStepOmitted();
-      const outputs = await resolver.resolve(step);
+      const outputs = budget && isWorkflowStepOutput(step.output)
+        ? await budget.resolveChild(() => resolver.resolve(step))
+        : await resolver.resolve(step);
       const omitted = budget?.takeStepOmitted();
       if (omitted) outputs.attributesOmitted = omitted;
       steps[step.stepName] = outputs;
