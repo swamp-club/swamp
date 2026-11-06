@@ -51,6 +51,8 @@ const PINNED_STDOUT_WRITERS: readonly string[] = [
   // The inbox enters and leaves the alternate screen around its TUI.
   "src/presentation/renderers/inbox_tui.tsx",
   "src/presentation/renderers/vault_read_secret.ts",
+  // A `--json` value too large for one string, written in chunks.
+  "src/presentation/output/json_stream.ts",
 
   // group 2: interaction still on stdout, pending a move to stderr
   "src/cli/commands/agent_setup.ts",

@@ -38,6 +38,7 @@ import {
 } from "../remote_run.ts";
 import type { WorkflowHistoryGetResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+import { writeJsonValue } from "../../presentation/output/json_stream.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -110,7 +111,7 @@ export async function workflowHistoryOutputsAction(
   }
 
   if (cliCtx.outputMode === "json") {
-    console.log(JSON.stringify(outputs, null, 2));
+    await writeJsonValue(outputs);
   } else {
     if (Object.keys(outputs).length === 0) {
       writeOutput("No step outputs found for this run.");
