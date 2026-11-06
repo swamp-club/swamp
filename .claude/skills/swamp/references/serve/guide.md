@@ -557,9 +557,15 @@ separate process on the serve host (e.g. `kubectl exec`): with a remote
 datastore, a running serve does not pull out-of-process token definitions, so
 the token fails until serve restarts.
 
-The mint output does not include the credential, and `reveal` has no `--server`.
-Run `swamp access token reveal <name> --yes` where the serve's repo or datastore
-is reachable.
+The mint output does not include the credential. Reveal it through the same
+serve (admin only; answered by the leader and audited):
+
+```bash
+swamp access token reveal <name> --yes --server wss://swamp.example.com
+```
+
+A login token (`oauth-…`, minted by an OAuth or device login) is not revealable
+through serve, even by an admin (`token_not_revealable`); revoke it instead.
 
 `swamp worker token create <name> --duration <d> --server <url>` also stores the
 secret in `_token-secrets` unless `--vault <name>` names another vault on the

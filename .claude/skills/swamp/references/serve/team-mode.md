@@ -7,8 +7,12 @@ setup **team mode** in anything written for users.
 ## Contents
 
 - [Set up serve](#set-up-serve)
+- [Upgrade serve](#upgrade-serve)
 - [Set up a member's checkout](#set-up-a-members-checkout)
+- [Tokens](#tokens)
 - [What runs where](#what-runs-where)
+- [Who a run names](#who-a-run-names)
+- [Leases](#leases)
 - [Approvals, signals and cancel](#approvals-signals-and-cancel)
 - [Known costs and limits](#known-costs-and-limits)
 
@@ -40,17 +44,48 @@ setup **team mode** in anything written for users.
    swamp serve --advertise-address https://node-a.internal:8443 --ca-cert certs/team-ca.pem
    ```
 
+## Upgrade serve
+
+Serve refuses a new run record that does not name the principal of the token
+that sent it. Members' older CLIs name their swamp-club username, so:
+
+1. **Flush queued offline work first.** Have each member run a writing command
+   while the old serve is still up. A run record an older CLI queued offline is
+   refused after the upgrade with `run_initiator_mismatch`: it stays in the
+   member's outbox, `swamp datastore status` lists it as refused for its
+   initiator, and the work has to be run again. There is no way to accept it as
+   it is.
+2. **Upgrade followers before the leader.** A follower still on the old version
+   does not tell members that the leader checks initiators, so their runs are
+   refused at the leader.
+3. **Then have members upgrade their CLI.** An older CLI's runs are refused with
+   advice to upgrade. A checkout an upgraded CLI has not yet used against the
+   upgraded serve refuses to start an offline `workflow run`
+   (`datastore_v3_offline_principal_unknown`) until it reaches serve once.
+
+An upgraded CLI writes a newer checkout state and outbox, so a member cannot go
+back to an older CLI in the same checkout.
+
 ## Set up a member's checkout
 
 - `.swamp.yaml` names the datastore with `format: 3` (a clone carries it) and
   `serverAddress: <serve URL>`.
 - Log in once: `swamp auth server-login --server <serve URL>`. The checkout
   needs no storage credentials.
-- When serve is unreachable, the checkout works offline from its copy and sends
-  saved work on the next command that reaches serve. A method that changes
+- When serve is unreachable, the checkout works offline from its copy. The saved
+  work is sent by the next command that writes to the datastore once serve is
+  reachable; a command that only reads does not send it. A method that changes
   things runs offline only under a lease taken while online: see the "Team Mode:
   Leases at Serve" section of
   [concurrency.md](../behavior/references/concurrency.md).
+
+## Tokens
+
+`swamp access token mint`, `rotate` and `reveal` run on serve from a member's
+checkout (or with `--server`), and need `admin` on `access:*`. Reveal is
+answered by the leader and audited. A login token (one an OAuth or device login
+minted, named `oauth-…`) is not revealable, even by an admin
+(`token_not_revealable`); revoke it instead.
 
 ## What runs where
 
@@ -60,10 +95,27 @@ setup **team mode** in anything written for users.
 | `extension install` / `pull` (only `--server` installs on serve) | Locally  |
 | `workflow approve`, `reject`, `signal`, `waits`                  | On serve |
 | `workflow cancel` of a run this checkout did not start           | On serve |
+| `access token mint`, `rotate`, `reveal`                          | On serve |
 | Anything with `--server`, a trigger or a schedule                | On serve |
 
 Local runs write through serve: every commit is authorised against the member's
 grants and stamped with who wrote it.
+
+## Who a run names
+
+A run's `initiatedBy` is the principal of the member's token (for example
+`user:m1`), as serve stamps it on the run's commits, never a display name. A
+child run keeps its parent's initiator, including one a resume starts. A
+behavior's output provenance and the `initiatedBy` data tag are the member's own
+report and are not checked.
+
+## Leases
+
+A refusal because another caller holds a behavior's lease names the holder's
+principal, whether it is an explicit lease, and when it ends;
+`swamp datastore lock status` shows the same. When an explicit lease outlasts
+the wait (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), the refusal comes at once
+(exit 75) instead of after the wait; a run's renewing lease is still waited for.
 
 ## Approvals, signals and cancel
 
@@ -80,10 +132,11 @@ grants and stamped with who wrote it.
 ## Known costs and limits
 
 - **A step's start commits before the step runs,** so a killed run never loses
-  it. Each start costs about 12-13 ms on an 11-step run and stores the run
-  record again. A 1,000-step run stores gigabytes of superseded records until
-  retention sweeps them, and on a bucket each start can then cost over 100 ms
-  more. This holds until a constant-size start marker ships.
+  it. Each start is a small record of its own (about 1.5 KiB: job, step and
+  start time), not the run record again. A start that cannot commit after its
+  retries puts the step back to pending and fails the run with
+  `datastore_v3_commit_unreachable` (exit 75); resume or recover it. A member
+  whose serve predates step starts commits each start as the whole run record.
 - **Cancel stops only this checkout's processes.** Two checkouts sharing a
   filesystem datastore no longer stop each other's runs; cancel a run from the
   checkout that started it, or through serve.
