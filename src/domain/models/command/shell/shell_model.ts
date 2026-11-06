@@ -34,6 +34,7 @@ import { secretOccurrencesOf } from "../../../vaults/secret_occurrences.ts";
 import { coerceMethodArgs } from "../../zod_type_coercion.ts";
 import { SecretDestinationRefusedError } from "../../secret_destinations.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
+import { withSpan } from "../../../../infrastructure/tracing/mod.ts";
 import {
   createSafeMethodEnv,
   NESTED_SWAMP_ENV_VARS,
@@ -312,7 +313,11 @@ async function executeCommand(
 
   // The command is lent the locks held for this run. Begun outside the try
   // below, which turns a thrown error into a result that is still written.
-  const lockHandOff = await processLockHolderMarker.beginChildHandOff();
+  const lockHandOff = await withSpan(
+    "swamp.method.lock_hand_off",
+    {},
+    () => processLockHolderMarker.beginChildHandOff(),
+  );
 
   try {
     const invocation = shellStrategy.buildInvocation(shellCommand);
@@ -324,19 +329,24 @@ async function executeCommand(
       ...traceHeadersToEnv(context.traceHeaders),
       ...shellEnv,
     };
-    const result = await executeProcess({
-      command: invocation.command,
-      args: invocation.args,
-      cwd: args.workingDir,
-      env: processEnv,
-      clearEnv: true,
-      timeoutMs: args.timeout,
-      signal: context.signal,
-      logger: context.logger,
-      redactor: context.redactor,
-      terminateProcessTree: true,
-      normalizeCrlf: shellStrategy.normalizesCrlfOutput,
-    });
+    const result = await withSpan(
+      "swamp.method.process",
+      {},
+      () =>
+        executeProcess({
+          command: invocation.command,
+          args: invocation.args,
+          cwd: args.workingDir,
+          env: processEnv,
+          clearEnv: true,
+          timeoutMs: args.timeout,
+          signal: context.signal,
+          logger: context.logger,
+          redactor: context.redactor,
+          terminateProcessTree: true,
+          normalizeCrlf: shellStrategy.normalizesCrlfOutput,
+        }),
+    );
 
     stdout = redact(result.stdout);
     stderr = redact(result.stderr);
@@ -352,7 +362,11 @@ async function executeCommand(
   // take the locks back before writing under them; a cancel-stopped command
   // does not wait for work still under them, one that finished first does, so a
   // later cancel keeps its output
-  await lockHandOff.end(stoppedByCancel ? context.signal : undefined);
+  await withSpan(
+    "swamp.method.lock_hand_back",
+    {},
+    () => lockHandOff.end(stoppedByCancel ? context.signal : undefined),
+  );
 
   // persisted before the exit code is judged: the output is the only account of
   // what the command did, and a failed command is the one whose account is

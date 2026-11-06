@@ -41,6 +41,12 @@ export interface ServeFeedWatchOptions {
   >;
   /** Runs the checkout's catch-up; called again only once it settled. */
   catchUp(): Promise<unknown>;
+  /** The feed cursor the checkout's copy has applied. */
+  readonly appliedCursor?: () => number;
+  /** Whether this process sent the commit, so its copy already read it back. */
+  readonly sentHere?: (txnId: string) => boolean;
+  /** Applies what the copy already holds, asking serve nothing. */
+  readonly catchUpLocally?: () => Promise<unknown>;
   readonly openSocket?: (url: string, headers: Headers) => WebSocket;
 }
 
@@ -50,25 +56,37 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
   let backoff = 1_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<unknown> | undefined;
-  let again = false;
+  let again: "serve" | "local" | undefined;
   const caCerts = options.target.caCerts;
   const httpClient = caCerts !== undefined && caCerts.length > 0
     ? Deno.createHttpClient({ caCerts: [...caCerts] })
     : undefined;
 
-  const catchUp = () => {
+  const sentHere = (change: unknown): boolean => {
+    if (options.sentHere === undefined) return false;
+    const txnId = (change as { commit?: { txnId?: unknown } } | null)?.commit
+      ?.txnId;
+    return typeof txnId === "string" && options.sentHere(txnId);
+  };
+
+  // a serve catch-up also does the local one, so a pending local one waits
+  // behind it and a pending serve one is never downgraded
+  const catchUp = (kind: "serve" | "local" = "serve") => {
+    if (kind === "local" && options.catchUpLocally === undefined) return;
     if (running !== undefined) {
-      again = true;
+      if (again !== "serve") again = kind;
       return;
     }
-    running = options.catchUp().catch((error) => {
+    const run = kind === "serve"
+      ? options.catchUp()
+      : options.catchUpLocally!();
+    running = run.catch((error) => {
       logger.debug`Catching up from serve's commit feed failed: ${error}`;
     }).finally(() => {
       running = undefined;
-      if (again && !stopped) {
-        again = false;
-        catchUp();
-      }
+      const next = again;
+      again = undefined;
+      if (next !== undefined && !stopped) catchUp(next);
     });
   };
 
@@ -120,7 +138,12 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
         }));
         // Anything committed between the command's own catch-up and the
         // head just read is read now.
-        catchUp();
+        if (
+          options.appliedCursor === undefined ||
+          cursor > options.appliedCursor()
+        ) {
+          catchUp();
+        }
         backoff = 1_000;
         return;
       }
@@ -130,7 +153,10 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
         return;
       }
       const changes = frame.payload?.changes;
-      if (Array.isArray(changes) && changes.length > 0) catchUp();
+      if (!Array.isArray(changes) || changes.length === 0) return;
+      // the copy holds this process's own commits already: only its read
+      // model is brought up, without asking serve
+      catchUp(changes.every((change) => sentHere(change)) ? "local" : "serve");
     };
     current.onerror = () => {};
     current.onclose = () => {

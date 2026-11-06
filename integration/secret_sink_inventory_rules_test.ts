@@ -419,7 +419,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       VALUE_FREE_STATUS,
     "src/infrastructure/persistence/datastore_sync_coordinator.ts: registerDatastoreSyncNamed":
       VALUE_FREE_STATUS,
-    "src/serve/http_request_span.ts: traceHttpRequests": VALUE_FREE_STATUS,
+    "src/serve/http_request_span.ts: withHttpServerSpan": VALUE_FREE_STATUS,
     "src/serve/sync_gate.ts: runGated": VALUE_FREE_STATUS,
   },
   "file-write": {

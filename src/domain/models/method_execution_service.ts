@@ -934,7 +934,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       argsResult.data,
       context.redactor,
     );
-    if (onArgumentsValidated) await onArgumentsValidated();
+    if (onArgumentsValidated) {
+      await withSpan(
+        "swamp.method.arguments_validated",
+        {},
+        () => onArgumentsValidated(),
+      );
+    }
     const secretBag = context.vaultSecrets;
 
     // globalArgs is wrapped in a Proxy that throws a clear error when the

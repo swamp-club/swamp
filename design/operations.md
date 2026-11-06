@@ -11,8 +11,15 @@ something a primitive depends on, move it to `enablers/` and give it an
 `enables:` header.
 
 - **Telemetry**: product telemetry, spooled under the user config dir and sent
-  over HTTP. The CLI flushes once at teardown; `swamp serve` runs its own flush
-  loop (`src/serve/telemetry_flush.ts`). Entries carry an `insert_id` for dedup
+  over HTTP. Every command spools its entry; a command sends the spool only
+  when the last flush attempt in the flush record is at least
+  `TELEMETRY_FLUSH_INTERVAL_MS` (5 minutes) old, in up to four batches under
+  one 2 s budget, and only then cleans the spool (`flushTelemetryIfDue` in
+  `src/cli/mod.ts`). The send cost about 0.75 s, so paying it on every
+  command was most of a short command's wall time (swamp-club#4457). Entries
+  arrive up to one interval late; none is lost, since a later due flush sends
+  what is spooled. `swamp serve` runs its own flush loop
+  (`src/serve/telemetry_flush.ts`). Entries carry an `insert_id` for dedup
   and are quarantined after a bounded number of retries. `swamp completions`
   records no event: shell rc files run it at every shell start and its scripts
   call it on every Tab press, so it must not wait on the teardown flush.
@@ -51,7 +58,16 @@ something a primitive depends on, move it to `enablers/` and give it an
   (`toRecordedInvocation`); the auth gate reads the resolution as typed.
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
-  `src/infrastructure/tracing/`.
+  `src/infrastructure/tracing/`. A team member's requests to serve's datastore
+  API carry a `traceparent`, and a follower re-sends a forwarded request with
+  its own. Serve opens a datastore request's span once the caller is
+  authenticated, then adopts the caller's trace and parent ids only
+  (`adoptAuthenticatedParent`): the sampled flag is replaced by serve's own
+  root decision from `OTEL_TRACES_SAMPLER`, so a member can neither force nor
+  suppress serve's recording. Authentication runs in its own root span,
+  `swamp.serve.datastore.authenticate`, which the request span links to and
+  whose time it records as `swamp.serve.auth_ms`. A refused or unauthenticated
+  request keeps a root span, as every other HTTP route's does.
   Application execution metrics opt in separately with
   `OTEL_METRICS_EXPORTER=otlp`; see the
   [remote telemetry contract](enablers/remote-execution-telemetry.md) for native

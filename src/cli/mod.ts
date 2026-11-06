@@ -173,7 +173,11 @@ import {
   createAutoResolveOutputAdapter,
   isBundleArtifactPath,
 } from "./auto_resolver_adapters.ts";
-import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
+import {
+  type TelemetryFlushOutcome,
+  TelemetryService,
+} from "../domain/telemetry/telemetry_service.ts";
+import type { TelemetrySender } from "../domain/telemetry/telemetry_sender.ts";
 import { isTelemetryDisabledByEnv } from "../infrastructure/telemetry/telemetry_opt_out_env.ts";
 import { JsonTelemetryFlushRecordRepository } from "../infrastructure/persistence/json_telemetry_flush_record_repository.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
@@ -2060,23 +2064,56 @@ async function recordAndFlushError(
     sensitiveValues,
   );
 
-  // distinct_id is required by the sender; skip the flush if neither userId nor
-  // repoId resolved
+  await flushTelemetryIfDue(telemetryCtx);
+}
+
+/** a command sends the spool at most once per interval; the rest only spool */
+export const TELEMETRY_FLUSH_INTERVAL_MS = 5 * 60_000;
+const MAX_FLUSH_BATCHES = 4;
+
+/**
+ * sends what the spool holds when a flush is due, in up to MAX_FLUSH_BATCHES
+ * batches under one 2 s budget, then cleans the spool; resolves to the last
+ * batch's outcome, or undefined when nothing was due
+ */
+export async function flushTelemetryIfDue(
+  telemetryCtx: TelemetryContext,
+  options: { readonly now?: Date; readonly sender?: TelemetrySender } = {},
+): Promise<TelemetryFlushOutcome | undefined> {
+  // distinct_id is required by the sender; if neither userId nor repoId
+  // resolved, skip the flush and leave the entry spooled for a future run
   const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
-  if (distinctId) {
-    const sender = new HttpTelemetrySender(
-      telemetryCtx.telemetryEndpoint,
-      USER_AGENT,
-    );
-    await telemetryCtx.service.flushTelemetry({
+  if (!distinctId) return undefined;
+  if (
+    !await telemetryCtx.service.flushDue(
+      TELEMETRY_FLUSH_INTERVAL_MS,
+      options.now,
+    )
+  ) {
+    return undefined;
+  }
+  const sender = options.sender ??
+    new HttpTelemetrySender(telemetryCtx.telemetryEndpoint, USER_AGENT);
+  const signal = AbortSignal.timeout(2000);
+  let outcome: TelemetryFlushOutcome | undefined;
+  for (let batch = 0; batch < MAX_FLUSH_BATCHES; batch++) {
+    outcome = await telemetryCtx.service.flushTelemetry({
       sender,
       distinctId,
       repoId: telemetryCtx.repoId,
       authToken: telemetryCtx.authToken ?? undefined,
       keepFlushed: telemetryCtx.keepFlushed,
-      signal: AbortSignal.timeout(2000),
+      signal,
+      ...(options.now !== undefined ? { at: options.now } : {}),
     });
+    if (!outcome.result.ok || outcome.sentCount === 0 || signal.aborted) break;
   }
+  // Cleanup with bounded timeout so Deno.exit() doesn't kill it
+  await Promise.race([
+    telemetryCtx.service.cleanupOldTelemetry(),
+    new Promise<void>((r) => setTimeout(r, 3000)),
+  ]);
+  return outcome;
 }
 
 function endInvocation(): void {
@@ -2748,38 +2785,15 @@ async function runInvocation(
             startTime,
           );
 
-          // distinct_id is required by the sender; if neither userId nor repoId
-          // resolved, skip the flush and leave the entry spooled for a future
-          // run
-          const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
-          if (distinctId) {
-            const sender = new HttpTelemetrySender(
-              telemetryCtx.telemetryEndpoint,
-              USER_AGENT,
+          const flushResult = await flushTelemetryIfDue(telemetryCtx);
+          if (flushResult !== undefined && !flushResult.result.ok) {
+            const detail = flushResult.result.reason
+              ? ` (${flushResult.result.reason})`
+              : "";
+            logger.warn(
+              `Telemetry flush failed${detail} — entries are queued locally and will retry on a later invocation`,
             );
-            const flushResult = await telemetryCtx.service.flushTelemetry({
-              sender,
-              distinctId,
-              repoId: telemetryCtx.repoId,
-              authToken: telemetryCtx.authToken ?? undefined,
-              keepFlushed: telemetryCtx.keepFlushed,
-              signal: AbortSignal.timeout(2000),
-            });
-            if (!flushResult.result.ok) {
-              const detail = flushResult.result.reason
-                ? ` (${flushResult.result.reason})`
-                : "";
-              logger.warn(
-                `Telemetry flush failed${detail} — entries are queued locally and will retry on the next invocation`,
-              );
-            }
           }
-
-          // Cleanup with bounded timeout so Deno.exit() doesn't kill it
-          await Promise.race([
-            telemetryCtx.service.cleanupOldTelemetry(),
-            new Promise<void>((r) => setTimeout(r, 3000)),
-          ]);
         } catch {
           // Best effort — never break the CLI for telemetry failures
         }

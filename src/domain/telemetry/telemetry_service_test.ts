@@ -1136,3 +1136,31 @@ Deno.test("TelemetryService.flushEntry writes no record for an entry of another 
 
   assertEquals(records.writes, 0);
 });
+
+Deno.test("TelemetryService.flushDue: due with no record, not within the interval, due once it passed or the clock moved back (swamp-club#4457)", async () => {
+  const records = new MockFlushRecordRepository();
+  const service = serviceWithFlushRecords(
+    new MockTelemetryRepository(),
+    records,
+  );
+  const at = new Date("2026-11-06T00:00:00.000Z");
+  assertEquals(await service.flushDue(60_000, at), true);
+  records.record = {
+    lastAttemptAt: at.toISOString(),
+    lastAttemptOk: true,
+    lastSuccessAt: at.toISOString(),
+    lastSentCount: 1,
+  };
+  assertEquals(
+    await service.flushDue(60_000, new Date(at.getTime() + 59_999)),
+    false,
+  );
+  assertEquals(
+    await service.flushDue(60_000, new Date(at.getTime() + 60_000)),
+    true,
+  );
+  assertEquals(
+    await service.flushDue(60_000, new Date(at.getTime() - 1)),
+    true,
+  );
+});

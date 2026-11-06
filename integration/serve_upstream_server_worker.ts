@@ -31,6 +31,7 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { withServer } from "./serve_datastore_api_harness.ts";
+import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { grant } from "./serve_request_harness.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 
@@ -47,6 +48,7 @@ export type ServeWorkerRequest =
     readonly grants: readonly GrantSpec[];
     readonly models?: readonly string[];
     readonly managedConfig?: boolean;
+    readonly commitFeed?: boolean;
   }
   | { readonly kind: "log" }
   | { readonly kind: "grants"; readonly grants: readonly GrantSpec[] }
@@ -141,6 +143,14 @@ async function start(
   await withServer(
     request.grants.map(toGrant),
     async (server) => {
+      if (request.commitFeed === true) {
+        const store = server.v3.commitStore;
+        (server.ctx as ConnectionContext).commitFeed = {
+          datastore: server.v3,
+          bound: () => store.highWaterMark().cursor,
+          onMoved: (listener) => store.onHeadMoved(listener),
+        };
+      }
       const models: Record<string, string> = { web: server.model.id };
       for (const name of request.models ?? []) {
         const model = Definition.create({ name, globalArguments: {} });

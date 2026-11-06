@@ -681,6 +681,15 @@ export function watchV3ServeFeeds(): void {
     feedWatches.push(watchServeFeed({
       target: binding.target,
       catchUp: () => handle.catchUp(),
+      ...(handle.serveFeedCursor !== undefined
+        ? { appliedCursor: () => handle.serveFeedCursor!() }
+        : {}),
+      ...(handle.sentToServe !== undefined
+        ? { sentHere: (txnId: string) => handle.sentToServe!(txnId) }
+        : {}),
+      ...(handle.catchUpReadModel !== undefined
+        ? { catchUpLocally: () => handle.catchUpReadModel!() }
+        : {}),
     }));
   }
 }

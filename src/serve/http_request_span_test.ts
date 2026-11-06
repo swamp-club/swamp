@@ -199,6 +199,19 @@ Deno.test("traceHttpRequests: parents spans started by the handler", async () =>
   });
 });
 
+Deno.test("traceHttpRequests: leaves a datastore route's span to the datastore API, which opens it after authentication", async () => {
+  await withCapturedSpans(async (spans) => {
+    let called = false;
+    const handler = traceHttpRequests(() => {
+      called = true;
+      return new Response(null, { status: 200 });
+    });
+    await handler(request("/api/v1/datastore/_default/changes"), INFO);
+    assert(called);
+    assertEquals(spans.length, 0);
+  });
+});
+
 Deno.test("traceHttpRequests: creates no span for a WebSocket upgrade", async () => {
   await withCapturedSpans(async (spans) => {
     let called = false;

@@ -1308,17 +1308,58 @@ export class SqliteReadModel implements ReadModel {
     return undefined;
   }
 
+  /** the chunks a base load will write, fetched together as a page's are */
+  async #prefetchBaseChunks(
+    writes: readonly { namespace: string; record_key: string }[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const byNamespace = new Map<string, BlobRef[]>();
+    for (const { namespace, record_key } of writes) {
+      const content = this.#state.loadContent(namespace, record_key);
+      if (content === undefined || !("blob" in content)) continue;
+      if (content.blob.legacyKey !== undefined) continue;
+      if (unprojectedReason(namespace, record_key, this.#checkout)) continue;
+      const owner = this.#state.loadFile(namespace, record_key);
+      if (
+        owner !== undefined &&
+        this.#net?.skipsWrite(namespace, record_key, owner.mark) === true
+      ) {
+        continue;
+      }
+      const refs = byNamespace.get(namespace) ?? [];
+      refs.push(content.blob);
+      byNamespace.set(namespace, refs);
+    }
+    if (byNamespace.size === 0) return;
+    await withSpan("swamp.datastore.v3.readmodel.prefetch", {}, async () => {
+      for (const [namespace, refs] of byNamespace) {
+        await this.#chunkStore.prefetch(namespaceOf(namespace), refs, signal);
+      }
+    });
+  }
+
+  /**
+   * the chunks the page's apply will read, fetched together: never a key this
+   * checkout does not project, nor a write a net replay skips
+   */
   async #prefetchChunks(
     page: readonly CommitChange[],
     signal: AbortSignal,
   ): Promise<void> {
     const byNamespace = new Map<string, BlobRef[]>();
-    for (const { commit } of page) {
-      for (const op of commit.ops) {
-        if (op.kind !== "put" || !("blob" in op.content)) continue;
-        if (op.content.blob.legacyKey !== undefined) continue;
+    for (const change of page) {
+      const { commit } = change;
+      for (const keyChange of finalKeyStates(commit)) {
+        const put = keyChange.put;
+        if (put === null || !("blob" in put.content)) continue;
+        if (put.content.blob.legacyKey !== undefined) continue;
+        const key = keyChange.key.toString();
+        if (unprojectedReason(commit.namespace, key, this.#checkout)) continue;
+        if (this.#net?.skipsWrite(commit.namespace, key, change.cursor)) {
+          continue;
+        }
         const refs = byNamespace.get(commit.namespace) ?? [];
-        refs.push(op.content.blob);
+        refs.push(put.content.blob);
         byNamespace.set(commit.namespace, refs);
       }
     }
@@ -1358,9 +1399,7 @@ export class SqliteReadModel implements ReadModel {
     try {
       let applied = 0;
       try {
-        // a replay fetches only what no later change replaces; a page of new
-        // changes reads each, so its chunks are fetched together first
-        if (!this.#replaying) await this.#prefetchChunks(page, signal);
+        await this.#prefetchChunks(page, signal);
         for (const change of page) {
           signal.throwIfAborted();
           if (await this.#apply(change, advance, signal, batch)) applied++;
@@ -1387,6 +1426,7 @@ export class SqliteReadModel implements ReadModel {
       this.#timeSync("catalog", () => this.#catalog.commitBatch());
       this.#state.commitBatch();
       tellOwnWorkApplied();
+      await this.#releaseFetched(signal);
       if (this.#stats !== undefined) {
         this.#stats.pages++;
         this.#stats.commits += applied;
@@ -1401,6 +1441,17 @@ export class SqliteReadModel implements ReadModel {
       this.#state.rollbackBatch();
       this.#pageInFlight = undefined;
       settled.resolve();
+    }
+  }
+
+  /** the page's files are durable, so the chunks fetched for them can go */
+  async #releaseFetched(signal: AbortSignal): Promise<void> {
+    try {
+      await this.#chunkStore.releaseFetched(signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      logger
+        .debug`Removing chunks fetched for files already written failed: ${error}`;
     }
   }
 
@@ -2009,6 +2060,7 @@ export class SqliteReadModel implements ReadModel {
         signal,
       ));
       await batch.barrier();
+      await this.#releaseFetched(signal);
     } finally {
       batch.discard();
     }
@@ -2094,6 +2146,7 @@ export class SqliteReadModel implements ReadModel {
         NO_COMMIT,
       );
     }
+    await this.#prefetchBaseChunks(writes, signal);
     for (const { namespace, record_key } of writes) {
       signal.throwIfAborted();
       const content = this.#state.loadContent(namespace, record_key);

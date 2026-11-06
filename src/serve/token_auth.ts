@@ -19,6 +19,7 @@
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { withSpan } from "../infrastructure/tracing/tracer.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   type ServerToken,
@@ -366,8 +367,16 @@ export async function authenticateServerToken(
 
   try {
     const deps = authDeps ??
-      await createServerTokenAuthDeps(repoDir, repoContext);
-    const token = await deps.readToken(split.name);
+      await withSpan(
+        "swamp.serve.token_auth.deps",
+        {},
+        () => createServerTokenAuthDeps(repoDir, repoContext),
+      );
+    const token = await withSpan(
+      "swamp.serve.token_auth.read_token",
+      {},
+      () => deps.readToken(split.name),
+    );
     const nowMs = deps.now?.() ?? Date.now();
     validateServerToken(token, split.name, presented, nowMs);
     const matchKey = vaultMatchKey(repoDir, token);
@@ -381,7 +390,11 @@ export async function authenticateServerToken(
         throw new Error(`Server token '${split.name}' does not match`);
       }
     } else {
-      const secret = await deps.readSecret(token.vaultName, token.secretKey);
+      const secret = await withSpan(
+        "swamp.serve.token_auth.read_secret",
+        {},
+        () => deps.readSecret(token.vaultName, token.secretKey),
+      );
       validateServerToken(token, split.name, presented, nowMs, secret);
       // the presented secret is the vault's; it must also be the one this
       // record was minted with, or the credential would authenticate as another

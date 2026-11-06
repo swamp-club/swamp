@@ -24,6 +24,7 @@
  */
 
 import {
+  type ChunkStage,
   type DatastoreStorage,
   STORAGE_CONTRACT,
   type StorageCapabilities,
@@ -150,6 +151,8 @@ export class CachedServeStorage extends FileSystemStorage
   implements PrefetchingStorage {
   readonly #remote: DatastoreStorage;
   readonly #offline: () => boolean;
+  /** chunks read from serve and not since stored here, by namespace */
+  readonly #fetched = new Map<string, Set<string>>();
 
   constructor(
     cacheRoot: string,
@@ -225,7 +228,50 @@ export class CachedServeStorage extends FileSystemStorage
     if (local !== null || this.#offline()) return local;
     const bytes = await this.#remote.get(namespace, sha256, signal);
     // The client checked the bytes' hash; keep them for the next read.
-    if (bytes !== null) await super.put(namespace, sha256, bytes, signal);
+    if (bytes !== null) {
+      await super.put(namespace, sha256, bytes, signal);
+      let fetched = this.#fetched.get(namespace);
+      if (fetched === undefined) {
+        this.#fetched.set(namespace, fetched = new Set());
+      }
+      fetched.add(sha256);
+    }
     return bytes;
+  }
+
+  override async put(
+    namespace: string,
+    sha256: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.#fetched.get(namespace)?.delete(sha256);
+    await super.put(namespace, sha256, bytes, signal);
+  }
+
+  override stageChunks(namespace: string): ChunkStage {
+    const stage = super.stageChunks(namespace);
+    return {
+      ...stage,
+      put: (sha256, bytes, signal) => {
+        this.#fetched.get(namespace)?.delete(sha256);
+        return stage.put(sha256, bytes, signal);
+      },
+    };
+  }
+
+  /**
+   * removes the chunks read from serve once the files made from them are
+   * durable: serve keeps them, so a later read fetches again. A chunk this
+   * checkout stored itself (its own commits, sent or not) is never removed
+   */
+  async releaseFetched(signal: AbortSignal): Promise<void> {
+    for (const [namespace, hashes] of this.#fetched) {
+      for (const sha256 of [...hashes]) {
+        signal.throwIfAborted();
+        hashes.delete(sha256);
+        await super.delete(namespace, sha256, signal);
+      }
+    }
   }
 }

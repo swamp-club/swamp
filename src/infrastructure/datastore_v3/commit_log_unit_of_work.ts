@@ -23,6 +23,7 @@
  * ones stay committed, later ones are not tried
  */
 
+import { withSpan } from "../tracing/tracer.ts";
 import {
   noteCommandLanded,
   noteCommandMayHaveLanded,
@@ -1258,7 +1259,32 @@ function runRank(group: Group): number {
  * one chunk batch before the commit is prepared, so a power loss never leaves a
  * commit naming a lost chunk. Resolves true when every op was withdrawn
  */
-async function appendGroup(
+function appendGroup(
+  group: Group,
+  options: CommitLogUnitOptions,
+  clock: () => Date,
+  storedOps: WeakMap<PendingPut, PutOp>,
+  superseded: WeakSet<PendingPut>,
+  unitOutbox: UnitOutbox,
+  onQueued?: () => void,
+): Promise<boolean> {
+  return withSpan(
+    "swamp.datastore.v3.commit.append_group",
+    {},
+    () =>
+      appendGroupIn(
+        group,
+        options,
+        clock,
+        storedOps,
+        superseded,
+        unitOutbox,
+        onQueued,
+      ),
+  );
+}
+
+async function appendGroupIn(
   group: Group,
   options: CommitLogUnitOptions,
   clock: () => Date,

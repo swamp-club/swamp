@@ -23,6 +23,7 @@ import {
   commandNeedsLoaderSetup,
   type DeferredWarning,
   defersExtensionCatalog,
+  flushTelemetryIfDue,
   isDispatchRunnerCommand,
   isHookCommand,
   isLocalhostUrl,
@@ -41,7 +42,16 @@ import {
   resolveWorkflowsDir,
   runsLocallyWithServeUpstream,
   shouldSuppressMissingExtensionsWarning,
+  TELEMETRY_FLUSH_INTERVAL_MS,
 } from "./mod.ts";
+import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
+import type { TelemetryEntry } from "../domain/telemetry/telemetry_entry.ts";
+import type {
+  TelemetryFlushResult,
+  TelemetrySender,
+} from "../domain/telemetry/telemetry_sender.ts";
+import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
+import { JsonTelemetryFlushRecordRepository } from "../infrastructure/persistence/json_telemetry_flush_record_repository.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
 import {
   resetServeUpstreamCommandPath,
@@ -1051,5 +1061,81 @@ Deno.test("runsLocallyWithServeUpstream: extension install and pull run in a for
     });
   } finally {
     resetServeUpstreamCommandPath();
+  }
+});
+
+class CountingSender implements TelemetrySender {
+  readonly batches: string[][] = [];
+  sendBatch(entries: TelemetryEntry[]): Promise<TelemetryFlushResult> {
+    this.batches.push(entries.map((entry) => entry.id));
+    return Promise.resolve({ ok: true });
+  }
+}
+
+async function recordCommand(service: TelemetryService): Promise<void> {
+  await service.recordSuccess(
+    {
+      command: "version",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+  );
+}
+
+Deno.test("flushTelemetryIfDue: commands within one interval send the spool once; the next due flush sends every record spooled since (swamp-club#4457)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const telemetryDir = join(dir, "telemetry");
+    // one service per command, as each command is its own process
+    const command = () => {
+      const service = new TelemetryService(
+        new JsonTelemetryRepository(dir, telemetryDir),
+        "1.0.0",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "http://ingest.test",
+        new JsonTelemetryFlushRecordRepository(telemetryDir),
+      );
+      return {
+        service,
+        userId: "user-1",
+        repoId: undefined,
+        telemetryEndpoint: "http://ingest.test",
+        keepFlushed: false,
+        authToken: null,
+      };
+    };
+    const sender = new CountingSender();
+    const start = Date.now();
+    const minute = 60_000;
+    // ten commands a minute apart: the first flushes, the next ones only spool
+    // until the interval has passed
+    let flushes = 0;
+    for (let i = 0; i < 10; i++) {
+      const ctx = command();
+      await recordCommand(ctx.service);
+      const outcome = await flushTelemetryIfDue(ctx, {
+        sender,
+        now: new Date(start + i * minute),
+      });
+      if (outcome !== undefined) flushes++;
+    }
+    const intervals = Math.floor(9 * minute / TELEMETRY_FLUSH_INTERVAL_MS);
+    assertEquals(flushes, 1 + intervals);
+    assertEquals(sender.batches.flat().length, 1 + 5 * intervals);
+
+    // nothing spooled is lost: a due flush sends the remaining records
+    await flushTelemetryIfDue(command(), {
+      sender,
+      now: new Date(start + 60 * minute),
+    });
+    assertEquals(sender.batches.flat().length, 10);
+    assertEquals(new Set(sender.batches.flat()).size, 10);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseArgs } from "@std/cli/parse-args";
-import { join, resolve } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 
 interface Options {
   readonly binaries: Readonly<Record<string, string>>;
@@ -31,11 +31,20 @@ interface Options {
   readonly fakeGcsImage: string;
   readonly keep: boolean;
   readonly setupOnly: boolean;
+  readonly largeHistory: number;
+  readonly largeKib: number;
+  readonly idleMs: number;
+  readonly coldRounds: number;
+  readonly cloneRounds: number;
+  readonly startupRounds: number;
+  readonly telemetryLatencyMs: number;
+  readonly v2Hydration: readonly ("full" | "lazy")[];
 }
 
 const GCS_EXTENSION = "@swamp/gcs-datastore";
 const BUCKET = "lane";
 const WRITER = "writer";
+const BIG = "big";
 const WORKFLOW = "two-steps";
 
 function usage(): never {
@@ -43,7 +52,10 @@ function usage(): never {
     `usage: deno run -A scripts/measure_v3_team_round_trips.ts \\
   --binary label=path [--binary label=path ...] [--latency-ms 100] \\
   [--handshake-rtts 2] [--rounds 12] [--history 200] [--followers 1] \\
-  [--work-dir dir] [--fake-gcs-image image] [--keep] [--setup-only]`,
+  [--work-dir dir] [--fake-gcs-image image] [--keep] [--setup-only] \\
+  [--large-history 20] [--large-kib 64] [--idle-ms 70000] [--cold-rounds 2] \\
+  [--clone-rounds 2] [--startup-rounds 6] [--telemetry-latency-ms 300] \\
+  [--v2-hydration full,lazy]`,
   );
   Deno.exit(2);
 }
@@ -59,6 +71,14 @@ function parseOptions(): Options {
       "followers",
       "work-dir",
       "fake-gcs-image",
+      "large-history",
+      "large-kib",
+      "idle-ms",
+      "cold-rounds",
+      "clone-rounds",
+      "startup-rounds",
+      "telemetry-latency-ms",
+      "v2-hydration",
     ],
     boolean: ["keep", "setup-only"],
     collect: ["binary"],
@@ -69,6 +89,15 @@ function parseOptions(): Options {
       history: "200",
       followers: "1",
       "fake-gcs-image": "fsouza/fake-gcs-server:1.56.1",
+      "large-history": "20",
+      "large-kib": "64",
+      // past serve's 60 s vault-match TTL
+      "idle-ms": "70000",
+      "cold-rounds": "2",
+      "clone-rounds": "2",
+      "startup-rounds": "6",
+      "telemetry-latency-ms": "300",
+      "v2-hydration": "",
     },
   });
   const binaries: Record<string, string> = {};
@@ -78,6 +107,12 @@ function parseOptions(): Options {
     binaries[spec.slice(0, at)] = resolve(spec.slice(at + 1));
   }
   if (Object.keys(binaries).length === 0) usage();
+  const v2Hydration: ("full" | "lazy")[] = [];
+  for (const mode of String(args["v2-hydration"]).split(",")) {
+    if (mode === "") continue;
+    if (mode !== "full" && mode !== "lazy") usage();
+    v2Hydration.push(mode);
+  }
   return {
     binaries,
     latencyMs: Number(args["latency-ms"]),
@@ -91,6 +126,14 @@ function parseOptions(): Options {
     fakeGcsImage: args["fake-gcs-image"],
     keep: args.keep,
     setupOnly: args["setup-only"],
+    largeHistory: Number(args["large-history"]),
+    largeKib: Number(args["large-kib"]),
+    idleMs: Number(args["idle-ms"]),
+    coldRounds: Number(args["cold-rounds"]),
+    cloneRounds: Number(args["clone-rounds"]),
+    startupRounds: Number(args["startup-rounds"]),
+    telemetryLatencyMs: Number(args["telemetry-latency-ms"]),
+    v2Hydration,
   };
 }
 
@@ -361,6 +404,7 @@ async function initRepo(
   env: Record<string, string>,
 ): Promise<void> {
   await Deno.mkdir(dir, { recursive: true });
+  laneRepos.push(dir);
   await run(binary, ["repo", "init", "--tool", "none", "--json"], dir, env);
   await run(
     binary,
@@ -579,15 +623,7 @@ async function setUpLane(
     const origin = i === memberCount - 1 && followers.length > 0
       ? followers[0].origin
       : leader.origin;
-    const marker = await Deno.readTextFile(join(leaderRepo, ".swamp.yaml"));
-    const datastore = marker.slice(marker.indexOf("datastore:"));
-    const own = await Deno.readTextFile(join(repo, ".swamp.yaml"));
-    await Deno.writeTextFile(
-      join(repo, ".swamp.yaml"),
-      own.slice(0, own.indexOf("datastore:") >= 0 ? own.indexOf("datastore:") : own.length)
-        .trimEnd() + `\nserverAddress: ${JSON.stringify(origin)}\n` +
-        datastore,
-    );
+    await pointAtServe(repo, leaderRepo, origin);
     members.push({ name, repo, origin, token: tokens[i] });
   }
   return {
@@ -606,6 +642,22 @@ async function setUpLane(
       }
     },
   };
+}
+
+async function pointAtServe(
+  repo: string,
+  leaderRepo: string,
+  origin: string,
+): Promise<void> {
+  const marker = await Deno.readTextFile(join(leaderRepo, ".swamp.yaml"));
+  const datastore = marker.slice(marker.indexOf("datastore:"));
+  const own = await Deno.readTextFile(join(repo, ".swamp.yaml"));
+  await Deno.writeTextFile(
+    join(repo, ".swamp.yaml"),
+    own.slice(0, own.indexOf("datastore:") >= 0 ? own.indexOf("datastore:") : own.length)
+      .trimEnd() + `\nserverAddress: ${JSON.stringify(origin)}\n` +
+      datastore,
+  );
 }
 
 function memberEnv(env: Env, member: Member): Record<string, string> {
@@ -630,7 +682,17 @@ async function memberRun(
   );
 }
 
-async function seedMember(binary: string, env: Env, member: Member) {
+// random so no two outputs share a chunk; base64 grows it by a third
+function bigRun(largeKib: number): string {
+  return `run=head -c ${Math.floor(largeKib * 1024 * 3 / 4)} /dev/urandom | base64`;
+}
+
+async function seedMember(
+  binary: string,
+  env: Env,
+  member: Member,
+  largeKib: number,
+) {
   await memberRun(binary, env, member, [
     "model",
     "create",
@@ -638,6 +700,14 @@ async function seedMember(binary: string, env: Env, member: Member) {
     WRITER,
     "--global-arg",
     "run=echo written",
+  ]);
+  await memberRun(binary, env, member, [
+    "model",
+    "create",
+    "command/shell",
+    BIG,
+    "--global-arg",
+    bigRun(largeKib),
   ]);
   const body = join(member.repo, "two-steps.body.yaml");
   await Deno.writeTextFile(
@@ -732,6 +802,64 @@ async function settle(
   }
 }
 
+async function sampleOnce(
+  label: string,
+  binary: string,
+  member: Member,
+  command: string,
+  args: readonly string[],
+  round: number,
+  env: Env,
+  spans: SinkSpan[],
+  events: StorageEvent[],
+): Promise<Sample> {
+  await settle(spans, events);
+  const fromSpan = spans.length;
+  const fromEvent = events.length;
+  const started = Date.now();
+  const result = await run(
+    binary,
+    [...args, "--json"],
+    member.repo,
+    memberEnv(env, member),
+    false,
+  );
+  const ended = Date.now();
+  await settle(spans, events);
+  const window = spans.slice(fromSpan).filter((span) =>
+    span.startMs >= started - 5 && span.startMs <= ended + 5
+  );
+  const storage = emptyStorageCounts();
+  for (const event of events.slice(fromEvent)) {
+    if (event.at >= started && event.at <= ended) storage[event.kind]++;
+  }
+  if (result.code !== 0) {
+    console.error(
+      `  ${label} ${member.name} ${command}: exit ${result.code}: ${
+        result.stderr.trim().split("\n").slice(-2).join(" | ")
+      }`,
+    );
+  }
+  return {
+    binary: label,
+    member: member.name,
+    command,
+    round,
+    ms: result.ms,
+    code: result.code,
+    memberRequests: window
+      .filter((span) => span.name === "swamp.datastore.v3.serve.request")
+      .sort((a, b) => a.startMs - b.startMs)
+      .map((span) =>
+        `${span.attributes["http.request.method"]} ${
+          span.attributes["http.route"]
+        }`
+      ),
+    storage,
+    spans: window,
+  };
+}
+
 async function measure(
   label: string,
   binary: string,
@@ -745,52 +873,290 @@ async function measure(
   for (let round = 0; round < options.rounds; round++) {
     for (const member of lane.members) {
       for (const [command, args] of Object.entries(COMMANDS)) {
-        await settle(spans, events);
-        const fromSpan = spans.length;
-        const fromEvent = events.length;
-        const started = Date.now();
-        const result = await run(
-          binary,
-          [...args, "--json"],
-          member.repo,
-          memberEnv(env, member),
-          false,
+        samples.push(
+          await sampleOnce(
+            label,
+            binary,
+            member,
+            command,
+            args,
+            round,
+            env,
+            spans,
+            events,
+          ),
         );
-        const ended = Date.now();
-        await settle(spans, events);
-        const window = spans.slice(fromSpan).filter((span) =>
-          span.startMs >= started - 5 && span.startMs <= ended + 5
-        );
-        const storage = emptyStorageCounts();
-        for (const event of events.slice(fromEvent)) {
-          if (event.at >= started && event.at <= ended) storage[event.kind]++;
-        }
-        samples.push({
-          binary: label,
-          member: member.name,
-          command,
-          round,
-          ms: result.ms,
-          code: result.code,
-          memberRequests: window
-            .filter((span) => span.name === "swamp.datastore.v3.serve.request")
-            .sort((a, b) => a.startMs - b.startMs)
-            .map((span) =>
-              `${span.attributes["http.request.method"]} ${
-                span.attributes["http.route"]
-              }`
-            ),
-          storage,
-          spans: window,
-        });
-        if (result.code !== 0) {
-          console.error(
-            `  ${label} ${member.name} ${command}: exit ${result.code}: ${
-              result.stderr.trim().split("\n").slice(-2).join(" | ")
-            }`,
-          );
-        }
       }
+    }
+  }
+  return samples;
+}
+
+// every member's first read after serve's token cache went cold
+async function measureCold(
+  lanes: readonly [string, string, Lane][],
+  options: Options,
+  env: Env,
+  spans: SinkSpan[],
+  events: StorageEvent[],
+): Promise<Sample[]> {
+  const samples: Sample[] = [];
+  for (let round = 0; round < options.coldRounds; round++) {
+    console.error(`idling ${options.idleMs} ms for cold reads, round ${round + 1}`);
+    await delay(options.idleMs);
+    for (const [label, binary, lane] of lanes) {
+      for (const member of lane.members) {
+        samples.push(
+          await sampleOnce(
+            label,
+            binary,
+            member,
+            "cold data get",
+            COMMANDS["data get"],
+            round,
+            env,
+            spans,
+            events,
+          ),
+        );
+      }
+    }
+  }
+  return samples;
+}
+
+async function treeBytes(dir: string): Promise<number> {
+  let total = 0;
+  for await (const entry of Deno.readDir(dir)) {
+    const path = join(dir, entry.name);
+    if (entry.isSymlink) continue;
+    if (entry.isDirectory) total += await treeBytes(path);
+    else total += (await Deno.lstat(path)).size;
+  }
+  return total;
+}
+
+// a datastore's cache can live under ~/.swamp/repos/<repoId>, outside the repo
+async function homeCacheOf(repo: string): Promise<string | undefined> {
+  const marker = await Deno.readTextFile(join(repo, ".swamp.yaml"));
+  const id = /^repoId:\s*"?([^"\s]+)"?/m.exec(marker)?.[1];
+  const home = Deno.env.get("HOME");
+  return id === undefined || home === undefined
+    ? undefined
+    : join(home, ".swamp", "repos", id);
+}
+
+async function storedBytes(repo: string): Promise<number> {
+  const cache = await homeCacheOf(repo);
+  let cached = 0;
+  if (cache !== undefined) {
+    try {
+      cached = await treeBytes(cache);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  return (await treeBytes(repo)) + cached;
+}
+
+// every repo the lane made, so their home caches go when it ends
+const laneRepos: string[] = [];
+
+interface CloneSample {
+  readonly binary: string;
+  readonly kind: string;
+  readonly round: number;
+  readonly ms: number;
+  readonly code: number;
+  readonly bytes: number;
+}
+
+// a new member checkout's first data list: the whole catch-up from serve
+async function measureClone(
+  label: string,
+  binary: string,
+  lane: Lane,
+  options: Options,
+  env: Env,
+): Promise<CloneSample[]> {
+  const samples: CloneSample[] = [];
+  const m1 = lane.members[0];
+  for (let round = 0; round < options.cloneRounds; round++) {
+    const repo = join(dirname(lane.leader.repo), `clone-${round + 1}`);
+    await initRepo(binary, repo, baseEnv(env));
+    await pointAtServe(repo, lane.leader.repo, m1.origin);
+    const before = await storedBytes(repo);
+    const result = await run(
+      binary,
+      ["data", "list", WRITER, "--json"],
+      repo,
+      memberEnv(env, { ...m1, repo }),
+      false,
+    );
+    if (result.code !== 0) {
+      console.error(
+        `  ${label} v3 clone: exit ${result.code}: ${
+          result.stderr.trim().split("\n").slice(-3).join(" | ")
+        }`,
+      );
+    }
+    samples.push({
+      binary: label,
+      kind: "v3 member clone",
+      round,
+      ms: result.ms,
+      code: result.code,
+      bytes: (await storedBytes(repo)) - before,
+    });
+  }
+  return samples;
+}
+
+// the same history on a v2 bucket, cloned in the given hydration mode
+async function measureV2Clone(
+  label: string,
+  binary: string,
+  options: Options,
+  env: Env,
+): Promise<CloneSample[]> {
+  const samples: CloneSample[] = [];
+  const root = join(options.workDir, `${label}-v2`);
+  const runEnv = baseEnv(env);
+  const config = gcsConfig(
+    `${label}-v2-${crypto.randomUUID().slice(0, 8)}`,
+    env.storageHost,
+  );
+  const writer = join(root, "writer");
+  await initRepo(binary, writer, runEnv);
+  await run(binary, [
+    "datastore",
+    "setup",
+    "extension",
+    GCS_EXTENSION,
+    "--config",
+    config,
+    "--json",
+  ], writer, runEnv);
+  await run(binary, [
+    "model",
+    "create",
+    "command/shell",
+    WRITER,
+    "--global-arg",
+    "run=echo written",
+    "--json",
+  ], writer, runEnv);
+  await run(binary, [
+    "model",
+    "create",
+    "command/shell",
+    BIG,
+    "--global-arg",
+    bigRun(options.largeKib),
+    "--json",
+  ], writer, runEnv);
+  console.error(`seeding the ${label} v2 bucket`);
+  for (let i = 0; i < options.history; i++) {
+    await run(binary, [...COMMANDS.write, "--json"], writer, runEnv);
+  }
+  for (let i = 0; i < options.largeHistory; i++) {
+    await run(
+      binary,
+      ["model", "method", "run", BIG, "execute", "--json"],
+      writer,
+      runEnv,
+    );
+  }
+  for (const mode of options.v2Hydration) {
+    for (let round = 0; round < options.cloneRounds; round++) {
+      const repo = join(root, `clone-${mode}-${round + 1}`);
+      await initRepo(binary, repo, runEnv);
+      // v2 keeps definitions in the repo, so a git clone brings them along
+      await new Deno.Command("cp", {
+        args: ["-R", join(writer, "models"), join(repo, "models")],
+      }).output();
+      const before = await storedBytes(repo);
+      const started = performance.now();
+      const setup = await run(binary, [
+        "datastore",
+        "setup",
+        "extension",
+        GCS_EXTENSION,
+        "--config",
+        config,
+        "--hydration-strategy",
+        mode,
+        "--json",
+      ], repo, runEnv, false);
+      const list = setup.code === 0
+        ? await run(binary, ["data", "list", WRITER, "--json"], repo, runEnv, false)
+        : setup;
+      if (list.code !== 0) {
+        console.error(
+          `  ${label} v2 clone (${mode}): exit ${list.code}: ${
+            list.stderr.trim().split("\n").slice(-3).join(" | ")
+          }`,
+        );
+      }
+      samples.push({
+        binary: label,
+        kind: `v2 clone (${mode})`,
+        round,
+        ms: performance.now() - started,
+        code: list.code,
+        bytes: (await storedBytes(repo)) - before,
+      });
+    }
+  }
+  return samples;
+}
+
+interface StartupSample {
+  readonly binary: string;
+  readonly telemetry: boolean;
+  readonly ms: number;
+}
+
+// a local ingest answering after the injected delay, so no lane run reaches
+// the real telemetry endpoint
+function startTelemetryIngest(
+  port: number,
+  latencyMs: number,
+  posts: { count: number },
+): Deno.HttpServer {
+  return Deno.serve(
+    { hostname: "127.0.0.1", port, onListen: () => {} },
+    async (req) => {
+      await req.body?.cancel();
+      if (req.method === "POST") posts.count++;
+      await delay(latencyMs);
+      return new Response(null, { status: 202 });
+    },
+  );
+}
+
+async function measureStartup(
+  label: string,
+  binary: string,
+  lane: Lane,
+  options: Options,
+  env: Env,
+  ingest: string,
+): Promise<StartupSample[]> {
+  const samples: StartupSample[] = [];
+  const m1 = lane.members[0];
+  const off = memberEnv(env, m1);
+  const { SWAMP_NO_TELEMETRY: _a, DO_NOT_TRACK: _b, ...rest } = off;
+  const on = {
+    ...rest,
+    SWAMP_TELEMETRY_ENDPOINT: ingest,
+    // the spool stays inside the lane
+    SWAMP_CONFIG_DIR: join(options.workDir, `${label}-telemetry-config`),
+  };
+  for (let round = 0; round < options.startupRounds; round++) {
+    for (const [telemetry, runEnv] of [[false, off], [true, on]] as const) {
+      const result = await run(binary, ["version", "--json"], m1.repo, runEnv);
+      samples.push({ binary: label, telemetry, ms: result.ms });
     }
   }
   return samples;
@@ -806,6 +1172,20 @@ async function seedHistory(
   for (let i = 0; i < options.history; i++) {
     await memberRun(binary, env, member, [...COMMANDS.write]);
   }
+  for (let i = 0; i < options.largeHistory; i++) {
+    await memberRun(binary, env, member, ["model", "method", "run", BIG, "execute"]);
+  }
+}
+
+function spanTotal(sample: Sample, name: string): number {
+  return sample.spans
+    .filter((span) => span.name === name)
+    .reduce((sum, span) => sum + span.endMs - span.startMs, 0);
+}
+
+// process start-up and exit: the wall time outside the swamp.cli span
+function outsideCliMs(sample: Sample): number {
+  return sample.ms - spanTotal(sample, "swamp.cli");
 }
 
 // K2a: the swamp.cli span less bootstrap and the method's own execution
@@ -835,12 +1215,16 @@ export function summarize(
     groups.set(key, [...(groups.get(key) ?? []), sample]);
   }
   lines.push(
-    "binary | command | member | n | failed | wall p50 / p95 ms | K2a p50 / p95 ms | requests to serve (median) | storage requests (median)",
+    "binary | command | member | n | failed | wall p50 / p95 ms | K2a p50 / p95 ms | outside swamp.cli p50 ms | teardown p50 ms | requests to serve (median) | storage requests (median)",
   );
   for (const [key, group] of groups) {
     const ok = group.filter((sample) => sample.code === 0);
     const ms = ok.map((sample) => sample.ms);
     const k2a = ok.map(k2aMs);
+    const outside = ok.map(outsideCliMs);
+    const teardown = ok.map((sample) =>
+      spanTotal(sample, "swamp.cli.teardown")
+    );
     const requests = ok.map((sample) => sample.memberRequests.length);
     const storage = ok.map((sample) =>
       Object.values(sample.storage).reduce((a, b) => a + b, 0)
@@ -850,7 +1234,11 @@ export function summarize(
         Math.round(percentile(ms, 50))
       } / ${Math.round(percentile(ms, 95))} | ${
         Math.round(percentile(k2a, 50))
-      } / ${Math.round(percentile(k2a, 95))} | ${percentile(requests, 50)} | ${
+      } / ${Math.round(percentile(k2a, 95))} | ${
+        Math.round(percentile(outside, 50))
+      } | ${Math.round(percentile(teardown, 50))} | ${
+        percentile(requests, 50)
+      } | ${
         percentile(storage, 50)
       }`,
     );
@@ -858,8 +1246,53 @@ export function summarize(
   return lines.join("\n");
 }
 
-// serve ignores an incoming traceparent: a serve span is matched to the
-// member request it falls inside, by route
+export function summarizeClones(samples: readonly CloneSample[]): string {
+  const lines = [
+    "binary | clone | n | failed | wall p50 ms | bytes stored p50 (MB)",
+  ];
+  const groups = new Map<string, CloneSample[]>();
+  for (const sample of samples) {
+    const key = `${sample.binary} | ${sample.kind}`;
+    groups.set(key, [...(groups.get(key) ?? []), sample]);
+  }
+  for (const [key, group] of groups) {
+    const ok = group.filter((sample) => sample.code === 0);
+    lines.push(
+      `${key} | ${group.length} | ${group.length - ok.length} | ${
+        Math.round(percentile(ok.map((s) => s.ms), 50))
+      } | ${
+        (percentile(ok.map((s) => s.bytes), 50) / 1_048_576).toFixed(1)
+      }`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export function summarizeStartup(
+  samples: readonly StartupSample[],
+  flushes: number,
+): string {
+  const lines = [
+    `swamp version in a member checkout; ${flushes} telemetry posts to the local ingest`,
+    "binary | telemetry | n | wall p50 / p95 ms",
+  ];
+  for (const binary of new Set(samples.map((sample) => sample.binary))) {
+    for (const telemetry of [false, true]) {
+      const ms = samples
+        .filter((s) => s.binary === binary && s.telemetry === telemetry)
+        .map((s) => s.ms);
+      lines.push(
+        `${binary} | ${telemetry ? "on" : "off"} | ${ms.length} | ${
+          Math.round(percentile(ms, 50))
+        } / ${Math.round(percentile(ms, 95))}`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+// a serve span is the member request's child once serve adopts the member's
+// traceparent; a binary that ignores it is matched by route and time window
 export function breakdown(samples: readonly Sample[], label: string): string {
   const lines: string[] = [];
   for (const command of Object.keys(COMMANDS)) {
@@ -895,6 +1328,9 @@ export function breakdown(samples: readonly Sample[], label: string): string {
       const route = String(request.attributes["http.route"]);
       const method = String(request.attributes["http.request.method"]);
       const server = median.spans.find((span) =>
+        span.parentSpanId === request.spanId &&
+        span.name.startsWith(`${method} /api/v1/datastore/`)
+      ) ?? median.spans.find((span) =>
         span.name === `${method} /api/v1/datastore/{namespace}/${route}` &&
         span.startMs >= request.startMs - 2 && span.endMs <= request.endMs + 2
       );
@@ -902,10 +1338,11 @@ export function breakdown(samples: readonly Sample[], label: string): string {
         ? []
         : under(server).filter((span) => span.name.startsWith("GCS ") ||
           span.name.startsWith("S3 "));
+      const auth = server?.attributes["swamp.serve.auth_ms"];
       lines.push(
         `  ${String(request.endMs - request.startMs).padStart(5)} ms  ${method} ${route}  [${
           parentName(request).replace("swamp.datastore.v3.serve.", "")
-        }]`,
+        }]${auth === undefined ? "" : `  auth ${auth} ms`}`,
       );
       for (const call of storage) {
         const key = String(call.attributes["gcp.gcs.key"] ?? "")
@@ -927,6 +1364,15 @@ async function main(): Promise<void> {
   const gcsPort = freePort();
   const proxyPort = freePort();
   const otlpPort = freePort();
+  const ingestPort = freePort();
+  const posts = { count: 0 };
+  const ingest = startTelemetryIngest(
+    ingestPort,
+    options.telemetryLatencyMs,
+    posts,
+  );
+  const clones: CloneSample[] = [];
+  const startups: StartupSample[] = [];
   const container = `swamp-team-lane-${crypto.randomUUID().slice(0, 8)}`;
   await new Deno.Command("docker", {
     args: [
@@ -998,7 +1444,7 @@ async function main(): Promise<void> {
         await lane.stop();
         return;
       }
-      await seedMember(binary, env, lane.members[0]);
+      await seedMember(binary, env, lane.members[0], options.largeKib);
       console.error(`seeding ${options.history} commits`);
       await seedHistory(binary, lane, options, env);
     }
@@ -1019,13 +1465,35 @@ async function main(): Promise<void> {
         );
       }
     }
+    all.push(...await measureCold(lanes, options, env, spans, events));
+    for (const [label, binary, lane] of lanes) {
+      console.error(`measuring ${label} start-up and fresh clones`);
+      startups.push(
+        ...await measureStartup(
+          label,
+          binary,
+          lane,
+          options,
+          env,
+          `http://127.0.0.1:${ingestPort}`,
+        ),
+      );
+      clones.push(...await measureClone(label, binary, lane, options, env));
+    }
     for (const [, , lane] of lanes) await lane.stop();
+    if (options.v2Hydration.length > 0) {
+      for (const [label, binary] of Object.entries(options.binaries)) {
+        clones.push(...await measureV2Clone(label, binary, options, env));
+      }
+    }
   } finally {
     await Deno.writeTextFile(
       join(options.workDir, "samples.json"),
       JSON.stringify(all, null, 1),
     );
     console.log(summarize(all, options));
+    console.log(`\n${summarizeStartup(startups, posts.count)}`);
+    console.log(`\n${summarizeClones(clones)}`);
     const first = Object.keys(options.binaries)[0];
     console.log(breakdown(all, first));
     console.error(`samples: ${join(options.workDir, "samples.json")}`);
@@ -1037,6 +1505,15 @@ async function main(): Promise<void> {
     }).output();
     await proxy.shutdown();
     await sink.shutdown();
+    await ingest.shutdown();
+    if (!options.keep) {
+      for (const repo of laneRepos) {
+        const cache = await homeCacheOf(repo).catch(() => undefined);
+        if (cache !== undefined) {
+          await Deno.remove(cache, { recursive: true }).catch(() => {});
+        }
+      }
+    }
     if (!options.keep) {
       await new Deno.Command("docker", {
         args: ["rm", "-f", container],

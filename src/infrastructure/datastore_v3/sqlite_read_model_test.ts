@@ -27,6 +27,7 @@ import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
+import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import { type Op, tombstoneOp } from "../../domain/datastore_v3/op.ts";
 import {
   blobPut,
@@ -1551,3 +1552,90 @@ async function reachesAs(
     await Deno.remove(join(dir, name));
   }
 }
+
+class PrefetchRecorder extends MemoryStorage {
+  readonly prefetched: string[][] = [];
+  prefetch(
+    _namespace: string,
+    hashes: readonly string[],
+    _signal: AbortSignal,
+  ): Promise<void> {
+    this.prefetched.push([...hashes]);
+    return Promise.resolve();
+  }
+}
+
+function hashesOf(ref: BlobRef): string[] {
+  return (ref.parts ?? [{ sha256: ref.sha256 }]).map((part) => part.sha256);
+}
+
+Deno.test("SqliteReadModel.catchUp: a replay fetches the chunks it writes together, never one a later write of the key replaces (swamp-club#4457)", async () => {
+  await withEnv(async (env) => {
+    const storage = new PrefetchRecorder();
+    const chunks = new ChunkStore(storage);
+    const blob = (fill: number) =>
+      chunks.write(SOLO_NAMESPACE, new Uint8Array(20_000).fill(fill), signal());
+    const first = await blob(1);
+    const rewritten = await blob(2);
+    const b = await blob(3);
+    const c = await blob(4);
+    await env.append(1, "", [await blobPut("a", 1, first), versionOp("a", 1)]);
+    await env.append(2, "", [await blobPut("a", 1, rewritten)]);
+    await env.append(3, "", [
+      await blobPut("b", 1, b),
+      versionOp("b", 1),
+      await blobPut("c", 1, c),
+      versionOp("c", 1),
+    ]);
+    const readModel = env.open({ chunkStore: chunks });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(storage.prefetched.length, 1, "one batch for the page");
+    assertEquals(
+      storage.prefetched.flat().sort(),
+      [...hashesOf(rewritten), ...hashesOf(b), ...hashesOf(c)].sort(),
+    );
+    assertEquals(
+      await readOrAbsent(env.contentPath("", "a", 1)) !== undefined,
+      true,
+    );
+  });
+});
+
+Deno.test("SqliteReadModel.catchUp: a page of new commits fetches no chunk for a key the checkout does not project (swamp-club#4457)", async () => {
+  await withEnv(async (env) => {
+    const storage = new PrefetchRecorder();
+    const chunks = new ChunkStore(storage);
+    const blob = (fill: number) =>
+      chunks.write(SOLO_NAMESPACE, new Uint8Array(20_000).fill(fill), signal());
+    const shown = await blob(1);
+    const alsoShown = await blob(2);
+    const hidden = await blob(3);
+    await env.append(1, "", [await savePut("seed", 1), versionOp("seed", 1)]);
+    const readModel = env.open({
+      chunkStore: chunks,
+      checkout: { namespace: "", admits: (key) => !key.includes("hidden") },
+    });
+    try {
+      await readModel.catchUp(signal());
+      await env.append(2, "", [
+        await blobPut("shown", 1, shown),
+        versionOp("shown", 1),
+        await blobPut("also-shown", 1, alsoShown),
+        versionOp("also-shown", 1),
+        await blobPut("hidden", 1, hidden),
+        versionOp("hidden", 1),
+      ]);
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(
+      storage.prefetched.flat().sort(),
+      [...hashesOf(shown), ...hashesOf(alsoShown)].sort(),
+    );
+  });
+});

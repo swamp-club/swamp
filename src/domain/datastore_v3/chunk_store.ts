@@ -199,6 +199,10 @@ export function storageNamespaceOf(namespace: Namespace): string {
 }
 
 // prefetch keeps what it fetches; ChunkStore asks only a storage that does
+export interface ReleasingStorage {
+  releaseFetched(signal: AbortSignal): Promise<void>;
+}
+
 export interface PrefetchingStorage {
   prefetch(
     namespace: string,
@@ -400,6 +404,15 @@ export class ChunkStore {
       hashes,
       signal,
     );
+  }
+
+  /**
+   * lets a storage that keeps what it fetches drop it, once the files made
+   * from it are durable; nothing for any other storage
+   */
+  async releaseFetched(signal: AbortSignal): Promise<void> {
+    const storage = this.#storage as Partial<ReleasingStorage>;
+    await storage.releaseFetched?.(signal);
   }
 
   /**

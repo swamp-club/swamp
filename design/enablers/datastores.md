@@ -4034,6 +4034,18 @@ applied commits replay in full, and so does one resumed after a crash: from
 the bound on, every file is where a full replay leaves it. On the dogfood
 repos a clone wrote 13.7k files instead of 40-48k.
 
+**Fetching chunks for a page (swamp-club#4457).** Before a page applies, the
+read model fetches together every chunk the page's writes will read: puts of
+keys the checkout projects, less the writes a net replay skips
+(`#prefetchChunks`); a compacted base load does the same for its staged
+files. A replay, recovery included, fetches this way too, so a fresh clone or
+a recovery no longer reads a member's large outputs one chunk at a time. A
+serve-backed copy keeps no chunk it fetched once the files made from it are
+durable (`CachedServeStorage.releaseFetched`, after each page's barrier):
+serve holds them, and a later read fetches again. A chunk the checkout stored
+itself, through `put` or a chunk stage, is never released, so an unsent
+offline commit keeps its chunks.
+
 **Netted base load (swamp-club#3916).** A net catch-up that meets a compacted
 base before applying anything plans the base and the tail after it together.
 After staging the base, it seeds a `NetReplayPlanner` with each staged file's
@@ -8660,7 +8672,18 @@ serve-mode checkout watch serve's feed while they run (`watchV3ServeFeeds`,
 stopped when the datastores close). The watch is a wake-up: when a frame
 brings commits, the checkout's own catch-up reads them through the changes
 feed, with its filtering, base loads and gaps. Short commands need nothing
-new; serve never watches.
+new; serve never watches. It wakes only for what the copy lacks
+(swamp-club#4457): the `commits.head` reply starts a catch-up only past the
+feed cursor the copy has applied, since the command caught up just before it
+started watching, and a frame whose commits this process sent itself
+(`sentToServe`, the txnIds its sink forwarded) asks serve nothing, since the
+commit's own read-back already put it in the copy: it only brings the read
+model up (`catchUpReadModel`), so the next command does not pay for applying
+this one's commits. A frame with another
+writer's commit still starts one. A write then makes two catch-ups, the
+writer hold's and the lock's, not four, and a later catch-up that meets the
+command's own commit again in the changes feed appends nothing (`#append`
+skips a seq the copy already holds).
 
 Such a catch-up can run while one of the command's units is open, and the
 feed brings back the commits the command itself sent, a mid-run checkpoint

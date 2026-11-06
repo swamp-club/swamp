@@ -24,6 +24,7 @@
  */
 
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { injectTraceContext } from "../infrastructure/tracing/propagation.ts";
 import {
   ServeFollowerBehindError,
   type ServeLeader,
@@ -181,6 +182,10 @@ export class LeaderLink {
     );
     const peer = this.#options.peerToken?.();
     if (peer !== undefined) headers.set(TEAM_PEER_HEADER, peer);
+    // the leader's span joins this node's, not the caller's directly
+    for (const [name, value] of Object.entries(injectTraceContext())) {
+      headers.set(name, value);
+    }
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     const signal = AbortSignal.any([this.#closed.signal, req.signal]);
     const client = this.client(address);
