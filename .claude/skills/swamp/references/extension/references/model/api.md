@@ -317,6 +317,12 @@ Returned by `writeResource` and writer methods:
 | `metadata`   | Metadata for the data artifact (see below)                   |
 | `attributes` | Top-level resource attributes (resource kind only, optional) |
 
+`attributes` is absent once a run's written resources pass 64 MiB of serialized
+JSON; the data is still written. Read content through
+`context.dataRepository.getContent` rather than relying on `attributes` in a
+method or report that may write or read many resources. The `--json` run result
+marks such artifacts `attributesOmitted: true`.
+
 **`metadata` sub-fields:**
 
 | Field               | Type                      | Description                                              |

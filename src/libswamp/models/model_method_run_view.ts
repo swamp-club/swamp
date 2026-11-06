@@ -23,6 +23,8 @@ export interface DataArtifactView {
   path: string;
   attributes?: Record<string, unknown>;
   tags?: Record<string, string>;
+  /** content left out: the run's attribute budget was spent */
+  attributesOmitted?: true;
 }
 
 export interface ReportResultView {

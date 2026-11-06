@@ -268,6 +268,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
     artifacts: Array<{
       name: string;
       attributes?: Record<string, unknown>;
+      attributesOmitted?: true;
       tags?: Record<string, string>;
     }>,
     options?: DataBoxOptions,
@@ -277,6 +278,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
       .map((a) => ({
         name: a.name,
         attributes: a.attributes,
+        ...(a.attributesOmitted ? { attributesOmitted: true as const } : {}),
       }));
     const lines = renderDataBox(dataArtifacts, options);
     for (const line of lines) {

@@ -208,6 +208,7 @@ export class PipeWriter {
 export interface DataArtifact {
   name: string;
   attributes?: Record<string, unknown>;
+  attributesOmitted?: true;
   source?: string;
 }
 
@@ -276,6 +277,15 @@ export function renderDataBox(
           ]
           : []),
       ]);
+
+      if (artifact.attributesOmitted) {
+        dataEntries.push(
+          dim("    content not shown: run output limit reached"),
+        );
+        if (!complexArtifactNames.includes(artifact.name)) {
+          complexArtifactNames.push(artifact.name);
+        }
+      }
 
       if (artifact.attributes) {
         const keys = Object.keys(artifact.attributes);

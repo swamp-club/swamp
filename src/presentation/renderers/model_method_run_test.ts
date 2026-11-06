@@ -863,3 +863,62 @@ Deno.test("ModelMethodRunRenderer: a destination refusal is an error carrying it
     assertStringIncludes(error.message, "secret 'DB_PASS' in vault 'prod'");
   }
 });
+
+function makeOmittedRunView(): ModelMethodRunView {
+  return {
+    ...makeRunView("succeeded"),
+    dataArtifacts: [
+      {
+        id: "art-1",
+        name: "first",
+        path: "/data/first/v1",
+        attributes: { exitCode: 0 },
+      },
+      {
+        id: "art-2",
+        name: "second",
+        path: "/data/second/v1",
+        attributesOmitted: true,
+      },
+    ],
+  };
+}
+
+Deno.test("JsonModelMethodRunRenderer: an artifact past the attribute budget carries attributesOmitted and no attributes", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createModelMethodRunRenderer("json", {
+      modelName: "test-model",
+      methodName: "run",
+    });
+    await consumeStream(
+      toStream(fullEventStream(makeOmittedRunView())),
+      renderer.handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.status, "succeeded");
+    assertEquals(parsed.dataArtifacts[0].attributes, { exitCode: 0 });
+    assertEquals(parsed.dataArtifacts[1].attributesOmitted, true);
+    assertEquals("attributes" in parsed.dataArtifacts[1], false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: an artifact past the attribute budget says its content is not shown and how to read it", async () => {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(fullEventStream(makeOmittedRunView())),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "content not shown: run output limit reached");
+  assertStringIncludes(output, `name == "second"' --select content`);
+});

@@ -3197,3 +3197,92 @@ Deno.test("modelMethodRun: outside a diagnostic area it exports no phases", asyn
     );
   });
 });
+
+function jsonHandle(name: string, content: string): DataHandle {
+  return {
+    dataId: generateDataId(),
+    name,
+    specName: "item",
+    kind: "resource" as const,
+    version: 1,
+    size: new TextEncoder().encode(content).length,
+    tags: {},
+    metadata: { contentType: "application/json" },
+  } as DataHandle;
+}
+
+async function runWithResources(
+  contents: Record<string, string>,
+  capBytes?: number,
+): Promise<{ events: ModelMethodRunEvent[]; reads: string[] }> {
+  const reads: string[] = [];
+  const handles = Object.entries(contents).map(([name, content]) =>
+    jsonHandle(name, content)
+  );
+  const deps = createTestDeps(
+    createTestDefinition("test-model", "run"),
+    createTestModelDef("run"),
+  );
+  deps.resourceAttributeCapBytes = capBytes;
+  deps.dataRepo = {
+    ...createFakeDataRepo(),
+    getContent: (_type: ModelType, _id: string, name: string) => {
+      reads.push(name);
+      return Promise.resolve(new TextEncoder().encode(contents[name]));
+    },
+  } as unknown as ModelMethodRunDeps["dataRepo"];
+  deps.createExecutionService = () => ({
+    ...createFakeExecutionService(),
+    executeWorkflow: async (
+      _definition: unknown,
+      _modelDef: unknown,
+      _methodName: string,
+      _context: unknown,
+      options?: { onArgumentsValidated?: () => Promise<void> },
+    ) => {
+      await validatedArguments(options);
+      return { dataHandles: handles };
+    },
+  });
+  const events = await collect<ModelMethodRunEvent>(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      skipAllReports: true,
+    }),
+  );
+  return { events, reads };
+}
+
+Deno.test("modelMethodRun: a run under the attribute budget inlines every artifact's attributes", async () => {
+  const { events } = await runWithResources({
+    a: JSON.stringify({ n: 1 }),
+    b: JSON.stringify({ n: 2 }),
+  });
+  const last = events.at(-1);
+  assert(last?.kind === "completed");
+  assertEquals(
+    last.run.dataArtifacts.map((a) => [a.name, a.attributes]),
+    [["a", { n: 1 }], ["b", { n: 2 }]],
+  );
+  assertEquals(
+    last.run.dataArtifacts.some((a) => "attributesOmitted" in a),
+    false,
+  );
+});
+
+Deno.test("modelMethodRun: artifacts past the attribute budget are marked omitted and never read", async () => {
+  const content = JSON.stringify({ blob: "x".repeat(40) });
+  const { events, reads } = await runWithResources(
+    { a: content, b: content, c: content },
+    content.length + 1,
+  );
+  const last = events.at(-1);
+  assert(last?.kind === "completed");
+  assertEquals(last.run.status, "succeeded");
+  const [a, b, c] = last.run.dataArtifacts;
+  assertEquals(a.attributes, { blob: "x".repeat(40) });
+  assertEquals(a.attributesOmitted, undefined);
+  assertEquals([b.attributes, b.attributesOmitted], [undefined, true]);
+  assertEquals([c.attributes, c.attributesOmitted], [undefined, true]);
+  assertEquals(reads, ["a"]);
+});

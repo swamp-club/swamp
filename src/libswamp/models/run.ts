@@ -55,6 +55,7 @@ import type { ReportResultView } from "./model_method_run_view.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { ResourceAttributeBudget } from "../../domain/models/resource_attribute_budget.ts";
 import type { DataHandle, ModelDefinition } from "../../domain/models/model.ts";
 import {
   type MethodExecutionService,
@@ -323,6 +324,8 @@ export interface ModelMethodRunDeps {
     persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   createExecutionService: () => MethodExecutionService;
+  /** lowers the run's attribute budget; production runs leave it at the default */
+  resourceAttributeCapBytes?: number;
   createVaultService: () => Promise<VaultService>;
   dataRepo: UnifiedDataRepository;
   catalogStore?: CatalogStore;
@@ -1642,6 +1645,9 @@ export async function* modelMethodRun(
                 "swamp.model.method.post_execute",
               );
               const dataArtifacts: DataArtifactView[] = [];
+              const attributeBudget = new ResourceAttributeBudget(
+                deps.resourceAttributeCapBytes,
+              );
               deps.onWrittenVersions?.(
                 writtenVersionsOfHandles(
                   execResult.dataHandles ?? [],
@@ -1670,7 +1676,14 @@ export async function* modelMethodRun(
                   });
 
                   let attributes: Record<string, unknown> | undefined;
+                  let attributesOmitted = false;
                   if (handle.metadata.contentType === "application/json") {
+                    attributesOmitted = !attributeBudget.admit(handle.size);
+                  }
+                  if (
+                    handle.metadata.contentType === "application/json" &&
+                    !attributesOmitted
+                  ) {
                     try {
                       const content = await deps.dataRepo.getContent(
                         modelType,
@@ -1696,6 +1709,9 @@ export async function* modelMethodRun(
                     path: dataPath,
                     attributes,
                     tags: handle.tags,
+                    ...(attributesOmitted
+                      ? { attributesOmitted: true as const }
+                      : {}),
                   });
                   yield {
                     kind: "data_artifact_saved",
