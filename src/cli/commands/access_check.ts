@@ -222,6 +222,15 @@ export const accessCheckCommand = new Command()
       );
     }
     const action: Action = actionResult.data;
+    if (
+      (options.field as string[] | undefined)?.some((f) =>
+        f.startsWith("client=")
+      )
+    ) {
+      throw new UserError(
+        "--field client is not read: a resource field cannot stand in for the client; use --client",
+      );
+    }
     let client: string | undefined;
     if (options.client !== undefined) {
       try {

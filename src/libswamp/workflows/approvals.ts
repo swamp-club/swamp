@@ -302,7 +302,7 @@ export async function* workflowApprovals(
             ...(run.initiatedBy !== undefined
               ? { initiatedBy: run.initiatedBy }
               : {}),
-            serveDriven: isServeDrivenRun(run),
+            ...(isServeDrivenRun(run) ? { serveDriven: true } : {}),
             ...(parentRun ? { parentRun, parentWaiting } : {}),
             ...(verdict && isOrphaned(verdict)
               ? {

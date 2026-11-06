@@ -1322,3 +1322,23 @@ grants:
   assertEquals(result.warnings[0].message.includes("workflow grant"), true);
   assertEquals(result.warnings[1].message.includes("'write'"), true);
 });
+
+Deno.test("parseGrantFile: refuses a condition on the run for any action but approve, and carries condition warnings", () => {
+  const parse = (actions: string, condition: string) =>
+    parseGrantFile(
+      "g.yaml",
+      `grants:\n  - subject: "user:a"\n    effect: deny\n    actions: [${actions}]\n    resource: "workflow:*"\n    condition: '${condition}'\n`,
+      validateGrantCondition,
+    );
+  const self = "principal.sub == run.initiator.sub";
+  assertEquals(parse("approve", self).errors, []);
+  assertStringIncludes(parse("run", self).errors[0].message, "names run");
+  assertStringIncludes(
+    parse("approve, read", self).errors[0].message,
+    "names run",
+  );
+  assertStringIncludes(
+    parse("read", 'client != "direct:cli"').warnings[0].message,
+    "not a security boundary",
+  );
+});

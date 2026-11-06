@@ -465,6 +465,7 @@ Deno.test("validateGrantCondition: a path the run does not have is refused, sinc
       'run.initiator.subject == "x"',
       "run.serve_driven",
       'run["initiator"].sub == "x"',
+      'run.initiator["subz"] == "x"',
       "run == {}",
     ]
   ) {
@@ -484,6 +485,23 @@ Deno.test("validateGrantCondition: a path the run does not have is refused, sinc
       validateGrantCondition(condition, "workflow", APPROVE_DENY).valid,
       true,
       condition,
+    );
+  }
+});
+
+Deno.test("validateGrantCondition: a client prefix no token can hold is refused", () => {
+  for (const prefix of ["integration:Slack", "slack", "direct:nope"]) {
+    assertEquals(
+      validateGrantCondition(`client.startsWith("${prefix}")`, "data").valid,
+      false,
+      prefix,
+    );
+  }
+  for (const prefix of ["integration:", "integration:sl", "direct:", "dir"]) {
+    assertEquals(
+      validateGrantCondition(`client.startsWith("${prefix}")`, "data").valid,
+      true,
+      prefix,
     );
   }
 });

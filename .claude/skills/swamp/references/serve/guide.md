@@ -262,6 +262,7 @@ swamp access check --subject user:alice --action run \
   --on 'workflow:@acme/deploy' --client integration:slack
 ```
 
+Add `--field run.initiator.sub=alice` to check a condition on the run.
 Self-approval's limits for member-driven runs are in
 `design/enablers/access-control.md`.
 

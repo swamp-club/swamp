@@ -269,7 +269,11 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
       `${effect} via ${via} (${subject} → ${result.action} → ${
         checkedTarget(result)
       })${impliedMarker(firstDecision)}${
-        firstDecision.dependsOn ? " (depends on the run)" : ""
+        firstDecision.dependsOn
+          ? " (depends on the run)"
+          : result.decisions.some((d) => d.dependsOn)
+          ? " (a deny depends on the run)"
+          : ""
       }${result.client ? ` as ${result.client}` : ""}`,
     );
 

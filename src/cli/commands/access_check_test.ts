@@ -467,3 +467,46 @@ Deno.test("accessCheckCommand: --client is refused with --server, since a reques
     "--client is not supported with --server",
   );
 });
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local --client reaches the decision and is named in the result",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo([
+      ["--subject", "user:a", "--allow", "read", "--on", "workflow:*"],
+      [
+        "--subject",
+        "user:a",
+        "--deny",
+        "read",
+        "--on",
+        "workflow:*",
+        "--when",
+        'client == "integration:slack"',
+      ],
+    ], async (dir) => {
+      const check = (...extra: string[]) =>
+        runAccess("check", [
+          "--repo-dir",
+          dir,
+          "--subject",
+          "user:a",
+          "--action",
+          "read",
+          "--on",
+          "workflow:w",
+          ...extra,
+        ]);
+      const slack = await check("--client", "integration:slack");
+      assertEquals(slack.exitCode, 1);
+      assertEquals(JSON.parse(slack.output).client, "integration:slack");
+      const direct = await check();
+      assertEquals(direct.exitCode, 0);
+      assertEquals(JSON.parse(direct.output).client, undefined);
+      await assertRejects(() => check("--client", "nonsense"));
+      await assertRejects(() => check("--field", "client=direct:cli"));
+    });
+  },
+});

@@ -108,7 +108,11 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       `${effect} via ${via} (${first.via} → ${result.query!.action} → ${
         result.query!.resource
       })${impliedMarker(first)}${
-        first.dependsOn ? " (depends on the run)" : ""
+        first.dependsOn
+          ? " (depends on the run)"
+          : result.decisions.some((d) => d.dependsOn)
+          ? " (a deny depends on the run)"
+          : ""
       }`,
     );
 

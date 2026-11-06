@@ -114,7 +114,7 @@ export function suppliedResourceFields(kind: ResourceKind): string[] {
     .map((f) => f.name);
 }
 
-const BINDING_MACROS = new Set([
+export const BINDING_MACROS: ReadonlySet<string> = new Set([
   "all",
   "exists",
   "exists_one",
@@ -206,6 +206,10 @@ export function unknownRunPaths(ast: unknown): string[] {
       const [target, member] = node.args as [unknown, unknown];
       const base = pathOf(target);
       return base === null ? null : [...base, String(member)];
+    }
+    if (node.op === "[]" || node.op === "[?]") {
+      const base = pathOf((node.args as unknown[])[0]);
+      return base === null ? null : [...base, "[]"];
     }
     return null;
   };

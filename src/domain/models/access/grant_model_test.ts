@@ -499,3 +499,25 @@ Deno.test("checkGrantCreateInputs: returns the parsed inputs and selector warnin
   assertEquals(checked.warnings.length, 1);
   assertEquals(checked.warnings[0].message.includes("model:@acme/*"), true);
 });
+
+Deno.test("checkGrantCreateInputs: refuses the run on any action but approve, and returns condition warnings", () => {
+  const self = {
+    ...VALID_CREATE_ARGS,
+    effect: "deny" as const,
+    condition: "principal.sub == run.initiator.sub",
+  };
+  assertThrows(
+    () => checkGrantCreateInputs({ ...self, actions: ["run"] }),
+    Error,
+    "names run",
+  );
+  assertEquals(
+    checkGrantCreateInputs({ ...self, actions: ["approve"] }).warnings,
+    [],
+  );
+  const warned = checkGrantCreateInputs({
+    ...VALID_CREATE_ARGS,
+    condition: 'client != "direct:cli"',
+  });
+  assertStringIncludes(warned.warnings[0].message, "not a security boundary");
+});

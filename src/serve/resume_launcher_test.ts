@@ -2108,3 +2108,64 @@ for (
     }
   });
 }
+
+Deno.test("autoResumeParentAfterChild: a resume by the initiator is judged on run, not as an approver", async () => {
+  const { parent, child } = nestedWorkflows(true);
+  const pair = settledPair(parent, child);
+  const initiatedBy = "user:approver";
+  const parentRun = WorkflowRun.fromData({
+    ...pair.parentRun.toData(),
+    initiatedBy,
+  });
+  const childRun = WorkflowRun.fromData({
+    ...pair.childRun.toData(),
+    initiatedBy,
+  });
+  const { ctx, registry } = nestedHarness(
+    [parent, child],
+    [parentRun, childRun],
+    "token",
+  );
+  withLiveToken(ctx);
+  const shared = {
+    subject: { kind: "user" as const, name: "approver" },
+    resource: { kind: "workflow" as const, pattern: "*" },
+    state: "active" as const,
+    source: "method" as const,
+    createdBy: { kind: "user" as const, id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+  Object.assign(ctx, {
+    policySnapshotLoader: {
+      decisionService: new GrantBasedAccessDecisionService(
+        new PolicySnapshot(
+          [
+            {
+              ...shared,
+              id: "allow",
+              effect: "allow" as const,
+              actions: ["run" as const],
+            },
+            {
+              ...shared,
+              id: "deny",
+              effect: "deny" as const,
+              actions: ["approve" as const],
+              condition: "principal.sub == run.initiator.sub",
+            },
+          ],
+          [],
+          createConditionEvaluator(),
+        ),
+      ),
+    },
+  });
+  const launched = await autoResumeParentAfterChild(
+    ctx,
+    { workflowId: child.id, runId: childRun.id },
+    tokenSubject,
+    "run",
+  );
+  assertEquals(launched, true);
+  assertEquals(registry.registered.length, 1);
+});

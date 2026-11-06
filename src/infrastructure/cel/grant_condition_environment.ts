@@ -23,8 +23,10 @@ import type { Action } from "../../domain/access/action.ts";
 import {
   type ClientLiteralFinding,
   clientLiteralFinding,
+  clientPrefixFinding,
 } from "../../domain/access/client.ts";
 import {
+  BINDING_MACROS,
   CONDITION_FIELDS,
   conditionFieldsUnavailableForActions,
   referencedConditionFields,
@@ -347,8 +349,11 @@ export function validateGrantCondition(
   const clientLiterals: ConditionTypeLiteral[] = [];
   collectTypeLiterals(parsed.ast, "client", clientLiterals);
   for (const { literal, match } of clientLiterals) {
-    if (match !== "exact") continue;
-    const finding = clientLiteralFinding(literal);
+    const finding = match === "exact"
+      ? clientLiteralFinding(literal)
+      : match === "prefix"
+      ? clientPrefixFinding(literal)
+      : undefined;
     if (finding) clientFindings.push(finding);
   }
   const neverMatches = clientFindings.find((f) => f.kind === "never-matches");
@@ -408,14 +413,6 @@ const TYPE_LITERAL_METHODS: Record<string, ConditionTypeLiteral["match"]> = {
   endsWith: "fragment",
   contains: "fragment",
 };
-
-const BINDING_MACROS = new Set([
-  "all",
-  "exists",
-  "exists_one",
-  "map",
-  "filter",
-]);
 
 function collectTypeLiterals(
   node: unknown,

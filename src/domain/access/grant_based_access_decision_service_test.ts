@@ -2853,3 +2853,13 @@ Deno.test("decideAll: a client deny decides for an integration and not for a dir
   );
   assertEquals(service.decideAll(ALICE, "write", "data")?.effect, "allow");
 });
+
+Deno.test("decide: while the run is pending an unconditional allow beats a pending one", () => {
+  const decision = conditionService([OTHERS_ALLOW, {}]).decide(
+    ALICE,
+    "approve",
+    { ...WORKFLOW, pending: ["run"] },
+  );
+  assertEquals(decision?.effect, "allow");
+  assertEquals(decision?.dependsOn, undefined);
+});

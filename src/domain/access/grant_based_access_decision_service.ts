@@ -398,6 +398,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     }
 
     let conditionsEvaluated = 0;
+    let pendingAllow: AccessDecision | undefined;
     // A deny whose condition could not be evaluated decides nothing, but it
     // must not let the service trigger default allow what it meant to stop.
     let denyUndecided = false;
@@ -451,10 +452,11 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       );
       if (outcome === "match") return toDecision(grant, match);
       if (outcome === "pending") {
-        return toDecision(grant, match, resource.pending);
+        pendingAllow ??= toDecision(grant, match, resource.pending);
       }
     }
 
+    if (pendingAllow) return pendingAllow;
     return denyUndecided
       ? null
       : serviceTriggerDefault(principal, action, resource);

@@ -85,6 +85,22 @@ export type ClientLiteralFinding =
   | { readonly kind: "never-matches"; readonly message: string }
   | { readonly kind: "not-a-boundary"; readonly message: string };
 
+/** judges a literal a condition requires `client` to start with */
+export function clientPrefixFinding(
+  literal: string,
+): ClientLiteralFinding | undefined {
+  const direct = CLIENT_KINDS.some((kind) => `${kind}:`.startsWith(literal)) ||
+    DIRECT_CLIENT_IDS.some((id) => `direct:${id}`.startsWith(literal));
+  const integration = literal.startsWith("integration:") &&
+    /^[a-z0-9-]{0,63}$/.test(literal.slice("integration:".length));
+  return direct || integration ? undefined : {
+    kind: "never-matches",
+    message: `client is required to start with ${
+      JSON.stringify(literal)
+    }, which no token can hold`,
+  };
+}
+
 /** judges a literal a condition compares `client` with, in full */
 export function clientLiteralFinding(
   literal: string,

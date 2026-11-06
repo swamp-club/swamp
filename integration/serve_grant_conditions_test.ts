@@ -477,3 +477,56 @@ Deno.test("grant conditions: type and schema endpoints check for an allow, so a 
     assertEquals(refusal(frames), undefined);
   });
 });
+
+Deno.test("grant conditions: can-i and check say a decision depends on the run, and only a self-check reads the caller's client", async () => {
+  await withServeRepo(async (repo) => {
+    await saveGatedWorkflow(repo, "deploy", "gate");
+    const clientDeny = {
+      effect: "deny",
+      actions: ["read"],
+      condition: `client == "${SLACK}"`,
+    } as Partial<Grant>;
+    const ctx = createServeCtx(repo, [
+      ...POLICY,
+      grant({
+        subject: { kind: "user", name: "root" },
+        actions: ["admin"],
+        resource: { kind: "access", pattern: "*" },
+      }),
+      onWorkflows("root", { actions: ["read"] }),
+      onWorkflows("root", clientDeny),
+      onWorkflows("alice", clientDeny),
+    ]);
+    const canI = await sendRequest(ctx, {
+      type: "access.can-i",
+      id: crypto.randomUUID(),
+      payload: { action: "approve", resource: "workflow:deploy" },
+    }, ALICE);
+    const rows = canI.find((f) => f.type === "access.can-i")?.payload
+      ?.decisions as { effect: string; dependsOn?: string[] }[];
+    assertEquals(rows.map((r) => [r.effect, r.dependsOn]), [
+      ["allow", undefined],
+      ["deny", ["run"]],
+    ]);
+    const root: Principal = { kind: "user", id: "root" };
+    const check = async (subject: string, client?: string) => {
+      const frames = await sendRequest(
+        ctx,
+        {
+          type: "access.check",
+          id: crypto.randomUUID(),
+          payload: { subject, action: "read", resource: "workflow:deploy" },
+        },
+        root,
+        { client },
+      );
+      const reply = frames.find((f) => f.type === "access.check");
+      assert(reply, JSON.stringify(frames));
+      const decisions = reply.payload?.decisions as { effect: string }[];
+      return decisions[0]?.effect;
+    };
+    assertEquals(await check("user:root", SLACK), "deny");
+    assertEquals(await check("user:root"), "allow");
+    assertEquals(await check("user:alice", SLACK), "allow");
+  });
+});

@@ -2645,6 +2645,8 @@ export async function handleWorkflowResume(
     tracestate: payload.tracestate,
     principalId: principal ? principalToString(principal) : null,
     subject: captureDecisionSubject(socket, principal),
+    // a resume decides no gate, so its caller is not judged as an approver
+    parentGrant: "run",
     canReadWorkflow: nestedRunReadDecider(ctx, socket, principal),
   });
   if (!launched.ok) {
