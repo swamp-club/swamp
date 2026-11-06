@@ -32,7 +32,12 @@ import type { SwampError } from "../../libswamp/errors.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { SerializedEvent } from "../protocol.ts";
 import { CanonicalResources } from "./resource_resolution.ts";
-import { type ConnectionContext, resourceDecider } from "./shared.ts";
+import {
+  type AccessCaller,
+  accessCallerOf,
+  callerResourceDecider,
+  type ConnectionContext,
+} from "./shared.ts";
 
 export interface NamedWorkflow {
   workflowId: string;
@@ -53,12 +58,24 @@ export function nestedRunReadDecider(
   // extension workflows it first read for the whole stream
   canonical?: CanonicalResources,
 ): (workflow: NamedWorkflow) => Promise<boolean> {
+  return callerNestedRunReadDecider(
+    ctx,
+    accessCallerOf(socket, principal),
+    canonical,
+  );
+}
+
+export function callerNestedRunReadDecider(
+  ctx: ConnectionContext,
+  caller: AccessCaller,
+  canonical?: CanonicalResources,
+): (workflow: NamedWorkflow) => Promise<boolean> {
   if (ctx.authConfig.mode === "none") return () => Promise.resolve(true);
   const owners = canonical ?? new CanonicalResources(
     ctx.repoContext.definitionRepo,
     ctx.repoContext.workflowRepo,
   );
-  const allows = resourceDecider(socket, principal, "read", ctx);
+  const allows = callerResourceDecider(caller, "read", ctx);
   const decided = new Map<string, Promise<boolean>>();
   return (workflow) => {
     const key = JSON.stringify([workflow.workflowId, workflow.workflowName]);

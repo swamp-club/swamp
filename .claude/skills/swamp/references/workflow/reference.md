@@ -993,12 +993,14 @@ added or moved, or a job added, renamed or removed); the run stays suspended
 until `swamp workflow cancel <wf> --run <id>`, or, for a run `swamp serve`
 started, `swamp workflow cancel --run <id> --server <url>`. The serve cancel
 also clears a serve-started run whose approval gate has timed out, and a run
-left `running` by a serve process that has died. A gate past its `timeout` can
-no longer be approved or rejected: `swamp workflow approvals` lists it in a
-separate expired section with the cancel command for its run (an `expired` array
-in `--json`), and the dashboard's Approvals & Signals view has a Cancel button
-for it. If it answers that the run was not cancelled, the reply says what still
-holds it. See
+left `running` by a serve process that has died. It needs `run` on the run's
+workflow, or admin; a caller refused gets the same "No cancellable" reply as a
+missing run, and `workflow approvals --json` says per run in `canCancel`. A gate
+past its `timeout` can no longer be approved or rejected:
+`swamp workflow approvals` lists it in a separate expired section with the
+cancel command for its run (an `expired` array in `--json`), and the dashboard's
+Approvals & Signals view has a Cancel button for it. If it answers that the run
+was not cancelled, the reply says what still holds it. See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **`wait_for_signal`** - Suspend the workflow until a JSON message arrives or a

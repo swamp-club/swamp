@@ -645,6 +645,20 @@ export class ScheduledExecutionService {
     return true;
   }
 
+  workflowOfRun(runId: string): { id: string; name: string } | undefined {
+    // An empty id would match every run whose start is not recorded yet.
+    if (runId === "") return undefined;
+    for (const [workflowId, entry] of this.running) {
+      if (entry.runId === runId) {
+        return {
+          id: workflowId,
+          name: this.workflowNames.get(workflowId) ?? workflowId,
+        };
+      }
+    }
+    return undefined;
+  }
+
   cancelByRunId(runId: string, reason = "cancelled by user"): boolean {
     for (const [workflowId, entry] of this.running) {
       if (entry.runId === runId) {

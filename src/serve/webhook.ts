@@ -566,7 +566,11 @@ export class WebhookService {
   private eventHandler: WebhookEventHandler | null = null;
   private readonly running = new Map<
     string,
-    { controller: AbortController; runId: string }
+    {
+      controller: AbortController;
+      runId: string;
+      workflow?: { id?: string; name: string };
+    }
   >();
   private draining = false;
   private stopped = false;
@@ -1065,6 +1069,14 @@ export class WebhookService {
     }
   }
 
+  workflowOfRun(runId: string): { id?: string; name: string } | undefined {
+    if (runId === "") return undefined;
+    for (const entry of this.running.values()) {
+      if (entry.runId === runId) return entry.workflow;
+    }
+    return undefined;
+  }
+
   cancelByRunId(runId: string, reason = "cancelled by user"): boolean {
     // An empty id would match every run whose start is not recorded yet.
     if (runId === "") return false;
@@ -1217,7 +1229,11 @@ export class WebhookService {
     const execId = crypto.randomUUID();
     // runId starts empty until the "started" event arrives with the real ID.
     // During this narrow window cancelByRunId() cannot match this run.
-    const tracked = { controller, runId: "" };
+    const tracked: {
+      controller: AbortController;
+      runId: string;
+      workflow?: { id?: string; name: string };
+    } = { controller, runId: "" };
     this.running.set(execId, tracked);
     // stop() may have swept `running` while this run was still dequeuing.
     if (this.stopped) controller.abort();
@@ -1252,6 +1268,10 @@ export class WebhookService {
             entry.lastProgressAt = new Date(this.now()).toISOString();
             observation.attributes({ "workflow.run_id": runId });
             tracked.runId = runId;
+            tracked.workflow = {
+              id: authorization.workflowId,
+              name: event.workflowName,
+            };
             // A route removed while this run was queued keeps no delay.
             if (this.endpoints.some((e) => e.route === route)) {
               this.lastQueueDelayMs.set(

@@ -62,11 +62,16 @@ export interface PendingApproval {
   /** set by serve for the caller; absent on a local listing */
   canDecide?: boolean;
   canDecideReason?: "grant-condition";
+  /** set by serve for the caller; absent on a local listing or an older serve */
+  canCancel?: boolean;
+  canResume?: boolean;
   parentRun?: {
     workflowId: string;
     workflowName: string;
     runId: string;
     stepName: string;
+    canCancel?: boolean;
+    canResume?: boolean;
   };
   /**
    * With `parentRun`: whether the parent still waits on this run. False once
@@ -96,12 +101,16 @@ export interface ExpiredApproval {
   timeoutSeconds: number;
   expiredAt: string;
   serveStarted: boolean;
+  canCancel?: boolean;
+  canResume?: boolean;
   parentRun?: {
     workflowId: string;
     workflowName: string;
     runId: string;
     stepName: string;
     serveStarted: boolean;
+    canCancel?: boolean;
+    canResume?: boolean;
   };
   parentWaiting?: boolean;
 }

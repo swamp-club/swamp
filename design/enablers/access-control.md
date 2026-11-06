@@ -989,6 +989,36 @@ runs out, the request is denied whatever grants remain.
 Implementation: `src/domain/access/grant_based_access_decision_service.ts`,
 `src/domain/access/policy_snapshot.ts`.
 
+### Who can cancel a run
+
+A cancel of one workflow run, by `swamp workflow cancel --run --server`
+(`POST /api/v1/cancel/workflow-run/<id>`) or the `workflow.cancel` request the
+dashboard uses, needs `run` on the run's workflow, for any run of it: there is no
+per-run ownership, and a person with `approve` could end the run by rejecting it
+anyway. It is decided on the workflow of what would be aborted, not on a stored
+record while something holds that run id. A condition cannot narrow it, since `run`
+is not available to a `run` decision. To keep cancel admin-only, list
+`workflow.cancel` in `--restricted-commands`, which binds both routes. `deny run`
+also stops a cancel, but stops starting the workflow too.
+
+A refused caller, a missing run, a finished run and another workflow's run get the
+same not-found reply, on each route. Cancelling a parent also cancels the suspended
+children it waited on, on workflows where the caller holds no grant; the reply names
+a child only to a reader of its workflow. The audit log records the caller on the
+parent's event and names them in the reason of each child's system event.
+
+What stays different, and why:
+
+| Route                                       | Needs                                                  | Why                                                       |
+| ------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- |
+| `POST /api/v1/cancel` (bulk)                | `admin` on `access:*`                                  | It reaches every run                                      |
+| `POST /api/v1/cancel/method-run/<id>`       | `admin` on `access:*`                                  | No CLI uses it; the WebSocket `cancel` takes `run`        |
+| `POST /api/v1/cancel/workflow-run/<id>`     | `admin` on `access:*`, or `run` on the run's workflow  | An admin denied `run` keeps it, as before this rule       |
+| `workflow.cancel`                           | `run` on the run's workflow                            | An admin denied `run` is refused, as `run` decides here   |
+
+A follower authenticates a per-run cancel and forwards it with the caller's own
+credentials, so the leader decides and records it, on its policy and records.
+
 ### Separation of duties
 
 To forbid self-approval, write a `deny`, once for each subject that holds `run`,
@@ -1009,9 +1039,10 @@ subject.
 
 A person refused on their own run sees that they are denied `approve`, and the
 audit event names the grant and the client. The gate keeps waiting, for someone
-else to decide, and the person can still cancel the run with `run`. Finish or
-cancel suspended runs with no usable initiator before writing such a deny: nobody
-it covers can decide them.
+else to decide, and the person can still cancel the run with `run` (see "Who can
+cancel a run"). Finish or cancel suspended runs with no usable initiator before
+writing such a deny: nobody it covers can decide them, and anyone with `run` on
+the workflow can cancel them.
 
 **Approve and reject decide twice.** Before any run is read, `run` is pending: a
 deny on it waits and an allow on it counts as possible, so a caller with no right
@@ -1024,7 +1055,9 @@ therefore tell refused from not found; they hold `approve` on that workflow.
 An explanation that names no run marks each decision needing one `dependsOn`, and
 `workflow.approvals` sets `canDecide` per run, with
 `canDecideReason: grant-condition` when the caller could decide other runs of the
-workflow but not this one.
+workflow but not this one. It also sets `canCancel` and `canResume` per row and on
+`parentRun`, unaudited, and `swamp workflow approvals` offers only the commands
+those allow. `canCancel` answers for `swamp workflow cancel --server`.
 
 **What self-approval guarantees:**
 

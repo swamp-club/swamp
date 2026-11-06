@@ -3987,8 +3987,8 @@ This is how a run `swamp serve` started is cleared once it suspends. That
 includes a run with an expired gate and one whose resume refuses a changed
 workflow. A local cancel refuses such a run, and supersede skips it. Any serve
 instance can cancel it, not only the one that started it, because each serve
-start records a fresh `instanceId`. The endpoint's admin check still applies,
-and the change runs under the sync gate and is pushed like any handler
+start records a fresh `instanceId`. The endpoint's check still applies (admin,
+or `run` on the run's workflow), and the change runs under the sync gate and is pushed like any handler
 mutation. A run that is already cancelled or finished gets `404`. A suspended
 run that another operation holds gets `409`.
 

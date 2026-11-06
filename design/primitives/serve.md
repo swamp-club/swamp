@@ -211,7 +211,7 @@ Everything below shares the one listener, dispatched in table order
 | WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, `?token=`, or an origin-bound dashboard session cookie) unless mode `none` | Serve protocol: 121 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
 | HTTP | `/data/*`, `/bundle/*` | worker session bearer | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
-| HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
+| HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin; a `workflow-run` cancel takes `run` on the run's workflow instead (IP burst and per-token rate limits) | `cancelExecution` (see below) |
 | HTTP POST | `/api/v1/signal/{waitId}`, `/api/v1/signal` (by workflow and key, in the body) | token + `signal` on the wait's workflow (IP burst and per-token rate limits) | Delivers a signal to a `wait_for_signal` step (`src/serve/signal_http.ts`; see "Signal" below) |
 | HTTP POST | `/api/v1/request` | bearer token, or the dashboard session cookie from its own `Origin`, unless mode `none` | Reads whose replies can outgrow a WebSocket frame (`HTTP_REQUEST_TYPES`), streamed as NDJSON (`src/serve/http_request_route.ts`) |
 | HTTP POST | `/api/v1/action` | bearer token only, unless mode `none` (per-principal rate; failed credentials counted per token name and address) | Workflow actions for an integration (`HTTP_ACTION_TYPES`), one JSON reply each (`src/serve/http_action_route.ts`; see "Actions over HTTP" below) |
@@ -1268,7 +1268,13 @@ server needs an upgrade (`requestNewerServerResponse`,
 
 **Cancel.** There are two paths:
 
-- HTTP cancel routes (admin only) call `cancelExecution`. It aborts the run's
+- HTTP cancel routes call `cancelExecution`. Bulk and `method-run` need admin;
+  a `workflow-run` cancel needs admin or `run` on the run's workflow
+  ("Who can cancel a run" in
+  [access control](../enablers/access-control.md)). For a non-admin,
+  `decideRunCancel` (`src/serve/run_cancel_authorization.ts`) decides on the
+  workflow each holder records, in `cancelExecution`'s own order, before anything
+  is aborted, and answers refused the same as missing. It aborts the run's
   controller and waits up to `CANCEL_GRACE_MS = 5_000` for completion. It
   returns `cancelled` if the run left the registry in time, otherwise
   `cancellation_requested` (`src/cli/commands/serve.ts`). A workflow run that
@@ -1292,8 +1298,10 @@ server needs an upgrade (`requestNewerServerResponse`,
   so is a refusal for a missing policy snapshot or principal, which on this
   path also sends no reply.
 - The WebSocket `workflow.cancel` request cancels a run by id: one this
-  instance is driving through the registry, otherwise a persisted suspended
-  run (`handleWorkflowCancel` in `src/serve/handlers/workflow_handlers.ts`).
+  instance is driving through the registry, an attached, scheduled or webhook
+  run (aborted and answered `cancellation_requested`), otherwise a persisted
+  suspended run (`handleWorkflowCancel` in
+  `src/serve/handlers/workflow_handlers.ts`).
   For a persisted run, `cancelSuspendedRunAndPush`
   (`src/serve/suspended_run_cancel.ts`) first locates the run and checks a
   `run` grant on the workflow it belongs to, holding neither the sync gate

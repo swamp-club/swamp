@@ -208,6 +208,15 @@ Deno.test({
   fn: async () => {
     await withStartedWebhookRun(async (started) => {
       const reason = "cancelled by test";
+      assertEquals(
+        started.service.workflowOfRun(started.runId)?.name !== undefined,
+        true,
+      );
+      assertEquals(
+        started.service.workflowOfRun(crypto.randomUUID()),
+        undefined,
+      );
+      assertEquals(started.service.workflowOfRun(""), undefined);
       const result = await cancelExecution("workflow-run", started.runId, {
         cancelRegistry: new RunCancelRegistry(),
         activeRunRegistry: new ActiveRunRegistry(),

@@ -2443,6 +2443,65 @@ Deno.test("handleWorkflowApprovals: canDecide says whether this caller holds app
   });
 });
 
+Deno.test("handleWorkflowApprovals: canCancel says whether this caller's cancel of each gate's run would be allowed", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    await seedGatedRun(dir, repo, "team-a-deploy", { team: "team-a" });
+    await seedGatedRun(dir, repo, "team-b-deploy", { team: "team-b" });
+    const read = workflowGrant({
+      actions: ["read"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    const run = workflowGrant({
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "team-a-*" },
+    });
+    const canCancel = async (grants: Grant[], restricted: string[] = []) => {
+      const ctx = approvalsCtx(dir, repo, grants);
+      (ctx.authConfig as { restrictedCommands: string[] }).restrictedCommands =
+        restricted;
+      const rows = await listApprovals(ctx, WORKFLOW_EDITOR);
+      return Object.fromEntries(
+        rows.map((r) => [r.workflowName, r.canCancel]),
+      );
+    };
+    assertEquals(await canCancel([read, run]), {
+      "team-a-deploy": true,
+      "team-b-deploy": false,
+    });
+    const admin = workflowGrant({
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    });
+    const denyRun = workflowGrant({
+      effect: "deny",
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    assertEquals(await canCancel([read, admin, denyRun]), {
+      "team-a-deploy": true,
+      "team-b-deploy": true,
+    });
+    assertEquals(await canCancel([read, run], ["workflow.cancel"]), {
+      "team-a-deploy": false,
+      "team-b-deploy": false,
+    });
+    assertEquals(await canCancel([read, admin], ["workflow.cancel"]), {
+      "team-a-deploy": true,
+      "team-b-deploy": true,
+    });
+    // restricting cancel leaves resume to who holds run
+    const ctx = approvalsCtx(dir, repo, [read, run]);
+    (ctx.authConfig as { restrictedCommands: string[] }).restrictedCommands = [
+      "workflow.cancel",
+    ];
+    const rows = await listApprovals(ctx, WORKFLOW_EDITOR);
+    assertEquals(
+      Object.fromEntries(rows.map((r) => [r.workflowName, r.canResume])),
+      { "team-a-deploy": true, "team-b-deploy": false },
+    );
+  });
+});
+
 Deno.test("handleWorkflowApprovals: canDecide follows run-implies-approve and its explicit-grant setting", async () => {
   await withWorkflowRepo(async (dir, repo) => {
     await seedGatedRun(dir, repo, "deploy", {});
