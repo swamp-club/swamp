@@ -20,6 +20,11 @@
 import { UserError } from "../errors.ts";
 import { normalizeServerUrl } from "../auth/server_url.ts";
 
+/** whether serve checks a new run record's initiator, and against whom */
+export type ServeInitiatorMode =
+  | { readonly kind: "not-checked" }
+  | { readonly kind: "checked"; readonly principal: string };
+
 export interface ServeUpstreamTargetInput {
   serverUrl: string;
   token?: string;

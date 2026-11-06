@@ -40,6 +40,7 @@ import type { ExplicitLease } from "./explicit_model_leases.ts";
 import { dropServeLease, holdServeLease } from "./serve_lease_registry.ts";
 import { ServeUpstreamError } from "./serve_upstream_errors.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
 import {
   latchServeUnreachable,
   serveDatastoreClientFor,
@@ -202,6 +203,7 @@ export class ServeLock implements DistributedLock {
           this.#ttlMs,
           waitMs,
           hold.signal,
+          { budgetMs: remaining },
         );
         if (reply.acquired) {
           this.#client = client;
@@ -215,11 +217,18 @@ export class ServeLock implements DistributedLock {
           this.#startHeartbeat();
           break;
         }
-        heldBy = reply.heldBy === "caller"
-          ? "another command of this caller"
-          : reply.heldBy === "serve"
-          ? "serve's own work"
-          : "another caller";
+        heldBy = describeHolder(reply.heldBy, reply.holder);
+        // an explicit lease that ends after this wait would only be waited
+        // out to the same refusal
+        if (
+          outlastsWait(
+            reply.holder,
+            started + this.#options.maxWaitMs,
+            client.baseUrl,
+          )
+        ) {
+          throw this.#timeout(client, heldBy, this.#now() - started);
+        }
         // Serve answered before its wait was up (a lock it could not wait
         // on): pause before asking again.
         if (this.#now() - asked < waitMs || waitMs === 0) {

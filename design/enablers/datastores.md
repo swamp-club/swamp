@@ -3654,6 +3654,21 @@ the definition's partition that is no longer the commit store's version
 refuses the command with `config_edit_conflict` before it changes
 anything; a rename then never creates its new name.
 
+In a checkout written through serve whose command reached serve
+(`CommitLogEngine.reachedServe`), an edit skips that local refusal: serve
+decides the caller's grant before the base, so a caller without the grant is
+refused `forbidden` and never learns who changed the definition or when, and
+one with it gets `config_edit_conflict` from serve. Offline, or with no
+contact, the local refusal stays. A delete keeps it, and in a serve-mode
+checkout first sends `POST authorize` (swamp-club#4454): one output removal,
+one removal per data name, and the definition's tombstone last, within serve's
+caps (16 commits, 64 ops, the body under 256 KiB), which serve runs through
+`authorizeCommit` and appends nothing. Names past the caps are judged at
+commit.
+A refused one stops the delete before anything is removed. A serve without
+the route answers 404 and the delete runs as before; a grant revoked between
+the check and the commits can still leave part of a delete.
+
 The extension lockfile's put expects the lockfile record the commit store
 held when the transaction hydrated (`CommitLogEngine.storedVersion`,
 `SqliteCommitStore.recordSha256`; not the read model, which applies this
@@ -7469,11 +7484,19 @@ below describes them.
   waits at serve at most 10 s (`waitMs`), so a waiting client asks again
   rather than polls; at most 256 leases per principal (`429
   too_many_leases`). The routes are rate-limited like the others.
-- **What a refusal tells.** `409 lock_held` says only `heldBy`: `caller`
+- **What a refusal tells.** `409 lock_held` says `heldBy`: `caller`
   (another command of the same principal), `other` (another principal) or
-  `serve` (serve's own work), never who. `swamp datastore lock status` on
-  serve shows serve's process as the holder of every lease, as for its own
-  runs.
+  `serve` (serve's own work), and, for a lease, `holder`: its principal,
+  whether it is explicit, and when it ends. The caller has passed the lock's
+  authorization, so it may take the lock and may know who holds it
+  (swamp-club#4454). `swamp datastore lock status` on serve shows serve's
+  process as the holder of every lease, as for its own runs.
+- **Waiting that cannot help.** Serve advertises `lease-holder`; a client that
+  sees it sends `budgetMs`, its whole remaining wait. When an explicit lease
+  outlasts it, serve answers `lock_held` at once instead of long-polling; a
+  renewing run lease is still waited for, so its release is caught at once.
+  The client refuses an explicit lease that ends after its deadline by
+  serve's clock after one ask, its own from another checkout included.
 - **The client.** `ServeLock` asks with `waitMs` up to the time left (at most
   half the request timeout) until the lock timeout, then throws
   `LockTimeoutError`. It renews at a third of the TTL; a renewal serve
@@ -7556,7 +7579,8 @@ which behaves as above.
   releases the lock, so they reach serve naming the lease.
 - **Lock status.** `GET locks?prefix=` lists the leases serve holds on locks
   the caller could take, each decided without a refusal audit: `lockKey`,
-  `heldBy` (`caller` or `other`, never who) and `expiresAt`, at most 512 with
+  `heldBy` (`caller` or `other`), `expiresAt` and `holder` (principal and
+  whether it is explicit), at most 512 with
   `truncated` past it. A follower refuses it: leases are the leader's.
   `swamp datastore lock status` in a serve-mode checkout reports them as
   `serve_lease` events, and nothing else: it binds no storage and needs no
@@ -7996,7 +8020,8 @@ while serve is unreachable, within these rules (`offline_write_policy.ts`,
 - **Queued, not sent.** An allowed commit goes to the outbox marked
   `offline` and the command succeeds (exit 0), warning once that the work
   is saved in this checkout and will be sent by the next command that
-  reaches serve. Version numbers count queued entries, so two offline
+  writes once serve is reachable: only a command that takes the writer hold
+  flushes the outbox, a read-only one never does. Version numbers count queued entries, so two offline
   commands, or two commits to one partition in one unit, never share a
   version or seq (an indexed `outbox_versions` table, not every entry's
   body). Chunk reads use the local cache only. A later command, offline or

@@ -158,6 +158,7 @@ const CATEGORIES: Record<string, Category> = {
   "access.reload": "access",
   "access.token.list": "access",
   "access.token.mint": "access",
+  "access.token.reveal": "access",
   "access.token.revoke": "access",
   "access.token.rotate": "access",
   "audit.alerts": "access",

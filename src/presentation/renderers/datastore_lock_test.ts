@@ -195,3 +195,21 @@ Deno.test("datastore lock release renderer: a lease serve ended names who held i
   assertStringIncludes(renderRelease("log", data), "Lease held by: user:alice");
   assertEquals(JSON.parse(renderRelease("json", data)), data);
 });
+
+Deno.test("createDatastoreLockStatusRenderer: a serve lease names who holds it and whether it is explicit, when serve says", () => {
+  const text = capture(() =>
+    createDatastoreLockStatusRenderer("log").handlers().serve_lease({
+      kind: "serve_lease",
+      data: {
+        ...serveLease,
+        holder: {
+          principal: "user:boss",
+          explicit: true,
+          expiresAt: serveLease.expiresAt,
+        },
+      },
+    })
+  );
+  assertStringIncludes(text, "user:boss");
+  assertStringIncludes(text, "explicit lease");
+});

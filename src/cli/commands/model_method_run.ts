@@ -36,6 +36,7 @@ import {
   acquirePublishLocksOrDefer,
   assertOfflineRunAllowed,
   cancelOnLeaseLost,
+  datastoreRootOf,
   libSwampContextForRepo,
   type ModelLockResult,
   pullModelsUnlocked,
@@ -661,7 +662,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             }
           }
 
-          const initiatedBy = await resolveCliInitiatedBy();
+          const initiatedBy = await resolveCliInitiatedBy(
+            datastoreRootOf(datastoreConfig),
+          );
 
           const inputSets: Record<string, unknown>[] = stdinItems
             ? stdinItems.map((item) =>

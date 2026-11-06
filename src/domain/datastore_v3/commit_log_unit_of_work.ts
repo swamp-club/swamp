@@ -22,6 +22,10 @@ import {
   UnrecordedEndError,
 } from "../datastore/unit_of_work.ts";
 import { UserError } from "../errors.ts";
+import {
+  RUN_INITIATOR_MISMATCH_CODE,
+  RUN_INITIATOR_MISMATCH_REASON,
+} from "./commit_authorization.ts";
 import type { FileAccess } from "./file_access.ts";
 import type { Intent } from "./intent.ts";
 import type { Op, PutExpect } from "./op.ts";
@@ -169,6 +173,32 @@ export function leaseLostRefusalOf(
         : undefined;
     }
     if (!(current instanceof Error)) return undefined;
+    current = current.cause;
+  }
+  return undefined;
+}
+
+/** serve refused a new run record for the initiator it names */
+export class RunInitiatorMismatchError extends UserError {
+  constructor(message: string, cause: unknown) {
+    super(message, RUN_INITIATOR_MISMATCH_CODE);
+    this.name = "RunInitiatorMismatchError";
+    this.cause = cause;
+  }
+}
+
+/** the refusal, raw or wrapped, as the coded error the user is shown */
+export function runInitiatorMismatchOf(
+  error: unknown,
+): RunInitiatorMismatchError | undefined {
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    if (current instanceof RunInitiatorMismatchError) return current;
+    if (!(current instanceof Error)) return undefined;
+    const reason = (current as { reason?: unknown }).reason;
+    if (reason === RUN_INITIATOR_MISMATCH_REASON) {
+      return new RunInitiatorMismatchError(current.message, current);
+    }
     current = current.cause;
   }
   return undefined;

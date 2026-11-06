@@ -23,6 +23,10 @@
  * entry leaves the outbox only once landed
  */
 
+import {
+  RUN_INITIATOR_MISMATCH_CODE,
+  RUN_INITIATOR_MISMATCH_REASON,
+} from "../../domain/datastore_v3/commit_authorization.ts";
 import { Commit, type CommitWriter } from "../../domain/datastore_v3/commit.ts";
 import {
   COMPACTED_TXN_RETENTION_MS,
@@ -91,6 +95,7 @@ export interface OfflineFlushPort {
     keys: readonly OutboxKey[],
     state: OutboxEntryState,
     reason?: string,
+    code?: string,
   ): Promise<void>;
   settle(keys: readonly OutboxKey[]): Promise<void>;
   /**
@@ -184,7 +189,11 @@ type EntryOutcome =
   }
   | { readonly kind: "waiting" }
   | { readonly kind: "stop"; readonly sentMaybe?: boolean }
-  | { readonly kind: "rejected"; readonly reason: string }
+  | {
+    readonly kind: "rejected";
+    readonly reason: string;
+    readonly code?: string;
+  }
   | { readonly kind: "quarantined"; readonly reason: string };
 
 export async function flushOfflineEntries(
@@ -290,9 +299,14 @@ export async function flushOfflineEntries(
       case "rejected":
         rejected++;
         held.add(partition);
-        await port.mark([key], "rejected", outcome.reason);
-        logger
-          .warn`A change this checkout saved offline to ${partition} could not be sent and is kept in its outbox: ${outcome.reason}`;
+        await port.mark([key], "rejected", outcome.reason, outcome.code);
+        if (outcome.code === RUN_INITIATOR_MISMATCH_CODE) {
+          logger
+            .warn`A run record this checkout saved offline to ${partition} was refused for its initiator: an older swamp CLI wrote it. It is kept in the outbox; upgrade swamp and run the work again: ${outcome.reason}`;
+        } else {
+          logger
+            .warn`A change this checkout saved offline to ${partition} could not be sent and is kept in its outbox: ${outcome.reason}`;
+        }
         break;
       case "quarantined":
         quarantined++;
@@ -443,9 +457,16 @@ async function flushEntry(
         return { kind: "rejected", reason: error.message };
       }
       if (error instanceof ServeCommitRefusedError) {
-        return error.reason === "forbidden"
-          ? { kind: "quarantined", reason: error.message }
-          : { kind: "rejected", reason: error.message };
+        if (error.reason === "forbidden") {
+          return { kind: "quarantined", reason: error.message };
+        }
+        return {
+          kind: "rejected",
+          reason: error.message,
+          ...(error.reason === RUN_INITIATOR_MISMATCH_REASON
+            ? { code: RUN_INITIATOR_MISMATCH_CODE }
+            : {}),
+        };
       }
       throw error;
     }

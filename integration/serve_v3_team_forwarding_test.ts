@@ -271,6 +271,7 @@ Deno.test({
           id: runId,
           workflowId,
           workflowName: "deploy",
+          initiatedBy: "user:caller",
           status: "suspended",
           tags: {},
           jobs: [{

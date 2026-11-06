@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { nameLockHolder } from "./auth_context.ts";
 import { CommitLeaseLostError } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
@@ -1565,6 +1566,8 @@ export async function requireInitializedRepoUnlocked(
         ? { ownerCheck: options.v3OwnerCheck }
         : {}),
     });
+    // the hold caught up from serve, which named the caller's principal
+    nameLockHolder(datastoreRootOf(datastoreConfig));
   }
 
   const repoPath = RepoPath.create(repoDir);
@@ -1792,6 +1795,12 @@ function serveLockOf(
         maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
       }),
   });
+}
+
+/** the datastore root a serve-mode checkout's state is kept under, if local */
+export function datastoreRootOf(config: DatastoreConfig): string | undefined {
+  const locking = lockingConfigOf(config);
+  return isCustomDatastoreConfig(locking) ? undefined : locking.path;
 }
 
 /**

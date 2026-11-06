@@ -1725,7 +1725,17 @@ async function checkForMissingPulledExtensions(
     const detail = ` (e.g. ${files.slice(0, 3).join(", ")})`;
     return `${items.map((m) => m.name).join(", ")}${detail}`;
   };
-  const shared = missing.filter((m) => !localOnly.has(m.name));
+  // a team checkout's shared lockfile lists every extension the team pulled:
+  // one this checkout never installed is reinstalled when a command needs it
+  const shared: typeof missing = [];
+  for (const m of missing) {
+    if (localOnly.has(m.name)) continue;
+    if (
+      localLockfilePath !== undefined &&
+      await isAbsentFromDisk(repoDir, m.name, entries[m.name])
+    ) continue;
+    shared.push(m);
+  }
   const local: typeof missing = [];
   for (const m of missing) {
     if (!localOnly.has(m.name)) continue;

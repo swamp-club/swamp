@@ -46,6 +46,7 @@ import {
 import { parseDuration } from "../../libswamp/data/search.ts";
 import { renderServerTokenCreate } from "../../presentation/output/access_token_output.ts";
 import {
+  commandTargetOf,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -151,6 +152,7 @@ export const accessTokenMintCommand = withRemoteOptions(
     renderServerTokenCreate(
       response.data as unknown as ServerTokenCreateData,
       cliCtx.outputMode,
+      commandTargetOf(options),
     );
     return;
   }
@@ -260,7 +262,11 @@ export const accessTokenMintCommand = withRemoteOptions(
           );
         }
 
-        renderServerTokenCreate(data, cliCtx.outputMode);
+        renderServerTokenCreate(
+          data,
+          cliCtx.outputMode,
+          commandTargetOf(options),
+        );
 
         if (syncService) {
           await root.stage({ kind: "bulk", reason: "access token mint" });

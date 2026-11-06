@@ -46,6 +46,7 @@ import {
 import { parseDuration } from "../../libswamp/data/search.ts";
 import { renderServerTokenRotate } from "../../presentation/output/access_token_output.ts";
 import {
+  commandTargetOf,
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
@@ -127,6 +128,7 @@ export const accessTokenRotateCommand = withRemoteOptions(
     renderServerTokenRotate(
       response.data as unknown as ServerTokenRotateData,
       cliCtx.outputMode,
+      commandTargetOf(options),
     );
     return;
   }
@@ -273,7 +275,11 @@ export const accessTokenRotateCommand = withRemoteOptions(
             `Rotating token '${name}' ended without completing`,
           );
         }
-        renderServerTokenRotate(data, cliCtx.outputMode);
+        renderServerTokenRotate(
+          data,
+          cliCtx.outputMode,
+          commandTargetOf(options),
+        );
       },
     );
   });

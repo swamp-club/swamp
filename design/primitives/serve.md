@@ -491,6 +491,14 @@ with another mint's secret (swamp-club#2482):
   skip the check until they are rotated or re-minted; no migration adds one,
   since hashing the current secret would bless a pairing that may already be
   wrong.
+- **Reveal through serve.** `access.token.reveal` runs the same reveal as the
+  local command on serve, for a caller with `admin` on `access:*`. A follower
+  forwards it to the leader, which has applied every mint and rotate, and it is
+  audited as a secrets action (it is in the `secret-access` report). The
+  plaintext is registered with the log redactor until the reply is sent. It
+  refuses a login token (`oauthIdentity` set, or an `oauth-` name of eight hex
+  characters from before the marker) with `token_not_revealable`: an admin may
+  revoke a member's login, never hold it. The local reveal is unchanged.
 
 The token GC takes the name lock too, around each token it collects (see
 below). One writer does not. The OAuth login mint names each token

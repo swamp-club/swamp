@@ -155,12 +155,19 @@ export const accessReviewReport: ComplianceReportDefinition = {
 
 export const secretAccessReport: ComplianceReportDefinition = {
   name: "secret-access",
-  description: "Every vault.read-secret event, grouped by principal and key.",
+  description:
+    "Every vault.read-secret and access.token.reveal event, grouped by principal and key.",
   async execute(queryService, params) {
-    const events = await collectEvents(queryService, params, {
-      category: "secrets",
-      action: "vault.read-secret",
-    });
+    const events = [
+      ...await collectEvents(queryService, params, {
+        category: "secrets",
+        action: "vault.read-secret",
+      }),
+      ...await collectEvents(queryService, params, {
+        category: "secrets",
+        action: "access.token.reveal",
+      }),
+    ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
     const byPrincipal = groupBy(events, (e) => e.principalId);
     const lines: string[] = [

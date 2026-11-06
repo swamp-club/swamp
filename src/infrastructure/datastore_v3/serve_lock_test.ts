@@ -62,12 +62,19 @@ class FakeServe implements ServeLockClient {
   floor: LockLease["floor"];
   #leases = 0;
 
+  /** what a held answer says of its holder */
+  heldReply: { heldBy?: string; holder?: unknown } = {};
+  readonly budgets: (number | undefined)[] = [];
+
   acquireLock(
     lockKey: string,
     ttlMs: number,
     waitMs: number,
+    _signal?: AbortSignal,
+    options: { readonly budgetMs?: number } = {},
   ): Promise<LockAcquireReply> {
     this.calls.push(`acquire ${lockKey} ttl=${ttlMs} wait=${waitMs}`);
+    this.budgets.push(options.budgetMs);
     const answer = this.answers.length > 1
       ? this.answers.shift()!
       : this.answers[0];
@@ -77,7 +84,8 @@ class FakeServe implements ServeLockClient {
         acquired: false,
         heldBy: "other",
         message: "held",
-      });
+        ...this.heldReply,
+      } as LockAcquireReply);
     }
     return Promise.resolve({ acquired: true, lease: this.#lease(ttlMs) });
   }
@@ -676,4 +684,66 @@ Deno.test("ServeLock.release: a release serve never answers is given up at its d
   await subject.acquire();
   await subject.release();
   assertEquals(serve.closed, 1);
+});
+
+const IN_TEN_MINUTES = () => new Date(Date.now() + 600_000).toISOString();
+
+Deno.test("ServeLock.acquire: another principal's explicit lease that outlasts the wait is refused after one ask, naming who holds it and until when", async () => {
+  const serve = new FakeServe();
+  serve.answers = ["held"];
+  const until = IN_TEN_MINUTES();
+  serve.heldReply = {
+    holder: { principal: "user:boss", explicit: true, expiresAt: until },
+  };
+  const subject = lock(serve, { maxWaitMs: 60_000 });
+  const error = await assertRejects(() => subject.acquire(), LockTimeoutError);
+  assertEquals(serve.calls.length, 1);
+  assertStringIncludes(error.message, "user:boss");
+  assertStringIncludes(error.message, "explicit lease");
+  assertStringIncludes(error.message, until);
+  assertEquals(error.code, "lock_timeout");
+});
+
+Deno.test("ServeLock.acquire: this caller's explicit lease held from another checkout is refused at once too", async () => {
+  const serve = new FakeServe();
+  serve.answers = ["held"];
+  serve.heldReply = {
+    heldBy: "caller",
+    holder: {
+      principal: "user:m1",
+      explicit: true,
+      expiresAt: IN_TEN_MINUTES(),
+    },
+  };
+  const subject = lock(serve, { maxWaitMs: 60_000 });
+  await assertRejects(() => subject.acquire(), LockTimeoutError);
+  assertEquals(serve.calls.length, 1);
+});
+
+Deno.test("ServeLock.acquire: a run lease that renews is waited out, whatever its expiry says", async () => {
+  const serve = new FakeServe();
+  serve.answers = ["held", "held", "acquired"];
+  serve.heldReply = {
+    holder: {
+      principal: "user:boss",
+      explicit: false,
+      expiresAt: IN_TEN_MINUTES(),
+    },
+  };
+  const subject = lock(serve, { maxWaitMs: 60_000 });
+  await subject.acquire();
+  await subject.release();
+  assertEquals(
+    serve.calls.filter((call) => call.startsWith("acquire")).length,
+    3,
+  );
+});
+
+Deno.test("ServeLock.acquire: each ask tells serve what is left of the whole wait", async () => {
+  const serve = new FakeServe();
+  const subject = lock(serve, { maxWaitMs: 60_000 });
+  await subject.acquire();
+  await subject.release();
+  const budget = serve.budgets[0];
+  assert(budget !== undefined && budget > 50_000 && budget <= 60_000);
 });

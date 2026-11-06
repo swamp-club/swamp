@@ -28,6 +28,7 @@ import type {
   AccessGroupListPayload,
   AccessReloadFileResult,
   AccessTokenMintPayload,
+  AccessTokenRevealPayload,
   AccessTokenRevokePayload,
   AccessTokenRotatePayload,
   RunVaultAccessReport,
@@ -130,6 +131,11 @@ import {
   serverTokenList,
 } from "../../libswamp/access/token_list.ts";
 import {
+  createServerTokenRevealDeps,
+  serverTokenReveal,
+  type ServerTokenRevealData,
+} from "../../libswamp/access/token_reveal.ts";
+import {
   createServerTokenRevokeDeps,
   serverTokenRevoke,
 } from "../../libswamp/access/token_revoke.ts";
@@ -143,10 +149,15 @@ import {
   ServerTokenSchema,
 } from "../../domain/models/access/server_token_model.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
+import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
+import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
 
 const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
 const runVaultLogger = getSwampLogger(["serve", "access", "run-vault"]);
 const listLogger = getSwampLogger(["serve", "access", "list"]);
+const revealLogger = getSwampLogger(["serve", "access", "reveal"]);
 
 export async function handleAccessGrantList(
   socket: WebSocket,
@@ -1038,6 +1049,101 @@ export async function handleAccessTokenList(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_token_list_failed", message);
+  }
+}
+
+export async function handleAccessTokenReveal(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessTokenRevealPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  // registered until nothing more is logged here, so a failed send that
+  // echoes the reply is masked too
+  let redactorHandle: string | undefined;
+  try {
+    const libCtx = handlerLibSwampContext(ctx);
+    const deps = createServerTokenRevealDeps(
+      ctx.repoContext.dataQueryService,
+      await VaultService.fromRepository(ctx.repoDir, {
+        vaultsDir: ctx.vaultsDir,
+      }),
+    );
+
+    let revealed: ServerTokenRevealData | undefined;
+    let refusal: SwampError | undefined;
+    await consumeStream(
+      serverTokenReveal(libCtx, deps, payload.name, {
+        refuseLoginTokens: true,
+      }),
+      withDefaults({
+        completed: (e) => {
+          revealed = e.data;
+        },
+        error: (e) => {
+          refusal = e.error;
+        },
+      }),
+    );
+
+    if (revealed !== undefined) {
+      const redactor = new SecretRedactor();
+      redactor.addSecret(revealed.token);
+      redactor.addSecret(revealed.token.slice(revealed.name.length + 1));
+      redactorHandle = runFileSink.registerRedactor(redactor);
+    }
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    if (refusal !== undefined) {
+      sendError(
+        socket,
+        requestId,
+        refusal.code,
+        sanitizeErrorForClient(new Error(refusal.message)),
+      );
+      return;
+    }
+    if (revealed === undefined) {
+      sendError(
+        socket,
+        requestId,
+        "access_token_reveal_failed",
+        `Revealing token '${payload.name}' ended without completing`,
+      );
+      return;
+    }
+    send(socket, {
+      type: "access.token.reveal",
+      id: requestId,
+      payload: { data: revealed as unknown as Record<string, unknown> },
+    });
+  } catch (error) {
+    revealLogger.warn`Revealing token ${payload.name} failed: ${error}`;
+    try {
+      sendError(
+        socket,
+        requestId,
+        "access_token_reveal_failed",
+        sanitizeErrorForClient(error),
+      );
+    } catch (sendFailure) {
+      revealLogger
+        .warn`Could not report the failed reveal of ${payload.name}: ${sendFailure}`;
+    }
+  } finally {
+    runFileSink.unregisterRedactor(redactorHandle);
   }
 }
 

@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  AppendUnrecordedError,
   COMMIT_LEASE_LOST_CODE,
   COMMIT_PARTLY_COMMITTED_CODE,
   CommitLeaseLostError,
@@ -1433,3 +1434,34 @@ Deno.test("exitCodeForError: an unreachable serve or commit exits 1 once somethi
     assertEquals(exitCodeForError(error), 75);
   }
 });
+
+for (
+  const [label, wrap] of [
+    ["raw", (refusal: Error) => refusal],
+    [
+      "wrapped in a direct append's failure",
+      (refusal: Error) => new AppendUnrecordedError(refusal, true),
+    ],
+  ] as const
+) {
+  Deno.test(`renderError: a run record refused for its initiator, ${label}, is shown under its own code with the upgrade advice`, () => {
+    const refusal = Object.assign(
+      new Error(
+        "run.create of workflow-runs/w/workflow-run-r.yaml: its initiator is not user:m1; upgrade your swamp CLI",
+      ),
+      { code: "forbidden", reason: "run-initiator-mismatch" },
+    );
+    const stderrLogs: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
+    try {
+      renderError(wrap(refusal), "json");
+    } finally {
+      console.error = originalError;
+    }
+    const parsed = JSON.parse(stderrLogs[0]);
+    assertEquals(parsed.code, "run_initiator_mismatch");
+    assertStringIncludes(parsed.error, "upgrade");
+    assertEquals(parsed.stack, undefined);
+  });
+}

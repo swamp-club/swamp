@@ -131,6 +131,8 @@ export interface OutboxEntry extends OutboxPreparation {
   readonly abandonedAt?: number;
   readonly state?: OutboxEntryState;
   readonly stateReason?: string;
+  /** the code a rejected entry was refused with, when it has its own */
+  readonly stateCode?: string;
   /**
    * serve keeps a landed commit's txnId for COMPACTED_TXN_RETENTION_MS; past
    * that the flush cannot tell whether it landed and never sends it again
@@ -396,6 +398,7 @@ export interface CommitOutbox {
     keys: readonly OutboxKey[],
     state: OutboxEntryState,
     reason?: string,
+    code?: string,
   ): Promise<void>;
   /**
    * an earlier record is kept: serve's txnId retention runs from the first time

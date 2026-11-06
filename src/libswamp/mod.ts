@@ -1421,6 +1421,7 @@ export {
   type ModelDeleteDeps,
   type ModelDeleteEvent,
   type ModelDeleteInput,
+  type ModelDeletePlan,
   type ModelDeletePreview,
   modelDeletePreview,
 } from "./models/delete.ts";

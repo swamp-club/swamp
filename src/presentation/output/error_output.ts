@@ -61,6 +61,7 @@ import {
   LEASE_LAPSED_CODE,
   leaseLostRefusalOf,
   recoveryNeedsAcknowledgement,
+  runInitiatorMismatchOf,
   RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 
@@ -330,6 +331,7 @@ export function renderError(
   // a refused stale config edit is the user's to resolve, not a crash
   const leaseError = leaseErrorOf(error);
   const err = configEditConflictOf(error) ?? leaseError ??
+    runInitiatorMismatchOf(error) ??
     (error instanceof Error ? error : new Error(String(error)));
   const message = messageFor(err, surface);
   // A certificate-store failure is an environment problem the user can fix,

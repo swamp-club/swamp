@@ -558,3 +558,63 @@ Deno.test("ServeUpstreamState: a file at schema version 4 upgrades with no conta
     }
   });
 });
+
+Deno.test("ServeUpstreamState.initiator: unseen until recorded, kept across a reopen and an access reset, forgotten when the token changes", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const state = ServeUpstreamState.open(path);
+    try {
+      state.stampCaller("token-a");
+      assertEquals(state.initiator(), undefined);
+      state.recordInitiator({ kind: "checked", principal: "user:alice" });
+      assertEquals(state.initiator(), {
+        kind: "checked",
+        principal: "user:alice",
+      });
+      // an access reset keeps the caller's token, so keeps what serve said
+      state.beginCallerReset();
+      state.finishCallerReset("token-a", 1_000);
+      assertEquals(state.initiator(), {
+        kind: "checked",
+        principal: "user:alice",
+      });
+    } finally {
+      state.close();
+    }
+    const reopened = ServeUpstreamState.open(path);
+    try {
+      assertEquals(reopened.initiator(), {
+        kind: "checked",
+        principal: "user:alice",
+      });
+      reopened.recordInitiator({ kind: "not-checked" });
+      assertEquals(reopened.initiator(), { kind: "not-checked" });
+      // a reset cut short and run again still forgets it for the new token
+      reopened.beginCallerReset();
+      reopened.beginCallerReset();
+      reopened.finishCallerReset("token-b");
+      assertEquals(reopened.initiator(), undefined);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a file one schema older upgrades with no initiator recorded", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    ServeUpstreamState.open(path).close();
+    const db = new DatabaseSync(path);
+    db.exec("DROP TABLE initiator");
+    db.exec(
+      `PRAGMA user_version = ${SERVE_UPSTREAM_STATE_SCHEMA_VERSION - 1}`,
+    );
+    db.close();
+    const state = ServeUpstreamState.open(path);
+    try {
+      assertEquals(state.initiator(), undefined);
+    } finally {
+      state.close();
+    }
+  });
+});

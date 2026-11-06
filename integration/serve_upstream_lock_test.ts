@@ -434,3 +434,73 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "serve upstream locks: an admin force-releases a behavior's lease by its bare name, resolved at serve, while that member's command still writes there",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: [
+          ...MEMBER,
+          { user: "carol", actions: ["admin"], kind: "access", pattern: "*" },
+        ],
+      });
+      const member = await scratch.client("a");
+      const type = serve.modelType.normalized;
+      const id = serve.models.web;
+      await readCommand(
+        scratch,
+        member,
+        serveEnv(serve, "alice-token"),
+        () => Promise.resolve(),
+      );
+      const lockKey = `data/${type}/${id}/.lock`;
+      const taken = await fetch(
+        `${serve.origin}/api/v1/datastore/_default/locks`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer alice-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ lockKey, ttlMs: 60_000, waitMs: 0 }),
+        },
+      );
+      assertEquals(taken.status, 201, await taken.text());
+
+      const writer = await holdWriter(
+        serveUpstreamLocalRoot(member.repoDir, serve.origin, ""),
+      );
+      const carol = {
+        ...serveEnv(serve, "carol-token"),
+        SWAMP_LOCK_TIMEOUT_MS: "2000",
+      };
+      let released: unknown[];
+      try {
+        const unknown = await assertRejects(() =>
+          datastoreCommandJson(
+            scratch,
+            serve,
+            member,
+            ["lock", "release", "--force", "--behavior", "no-such-behavior"],
+            carol,
+          )
+        );
+        assertStringIncludes(String(unknown), "type/id");
+        released = await datastoreCommandJson(
+          scratch,
+          serve,
+          member,
+          ["lock", "release", "--force", "--behavior", "web"],
+          carol,
+        );
+      } finally {
+        await writer.release();
+      }
+      assertEquals(released, [{ released: true, leaseHolder: "user:caller" }]);
+    });
+  },
+});

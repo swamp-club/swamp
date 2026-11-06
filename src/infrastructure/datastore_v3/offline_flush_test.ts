@@ -73,6 +73,7 @@ class FakePort implements OfflineFlushPort {
   readonly commits: Commit[] = [];
   readonly sends: string[] = [];
   readonly marks: string[] = [];
+  readonly markCodes: string[] = [];
   readonly settled: string[] = [];
   readonly quarantinedEntries: string[] = [];
   readonly sentMaybe: string[] = [];
@@ -114,8 +115,13 @@ class FakePort implements OfflineFlushPort {
   mark(
     keys: readonly { txnId: string }[],
     state: OutboxEntryState,
+    _reason?: string,
+    code?: string,
   ): Promise<void> {
-    for (const key of keys) this.marks.push(`${key.txnId} ${state}`);
+    for (const key of keys) {
+      this.marks.push(`${key.txnId} ${state}`);
+      if (code !== undefined) this.markCodes.push(`${key.txnId} ${code}`);
+    }
     return Promise.resolve();
   }
   settle(keys: readonly { txnId: string }[]): Promise<void> {
@@ -706,4 +712,22 @@ Deno.test("flushOfflineEntries: with no other writer meanwhile, queued versions 
     report.renumbered.map((version) => [version.from, version.to]),
     [[1, 1], [2, 2]],
   );
+});
+
+Deno.test("flushOfflineEntries: a run record refused for its initiator is rejected and kept with its code, never quarantined", async () => {
+  const port = new FakePort();
+  port.answers = [
+    new ServeCommitRefusedError(
+      "forbidden",
+      "run-initiator-mismatch",
+      0,
+      "its initiator is not user:m1",
+    ),
+  ];
+  const report = await flush(port, [await offlineEntry(1, "r", 1)]);
+  assertEquals(report.rejected, 1);
+  assertEquals(report.quarantined, 0);
+  assertEquals(port.marks, ["r rejected"]);
+  assertEquals(port.markCodes, ["r run_initiator_mismatch"]);
+  assertEquals(port.quarantinedEntries, []);
 });

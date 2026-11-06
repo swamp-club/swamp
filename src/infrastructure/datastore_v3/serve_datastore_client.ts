@@ -23,7 +23,10 @@
  * ServeUnreachableError, saying whether the request may have reached serve
  */
 
-import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
+import type {
+  ServeInitiatorMode,
+  ServeUpstreamTarget,
+} from "../../domain/datastore_v3/serve_upstream.ts";
 import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { CHUNK_BYTES } from "../../domain/datastore_v3/chunk_store.ts";
 import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
@@ -35,7 +38,7 @@ import {
   observedBaseEntryFromJSON,
   type ObservedBasePage,
 } from "../../domain/datastore_v3/observed_base.ts";
-import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
+import { MAX_INLINE_BYTES, type Op } from "../../domain/datastore_v3/op.ts";
 import { chunksToWire } from "../../domain/datastore_v3/quarantine.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { MAX_RECORD_KEY_LENGTH } from "../../domain/datastore_v3/record_key.ts";
@@ -143,6 +146,33 @@ export const LEASE_OPS_FEATURE = "lease-ops";
 /** without it in serve's replies, a member commits each start as the whole record */
 export const STEP_STARTS_FEATURE = "step-starts";
 
+/** serve checks removals a command will commit, before it commits any */
+export const AUTHORIZE_ONLY_FEATURE = "authorize-only";
+
+/** serve names a lease's holder and answers at once when waiting cannot help */
+export const LEASE_HOLDER_FEATURE = "lease-holder";
+
+/** serve refuses a new run record that does not name the principal it stamps */
+export const RUN_INITIATOR_FEATURE = "run-initiator";
+
+/** the principal serve stamps on the caller's commits, percent-encoded */
+export const SERVE_DATASTORE_PRINCIPAL_HEADER = "x-swamp-datastore-principal";
+
+/** the check advertised with no principal is no check this client can meet */
+function initiatorModeOf(
+  features: readonly string[],
+  encodedPrincipal: string | null,
+): ServeInitiatorMode {
+  if (!features.includes(RUN_INITIATOR_FEATURE) || encodedPrincipal === null) {
+    return { kind: "not-checked" };
+  }
+  try {
+    return { kind: "checked", principal: decodeURIComponent(encodedPrincipal) };
+  } catch {
+    return { kind: "not-checked" };
+  }
+}
+
 export function serveRequestTimeoutMs(): number {
   const env = Deno.env.get("SWAMP_SERVE_TIMEOUT_MS");
   if (env !== undefined) {
@@ -230,10 +260,22 @@ export interface LockLease {
   readonly holdMs?: number;
 }
 
+export type RemovalVerdict =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string; readonly message: string };
+
+/** who holds a lease, as a serve that names lease-holder says */
+export interface ServeLeaseHolder {
+  readonly principal: string;
+  readonly explicit: boolean;
+  readonly expiresAt: string;
+}
+
 export interface ServeLeaseEntry {
   readonly lockKey: string;
   readonly heldBy: "caller" | "other";
   readonly expiresAt: string;
+  readonly holder?: ServeLeaseHolder;
 }
 
 export interface ServeLeaseListing {
@@ -247,6 +289,7 @@ export type LockAcquireReply =
     readonly acquired: false;
     readonly heldBy: string;
     readonly message: string;
+    readonly holder?: ServeLeaseHolder;
   };
 
 interface RequestSpec {
@@ -271,6 +314,7 @@ export class ServeDatastoreClient {
   #logCheck: ((logId: string | undefined) => void) | undefined;
   #accessCheck: ((fingerprint: string) => void) | undefined;
   #takesStepStarts = false;
+  #initiatorMode: ServeInitiatorMode | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
     this.baseUrl = normalizeServerUrl(options.baseUrl);
@@ -545,8 +589,13 @@ export class ServeDatastoreClient {
     ttlMs: number,
     waitMs: number,
     signal: AbortSignal,
-    options: { readonly holdMs?: number } = {},
+    options: { readonly holdMs?: number; readonly budgetMs?: number } = {},
   ): Promise<LockAcquireReply> {
+    // an older serve ignores a field it does not know; a command's lock
+    // client has often read no reply yet, so it cannot wait to be told
+    const budget = options.budgetMs !== undefined
+      ? { budgetMs: Math.max(0, Math.floor(options.budgetMs)) }
+      : {};
     return await this.#exchange(
       {
         method: "POST",
@@ -556,8 +605,14 @@ export class ServeDatastoreClient {
         // explicit lease is held for `holdMs` between renewals
         body: JSON.stringify(
           options.holdMs === undefined
-            ? { lockKey, ttlMs, waitMs, fenced: true }
-            : { lockKey, waitMs, fenced: true, holdMs: options.holdMs },
+            ? { lockKey, ttlMs, waitMs, fenced: true, ...budget }
+            : {
+              lockKey,
+              waitMs,
+              fenced: true,
+              holdMs: options.holdMs,
+              ...budget,
+            },
         ),
       },
       signal,
@@ -569,12 +624,14 @@ export class ServeDatastoreClient {
             SERVE_ERROR_BODY_MAX_BYTES,
           ).catch(() => undefined) as Record<string, unknown> | undefined;
           if (body?.code === "lock_held") {
+            const holder = leaseHolderOf(body.holder);
             return {
               acquired: false,
               heldBy: typeof body.heldBy === "string" ? body.heldBy : "other",
               message: typeof body.message === "string"
                 ? body.message
                 : `${lockKey} is held`,
+              ...(holder === undefined ? {} : { holder }),
             };
           }
           throw serveErrorFromReply(409, body, this.baseUrl);
@@ -646,6 +703,59 @@ export class ServeDatastoreClient {
         }
         await response.body?.cancel();
         return true;
+      },
+    );
+  }
+
+  /** undefined from a serve too old to check removals ahead */
+  async authorizeRemovals(
+    commits: readonly {
+      readonly partition: PartitionKey;
+      readonly ops: readonly Op[];
+    }[],
+    signal: AbortSignal,
+  ): Promise<readonly RemovalVerdict[] | undefined> {
+    return await this.#exchange(
+      {
+        method: "POST",
+        path: "authorize",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          commits: commits.map(({ partition, ops }) => ({
+            partition: partition.toString(),
+            ops: ops.map((op) => op.toJSON()),
+          })),
+        }),
+      },
+      signal,
+      async (response) => {
+        // an older serve has no such route
+        if (response.status === 404 || response.status === 405) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        if (!response.ok) throw await this.#refusal(response, "authorize");
+        const reply = await readBoundedJson(
+          response,
+          "authorize",
+          SERVE_REPLY_MAX_BYTES,
+        );
+        const verdicts = (reply as { verdicts?: unknown }).verdicts;
+        if (!Array.isArray(verdicts) || verdicts.length !== commits.length) {
+          throw invalidReply("authorize", "a verdict per commit");
+        }
+        return verdicts.map((raw): RemovalVerdict => {
+          const fields = typeof raw === "object" && raw !== null
+            ? raw as Record<string, unknown>
+            : {};
+          return fields.ok === true ? { ok: true } : {
+            ok: false,
+            reason: typeof fields.reason === "string" ? fields.reason : "",
+            message: typeof fields.message === "string"
+              ? fields.message
+              : "refused",
+          };
+        });
       },
     );
   }
@@ -825,6 +935,11 @@ export class ServeDatastoreClient {
     });
   }
 
+  /** undefined until a reply from serve itself has been read */
+  initiatorMode(): ServeInitiatorMode | undefined {
+    return this.#initiatorMode;
+  }
+
   takesStepStarts(): boolean {
     return this.#takesStepStarts;
   }
@@ -911,10 +1026,14 @@ export class ServeDatastoreClient {
         }
       }
       if (logId !== undefined) {
-        this.#takesStepStarts =
-          (response.headers.get(SERVE_DATASTORE_FEATURES_HEADER) ?? "")
-            .split(",")
-            .some((feature) => feature.trim() === STEP_STARTS_FEATURE);
+        const features = (response.headers.get(
+          SERVE_DATASTORE_FEATURES_HEADER,
+        ) ?? "").split(",").map((feature) => feature.trim());
+        this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
+        this.#initiatorMode = initiatorModeOf(
+          features,
+          response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),
+        );
       }
       const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
       if (this.#accessCheck !== undefined && access !== null) {
@@ -1070,13 +1189,34 @@ function leaseListingOf(body: unknown): ServeLeaseListing {
     ) {
       throw invalidReply("locks", "each lease's lockKey, heldBy and expiresAt");
     }
+    const holder = leaseHolderOf(lease.holder);
     return {
       lockKey: lease.lockKey,
       heldBy: lease.heldBy,
       expiresAt: lease.expiresAt,
+      ...(holder === undefined ? {} : { holder }),
     };
   });
   return { leases, truncated: fields.truncated === true };
+}
+
+/** a malformed holder is left out, so the reply reads as an older serve's */
+function leaseHolderOf(raw: unknown): ServeLeaseHolder | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const fields = raw as Record<string, unknown>;
+  if (
+    typeof fields.principal !== "string" ||
+    typeof fields.explicit !== "boolean" ||
+    typeof fields.expiresAt !== "string" ||
+    Number.isNaN(Date.parse(fields.expiresAt))
+  ) {
+    return undefined;
+  }
+  return {
+    principal: fields.principal,
+    explicit: fields.explicit,
+    expiresAt: fields.expiresAt,
+  };
 }
 
 function isSeq(value: unknown): value is number {

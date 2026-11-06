@@ -38,6 +38,7 @@ import {
   cancelOnLeaseLost,
   createLockProgressWriter,
   createWorkflowRunClaims,
+  datastoreRootOf,
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
   signalWaitsOf,
@@ -122,7 +123,10 @@ import {
   showsDataAttributes,
 } from "../../presentation/renderers/workflow_run.ts";
 import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
-import { resolveCliInitiatedBy } from "../auth_context.ts";
+import {
+  assertRunInitiatorKnown,
+  resolveCliInitiatedBy,
+} from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
   CA_CERT_DESCRIPTION,
@@ -712,7 +716,9 @@ export const workflowRunCommand = new Command()
               )
               : [cliInputs];
 
-            const initiatedBy = await resolveCliInitiatedBy();
+            const datastoreRoot = datastoreRootOf(unlocked.datastoreConfig);
+            assertRunInitiatorKnown(datastoreRoot);
+            const initiatedBy = await resolveCliInitiatedBy(datastoreRoot);
 
             if (options.junit && inputSets.length > 1) {
               throw new UserError(

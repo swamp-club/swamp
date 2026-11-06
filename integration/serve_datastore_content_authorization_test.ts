@@ -88,13 +88,14 @@ async function forward(
   server: Server,
   partition: PartitionKey,
   ops: unknown[],
+  token = "alice-token",
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   const head = await server.v3.commitStore.head(server.v3.namespace, partition);
   return await post(
     `${server.url}/partitions/${
       encodeURIComponent(partition.toString())
     }/commits`,
-    "alice-token",
+    token,
     commitBody({
       expectedSeq: head.seq,
       txnId: crypto.randomUUID(),
@@ -411,11 +412,16 @@ function runRecord(
     status: "running",
     tags: {},
     jobs: [],
+    initiatedBy: "user:caller",
     ...fields,
   };
 }
 
-function forwardRun(server: Server, record: Record<string, unknown>) {
+function forwardRun(
+  server: Server,
+  record: Record<string, unknown>,
+  token = "alice-token",
+) {
   const runId = String(record.id);
   return forward(
     server,
@@ -427,6 +433,7 @@ function forwardRun(server: Server, record: Record<string, unknown>) {
         yaml(record),
       ),
     ],
+    token,
   );
 }
 
@@ -2081,12 +2088,39 @@ Deno.test({
               victim,
             ),
         );
+        const forgedRecord = (runId: string, initiatedBy: string) =>
+          runRecord(runId, {
+            status: "suspended",
+            initiatedBy,
+            jobs: [{
+              jobName: "main",
+              status: "running",
+              steps: [{
+                stepName: "call",
+                status: "waiting_approval",
+                startedAt: "2020-01-01T00:00:00.000Z",
+                nestedRun: {
+                  workflowId: victimWorkflow.id,
+                  workflowName: "victim",
+                  runId: victim.id,
+                },
+              }],
+            }],
+          });
+        // naming the victim's initiator, which a back link would match, is
+        // refused outright
+        const impersonated = await forwardRun(
+          server,
+          forgedRecord(crypto.randomUUID(), "user:alice"),
+        );
+        assertEquals(impersonated.status, 403);
+        assertEquals(impersonated.json.reason, "run-initiator-mismatch");
         const parent = crypto.randomUUID();
         const started = await forwardRun(
           server,
           runRecord(parent, {
             status: "suspended",
-            initiatedBy: "user:alice",
+            initiatedBy: "user:caller",
             jobs: [{
               jobName: "main",
               status: "running",
@@ -2553,9 +2587,141 @@ Deno.test({
       };
       const older = await read("lease-ops");
       assertEquals(older.kinds, ["run.create"]);
-      assertEquals(older.replyFeatures, "step-starts");
+      assert(
+        (older.replyFeatures ?? "").split(",").includes("step-starts"),
+        String(older.replyFeatures),
+      );
       const current = await read("lease-ops,step-starts");
       assertEquals(current.kinds, ["run.create", "run-start.save"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a new run record names the principal serve stamps on its commit, or is refused for its initiator",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([runWorkflows], async (server) => {
+      const landed = await forwardRun(server, runRecord(crypto.randomUUID()));
+      assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      for (const initiatedBy of ["user:someone-else", "ghost", undefined]) {
+        const record = runRecord(crypto.randomUUID());
+        if (initiatedBy === undefined) delete record.initiatedBy;
+        else record.initiatedBy = initiatedBy;
+        const answer = await forwardRun(server, record);
+        assertEquals(answer.status, 403, String(initiatedBy));
+        assertEquals(answer.json.code, "forbidden");
+        assertEquals(answer.json.reason, "run-initiator-mismatch");
+        assertStringIncludes(String(answer.json.message), "upgrade");
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a child run another member creates keeps its parent's initiator",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const bobRuns = grant({
+      subject: { kind: "user", name: "bob" },
+      actions: ["read", "run"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    await withServer([runWorkflows, bobRuns], async (server) => {
+      const parentId = crypto.randomUUID();
+      const parent = await forwardRun(
+        server,
+        runRecord(parentId, { status: "suspended" }),
+      );
+      assertEquals(parent.status, 200, JSON.stringify(parent.json));
+      const parentRun = {
+        workflowId: WORKFLOW,
+        workflowName: "deploy",
+        runId: parentId,
+        jobName: "main",
+        stepName: "call",
+        nestingDepth: 1,
+        ancestorWorkflowNames: ["deploy"],
+      };
+      const inherited = await forwardRun(
+        server,
+        runRecord(crypto.randomUUID(), { parentRun }),
+        "bob-token",
+      );
+      assertEquals(inherited.status, 200, JSON.stringify(inherited.json));
+      const resumer = await forwardRun(
+        server,
+        runRecord(crypto.randomUUID(), { parentRun, initiatedBy: "user:bob" }),
+        "bob-token",
+      );
+      assertEquals(resumer.status, 403, JSON.stringify(resumer.json));
+      assertEquals(resumer.json.reason, "run-initiator-mismatch");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: serve's replies name the caller's principal and the run-initiator check",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([runWorkflows], async (server) => {
+      const response = await fetch(`${server.url}/changes`, {
+        headers: { authorization: "Bearer alice-token" },
+      });
+      await response.body?.cancel();
+      assertEquals(
+        response.headers.get("x-swamp-datastore-principal"),
+        encodeURIComponent("user:caller"),
+      );
+      const features = (response.headers.get("x-swamp-datastore-features") ??
+        "").split(",").map((feature) => feature.trim());
+      assert(features.includes("run-initiator"), features.join(","));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: the authorize request takes removals only, so it cannot ask ahead whether a write would be allowed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([runWorkflows], async (server) => {
+      const runId = crypto.randomUUID();
+      const partition = partitionOf({
+        kind: "run",
+        workflowId: WORKFLOW,
+        runId,
+      });
+      const answer = await fetch(`${server.url}/authorize`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer alice-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          commits: [{
+            partition: partition.toString(),
+            ops: [
+              put(
+                { kind: "run.create", run: { workflowId: WORKFLOW, runId } },
+                `workflow-runs/${WORKFLOW}/workflow-run-${runId}.yaml`,
+                yaml(runRecord(runId)),
+              ),
+            ],
+          }],
+        }),
+      });
+      const json = await answer.json();
+      assertEquals(answer.status, 400, JSON.stringify(json));
+      assertEquals(json.code, "invalid_request");
+      assertEquals(json.verdicts, undefined);
     });
   },
 });

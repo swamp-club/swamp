@@ -19,7 +19,9 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
+  assertRunInitiatorKnown,
   isAuthenticated,
+  nameLockHolder,
   requireAuthenticated,
   requireScope,
   resolveCliInitiatedBy,
@@ -33,6 +35,16 @@ import { UserError } from "../domain/errors.ts";
 import { join } from "@std/path";
 import { setApiKeyFileOverride } from "../infrastructure/persistence/api_key_source.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
+import { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
+import {
+  lockHolderName,
+  setLockHolderName,
+} from "../infrastructure/persistence/lock_holder_name.ts";
+import {
+  noteServeInitiator,
+  registerServeUpstream,
+  resetServeUpstreamBindingsForTesting,
+} from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 
 Deno.test("auth_context: defaults to not authenticated", () => {
   setAuthenticated(false);
@@ -250,4 +262,83 @@ Deno.test("requireScope: global wildcard satisfies any gate", () => {
   requireScope("vault:read");
   setCollectiveToken("");
   setAuthScopes(undefined);
+});
+
+async function withServeModeCheckout(
+  fn: (datastorePath: string) => Promise<void>,
+): Promise<void> {
+  const datastorePath = await Deno.makeTempDir({
+    prefix: "swamp-initiator-",
+  });
+  registerServeUpstream({
+    root: datastorePath,
+    target: ServeUpstreamTarget.create({
+      serverUrl: "https://serve.example",
+      token: "t.s",
+    }),
+    namespace: "",
+    client: () => {
+      throw new Error("no client in this test");
+    },
+  });
+  try {
+    await fn(datastorePath);
+  } finally {
+    resetServeUpstreamBindingsForTesting();
+    await Deno.remove(datastorePath, { recursive: true });
+  }
+}
+
+Deno.test("resolveCliInitiatedBy: a serve-mode checkout names the principal serve checks runs against", async () => {
+  await withServeModeCheckout(async (datastorePath) => {
+    noteServeInitiator(datastorePath, {
+      kind: "checked",
+      principal: "user:m1",
+    });
+    assertEquals(await resolveCliInitiatedBy(datastorePath), "user:m1");
+  });
+});
+
+Deno.test("resolveCliInitiatedBy: a serve that checks no initiator, or one not heard from, keeps today's value", async () => {
+  await withServeModeCheckout(async (datastorePath) => {
+    setAuthenticated(false);
+    assertEquals(await resolveCliInitiatedBy(datastorePath), "ghost");
+    noteServeInitiator(datastorePath, { kind: "not-checked" });
+    assertEquals(await resolveCliInitiatedBy(datastorePath), "ghost");
+  });
+});
+
+Deno.test("assertRunInitiatorKnown: refuses a run before it starts only in a serve-mode checkout that has not heard from serve", async () => {
+  await withServeModeCheckout((datastorePath) => {
+    const refusal = assertThrows(
+      () => assertRunInitiatorKnown(datastorePath),
+      UserError,
+    );
+    assertEquals(refusal.code, "datastore_v3_offline_principal_unknown");
+    assertStringIncludes(refusal.message, "serve");
+    noteServeInitiator(datastorePath, { kind: "not-checked" });
+    assertRunInitiatorKnown(datastorePath);
+    return Promise.resolve();
+  });
+  assertRunInitiatorKnown("/not/a/serve/mode/checkout");
+  assertRunInitiatorKnown(undefined);
+});
+
+Deno.test("nameLockHolder: locks a serve-mode checkout takes name the principal serve knows the caller by", async () => {
+  await withServeModeCheckout(async (datastorePath) => {
+    try {
+      await withMockedEnv({ USER: "pat", USERNAME: undefined }, () => {
+        nameLockHolder(datastorePath);
+        assertEquals(lockHolderName(), "pat");
+        noteServeInitiator(datastorePath, {
+          kind: "checked",
+          principal: "user:m1",
+        });
+        nameLockHolder(datastorePath);
+        assertEquals(lockHolderName(), "user:m1");
+      });
+    } finally {
+      setLockHolderName(undefined);
+    }
+  });
 });

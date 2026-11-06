@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   anyServeOffline,
@@ -113,6 +113,9 @@ Deno.test("reportQueuedOffline: in json mode, says going offline and, once the c
     if (queued.notice === "datastore_offline_queued") {
       assertEquals(queued.queued, 2);
       assertEquals(queued.txnIds, ["t-1", "t-2"]);
+      // a read-only command never sends it: only one that writes does
+      assert(queued.message.includes("command that writes"), queued.message);
+      assert(!queued.message.includes("next command that reaches it"));
     }
   } finally {
     setServeOfflineNoticeWriter(undefined);

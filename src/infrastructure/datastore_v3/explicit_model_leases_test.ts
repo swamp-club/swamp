@@ -70,6 +70,7 @@ class FakeServe {
   readonly calls: string[] = [];
   answers: Array<"held" | "acquired" | "unfenced"> = ["acquired"];
   renewal: "renew" | "ended" | Error = "renew";
+  holder: unknown;
 
   acquireLock(
     lockKey: string,
@@ -87,7 +88,8 @@ class FakeServe {
         acquired: false,
         heldBy: "other",
         message: "held",
-      });
+        ...(this.holder === undefined ? {} : { holder: this.holder }),
+      } as LockAcquireReply);
     }
     const lease: LockLease = {
       leaseId: crypto.randomUUID(),
@@ -310,5 +312,21 @@ Deno.test("renewExplicitLeases: with serve unreachable, tries once and keeps eve
       1,
     );
     assertEquals((await readExplicitLeases(root)).length, 2);
+  });
+});
+
+Deno.test("acquireExplicitLease: another explicit lease that outlasts the wait is refused after one ask, naming its holder and end", async () => {
+  await withRoot(async (root) => {
+    const serve = new FakeServe();
+    serve.answers = ["held"];
+    const until = new Date(Date.now() + 600_000).toISOString();
+    serve.holder = { principal: "user:boss", explicit: true, expiresAt: until };
+    const error = await assertRejects(
+      () => acquireExplicitLease(root, serve, KEY, 60_000, 5_000, SIGNAL),
+      ExplicitLeaseHeldError,
+    );
+    assertEquals(serve.calls.length, 1);
+    assert(error.message.includes("user:boss"), error.message);
+    assert(error.message.includes(until), error.message);
   });
 });

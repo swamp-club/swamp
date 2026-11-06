@@ -338,7 +338,8 @@ async function schemaOneOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN state; " +
+    "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state; " +
       "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
       "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
       "DROP TABLE outbox_versions; " +
@@ -367,7 +368,8 @@ async function schemaTwoOutbox(path: string): Promise<void> {
   await outbox.close();
   const db = new DatabaseSync(path);
   db.exec(
-    "ALTER TABLE outbox_entries DROP COLUMN state; " +
+    "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state; " +
       "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
       "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
       "DROP TABLE outbox_versions; " +
@@ -864,7 +866,8 @@ Deno.test("SqliteCommitOutbox: a schema 5 outbox migrates to 6, its entries pend
     await outbox.close();
     const db = new DatabaseSync(path);
     db.exec(
-      "ALTER TABLE outbox_entries DROP COLUMN state; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+        "ALTER TABLE outbox_entries DROP COLUMN state; " +
         "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
         "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
         "DROP TABLE outbox_versions; " +
@@ -872,12 +875,12 @@ Deno.test("SqliteCommitOutbox: a schema 5 outbox migrates to 6, its entries pend
         "PRAGMA user_version=5",
     );
     db.close();
-    assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 6);
+    assertEquals(COMMIT_OUTBOX_SCHEMA_VERSION, 7);
     const migrated = new SqliteCommitOutbox(path);
     try {
       const { entries } = await migrated.entries();
       assertEquals(entries.map((entry) => entry.state), [undefined]);
-      assertEquals(schemaOf(path), 6);
+      assertEquals(schemaOf(path), 7);
       await migrated.markState([outboxKeyOf(commit)], "offline");
       assertEquals(
         await migrated.queuedDataHighWater(
@@ -961,7 +964,8 @@ Deno.test("SqliteCommitOutbox: one schema 5 entry whose body does not parse leav
     await outbox.close();
     const db = new DatabaseSync(path);
     db.exec(
-      "ALTER TABLE outbox_entries DROP COLUMN state; " +
+      "ALTER TABLE outbox_entries DROP COLUMN state_code; " +
+        "ALTER TABLE outbox_entries DROP COLUMN state; " +
         "ALTER TABLE outbox_entries DROP COLUMN state_reason; " +
         "ALTER TABLE outbox_entries DROP COLUMN sent_maybe_at; " +
         "DROP TABLE outbox_versions; " +
@@ -974,7 +978,7 @@ Deno.test("SqliteCommitOutbox: one schema 5 entry whose body does not parse leav
     const migrated = new SqliteCommitOutbox(path);
     try {
       const listing = await migrated.entries();
-      assertEquals(schemaOf(path), 6);
+      assertEquals(schemaOf(path), 7);
       assertEquals(listing.entries.map((entry) => entry.commit.txnId), [
         good.txnId,
       ]);
@@ -1036,6 +1040,37 @@ Deno.test("SqliteCommitOutbox.recordLandedOffline: keeps what a landed offline e
       assertEquals(
         (await outbox.landedOfflineCarry("", partition)).versions,
         [],
+      );
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox.markState: a rejected entry keeps the code it was refused with, and a mark without one clears it", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "outbox.db");
+    const outbox = new SqliteCommitOutbox(path);
+    try {
+      const commit = modelCommit(1, [await savePut("a", 1)]);
+      await outbox.prepare({
+        commit,
+        unitId: "u",
+        base: { seq: 0, txnId: undefined },
+      });
+      await outbox.markState(
+        [outboxKeyOf(commit)],
+        "rejected",
+        "its initiator is not user:m1",
+        "run_initiator_mismatch",
+      );
+      const listed = (await outbox.entries()).entries[0];
+      assertEquals(listed.state, "rejected");
+      assertEquals(listed.stateCode, "run_initiator_mismatch");
+      await outbox.markState([outboxKeyOf(commit)], "rejected", "other");
+      assertEquals(
+        (await outbox.entries()).entries[0].stateCode,
+        undefined,
       );
     } finally {
       await outbox.close();

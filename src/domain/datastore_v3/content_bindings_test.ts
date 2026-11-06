@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type {
   StepRunData,
   WorkflowRunData,
@@ -28,6 +28,7 @@ import {
   judgeRunRecord,
   judgeRunStart,
   runIdentityRefusal,
+  runInitiatorRefusal,
   type RunRecordContext,
   type RunStartContext,
 } from "./content_bindings.ts";
@@ -696,5 +697,43 @@ Deno.test("judgeRunStart: a run with no stored record, or one serve drives, take
   assert(
     judgeStart(startOf(), run([step("deploy")], { instanceId: "leader" })) !==
       undefined,
+  );
+});
+
+Deno.test("runInitiatorRefusal: a new run names its creator's authenticated principal", () => {
+  assertEquals(
+    runInitiatorRefusal({ initiatedBy: "user:alice", caller: "user:alice" }),
+    undefined,
+  );
+  for (const initiatedBy of ["user:bob", "ghost", undefined]) {
+    const refusal = runInitiatorRefusal({ initiatedBy, caller: "user:alice" });
+    assert(refusal !== undefined, String(initiatedBy));
+    assertStringIncludes(refusal, "user:alice");
+  }
+});
+
+Deno.test("runInitiatorRefusal: a child run keeps its parent's initiator, whoever creates it", () => {
+  const parent = { initiatedBy: "user:alice" };
+  assertEquals(
+    runInitiatorRefusal({
+      initiatedBy: "user:alice",
+      caller: "user:bob",
+      parent,
+    }),
+    undefined,
+  );
+  assert(
+    runInitiatorRefusal({
+      initiatedBy: "user:bob",
+      caller: "user:bob",
+      parent,
+    }) !== undefined,
+  );
+});
+
+Deno.test("runInitiatorRefusal: a serve with no authenticated caller checks nothing", () => {
+  assertEquals(
+    runInitiatorRefusal({ initiatedBy: "ghost", caller: undefined }),
+    undefined,
   );
 });

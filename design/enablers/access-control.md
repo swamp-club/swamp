@@ -1649,13 +1649,30 @@ runner against their will.
    did. There is no per-run ownership refusal: one member resuming another's run
    works.
 
+**Initiator (swamp-club#4454).** A new run record names the principal serve
+stamps on its commit (the token record's principal), or, for a child run, its
+stored parent's initiator; anything else is refused with
+`run-initiator-mismatch` (`run_initiator_mismatch` in the CLI, advising an
+upgrade). Serve rewrites no bytes, and the frozen-field rule keeps it after the
+first record. A child a resume creates keeps the parent's initiator; who resumed
+it is out of scope. The rule is not limited to resumes: any caller with `run`
+on an active parent's workflow can create a child record attributed to the
+parent's initiator. Under auth mode none nothing is checked. Two upgrade windows
+are accepted, not closed: work an older CLI queued offline across a serve
+upgrade, and a leader upgraded before its followers (an old follower never
+advertises the check). Such a record is kept in the member's outbox as rejected
+and its work is run again; there is no path that accepts it as it is.
+
+**Login tokens.** An admin may revoke any token but may not reveal a login
+token (one an OAuth or device login minted) through serve.
+
 **Out of scope:**
 
 - the step, job and run statuses, outputs and timings a member reports for a run
   they drive;
 - splitting such a report across commits.
-- `initiatedBy` and `triggerSource`, which are the member's report: the commit
-  stamp says who wrote the record.
+- `triggerSource`, a behavior's output provenance and the `initiatedBy` data
+  tag, which are the member's report: the commit stamp says who wrote them.
 - the step starts a member reports for a run they drive (swamp-club#4319). A
   start is a run's own small record that a step began, read with the run's
   record on recovery. It holds a job, a step and a start time and nothing else,
