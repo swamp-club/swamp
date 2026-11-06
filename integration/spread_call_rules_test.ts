@@ -349,10 +349,7 @@ const PINNED: ReadonlyArray<
     file: "src/presentation/output/console_writer.ts",
     reason: "names or attribute keys of one run or record",
     calls: [
-      "Math.max(...displayKeys.map((k) => k.length), 1)",
-      "Math.max(...keys.map((k) => k.length), 1)",
       "Math.max(...names.map((n) => n.length), 1)",
-      'dataEntries.push(...formatAttributeEntries(key, val, maxKeyLen, " "))',
     ],
   },
   {
