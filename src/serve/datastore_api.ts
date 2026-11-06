@@ -151,6 +151,7 @@ import type {
   UploadReservation,
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
 import {
+  LEASE_HOLDER_FEATURE,
   LEASE_OPS_FEATURE,
   RUN_INITIATOR_FEATURE,
   SERVE_DATASTORE_ACCESS_HEADER,
@@ -191,6 +192,7 @@ import {
   type DatastoreLockLeases,
   DEFAULT_LOCK_TTL_MS,
   type LeaseBase,
+  type LeaseHolder,
   LeaseRecordNotRemovedError,
   type LeaseView,
   type LockHolder,
@@ -413,15 +415,33 @@ export function callerReplyHeaders(
   principal: string,
 ): [string, string][] {
   if (authMode === "none") {
-    return [[SERVE_DATASTORE_FEATURES_HEADER, STEP_STARTS_FEATURE]];
+    return [[
+      SERVE_DATASTORE_FEATURES_HEADER,
+      [STEP_STARTS_FEATURE, LEASE_HOLDER_FEATURE].join(","),
+    ]];
   }
   return [
     [
       SERVE_DATASTORE_FEATURES_HEADER,
-      [STEP_STARTS_FEATURE, RUN_INITIATOR_FEATURE].join(","),
+      [STEP_STARTS_FEATURE, RUN_INITIATOR_FEATURE, LEASE_HOLDER_FEATURE]
+        .join(","),
     ],
     [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
   ];
+}
+
+function heldMessage(
+  lockKey: string,
+  outcome: { readonly heldBy: LockHolder; readonly holder?: LeaseHolder },
+): string {
+  const { holder } = outcome;
+  if (holder === undefined) return `${lockKey} is held by serve's own work`;
+  const who = outcome.heldBy === "caller"
+    ? `another command of ${holder.principal}`
+    : holder.principal;
+  return holder.explicit
+    ? `${lockKey} is held by ${who} under an explicit lease until ${holder.expiresAt}`
+    : `${lockKey} is held by ${who}`;
 }
 
 /**
@@ -1420,6 +1440,20 @@ class DatastoreApi {
         "waitMs must be a non-negative integer",
       );
     }
+    // the caller's whole remaining wait: an explicit lease outlasting it is
+    // answered at once rather than long-polled
+    const budgetMs = fields.budgetMs;
+    if (
+      budgetMs !== undefined &&
+      (typeof budgetMs !== "number" || !Number.isSafeInteger(budgetMs) ||
+        budgetMs < 0)
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        "budgetMs must be a non-negative integer",
+      );
+    }
     const refused = await this.#authorizeLock(target);
     if (refused !== undefined) return refused;
     // A kept lease on this key not adopted yet holds it (swamp-club#4258).
@@ -1434,6 +1468,7 @@ class DatastoreApi {
       signal: req.signal,
       ...(fenced ? { fenced: () => this.#leaseBase(target) } : {}),
       ...(holdMs !== undefined ? { holdMs: holdMs as number } : {}),
+      ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
     });
     switch (outcome.kind) {
       case "acquired":
@@ -1454,16 +1489,13 @@ class DatastoreApi {
           [["Retry-After", "1"]],
         );
       case "held":
-        // Who holds it is said only as far as the caller may know: itself,
-        // another caller, or serve's own work. Never another's identity.
+        // The caller passed this lock's authorization, so it may take the
+        // lock and may know who holds it; heldBy stays for older clients.
         return Response.json({
           code: "lock_held",
           heldBy: outcome.heldBy,
-          message: outcome.heldBy === "caller"
-            ? `${fields.lockKey} is held by another of this caller's commands`
-            : outcome.heldBy === "other"
-            ? `${fields.lockKey} is held by another caller`
-            : `${fields.lockKey} is held by serve's own work`,
+          ...(outcome.holder === undefined ? {} : { holder: outcome.holder }),
+          message: heldMessage(fields.lockKey as string, outcome),
         }, { status: 409, headers: { "Retry-After": "1" } });
     }
   }
@@ -1471,7 +1503,8 @@ class DatastoreApi {
   /**
    * `GET locks?prefix=`: the leases serve holds on locks the caller could
    * take itself (swamp-club#4121), each as its key, who holds it (`caller`
-   * or `other`, never who) and when it ends unless renewed. Each lock is
+   * or `other`, and the holder's principal), whether it is explicit, and
+   * when it ends unless renewed. Each lock is
    * decided without a refusal audit, since a listing refuses nothing. At
    * most {@link MAX_LISTED_LEASES}, with `truncated` set past it.
    */
@@ -1485,6 +1518,7 @@ class DatastoreApi {
       lockKey: string;
       heldBy: LockHolder;
       expiresAt: string;
+      holder: LeaseHolder;
     }[] = [];
     let truncated = false;
     for (const lease of this.#deps.locks.list(prefix)) {
@@ -1497,6 +1531,11 @@ class DatastoreApi {
         lockKey: lease.lockKey,
         heldBy: lease.principal === this.#caller.principal ? "caller" : "other",
         expiresAt: lease.expiresAt,
+        holder: {
+          principal: lease.principal,
+          explicit: lease.explicit,
+          expiresAt: lease.expiresAt,
+        },
       });
     }
     return Response.json({ leases, truncated });

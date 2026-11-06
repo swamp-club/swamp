@@ -276,7 +276,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "datastore lease fence: GET locks lists serve's leases on locks the caller could take, holder kinds only",
+    "datastore lease fence: GET locks lists serve's leases on locks the caller could take, and who holds them",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -300,6 +300,7 @@ Deno.test({
       assertEquals(Object.keys(listed).sort(), [
         "expiresAt",
         "heldBy",
+        "holder",
         "lockKey",
       ]);
       assert(!JSON.stringify(asAlice.json).includes(lease.leaseId));
@@ -309,7 +310,12 @@ Deno.test({
         (asBob.json.leases as Record<string, unknown>[]).map((l) => l.heldBy),
         ["other"],
       );
-      assert(!JSON.stringify(asBob.json).includes("user:caller"));
+      // a caller who may take the lock may know who holds it (swamp-club#4454)
+      assertEquals(
+        (asBob.json.leases as { holder?: { principal?: string } }[])[0].holder
+          ?.principal,
+        "user:caller",
+      );
 
       const prefixed = await call(
         server,

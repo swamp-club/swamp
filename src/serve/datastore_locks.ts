@@ -223,9 +223,21 @@ export class LeaseRecordNotRemovedError extends Error {
 
 export type LockHolder = "caller" | "other" | "serve";
 
+/** who holds a lease, said to callers who may take its lock */
+export interface LeaseHolder {
+  readonly principal: string;
+  readonly explicit: boolean;
+  readonly expiresAt: string;
+}
+
 export type AcquireOutcome =
   | { readonly kind: "acquired"; readonly lease: AcquiredLease }
-  | { readonly kind: "held"; readonly heldBy: LockHolder }
+  | {
+    readonly kind: "held";
+    readonly heldBy: LockHolder;
+    /** absent when serve's own work holds it */
+    readonly holder?: LeaseHolder;
+  }
   | { readonly kind: "too-many" }
   // an explicit lease the leader could not record, so a takeover would end it:
   // refused rather than granted
@@ -405,6 +417,7 @@ export class DatastoreLockLeases {
     readonly signal: AbortSignal;
     readonly fenced?: () => Promise<LeaseBase>;
     readonly holdMs?: number;
+    readonly budgetMs?: number;
   }): Promise<AcquireOutcome> {
     if (this.#disposed) return { kind: "held", heldBy: "serve" };
     const attempt = this.#acquire(request);
@@ -424,6 +437,7 @@ export class DatastoreLockLeases {
     readonly signal: AbortSignal;
     readonly fenced?: () => Promise<LeaseBase>;
     readonly holdMs?: number;
+    readonly budgetMs?: number;
   }): Promise<AcquireOutcome> {
     const { principal, target, ttlMs } = request;
     if (this.#heldBy(principal) >= this.#maxPerPrincipal) {
@@ -438,8 +452,12 @@ export class DatastoreLockLeases {
     const lock = await this.#createLock(target);
     while (true) {
       if (!this.#byKey.has(key) && await lock.tryAcquire()) break;
-      if (signal.aborted || this.#now() >= deadline) {
-        return { kind: "held", heldBy: this.#holderOf(key, principal) };
+      // waiting helps only for a lease that may end within the caller's
+      // whole wait: an explicit lease that outlasts it is answered now
+      const outlasts = request.budgetMs !== undefined &&
+        this.#explicitUntil(key) > this.#now() + request.budgetMs;
+      if (signal.aborted || outlasts || this.#now() >= deadline) {
+        return this.#held(key, principal);
       }
       await delay(this.#retryIntervalMs, signal);
     }
@@ -902,6 +920,29 @@ export class DatastoreLockLeases {
       if (lease.principal === principal) count++;
     }
     return count;
+  }
+
+  #held(key: string, principal: string): AcquireOutcome {
+    const id = this.#byKey.get(key);
+    const lease = id === undefined ? undefined : this.#leases.get(id);
+    return {
+      kind: "held",
+      heldBy: this.#holderOf(key, principal),
+      ...(lease === undefined ? {} : {
+        holder: {
+          principal: lease.principal,
+          explicit: lease.holdMs !== undefined,
+          expiresAt: new Date(lease.expiresAt).toISOString(),
+        },
+      }),
+    };
+  }
+
+  /** when the key's explicit lease ends, or 0 when none holds it */
+  #explicitUntil(key: string): number {
+    const id = this.#byKey.get(key);
+    const lease = id === undefined ? undefined : this.#leases.get(id);
+    return lease?.holdMs === undefined ? 0 : lease.expiresAt;
   }
 
   #holderOf(key: string, principal: string): LockHolder {

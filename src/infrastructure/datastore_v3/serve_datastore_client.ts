@@ -146,6 +146,9 @@ export const LEASE_OPS_FEATURE = "lease-ops";
 /** without it in serve's replies, a member commits each start as the whole record */
 export const STEP_STARTS_FEATURE = "step-starts";
 
+/** serve names a lease's holder and answers at once when waiting cannot help */
+export const LEASE_HOLDER_FEATURE = "lease-holder";
+
 /** serve refuses a new run record that does not name the principal it stamps */
 export const RUN_INITIATOR_FEATURE = "run-initiator";
 
@@ -254,10 +257,18 @@ export interface LockLease {
   readonly holdMs?: number;
 }
 
+/** who holds a lease, as a serve that names lease-holder says */
+export interface ServeLeaseHolder {
+  readonly principal: string;
+  readonly explicit: boolean;
+  readonly expiresAt: string;
+}
+
 export interface ServeLeaseEntry {
   readonly lockKey: string;
   readonly heldBy: "caller" | "other";
   readonly expiresAt: string;
+  readonly holder?: ServeLeaseHolder;
 }
 
 export interface ServeLeaseListing {
@@ -271,6 +282,7 @@ export type LockAcquireReply =
     readonly acquired: false;
     readonly heldBy: string;
     readonly message: string;
+    readonly holder?: ServeLeaseHolder;
   };
 
 interface RequestSpec {
@@ -295,6 +307,7 @@ export class ServeDatastoreClient {
   #logCheck: ((logId: string | undefined) => void) | undefined;
   #accessCheck: ((fingerprint: string) => void) | undefined;
   #takesStepStarts = false;
+  #takesLeaseHolder = false;
   #initiatorMode: ServeInitiatorMode | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
@@ -570,8 +583,12 @@ export class ServeDatastoreClient {
     ttlMs: number,
     waitMs: number,
     signal: AbortSignal,
-    options: { readonly holdMs?: number } = {},
+    options: { readonly holdMs?: number; readonly budgetMs?: number } = {},
   ): Promise<LockAcquireReply> {
+    // the budget goes only to a serve known to read it
+    const budget = options.budgetMs !== undefined && this.#takesLeaseHolder
+      ? { budgetMs: Math.max(0, Math.floor(options.budgetMs)) }
+      : {};
     return await this.#exchange(
       {
         method: "POST",
@@ -581,8 +598,14 @@ export class ServeDatastoreClient {
         // explicit lease is held for `holdMs` between renewals
         body: JSON.stringify(
           options.holdMs === undefined
-            ? { lockKey, ttlMs, waitMs, fenced: true }
-            : { lockKey, waitMs, fenced: true, holdMs: options.holdMs },
+            ? { lockKey, ttlMs, waitMs, fenced: true, ...budget }
+            : {
+              lockKey,
+              waitMs,
+              fenced: true,
+              holdMs: options.holdMs,
+              ...budget,
+            },
         ),
       },
       signal,
@@ -594,12 +617,14 @@ export class ServeDatastoreClient {
             SERVE_ERROR_BODY_MAX_BYTES,
           ).catch(() => undefined) as Record<string, unknown> | undefined;
           if (body?.code === "lock_held") {
+            const holder = leaseHolderOf(body.holder);
             return {
               acquired: false,
               heldBy: typeof body.heldBy === "string" ? body.heldBy : "other",
               message: typeof body.message === "string"
                 ? body.message
                 : `${lockKey} is held`,
+              ...(holder === undefined ? {} : { holder }),
             };
           }
           throw serveErrorFromReply(409, body, this.baseUrl);
@@ -945,6 +970,7 @@ export class ServeDatastoreClient {
           SERVE_DATASTORE_FEATURES_HEADER,
         ) ?? "").split(",").map((feature) => feature.trim());
         this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
+        this.#takesLeaseHolder = features.includes(LEASE_HOLDER_FEATURE);
         this.#initiatorMode = initiatorModeOf(
           features,
           response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),
@@ -1104,13 +1130,34 @@ function leaseListingOf(body: unknown): ServeLeaseListing {
     ) {
       throw invalidReply("locks", "each lease's lockKey, heldBy and expiresAt");
     }
+    const holder = leaseHolderOf(lease.holder);
     return {
       lockKey: lease.lockKey,
       heldBy: lease.heldBy,
       expiresAt: lease.expiresAt,
+      ...(holder === undefined ? {} : { holder }),
     };
   });
   return { leases, truncated: fields.truncated === true };
+}
+
+/** a malformed holder is left out, so the reply reads as an older serve's */
+function leaseHolderOf(raw: unknown): ServeLeaseHolder | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const fields = raw as Record<string, unknown>;
+  if (
+    typeof fields.principal !== "string" ||
+    typeof fields.explicit !== "boolean" ||
+    typeof fields.expiresAt !== "string" ||
+    Number.isNaN(Date.parse(fields.expiresAt))
+  ) {
+    return undefined;
+  }
+  return {
+    principal: fields.principal,
+    explicit: fields.explicit,
+    expiresAt: fields.expiresAt,
+  };
 }
 
 function isSeq(value: unknown): value is number {

@@ -66,7 +66,7 @@ const twoMembers = () => [
 
 Deno.test({
   name:
-    "datastore locks: a member takes a behavior's lock, another caller is told only that another holds it, and only the holder renews or releases it",
+    "datastore locks: a member takes a behavior's lock, another caller is told who holds it, and only the holder renews or releases it",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -88,7 +88,10 @@ Deno.test({
         "lock_held",
         "other",
       ]);
-      assert(!JSON.stringify(held.json).includes("user:caller"));
+      assertEquals(
+        (held.json.holder as { principal?: string } | undefined)?.principal,
+        "user:caller",
+      );
 
       assertEquals(
         (await call(server, "PUT", `locks/${leaseId}`, "bob-token", {})).status,

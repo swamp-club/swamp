@@ -23,6 +23,8 @@
  * lease serve refuses
  */
 
+import type { ServeLeaseHolder } from "./serve_datastore_client.ts";
+import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
 import { join } from "@std/path";
 import type { DataNameMarks } from "../../domain/datastore_v3/commit_store.ts";
 import { dataNameMarksFromJSON } from "../../domain/datastore_v3/observed_base.ts";
@@ -309,8 +311,11 @@ export class ExplicitLeaseHeldError extends Error {
     readonly lockKey: string,
     readonly heldBy: string,
     readonly waitedMs: number,
+    holderDetail?: ServeLeaseHolder,
   ) {
-    const holder = heldBy === "caller"
+    const holder = holderDetail !== undefined
+      ? describeHolder(heldBy, holderDetail)
+      : heldBy === "caller"
       ? "another command of yours"
       : heldBy === "serve"
       ? "serve's own work"
@@ -343,7 +348,10 @@ const ACQUIRE_REQUEST_WAIT_MS = 10_000;
  */
 export async function acquireExplicitLease(
   root: string,
-  client: ExplicitLeaseClient & { readonly timeoutMs: number },
+  client: ExplicitLeaseClient & {
+    readonly timeoutMs: number;
+    readonly baseUrl?: string;
+  },
   lockKey: string,
   holdMs: number,
   maxWaitMs: number,
@@ -365,6 +373,8 @@ export async function acquireExplicitLease(
     await forgetExplicitLease(root, recorded.leaseId);
   }
   const started = performance.now();
+  // the wall-clock end of the wait, which a holder's expiry is judged by
+  const deadline = Date.now() + maxWaitMs;
   let heldBy = "other";
   while (true) {
     const remaining = maxWaitMs - (performance.now() - started);
@@ -383,6 +393,7 @@ export async function acquireExplicitLease(
       ACQUIRE_TTL_MS,
       waitMs,
       signal,
+      { budgetMs: Math.max(0, Math.floor(remaining)) },
     );
     if (reply.acquired) {
       const taken = explicitLeaseFrom(reply.lease, holdMs);
@@ -413,11 +424,15 @@ export async function acquireExplicitLease(
       return { lease, existing: false };
     }
     heldBy = reply.heldBy;
-    if (performance.now() - started >= maxWaitMs) {
+    if (
+      performance.now() - started >= maxWaitMs ||
+      outlastsWait(reply.holder, deadline, client.baseUrl ?? "")
+    ) {
       throw new ExplicitLeaseHeldError(
         lockKey,
         heldBy,
         Math.round(performance.now() - started),
+        reply.holder,
       );
     }
     if (waitMs === 0) {

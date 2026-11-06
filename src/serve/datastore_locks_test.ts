@@ -155,7 +155,7 @@ Deno.test("parseLockKey: anything else, and any key a path could escape with, is
   }
 });
 
-Deno.test("DatastoreLockLeases.acquire: takes serve's lock, and a second caller is told only that another holds it", async () => {
+Deno.test("DatastoreLockLeases.acquire: takes serve's lock, and a second caller is told another holds it, and who", async () => {
   const locks = fakeLocks();
   const subject = leases(locks);
   try {
@@ -163,14 +163,13 @@ Deno.test("DatastoreLockLeases.acquire: takes serve's lock, and a second caller 
     assert(first.kind === "acquired");
     assertEquals(first.lease.lockKey, lockKeyOf(model));
     assert(locks.held.has(lockKeyOf(model)));
-    assertEquals(await subject.acquire(request("user:bob")), {
-      kind: "held",
-      heldBy: "other",
-    });
-    assertEquals(await subject.acquire(request("user:alice")), {
-      kind: "held",
-      heldBy: "caller",
-    });
+    const other = await subject.acquire(request("user:bob"));
+    assert(other.kind === "held");
+    assertEquals(other.heldBy, "other");
+    assertEquals(other.holder?.principal, "user:alice");
+    const own = await subject.acquire(request("user:alice"));
+    assert(own.kind === "held");
+    assertEquals(own.heldBy, "caller");
   } finally {
     await subject.dispose();
   }
@@ -566,10 +565,10 @@ Deno.test("DatastoreLockLeases: an explicit lease survives a takeover, and its h
       3_600_000,
     );
     assertEquals(renewed?.leaseId, taken.lease.leaseId);
-    assertEquals(
-      await second.subject.acquire(explicit("user:bob")),
-      { kind: "held", heldBy: "other" },
-    );
+    const refused = await second.subject.acquire(explicit("user:bob"));
+    assert(refused.kind === "held");
+    assertEquals(refused.heldBy, "other");
+    assertEquals(refused.holder?.principal, "user:alice");
   } finally {
     await first.subject.dispose();
     await second.subject.dispose();
