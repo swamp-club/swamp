@@ -20,6 +20,7 @@
 import {
   assert,
   assertEquals,
+  assertRejects,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -33,6 +34,10 @@ import {
   showsDataAttributes,
 } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  deeplyNestedAttributes,
+  nestedTreeDepth,
+} from "../output/json_stream_test_helpers.ts";
 import {
   SUMMARY_DISPLAY_HIDDEN,
   SUMMARY_DISPLAY_TAG,
@@ -3125,6 +3130,94 @@ Deno.test("JsonWorkflowRunRenderer: an artifact past the attribute budget carrie
     const artifact = parsed.jobs[0].steps[0].dataArtifacts.at(-1);
     assertEquals(artifact.attributesOmitted, true);
     assertEquals("attributes" in artifact, false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+function deeplyNestedRunView(
+  status: "succeeded" | "cancelled",
+): WorkflowRunView {
+  const run = makeRunView(status);
+  run.jobs[0].steps[0].dataArtifacts![0].attributes = deeplyNestedAttributes();
+  return run;
+}
+
+const OUTCOME_STREAMS: {
+  kind: string;
+  status: "succeeded" | "cancelled";
+  failed: boolean;
+  events: (run: WorkflowRunView) => WorkflowRunEvent[];
+}[] = [
+  {
+    kind: "completed",
+    status: "succeeded",
+    failed: false,
+    events: (run) => simpleEvents(run),
+  },
+  {
+    kind: "cancelled",
+    status: "cancelled",
+    failed: true,
+    events: (run) => [{ kind: "cancelled", run }],
+  },
+  {
+    kind: "suspended",
+    status: "succeeded",
+    failed: false,
+    events: (run) => [{
+      kind: "suspended",
+      run,
+      jobId: "extract",
+      stepId: "fetch",
+      prompt: "Approve?",
+    }],
+  },
+];
+
+for (const outcome of OUTCOME_STREAMS) {
+  Deno.test(`JsonWorkflowRunRenderer: a ${outcome.kind} run whose attributes nest past JSON.stringify's stack limit prints whole`, async () => {
+    const run = deeplyNestedRunView(outcome.status);
+    assertThrows(() => JSON.stringify(run, null, 2), RangeError);
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const lines = await captureOutputAsync(async () => {
+      await consumeStream(toStream(outcome.events(run)), renderer.handlers());
+    });
+    assertEquals(renderer.workflowFailed(), outcome.failed);
+    assertEquals(lines.length, 1);
+    const parsed = JSON.parse(lines[0]);
+    assertEquals(parsed.status, outcome.status);
+    assertEquals(
+      nestedTreeDepth(parsed.jobs[0].steps[0].dataArtifacts[0].attributes),
+      { depth: 6_000, leaf: [0, 1, 2] },
+    );
+  });
+}
+
+Deno.test("JsonWorkflowRunRenderer: a run whose JSON cannot be printed is reported as unprinted output naming the run and its saved status", async () => {
+  const renderer = createWorkflowRunRenderer("json", {
+    workflowName: "test-pipeline",
+  });
+  const originalLog = console.log;
+  console.log = () => {
+    throw new Error("no space left on device");
+  };
+  try {
+    const error = await assertRejects(
+      () =>
+        consumeStream(
+          toStream(simpleEvents(makeRunView("succeeded"))),
+          renderer.handlers(),
+        ),
+      UserError,
+    );
+    assertStringIncludes(error.message, "run-1");
+    assertStringIncludes(error.message, "status succeeded");
+    assertStringIncludes(error.message, "JSON output could not be written");
+    assertStringIncludes(error.message, "no space left on device");
+    assertEquals(error.message.includes("total_records"), false);
   } finally {
     console.log = originalLog;
   }

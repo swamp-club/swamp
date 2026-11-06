@@ -19,6 +19,7 @@
 
 import { green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
+import { prettyJson } from "../output/json_stream.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type {
@@ -31,7 +32,8 @@ export function renderWorkflowRunDisplay(
   mode: OutputMode,
 ): void {
   if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
+    // resource attributes can nest deeper than JSON.stringify's stack allows
+    console.log(prettyJson(data));
   } else {
     renderLogWorkflowRun(data);
   }
