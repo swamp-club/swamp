@@ -3654,6 +3654,19 @@ the definition's partition that is no longer the commit store's version
 refuses the command with `config_edit_conflict` before it changes
 anything; a rename then never creates its new name.
 
+In a checkout written through serve whose command reached serve
+(`CommitLogEngine.reachedServe`), an edit skips that local refusal: serve
+decides the caller's grant before the base, so a caller without the grant is
+refused `forbidden` and never learns who changed the definition or when, and
+one with it gets `config_edit_conflict` from serve. Offline, or with no
+contact, the local refusal stays. A delete keeps it, and in a serve-mode
+checkout first sends `POST authorize` (swamp-club#4454): one tombstone per
+partition and kind the delete will commit (an output, a data version, the
+definition), which serve runs through `authorizeCommit` and appends nothing.
+A refused one stops the delete before anything is removed. A serve without
+the route answers 404 and the delete runs as before; a grant revoked between
+the check and the commits can still leave part of a delete.
+
 The extension lockfile's put expects the lockfile record the commit store
 held when the transaction hydrated (`CommitLogEngine.storedVersion`,
 `SqliteCommitStore.recordSha256`; not the read model, which applies this

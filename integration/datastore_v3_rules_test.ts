@@ -207,6 +207,12 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
+  // a lock release by name asks the datastore's own serve, with its token,
+  // CA and headers
+  "src/cli/commands/datastore_lock.ts -> src/domain/datastore_v3/serve_upstream.ts",
+  // a delete through serve asks about every removal before the first commits
+  "src/cli/commands/model_delete.ts -> src/infrastructure/datastore_v3/delete_preflight.ts",
+  "src/cli/commands/model_delete.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   // a run names the principal serve checks run records
   // against, which the catch-up recorded for the checkout's datastore
   "src/cli/auth_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",

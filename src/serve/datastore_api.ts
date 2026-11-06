@@ -151,6 +151,7 @@ import type {
   UploadReservation,
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
 import {
+  AUTHORIZE_ONLY_FEATURE,
   LEASE_HOLDER_FEATURE,
   LEASE_OPS_FEATURE,
   RUN_INITIATOR_FEATURE,
@@ -417,18 +418,27 @@ export function callerReplyHeaders(
   if (authMode === "none") {
     return [[
       SERVE_DATASTORE_FEATURES_HEADER,
-      [STEP_STARTS_FEATURE, LEASE_HOLDER_FEATURE].join(","),
+      [STEP_STARTS_FEATURE, LEASE_HOLDER_FEATURE, AUTHORIZE_ONLY_FEATURE]
+        .join(","),
     ]];
   }
   return [
     [
       SERVE_DATASTORE_FEATURES_HEADER,
-      [STEP_STARTS_FEATURE, RUN_INITIATOR_FEATURE, LEASE_HOLDER_FEATURE]
-        .join(","),
+      [
+        STEP_STARTS_FEATURE,
+        RUN_INITIATOR_FEATURE,
+        LEASE_HOLDER_FEATURE,
+        AUTHORIZE_ONLY_FEATURE,
+      ].join(","),
     ],
     [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
   ];
 }
+
+const MAX_AUTHORIZE_BODY_BYTES = 256 * 1024;
+const MAX_AUTHORIZED_COMMITS = 16;
+const MAX_AUTHORIZED_OPS = 64;
 
 function heldMessage(
   lockKey: string,
@@ -610,6 +620,10 @@ async function answerDatastoreRequest(
         return req.method === "GET"
           ? await api.changes(req)
           : methodNotAllowed("GET");
+      case "authorize":
+        return req.method === "POST"
+          ? await api.authorize(req)
+          : methodNotAllowed("POST");
       case "base":
         return req.method === "GET"
           ? await api.compactedBase(req)
@@ -825,6 +839,75 @@ class DatastoreApi {
         sha256,
       );
     });
+  }
+
+  /**
+   * `POST authorize`: `{commits: [{partition, ops}]}`, tombstones only. Runs
+   * the check a commit's first pass runs on each, and appends nothing, so a
+   * command that commits several partitions in turn learns before the first
+   * whether a later one is refused. Refusals are audited as a commit's are.
+   */
+  async authorize(req: Request): Promise<Response> {
+    const body = await readJson(req, MAX_AUTHORIZE_BODY_BYTES);
+    const commits = typeof body === "object" && body !== null &&
+        Array.isArray((body as { commits?: unknown }).commits)
+      ? (body as { commits: unknown[] }).commits
+      : undefined;
+    if (commits === undefined || commits.length > MAX_AUTHORIZED_COMMITS) {
+      return failure(
+        400,
+        "invalid_request",
+        `Body must be {"commits": [{"partition", "ops"}]}, at most ${MAX_AUTHORIZED_COMMITS} commits`,
+      );
+    }
+    const parsed: { partition: PartitionKey; ops: Op[] }[] = [];
+    try {
+      for (const raw of commits) {
+        const fields = raw as { partition?: unknown; ops?: unknown };
+        const partition = typeof fields.partition === "string"
+          ? parsePartition(fields.partition)
+          : undefined;
+        if (
+          partition === undefined || !Array.isArray(fields.ops) ||
+          fields.ops.length === 0 || fields.ops.length > MAX_AUTHORIZED_OPS
+        ) {
+          throw new Error("each commit names a partition and its ops");
+        }
+        const ops = await Promise.all(fields.ops.map((op) => opFromJSON(op)));
+        if (ops.some((op) => op.kind !== "tombstone")) {
+          throw new Error("only removals are authorized ahead");
+        }
+        parsed.push({ partition, ops });
+      }
+    } catch (error) {
+      return failure(
+        400,
+        "invalid_request",
+        `Malformed authorize request: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    await this.#catchUp();
+    const verdicts = [];
+    for (const { partition, ops } of parsed) {
+      const checked = await authorizeCommit(
+        partition,
+        ops,
+        this.#resolver,
+        this.#writeAuthority(),
+        "deferred",
+      );
+      verdicts.push(
+        checked.ok ? { ok: true } : {
+          ok: false,
+          reason: checked.reason,
+          opIndex: checked.opIndex,
+          message: checked.message,
+        },
+      );
+    }
+    return Response.json({ verdicts });
   }
 
   /** `POST partitions/{p}/commits`. */

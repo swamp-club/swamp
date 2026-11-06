@@ -246,7 +246,7 @@ Deno.test("callerReplyHeaders: a token serve names the caller's principal, encod
   );
   assertEquals(
     headers.get("x-swamp-datastore-features")?.split(","),
-    ["step-starts", "run-initiator", "lease-holder"],
+    ["step-starts", "run-initiator", "lease-holder", "authorize-only"],
   );
   // a header value the Fetch API accepts
   new Headers([...headers]);
@@ -257,6 +257,6 @@ Deno.test("callerReplyHeaders: a serve without authentication names no principal
   assertEquals(headers.has("x-swamp-datastore-principal"), false);
   assertEquals(
     headers.get("x-swamp-datastore-features")?.split(","),
-    ["step-starts", "lease-holder"],
+    ["step-starts", "lease-holder", "authorize-only"],
   );
 });

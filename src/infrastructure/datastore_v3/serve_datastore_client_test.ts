@@ -1506,3 +1506,27 @@ Deno.test("ServeDatastoreClient: a held reply or listing without a holder (an ol
     expiresAt: "2026-10-29T12:00:30.000Z",
   });
 });
+
+Deno.test("ServeDatastoreClient.authorizeRemovals: reads a verdict per commit, and an older serve without the route is no answer", async () => {
+  const { client, requests } = clientWith(() =>
+    Response.json({
+      verdicts: [{ ok: true }, {
+        ok: false,
+        reason: "forbidden",
+        message: "Not authorized to write model:web (definition.delete)",
+      }],
+    })
+  );
+  const commit = { partition: modelPartition(), ops: [] };
+  assertEquals(
+    await client.authorizeRemovals([commit, commit], signal()),
+    [{ ok: true }, {
+      ok: false,
+      reason: "forbidden",
+      message: "Not authorized to write model:web (definition.delete)",
+    }],
+  );
+  assertEquals(requests[0].url, `${PREFIX}/authorize`);
+  const older = clientWith(() => new Response("no", { status: 404 })).client;
+  assertEquals(await older.authorizeRemovals([commit], signal()), undefined);
+});

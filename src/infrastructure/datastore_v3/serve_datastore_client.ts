@@ -38,7 +38,7 @@ import {
   observedBaseEntryFromJSON,
   type ObservedBasePage,
 } from "../../domain/datastore_v3/observed_base.ts";
-import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
+import { MAX_INLINE_BYTES, type Op } from "../../domain/datastore_v3/op.ts";
 import { chunksToWire } from "../../domain/datastore_v3/quarantine.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { MAX_RECORD_KEY_LENGTH } from "../../domain/datastore_v3/record_key.ts";
@@ -145,6 +145,9 @@ export const LEASE_OPS_FEATURE = "lease-ops";
 
 /** without it in serve's replies, a member commits each start as the whole record */
 export const STEP_STARTS_FEATURE = "step-starts";
+
+/** serve checks removals a command will commit, before it commits any */
+export const AUTHORIZE_ONLY_FEATURE = "authorize-only";
 
 /** serve names a lease's holder and answers at once when waiting cannot help */
 export const LEASE_HOLDER_FEATURE = "lease-holder";
@@ -256,6 +259,10 @@ export interface LockLease {
   readonly floor?: readonly DataNameMarks[];
   readonly holdMs?: number;
 }
+
+export type RemovalVerdict =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string; readonly message: string };
 
 /** who holds a lease, as a serve that names lease-holder says */
 export interface ServeLeaseHolder {
@@ -705,6 +712,59 @@ export class ServeDatastoreClient {
    * has no such route and answers 405, thrown as ServeUpstreamError like any
    * non-success
    */
+  /** undefined from a serve too old to check removals ahead */
+  async authorizeRemovals(
+    commits: readonly {
+      readonly partition: PartitionKey;
+      readonly ops: readonly Op[];
+    }[],
+    signal: AbortSignal,
+  ): Promise<readonly RemovalVerdict[] | undefined> {
+    return await this.#exchange(
+      {
+        method: "POST",
+        path: "authorize",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          commits: commits.map(({ partition, ops }) => ({
+            partition: partition.toString(),
+            ops: ops.map((op) => op.toJSON()),
+          })),
+        }),
+      },
+      signal,
+      async (response) => {
+        // an older serve has no such route
+        if (response.status === 404 || response.status === 405) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        if (!response.ok) throw await this.#refusal(response, "authorize");
+        const reply = await readBoundedJson(
+          response,
+          "authorize",
+          SERVE_REPLY_MAX_BYTES,
+        );
+        const verdicts = (reply as { verdicts?: unknown }).verdicts;
+        if (!Array.isArray(verdicts) || verdicts.length !== commits.length) {
+          throw invalidReply("authorize", "a verdict per commit");
+        }
+        return verdicts.map((raw): RemovalVerdict => {
+          const fields = typeof raw === "object" && raw !== null
+            ? raw as Record<string, unknown>
+            : {};
+          return fields.ok === true ? { ok: true } : {
+            ok: false,
+            reason: typeof fields.reason === "string" ? fields.reason : "",
+            message: typeof fields.message === "string"
+              ? fields.message
+              : "refused",
+          };
+        });
+      },
+    );
+  }
+
   async forceReleaseLock(
     lockKey: string,
     signal: AbortSignal,
