@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, dim, green, yellow } from "@std/fmt/colors";
+import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
   RepoPruneEvent,
+  RepoPruneFailure,
   RepoPruneItem,
   RepoPrunePreview,
   RepoPruneSkip,
@@ -28,7 +29,7 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import { UserError } from "../../domain/errors.ts";
+import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 
 function formatTools(tools: readonly string[]): string {
@@ -59,16 +60,17 @@ function formatPruneLines(
   enrolledTools: readonly string[],
   items: readonly RepoPruneItem[],
   skipped: readonly RepoPruneSkip[],
+  failed: readonly RepoPruneFailure[],
   willDelete: boolean,
 ): string[] {
   const lines: string[] = [];
-  if (items.length === 0) {
+  if (items.length === 0 && failed.length === 0) {
     lines.push(
       `No swamp settings to prune for tools that are not enrolled ${
         dim(`(enrolled: ${formatTools(enrolledTools)})`)
       }`,
     );
-  } else {
+  } else if (items.length > 0) {
     lines.push(
       `${bold(cyan(heading))} ${
         dim(`(enrolled: ${formatTools(enrolledTools)})`)
@@ -95,13 +97,24 @@ function formatPruneLines(
     if (hint !== null) lines.push(`  ${yellow("⚠")} ${hint}`);
   }
   if (skipped.length > 0) {
-    lines.push("");
+    if (lines.length > 0) lines.push("");
     lines.push(cyan("Skipped:"));
     for (const skip of skipped) {
       lines.push(
         `  ${yellow("⚠")} ${bold(skip.path)} ${dim(`(${skip.tool})`)} ${
           dim("-")
         } ${skip.reason}`,
+      );
+    }
+  }
+  if (failed.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(red("Failed:"));
+    for (const failure of failed) {
+      lines.push(
+        `  ${red("✗")} ${bold(failure.path)} ${dim(`(${failure.tool})`)} ${
+          dim("-")
+        } ${failure.reason}`,
       );
     }
   }
@@ -122,12 +135,13 @@ class LogRepoPruneRenderer implements Renderer<RepoPruneEvent> {
             data.enrolledTools,
             data.pruned,
             data.skipped,
+            data.failed,
             data.dryRun,
           ).join("\n"),
         );
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }
@@ -141,7 +155,7 @@ class JsonRepoPruneRenderer implements Renderer<RepoPruneEvent> {
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw userErrorFromSwampError(e.error);
       },
     };
   }
@@ -166,6 +180,7 @@ export function renderRepoPrunePreview(preview: RepoPrunePreview): void {
       preview.enrolledTools,
       preview.items,
       preview.skipped,
+      [],
       true,
     ).join("\n"),
   );

@@ -60,9 +60,17 @@ export interface PrunePlan {
   skipped: PruneSkip[];
 }
 
+/** a change that was attempted and threw, unlike a skip, which is deliberate */
+export interface PruneFailure {
+  tool: AiTool;
+  path: string;
+  reason: string;
+}
+
 export interface PruneOutcome {
   applied: PruneAction[];
   skipped: PruneSkip[];
+  failed: PruneFailure[];
 }
 
 /** must replace the file (temp file and rename), never write through a symlink */
@@ -224,6 +232,7 @@ export class ToolSettingsPruner {
     const realRoot = await Deno.realPath(this.repoRoot);
     const applied: PruneAction[] = [];
     const skipped: PruneSkip[] = [...plan.skipped];
+    const failed: PruneFailure[] = [];
     for (const action of plan.actions) {
       const target = await this.readTarget(realRoot, action.path);
       if (target.kind !== "file" || target.text !== action.original) {
@@ -245,18 +254,16 @@ export class ToolSettingsPruner {
           await this.writeTextFile(target.abs, action.content);
         }
       } catch (error) {
-        skipped.push({
+        failed.push({
           tool: action.tool,
           path: action.path,
-          reason: `it could not be changed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          reason: error instanceof Error ? error.message : String(error),
         });
         continue;
       }
       applied.push(action);
     }
-    return { applied, skipped };
+    return { applied, skipped, failed };
   }
 
   private async findForTool(

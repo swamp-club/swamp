@@ -369,7 +369,7 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
             data.tools,
           )
         ) {
-          writeOutput(`  ${line}`);
+          writeOutput(line);
         }
 
         if (data.localSkillCopies.length > 0) {

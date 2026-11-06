@@ -21,6 +21,7 @@ import { enrolledTools } from "../../domain/repo/primary_tool.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   type PruneAction,
+  type PruneFailure,
   type PruneOutcome,
   type PrunePlan,
   type PruneSkip,
@@ -45,6 +46,12 @@ export interface RepoPruneSkip {
   reason: string;
 }
 
+export interface RepoPruneFailure {
+  tool: string;
+  path: string;
+  reason: string;
+}
+
 export interface RepoPrunePreview {
   path: string;
   enrolledTools: string[];
@@ -54,13 +61,14 @@ export interface RepoPrunePreview {
   plan: PrunePlan;
 }
 
-/** with dryRun, pruned lists what would be removed */
+/** with dryRun, pruned lists what would be removed and failed is empty */
 export interface RepoPruneData {
   path: string;
   dryRun: boolean;
   enrolledTools: string[];
   pruned: RepoPruneItem[];
   skipped: RepoPruneSkip[];
+  failed: RepoPruneFailure[];
 }
 
 export type RepoPruneEvent =
@@ -108,10 +116,22 @@ function toSkip(skip: PruneSkip): RepoPruneSkip {
   return { tool: skip.tool, path: skip.path, reason: skip.reason };
 }
 
+function toFailure(failure: PruneFailure): RepoPruneFailure {
+  return { tool: failure.tool, path: failure.path, reason: failure.reason };
+}
+
 function notARepository(path: string): SwampError {
   return validationFailed(
     `Not a swamp repository: ${path}. Run 'swamp repo init' first.`,
   );
+}
+
+function pruneFailed(error: unknown): SwampError {
+  return {
+    code: "prune_failed",
+    message: error instanceof Error ? error.message : String(error),
+    cause: error instanceof Error ? error : undefined,
+  };
 }
 
 /** null when the path is not a swamp repository */
@@ -149,16 +169,14 @@ export async function* repoPrune(
         preview = input.preview ??
           await repoPrunePreview(ctx, deps, { path: input.path });
       } catch (error) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
-        };
+        yield { kind: "error", error: pruneFailed(error) };
         return;
       }
       if (preview === null) {
-        yield { kind: "error", error: notARepository(input.path) };
+        yield {
+          kind: "error",
+          error: notARepository(RepoPath.create(input.path).value),
+        };
         return;
       }
 
@@ -171,6 +189,7 @@ export async function* repoPrune(
             enrolledTools: preview.enrolledTools,
             pruned: preview.items,
             skipped: preview.skipped,
+            failed: [],
           },
         };
         return;
@@ -181,12 +200,7 @@ export async function* repoPrune(
       try {
         outcome = await deps.apply(preview.path, preview.plan);
       } catch (error) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            error instanceof Error ? error.message : String(error),
-          ),
-        };
+        yield { kind: "error", error: pruneFailed(error) };
         return;
       }
 
@@ -198,6 +212,7 @@ export async function* repoPrune(
           enrolledTools: preview.enrolledTools,
           pruned: outcome.applied.map(toItem),
           skipped: outcome.skipped.map(toSkip),
+          failed: outcome.failed.map(toFailure),
         },
       };
     })(),
