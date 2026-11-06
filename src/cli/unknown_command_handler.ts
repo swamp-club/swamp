@@ -191,6 +191,9 @@ function buildContextSuggestions(
       `swamp repo upgrade`,
     );
     suggestions.push(
+      `swamp repo prune`,
+    );
+    suggestions.push(
       `swamp update`,
     );
   } else {

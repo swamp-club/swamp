@@ -1719,6 +1719,8 @@ export {
 export {
   createRepoInitDeps,
   createRepoUpgradeDeps,
+  type FindPrunableSettings,
+  type PrunableToolSettings,
   repoInit,
   type RepoInitData,
   type RepoInitDeps,
@@ -1730,6 +1732,19 @@ export {
   type RepoUpgradeEvent,
   type RepoUpgradeInput,
 } from "./repo/init.ts";
+
+export {
+  createRepoPruneDeps,
+  repoPrune,
+  type RepoPruneData,
+  type RepoPruneDeps,
+  type RepoPruneEvent,
+  type RepoPruneInput,
+  type RepoPruneItem,
+  type RepoPrunePreview,
+  repoPrunePreview,
+  type RepoPruneSkip,
+} from "./repo/prune.ts";
 
 export {
   createVersionDeps,

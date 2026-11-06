@@ -190,9 +190,23 @@ swamp repo upgrade --tool none
 ```
 
 Dropping a tool from the list does **not** delete its on-disk files (`.kiro/`,
-etc.) — remove them by hand if desired. Adding a tool that didn't share a skills
-directory with the previous primary surfaces an `extensionsToReinstall` warning
-naming pulled extensions that need to be re-installed for the new tool.
+etc.) — remove them by hand if desired. When swamp's own settings for the
+dropped tool remain (audit hooks that still run swamp on every tool call,
+swamp's plugin files, the Kiro `swamp` agent), the upgrade names those files in
+`prunableSettings` and suggests `swamp repo prune`, which removes them:
+
+```bash
+swamp repo prune --dry-run --json  # list what would be removed
+swamp repo prune --yes             # remove without a prompt (--json never prompts)
+```
+
+Prune touches only built-in tools that are not enrolled, and only entries and
+files swamp owns: user hooks, `permissions.allow`, skills and instructions files
+stay, a file is deleted only when nothing else is left in it, and symlinked or
+out-of-repo files are skipped and listed under `skipped`. Adding a tool that
+didn't share a skills directory with the previous primary surfaces an
+`extensionsToReinstall` warning naming pulled extensions that need to be
+re-installed for the new tool.
 
 Legacy extension layouts are automatically migrated during upgrade. See
 [references/troubleshooting.md](references/troubleshooting.md) for details on

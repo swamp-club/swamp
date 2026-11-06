@@ -70,6 +70,10 @@ import {
 } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { BRIEF_HEADER } from "../start/brief.ts";
+import {
+  isKiroAuditCommand,
+  isKiroAuditHookEntry,
+} from "./audit_hook_command.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
 
@@ -90,11 +94,6 @@ const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
 const LEGACY_CLAUDE_VAULT_ALLOW = "Bash(swamp vault:*)";
 
 const KIRO_AUDIT_COMMAND = "swamp audit record --from-hook --tool kiro";
-// matches swamp's audit hook command exactly (bare or absolute-path binary,
-// nothing after), so upgrade deletes only that and keeps a command the user
-// extended
-const KIRO_AUDIT_COMMAND_PATTERN =
-  /^(?:swamp|"[^"]*swamp(?:\.exe)?"|\S*[\\/]swamp(?:\.exe)?) audit record --from-hook --tool kiro$/;
 
 // legacy Kiro IDE settings that Kiro IDE 1.0 does not read (rules moved to
 // permissions.yaml outside the repo); upgrade removes these exact entries
@@ -106,20 +105,6 @@ const LEGACY_KIRO_IDE_SETTINGS: Record<string, string> = {
 // legacy Amp allowlist entry that Amp does not read as amp.commands; upgrade
 // removes this exact entry
 const LEGACY_AMP_ALLOW = "swamp *";
-
-function isKiroAuditCommand(command: unknown): boolean {
-  return typeof command === "string" &&
-    KIRO_AUDIT_COMMAND_PATTERN.test(command.trim());
-}
-
-function isKiroAuditHookEntry(hook: unknown): boolean {
-  const entry = hook as
-    | { trigger?: unknown; action?: { command?: unknown } }
-    | null;
-  return (entry?.trigger === "PostToolUse" ||
-    entry?.trigger === "postToolUse") &&
-    isKiroAuditCommand(entry?.action?.command);
-}
 
 export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
 
