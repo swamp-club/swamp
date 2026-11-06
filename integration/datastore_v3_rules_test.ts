@@ -207,7 +207,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/trusted_evaluations.ts",
   "src/cli/last_evaluated_trust.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
-  // swamp-club#4454: a run names the principal serve checks run records
+  // a run names the principal serve checks run records
   // against, which the catch-up recorded for the checkout's datastore
   "src/cli/auth_context.ts -> src/infrastructure/datastore_v3/serve_upstream_registry.ts",
   "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -298,7 +298,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/read_model.ts",
-  // swamp-club#4454: status says what to do about a run record refused for
+  // status says what to do about a run record refused for
   // its initiator, which the outbox keeps under that code
   "src/presentation/renderers/datastore_status.ts -> src/domain/datastore_v3/commit_authorization.ts",
   "src/serve/handlers/shared.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",

@@ -310,7 +310,7 @@ Deno.test({
         (asBob.json.leases as Record<string, unknown>[]).map((l) => l.heldBy),
         ["other"],
       );
-      // a caller who may take the lock may know who holds it (swamp-club#4454)
+      // a caller who may take the lock may know who holds it
       assertEquals(
         (asBob.json.leases as { holder?: { principal?: string } }[])[0].holder
           ?.principal,

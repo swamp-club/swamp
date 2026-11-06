@@ -2108,7 +2108,7 @@ Deno.test({
             }],
           });
         // naming the victim's initiator, which a back link would match, is
-        // refused outright (swamp-club#4454)
+        // refused outright
         const impersonated = await forwardRun(
           server,
           forgedRecord(crypto.randomUUID(), "user:alice"),

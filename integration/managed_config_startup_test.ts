@@ -179,6 +179,19 @@ async function withManagedRepo(
         DATASTORE_CODE(datastoreType, cacheDir),
       );
     }
+    // team-gone keeps its directory with a file missing: a truncated tree,
+    // which warns at startup, unlike one entirely absent
+    await Deno.mkdir(
+      join(
+        repoDir,
+        ".swamp",
+        "config",
+        "pulled-extensions",
+        scope,
+        "team-gone",
+      ),
+      { recursive: true },
+    );
     await fn({ repoDir, cacheDir, scope, datastoreType, marker });
   } finally {
     for (
