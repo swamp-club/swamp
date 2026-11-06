@@ -28,10 +28,7 @@ import {
 const TRACEPARENT =
   /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})(-.*)?$/;
 
-/**
- * Whether serve samples a trace it starts itself, read as the SDK reads
- * OTEL_TRACES_SAMPLER for a root span.
- */
+// read as the SDK reads OTEL_TRACES_SAMPLER for a root span
 export function rootSampled(
   traceId: string,
   env: (name: string) => string | undefined = (name) => Deno.env.get(name),
@@ -66,12 +63,7 @@ function traceIdRatioSampled(traceId: string, ratio: number): boolean {
   return accumulation < bound;
 }
 
-/**
- * The parent for a server span from an already authenticated caller's
- * traceparent: its trace and span ids only. The caller's sampled flag is
- * replaced by serve's own decision, so a caller can neither force nor
- * suppress serve's recording.
- */
+// ids only: the sampled flag is serve's own decision, so a caller cannot force or suppress recording
 export function adoptAuthenticatedParent(
   headers: Headers,
   env?: (name: string) => string | undefined,

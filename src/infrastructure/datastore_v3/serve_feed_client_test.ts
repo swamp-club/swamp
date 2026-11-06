@@ -229,8 +229,6 @@ Deno.test("watchServeFeed: a frame holding only commits this process sent brings
     ),
     1,
   );
-  // the copy already holds its own commits: its read model is brought up
-  // without asking serve
   assertEquals(locals.count, 1);
   assertEquals(
     await catchUpsFor([own, theirs(43)], { appliedCursor: () => 41 }),

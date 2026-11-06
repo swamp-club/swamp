@@ -249,11 +249,7 @@ export interface ServerSpanOptions {
   readonly links?: readonly Link[];
 }
 
-/**
- * a new trace root, as serve runs inside the never-ending swamp.cli span,
- * unless given the parent an authenticated caller's traceparent named:
- * an unauthenticated caller can never choose the trace joined
- */
+// a root, as serve runs inside the never-ending swamp.cli span, unless given an authenticated caller's parent
 export function withServerSpan<T>(
   name: string,
   attributes: Attributes,
