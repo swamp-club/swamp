@@ -1655,7 +1655,9 @@ stored parent's initiator; anything else is refused with
 `run-initiator-mismatch` (`run_initiator_mismatch` in the CLI, advising an
 upgrade). Serve rewrites no bytes, and the frozen-field rule keeps it after the
 first record. A child a resume creates keeps the parent's initiator; who resumed
-it is out of scope. Under auth mode none nothing is checked. Two upgrade windows
+it is out of scope. The rule is not limited to resumes: any caller with `run`
+on an active parent's workflow can create a child record attributed to the
+parent's initiator. Under auth mode none nothing is checked. Two upgrade windows
 are accepted, not closed: work an older CLI queued offline across a serve
 upgrade, and a leader upgraded before its followers (an old follower never
 advertises the check). Such a record is kept in the member's outbox as rejected

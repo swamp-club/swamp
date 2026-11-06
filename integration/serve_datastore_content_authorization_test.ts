@@ -2685,3 +2685,43 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "forwarded content: the authorize request takes removals only, so it cannot ask ahead whether a write would be allowed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([runWorkflows], async (server) => {
+      const runId = crypto.randomUUID();
+      const partition = partitionOf({
+        kind: "run",
+        workflowId: WORKFLOW,
+        runId,
+      });
+      const answer = await fetch(`${server.url}/authorize`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer alice-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          commits: [{
+            partition: partition.toString(),
+            ops: [
+              put(
+                { kind: "run.create", run: { workflowId: WORKFLOW, runId } },
+                `workflow-runs/${WORKFLOW}/workflow-run-${runId}.yaml`,
+                yaml(runRecord(runId)),
+              ),
+            ],
+          }],
+        }),
+      });
+      const json = await answer.json();
+      assertEquals(answer.status, 400, JSON.stringify(json));
+      assertEquals(json.code, "invalid_request");
+      assertEquals(json.verdicts, undefined);
+    });
+  },
+});

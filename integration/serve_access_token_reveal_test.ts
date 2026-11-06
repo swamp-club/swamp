@@ -70,6 +70,7 @@ await initializeLogging({});
 
 const ADMIN: Principal = { kind: "user", id: "admin" };
 const MEMBER: Principal = { kind: "user", id: "member" };
+const ACCESS_EDITOR: Principal = { kind: "user", id: "access-editor" };
 
 interface Frame {
   type: string;
@@ -128,6 +129,11 @@ async function withTokenRepo(
                 subject: { kind: "user", name: MEMBER.id },
                 actions: ["read", "write", "run"],
                 resource: { kind: "model", pattern: "*" },
+              }),
+              harnessGrant({
+                subject: { kind: "user", name: ACCESS_EDITOR.id },
+                actions: ["read", "write"],
+                resource: { kind: "access", pattern: "*" },
               }),
             ],
             [],
@@ -316,6 +322,24 @@ Deno.test("access.token.reveal: a caller without admin on access is refused and 
     const secret = await secretOf(repo.repoDir, "member-token");
 
     const frames = await request(repo.ctx(), MEMBER, reveal("member-token"));
+
+    assertEquals(frames.length, 1, JSON.stringify(frames));
+    assertEquals(frames[0].type, "error");
+    assertEquals(frames[0].error?.code, "unauthorized");
+    assert(!JSON.stringify(frames).includes(secret));
+  });
+});
+
+Deno.test("access.token.reveal: read and write on access are not enough, only admin reveals", async () => {
+  await withTokenRepo(async (repo) => {
+    await repo.mint("member-token", "user:member");
+    const secret = await secretOf(repo.repoDir, "member-token");
+
+    const frames = await request(
+      repo.ctx(),
+      ACCESS_EDITOR,
+      reveal("member-token"),
+    );
 
     assertEquals(frames.length, 1, JSON.stringify(frames));
     assertEquals(frames[0].type, "error");
