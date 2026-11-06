@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { prettyJsonChunks, writeJsonValue } from "./json_stream.ts";
 
 function collectingSink(maxPerWrite = Infinity) {
@@ -75,4 +75,59 @@ Deno.test("writeJsonValue: a value whose JSON is too large for one string is wri
   }
   assertEquals(written, expected);
   assertEquals(last, "\n".charCodeAt(0));
+});
+
+function nestedArrays(depth: number): unknown {
+  let value: unknown = [0, 1, 2];
+  for (let i = 0; i < depth; i++) value = [value];
+  return { i: 0, tree: value };
+}
+
+// past the depth a recursive walk survives; pretty output grows with depth
+// squared, so the chunks are checked in place rather than joined
+const DEEP = 5_000;
+
+Deno.test("prettyJsonChunks: a deeply nested value yields JSON.stringify(value, null, 2) piece by piece", () => {
+  const value = nestedArrays(DEEP);
+  const expected = JSON.stringify(value, null, 2);
+  let offset = 0;
+  for (const chunk of prettyJsonChunks(value)) {
+    assertEquals(expected.startsWith(chunk, offset), true);
+    offset += chunk.length;
+  }
+  assertEquals(offset, expected.length);
+});
+
+Deno.test("writeJsonValue: a deeply nested value is written whole", async () => {
+  const value = nestedArrays(DEEP);
+  const expectedBytes =
+    new TextEncoder().encode(JSON.stringify(value, null, 2)).length + 1;
+  let written = 0;
+  let last = 0;
+  await writeJsonValue(value, (bytes) => {
+    written += bytes.length;
+    last = bytes[bytes.length - 1];
+    return Promise.resolve(bytes.length);
+  });
+  assertEquals(written, expectedBytes);
+  assertEquals(last, "\n".charCodeAt(0));
+});
+
+Deno.test("writeJsonValue: a closed pipe ends the write quietly after the first failed write", async () => {
+  const value = { rows: Array.from({ length: 50_000 }, (_, i) => i) };
+  let calls = 0;
+  await writeJsonValue(value, () => {
+    calls++;
+    return Promise.reject(new Deno.errors.BrokenPipe("Broken pipe"));
+  });
+  assertEquals(calls, 1);
+});
+
+Deno.test("writeJsonValue: a sink error other than a closed pipe rejects", async () => {
+  await assertRejects(
+    () =>
+      writeJsonValue({ a: 1 }, () => Promise.reject(new Error("disk full"))),
+    Error,
+    "disk full",
+  );
 });

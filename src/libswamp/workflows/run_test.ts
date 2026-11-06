@@ -2875,3 +2875,92 @@ Deno.test("RunAttributeBudget.resolveChild: a child step too large for one JSON 
   );
   assertEquals(budget.takeStepOmitted(), ["tail-data"]);
 });
+
+function nestedContent(depth: number): string {
+  let tree = "[0,1,2]";
+  for (let i = 0; i < depth; i++) tree = `[${tree}]`;
+  return `{"i":0,"tree":${tree}}`;
+}
+
+Deno.test("resolveCompletedRunOutputs: a child step with deeply nested outputs keeps them, and a later step keeps its attributes", async () => {
+  const deep = nestedContent(5_000);
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const child = createBulkRun([deep], true);
+  await runRepo.save(createWorkflowId(child.workflowId), child);
+  const parent = createParentRun(child, TAIL_ITEM);
+
+  const resolved = await resolveCompletedRunOutputs(
+    parent,
+    namedDataRepo({ "item-0": deep, "tail-item": TAIL_ITEM }, []),
+    runRepo,
+  );
+
+  // compared as text: a deep assertEquals would recurse once per level
+  assertEquals(
+    JSON.stringify(resolved!.job1.step1.outputs),
+    `{"step1":${deep}}`,
+  );
+  assertEquals(resolved!.job1.step1.attributesOmitted, undefined);
+  assertEquals(resolved!.job1.tail.attributesByDataId, {
+    "tail-data": { ok: true },
+  });
+  assertEquals(resolved!.job1.tail.attributesOmitted, undefined);
+});
+
+function sourceRecord(id: string) {
+  return {
+    id,
+    name: id,
+    version: 1,
+    namespace: "",
+    modelName: "m",
+    tags: {},
+    attributes: {},
+  };
+}
+
+Deno.test("RunAttributeBudget.resolveChild: a child step whose measuring throws RangeError is refused alone with its records omitted", async () => {
+  const budget = new RunAttributeBudget(16 * 1024 * 1024);
+  const unmeasurable = {
+    toJSON: () => {
+      throw new RangeError("Maximum call stack size exceeded");
+    },
+  };
+
+  const resolved = await budget.resolveChild(() =>
+    Promise.resolve({
+      outputs: { small: { ok: true }, deep: unmeasurable },
+      attributesByDataId: {},
+      sources: [
+        { path: ["small"], records: [sourceRecord("data-small")] },
+        { path: ["deep"], records: [sourceRecord("data-deep")] },
+      ],
+    })
+  );
+
+  assertEquals(resolved.outputs, { small: { ok: true } });
+  assertEquals(resolved.sources?.map((group) => group.path), [["small"]]);
+  assertEquals(budget.takeStepOmitted(), ["data-deep"]);
+});
+
+Deno.test("RunAttributeBudget.resolveChild: an error other than RangeError from measuring still rejects", async () => {
+  const budget = new RunAttributeBudget(16 * 1024 * 1024);
+  const broken = {
+    toJSON: () => {
+      throw new TypeError("not serialisable");
+    },
+  };
+
+  await assertRejects(
+    () =>
+      budget.resolveChild(() =>
+        Promise.resolve({
+          outputs: { broken },
+          attributesByDataId: {},
+          sources: [],
+        })
+      ),
+    TypeError,
+    "not serialisable",
+  );
+});

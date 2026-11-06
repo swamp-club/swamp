@@ -81,3 +81,17 @@ Deno.test("jsonByteLengthWithin: a value too large for one string is refused wit
   const huge = Array.from({ length: 1024 }, () => mebibyte);
   assertEquals(jsonByteLengthWithin(huge, 16 * 1024 * 1024), undefined);
 });
+
+function nestedArrays(depth: number): unknown {
+  let value: unknown = [0, 1, 2];
+  for (let i = 0; i < depth; i++) value = [value];
+  return value;
+}
+
+Deno.test("jsonByteLengthWithin: a value nested past the native stringify depth is measured without throwing", () => {
+  const depth = 100_000;
+  const value = { i: 0, tree: nestedArrays(depth) };
+  const expected = '{"i":0,"tree":}'.length + 2 * depth + "[0,1,2]".length;
+  assertEquals(jsonByteLengthWithin(value, 16 * 1024 * 1024), expected);
+  assertEquals(jsonByteLengthWithin(value, expected - 1), undefined);
+});

@@ -33,67 +33,97 @@ function skipped(value: unknown): boolean {
     typeof value === "symbol";
 }
 
-/** the pieces of JSON.stringify(value, null, 2), never joined into one string */
-export function* prettyJsonChunks(value: unknown): Generator<string> {
-  yield* chunksOf(viaToJSON(value, ""), "");
+type Container =
+  | { kind: "array"; items: unknown[]; indent: string; next: number }
+  | {
+    kind: "object";
+    entries: (readonly [string, unknown])[];
+    indent: string;
+    next: number;
+  };
+
+// toJSON is already applied to value; an object's entries take theirs here
+function containerOf(value: unknown, indent: string): Container | undefined {
+  if (Array.isArray(value)) {
+    return { kind: "array", items: value, indent, next: 0 };
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  const entries = Object.entries(value)
+    .map(([k, v]) => [k, viaToJSON(v, k)] as const)
+    .filter(([, v]) => !skipped(v));
+  return { kind: "object", entries, indent, next: 0 };
 }
 
-// toJSON is already applied, so a value it turns to undefined is skipped first
-function* chunksOf(value: unknown, indent: string): Generator<string> {
-  const inner = indent + "  ";
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      yield "[]";
-      return;
+function sizeOf(container: Container): number {
+  return container.kind === "array"
+    ? container.items.length
+    : container.entries.length;
+}
+
+/**
+ * the pieces of JSON.stringify(value, null, 2), never joined into one string;
+ * walks an explicit stack, so depth is no limit
+ */
+export function* prettyJsonChunks(value: unknown): Generator<string> {
+  const open: Container[] = [];
+  let current = viaToJSON(value, "");
+  let indent = "";
+  while (true) {
+    const container = containerOf(current, indent);
+    if (container === undefined) {
+      const text = JSON.stringify(current);
+      if (text !== undefined) yield text;
+    } else if (sizeOf(container) === 0) {
+      yield container.kind === "array" ? "[]" : "{}";
+    } else {
+      yield container.kind === "array" ? "[\n" : "{\n";
+      open.push(container);
     }
-    yield "[\n";
-    for (let i = 0; i < value.length; i++) {
-      const item = viaToJSON(value[i], String(i));
-      yield inner;
-      if (skipped(item)) yield "null";
-      else yield* chunksOf(item, inner);
-      yield i < value.length - 1 ? ",\n" : "\n";
+
+    let parent = open[open.length - 1];
+    while (parent !== undefined && parent.next === sizeOf(parent)) {
+      yield `\n${parent.indent}${parent.kind === "array" ? "]" : "}"}`;
+      open.pop();
+      parent = open[open.length - 1];
     }
-    yield `${indent}]`;
-    return;
+    if (parent === undefined) return;
+
+    const i = parent.next++;
+    indent = parent.indent + "  ";
+    yield i > 0 ? `,\n${indent}` : indent;
+    if (parent.kind === "array") {
+      const item = viaToJSON(parent.items[i], String(i));
+      current = skipped(item) ? null : item;
+    } else {
+      const [k, v] = parent.entries[i];
+      yield `${JSON.stringify(k)}: `;
+      current = v;
+    }
   }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value)
-      .map(([k, v]) => [k, viaToJSON(v, k)] as const)
-      .filter(([, v]) => !skipped(v));
-    if (entries.length === 0) {
-      yield "{}";
-      return;
-    }
-    yield "{\n";
-    for (let i = 0; i < entries.length; i++) {
-      const [k, v] = entries[i];
-      yield `${inner}${JSON.stringify(k)}: `;
-      yield* chunksOf(v, inner);
-      yield i < entries.length - 1 ? ",\n" : "\n";
-    }
-    yield `${indent}}`;
-    return;
-  }
-  const text = JSON.stringify(value);
-  if (text !== undefined) yield text;
 }
 
 /**
  * writes a `--json` value as JSON.stringify(value, null, 2) plus a newline, in
- * chunks, so a value too large for one string still prints
+ * chunks, so a value too large for one string still prints; a reader that
+ * closes the pipe early ends the write quietly, as it does for console.log
  */
 export async function writeJsonValue(
   value: unknown,
   sink: Sink = (bytes) => Deno.stdout.write(bytes),
 ): Promise<void> {
   const encoder = new TextEncoder();
-  const flush = async (text: string) => {
+  const flush = async (text: string): Promise<boolean> => {
     const bytes = encoder.encode(text);
     let offset = 0;
-    while (offset < bytes.length) {
-      offset += await sink(bytes.subarray(offset));
+    try {
+      while (offset < bytes.length) {
+        offset += await sink(bytes.subarray(offset));
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.BrokenPipe) return false;
+      throw error;
     }
+    return true;
   };
   let pending: string[] = [];
   let pendingChars = 0;
@@ -101,7 +131,7 @@ export async function writeJsonValue(
     pending.push(chunk);
     pendingChars += chunk.length;
     if (pendingChars >= FLUSH_CHARS) {
-      await flush(pending.join(""));
+      if (!await flush(pending.join(""))) return;
       pending = [];
       pendingChars = 0;
     }
