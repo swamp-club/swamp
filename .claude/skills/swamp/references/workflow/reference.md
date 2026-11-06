@@ -390,7 +390,9 @@ stdin item.
 Each data artifact carries its `attributes` until the run's artifacts pass 16
 MiB of stored JSON; later artifacts carry `attributesOmitted: true` instead. A
 step whose merged `outputs` left any resource out, its child runs' included,
-carries `outputsPartial: true`. Read the omitted content with `swamp data get`.
+carries `outputsPartial: true`. The same budget applies to
+`swamp workflow history get --json`; `swamp workflow history outputs` reads
+every resource. Read the omitted content with `swamp data get`.
 
 ## Workflow History
 

@@ -37,6 +37,7 @@ import {
 } from "../../infrastructure/persistence/repository_factory.ts";
 import {
   createDataRepositoryAttributeReader,
+  type ResourceAttributeReader,
   type ResourceReadPolicy,
   StepOutputResolver,
 } from "../../domain/workflows/step_output_resolver.ts";
@@ -48,6 +49,7 @@ import { notFound, validationFailed } from "../errors.ts";
 import type { SignalWaitView, WorkflowRunView } from "./workflow_run_view.ts";
 import {
   resolveRunStepOutputs,
+  RunAttributeBudget,
   type RunStepOutputs,
   toRunData,
 } from "./run.ts";
@@ -228,6 +230,7 @@ export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
   resolveStepOutputs: (
     run: WorkflowRun,
     signal?: AbortSignal,
+    allAttributes?: boolean,
   ) => Promise<RunStepOutputs>;
   retentionWatermarks?: RetentionWatermarkRepository;
   /** a running run's start journal, so a step it shows started reads running */
@@ -243,6 +246,11 @@ export interface WorkflowHistoryGetOptions {
    * when the caller does not render them, so no data is read.
    */
   includeOutputs?: boolean;
+  /**
+   * reads every resource past the run's attribute budget, for a caller that
+   * keeps only the merged step outputs and never the per-artifact attributes
+   */
+  allAttributes?: boolean;
   /**
    * The argument, already resolved with resolveRunReference. The read acts
    * on exactly this and does not look the argument up again.
@@ -300,7 +308,7 @@ export function createWorkflowHistoryGetDeps(
       runRepo.findStepStarts(workflowId, runId),
     getRunPath: (workflowId, runId) =>
       runRepo.getPath(workflowId, createWorkflowRunId(runId)),
-    resolveStepOutputs: (run, signal) =>
+    resolveStepOutputs: (run, signal, allAttributes) =>
       withDiagnosticArea("step_outputs", async () => {
         // Opened per call: only callers that render outputs pay for it.
         const opening = startDiagnosticPhase("catalog_open");
@@ -334,11 +342,13 @@ export function createWorkflowHistoryGetDeps(
           const tally = walk.tally;
           const childRuns = new Set<string>();
           const readAttributes = createDataRepositoryAttributeReader(dataRepo);
+          const budget = allAttributes ? undefined : new RunAttributeBudget();
+          const countedRead: ResourceAttributeReader = (ref) => {
+            resourcesRead++;
+            return readAttributes(ref);
+          };
           const resolver = new StepOutputResolver({
-            readAttributes: (ref) => {
-              resourcesRead++;
-              return readAttributes(ref);
-            },
+            readAttributes: budget ? budget.wrap(countedRead) : countedRead,
             findChildRun: async (workflowId, runId) => {
               childRunsRead++;
               if (walk.recording) {
@@ -402,7 +412,7 @@ export function createWorkflowHistoryGetDeps(
           };
           try {
             const outputs = await walk.run(() =>
-              resolveRunStepOutputs(run, resolver)
+              resolveRunStepOutputs(run, resolver, budget)
             );
             countWalk("completed");
             walk.end();
@@ -511,7 +521,12 @@ export async function* workflowHistoryGet(
         ? await withSpan(
           "swamp.workflow.step_outputs.resolve",
           {},
-          () => deps.resolveStepOutputs(run, options.signal),
+          () =>
+            deps.resolveStepOutputs(
+              run,
+              options.signal,
+              options.allAttributes,
+            ),
         )
         : undefined;
       const data = toRunData(run, path, undefined, stepOutputs);

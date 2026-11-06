@@ -25,6 +25,7 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../src/domain/models/method_execution_service.ts";
 import { type DataHandle, modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
+import { RESOURCE_ATTRIBUTE_CAP_BYTES } from "../src/domain/models/resource_attribute_budget.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
@@ -39,7 +40,12 @@ import {
   type ModelMethodRunEvent,
 } from "../src/libswamp/models/run.ts";
 import { collect } from "../src/libswamp/testing.ts";
+import {
+  createWorkflowHistoryGetDeps,
+  workflowHistoryGet,
+} from "../src/libswamp/workflows/history_get.ts";
 import { workflowRun } from "../src/libswamp/workflows/run.ts";
+import type { WorkflowRunView } from "../src/libswamp/workflows/workflow_run_view.ts";
 import {
   createModelMethodRunDeps,
   createWorkflowRunDeps,
@@ -91,6 +97,19 @@ async function withBulkModel(fn: (fx: Fixture) => Promise<void>) {
             );
           }
           return { dataHandles: returned };
+        },
+      },
+      writeLarge: {
+        description: "Write one item past the default cap, then a small one",
+        arguments: z.object({}),
+        execute: async (_args, context) => {
+          const large = await context.writeResource!("item", "large", {
+            blob: "x".repeat(RESOURCE_ATTRIBUTE_CAP_BYTES),
+          });
+          const small = await context.writeResource!("item", "small", {
+            ...ITEM,
+          });
+          return { dataHandles: [large, small] };
         },
       },
     },
@@ -227,5 +246,71 @@ Deno.test("resource attribute budget: a workflow run past the cap completes with
       last.run.jobs[0].steps[0].dataArtifacts!.length,
     );
     await assertItemsWritten(fx);
+  });
+});
+
+async function historyOf(
+  fx: Fixture,
+  workflow: string,
+  allAttributes: boolean,
+): Promise<WorkflowRunView> {
+  const deps = createWorkflowHistoryGetDeps(
+    fx.dir,
+    undefined,
+    fx.repo.workflowRepo,
+  );
+  let view: WorkflowRunView | undefined;
+  for await (
+    const event of workflowHistoryGet(createLibSwampContext(), deps, workflow, {
+      includeOutputs: true,
+      allAttributes,
+    })
+  ) {
+    if (event.kind === "completed") view = event.data;
+    if (event.kind === "error") throw new Error(event.error.message);
+  }
+  assertExists(view);
+  return view;
+}
+
+Deno.test("resource attribute budget: workflow history get bounds a large run, and allAttributes still reads it whole", async () => {
+  await withBulkModel(async (fx) => {
+    const deps = await createWorkflowRunDeps(fx.dir, fx.repo, {
+      type: "filesystem",
+      path: join(fx.dir, ".swamp"),
+    });
+    const workflow = Workflow.create({
+      name: `large-${crypto.randomUUID()}`,
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "write",
+            task: StepTask.model("bulk", "writeLarge", {}),
+          }),
+        ],
+      })],
+    });
+    await fx.repo.workflowRepo.save(workflow);
+    const events = await collect(
+      workflowRun(createLibSwampContext(), deps, {
+        workflowIdOrName: workflow.name,
+      }),
+    );
+    assertEquals(events.at(-1)?.kind, "completed");
+
+    const bounded = await historyOf(fx, workflow.name, false);
+    const step = bounded.jobs[0].steps[0];
+    const byName = new Map(step.dataArtifacts!.map((a) => [a.name, a]));
+    assertEquals(byName.get("large")?.attributesOmitted, true);
+    assertEquals(byName.get("small")?.attributesOmitted, true);
+    assertEquals(byName.get("large")?.attributes, undefined);
+    assertEquals(step.outputsPartial, true);
+    assert(JSON.stringify(bounded).length < RESOURCE_ATTRIBUTE_CAP_BYTES);
+
+    const whole = await historyOf(fx, workflow.name, true);
+    const wholeStep = whole.jobs[0].steps[0];
+    assertEquals(wholeStep.outputsPartial, undefined);
+    assertEquals(wholeStep.outputs, ITEM);
   });
 });

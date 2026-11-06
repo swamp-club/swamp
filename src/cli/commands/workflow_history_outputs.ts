@@ -87,6 +87,7 @@ export async function workflowHistoryOutputsAction(
     for await (
       const event of workflowHistoryGet(ctx, deps, runIdOrWorkflow, {
         includeOutputs: true,
+        allAttributes: true,
       })
     ) {
       if (event.kind === "completed") {
