@@ -240,6 +240,13 @@ import {
   type SuspendedRunCancelResult,
 } from "../suspended_run_cancel.ts";
 import {
+  abortRunHeldOutsideActiveRuns,
+  runCancelDecider,
+  runCancelResource,
+  runResumeDecider,
+  workflowHeldOutsideActiveRuns,
+} from "../run_cancel_authorization.ts";
+import {
   deleteActiveRun,
   rekeyActiveRun,
   writeActiveRun,
@@ -302,13 +309,11 @@ import {
   authorizeReferenceAccess,
   authorizeResolved,
   canonicalResources,
-  resolveRecordedWorkflow,
   resolveRunAccess,
   resolveWorkflowTarget,
   type ResourceResolution,
   type SettledResolution,
   targetArgument,
-  unresolvedAccessResource,
   workflowAccessResource,
 } from "./resource_resolution.ts";
 import {
@@ -586,6 +591,7 @@ export async function handleWorkflowRun(
               "workflow-run",
               registeredRunId,
               controller,
+              { id: resourceId, name: resourceName },
             );
           }
           if (socket.readyState !== WebSocket.OPEN) return;
@@ -925,7 +931,7 @@ export async function handleWorkflowSearch(
 interface ApprovalsRow {
   workflowId: string;
   workflowName: string;
-  parentRun?: NamedWorkflow;
+  parentRun?: NamedWorkflow & { canCancel?: boolean; canResume?: boolean };
   parentWaiting?: boolean;
   initiatedBy?: string;
   serveDriven?: boolean;
@@ -937,6 +943,9 @@ interface ApprovalsRow {
   canDecide?: boolean;
   /** set when the caller could decide other runs of this workflow, not this one */
   canDecideReason?: "grant-condition";
+  /** whether swamp workflow cancel --server would allow this caller's cancel */
+  canCancel?: boolean;
+  canResume?: boolean;
 }
 
 export async function handleWorkflowApprovals(
@@ -1043,6 +1052,22 @@ export async function handleWorkflowApprovals(
       "approve",
       ctx,
     );
+    const caller = accessCallerOf(socket, principal);
+    const mayCancel = runCancelDecider(ctx, caller);
+    const mayResume = runResumeDecider(ctx, caller);
+    const markCommands = async (item: ApprovalsRow) => {
+      const own = { id: item.workflowId, name: item.workflowName };
+      item.canCancel = await mayCancel(own);
+      item.canResume = await mayResume(own);
+      if (item.parentRun) {
+        const parent = {
+          id: item.parentRun.workflowId,
+          name: item.parentRun.workflowName,
+        };
+        item.parentRun.canCancel = await mayCancel(parent);
+        item.parentRun.canResume = await mayResume(parent);
+      }
+    };
     const data = await withSpan("swamp.serve.authorize", {}, async () => {
       const approvals = await readable(listed.approvals);
       for (const item of approvals) {
@@ -1050,8 +1075,11 @@ export async function handleWorkflowApprovals(
         if (!item.canDecide && await mayDecideSomeRun(item)) {
           item.canDecideReason = "grant-condition";
         }
+        await markCommands(item);
       }
-      return { approvals, expired: await readable(listed.expired) };
+      const expired = await readable(listed.expired);
+      for (const item of expired) await markCommands(item);
+      return { approvals, expired };
     });
 
     await sendTraced(socket, {
@@ -2567,24 +2595,12 @@ export async function handleWorkflowCancel(
   const mayCancel = async (
     target: { id?: string; name: string },
   ): Promise<boolean> => {
-    const resolution = target.id
-      ? await resolveRecordedWorkflow(
-        ctx.repoContext.workflowRepo,
-        target.id,
-        target.name,
-      )
-      : await resolveWorkflowTarget(ctx.repoContext.workflowRepo, target.name);
-    if (resolution.status === "failed") return false;
-    return isAuthorized(
-      socket,
-      requestId,
-      principal,
-      "run",
-      resolution.status === "found"
-        ? resolution.resource
-        : unresolvedAccessResource("workflow", target.name),
-      ctx,
+    const resource = await runCancelResource(
+      ctx.repoContext.workflowRepo,
+      target,
     );
+    if (!resource) return false;
+    return isAuthorized(socket, requestId, principal, "run", resource, ctx);
   };
   const cancelPersisted = () =>
     cancelSuspendedRunAndPush(
@@ -2620,6 +2636,23 @@ export async function handleWorkflowCancel(
 
   try {
     const registry = ctx.activeRunRegistry;
+    const held = registry?.get(payload.runId)
+      ? undefined
+      : workflowHeldOutsideActiveRuns(ctx, payload.runId);
+    if (held) {
+      const matches = payload.workflowIdOrName === undefined ||
+        payload.workflowIdOrName === held.name ||
+        payload.workflowIdOrName === held.id;
+      if (
+        !matches || !(await mayCancel(held)) ||
+        !abortRunHeldOutsideActiveRuns(ctx, payload.runId, reason)
+      ) {
+        sendError(socket, requestId, "workflow_cancel_failed", notFound);
+        return;
+      }
+      await reply(held.name, "cancellation_requested");
+      return;
+    }
     const outcome: SuspendedRunCancelResult = registry?.get(payload.runId)
       ? { status: "active" }
       : await cancelPersisted();

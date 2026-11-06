@@ -28,6 +28,13 @@ export interface RunCancelEntry {
   executionId: string;
   controller: AbortController;
   registeredAt: Date;
+  workflow?: HeldRunWorkflow;
+}
+
+/** the workflow a holder runs a run for, which a cancel is decided on */
+export interface HeldRunWorkflow {
+  id?: string;
+  name: string;
 }
 
 export class RunCancelRegistry {
@@ -41,6 +48,7 @@ export class RunCancelRegistry {
     executionType: ExecutionType,
     executionId: string,
     controller: AbortController,
+    workflow?: HeldRunWorkflow,
   ): void {
     const k = this.key(executionType, executionId);
     this.entries.set(k, {
@@ -48,6 +56,7 @@ export class RunCancelRegistry {
       executionId,
       controller,
       registeredAt: new Date(),
+      workflow,
     });
     logger.debug`Registered ${executionType} ${executionId}`;
   }
@@ -57,6 +66,13 @@ export class RunCancelRegistry {
     if (this.entries.delete(k)) {
       logger.debug`Deregistered ${executionType} ${executionId}`;
     }
+  }
+
+  workflowOf(
+    executionType: ExecutionType,
+    executionId: string,
+  ): HeldRunWorkflow | undefined {
+    return this.entries.get(this.key(executionType, executionId))?.workflow;
   }
 
   cancel(

@@ -471,6 +471,14 @@ Deno.test("ScheduledExecutionService.cancelByRunId: leaves the run alone for an 
   });
 });
 
+Deno.test("ScheduledExecutionService.workflowOfRun: names the workflow holding the run, and none for an unknown or empty id", async () => {
+  await withRunInFlight((service) => {
+    assertEquals(service.workflowOfRun("run-1")?.id !== undefined, true);
+    assertEquals(service.workflowOfRun("run-9"), undefined);
+    assertEquals(service.workflowOfRun(""), undefined);
+  });
+});
+
 Deno.test("ScheduledExecutionService.cancelAllRuns: aborts every run with the reason given", async () => {
   await withRunInFlight((service, signal) => {
     assertEquals(service.cancelAllRuns("cancelled by user:bob"), 1);

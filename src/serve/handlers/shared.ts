@@ -403,6 +403,10 @@ export interface ConnectionContext {
   hotReload?: boolean;
   serveConfigPath?: string;
   scheduledExecution?: ScheduledExecutionService;
+  webhookRuns?: Pick<
+    import("../webhook.ts").WebhookService,
+    "workflowOfRun" | "cancelByRunId"
+  >;
   workflowReloader?: () => Promise<number>;
   extensionChangeReloader?: () => Promise<
     import("../protocol.ts").ServeReloadResponse

@@ -1856,6 +1856,75 @@ Deno.test("cancelExecution: does not re-check a run still registered after the g
   assertEquals(calls, 0);
 });
 
+Deno.test("cancelExecution: a run a resume registered after the decision is left alone when the caller may not abort it", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  const controller = new AbortController();
+  // the registry miss that sends a run to cancelSuspended came before this
+  const cancelSuspended = () => {
+    activeRunRegistry.register({
+      runId: "r1",
+      kind: "workflow-resume",
+      resourceName: "wf",
+      buffer: new RunEventBuffer(16),
+      controller,
+      startedAt: new Date(),
+      completion: Promise.resolve(),
+      principalId: null,
+      completedRun: {},
+    });
+    return Promise.resolve({ status: "active" as const });
+  };
+  const result = await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended,
+    mayAbortActive: () => Promise.resolve(false),
+  });
+  assertEquals(result.status, "not_found");
+  assertEquals(controller.signal.aborted, false);
+});
+
+Deno.test("cancelExecution: a run re-registered during the grace is reported not found when the caller may not abort it", async () => {
+  const activeRunRegistry = new ActiveRunRegistry();
+  let mayAbort = true;
+  const registerRun = (
+    controller: AbortController,
+    completion: Promise<void>,
+  ) =>
+    activeRunRegistry.register({
+      runId: "r1",
+      kind: "workflow-resume",
+      resourceName: "wf",
+      buffer: new RunEventBuffer(16),
+      controller,
+      startedAt: new Date(),
+      completion,
+      principalId: null,
+      completedRun: {},
+    });
+  const first = new AbortController();
+  let finish!: () => void;
+  registerRun(first, new Promise<void>((r) => finish = r));
+  first.signal.addEventListener("abort", () => {
+    activeRunRegistry.deregister("r1");
+    finish();
+  });
+  const second = new AbortController();
+  const result = await cancelExecution("workflow-run", "r1", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry,
+    cancelSuspended: () => {
+      registerRun(second, Promise.resolve());
+      mayAbort = false;
+      return Promise.resolve({ status: "active" as const });
+    },
+    mayAbortActive: () => Promise.resolve(mayAbort),
+  });
+  assertEquals(result.status, "not_found");
+  assertEquals(first.signal.aborted, true);
+  assertEquals(second.signal.aborted, false);
+});
+
 interface CancelAuthHarness {
   events: AuditEvent[];
   asked: Parameters<AccessDecisionService["decide"]>[];
@@ -1905,8 +1974,9 @@ Deno.test("authorizeCancelRequest: refuses without a policy snapshot and audits 
     cancelAuthRequest,
   );
 
-  assertEquals(response?.status, 403);
-  assertEquals(await response?.json(), {
+  assert("refusal" in response);
+  assertEquals(response.refusal.status, 403);
+  assertEquals(await response.refusal.json(), {
     status: "error",
     message:
       "Authorization enforcement is enabled but no policy snapshot is available",
@@ -1939,40 +2009,60 @@ Deno.test("authorizeCancelRequest: the refusal records the caller's login identi
 });
 
 for (const effect of ["deny", null] as const) {
-  Deno.test(`authorizeCancelRequest: refuses a caller without admin (decision ${effect}) and audits the refusal`, async () => {
+  for (
+    const execution of [
+      { type: "method-run" as const, id: "run-1" },
+      undefined,
+    ]
+  ) {
+    Deno.test(
+      `authorizeCancelRequest: refuses a caller without admin (decision ${effect}) on ${
+        execution?.type ?? "bulk"
+      } and audits the refusal`,
+      async () => {
+        const h = cancelAuthHarness(effect);
+
+        const response = authorizeCancelRequest(
+          cancelAuthCtx(h.events),
+          h.loader,
+          { ...cancelAuthRequest, execution },
+        );
+
+        assert("refusal" in response);
+        assertEquals(response.refusal.status, 403);
+        assertEquals(await response.refusal.json(), {
+          status: "error",
+          message: "Access denied: cancel requires admin permission",
+        });
+        assertEquals(h.asked, [[
+          {
+            principal: { kind: "user", id: "u-1" },
+            collectives: ["acme"],
+            groups: ["ops"],
+            client: undefined,
+          },
+          "admin",
+          { kind: "access", name: "*", fields: {} },
+        ]]);
+        assertEquals(refusalFields(h).map((e) => [e.outcome, e.detail]), [[
+          "denied",
+          "admin required",
+        ]]);
+      },
+    );
+  }
+
+  Deno.test(`authorizeCancelRequest: a workflow-run cancel without admin (decision ${effect}) is left to the per-run decision, unaudited`, () => {
     const h = cancelAuthHarness(effect);
 
-    const response = authorizeCancelRequest(
+    const result = authorizeCancelRequest(
       cancelAuthCtx(h.events),
       h.loader,
       cancelAuthRequest,
     );
 
-    assertEquals(response?.status, 403);
-    assertEquals(await response?.json(), {
-      status: "error",
-      message: "Access denied: cancel requires admin permission",
-    });
-    assertEquals(h.asked, [[
-      {
-        principal: { kind: "user", id: "u-1" },
-        collectives: ["acme"],
-        groups: ["ops"],
-        client: undefined,
-      },
-      "admin",
-      { kind: "access", name: "*", fields: {} },
-    ]]);
-    assertEquals(refusalFields(h), [{
-      action: "cancel",
-      resourceKind: "workflow",
-      resourceName: "run-1",
-      outcome: "denied",
-      detail: "admin required",
-      principalId: "u-1",
-      initiatedBy: "user:alice",
-      sourceIp: "10.0.0.1",
-    }]);
+    assertEquals(result, { authority: "run" });
+    assertEquals(h.events, []);
   });
 }
 
@@ -2004,14 +2094,22 @@ Deno.test("authorizeCancelRequest: audits a refused method-run and bulk cancel a
 Deno.test("authorizeCancelRequest: lets an admin through without auditing", () => {
   const h = cancelAuthHarness("allow");
 
-  const response = authorizeCancelRequest(
-    cancelAuthCtx(h.events),
-    h.loader,
-    cancelAuthRequest,
-  );
-
-  assertEquals(response, undefined);
-  assertEquals(h.asked.length, 1);
+  for (
+    const execution of [
+      cancelAuthRequest.execution,
+      { type: "method-run" as const, id: "run-1" },
+      undefined,
+    ]
+  ) {
+    assertEquals(
+      authorizeCancelRequest(cancelAuthCtx(h.events), h.loader, {
+        ...cancelAuthRequest,
+        execution,
+      }),
+      { authority: "admin" },
+    );
+  }
+  assertEquals(h.asked.length, 3);
   assertEquals(h.asked[0][1], "admin");
   assertEquals(h.events, []);
 });
