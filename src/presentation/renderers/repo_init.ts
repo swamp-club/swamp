@@ -32,6 +32,7 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInstallRenderer } from "./extension_install.ts";
+import { reenrollHint } from "./repo_prune.ts";
 import { join } from "@std/path";
 import { bold, dim, yellow } from "@std/fmt/colors";
 
@@ -170,14 +171,22 @@ function droppedToolLines(
 function leftoverSettingsLines(
   prunable: readonly PrunableToolSettings[],
   removedTools: readonly string[],
+  enrolledTools: readonly string[],
 ): string[] {
   return prunable
     .filter((p) => !removedTools.includes(p.tool))
-    .map((p) =>
-      `${yellow("⚠")} swamp's settings for ${p.tool}, which is not enrolled, ` +
-      `remain in ${p.paths.join(", ")}. ` +
-      `Run \`swamp repo prune\` to remove them.`
-    );
+    .flatMap((p) => {
+      const lines = [
+        `${
+          yellow("⚠")
+        } swamp's settings for ${p.tool}, which is not enrolled, ` +
+        `remain in ${p.paths.join(", ")}. ` +
+        `Run \`swamp repo prune\` to remove them.`,
+      ];
+      const hint = reenrollHint(enrolledTools, [p.tool]);
+      if (hint !== null) lines.push(`  ${hint}`);
+      return lines;
+    });
 }
 
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
@@ -251,6 +260,7 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
           const line of leftoverSettingsLines(
             data.prunableSettings,
             data.removedTools,
+            data.tools,
           )
         ) {
           writeOutput(line);
@@ -356,6 +366,7 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           const line of leftoverSettingsLines(
             data.prunableSettings,
             data.removedTools,
+            data.tools,
           )
         ) {
           writeOutput(`  ${line}`);

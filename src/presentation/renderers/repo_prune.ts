@@ -29,9 +29,29 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 
 function formatTools(tools: readonly string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
+}
+
+/**
+ * an empty enrolled list may be a legacy marker whose implicit tool is still in
+ * use, so pruning that tool's settings would stop audit recording
+ */
+export function reenrollHint(
+  enrolledTools: readonly string[],
+  leftoverTools: readonly string[],
+  afterPrune = false,
+): string | null {
+  const implicit = resolvePrimaryTool(null);
+  if (enrolledTools.length > 0 || !leftoverTools.includes(implicit)) {
+    return null;
+  }
+  const command = `\`swamp repo upgrade --tool ${implicit}\``;
+  return afterPrune
+    ? `If you still use ${implicit}, run ${command} to restore them.`
+    : `If you still use ${implicit}, enroll it with ${command} instead of pruning.`;
 }
 
 function formatPruneLines(
@@ -67,6 +87,12 @@ function formatPruneLines(
         lines.push(`      ${dim("-")} ${removed}`);
       }
     }
+    const hint = reenrollHint(
+      enrolledTools,
+      items.map((i) => i.tool),
+      !willDelete,
+    );
+    if (hint !== null) lines.push(`  ${yellow("⚠")} ${hint}`);
   }
   if (skipped.length > 0) {
     lines.push("");

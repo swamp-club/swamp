@@ -207,6 +207,10 @@ swamp repo prune --dry-run --json  # list what would be removed
 swamp repo prune --yes             # remove without a prompt (--json never prompts)
 ```
 
+When `enrolledTools` is empty and `claude` is listed, the repo may only have
+picked up `tools: []` from an older upgrade and still use claude: ask before
+pruning, and if it does, run `swamp repo upgrade --tool claude` instead.
+
 Prune touches only built-in tools that are not enrolled, and only entries and
 files swamp owns: user hooks, `permissions.allow`, skills and instructions files
 stay, a file is deleted only when nothing else is left in it, and symlinked or
