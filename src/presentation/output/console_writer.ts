@@ -21,6 +21,7 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { unicodeWidth } from "@std/cli/unicode-width";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
+import { mapControlCharacters } from "../../domain/control_characters.ts";
 import { dataQueryCommand } from "../../domain/data/data_query_command.ts";
 import {
   SUMMARY_DISPLAY_HIDDEN,
@@ -246,10 +247,7 @@ export function renderDataBox(
       ...options?.methodArguments,
     };
     const keys = Object.keys(allArgs);
-    const keyWidth = Math.max(
-      maxOf(keys.map((k) => unicodeWidth(stripAnsi(k)))) ?? 0,
-      1,
-    );
+    const keyWidth = keyColumnWidth(keys);
     for (const key of keys) {
       argRows.push([
         { text: "    " },
@@ -270,19 +268,19 @@ export function renderDataBox(
     for (const artifact of artifacts) {
       dataRows.push([
         { text: "  " },
-        { text: stripAnsi(artifact.name), style: bold },
+        ...firstLine(artifact.name, bold),
         ...(artifact.source
-          ? [{ text: `    from ${stripAnsi(artifact.source)}`, style: dim }]
+          ? [
+            { text: "    from ", style: dim },
+            ...firstLine(artifact.source, dim),
+          ]
           : []),
       ]);
 
       if (artifact.attributes) {
         const keys = Object.keys(artifact.attributes);
         const displayKeys = keys.slice(0, 10);
-        const keyWidth = Math.max(
-          maxOf(displayKeys.map((k) => unicodeWidth(stripAnsi(k)))) ?? 0,
-          1,
-        );
+        const keyWidth = keyColumnWidth(displayKeys);
 
         for (const key of displayKeys) {
           const val = artifact.attributes[key];
@@ -375,7 +373,7 @@ function fitRow(
   row: BoxRow,
   width: number,
 ): { line: string; width: number } {
-  const total = row.reduce((n, s) => n + unicodeWidth(s.text), 0);
+  const total = segmentsWidth(row);
   if (total <= width) {
     return { line: row.map((s) => paint(s, s.text)).join(""), width: total };
   }
@@ -396,20 +394,45 @@ function fitRow(
   return { line: `${line}${dim(ELLIPSIS)}`, width: used + ELLIPSIS.length };
 }
 
+function segmentsWidth(segments: readonly BoxSegment[]): number {
+  return segments.reduce((n, s) => n + unicodeWidth(s.text), 0);
+}
+
+function keyColumnWidth(keys: string[]): number {
+  return Math.max(
+    maxOf(keys.map((k) => segmentsWidth(firstLine(k, dim)))) ?? 0,
+    1,
+  );
+}
+
 function keyColumn(key: string, keyWidth: number): BoxSegment[] {
-  const text = stripAnsi(key);
+  const segments = firstLine(key, dim);
   return [
-    { text, style: dim },
-    { text: `${" ".repeat(keyWidth - unicodeWidth(text))}   ` },
+    ...segments,
+    { text: `${" ".repeat(keyWidth - segmentsWidth(segments))}   ` },
   ];
 }
 
-function firstLine(s: string): BoxSegment[] {
-  const text = stripAnsi(s);
-  const [first] = text.split("\n");
-  return text.includes("\n")
-    ? [{ text: first }, { text: ELLIPSIS, style: dim }]
-    : [{ text: first }];
+// deno-lint-ignore no-control-regex
+const STRING_SEQUENCE = /\x1b[\]PX^_][^\x07\x1b]*(?:\x07|\x1b\\)?/g;
+// deno-lint-ignore no-control-regex
+const CSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
+// Box text comes from model output, so anything a terminal would act on instead
+// of print is dropped; a lone CR ends the line because the terminal returns there.
+function firstLine(s: string, style?: ColorFn): BoxSegment[] {
+  const end = s.search(/[\r\n]/);
+  const line = end === -1 ? s : s.slice(0, end);
+  const text = mapControlCharacters(
+    line.replace(STRING_SEQUENCE, "").replace(CSI_SEQUENCE, "").replaceAll(
+      "\t",
+      " ",
+    ),
+    () => "",
+  );
+  return end === -1
+    ? [{ text, style }]
+    : [{ text, style }, { text: ELLIPSIS, style: dim }];
 }
 
 function argumentValue(value: unknown): BoxSegment[] {
@@ -444,11 +467,6 @@ function attributeValue(value: unknown): BoxSegment[] {
     }];
   }
   return firstLine(String(value));
-}
-
-function stripAnsi(str: string): string {
-  // deno-lint-ignore no-control-regex
-  return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 export function writeGutterLine(

@@ -24,21 +24,42 @@ import { assert, assertEquals } from "@std/assert";
 import { unicodeWidth } from "@std/cli/unicode-width";
 import { setColorEnabled } from "@std/fmt/colors";
 import fc from "fast-check";
+import { hasControlCharacter } from "../../domain/control_characters.ts";
 import { type DataArtifact, renderDataBox } from "./console_writer.ts";
 
-// deno-lint-ignore no-control-regex
-const CONTROL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/;
 const ZWJ = "‍";
 
 const plainText = fc
   .string({ unit: "grapheme", maxLength: 120 })
-  .filter((s) => !CONTROL.test(s) && !s.includes(ZWJ));
+  .filter((s) => !hasControlCharacter(s) && !s.includes(ZWJ));
 
-const text = fc.oneof(
-  plainText,
-  plainText.map((s) => `\x1b[31m${s}\x1b[0m`),
-  fc.tuple(plainText, plainText).map(([a, b]) => `${a}\n${b}`),
+const terminalSequence = fc.constantFrom(
+  "\t",
+  "\r",
+  "\n",
+  "\r\n",
+  "\x00",
+  "\x07",
+  "\x7f",
+  "\x85",
+  "\x9b2K",
+  "\x1b",
+  "\x1b7",
+  "\x1b[31m",
+  "\x1b[0m",
+  "\x1b[38:5:196m",
+  "\x1b[2K",
+  "\x1b[1A",
+  "\x1b[12",
+  "\x1b]8;;https://example.com\x07",
+  "\x1b]8;;\x1b\\",
+  "\x1b]0;title",
+  "\x1bPq#0\x1b\\",
 );
+
+const text = fc
+  .array(fc.oneof(plainText, terminalSequence), { maxLength: 6 })
+  .map((parts) => parts.join(""));
 
 const value = fc.oneof(
   text,
@@ -76,8 +97,8 @@ Deno.test("renderDataBox: every line of the box has one visible width within the
           assertEquals(new Set(widths).size, 1, lines.join("\n"));
           assert(widths[0] <= 86, lines.join("\n"));
           assert(
-            !lines.some((line) => line.includes("\x1b")),
-            lines.join("\n"),
+            !lines.some((line) => hasControlCharacter(line)),
+            JSON.stringify(lines),
           );
         },
       ),
