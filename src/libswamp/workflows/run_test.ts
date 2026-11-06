@@ -2531,7 +2531,11 @@ Deno.test("workflowRun: onCompletedRun alone reads no data attributes", async ()
   );
 });
 
-function createBulkRun(contents: string[], withSize: boolean): WorkflowRun {
+function createBulkRun(
+  contents: string[],
+  withSize: boolean,
+  recordedSize?: number,
+): WorkflowRun {
   const run = WorkflowRun.create(createTestWorkflow());
   run.start();
   const job = run.getJob("job1")!;
@@ -2552,7 +2556,9 @@ function createBulkRun(contents: string[], withSize: boolean): WorkflowRun {
       tags: {},
       attributes: null,
       content: null,
-      ...(withSize ? { size: new TextEncoder().encode(content).length } : {}),
+      ...(withSize
+        ? { size: recordedSize ?? new TextEncoder().encode(content).length }
+        : {}),
     };
   });
   step.succeed({
@@ -2611,6 +2617,7 @@ Deno.test("resolveCompletedRunOutputs: resources past the attribute budget are n
   ]);
   assertEquals(artifacts[0].attributes, { blob: "x".repeat(40) });
   assertEquals(artifacts[1].attributes, undefined);
+  assertEquals(view.jobs[0].steps[0].outputsPartial, true);
 });
 
 Deno.test("resolveCompletedRunOutputs: a record without a stored size is measured after its read", async () => {
@@ -2638,4 +2645,60 @@ Deno.test("resolveCompletedRunOutputs: a run under the attribute budget names no
 
   assertEquals(Object.keys(resolved!.job1.step1.attributesByDataId).length, 3);
   assertEquals(resolved!.job1.step1.attributesOmitted, undefined);
+  const view = toRunData(
+    createBulkRun(BULK_CONTENTS, true),
+    undefined,
+    false,
+    resolved,
+  );
+  assertEquals(view.jobs[0].steps[0].outputsPartial, undefined);
+});
+
+Deno.test("resolveCompletedRunOutputs: a recorded size of 0 is measured after the read rather than admitted free", async () => {
+  const reads: string[] = [];
+  const resolved = await resolveCompletedRunOutputs(
+    createBulkRun(BULK_CONTENTS, true, 0),
+    bulkDataRepo(BULK_CONTENTS, reads),
+    new InMemoryWorkflowRunRepository(),
+    undefined,
+    undefined,
+    undefined,
+    BULK_ITEM.length + 1,
+  );
+
+  assertEquals(reads, ["item-0", "item-1"]);
+  assertEquals(resolved!.job1.step1.attributesOmitted, ["data-1", "data-2"]);
+});
+
+Deno.test("resolveCompletedRunOutputs: a workflow step whose child run passes the budget has partial outputs", async () => {
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const child = createBulkRun(BULK_CONTENTS, true);
+  await runRepo.save(createWorkflowId(child.workflowId), child);
+  const parent = WorkflowRun.create(createTestWorkflow());
+  parent.start();
+  const job = parent.getJob("job1")!;
+  job.start();
+  const step = job.getStep("step1")!;
+  step.start();
+  step.succeed({
+    type: "workflow",
+    workflowId: child.workflowId,
+    runId: child.id,
+  });
+  job.succeed();
+  parent.complete();
+
+  const resolved = await resolveCompletedRunOutputs(
+    parent,
+    bulkDataRepo(BULK_CONTENTS, []),
+    runRepo,
+    undefined,
+    undefined,
+    undefined,
+    BULK_ITEM.length + 1,
+  );
+
+  assertEquals(resolved!.job1.step1.attributesOmitted, ["data-1", "data-2"]);
+  const view = toRunData(parent, undefined, false, resolved);
+  assertEquals(view.jobs[0].steps[0].outputsPartial, true);
 });

@@ -529,24 +529,26 @@ export async function resolveCompletedRunOutputs(
   attributeCapBytes: number = RESOURCE_ATTRIBUTE_CAP_BYTES,
 ): Promise<RunStepOutputs | undefined> {
   const budget = new ResourceAttributeBudget(attributeCapBytes);
-  const omitted = new Set<string>();
+  // reset per step: resolution is sequential, so every omission during one
+  // step's resolve, its child runs' included, belongs to that step
+  let stepOmitted: string[] = [];
   const omit = (ref: StepResourceRef) => {
-    if (ref.dataId) omitted.add(ref.dataId);
+    stepOmitted.push(ref.dataId);
     return undefined;
   };
   const resolver = new StepOutputResolver({
     // a recorded size is decided before the read, so content past the budget
-    // is never loaded; a record without one is read once and measured
+    // is never loaded; JSON is never zero bytes, so a size of 0 counts as
+    // unrecorded and is measured after the read
     readAttributes: async (ref) => {
       if (budget.exhausted) return omit(ref);
-      if (ref.size !== undefined) {
+      if (ref.size !== undefined && ref.size > 0) {
         return budget.admit(ref.size) ? await readAttributes(ref) : omit(ref);
       }
       const attributes = await readAttributes(ref);
       if (attributes === undefined) return undefined;
-      return budget.admit(JSON.stringify(attributes).length)
-        ? attributes
-        : omit(ref);
+      const bytes = new TextEncoder().encode(JSON.stringify(attributes)).length;
+      return budget.admit(bytes) ? attributes : omit(ref);
     },
     findChildRun: (workflowId, runId) =>
       runRepo.findById(
@@ -558,29 +560,22 @@ export async function resolveCompletedRunOutputs(
     signal,
   });
   try {
-    const resolved = await resolveRunStepOutputs(run, resolver);
-    if (omitted.size > 0) markOmittedAttributes(run, resolved, omitted);
+    const resolved: RunStepOutputs = {};
+    for (const job of run.jobs) {
+      const steps: Record<string, ResolvedStepOutputs> = {};
+      for (const step of job.steps) {
+        stepOmitted = [];
+        const outputs = await resolver.resolve(step);
+        if (stepOmitted.length > 0) outputs.attributesOmitted = stepOmitted;
+        steps[step.stepName] = outputs;
+      }
+      resolved[job.jobName] = steps;
+    }
     return resolved;
   } catch (error) {
     // The run is already saved; only its summary goes without attributes.
     runLogger.debug`Data attributes of run ${run.id} not read: ${error}`;
     return undefined;
-  }
-}
-
-function markOmittedAttributes(
-  run: WorkflowRun,
-  resolved: RunStepOutputs,
-  omitted: ReadonlySet<string>,
-): void {
-  for (const job of run.jobs) {
-    for (const step of job.steps) {
-      const ids = (step.dataArtifacts ?? [])
-        .map((a) => a.dataId)
-        .filter((id) => omitted.has(id));
-      const outputs = resolved[job.jobName]?.[step.stepName];
-      if (ids.length > 0 && outputs) outputs.attributesOmitted = ids;
-    }
   }
 }
 
@@ -648,6 +643,7 @@ export function withRunStepOutputs(
               ? { dataArtifacts: from.dataArtifacts }
               : {}),
             ...(from.outputs !== undefined ? { outputs: from.outputs } : {}),
+            ...(from.outputsPartial ? { outputsPartial: true as const } : {}),
             ...(from.artifacts !== undefined
               ? { artifacts: from.artifacts }
               : {}),
@@ -783,6 +779,9 @@ export function toRunData(
 
           if (resolved?.outputs) {
             stepData.outputs = run.mask(resolved.outputs);
+          }
+          if (resolved?.attributesOmitted !== undefined) {
+            stepData.outputsPartial = true;
           }
 
           return stepData;

@@ -3198,14 +3198,18 @@ Deno.test("modelMethodRun: outside a diagnostic area it exports no phases", asyn
   });
 });
 
-function jsonHandle(name: string, content: string): DataHandle {
+function jsonHandle(
+  name: string,
+  content: string,
+  recordedSize?: number,
+): DataHandle {
   return {
     dataId: generateDataId(),
     name,
     specName: "item",
     kind: "resource" as const,
     version: 1,
-    size: new TextEncoder().encode(content).length,
+    size: recordedSize ?? new TextEncoder().encode(content).length,
     tags: {},
     metadata: { contentType: "application/json" },
   } as DataHandle;
@@ -3214,10 +3218,11 @@ function jsonHandle(name: string, content: string): DataHandle {
 async function runWithResources(
   contents: Record<string, string>,
   capBytes?: number,
+  recordedSize?: number,
 ): Promise<{ events: ModelMethodRunEvent[]; reads: string[] }> {
   const reads: string[] = [];
   const handles = Object.entries(contents).map(([name, content]) =>
-    jsonHandle(name, content)
+    jsonHandle(name, content, recordedSize)
   );
   const deps = createTestDeps(
     createTestDefinition("test-model", "run"),
@@ -3285,4 +3290,20 @@ Deno.test("modelMethodRun: artifacts past the attribute budget are marked omitte
   assertEquals([b.attributes, b.attributesOmitted], [undefined, true]);
   assertEquals([c.attributes, c.attributesOmitted], [undefined, true]);
   assertEquals(reads, ["a"]);
+});
+
+Deno.test("modelMethodRun: a JSON artifact recorded with size 0 is measured after its read rather than admitted free", async () => {
+  const content = JSON.stringify({ blob: "x".repeat(40) });
+  const { events, reads } = await runWithResources(
+    { a: content, b: content, c: content },
+    content.length + 1,
+    0,
+  );
+  const last = events.at(-1);
+  assert(last?.kind === "completed");
+  assertEquals(
+    last.run.dataArtifacts.map((a) => a.attributesOmitted === true),
+    [false, true, true],
+  );
+  assertEquals(reads, ["a", "b"]);
 });

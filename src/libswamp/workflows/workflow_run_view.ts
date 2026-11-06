@@ -89,6 +89,8 @@ export interface StepRunView {
   assertResult?: AssertResultView;
   approval?: ApprovalView;
   outputs?: Record<string, unknown>;
+  /** outputs merge only the resources read within the run's attribute budget */
+  outputsPartial?: true;
   skipReason?: StepSkipReasonView;
   /**
    * Set when the failure is structural. `workflow_changed`: a failed-run

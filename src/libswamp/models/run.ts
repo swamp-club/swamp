@@ -1677,8 +1677,12 @@ export async function* modelMethodRun(
 
                   let attributes: Record<string, unknown> | undefined;
                   let attributesOmitted = false;
+                  // JSON is never zero bytes, so a size of 0 was not recorded:
+                  // such content is measured after its read instead of before
+                  const sized = handle.size > 0;
                   if (handle.metadata.contentType === "application/json") {
-                    attributesOmitted = !attributeBudget.admit(handle.size);
+                    attributesOmitted = attributeBudget.exhausted ||
+                      (sized && !attributeBudget.admit(handle.size));
                   }
                   if (
                     handle.metadata.contentType === "application/json" &&
@@ -1691,7 +1695,12 @@ export async function* modelMethodRun(
                         handle.name,
                         handle.version,
                       );
-                      if (content) {
+                      if (
+                        content && !sized &&
+                        !attributeBudget.admit(content.length)
+                      ) {
+                        attributesOmitted = true;
+                      } else if (content) {
                         const text = new TextDecoder().decode(content);
                         attributes = JSON.parse(text) as Record<
                           string,
