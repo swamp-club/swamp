@@ -600,6 +600,10 @@ import {
   modelCatalogGap,
 } from "../../domain/extensions/model_catalog_gap.ts";
 import {
+  type ListingLimitBreach,
+  registryListingLimitBreaches,
+} from "../../domain/extensions/registry_listing_limits.ts";
+import {
   type GeneratedDeclaration,
   parseQualitySidecar,
   QUALITY_SIDECAR_FILENAME,
@@ -1377,7 +1381,7 @@ export async function extensionPushPrepare(
     safetyWarnings: safetyResult.warnings,
     files: allFiles.filter(notRejected),
     ...(contentMetadata
-      ? { argumentSchemas: argumentSchemas(contentMetadata) }
+      ? { argumentSchemas: argumentSchemas(contentMetadata), contentMetadata }
       : {}),
   });
   const reviewRulesResult = findings.reviewRulesResult;
@@ -1744,6 +1748,7 @@ export interface QualityFindingsInput {
   safetyWarnings: SafetyIssue[];
   files: string[];
   argumentSchemas?: ArgumentSchemas;
+  contentMetadata?: ExtensionContentMetadata;
 }
 
 /**
@@ -1950,6 +1955,17 @@ async function readUnlessSymlink(file: string): Promise<string | undefined> {
   }
 }
 
+export function registryListingLimitMessage(
+  breach: ListingLimitBreach,
+): string {
+  const where = breach.owner ? ` for ${breach.owner}` : "";
+  return `The registry lists at most ${breach.limit} ${breach.list}${where}; ` +
+    `this push sends ${breach.count}. Over any limit the registry discards ` +
+    "the whole listing and falls back to reading the archive, which can " +
+    "leave the published page listing no behaviors, methods or arguments, " +
+    "although the extension still installs and runs.";
+}
+
 /**
  * quality calls it on every run, including a cache hit, so push and quality
  * report the same findings for the same source.
@@ -1957,8 +1973,14 @@ async function readUnlessSymlink(file: string): Promise<string | undefined> {
 export async function runQualityFindings(
   ctx: LibSwampContext,
   deps: Pick<ExtensionPushPrepareDeps, "checkReviewRules">,
-  { input, sidecar, safetyWarnings, files, argumentSchemas: schemas }:
-    QualityFindingsInput,
+  {
+    input,
+    sidecar,
+    safetyWarnings,
+    files,
+    argumentSchemas: schemas,
+    contentMetadata,
+  }: QualityFindingsInput,
 ): Promise<QualityFindings> {
   // report findings are warnings: a missing or stale report prompts rather than
   // blocks, so a benign version bump nudges the reviewer instead of bricking
@@ -2076,6 +2098,23 @@ export async function runQualityFindings(
         remediation: remediationFor("uncatalogued-model"),
       });
     }
+  }
+
+  // the registry rejects the whole listing on any breach, so the published page
+  // would list nothing; one finding per over-limit list.
+  for (
+    const breach of contentMetadata
+      ? registryListingLimitBreaches(contentMetadata)
+      : []
+  ) {
+    reviewRulesResult.warnings.push({
+      ruleId: "registry-listing-limit",
+      dimension: "Registry catalog",
+      severity: "medium",
+      file: "(extension)",
+      message: registryListingLimitMessage(breach),
+      remediation: remediationFor("registry-listing-limit"),
+    });
   }
 
   // an extension using the behavior export, directory or manifest key loads

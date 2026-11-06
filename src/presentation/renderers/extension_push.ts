@@ -607,9 +607,21 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         }
         parts.push(`Bundles: ${e.data.bundleCount}`);
         this.logger.info`${parts.join(", ")}`;
+        if (options?.accepted) {
+          this.renderAcceptedWarnings(options.accepted);
+        }
+        if (options?.report) {
+          renderFindingsReport(this.logger, options.report, this.reportPaths());
+        }
+        // last, so a problem with what was just published is the final word
+        // rather than a footnote between the counts and the local findings
         if (e.data.registryWarnings) {
           const { messages, omitted } = e.data.registryWarnings;
-          this.logger.warn`Registry warnings:`;
+          const total = messages.length + omitted;
+          const noun = total === 1 ? "warning" : "warnings";
+          this.logger.warn(
+            `Pushed, but the registry reported ${total} ${noun}:`,
+          );
           for (const message of messages) {
             this.textBlock("warn", message, "  ");
           }
@@ -617,12 +629,6 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
             const noun = omitted === 1 ? "warning" : "warnings";
             this.logger.warn(`  ${omitted} more registry ${noun} omitted`);
           }
-        }
-        if (options?.accepted) {
-          this.renderAcceptedWarnings(options.accepted);
-        }
-        if (options?.report) {
-          renderFindingsReport(this.logger, options.report, this.reportPaths());
         }
       },
       error: (e) => {

@@ -181,6 +181,16 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Make the source load on its own: fix the import or top-level error the warning names, so push can read the type it registers. Or write its type as a string literal in the export object.",
   },
+  // not acceptable: the published page lists nothing however it is justified,
+  // so only --yes or --force waives it, on each push
+  {
+    id: "registry-listing-limit",
+    severity: "warning",
+    scope: "extension",
+    acceptable: false,
+    remediation:
+      "Split the extension into several, each under the limit (for example one extension per API domain, @acme/thing/<domain>), or fold related methods into fewer behaviors.",
+  },
   // acceptable: an author targeting only current releases may acknowledge that
   // older clients and workers cannot load the extension
   {

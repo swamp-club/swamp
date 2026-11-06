@@ -135,6 +135,13 @@ Deno.test("isAcceptableRule: uncatalogued-model is a known file-scoped warning t
   assertEquals(isAcceptableRule("uncatalogued-model"), false);
 });
 
+Deno.test("isAcceptableRule: registry-listing-limit is a known extension-scoped warning that is never acceptable", () => {
+  const entry = findRule("registry-listing-limit");
+  assertEquals(entry?.severity, "warning");
+  assertEquals(entry?.scope, "extension");
+  assertEquals(isAcceptableRule("registry-listing-limit"), false);
+});
+
 Deno.test("isAcceptableRule: secret-unsafe-docs is a site-scoped warning an author may accept", () => {
   const entry = findRule("secret-unsafe-docs");
   assertEquals(entry?.severity, "warning");
