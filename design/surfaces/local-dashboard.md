@@ -101,7 +101,7 @@ locks and syncs like any CLI write, on every datastore:
 
 | Request | Command | Reply |
 | --- | --- | --- |
-| `workflow.approve` / `.reject` | `swamp workflow approve\|reject <wf> <step> --run=<id> --json` | The command's JSON as `data`, or an error frame with its message |
+| `workflow.approve` / `.reject` | `swamp workflow approve\|reject <wf> <step> --run=<id> [--suspended-at=<time>] --json` | The command's JSON as `data`, or an error frame with its message |
 | `workflow.cancel` | `swamp workflow cancel <wf> --run=<id> --json` | As above |
 | `workflow.resume` | `swamp workflow resume <wf> --run=<id> --json`, **detached** | `event` once the run tracker shows the run running under that pid, then `done` if it ends while the hub is up |
 

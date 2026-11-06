@@ -139,3 +139,21 @@ Deno.test("follower requests: attaching to a run goes to the leader, the commit 
   assertEquals(FOLLOWER_READ_REQUESTS.has("commits.subscribe"), true);
   assertEquals(FOLLOWER_READ_REQUESTS.has("commits.head"), true);
 });
+
+Deno.test("followerRefusal: a version check for the leader is forwarded, and only on a follower", () => {
+  const follower: FollowerGate = {
+    role: "follower",
+    leader: () => undefined,
+    isStale: () => false,
+  };
+  assertEquals(followerRefusal("server.version", follower), undefined);
+  assertEquals(
+    followerRefusal("server.version", follower, true)?.reads,
+    false,
+  );
+  assertEquals(
+    followerRefusal("server.version", { ...follower, role: "leader" }, true),
+    undefined,
+  );
+  assertEquals(followerRefusal("server.version", undefined, true), undefined);
+});

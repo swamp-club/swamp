@@ -471,7 +471,10 @@ whose `dependsOn` is met stays `pending`, and its job stays `pending` or ends
 The run still reports the rejected gate
 as its failed step. `swamp workflow resume <workflow> --run <id> --from <gate>`
 reopens that settled work along with the rejected gate: each gate asks again,
-with its approval `timeout` counted from the new wait.
+with its approval `timeout` counted from the new wait. Each attempt has its own
+start time, which a decision can name with `suspendedAt` (`--suspended-at`): a
+decision for an earlier attempt is refused with `gate_reopened`. With no job
+named, the time also picks among gates that share a step name.
 
 **Gates inside a nested workflow (swamp-club#2736).** A workflow step runs its
 child workflow as a run of its own. When the child suspends at a gate, the
@@ -3517,7 +3520,10 @@ swamp-club#3266).
 
 Each workflow keeps a run index, `.runs-index.json`, in the repo-local
 `.swamp/workflow-runs/{workflow-uuid}/`, wherever the datastore keeps its run
-records. It holds one summary entry per run, keyed by run id. A save updates
+records. It holds one summary entry per run, keyed by run id. An entry may carry
+`startKeyLookup`, the hash of the idempotency key that started the run: the record
+holds the whole `RunStartKey` (lookup, salt, fingerprint) and decides, since the index is not trusted, and the key appears
+in no run view. Adding it needed no schema version, as an older entry holds no key. A save updates
 the index of the repository it is made in, so records another repository
 writes to a shared datastore reach this index only through the checks below. A read trusts the index while it lists as many
 runs as there are records. When the counts differ, it stats every record, in

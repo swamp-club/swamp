@@ -2450,6 +2450,35 @@ export function recordAuditedResource(
   }
 }
 
+const auditedDetails = new WeakMap<WebSocket, Map<string, string>>();
+
+/** a success worth telling apart in the log, such as a replayed start */
+export function recordAuditedDetail(
+  socket: WebSocket,
+  requestId: string,
+  detail: string,
+): void {
+  let details = auditedDetails.get(socket);
+  if (!details) {
+    details = new Map();
+    auditedDetails.set(socket, details);
+  }
+  details.set(requestId, detail);
+  if (details.size > MAX_ERRORED_REQUESTS) {
+    details.delete(details.keys().next().value!);
+  }
+}
+
+export function takeAuditedDetail(
+  socket: WebSocket,
+  requestId: string,
+): string | undefined {
+  const details = auditedDetails.get(socket);
+  const detail = details?.get(requestId);
+  details?.delete(requestId);
+  return detail;
+}
+
 export function takeAuditedResource(
   socket: WebSocket,
   requestId: string,
@@ -2468,6 +2497,20 @@ function clientErrorReasonOf(details: unknown): string | undefined {
   }
   return CLIENT_ERROR_REASONS.has(details.reason) ? details.reason : undefined;
 }
+
+/** codes a request can end with when the datastore could not confirm its write */
+export const REPLICATION_REFUSALS = {
+  notLeader: SERVE_NOT_LEADER_CODE,
+  writerBusy: V3_WRITER_BUSY_CODE,
+  unconfirmed: [
+    V3_REPLICATION_UNCONFIRMED_CODE,
+    WRITER_FENCED_CODE,
+    COMMIT_UNREACHABLE_CODE,
+    COMMIT_PARTLY_COMMITTED_CODE,
+    RUN_PARTLY_COMMITTED_CODE,
+    V3_STORAGE_UNREACHABLE_CODE,
+  ],
+} as const;
 
 export function isServerFailureCode(code: string): boolean {
   if (code === "internal_error") return true;

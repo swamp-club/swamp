@@ -45,6 +45,12 @@ import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import {
+  ambiguousGateRefusal,
+  type GateTarget,
+  reopenedGateRefusal,
+  waitingGate,
+} from "./gate_refusals.ts";
+import {
   type AwaitingParentData,
   awaitingParentOf,
   type DetachedNestedRunData,
@@ -85,7 +91,7 @@ export type WorkflowRejectEvent =
   | { kind: "completed"; data: WorkflowRejectData }
   | { kind: "error"; error: SwampError };
 
-export interface WorkflowRejectInput {
+export interface WorkflowRejectInput extends GateTarget {
   workflowIdOrName: string;
   /**
    * Treat `workflowIdOrName` as a workflow id the caller already resolved,
@@ -98,7 +104,6 @@ export interface WorkflowRejectInput {
    * unique, so only a workflow with this name and the id is accepted.
    */
   expectedName?: string;
-  stepName: string;
   reason?: string;
   runId?: string;
   decidedBy?: string;
@@ -197,19 +202,12 @@ async function rejectClaimedRun(
   const orphaned = await settleOrphanedNestedRun(deps, run, workflow);
   if (orphaned) return { error: orphanedNestedRunError(orphaned) };
 
-  let step:
-    | import("../../domain/workflows/workflow_run.ts").StepRun
-    | undefined;
-  let jobName: string | undefined;
-  for (const job of run.jobs) {
-    const s = job.getStep(input.stepName);
-    // A nested workflow step waiting on its child run is not a gate.
-    if (s && s.status === "waiting_approval" && !s.isNestedWait) {
-      step = s;
-      jobName = job.jobName;
-      break;
-    }
-  }
+  const ambiguous = ambiguousGateRefusal(run, input);
+  if (ambiguous) return { error: ambiguous };
+
+  const gate = waitingGate(run, input);
+  const step = gate?.step;
+  const jobName = gate?.jobName;
   if (!step) {
     return {
       error: nestedWaitGateError(run, input.stepName) ??
@@ -218,6 +216,9 @@ async function rejectClaimedRun(
         ),
     };
   }
+
+  const reopened = reopenedGateRefusal(step, input);
+  if (reopened) return { error: reopened };
 
   const wfJob = workflow.jobs.find((j) => j.name === jobName);
   const timeout = evaluateApprovalTimeout(

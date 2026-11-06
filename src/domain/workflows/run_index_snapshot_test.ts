@@ -131,3 +131,14 @@ Deno.test("RunIndexSnapshot.of: a workflow with no runs", () => {
   assertEquals(snapshot.newestStartMs, undefined);
   assertEquals(snapshot.between(0, 1), []);
 });
+
+Deno.test("RunIndexSnapshot.withStartKey: finds the newest run holding a key", () => {
+  const snapshot = RunIndexSnapshot.of([
+    run("older", T0, { startKeyLookup: "k" }),
+    run("newer", T0 + 1000, { startKeyLookup: "k" }),
+    run("other", T0 + 2000, { startKeyLookup: "j" }),
+    run("none", T0 + 3000),
+  ]);
+  assertEquals(snapshot.withStartKey("k")?.summary.id, "newer");
+  assertEquals(snapshot.withStartKey("missing"), undefined);
+});

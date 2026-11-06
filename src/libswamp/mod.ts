@@ -924,6 +924,12 @@ export {
   type WorkflowHistoryLogsInput,
 } from "./workflows/history_logs.ts";
 export {
+  AMBIGUOUS_GATE_CODE,
+  GATE_REOPENED_CODE,
+  type GateTarget,
+} from "./workflows/gate_refusals.ts";
+export { exactRunReference } from "./workflows/run_lookup.ts";
+export {
   resolveRunReference,
   type RunReference,
   type RunReferenceDeps,

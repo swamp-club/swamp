@@ -967,6 +967,10 @@ swamp workflow resume  <workflow-name> --run <run-id> --input authKeyName=deploy
 swamp workflow approvals  # list pending approvals and expired gates with run IDs
 ```
 
+For a decision prepared earlier, such as by a script, pass the gate's
+`suspendedAt` from `swamp workflow approvals --json` as `--suspended-at`. It is
+refused with `gate_reopened` if a resume has asked the gate again since.
+
 A resume `--input` adds inputs the run does not have, such as the vault key name
 of a credential minted during the gate. A value the run already has cannot
 change (`--json` code `resume_input_immutable` locally, `workflow_resume_failed`

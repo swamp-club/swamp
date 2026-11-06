@@ -68,6 +68,10 @@ import {
   sentinelReferenceTextOf,
 } from "../expressions/provenance_map.ts";
 import { withWrittenReferenceRanges } from "../expressions/persisted_evaluation.ts";
+import {
+  type RunStartKeyData,
+  RunStartKeyDataSchema,
+} from "./run_start_key.ts";
 
 export const ApprovalDecisionSchema = z.object({
   approved: z.boolean(),
@@ -298,6 +302,7 @@ export const WorkflowRunSchema = z.object({
   replayedEvaluatedCache: z.literal(true).optional(),
   initiatedBy: z.string().optional(),
   client: z.string().optional(),
+  startKey: RunStartKeyDataSchema.optional(),
   instanceId: z.string().optional(),
   // pid and instanceId name the live process only while it runs, otherwise the
   // run's owner, which cancel routing and supersede read; kept while a resume
@@ -1211,6 +1216,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   private _persistedInputsProvenance: ProvenanceMap | undefined;
   private _replayedEvaluatedCache = false;
   private _resumedAt: Date | undefined;
+  private _startKey: RunStartKeyData | undefined;
 
   private constructor(
     readonly id: WorkflowRunId,
@@ -1415,6 +1421,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     );
     run._replayedEvaluatedCache = validated.replayedEvaluatedCache === true;
     if (validated.resumedAt) run._resumedAt = new Date(validated.resumedAt);
+    run._startKey = validated.startKey;
     if (validated.inputsProvenance) {
       run._inputsProvenance = ProvenanceMap.fromData(
         validated.inputsProvenance,
@@ -1470,6 +1477,19 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get completedAt(): Date | undefined {
     return this._completedAt;
+  }
+
+  get startKey(): RunStartKeyData | undefined {
+    return this._startKey;
+  }
+
+  recordStartKey(key: RunStartKeyData): void {
+    this._startKey = key;
+  }
+
+  /** a run that failed before it started: a retry of its key starts afresh */
+  clearStartKey(): void {
+    this._startKey = undefined;
   }
 
   get instanceId(): string | undefined {
@@ -2175,6 +2195,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       data.replayedEvaluatedCache = true;
     }
     if (this._resumedAt) data.resumedAt = this._resumedAt.toISOString();
+    if (this._startKey) data.startKey = { ...this._startKey };
     if (this._inputsProvenance) {
       data.inputsProvenance = this._inputsProvenance.toData();
     }

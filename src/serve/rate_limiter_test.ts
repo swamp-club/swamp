@@ -33,6 +33,7 @@ import {
   PRINCIPAL_RATE_PER_MINUTE,
   principalRateBucketCount,
   rateLimitKey,
+  rateLimitKeyWithAddress,
   recordFailedAttempt,
   resetRateLimitState,
 } from "./rate_limiter.ts";
@@ -541,4 +542,14 @@ Deno.test("limitFailedAttempts: the failure that locks a key out is logged once,
   assertEquals(lockouts.length, 1);
   assertEquals(lockouts[0].properties.count, 5);
   assert((lockouts[0].properties.seconds as number) > 0);
+});
+
+Deno.test("rateLimitKeyWithAddress: one token name counts per address", () => {
+  const key = (ip: string) => rateLimitKeyWithAddress("name.secret", ip);
+  assertEquals(key("10.0.0.1") === key("10.0.0.1"), true);
+  assertEquals(key("10.0.0.1") === key("10.0.0.2"), false);
+  assertEquals(
+    rateLimitKeyWithAddress("name.other-secret", "10.0.0.1"),
+    key("10.0.0.1"),
+  );
 });

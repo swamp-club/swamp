@@ -188,3 +188,34 @@ Deno.test("attachedReply: a failed command is an error frame with its message", 
   );
   assertEquals(actionErrorCode("workflow.approve"), "workflow_approve_failed");
 });
+
+Deno.test("actionCommand: a decision passes its gate attempt as one argument", () => {
+  const payload = {
+    workflowIdOrName: "deploy",
+    stepName: "gate",
+    runId: "11111111-2222-3333-4444-555555555555",
+    suspendedAt: "2026-11-06T10:00:00.000Z",
+  };
+  const command = actionCommand("workflow.approve", payload);
+  assertEquals(command.kind, "command");
+  if (command.kind === "command") {
+    assertEquals(
+      command.args.includes("--suspended-at=2026-11-06T10:00:00.000Z"),
+      true,
+    );
+  }
+});
+
+Deno.test("actionCommand: a value that is not a time is refused, not dropped", () => {
+  for (const suspendedAt of ["--repo-dir=/elsewhere", "yesterday", 7]) {
+    assertEquals(
+      actionCommand("workflow.reject", {
+        workflowIdOrName: "deploy",
+        stepName: "gate",
+        runId: "11111111-2222-3333-4444-555555555555",
+        suspendedAt,
+      }).kind,
+      "invalid",
+    );
+  }
+});

@@ -44,6 +44,7 @@ import {
   remoteGateRefusalUserError,
   requestNewerServerResponse,
   requestServerResponse,
+  requireGateAttemptCheck,
   resetImplicitServeRouting,
   resetMarkerServerAddress,
   resetRemoteIndicatorMode,
@@ -4031,4 +4032,48 @@ Deno.test("remoteGateRefusalUserError: an error serve sent without a local code,
     remoteGateRefusalUserError(plain, "workflow_approve_failed"),
     plain,
   );
+});
+
+Deno.test("requireGateAttemptCheck: refuses a serve that would drop the attempt, and passes one that checks it", async () => {
+  for (
+    const [capabilities, refused] of [
+      [["literal-inputs"], true],
+      [undefined, true],
+      [["gate-attempt"], false],
+    ] as const
+  ) {
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const { id, payload } = JSON.parse(event.data as string);
+          assertEquals(payload, { leader: true });
+          socket.send(JSON.stringify({
+            type: "server.version",
+            id,
+            payload: {
+              version: "1",
+              ...(capabilities ? { capabilities } : {}),
+            },
+          }));
+        };
+        return response;
+      },
+    );
+    try {
+      const target = { server: `ws://127.0.0.1:${server.addr.port}` };
+      if (refused) {
+        await assertRejects(
+          () => requireGateAttemptCheck(target),
+          UserError,
+          "--suspended-at",
+        );
+      } else {
+        await requireGateAttemptCheck(target);
+      }
+    } finally {
+      await server.shutdown();
+    }
+  }
 });

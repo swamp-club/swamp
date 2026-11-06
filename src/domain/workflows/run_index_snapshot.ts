@@ -59,11 +59,13 @@ export class RunIndexSnapshot {
 
   readonly #runs: readonly RunIndexRun[];
   readonly #byId: ReadonlyMap<string, RunIndexRun>;
+  readonly #byStartKey: ReadonlyMap<string, RunIndexRun>;
   readonly #startless: number;
 
   private constructor(runs: RunIndexRun[]) {
     this.#runs = Object.freeze(runs);
     const byId = new Map<string, RunIndexRun>();
+    const byStartKey = new Map<string, RunIndexRun>();
     const names = new Set<string>();
     const statuses = new Set<string>();
     let newest: number | undefined;
@@ -71,6 +73,10 @@ export class RunIndexSnapshot {
     for (const run of runs) {
       const id = run.summary.id.toLowerCase();
       if (!byId.has(id)) byId.set(id, run);
+      const startKey = run.summary.startKeyLookup;
+      if (startKey !== undefined && !byStartKey.has(startKey)) {
+        byStartKey.set(startKey, run);
+      }
       names.add(run.summary.workflowName);
       statuses.add(run.summary.status);
       if (run.startMs === undefined) startless++;
@@ -79,6 +85,7 @@ export class RunIndexSnapshot {
       }
     }
     this.#byId = byId;
+    this.#byStartKey = byStartKey;
     this.#startless = startless;
     this.recordedNames = names;
     this.distinctStatuses = statuses;
@@ -129,6 +136,10 @@ export class RunIndexSnapshot {
 
   get(runId: string): RunIndexRun | undefined {
     return this.#byId.get(runId.toLowerCase());
+  }
+
+  withStartKey(lookup: string): RunIndexRun | undefined {
+    return this.#byStartKey.get(lookup);
   }
 
   #firstBelow(ms: number): number {

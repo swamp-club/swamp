@@ -462,9 +462,11 @@ import {
   DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
 } from "../../serve/club_heartbeat_service.ts";
 import {
+  SERVE_ACTION_PATH,
   SERVE_REQUEST_PATH,
   type ServeReloadResponse,
 } from "../../serve/protocol.ts";
+import { handleHttpActionRequest } from "../../serve/http_action_route.ts";
 import { handleHttpRequest } from "../../serve/http_request_route.ts";
 import { createServeReloadRenderer } from "../../presentation/renderers/serve_reload.ts";
 import {
@@ -7150,6 +7152,21 @@ export const serveCommand = new Command()
                 }),
             },
           );
+        }
+
+        if (apiUrl.pathname === SERVE_ACTION_PATH) {
+          return await handleHttpActionRequest(req, clientAddress(), {
+            ctx: connectionCtx,
+            authenticate: (token, sourceIp) =>
+              authenticateServerToken(token, resolvedRepoDir, repoContext, {
+                emitter: connectionCtx.auditEmitter,
+                instanceId: connectionCtx.instanceId,
+                sourceIp,
+                ingress: "http-action",
+                resolvedUserNames: connectionCtx.resolvedUserNames,
+                onUsernamesResolved: rememberTokenUsernames,
+              }),
+          });
         }
 
         if (apiUrl.pathname === SERVE_REQUEST_PATH) {

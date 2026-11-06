@@ -106,6 +106,7 @@ Deno.test("parseWorkflowRunSummary: never retains the heavy jobs/output subtree"
     "parentRun",
     "waitingOnRun",
     "waitsOnlyOnNestedRuns",
+    "startKeyLookup",
   ]);
   for (const key of Object.keys(summary)) {
     assert(allowedKeys.has(key), `unexpected key "${key}" on summary`);

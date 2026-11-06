@@ -89,6 +89,17 @@ export function rateLimitKey(
   return `ip:${ip}`;
 }
 
+/**
+ * failures counted per address too, so someone who knows a token's name can only
+ * lock out themselves, never the token's real holder
+ */
+export function rateLimitKeyWithAddress(
+  token: string | null,
+  ip: string,
+): string {
+  return `${rateLimitKey(token, ip)}|address:${ip}`;
+}
+
 export function checkIpBurst(ip: string): RateLimitResult {
   return checkBucket(ipBurstBuckets, ip, MAX_IP_BURST, IP_BURST_WINDOW_MS);
 }

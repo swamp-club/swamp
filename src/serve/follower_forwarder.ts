@@ -295,7 +295,10 @@ export class FollowerForwarder {
     entry.chain = entry.chain.then(async () => {
       // the caller reads its own write from this node next: the reply waits
       // until this node's copy holds what the leader had committed
-      if (final && frame.type !== "error" && this.#barrier !== undefined) {
+      if (
+        final && frame.type !== "error" && entry.type !== "server.version" &&
+        this.#barrier !== undefined
+      ) {
         await this.#barrier().catch(() => {});
       }
       this.#relayToClient(data, frame);
