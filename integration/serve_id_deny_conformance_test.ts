@@ -115,7 +115,7 @@ const TAG_GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
     effect: "deny",
     actions: ACTIONS,
     resource: { kind, pattern: "*" },
-    condition: 'tags.env == "prod"',
+    condition: '"env" in tags && tags.env == "prod"',
   }),
 ]);
 
@@ -817,7 +817,7 @@ Deno.test("serve id-deny conformance: a tag-conditioned deny applies to a model 
         effect: "deny",
         actions: ACTIONS,
         resource: { kind: "model", pattern: "*" },
-        condition: 'tags.env == "prod"',
+        condition: '"env" in tags && tags.env == "prod"',
       }),
     ]);
     assertDenied(
@@ -1085,7 +1085,7 @@ Deno.test("serve id-deny conformance: cancelling a run whose workflow was delete
         effect: "deny",
         actions: ACTIONS,
         resource: { kind: "workflow", pattern: "*" },
-        condition: 'tags.env == "prod"',
+        condition: '"env" in tags && tags.env == "prod"',
       }),
     ], { detached: true });
     const original = await saveWorkflow(f.repo, "reused", f.devModel);
@@ -1274,7 +1274,7 @@ Deno.test("serve id-deny conformance: a tag-conditioned deny applies to an outpu
         effect: "deny",
         actions: ACTIONS,
         resource: { kind: "model", pattern: "*" },
-        condition: 'tags.env == "prod"',
+        condition: '"env" in tags && tags.env == "prod"',
       }),
     ]);
     assertDenied(

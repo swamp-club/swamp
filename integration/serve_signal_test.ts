@@ -980,7 +980,7 @@ const TAG_GRANTS: Grant[] = [
   workflowGrant(["signal", "read"]),
   {
     ...workflowGrant(["signal", "read"], "*", "deny"),
-    condition: 'tags.env == "prod"',
+    condition: '"env" in tags && tags.env == "prod"',
   },
 ];
 

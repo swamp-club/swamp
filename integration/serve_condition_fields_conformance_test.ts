@@ -233,7 +233,7 @@ const TAG_GRANTS: Grant[] = (["model", "data", "workflow"] as const).flatMap((
     effect: "deny",
     actions: ACTIONS,
     resource: { kind, pattern: "*" },
-    condition: 'tags.env == "prod"',
+    condition: '"env" in tags && tags.env == "prod"',
   }),
 ]);
 
@@ -415,6 +415,53 @@ Deno.test("serve condition-fields conformance: kind-level checks and creates are
       const error = errorFrame(
         await sendRequest(f.ctx, request(type, payload)),
       );
+      assert(
+        error?.error?.code !== "unauthorized",
+        `${type}: ${error?.error?.message}`,
+      );
+    }
+  });
+});
+
+Deno.test("serve condition-fields conformance: an unguarded tag deny fails closed on what has no such tag, and a kind-level check is still not refused", async () => {
+  await withFixtures(async (f) => {
+    const unguarded: Grant[] = (["model", "data", "workflow"] as const).flatMap(
+      (kind) => [
+        grant({ actions: ACTIONS, resource: { kind, pattern: "*" } }),
+        grant({
+          effect: "deny",
+          actions: ACTIONS,
+          resource: { kind, pattern: "*" },
+          condition: 'tags.env == "prod"',
+        }),
+      ],
+    );
+    const ctx = createServeCtx(f.repo, unguarded);
+    for (
+      const [type, payload] of [
+        ["workflow.create", { name: "new-flow" }],
+        ["model.create", {
+          typeArg: f.repo.modelType.normalized,
+          name: "new-model",
+        }],
+        ["vault.search", {}],
+      ] as const
+    ) {
+      assertEquals(
+        errorFrame(await sendRequest(ctx, request(type, payload)))?.error?.code,
+        "unauthorized",
+        type,
+      );
+    }
+    for (
+      const [type, payload] of [
+        ["model.type.search", {}],
+        ["workflow.schema", {}],
+        ["report.type.search", {}],
+        ["vault.type.search", {}],
+      ] as const
+    ) {
+      const error = errorFrame(await sendRequest(ctx, request(type, payload)));
       assert(
         error?.error?.code !== "unauthorized",
         `${type}: ${error?.error?.message}`,

@@ -203,7 +203,7 @@ Deno.test({
         workflowGrant(["read"]),
         {
           ...workflowGrant(["read"], "*", "deny"),
-          condition: 'tags.env == "prod"',
+          condition: '"env" in tags && tags.env == "prod"',
         },
       ]);
 

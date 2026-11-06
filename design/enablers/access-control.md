@@ -931,9 +931,10 @@ can still reach the admin fallback.
 
 This covers reading a tag the resource does not have. A deny on `tags.env ==
 "prod"` refuses `prod` resources and every resource with no `env` tag, in reads
-and listings too. New resources are untagged, and a vault request is decided as a
-data resource with no tags, so such a data deny also refuses that subject's vault
-requests. To apply a deny only to resources carrying the tag, guard it: `"env" in
+and listings too. A resource being created has no tags, so such a deny on `write`
+refuses creating one. A vault request is decided as a data resource with no tags,
+so such a data deny also refuses that subject's vault requests, `vault.search`
+included. To apply a deny only to resources carrying the tag, guard it: `"env" in
 tags && tags.env == "prod"`, or `has(tags.env) && ...`.
 
 A check on a resource kind as a whole (`kindResource`: type and schema

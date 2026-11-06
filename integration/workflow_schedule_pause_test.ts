@@ -257,7 +257,7 @@ Deno.test("schedule pause: list leaves out workflows the caller may not read; pa
         effect: "deny",
         actions: ["read", "write"],
         resource: { kind: "workflow", pattern: "*" },
-        condition: 'tags.env == "prod"',
+        condition: '"env" in tags && tags.env == "prod"',
       }),
     ];
     const ctx = ctxFor(repo, grants);
