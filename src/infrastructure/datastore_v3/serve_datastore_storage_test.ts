@@ -26,6 +26,7 @@ import {
   ChunkStore,
 } from "../../domain/datastore_v3/chunk_store.ts";
 import { sha256Of } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
   CachedServeStorage,
   SERVE_STORAGE_UNSUPPORTED_CODE,
@@ -448,5 +449,39 @@ Deno.test("CachedServeStorage.releaseFetched: drops what it read from serve, nev
       fetched.bytes,
     );
     assertEquals(serve.requests.getChunk, 3);
+  });
+});
+
+Deno.test("CachedServeStorage.releaseFetched: a fetched chunk this checkout then writes with the same bytes survives release (swamp-club#4457)", async () => {
+  await withCache(async (cache, serve) => {
+    const bytes = new TextEncoder().encode(
+      "the same bytes, fetched then written",
+    );
+    const sha256 = await sha256Of("the same bytes, fetched then written");
+    serve.chunks.set(sha256, bytes);
+    await cache.get("_default", sha256, live());
+
+    // the write finds the bytes present and touches the chunk, not puts it
+    const ref = await new ChunkStore(cache).write(
+      SOLO_NAMESPACE,
+      bytes,
+      live(),
+    );
+    assertEquals(ref.sha256, sha256);
+
+    await cache.releaseFetched(live());
+    assertEquals(await cached(cache, sha256), true);
+  });
+});
+
+Deno.test("CachedServeStorage.releaseFetched: a plain put after a fetch survives release (swamp-club#4457)", async () => {
+  await withCache(async (cache, serve) => {
+    const c = await chunk("put after a fetch");
+    serve.chunks.set(c.sha256, c.bytes);
+    await cache.get("_default", c.sha256, live());
+    await cache.put("_default", c.sha256, c.bytes, live());
+
+    await cache.releaseFetched(live());
+    assertEquals(await cached(cache, c.sha256), true);
   });
 });

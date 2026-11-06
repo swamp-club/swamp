@@ -249,6 +249,17 @@ export class CachedServeStorage extends FileSystemStorage
     await super.put(namespace, sha256, bytes, signal);
   }
 
+  // a write of bytes already here touches the chunk instead of putting it
+  override touch(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Set<string>> {
+    const fetched = this.#fetched.get(namespace);
+    for (const sha256 of hashes) fetched?.delete(sha256);
+    return super.touch(namespace, hashes, signal);
+  }
+
   override stageChunks(namespace: string): ChunkStage {
     const stage = super.stageChunks(namespace);
     return {
