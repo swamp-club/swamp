@@ -40,7 +40,7 @@ import {
   TxnIdReusedError,
 } from "../infrastructure/datastore_v3/forwarded_commit.ts";
 import { ChunkHashMismatchError } from "../infrastructure/datastore_v3/chunk_ingest.ts";
-import { datastoreErrorResponse } from "./datastore_api.ts";
+import { callerReplyHeaders, datastoreErrorResponse } from "./datastore_api.ts";
 import {
   datastoreRouteTemplate,
   matchDatastoreRoute,
@@ -236,4 +236,27 @@ Deno.test("datastoreErrorResponse: compaction is 410, a bad chunk 400, and anyth
   const internal = await reply(new Error("/secret/path/commits.db is locked"));
   assertEquals(internal.status, 500);
   assertEquals(internal.body.message, "Internal error");
+});
+
+Deno.test("callerReplyHeaders: a token serve names the caller's principal, encoded, and the run-initiator check", () => {
+  const headers = new Map(callerReplyHeaders("token", "user:zoë\nx"));
+  assertEquals(
+    headers.get("x-swamp-datastore-principal"),
+    encodeURIComponent("user:zoë\nx"),
+  );
+  assertEquals(
+    headers.get("x-swamp-datastore-features")?.split(","),
+    ["step-starts", "run-initiator"],
+  );
+  // a header value the Fetch API accepts
+  new Headers([...headers]);
+});
+
+Deno.test("callerReplyHeaders: a serve without authentication names no principal and checks no initiator", () => {
+  const headers = new Map(callerReplyHeaders("none", "@anonymous"));
+  assertEquals(headers.has("x-swamp-datastore-principal"), false);
+  assertEquals(
+    headers.get("x-swamp-datastore-features")?.split(","),
+    ["step-starts"],
+  );
 });

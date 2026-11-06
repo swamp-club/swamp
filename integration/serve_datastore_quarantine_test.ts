@@ -1281,3 +1281,68 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore quarantine: an accepted run record that names another initiator cannot land, and the reply says why and to run the work again",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([...writer(), ...bobReads()], async (server) => {
+      const workflowId = "44444444-5555-4666-8777-888888888888";
+      const runId = crypto.randomUUID();
+      const record = {
+        id: runId,
+        workflowId,
+        workflowName: "deploy",
+        status: "running",
+        tags: {},
+        jobs: [],
+        initiatedBy: "user:not-bob",
+      };
+      const bytes = new TextEncoder().encode(
+        stringifyYaml(JSON.parse(JSON.stringify(record))),
+      );
+      const commit = Commit.create({
+        seq: 1,
+        partition: partitionOf({ kind: "run", workflowId, runId }),
+        namespace: server.v3.namespace,
+        txnId: crypto.randomUUID(),
+        writer: { host: "bobs-laptop", pid: 1, instance: crypto.randomUUID() },
+        executedAt: new Date().toISOString(),
+        at: new Date().toISOString(),
+        ops: [
+          await opFromJSON({
+            kind: "put",
+            intent: { kind: "run.create", run: { workflowId, runId } },
+            key: `workflow-runs/${workflowId}/workflow-run-${runId}.yaml`,
+            inline: btoa(String.fromCharCode(...bytes)),
+          }),
+        ],
+      });
+      assertEquals(
+        (await deposit(server, "bob-token", {
+          commit: commit.toJSON(),
+          base: { seq: 0 },
+          chunks: [],
+        })).status,
+        201,
+      );
+      const refused = await call(
+        server,
+        "POST",
+        `quarantine/${commit.txnId}/accept`,
+        "alice-token",
+      );
+      assertEquals(refused.status, 403, JSON.stringify(refused.json));
+      assertEquals(refused.json.code, "quarantine_content_refused");
+      const message = String(refused.json.message);
+      assert(message.includes("initiator"), message);
+      assert(message.includes("run the work again"), message);
+      assertEquals(
+        (await server.quarantine.find(commit.txnId))?.state,
+        "held",
+      );
+    });
+  },
+});

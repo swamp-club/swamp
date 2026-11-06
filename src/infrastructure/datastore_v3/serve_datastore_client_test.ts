@@ -1386,3 +1386,44 @@ Deno.test("ServeDatastoreClient: a dedicated HTTP client is made once, on first 
   client.close();
   assertEquals(closed, 1);
 });
+
+Deno.test("ServeDatastoreClient.initiatorMode: read from serve's replies that carry its log, decoded, and never from a reply without", async () => {
+  let reply: () => Response = () => Response.json({ head: 0, commits: [] });
+  const { client } = clientWith(() => reply());
+  assertEquals(client.initiatorMode(), undefined);
+
+  const withLog = (headers: Record<string, string>) => () =>
+    Response.json({ head: 0, commits: [] }, {
+      headers: { "x-swamp-datastore-log": "log-a", ...headers },
+    });
+
+  reply = withLog({ "x-swamp-datastore-features": "step-starts" });
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.initiatorMode(), { kind: "not-checked" });
+
+  reply = withLog({
+    "x-swamp-datastore-features": "step-starts,run-initiator",
+    "x-swamp-datastore-principal": encodeURIComponent("user:zoë"),
+  });
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.initiatorMode(), {
+    kind: "checked",
+    principal: "user:zoë",
+  });
+
+  // a reply with no log header (a refusal before serve answered) says nothing
+  reply = () =>
+    Response.json({ code: "unauthorized", message: "no" }, { status: 401 });
+  await assertRejects(() =>
+    client.partitionCommits(modelPartition(), 0, signal(), 10)
+  );
+  assertEquals(client.initiatorMode(), {
+    kind: "checked",
+    principal: "user:zoë",
+  });
+
+  // the check advertised with no principal is no check this client can meet
+  reply = withLog({ "x-swamp-datastore-features": "run-initiator" });
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.initiatorMode(), { kind: "not-checked" });
+});

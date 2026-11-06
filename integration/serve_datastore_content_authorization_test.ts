@@ -88,13 +88,14 @@ async function forward(
   server: Server,
   partition: PartitionKey,
   ops: unknown[],
+  token = "alice-token",
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   const head = await server.v3.commitStore.head(server.v3.namespace, partition);
   return await post(
     `${server.url}/partitions/${
       encodeURIComponent(partition.toString())
     }/commits`,
-    "alice-token",
+    token,
     commitBody({
       expectedSeq: head.seq,
       txnId: crypto.randomUUID(),
@@ -411,11 +412,16 @@ function runRecord(
     status: "running",
     tags: {},
     jobs: [],
+    initiatedBy: "user:caller",
     ...fields,
   };
 }
 
-function forwardRun(server: Server, record: Record<string, unknown>) {
+function forwardRun(
+  server: Server,
+  record: Record<string, unknown>,
+  token = "alice-token",
+) {
   const runId = String(record.id);
   return forward(
     server,
@@ -427,6 +433,7 @@ function forwardRun(server: Server, record: Record<string, unknown>) {
         yaml(record),
       ),
     ],
+    token,
   );
 }
 
@@ -2556,6 +2563,95 @@ Deno.test({
       assertEquals(older.replyFeatures, "step-starts");
       const current = await read("lease-ops,step-starts");
       assertEquals(current.kinds, ["run.create", "run-start.save"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a new run record names the principal serve stamps on its commit, or is refused for its initiator",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([runWorkflows], async (server) => {
+      const landed = await forwardRun(server, runRecord(crypto.randomUUID()));
+      assertEquals(landed.status, 200, JSON.stringify(landed.json));
+      for (const initiatedBy of ["user:someone-else", "ghost", undefined]) {
+        const record = runRecord(crypto.randomUUID());
+        if (initiatedBy === undefined) delete record.initiatedBy;
+        else record.initiatedBy = initiatedBy;
+        const answer = await forwardRun(server, record);
+        assertEquals(answer.status, 403, String(initiatedBy));
+        assertEquals(answer.json.code, "forbidden");
+        assertEquals(answer.json.reason, "run-initiator-mismatch");
+        assertStringIncludes(String(answer.json.message), "upgrade");
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: a child run another member creates keeps its parent's initiator",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const bobRuns = grant({
+      subject: { kind: "user", name: "bob" },
+      actions: ["read", "run"],
+      resource: { kind: "workflow", pattern: "*" },
+    });
+    await withServer([runWorkflows, bobRuns], async (server) => {
+      const parentId = crypto.randomUUID();
+      const parent = await forwardRun(
+        server,
+        runRecord(parentId, { status: "suspended" }),
+      );
+      assertEquals(parent.status, 200, JSON.stringify(parent.json));
+      const parentRun = {
+        workflowId: WORKFLOW,
+        workflowName: "deploy",
+        runId: parentId,
+        jobName: "main",
+        stepName: "call",
+        nestingDepth: 1,
+        ancestorWorkflowNames: ["deploy"],
+      };
+      const inherited = await forwardRun(
+        server,
+        runRecord(crypto.randomUUID(), { parentRun }),
+        "bob-token",
+      );
+      assertEquals(inherited.status, 200, JSON.stringify(inherited.json));
+      const resumer = await forwardRun(
+        server,
+        runRecord(crypto.randomUUID(), { parentRun, initiatedBy: "user:bob" }),
+        "bob-token",
+      );
+      assertEquals(resumer.status, 403, JSON.stringify(resumer.json));
+      assertEquals(resumer.json.reason, "run-initiator-mismatch");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded content: serve's replies name the caller's principal and the run-initiator check",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer([runWorkflows], async (server) => {
+      const response = await fetch(`${server.url}/changes`, {
+        headers: { authorization: "Bearer alice-token" },
+      });
+      await response.body?.cancel();
+      assertEquals(
+        response.headers.get("x-swamp-datastore-principal"),
+        encodeURIComponent("user:caller"),
+      );
+      const features = (response.headers.get("x-swamp-datastore-features") ??
+        "").split(",").map((feature) => feature.trim());
+      assert(features.includes("run-initiator"), features.join(","));
     });
   },
 });

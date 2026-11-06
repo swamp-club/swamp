@@ -277,6 +277,22 @@ Deno.test("outboxEntryStatusesOf: lists kept entries only, and quarantineStatusO
     savedAt: "2026-10-30T12:00:00.000Z",
   }]);
   assertEquals(
+    outboxEntryStatusesOf([{
+      ...entry(),
+      state: "rejected" as const,
+      stateReason: "refused",
+      stateCode: "run_initiator_mismatch",
+    }]),
+    [{
+      state: "rejected",
+      partition: commit.partition.toString(),
+      txnId: commit.txnId,
+      reason: "refused",
+      code: "run_initiator_mismatch",
+      savedAt: "2026-10-30T12:00:00.000Z",
+    }],
+  );
+  assertEquals(
     quarantineStatusOf({
       txnId: commit.txnId,
       partition: "p",

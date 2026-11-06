@@ -899,3 +899,25 @@ Deno.test("recoverCommitOutbox: an offline entry a cut-off flush landed is recor
     }]);
   });
 });
+
+Deno.test("recoverCommitOutbox: a run record serve refuses for its initiator is kept as rejected with its code, never dropped", async () => {
+  await withFixture(async ({ store, outbox, prepare, recover }) => {
+    await prepare(prepared(1, [await savePut("a", 1)], "t1"));
+    store.append = () =>
+      Promise.reject(
+        new ServeCommitRefusedError(
+          "forbidden",
+          "run-initiator-mismatch",
+          0,
+          "its initiator is not user:m1",
+        ),
+      );
+    const report = await recover(2);
+    assertEquals(report.drops, []);
+    const kept = (await outbox.entries()).entries.find((entry) =>
+      entry.commit.txnId === "t1"
+    );
+    assertEquals(kept?.state, "rejected");
+    assertEquals(kept?.stateCode, "run_initiator_mismatch");
+  });
+});
