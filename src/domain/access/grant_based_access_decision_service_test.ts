@@ -2863,3 +2863,12 @@ Deno.test("decide: while the run is pending an unconditional allow beats a pendi
   assertEquals(decision?.effect, "allow");
   assertEquals(decision?.dependsOn, undefined);
 });
+
+Deno.test("explain: an unconditional allow comes before an allow depending on the run", () => {
+  const decisions = conditionService([OTHERS_ALLOW, {}]).explain(
+    ALICE,
+    "approve",
+    { ...WORKFLOW, pending: ["run"] },
+  );
+  assertEquals(decisions.map((d) => d.dependsOn), [undefined, ["run"]]);
+});

@@ -490,7 +490,14 @@ Deno.test("validateGrantCondition: a path the run does not have is refused, sinc
 });
 
 Deno.test("validateGrantCondition: a client prefix no token can hold is refused", () => {
-  for (const prefix of ["integration:Slack", "slack", "direct:nope"]) {
+  for (
+    const prefix of [
+      "integration:Slack",
+      "integration:-x",
+      "slack",
+      "direct:nope",
+    ]
+  ) {
     assertEquals(
       validateGrantCondition(`client.startsWith("${prefix}")`, "data").valid,
       false,
@@ -504,4 +511,16 @@ Deno.test("validateGrantCondition: a client prefix no token can hold is refused"
       prefix,
     );
   }
+});
+
+Deno.test("validateGrantCondition: a client prefix naming a direct id warns", () => {
+  assertStringIncludes(
+    validateGrantCondition('client.startsWith("direct:cli")', "data")
+      .warnings![0],
+    "not a security boundary",
+  );
+  assertEquals(
+    validateGrantCondition('client.startsWith("direct:")', "data").warnings,
+    undefined,
+  );
 });

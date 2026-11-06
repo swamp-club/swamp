@@ -62,6 +62,37 @@ import type { AccessCheckResult } from "../../presentation/renderers/access_chec
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** a partial run would make a condition error, and a deny that errors does not fire */
+function simulatedFields(
+  raw: string[] | undefined,
+): Record<string, unknown> {
+  const fields = parseFieldFlags(raw);
+  if (!Object.hasOwn(fields, "run")) return fields;
+  const { initiator, serveDriven, ...other } = fields.run as {
+    initiator?: { sub?: unknown; [key: string]: unknown };
+    serveDriven?: unknown;
+  };
+  const sub = initiator?.sub;
+  const { sub: _sub, ...otherInitiator } = initiator ?? {};
+  if (
+    typeof sub !== "string" || Object.keys(other).length > 0 ||
+    Object.keys(otherInitiator).length > 0 ||
+    (serveDriven !== undefined && serveDriven !== "true" &&
+      serveDriven !== "false")
+  ) {
+    throw new UserError(
+      "--field run needs run.initiator.sub, and may add run.serveDriven=true or false; a run with no initiator is refused on the server",
+    );
+  }
+  return {
+    ...fields,
+    run: {
+      initiator: { kind: "user", id: sub, sub },
+      serveDriven: serveDriven !== "false",
+    },
+  };
+}
+
 export const accessCheckCommand = new Command()
   .name("check")
   .description(
@@ -274,7 +305,7 @@ export const accessCheckCommand = new Command()
         resource.kind,
         resource.pattern,
         {
-          ...parseFieldFlags(options.field as string[] | undefined),
+          ...simulatedFields(options.field as string[] | undefined),
           ...(options.method ? { methodName: options.method as string } : {}),
         },
         (error) => {

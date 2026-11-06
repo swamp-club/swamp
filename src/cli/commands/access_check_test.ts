@@ -510,3 +510,53 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local --field run decides like a whole run, and a partial one is refused",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo([
+      ["--subject", "user:a", "--allow", "approve", "--on", "workflow:*"],
+      [
+        "--subject",
+        "user:a",
+        "--deny",
+        "approve",
+        "--on",
+        "workflow:*",
+        "--when",
+        "principal.sub == run.initiator.sub || !run.serveDriven",
+      ],
+    ], async (dir) => {
+      const check = (...extra: string[]) =>
+        runAccess("check", [
+          "--repo-dir",
+          dir,
+          "--subject",
+          "user:a",
+          "--action",
+          "approve",
+          "--on",
+          "workflow:w",
+          ...extra,
+        ]);
+      const own = await check("--field", "run.initiator.sub=a");
+      assertEquals(own.exitCode, 1);
+      const other = await check("--field", "run.initiator.sub=b");
+      assertEquals(other.exitCode, 0);
+      const member = await check(
+        "--field",
+        "run.initiator.sub=b",
+        "--field",
+        "run.serveDriven=false",
+      );
+      assertEquals(member.exitCode, 1);
+      await assertRejects(() => check("--field", "run.serveDriven=false"));
+      await assertRejects(() =>
+        check("--field", "run.initiator.sub=b", "--field", "run.nope=1")
+      );
+    });
+  },
+});

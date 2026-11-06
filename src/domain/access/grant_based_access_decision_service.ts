@@ -481,6 +481,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     let denyUndecided = false;
     const denyDecisions: AccessDecision[] = [];
     const allowDecisions: AccessDecision[] = [];
+    const pendingAllows: AccessDecision[] = [];
     const pendingDenies: AccessDecision[] = [];
     for (const grant of candidates) {
       if (!grantMatchesResource(grant, resource)) continue;
@@ -508,7 +509,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       if (outcome === "pending") {
         const decision = toDecision(grant, match, resource.pending);
         if (grant.effect === "deny") pendingDenies.push(decision);
-        else allowDecisions.push(decision);
+        else pendingAllows.push(decision);
       }
       if (
         outcome === "match" ||
@@ -524,12 +525,18 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
 
     if (
       denyDecisions.length === 0 && allowDecisions.length === 0 &&
-      pendingDenies.length === 0 && !denyUndecided
+      pendingAllows.length === 0 && pendingDenies.length === 0 &&
+      !denyUndecided
     ) {
       const builtin = serviceTriggerDefault(principal, action, resource);
       if (builtin) return [builtin];
     }
-    return [...denyDecisions, ...allowDecisions, ...pendingDenies];
+    return [
+      ...denyDecisions,
+      ...allowDecisions,
+      ...pendingAllows,
+      ...pendingDenies,
+    ];
   }
 
   decideAll(

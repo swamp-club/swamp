@@ -502,3 +502,17 @@ Deno.test("accessCheckRenderer: names the simulated client in log and json", () 
   }
   assertEquals(JSON.parse(output[0]).client, "integration:slack");
 });
+
+Deno.test("accessCheckRenderer log: a later allow on the run is not called a deny", () => {
+  const [headline] = logOutput(makeResult({
+    decisions: [
+      {
+        effect: "allow",
+        grantId: "allow-uuid",
+        subject: { kind: "user", name: "adam" },
+      },
+      { effect: "allow", ...RUN_DECISION },
+    ],
+  }));
+  assertEquals(headline.includes("depends on the run"), false);
+});

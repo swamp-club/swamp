@@ -92,13 +92,23 @@ export function clientPrefixFinding(
   const direct = CLIENT_KINDS.some((kind) => `${kind}:`.startsWith(literal)) ||
     DIRECT_CLIENT_IDS.some((id) => `direct:${id}`.startsWith(literal));
   const integration = literal.startsWith("integration:") &&
-    /^[a-z0-9-]{0,63}$/.test(literal.slice("integration:".length));
-  return direct || integration ? undefined : {
-    kind: "never-matches",
-    message: `client is required to start with ${
-      JSON.stringify(literal)
-    }, which no token can hold`,
-  };
+    /^([a-z0-9][a-z0-9-]{0,62})?$/.test(literal.slice("integration:".length));
+  if (!direct && !integration) {
+    return {
+      kind: "never-matches",
+      message: `client is required to start with ${
+        JSON.stringify(literal)
+      }, which no token can hold`,
+    };
+  }
+  return literal.length > ABSENT_CLIENT_CONDITION_VALUE.length &&
+      literal.startsWith(ABSENT_CLIENT_CONDITION_VALUE)
+    ? {
+      kind: "not-a-boundary",
+      message:
+        `client is required to start with ${literal}: a client labels how a token was issued, not what presents it, so a copied token still reads the same; a direct id is not a security boundary`,
+    }
+    : undefined;
 }
 
 /** judges a literal a condition compares `client` with, in full */
