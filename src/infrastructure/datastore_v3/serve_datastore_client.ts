@@ -707,11 +707,6 @@ export class ServeDatastoreClient {
     );
   }
 
-  /**
-   * ends the lease on `lockKey` whoever holds it; admin only. An older serve
-   * has no such route and answers 405, thrown as ServeUpstreamError like any
-   * non-success
-   */
   /** undefined from a serve too old to check removals ahead */
   async authorizeRemovals(
     commits: readonly {
@@ -765,6 +760,11 @@ export class ServeDatastoreClient {
     );
   }
 
+  /**
+   * ends the lease on `lockKey` whoever holds it; admin only. An older serve
+   * has no such route and answers 405, thrown as ServeUpstreamError like any
+   * non-success
+   */
   async forceReleaseLock(
     lockKey: string,
     signal: AbortSignal,

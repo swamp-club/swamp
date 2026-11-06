@@ -1797,17 +1797,17 @@ function serveLockOf(
   });
 }
 
-/**
- * when offline, reads and lists are allowed and their partition is registered
- * so what they record queues; anything that changes things needs a live
- * explicit lease on the behavior, by serve's clock
- */
 /** the datastore root a serve-mode checkout's state is kept under, if local */
 export function datastoreRootOf(config: DatastoreConfig): string | undefined {
   const locking = lockingConfigOf(config);
   return isCustomDatastoreConfig(locking) ? undefined : locking.path;
 }
 
+/**
+ * when offline, reads and lists are allowed and their partition is registered
+ * so what they record queues; anything that changes things needs a live
+ * explicit lease on the behavior, by serve's clock
+ */
 export async function assertOfflineRunAllowed(
   config: DatastoreConfig,
   run: {

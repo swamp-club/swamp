@@ -133,12 +133,12 @@ export async function checkRunRecord(
     ctx.repoContext.workflowRepo,
     intent.run.workflowId,
   );
-  // A run id names one run: some lookups and deletes select by it alone, so a
-  // first record reusing one would reach the run that holds it, in any workflow.
   if (before === undefined) {
     const initiator = await initiatorRefusal(context, op, after.data);
     if (initiator !== undefined) return initiator;
   }
+  // A run id names one run: some lookups and deletes select by it alone, so a
+  // first record reusing one would reach the run that holds it, in any workflow.
   if (before === undefined) {
     const isOurs = async () => {
       const holder = await ctx.repoContext.workflowRunRepo.findGlobalById(
@@ -396,11 +396,6 @@ async function additionsRefusal(
   return undefined;
 }
 
-/**
- * a parent records its wait on the child only once the child suspends, so no
- * link back is required here; the cascade checks both directions before it acts
- * on a parent
- */
 type StoredParent =
   | { readonly refusal: string }
   | { readonly parent: WorkflowRunData };
@@ -426,6 +421,11 @@ async function storedParentOf(
   return { parent: parsed.data };
 }
 
+/**
+ * a parent records its wait on the child only once the child suspends, so no
+ * link back is required here; the cascade checks both directions before it acts
+ * on a parent
+ */
 async function parentRefusal(
   context: ContentCheckContext,
   raw: unknown,

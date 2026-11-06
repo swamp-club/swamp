@@ -189,8 +189,8 @@ export function assertRunInitiatorKnown(
   if (serveInitiatorAt(datastorePath) !== undefined) return;
   throw new UserError(
     "This checkout has not reached serve since swamp was upgraded, so it " +
-      "cannot yet name you on a run serve will accept. Run any command " +
-      "while serve is reachable, then run this again.",
+      "cannot yet name you on a run serve will accept. Run " +
+      "'swamp datastore status' while serve is reachable, then run this again.",
     OFFLINE_PRINCIPAL_UNKNOWN_CODE,
   );
 }
