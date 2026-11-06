@@ -722,6 +722,29 @@ Deno.test(
         ".claude/settings.local.json. Run `swamp repo prune` to remove them.",
     );
     assertEquals(output.includes("was dropped"), false);
+    assertEquals(
+      output.split("\n").some((line) =>
+        line.startsWith("⚠ swamp's settings for claude")
+      ),
+      true,
+    );
+  },
+);
+
+Deno.test(
+  "LogRepoUpgradeRenderer: the leftovers note starts at column 0 below a Tools line",
+  () => {
+    const event = makeDroppedClaudeUpgrade([
+      { tool: "cursor", paths: [".cursor/hooks.json"] },
+    ]);
+    const output = captureUpgradeLog(event);
+    assertStringIncludes(output, "  Tools: [claude] → [codex]");
+    assertEquals(
+      output.split("\n").some((line) =>
+        line.startsWith("⚠ swamp's settings for cursor")
+      ),
+      true,
+    );
   },
 );
 
@@ -756,7 +779,7 @@ Deno.test(
     const output = captureUpgradeLog(makeLeftoverClaudeUpgrade([]));
     assertStringIncludes(
       output,
-      "Run `swamp repo prune` to remove them.\n    " + REENROLL_HINT,
+      "Run `swamp repo prune` to remove them.\n  " + REENROLL_HINT,
     );
   },
 );

@@ -60,7 +60,11 @@ function makeDeps(overrides: Partial<RepoPruneDeps> = {}): {
     },
     apply: (_root, plan) => {
       calls.apply++;
-      return Promise.resolve({ applied: plan.actions, skipped: plan.skipped });
+      return Promise.resolve({
+        applied: plan.actions,
+        skipped: plan.skipped,
+        failed: [],
+      });
     },
     ...overrides,
   };
@@ -90,6 +94,37 @@ Deno.test("repoPrune: dry run reports the plan without applying it", async () =>
     removed: ["PostToolUse: swamp audit record --from-hook"],
   }]);
   assertEquals(data.skipped.length, 1);
+  assertEquals(data.failed, []);
+});
+
+Deno.test("repoPrune: reports a change that failed apart from skips", async () => {
+  const { deps } = makeDeps({
+    apply: (_root, plan) =>
+      Promise.resolve({
+        applied: [],
+        skipped: plan.skipped,
+        failed: [{
+          tool: "claude",
+          path: ".claude/settings.local.json",
+          reason: "Permission denied (os error 13)",
+        }],
+      }),
+  });
+  const data = completedOf(
+    await collect<RepoPruneEvent>(
+      repoPrune(createLibSwampContext(), deps, {
+        path: "/repo",
+        dryRun: false,
+      }),
+    ),
+  );
+  assertEquals(data.pruned, []);
+  assertEquals(data.skipped.map((s) => s.path), [".kiro/hooks"]);
+  assertEquals(data.failed, [{
+    tool: "claude",
+    path: ".claude/settings.local.json",
+    reason: "Permission denied (os error 13)",
+  }]);
 });
 
 Deno.test("repoPrune: applies the plan and reports what was removed", async () => {
@@ -143,7 +178,36 @@ Deno.test("repoPrune: errors outside a swamp repository", async () => {
   const last = events[events.length - 1];
   if (last.kind !== "error") throw new Error(`got ${last.kind}`);
   assertStringIncludes(last.error.message, "Not a swamp repository");
+  assertEquals(last.error.code, "validation_failed");
   assertEquals(calls.find.length, 0);
+});
+
+Deno.test("repoPrune: the not-a-repository error names the resolved path", async () => {
+  const { deps } = makeDeps({
+    readEnrolledTools: () => Promise.resolve(null),
+  });
+  const events = await collect<RepoPruneEvent>(
+    repoPrune(createLibSwampContext(), deps, { path: ".", dryRun: false }),
+  );
+  const last = events[events.length - 1];
+  if (last.kind !== "error") throw new Error(`got ${last.kind}`);
+  assertStringIncludes(
+    last.error.message,
+    `Not a swamp repository: ${RepoPath.create(".").value}. `,
+  );
+});
+
+Deno.test("repoPrune: a failure finding settings is a prune_failed error", async () => {
+  const { deps } = makeDeps({
+    find: () => Promise.reject(new Error("permission denied")),
+  });
+  const events = await collect<RepoPruneEvent>(
+    repoPrune(createLibSwampContext(), deps, { path: "/repo", dryRun: true }),
+  );
+  const last = events[events.length - 1];
+  if (last.kind !== "error") throw new Error(`got ${last.kind}`);
+  assertEquals(last.error.code, "prune_failed");
+  assertStringIncludes(last.error.message, "permission denied");
 });
 
 Deno.test("repoPrune: an apply failure becomes an error event", async () => {
@@ -155,6 +219,7 @@ Deno.test("repoPrune: an apply failure becomes an error event", async () => {
   );
   const last = events[events.length - 1];
   if (last.kind !== "error") throw new Error(`got ${last.kind}`);
+  assertEquals(last.error.code, "prune_failed");
   assertStringIncludes(last.error.message, "permission denied");
 });
 

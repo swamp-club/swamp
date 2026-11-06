@@ -739,6 +739,32 @@ Deno.test("repoUpgrade: a failure looking for prunable settings leaves the upgra
   assertEquals(events.some((e) => e.kind === "error"), false);
 });
 
+Deno.test("repoInit: reports prunable settings for tools that are not enrolled", async () => {
+  const seen: string[] = [];
+  const deps = makeInitDeps({
+    findPrunableSettings: (root) => {
+      seen.push(root);
+      return Promise.resolve([
+        { tool: "cursor", paths: [".cursor/hooks.json"] },
+      ]);
+    },
+  });
+  const events = await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: true,
+      tools: ["claude"],
+      version: "1.0.0",
+    }),
+  );
+  const completed = events[1] as Extract<RepoInitEvent, { kind: "completed" }>;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.prunableSettings, [
+    { tool: "cursor", paths: [".cursor/hooks.json"] },
+  ]);
+  assertEquals(seen.length, 1);
+});
+
 Deno.test("repoInit: a failure looking for prunable settings leaves the init successful", async () => {
   const deps = makeInitDeps({
     findPrunableSettings: () => Promise.reject(new Error("permission denied")),

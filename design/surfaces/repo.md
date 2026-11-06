@@ -70,7 +70,9 @@ every tool call), files swamp overwrites on every upgrade, and the Kiro default
 agent when it is `swamp`. Init and upgrade report what is left as
 `prunableSettings` and name it in the note. `ToolSettingsPruner`
 (`src/domain/repo/tool_settings_pruner.ts`) never reads or writes a symlinked
-file or one whose directory resolves outside the repo. A marker with no `tools` field
+file or one whose directory resolves outside the repo; those are `skipped`. A
+change it attempts that throws is reported under `failed` instead, and
+`repo prune` then exits 1. A marker with no `tools` field
 predates enrollment and counts `claude` as enrolled; a plain upgrade leaves the
 field absent rather than writing an empty list, which would mean `none`. Older
 releases did write that empty list, so on disk it cannot be told from `none`:

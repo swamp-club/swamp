@@ -23,9 +23,11 @@ import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createRepoPruneDeps,
   repoPrune,
+  type RepoPruneEvent,
   type RepoPrunePreview,
   repoPrunePreview,
 } from "../../libswamp/repo/prune.ts";
+import type { EventHandlers } from "../../libswamp/stream.ts";
 import {
   createRepoPruneRenderer,
   renderRepoPruneCancelled,
@@ -43,7 +45,10 @@ export const repoPruneCommand = new Command()
     "Remove the settings swamp manages for AI tools that are no longer " +
       "enrolled: audit hook entries, swamp's plugin files and the Kiro swamp " +
       "agent. User entries, permissions, skills and instructions files are " +
-      "kept, and enrolled tools are never touched. Use --dry-run first.",
+      "kept, and enrolled tools are never touched. Use --dry-run first. " +
+      "A file it could not change is listed under failed and the command " +
+      "exits 1. Error codes: validation_failed (not a swamp repository), " +
+      "prune_failed (the repository could not be read or changed).",
   )
   .example("Preview what would be removed", "swamp repo prune --dry-run")
   .example("Remove without a prompt", "swamp repo prune --yes")
@@ -67,6 +72,7 @@ export const repoPruneCommand = new Command()
       } catch (error) {
         throw new UserError(
           error instanceof Error ? error.message : String(error),
+          "prune_failed",
         );
       }
       if (found !== null) {
@@ -81,9 +87,23 @@ export const repoPruneCommand = new Command()
       }
     }
 
-    const renderer = createRepoPruneRenderer(cliCtx.outputMode);
     await consumeStream(
       repoPrune(ctx, deps, { path, dryRun: !!options.dryRun, preview }),
-      renderer.handlers(),
+      exitOneOnFailedChanges(
+        createRepoPruneRenderer(cliCtx.outputMode).handlers(),
+      ),
     );
   });
+
+/** sets the exit code only after the result is rendered, so stdout keeps it */
+export function exitOneOnFailedChanges(
+  handlers: EventHandlers<RepoPruneEvent>,
+): EventHandlers<RepoPruneEvent> {
+  return {
+    ...handlers,
+    completed: async (e) => {
+      await handlers.completed(e);
+      if (e.data.failed.length > 0) Deno.exitCode = 1;
+    },
+  };
+}

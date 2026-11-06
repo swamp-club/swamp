@@ -214,10 +214,11 @@ pruning, and if it does, run `swamp repo upgrade --tool claude` instead.
 Prune touches only built-in tools that are not enrolled, and only entries and
 files swamp owns: user hooks, `permissions.allow`, skills and instructions files
 stay, a file is deleted only when nothing else is left in it, and symlinked or
-out-of-repo files are skipped and listed under `skipped`. Adding a tool that
-didn't share a skills directory with the previous primary surfaces an
-`extensionsToReinstall` warning naming pulled extensions that need to be
-re-installed for the new tool.
+out-of-repo files are skipped and listed under `skipped`. A file prune tried to
+change but could not (a permission error, for example) is listed under `failed`,
+and the command exits 1. Adding a tool that didn't share a skills directory with
+the previous primary surfaces an `extensionsToReinstall` warning naming pulled
+extensions that need to be re-installed for the new tool.
 
 Legacy extension layouts are automatically migrated during upgrade. See
 [references/troubleshooting.md](references/troubleshooting.md) for details on

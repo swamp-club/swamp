@@ -1745,6 +1745,7 @@ export {
   type RepoPruneData,
   type RepoPruneDeps,
   type RepoPruneEvent,
+  type RepoPruneFailure,
   type RepoPruneInput,
   type RepoPruneItem,
   type RepoPrunePreview,

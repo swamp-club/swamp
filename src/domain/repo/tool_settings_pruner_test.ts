@@ -387,7 +387,7 @@ Deno.test("ToolSettingsPruner.find: a second run after apply finds nothing", () 
     assertEquals(await pruner.find([]), { actions: [], skipped: [] });
   }));
 
-Deno.test("ToolSettingsPruner.apply: a file that cannot be written is skipped and the rest are still applied", () =>
+Deno.test("ToolSettingsPruner.apply: a file that cannot be written is failed, not skipped, and the rest are still applied", () =>
   withTempDir(async (dir) => {
     await writeJson(dir, ".claude/settings.local.json", swampClaudeSettings);
     await writeJson(dir, ".kiro/agents/swamp.json", { name: "swamp" });
@@ -399,9 +399,50 @@ Deno.test("ToolSettingsPruner.apply: a file that cannot be written is skipped an
     assertEquals(outcome.applied.map((a) => a.path), [
       ".kiro/agents/swamp.json",
     ]);
-    assertEquals(outcome.skipped, [{
+    assertEquals(outcome.skipped, []);
+    assertEquals(outcome.failed, [{
       tool: "claude",
       path: ".claude/settings.local.json",
-      reason: "it could not be changed: read-only file system",
+      reason: "read-only file system",
     }]);
+  }));
+
+// JSON.stringify of an object literal cannot produce an own __proto__ key, so
+// these fixtures are written as text; Deno has no __proto__ setter to hit
+Deno.test("ToolSettingsPruner.find: keeps a claude hook event named __proto__", () =>
+  withTempDir(async (dir) => {
+    const path = join(dir, ".claude", "settings.local.json");
+    await ensureDir(join(dir, ".claude"));
+    await Deno.writeTextFile(
+      path,
+      `{"hooks": {"__proto__": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user"}]}], "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "swamp audit record --from-hook"}]}]}}\n`,
+    );
+    const pruner = new ToolSettingsPruner(dir, atomicWriteTextFile);
+    const plan = await pruner.find([]);
+    assertEquals(plan.actions.length, 1);
+    const action = plan.actions[0];
+    assertEquals(action.kind, "edit");
+    if (action.kind !== "edit") return;
+    const hooks = (JSON.parse(action.content) as { hooks: object }).hooks;
+    assertEquals(Object.keys(hooks), ["__proto__"]);
+    assertStringIncludes(action.content, "echo user");
+  }));
+
+Deno.test("ToolSettingsPruner.find: keeps a flat hook event named __proto__", () =>
+  withTempDir(async (dir) => {
+    const path = join(dir, ".cursor", "hooks.json");
+    await ensureDir(join(dir, ".cursor"));
+    await Deno.writeTextFile(
+      path,
+      `{"version": 1, "hooks": {"__proto__": [{"command": "echo user"}], "postToolUse": [{"command": "swamp audit record --from-hook --tool cursor"}]}}\n`,
+    );
+    const pruner = new ToolSettingsPruner(dir, atomicWriteTextFile);
+    const plan = await pruner.find([]);
+    assertEquals(plan.actions.length, 1);
+    const action = plan.actions[0];
+    assertEquals(action.kind, "edit");
+    if (action.kind !== "edit") return;
+    const hooks = (JSON.parse(action.content) as { hooks: object }).hooks;
+    assertEquals(Object.keys(hooks), ["__proto__"]);
+    assertStringIncludes(action.content, "echo user");
   }));
