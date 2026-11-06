@@ -46,6 +46,7 @@ function makeInitData(
     gitignoreAction: "created",
     tools,
     removedTools: [],
+    prunableSettings: [],
     vault,
     tool: tools.length === 1 ? tools[0] : null,
   };
@@ -350,6 +351,7 @@ Deno.test(
           tools: [],
           addedTools: [],
           removedTools: [],
+          prunableSettings: [],
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
@@ -388,6 +390,7 @@ Deno.test(
           tools: [],
           addedTools: [],
           removedTools: [],
+          prunableSettings: [],
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
@@ -423,6 +426,7 @@ Deno.test(
           tools: ["claude"],
           addedTools: [],
           removedTools: [],
+          prunableSettings: [],
           extensionsToReinstall: [],
           localSkillCopies: [
             {
@@ -470,6 +474,7 @@ Deno.test(
           tools: ["claude"],
           addedTools: [],
           removedTools: [],
+          prunableSettings: [],
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
@@ -519,6 +524,7 @@ Deno.test(
           tools: ["claude"],
           addedTools: [],
           removedTools: [],
+          prunableSettings: [],
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
@@ -553,6 +559,7 @@ Deno.test(
           tools: [],
           addedTools: [],
           removedTools: [],
+          prunableSettings: [],
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
@@ -588,6 +595,7 @@ Deno.test(
           tools: [],
           addedTools: [],
           removedTools: [],
+          prunableSettings: [],
           extensionsToReinstall: [],
           localSkillCopies: [],
           changedFiles: [],
@@ -605,5 +613,114 @@ Deno.test(
       "Skipped the extension install pass and the untrusted-collectives " +
         "check: Cannot resolve the s3 datastore",
     );
+  },
+);
+
+function makeDroppedClaudeUpgrade(
+  prunableSettings: { tool: string; paths: string[] }[],
+): RepoUpgradeEvent {
+  return {
+    kind: "completed",
+    data: {
+      path: "/tmp/x",
+      previousVersion: "0.1.0",
+      newVersion: "0.1.1",
+      upgradedAt: "2026-04-24T00:00:00Z",
+      skillsUpdated: [],
+      instructionsUpdated: false,
+      settingsUpdated: false,
+      gitignoreAction: "unchanged",
+      previousTools: ["claude"],
+      tools: ["codex"],
+      addedTools: ["codex"],
+      removedTools: ["claude"],
+      prunableSettings,
+      extensionsToReinstall: [],
+      localSkillCopies: [],
+      changedFiles: [],
+      untrustedCollectives: [],
+      installSkipped: false,
+      tool: "codex",
+    },
+  };
+}
+
+function captureUpgradeLog(event: RepoUpgradeEvent): string {
+  return captureLog(() => {
+    const handlers = createRepoUpgradeRenderer("log").handlers();
+    if (event.kind === "completed") handlers.completed?.(event);
+  });
+}
+
+Deno.test(
+  "LogRepoUpgradeRenderer: names a dropped tool's remaining settings and suggests swamp repo prune",
+  () => {
+    const output = captureUpgradeLog(makeDroppedClaudeUpgrade([
+      { tool: "claude", paths: [".claude/settings.local.json"] },
+    ]));
+    assertStringIncludes(
+      output,
+      "claude was dropped from the enrolled tool list, but swamp's settings " +
+        "for it remain in .claude/settings.local.json. " +
+        "Run `swamp repo prune` to remove them.",
+    );
+    assertStringIncludes(
+      output,
+      "Other files in .claude/ were not deleted — remove them by hand if desired.",
+    );
+  },
+);
+
+Deno.test(
+  "LogRepoUpgradeRenderer: keeps the files-not-deleted note when a dropped tool has nothing to prune",
+  () => {
+    const output = captureUpgradeLog(makeDroppedClaudeUpgrade([]));
+    assertStringIncludes(
+      output,
+      "claude was dropped from the enrolled tool list. Files in .claude/ " +
+        "were not deleted — remove them by hand if desired.",
+    );
+    assertEquals(output.includes("swamp repo prune"), false);
+  },
+);
+
+Deno.test(
+  "LogRepoInitRenderer: suggests swamp repo prune for a tool dropped by init --force",
+  () => {
+    const output = captureInitOutput([{
+      kind: "completed",
+      data: {
+        ...makeInitData(["codex"]),
+        removedTools: ["cursor"],
+        prunableSettings: [{ tool: "cursor", paths: [".cursor/hooks.json"] }],
+      },
+    }], "log");
+    assertStringIncludes(output, "remain in .cursor/hooks.json");
+    assertStringIncludes(output, "Run `swamp repo prune`");
+  },
+);
+
+Deno.test(
+  "LogRepoUpgradeRenderer: notes leftovers from a tool dropped in an earlier upgrade",
+  () => {
+    const event = makeDroppedClaudeUpgrade([
+      { tool: "claude", paths: [".claude/settings.local.json"] },
+    ]);
+    if (event.kind !== "completed") throw new Error("expected completed");
+    const output = captureUpgradeLog({
+      ...event,
+      data: {
+        ...event.data,
+        previousTools: ["codex"],
+        addedTools: [],
+        removedTools: [],
+      },
+    });
+    assertStringIncludes(
+      output,
+      "swamp's settings for claude, which is not enrolled, remain in " +
+        ".claude/settings.local.json. Run `swamp repo prune` to remove them.",
+    );
+    assertEquals(output.includes("was dropped"), false);
   },
 );

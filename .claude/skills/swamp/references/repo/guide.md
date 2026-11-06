@@ -8,25 +8,26 @@ before executing — the output is structured JSON.
 
 ## Quick Reference
 
-| Task                       | Command                                                           |
-| -------------------------- | ----------------------------------------------------------------- |
-| Initialize repository      | `swamp repo init [path] --json`                                   |
-| Upgrade repository         | `swamp repo upgrade [path] --json`                                |
-| Start web interface        | `swamp repo webapp [path] --json`                                 |
-| Show datastore status      | `swamp datastore status --json`                                   |
-| Setup filesystem datastore | `swamp datastore setup filesystem --path <path> --json`           |
-| Setup extension datastore  | `swamp datastore setup extension <type> --config '<json>' --json` |
-| Sync remote datastore      | `swamp datastore sync --json`                                     |
-| Check lock status          | `swamp datastore lock status --json`                              |
-| Force-release stuck lock   | `swamp datastore lock release --force --json`                     |
-| Set namespace              | `swamp datastore namespace set <slug> --json`                     |
-| Migrate namespace layout   | `swamp datastore namespace migrate [--confirm] --json`            |
-| List namespaces            | `swamp datastore namespace list --json`                           |
-| Remove namespace           | `swamp datastore namespace unset --json`                          |
-| Pull foreign catalogs      | `swamp datastore catalog pull --namespaces <list> --json`         |
-| Add extension source       | `swamp extension source add <path> [--only models,vaults,...]`    |
-| Remove extension source    | `swamp extension source rm <path>`                                |
-| List extension sources     | `swamp extension source list --json`                              |
+| Task                           | Command                                                           |
+| ------------------------------ | ----------------------------------------------------------------- |
+| Initialize repository          | `swamp repo init [path] --json`                                   |
+| Upgrade repository             | `swamp repo upgrade [path] --json`                                |
+| Remove dropped tools' settings | `swamp repo prune [path] [--dry-run] --json`                      |
+| Start web interface            | `swamp repo webapp [path] --json`                                 |
+| Show datastore status          | `swamp datastore status --json`                                   |
+| Setup filesystem datastore     | `swamp datastore setup filesystem --path <path> --json`           |
+| Setup extension datastore      | `swamp datastore setup extension <type> --config '<json>' --json` |
+| Sync remote datastore          | `swamp datastore sync --json`                                     |
+| Check lock status              | `swamp datastore lock status --json`                              |
+| Force-release stuck lock       | `swamp datastore lock release --force --json`                     |
+| Set namespace                  | `swamp datastore namespace set <slug> --json`                     |
+| Migrate namespace layout       | `swamp datastore namespace migrate [--confirm] --json`            |
+| List namespaces                | `swamp datastore namespace list --json`                           |
+| Remove namespace               | `swamp datastore namespace unset --json`                          |
+| Pull foreign catalogs          | `swamp datastore catalog pull --namespaces <list> --json`         |
+| Add extension source           | `swamp extension source add <path> [--only models,vaults,...]`    |
+| Remove extension source        | `swamp extension source rm <path>`                                |
+| List extension sources         | `swamp extension source list --json`                              |
 
 ## Repository Structure
 

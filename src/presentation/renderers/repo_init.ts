@@ -23,6 +23,7 @@ import type {
   ExtensionInstallEvent,
 } from "../../libswamp/extensions/install.ts";
 import type {
+  PrunableToolSettings,
   RepoInitEvent,
   RepoUpgradeEvent,
 } from "../../libswamp/repo/init.ts";
@@ -136,6 +137,49 @@ function orphanedPathsFor(
   return droppedPaths.filter((p) => !stillUsedPaths.has(p));
 }
 
+function droppedToolLines(
+  dropped: string,
+  remaining: readonly string[],
+  prunable: readonly PrunableToolSettings[],
+): string[] {
+  const orphaned = orphanedPathsFor(dropped, remaining);
+  const settings = prunable.find((p) => p.tool === dropped)?.paths ?? [];
+  if (settings.length === 0) {
+    if (orphaned.length === 0) return [];
+    return [
+      `${yellow("⚠")} ${dropped} was dropped from the enrolled tool list. ` +
+      `Files in ${orphaned.join(", ")} were not deleted — ` +
+      `remove them by hand if desired.`,
+    ];
+  }
+  const lines = [
+    `${yellow("⚠")} ${dropped} was dropped from the enrolled tool list, ` +
+    `but swamp's settings for it remain in ${settings.join(", ")}. ` +
+    `Run \`swamp repo prune\` to remove them.`,
+  ];
+  if (orphaned.length > 0) {
+    lines.push(
+      `  Other files in ${orphaned.join(", ")} were not deleted — ` +
+        `remove them by hand if desired.`,
+    );
+  }
+  return lines;
+}
+
+// leftovers from a tool dropped in an earlier run, which droppedToolLines misses
+function leftoverSettingsLines(
+  prunable: readonly PrunableToolSettings[],
+  removedTools: readonly string[],
+): string[] {
+  return prunable
+    .filter((p) => !removedTools.includes(p.tool))
+    .map((p) =>
+      `${yellow("⚠")} swamp's settings for ${p.tool}, which is not enrolled, ` +
+      `remain in ${p.paths.join(", ")}. ` +
+      `Run \`swamp repo prune\` to remove them.`
+    );
+}
+
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
   handlers(): EventHandlers<RepoInitEvent> {
     return {
@@ -193,15 +237,23 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
         }
 
         for (const removed of data.removedTools) {
-          const paths = orphanedPathsFor(removed, data.tools);
-          if (paths.length === 0) continue;
-          writeOutput(
-            `${
-              yellow("⚠")
-            } ${removed} was dropped from the enrolled tool list. ` +
-              `Files in ${paths.join(", ")} were not deleted — ` +
-              `remove them by hand if desired.`,
-          );
+          for (
+            const line of droppedToolLines(
+              removed,
+              data.tools,
+              data.prunableSettings,
+            )
+          ) {
+            writeOutput(line);
+          }
+        }
+        for (
+          const line of leftoverSettingsLines(
+            data.prunableSettings,
+            data.removedTools,
+          )
+        ) {
+          writeOutput(line);
         }
 
         const knownTools = data.tools.filter((t) => t in TOOL_GUIDANCE);
@@ -280,15 +332,15 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           const after = formatToolsList(data.tools);
           writeOutput(`  Tools: [${before}] → [${after}]`);
           for (const removed of data.removedTools) {
-            const paths = orphanedPathsFor(removed, data.tools);
-            if (paths.length === 0) continue;
-            writeOutput(
-              `  ${
-                yellow("⚠")
-              } ${removed} was dropped from the enrolled tool list. ` +
-                `Files in ${paths.join(", ")} were not deleted — ` +
-                `remove them by hand if desired.`,
-            );
+            for (
+              const line of droppedToolLines(
+                removed,
+                data.tools,
+                data.prunableSettings,
+              )
+            ) {
+              writeOutput(`  ${line}`);
+            }
           }
           for (const entry of data.extensionsToReinstall) {
             const list = entry.names.join(", ");
@@ -299,6 +351,14 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
                 `for all enrolled tools: ${list}`,
             );
           }
+        }
+        for (
+          const line of leftoverSettingsLines(
+            data.prunableSettings,
+            data.removedTools,
+          )
+        ) {
+          writeOutput(`  ${line}`);
         }
 
         if (data.localSkillCopies.length > 0) {

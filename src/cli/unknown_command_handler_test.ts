@@ -410,10 +410,11 @@ Deno.test("buildUnknownCommandMessage - vault context suggestions", () => {
 });
 
 Deno.test("buildUnknownCommandMessage - repo context suggestions", () => {
-  const cmd = buildCommand("repo", ["init", "upgrade"]);
+  const cmd = buildCommand("repo", ["init", "upgrade", "prune"]);
   const msg = buildUnknownCommandMessage("my-project", cmd);
   assertStringIncludes(msg, "swamp repo init my-project");
   assertStringIncludes(msg, "swamp repo upgrade");
+  assertStringIncludes(msg, "swamp repo prune");
   assertStringIncludes(msg, "swamp update");
 });
 

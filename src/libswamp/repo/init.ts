@@ -34,8 +34,53 @@ import {
   type ExtensionInstallEvent,
 } from "../extensions/install.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { ToolSettingsPruner } from "../../domain/repo/tool_settings_pruner.ts";
+import { enrolledTools } from "../../domain/repo/primary_tool.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+
+export interface PrunableToolSettings {
+  tool: string;
+  paths: string[];
+}
+
+export type FindPrunableSettings = (
+  repoRoot: string,
+) => Promise<PrunableToolSettings[]>;
+
+async function findPrunableSettings(repoRoot: string) {
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoRoot),
+  );
+  if (!marker) return [];
+  const plan = await new ToolSettingsPruner(repoRoot, atomicWriteTextFile)
+    .find(enrolledTools(marker));
+  const byTool = new Map<string, string[]>();
+  for (const action of plan.actions) {
+    byTool.set(action.tool, [...byTool.get(action.tool) ?? [], action.path]);
+  }
+  return [...byTool].map(([tool, paths]) => ({ tool, paths }));
+}
+
+// reporting leftovers must never fail an init or upgrade that succeeded
+async function prunableSettingsFor(
+  ctx: LibSwampContext,
+  find: FindPrunableSettings | undefined,
+  repoRoot: string,
+): Promise<PrunableToolSettings[]> {
+  if (!find) return [];
+  try {
+    return await find(repoRoot);
+  } catch (error) {
+    ctx.logger.debug`Could not look for prunable tool settings: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return [];
+  }
+}
+
 /**
  * tools is the canonical field; tool is deprecated and always present: the
  * primary tool when tools.length === 1, null otherwise, so SDK consumers cannot
@@ -51,6 +96,7 @@ export interface RepoInitData {
   gitignoreAction: string;
   tools: string[];
   removedTools: string[];
+  prunableSettings: PrunableToolSettings[];
   /**
    * The repository's default vault: `created` is false when a vault named
    * `default` already existed and was kept. `null` when init was told not
@@ -94,6 +140,7 @@ export interface RepoInitDeps {
       defaultVault?: boolean;
     },
   ) => Promise<RepoInitResult>;
+  findPrunableSettings?: FindPrunableSettings;
 }
 
 export function createRepoInitDeps(version: string): RepoInitDeps {
@@ -112,6 +159,7 @@ export function createRepoInitDeps(version: string): RepoInitDeps {
           )
           : undefined,
       }),
+    findPrunableSettings,
   };
 }
 
@@ -160,6 +208,11 @@ export async function* repoInit(
         gitignoreAction: result.gitignoreAction,
         tools: result.tools,
         removedTools: result.removedTools,
+        prunableSettings: await prunableSettingsFor(
+          ctx,
+          deps.findPrunableSettings,
+          result.path,
+        ),
         vault: result.vault,
         tool: legacyToolField(result.tools),
       };
@@ -214,6 +267,7 @@ export interface RepoUpgradeData {
   tools: string[];
   addedTools: string[];
   removedTools: string[];
+  prunableSettings: PrunableToolSettings[];
   extensionsToReinstall: { tool: string; names: string[] }[];
   localSkillCopies: { skillsDir: string; names: string[] }[];
   changedFiles: string[];
@@ -282,12 +336,14 @@ export interface RepoUpgradeDeps {
       lockfilePath?: string | null;
     },
   ) => Promise<RepoUpgradeResult>;
+  findPrunableSettings?: FindPrunableSettings;
 }
 
 export function createRepoUpgradeDeps(version: string): RepoUpgradeDeps {
   const service = new RepoService(version);
   return {
     upgrade: (repoPath, options) => service.upgrade(repoPath, options),
+    findPrunableSettings,
   };
 }
 
@@ -372,6 +428,11 @@ export async function* repoUpgrade(
         tools: result.tools,
         addedTools: result.addedTools,
         removedTools: result.removedTools,
+        prunableSettings: await prunableSettingsFor(
+          ctx,
+          deps.findPrunableSettings,
+          result.path,
+        ),
         extensionsToReinstall: result.extensionsToReinstall,
         localSkillCopies: result.localSkillCopies,
         changedFiles: result.changedFiles,
