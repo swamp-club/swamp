@@ -734,3 +734,38 @@ Deno.test("configureStartupExtensions: a filesystem datastore at a custom path r
     }
   }, { datastoreRoot: "none" });
 });
+
+Deno.test("configureStartupExtensions: a team extension entirely absent from disk is not warned about at startup, as it is reinstalled on use; a partly missing one still is", async () => {
+  await withManagedRepo(async (fixture) => {
+    const { repoDir, scope } = fixture;
+    const first = await startup(fixture);
+    const base = getManagedConfigBase(repoDir) ?? "";
+    first.dispose();
+    const missing = (name: string) =>
+      `.swamp/config/pulled-extensions/${name}/models/gone.ts`;
+    await writeLockfile(join(base, "upstream_extensions.json"), {
+      [`${scope}/team-absent`]: { files: [missing(`${scope}/team-absent`)] },
+      [`${scope}/team-cut`]: { files: [missing(`${scope}/team-cut`)] },
+    });
+    await Deno.mkdir(
+      join(repoDir, ".swamp", "config", "pulled-extensions", scope, "team-cut"),
+      { recursive: true },
+    );
+    const lockfileBefore = await Deno.readFile(
+      join(base, "upstream_extensions.json"),
+    );
+
+    const { warnings, dispose } = await startup(fixture);
+    try {
+      const all = warnings.map((w) => w.error).join("\n");
+      assertEquals(all.includes(`${scope}/team-absent`), false, all);
+      assertStringIncludes(all, `${scope}/team-cut`);
+    } finally {
+      dispose();
+    }
+    assertEquals(
+      await Deno.readFile(join(base, "upstream_extensions.json")),
+      lockfileBefore,
+    );
+  });
+});
