@@ -50,6 +50,6 @@ export function describeHolder(
     ? `${holder.principal} in another checkout or command`
     : holder.principal;
   return holder.explicit
-    ? `${who}, under an explicit lease until ${holder.expiresAt}`
+    ? `${who}, under an explicit lease until ${holder.expiresAt} (unless released earlier)`
     : who;
 }

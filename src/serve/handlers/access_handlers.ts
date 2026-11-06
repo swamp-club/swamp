@@ -1115,12 +1115,19 @@ export async function handleAccessTokenReveal(
       );
       return;
     }
+    if (revealed === undefined) {
+      sendError(
+        socket,
+        requestId,
+        "access_token_reveal_failed",
+        `Revealing token '${payload.name}' ended without completing`,
+      );
+      return;
+    }
     send(socket, {
       type: "access.token.reveal",
       id: requestId,
-      payload: {
-        data: (revealed ?? {}) as unknown as Record<string, unknown>,
-      },
+      payload: { data: revealed as unknown as Record<string, unknown> },
     });
   } catch (error) {
     revealLogger.warn`Revealing token ${payload.name} failed: ${error}`;

@@ -35,6 +35,14 @@ export interface DeletePlan {
   readonly data: readonly { name: string; version: number }[];
 }
 
+function encodedBytes(op: Op): number {
+  return new TextEncoder().encode(JSON.stringify(op.toJSON())).byteLength + 1;
+}
+
+function definitionPartitionOf(plan: DeletePlan): PartitionKey {
+  return new ConfigChanges("model", plan.definition.name).partition;
+}
+
 function removalOf(change: TypedChange): Op {
   if (!("op" in change)) {
     throw new Error("Internal error: a removal staged a write");
@@ -45,9 +53,10 @@ function removalOf(change: TypedChange): Op {
 // a file name the output key rule accepts; only the access it needs is judged
 const ANY_OUTPUT_STAMP = "1970-01-01T00-00-00-000Z";
 
-// serve's caps on one authorize request
+// serve's caps on one authorize request, its body bounded below its 256 KiB
 const MAX_OPS_PER_COMMIT = 64;
 const MAX_COMMITS = 16;
+const MAX_REQUEST_BYTES = 192 * 1024;
 
 /**
  * one removal per data name, since a key can be refused on its own, and one
@@ -78,27 +87,29 @@ export function deleteRemovalCommits(
       removalOf(model.removeVersion("data.delete", data.name, data.version)[0]),
     );
   }
-  const commits: { partition: PartitionKey; ops: Op[] }[] = [];
-  for (
-    let start = 0;
-    start < modelOps.length && commits.length < MAX_COMMITS - 1;
-    start += MAX_OPS_PER_COMMIT
-  ) {
-    commits.push({
-      partition: model.partition,
-      ops: modelOps.slice(start, start + MAX_OPS_PER_COMMIT),
-    });
-  }
-  const definition = new ConfigChanges("model", plan.definition.name).remove(
-    "definition.delete",
-    RecordKey.create(
-      `config/models/${plan.type.normalized}/${plan.definition.name}.yaml`,
+  const definition = removalOf(
+    new ConfigChanges("model", plan.definition.name).remove(
+      "definition.delete",
+      RecordKey.create(
+        `config/models/${plan.type.normalized}/${plan.definition.name}.yaml`,
+      ),
     ),
   );
-  commits.push({
-    partition: definition.partition,
-    ops: [removalOf(definition)],
-  });
+  let bytes = encodedBytes(definition);
+  const commits: { partition: PartitionKey; ops: Op[] }[] = [];
+  for (const op of modelOps) {
+    const size = encodedBytes(op);
+    if (bytes + size > MAX_REQUEST_BYTES) break;
+    let last = commits.at(-1);
+    if (last === undefined || last.ops.length === MAX_OPS_PER_COMMIT) {
+      if (commits.length === MAX_COMMITS - 1) break;
+      last = { partition: model.partition, ops: [] };
+      commits.push(last);
+    }
+    last.ops.push(op);
+    bytes += size;
+  }
+  commits.push({ partition: definitionPartitionOf(plan), ops: [definition] });
   return commits;
 }
 

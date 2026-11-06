@@ -3660,9 +3660,11 @@ decides the caller's grant before the base, so a caller without the grant is
 refused `forbidden` and never learns who changed the definition or when, and
 one with it gets `config_edit_conflict` from serve. Offline, or with no
 contact, the local refusal stays. A delete keeps it, and in a serve-mode
-checkout first sends `POST authorize` (swamp-club#4454): one tombstone per
-partition and kind the delete will commit (an output, a data version, the
-definition), which serve runs through `authorizeCommit` and appends nothing.
+checkout first sends `POST authorize` (swamp-club#4454): one output removal,
+one removal per data name, and the definition's tombstone last, within serve's
+caps (16 commits, 64 ops, the body under 256 KiB), which serve runs through
+`authorizeCommit` and appends nothing. Names past the caps are judged at
+commit.
 A refused one stops the delete before anything is removed. A serve without
 the route answers 404 and the delete runs as before; a grant revoked between
 the check and the commits can still leave part of a delete.

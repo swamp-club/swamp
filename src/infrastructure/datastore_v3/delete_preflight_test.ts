@@ -71,8 +71,29 @@ Deno.test("deleteRemovalCommits: every key binds to its intent, as serve's check
 Deno.test("deleteRemovalCommits: many names split into commits within serve's caps, the definition still last", () => {
   const names = Array.from({ length: 2000 }, (_, i) => `name-${i}`);
   const commits = deleteRemovalCommits(plan(names));
-  assertEquals(commits.length, 16);
+  assertEquals(commits.length <= 16, true);
   for (const commit of commits) assertEquals(commit.ops.length <= 64, true);
+  const last = commits.at(-1);
+  assertEquals(last && tombstone(last.ops[0]).intent.kind, "definition.delete");
+});
+
+Deno.test("deleteRemovalCommits: long names stay within serve's body cap, the names past it judged at commit", () => {
+  const names = Array.from(
+    { length: 900 },
+    (_, i) => `subnet-0abc123def456-route-assoc-${i}`,
+  );
+  const scoped = {
+    ...plan(names),
+    type: ModelType.create("@org/aws/ec2/instance"),
+  };
+  const commits = deleteRemovalCommits(scoped);
+  const body = JSON.stringify({
+    commits: commits.map(({ partition, ops }) => ({
+      partition: partition.toString(),
+      ops: ops.map((op) => op.toJSON()),
+    })),
+  });
+  assertEquals(new TextEncoder().encode(body).byteLength < 256 * 1024, true);
   const last = commits.at(-1);
   assertEquals(last && tombstone(last.ops[0]).intent.kind, "definition.delete");
 });
