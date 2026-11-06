@@ -958,8 +958,10 @@ converting a `run` or `client` value with `int`, `uint`, `double`, `bool`,
 
 A stored grant is never rewritten or dropped. The warning appears once per grant
 per serve process, and again after a restart or when the grant changes, in the
-serve log only. Fix one by revoking it and writing it again. A deny reading a tag
-with no guard warns in the same places, and when created. That warning looks for
+serve log only. Fix a grant written by a method by revoking it and writing it
+again, and one from a file by editing the file. A deny reading a tag with no guard
+warns at `access grant create`, from `serve check-config` for a grant file, and
+when serve loads it, and is never refused for that. That warning looks for
 an `in` or `has` on the same tag anywhere in the condition, so it does not prove
 the guard is in the right place.
 

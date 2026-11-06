@@ -1018,12 +1018,19 @@ Deno.test("PolicySnapshotLoader.load: warns once about a condition that fails th
     resource: { kind: "model", pattern: "*" },
     condition: "tags.env ==",
   });
+  const fromFile = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "*" },
+    condition: 'tags.team == "a"',
+    source: "file:a.yaml",
+  });
   const dataRepo = createMockDataRepo(
     [
       { attrs: wrongTyped, modelId: "g1", dataName: "grant-main" },
       { attrs: unguardedDeny, modelId: "g2", dataName: "grant-main" },
       { attrs: unguardedAllow, modelId: "g3", dataName: "grant-main" },
       { attrs: unparsable, modelId: "g4", dataName: "grant-main" },
+      { attrs: fromFile, modelId: "g5", dataName: "grant-main" },
     ],
     [],
   );
@@ -1043,13 +1050,16 @@ Deno.test("PolicySnapshotLoader.load: warns once about a condition that fails th
   });
   await loader.dispose();
 
-  assertEquals(granted, 4);
+  assertEquals(granted, 5);
   const forWrongTyped = warnings.filter((w) => w.includes(wrongTyped.id));
   assertEquals(forWrongTyped.length, 1);
   assertEquals(forWrongTyped[0].includes("cannot evaluate"), true);
   const forUnguarded = warnings.filter((w) => w.includes(unguardedDeny.id));
   assertEquals(forUnguarded.length, 1);
   assertEquals(forUnguarded[0].includes("tags.env"), true);
+  assertEquals(forUnguarded[0].includes("Revoke it"), true);
+  const forFile = warnings.filter((w) => w.includes(fromFile.id));
+  assertEquals(forFile[0].includes("Fix it in its grant file"), true);
   assertEquals(warnings.filter((w) => w.includes(unguardedAllow.id)), []);
   assertEquals(warnings.filter((w) => w.includes(unparsable.id)), []);
 });

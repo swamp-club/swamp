@@ -730,7 +730,11 @@ export class PolicySnapshotLoader {
       }
       for (const message of this.#conditionMessages(grant)) {
         logger
-          .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${message}. Revoke it and write it again`;
+          .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${message}. ${
+          grant.source.startsWith("file:")
+            ? "Fix it in its grant file"
+            : "Revoke it and write it again"
+        }`;
       }
     }
   }
