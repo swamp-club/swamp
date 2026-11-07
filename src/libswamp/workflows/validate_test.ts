@@ -1285,6 +1285,25 @@ Deno.test("workflowValidate all: the skipped count is filtered by include", asyn
   assertEquals(data.pulledWorkflowsSkipped, 1);
 });
 
+Deno.test("workflowValidate all: a pulled workflow shadowed by a repo workflow the caller cannot read is not counted", async () => {
+  const data = await validateAllData(
+    makeDeps({
+      findAllWorkflows: () =>
+        Promise.resolve([
+          Workflow.create({ name: "shared", tags: { env: "prod" } }),
+        ]),
+      findSkippedWorkflows: () =>
+        Promise.resolve([
+          Workflow.create({ name: "shared", tags: { env: "dev" } }),
+        ]),
+    }),
+    (workflow) => workflow.tags.env === "dev",
+  );
+
+  assertEquals(data.workflows, []);
+  assertEquals(data.pulledWorkflowsSkipped, 0);
+});
+
 Deno.test("workflowValidate all: an empty repository still reports the skipped count, and zero without the port", async () => {
   const empty = await validateAllData(makeDeps({
     findAllWorkflows: () => Promise.resolve([]),

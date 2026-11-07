@@ -75,7 +75,7 @@ function formatSummary(
 }
 
 function formatSkipped(data: WorkflowValidateAllData): string | undefined {
-  // a server from before the field sends no count
+  // older servers omit the count
   const skipped = data.pulledWorkflowsSkipped ?? 0;
   if (skipped === 0) return undefined;
   const noun = skipped === 1 ? "workflow" : "workflows";
@@ -146,7 +146,7 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
     }
 
     const lines: string[] = [];
-    lines.push(bold(cyan("Validating all workflows...")));
+    lines.push(bold(cyan("Validating workflows...")));
 
     for (const workflow of data.workflows) {
       lines.push("");

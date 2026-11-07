@@ -54,10 +54,7 @@ export const workflowValidateCommand = withRemoteOptions(
     .name("validate")
     .description("Validate a workflow against its schema")
     .example("Validate a workflow", "swamp workflow validate deploy-pipeline")
-    .example(
-      "Validate the repo's own workflows (a pulled extension's workflow is validated by name)",
-      "swamp workflow validate",
-    )
+    .example("Validate the repo's own workflows", "swamp workflow validate")
     .arguments("[workflow_id_or_name:string]")
     .option(
       "--repo-dir <dir:string>",

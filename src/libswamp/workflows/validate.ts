@@ -88,8 +88,7 @@ export interface WorkflowValidateAllData {
   totalPassed: number;
   totalFailed: number;
   totalWarnings: number;
-  /** Workflows bundled in pulled extensions that this run did not check. */
-  pulledWorkflowsSkipped: number;
+  pulledWorkflowsSkipped?: number;
   passed: boolean;
 }
 
@@ -407,7 +406,8 @@ async function* validateAll(
   deps: WorkflowValidateDeps,
   include: (workflow: WorkflowIdentity) => boolean = () => true,
 ): AsyncIterable<WorkflowValidateEvent> {
-  const allWorkflows = (await deps.findAllWorkflows()).filter((workflow) =>
+  const ownWorkflows = await deps.findAllWorkflows();
+  const allWorkflows = ownWorkflows.filter((workflow) =>
     include({ name: workflow.name, tags: workflow.tags ?? {} })
   );
 
@@ -419,11 +419,11 @@ async function* validateAll(
       broken,
     ) => include({ name: broken.name ?? broken.file, tags: {} }));
 
-  // a name a checked workflow holds resolves to it, so it is not skipped
-  const checkedNames = new Set(allWorkflows.map((w) => w.name));
+  // a name the repo's own workflows hold resolves to them, readable or not
+  const ownNames = new Set(ownWorkflows.map((w) => w.name));
   const pulledWorkflowsSkipped = deps.findSkippedWorkflows
     ? (await deps.findSkippedWorkflows()).filter((w) =>
-      !checkedNames.has(w.name) &&
+      !ownNames.has(w.name) &&
       include({ name: w.name, tags: w.tags ?? {} })
     ).length
     : 0;

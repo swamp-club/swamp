@@ -198,9 +198,7 @@ Deno.test("LogWorkflowValidateRenderer - no skipped line at zero or when a serve
   assertEquals(atZero.includes("Skipped:"), false);
 
   const { pulledWorkflowsSkipped: _, ...fromOlderServer } = onePassedWorkflow;
-  const absent = await renderAllLog(
-    fromOlderServer as WorkflowValidateAllData,
-  );
+  const absent = await renderAllLog(fromOlderServer);
   assertEquals(absent.includes("Skipped:"), false);
 });
 

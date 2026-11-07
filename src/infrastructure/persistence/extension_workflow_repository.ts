@@ -263,14 +263,12 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
     return await this.collect(this.workflowsDirs);
   }
 
-  /** The workflows in dirs that are not `rootDir` or inside it. */
   async findAllOutside(rootDir: string): Promise<Workflow[]> {
     return await this.collect(
       this.workflowsDirs.filter((dir) => !isWithin(rootDir, dir)),
     );
   }
 
-  /** The workflows in dirs that are `rootDir` or inside it. */
   async findAllUnder(rootDir: string): Promise<Workflow[]> {
     return await this.collect(
       this.workflowsDirs.filter((dir) => isWithin(rootDir, dir)),
