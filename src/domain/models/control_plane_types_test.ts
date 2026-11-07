@@ -26,12 +26,13 @@ import {
 } from "./control_plane_types.ts";
 import { modelRegistry } from "./models.ts";
 
-Deno.test("CONTROL_PLANE_MODEL_TYPES: pins the eight control-plane types", () => {
+Deno.test("CONTROL_PLANE_MODEL_TYPES: pins the nine control-plane types", () => {
   assertEquals([...CONTROL_PLANE_MODEL_TYPES].sort(), [
     "swamp/enrollment-token",
     "swamp/fleet-probe",
     "swamp/grant",
     "swamp/group",
+    "swamp/integration",
     "swamp/pending-dispatch",
     "swamp/server-token",
     "swamp/step-lease",

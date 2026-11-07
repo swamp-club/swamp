@@ -34,6 +34,7 @@ const BOT: AccessPrincipal = {
   principal: { kind: "user", id: "bot" },
   collectives: [],
   groups: [],
+  client: undefined,
 };
 
 const noConditions = () => false;

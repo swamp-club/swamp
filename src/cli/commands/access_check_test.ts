@@ -211,11 +211,16 @@ async function initRepo(dir: string): Promise<void> {
 }
 
 async function runAccess(
-  command: "check" | "grant",
+  command: "check" | "grant" | "integration",
   args: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const root = new Command().globalOption("--json", "JSON output");
-  if (command === "check") {
+  if (command === "integration") {
+    const { accessIntegrationCommand } = await import(
+      "./access_integration.ts"
+    );
+    root.command("integration", accessIntegrationCommand);
+  } else if (command === "check") {
     root.command(
       "check",
       (await import("./access_check.ts")).accessCheckCommand,
@@ -557,6 +562,49 @@ Deno.test({
       await assertRejects(() =>
         check("--field", "run.initiator.sub=b", "--field", "run.nope=1")
       );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local --client integration is judged against its registered ceiling",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo([
+      ["--subject", "user:a", "--allow", "read,run", "--on", "workflow:*"],
+    ], async (dir) => {
+      const check = (action: string, client: string) =>
+        runAccess("check", [
+          "--repo-dir",
+          dir,
+          "--subject",
+          "user:a",
+          "--action",
+          action,
+          "--on",
+          "workflow:w",
+          "--client",
+          client,
+        ]);
+      const unknown = await check("read", "integration:slack");
+      assertEquals(unknown.exitCode, 1);
+      assertStringIncludes(unknown.output, "builtin:integration-unknown");
+      await runAccess("integration", [
+        "register",
+        "slack",
+        "--repo-dir",
+        dir,
+        "--name",
+        "Slack",
+        "--ceiling",
+        "read=workflow:w",
+      ]);
+      assertEquals((await check("read", "integration:slack")).exitCode, 0);
+      const above = await check("run", "integration:slack");
+      assertEquals(above.exitCode, 1);
+      assertStringIncludes(above.output, "builtin:integration-ceiling");
     });
   },
 });

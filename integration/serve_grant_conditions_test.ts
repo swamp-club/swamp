@@ -430,6 +430,7 @@ Deno.test("grant conditions: the approvals list says per run who may decide, wit
 });
 
 const SLACK = "integration:slack";
+const DIRECT_TOKEN = "direct:token";
 
 Deno.test("grant conditions: an integration is refused on each kind it can reach, and a direct or absent client is not", async () => {
   await withServeRepo(async (repo) => {
@@ -488,7 +489,11 @@ Deno.test("grant conditions: an integration is refused on each kind it can reach
           JSON.stringify(slack).includes('"results":[]'),
         `${request.type}: ${JSON.stringify(slack)}`,
       );
-      for (const client of ["direct:cli", undefined, "integration:other"]) {
+      // a ceiling covers only workflows, so another integration passes only there
+      const others = request.type.startsWith("workflow.")
+        ? ["direct:cli", undefined, "integration:other"]
+        : ["direct:cli", undefined];
+      for (const client of others) {
         const direct = await send(client);
         assertEquals(
           direct.map((f) => f.error?.code).includes("unauthorized"),
@@ -508,7 +513,7 @@ Deno.test("grant conditions: type and schema endpoints check for an allow, so a 
         actions: ["read"],
         resource: { kind: "model", pattern: "*" },
         effect: "deny",
-        condition: `client == "${SLACK}"`,
+        condition: `client == "${DIRECT_TOKEN}"`,
       }),
     ]);
     const frames = await sendRequest(
@@ -519,7 +524,7 @@ Deno.test("grant conditions: type and schema endpoints check for an allow, so a 
         payload: {},
       },
       undefined,
-      { client: SLACK },
+      { client: DIRECT_TOKEN },
     );
     assertEquals(refusal(frames), undefined);
   });
@@ -531,7 +536,7 @@ Deno.test("grant conditions: can-i and check say a decision depends on the run, 
     const clientDeny = {
       effect: "deny",
       actions: ["read"],
-      condition: `client == "${SLACK}"`,
+      condition: `client == "${DIRECT_TOKEN}"`,
     } as Partial<Grant>;
     const ctx = createServeCtx(repo, [
       ...POLICY,
@@ -572,8 +577,8 @@ Deno.test("grant conditions: can-i and check say a decision depends on the run, 
       const decisions = reply.payload?.decisions as { effect: string }[];
       return decisions[0]?.effect;
     };
-    assertEquals(await check("user:root", SLACK), "deny");
+    assertEquals(await check("user:root", DIRECT_TOKEN), "deny");
     assertEquals(await check("user:root"), "allow");
-    assertEquals(await check("user:alice", SLACK), "allow");
+    assertEquals(await check("user:alice", DIRECT_TOKEN), "allow");
   });
 });

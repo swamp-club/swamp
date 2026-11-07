@@ -435,3 +435,37 @@ Deno.test("ServeCommitEffects.stop: a pass in flight ends without reloading the 
   await effects.settled();
   assertEquals(calls, { policy: 0, config: 0 });
 });
+
+Deno.test("ServeCommitEffects: an integration commit reloads the directory on a leader and a follower, never the policy", async () => {
+  for (const follower of [true, false]) {
+    const store = fakeSource();
+    let policy = 0;
+    let integrations = 0;
+    const effects = new ServeCommitEffects({
+      source: store.source,
+      reloadPolicy: () => {
+        policy++;
+        return Promise.resolve();
+      },
+      reloadIntegrations: () => {
+        integrations++;
+        return Promise.resolve();
+      },
+      checkConfig: () => {},
+      isFollower: () => follower,
+    });
+    effects.start();
+    try {
+      store.land(partitionOf({
+        kind: "model",
+        type: ModelType.create("swamp/integration"),
+        id: ID,
+      }));
+      effects.poke();
+      await waitFor(() => integrations === 1, "the directory reloaded");
+      assertEquals(policy, 0);
+    } finally {
+      await effects.stop();
+    }
+  }
+});

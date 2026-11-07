@@ -2132,3 +2132,47 @@ Deno.test("resolveOrCreateDefinition: a race loser adopts the winner's definitio
     });
   });
 });
+
+Deno.test("resolveOrCreateDefinition: concurrent first runs of an integration reach one definition", async () => {
+  const create = (typeName: string) => {
+    const type = ModelType.create(typeName);
+    return resolveOrCreateDefinition(
+      {
+        lookupDefinition: () => Promise.resolve(null),
+        getModelDef: () => Promise.resolve(undefined),
+        saveDefinition: () => Promise.resolve(),
+        getDefinitionPath: () => "unused",
+      },
+      typeName,
+      "integration-app",
+      "go",
+      {},
+      type,
+      {
+        type,
+        version: "2026.01.01.1",
+        methods: {
+          go: {
+            description: "go",
+            arguments: z.object({}),
+            execute: () => Promise.resolve({}),
+          },
+        },
+      } as unknown as ModelDefinition,
+    );
+  };
+  const idOf = (result: Awaited<ReturnType<typeof create>>) => {
+    assert(result.ok);
+    return result.definition.id;
+  };
+  const [one, two] = await Promise.all([
+    create("swamp/integration"),
+    create("swamp/integration"),
+  ]);
+  assertEquals(idOf(one), idOf(two));
+  const [three, four] = await Promise.all([
+    create("test/other"),
+    create("test/other"),
+  ]);
+  assertEquals(idOf(three) === idOf(four), false);
+});

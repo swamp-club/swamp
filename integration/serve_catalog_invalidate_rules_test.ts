@@ -29,10 +29,10 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 const PINNED = [
-  // Five v2 sync callbacks (managed-config boot pull, cache hydration, the
-  // config, access-data and runtime-data pollers) and the token GC pull: each
-  // needs a sync service, which a v3 serve does not have.
-  "src/cli/commands/serve.ts :: serveCommand (x6)",
+  // Six v2 sync callbacks (managed-config boot pull, cache hydration, the
+  // config, access-data, integration-data and runtime-data pollers) and the
+  // token GC pull: each needs a sync service, which a v3 serve does not have.
+  "src/cli/commands/serve.ts :: serveCommand (x7)",
   // Calls its callback only after a pull, and is built only with a sync service.
   "src/serve/access_data_poller.ts :: AccessDataPoller",
   // Cache hydration pulls through the sync service; never built on v3.

@@ -704,6 +704,15 @@ export {
   type ServerTokenCreateInput,
 } from "./access/token_create.ts";
 export {
+  createIntegrationListDeps,
+  integrationList,
+  type IntegrationListData,
+  type IntegrationListDeps,
+  type IntegrationListEvent,
+  type IntegrationView,
+  integrationView,
+} from "./access/integration_list.ts";
+export {
   createServerTokenListDeps,
   serverTokenList,
   type ServerTokenListData,

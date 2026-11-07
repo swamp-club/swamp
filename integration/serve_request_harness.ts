@@ -23,6 +23,8 @@
  * id-deny conformance tests
  */
 
+import { Ceiling } from "../src/domain/access/ceiling.ts";
+import type { IntegrationLookup } from "../src/domain/access/integration_directory.ts";
 import { setConnectionClient } from "../src/serve/handlers/shared.ts";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -144,7 +146,23 @@ export function grant(overrides: Partial<Grant>): Grant {
   };
 }
 
+/** tests of something else use an integration client without meeting a refusal */
+export const WIDEST_CEILING: IntegrationLookup = {
+  standingOf: () => ({
+    kind: "active",
+    ceiling: Ceiling.parse({
+      version: 1,
+      ceiling: [{
+        actions: ["approve", "read", "run", "signal"],
+        resource: "workflow:*",
+      }],
+    }),
+  }),
+};
+
 export interface ServeCtxOptions {
+  integrations?: IntegrationLookup;
+  restrictedCommands?: string[];
   detached?: boolean;
   syncService?: ConnectionContext["syncService"];
   syncGate?: ConnectionContext["syncGate"];
@@ -174,7 +192,7 @@ export function createServeCtx(
     oauthProvider: "",
     groupsField: "",
     restrictedModelTypes: options.restrictedModelTypes ?? [],
-    restrictedCommands: [],
+    restrictedCommands: options.restrictedCommands ?? [],
     approveRequiresExplicitGrant: false,
     signalRequiresExplicitGrant: false,
     tagRequiresExplicitGrant: options.tagRequiresExplicitGrant ?? false,
@@ -202,7 +220,10 @@ export function createServeCtx(
         policySnapshotLoader: {
           decisionService: new GrantBasedAccessDecisionService(
             new PolicySnapshot(grants, [], createConditionEvaluator()),
-            { writeImpliesTag: !authConfig.tagRequiresExplicitGrant },
+            {
+              writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
+              integrations: options.integrations ?? WIDEST_CEILING,
+            },
           ),
         } as unknown as PolicySnapshotLoader,
       }

@@ -120,11 +120,13 @@ Deno.test("grant files with misspelled types: denies match in any spelling, allo
       principal: { kind: "user" as const, id: "dev" },
       collectives: [],
       groups: [],
+      client: undefined,
     };
     const ops = {
       principal: { kind: "user" as const, id: "ops" },
       collectives: [],
       groups: [],
+      client: undefined,
     };
 
     assertEquals(

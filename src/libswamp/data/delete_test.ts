@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -30,6 +30,8 @@ import {
   type DataDeleteEvent,
   dataDeletePreview,
 } from "./delete.ts";
+import { DataDeleteService } from "../../domain/data/data_delete_service.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
@@ -461,4 +463,76 @@ Deno.test("dataDeletePreview: forwards byId to the preview service", async () =>
 
   assertEquals(preview.versionsCount, 3);
   assertEquals(calls, [true]);
+});
+
+function serviceDepsForIntegrationRecord(): {
+  deps: DataDeleteDeps;
+  removed: string[];
+} {
+  const removed: string[] = [];
+  const service = new DataDeleteService(
+    {
+      listVersions: () => Promise.resolve([1]),
+      findAllForModel: () => Promise.resolve([{ name: "integration-main" }]),
+      delete: (_type: unknown, _id: unknown, name: string) => {
+        removed.push(name);
+        return Promise.resolve();
+      },
+    } as never,
+    {
+      findByNameGlobal: (name: string) =>
+        Promise.resolve({
+          definition: { id: "def-1", name },
+          type: ModelType.create("swamp/integration"),
+        }),
+      findById: () => Promise.resolve(null),
+    } as never,
+  );
+  return {
+    removed,
+    deps: {
+      delete: (ref, name, version, byId, expectedName) =>
+        service.delete(ref, name, version, { byId, expectedName }),
+      preview: () => Promise.reject(new Error("preview failed")),
+      batchDelete: (ref, filter) => service.batchDelete(ref, filter),
+      batchPreview: () => Promise.reject(new Error("preview failed")),
+    },
+  };
+}
+
+Deno.test("dataDelete: an integration's record stays when the preview fails", async () => {
+  const { deps, removed } = serviceDepsForIntegrationRecord();
+  const events = [];
+  for await (
+    const event of dataDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "rec",
+      dataName: "integration-main",
+    })
+  ) events.push(event);
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(last.error.message, "must stay reserved");
+  }
+  assertEquals(removed, []);
+});
+
+Deno.test("dataBatchDelete: an integration's record stays when the preview fails", async () => {
+  const { deps, removed } = serviceDepsForIntegrationRecord();
+  const events = [];
+  for await (
+    const event of dataBatchDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "rec",
+      filter: { kind: "all" },
+      dryRun: false,
+    })
+  ) events.push(event);
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") {
+    assertStringIncludes(last.error.message, "must stay reserved");
+  }
+  assertEquals(removed, []);
 });

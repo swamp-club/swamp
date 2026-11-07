@@ -180,7 +180,12 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
       async decide(sub) {
         await loader.load();
         return loader.decisionService.decide(
-          { principal: { kind: "user", id: sub }, collectives: [], groups: [] },
+          {
+            principal: { kind: "user", id: sub },
+            collectives: [],
+            groups: [],
+            client: undefined,
+          },
           "run",
           DEPLOY,
         )?.effect;

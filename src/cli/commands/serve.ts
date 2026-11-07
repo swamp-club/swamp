@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
+import {
+  INTEGRATION_DATA_NAME,
+  INTEGRATION_MODEL_TYPE,
+} from "../../domain/models/access/integration_model.ts";
 import { RunIndexWarmup } from "../../serve/run_index_warmup.ts";
 import { EventLoopLagMonitor } from "../../serve/event_loop_lag.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
@@ -126,12 +131,14 @@ import {
   isRestrictedCommand,
   listTokenSessions,
   MAX_CANCEL_REASON_LENGTH,
+  refuseIntegrationCaller,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
   sanitizeErrorForClient,
   setConnectionCompression,
   setConnectionSourceIp,
+  terminateIntegrationSessions,
   terminateTokenSessions,
   updateCollectivesForPrincipal,
 } from "../../serve/handlers/shared.ts";
@@ -560,6 +567,7 @@ import {
 import {
   type AccessDataPoller,
   createAccessDataPoller,
+  INTEGRATION_DATA_SUBDIRS,
 } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
 import { computeFileContentHashIfExists } from "../../domain/extensions/extension_package_cache.ts";
@@ -3660,6 +3668,7 @@ export const serveCommand = new Command()
     let configPoller: ConfigPoller | null = null;
     let serveCommitEffects: ServeCommitEffects | undefined;
     let accessDataPoller: AccessDataPoller | null = null;
+    let integrationDataPoller: AccessDataPoller | null = null;
     let runtimeDataPoller: RuntimeDataPoller | null = null;
     let repoMarker = null;
     try {
@@ -5035,6 +5044,10 @@ export const serveCommand = new Command()
       await publishGrantConfig();
     }
 
+    const integrationDirectory = new IntegrationDirectory(
+      repoContext.unifiedDataRepo,
+      { eventBus: repoContext.eventBus },
+    );
     const policySnapshotLoader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,
       repoContext.eventBus,
@@ -5043,6 +5056,7 @@ export const serveCommand = new Command()
         runImpliesApprove: !authConfig.approveRequiresExplicitGrant,
         runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
         writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
+        integrations: integrationDirectory,
       },
       readConditionTypeLiterals,
       readConditionFindings,
@@ -5062,6 +5076,24 @@ export const serveCommand = new Command()
       datastoreResolver: repoDatastoreResolver,
       eventBus: repoContext.eventBus,
     });
+    integrationDataPoller = await createAccessDataPoller({
+      syncService,
+      syncGate,
+      pollIntervalMs: datastorePollIntervalMs,
+      policySnapshotLoader: integrationDirectory,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      namespace: serveNamespace,
+      datastoreConfig,
+      datastoreEngine,
+      datastoreResolver: repoDatastoreResolver,
+      eventBus: repoContext.eventBus,
+      subdirs: INTEGRATION_DATA_SUBDIRS,
+      reloadEveryCycle: true,
+      reloading: "integration directory",
+      dataNames: [INTEGRATION_DATA_NAME],
+      modelTypes: [INTEGRATION_MODEL_TYPE.normalized],
+    });
+    await integrationDirectory.reload();
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
       mode: grantReloadMode,
@@ -5124,6 +5156,7 @@ export const serveCommand = new Command()
     };
 
     accessDataPoller?.start();
+    integrationDataPoller?.start();
 
     if (syncService) {
       runtimeDataPoller = new RuntimeDataPoller({
@@ -5622,6 +5655,7 @@ export const serveCommand = new Command()
     );
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
+        integrationDirectory,
         repoDir: resolvedRepoDir,
         repoContext,
         gcMutex,
@@ -6680,6 +6714,20 @@ export const serveCommand = new Command()
       });
       tokenSessionRevalidationService.start();
     }
+    integrationDirectory.onNarrowed((changes) => {
+      for (const { id, reason } of changes) {
+        terminateIntegrationSessions(id, {
+          code: 4003,
+          reason: `Session ended: integration ${reason}`,
+          cause: `integration-${reason}`,
+          initiatedBy: "system",
+          audit: {
+            emitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
+          },
+        });
+      }
+    });
 
     // Enrollment tokens revoked from the CLI or on a peer never reach this
     // gateway's revoke path; re-check them so their workers are cut off.
@@ -7702,6 +7750,7 @@ export const serveCommand = new Command()
                     name: token.name,
                     createdAt: token.createdAt,
                     principalId: auth.authResult.principalId,
+                    client: auth.authResult.client,
                   }, {
                     sourceIp: auth.clientAddr,
                     close: (code, reason) => closer.close(code, reason),
@@ -7919,6 +7968,29 @@ export const serveCommand = new Command()
                   response: new Response(`Unauthorized: ${result.reason}`, {
                     status: 401,
                   }),
+                };
+              }
+              if (
+                refuseIntegrationCaller(
+                  {
+                    principal: parsePrincipal(result.principalId),
+                    collectives: result.collectives,
+                    groups: result.groups,
+                    sourceIp: dashboardRemoteAddr,
+                    loginIdentity: result.oauthIdentity,
+                    client: result.client,
+                  },
+                  crypto.randomUUID(),
+                  "dashboard-session",
+                  connectionCtx,
+                )
+              ) {
+                return {
+                  ok: false,
+                  response: new Response(
+                    "Forbidden: an integration token can't start a dashboard session",
+                    { status: 403 },
+                  ),
                 };
               }
               const rate = checkPrincipalRate(result.principalId);
@@ -8299,6 +8371,10 @@ export const serveCommand = new Command()
         const poller = accessDataPoller;
         await stages.run("access data poller", () => poller.stop());
       }
+      if (integrationDataPoller) {
+        const poller = integrationDataPoller;
+        await stages.run("integration data poller", () => poller.stop());
+      }
       if (runtimeDataPoller) {
         const poller = runtimeDataPoller;
         await stages.run("runtime data poller", () => poller.stop());
@@ -8310,6 +8386,10 @@ export const serveCommand = new Command()
       await stages.run(
         "policy snapshot loader",
         () => policySnapshotLoader.dispose(),
+      );
+      await stages.run(
+        "integration directory",
+        () => integrationDirectory.dispose(),
       );
       // a tick's chunk sweep must never overlap the closing compaction and
       // lease release; stop() aborts it, so the wait ends at its next batch or
@@ -8616,6 +8696,7 @@ export const serveCommand = new Command()
       const followerPolicy = wireFollowerPolicy({
         source: feedSource,
         reloadPolicy: () => policySnapshotLoader.load(),
+        reloadIntegrations: () => integrationDirectory.reload(),
         checkConfig: () => configPoller?.pollNow(),
         isFollower: () => connectionCtx.followerGate?.role === "follower",
       });

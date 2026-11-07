@@ -49,6 +49,7 @@ const CONFIG_EDIT: readonly string[] = [
 const SINK: readonly string[] = [
   "access_grant.ts",
   "access_group.ts",
+  "access_integration.ts",
   "access_token_mint.ts",
   "access_token_reveal.ts",
   "access_token_revoke.ts",

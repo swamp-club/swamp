@@ -26,7 +26,8 @@ import type {
   AccessResource,
 } from "./access_decision_service.ts";
 import type { Action } from "./action.ts";
-import { clientConditionValue } from "./client.ts";
+import { clientConditionValue, integrationOfClient } from "./client.ts";
+import type { IntegrationLookup } from "./integration_directory.ts";
 import type { ConditionOutcome, PolicySnapshot } from "./policy_snapshot.ts";
 import { principalToString } from "./principal.ts";
 import { isControlPlaneRecordResource } from "./control_plane_records.ts";
@@ -130,6 +131,8 @@ export interface GrantBasedAccessDecisionServiceOptions {
   readonly runImpliesApprove?: boolean;
   readonly runImpliesSignal?: boolean;
   readonly writeImpliesTag?: boolean;
+  /** absent, every integration is unknown and so refused */
+  readonly integrations?: IntegrationLookup;
 }
 
 const IMPLYING_ACTION = {
@@ -280,11 +283,30 @@ function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
   };
 }
 
+export const INTEGRATION_CEILING_GRANT_ID = "builtin:integration-ceiling";
+export const INTEGRATION_UNKNOWN_GRANT_ID = "builtin:integration-unknown";
+export const INTEGRATION_REVOKED_GRANT_ID = "builtin:integration-revoked";
+
+/** no grant is behind these, so naming one would mislead */
+export function integrationRefusalReason(grantId: string): string | undefined {
+  switch (grantId) {
+    case INTEGRATION_CEILING_GRANT_ID:
+      return "above the integration's ceiling";
+    case INTEGRATION_UNKNOWN_GRANT_ID:
+      return "the integration is not registered";
+    case INTEGRATION_REVOKED_GRANT_ID:
+      return "the integration was revoked";
+    default:
+      return undefined;
+  }
+}
+
 const MAX_CACHED_FINGERPRINTS = 4096;
 
 export class GrantBasedAccessDecisionService implements AccessDecisionService {
   #snapshot: PolicySnapshot;
   readonly #implications: Implications;
+  readonly #integrations: IntegrationLookup | undefined;
   readonly #fingerprints = new WeakMap<PolicySnapshot, Map<string, string>>();
 
   constructor(
@@ -297,6 +319,51 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       signal: options.runImpliesSignal ?? true,
       tag: options.writeImpliesTag ?? true,
     };
+    this.#integrations = options.integrations;
+  }
+
+  /** explicit, never null: sites fall back to an admin check on a null */
+  #integrationRefusal(
+    principal: AccessPrincipal,
+    action: Action,
+    resource: Pick<AccessResource, "kind" | "name">,
+  ): AccessDecision | null {
+    const integration = integrationOfClient(principal.client);
+    if (integration.kind === "none") return null;
+    const refuse = (grantId: string): AccessDecision => ({
+      effect: "deny",
+      grantId,
+      subject: budgetExceededSubject(principal),
+    });
+    if (integration.kind === "malformed") {
+      return refuse(INTEGRATION_UNKNOWN_GRANT_ID);
+    }
+    const standing = this.#integrations?.standingOf(integration.id) ??
+      { kind: "unknown" as const };
+    if (standing.kind === "unknown") {
+      return refuse(INTEGRATION_UNKNOWN_GRANT_ID);
+    }
+    if (standing.kind === "revoked") {
+      return refuse(INTEGRATION_REVOKED_GRANT_ID);
+    }
+    return resource.kind === "workflow" &&
+        standing.ceiling.allows(action, resource.name)
+      ? null
+      : refuse(INTEGRATION_CEILING_GRANT_ID);
+  }
+
+  /** for showing a person's grants: what a ceiling could never let through */
+  grantUsableThroughClient(
+    principal: AccessPrincipal,
+    grant: Grant,
+    action: Action,
+  ): boolean {
+    const integration = integrationOfClient(principal.client);
+    if (integration.kind === "none") return true;
+    if (integration.kind === "malformed") return false;
+    const standing = this.#integrations?.standingOf(integration.id);
+    return standing?.kind === "active" && grant.resource.kind === "workflow" &&
+      standing.ceiling.overlaps(action, grant.resource);
   }
 
   get runImpliesApprove(): boolean {
@@ -376,6 +443,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     // any action on a control-plane record is managing access, so it is decided
     // as admin
     if (isControlPlaneRecordResource(resource)) action = "admin";
+    const refusal = this.#integrationRefusal(principal, action, resource);
+    if (refusal) return refusal;
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
     const localGroups = snapshot.groupsForPrincipal(principalKey);
@@ -473,6 +542,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     // any action on a control-plane record is managing access, so it is
     // explained as admin
     if (isControlPlaneRecordResource(resource)) action = "admin";
+    const refusal = this.#integrationRefusal(principal, action, resource);
+    if (refusal) return [refusal];
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
     const localGroups = snapshot.groupsForPrincipal(principalKey);
@@ -550,6 +621,11 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     action: Action,
     kind: ResourceKind,
   ): AccessDecision | null {
+    const refusal = this.#integrationRefusal(principal, action, {
+      kind,
+      name: "*",
+    });
+    if (refusal) return refusal;
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
     const localGroups = snapshot.groupsForPrincipal(principalKey);
@@ -585,6 +661,15 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     action: Action,
     kind: ResourceKind,
   ): boolean {
+    const integration = integrationOfClient(principal.client);
+    if (integration.kind === "malformed") return false;
+    if (integration.kind === "integration") {
+      const standing = this.#integrations?.standingOf(integration.id);
+      if (
+        standing?.kind !== "active" || kind !== "workflow" ||
+        !standing.ceiling.allowsSomewhere(action)
+      ) return false;
+    }
     const snapshot = this.#snapshot;
     const principalKey = principalToString(principal.principal);
     const localGroups = snapshot.groupsForPrincipal(principalKey);

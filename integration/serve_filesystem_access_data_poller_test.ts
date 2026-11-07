@@ -61,6 +61,7 @@ const GRANTEE: AccessPrincipal = {
   principal: { kind: "user", id: "fs-peer-grantee" },
   collectives: [],
   groups: [],
+  client: undefined,
 };
 const RESOURCE = { kind: "model" as const, name: "granted-model", fields: {} };
 
@@ -470,6 +471,7 @@ function decisionFor(loader: PolicySnapshotLoader, id: string): string {
     principal: { kind: "user", id },
     collectives: [],
     groups: [],
+    client: undefined,
   };
   return loader.decisionService.decide(principal, "read", RESOURCE)?.effect ??
     "deny";

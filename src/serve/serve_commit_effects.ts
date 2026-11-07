@@ -38,6 +38,8 @@ const PAGE = 1000;
 export interface ServeCommitEffectsDeps {
   readonly source: Pick<V3CommitFeedSource, "datastore" | "onMoved">;
   reloadPolicy(): Promise<unknown>;
+  /** never rejects: a failed read refuses integration tokens by itself */
+  reloadIntegrations?(): Promise<unknown>;
   checkConfig(): void;
   isFollower(): boolean;
 }
@@ -46,6 +48,7 @@ const EVERY_EFFECT: ReadonlySet<CommitEffect> = new Set([
   "config",
   "lockfile",
   "access",
+  "integrations",
   "runtime",
 ]);
 
@@ -201,6 +204,10 @@ export class ServeCommitEffects {
   async #apply(effects: ReadonlySet<CommitEffect>): Promise<void> {
     if (effects.has("config") || effects.has("lockfile")) {
       this.#deps.checkConfig();
+    }
+    // on a leader too: a stored workflow step or a member's commit can write one
+    if (effects.has("integrations")) {
+      await this.#deps.reloadIntegrations?.();
     }
     if (!this.#deps.isFollower()) {
       // A node that took the lead with an unknown policy reloads it: its own

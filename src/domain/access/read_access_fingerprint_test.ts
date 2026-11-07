@@ -53,6 +53,7 @@ const ADAM: AccessPrincipal = {
   principal: { kind: "user", id: "adam" },
   collectives: ["acme"],
   groups: ["idp-ops"],
+  client: undefined,
 };
 
 function fingerprintOf(
@@ -74,7 +75,12 @@ Deno.test("readAccessFingerprint: is a hex SHA-256 digest", () => {
 Deno.test("readAccessFingerprint: is pinned, so a change to how the same inputs decide must bump the format", () => {
   assertEquals(
     readAccessFingerprint(
-      { principal: { kind: "user", id: "adam" }, collectives: [], groups: [] },
+      {
+        principal: { kind: "user", id: "adam" },
+        collectives: [],
+        groups: [],
+        client: undefined,
+      },
       [],
       [],
       [],
@@ -261,6 +267,7 @@ Deno.test("readAccessFingerprint: differs by client, so tokens of one person nev
     principal: { kind: "user" as const, id: "alice" },
     collectives: [],
     groups: [],
+    client: undefined,
   };
   const direct = readAccessFingerprint(principal, [], [], []);
   assertNotEquals(

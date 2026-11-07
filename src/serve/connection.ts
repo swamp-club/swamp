@@ -167,6 +167,7 @@ import {
   handleAccessGrantList,
   handleAccessGroupList,
   handleAccessGroupListIdp,
+  handleAccessIntegrationList,
   handleAccessReload,
   handleAccessTokenList,
   handleAccessTokenMint,
@@ -1254,6 +1255,12 @@ const RunAttachRequestSchema = z.object({
   }),
 });
 
+const AccessIntegrationListRequestSchema = z.object({
+  type: z.literal("access.integration.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({}).optional(),
+});
+
 const AccessTokenListRequestSchema = z.object({
   type: z.literal("access.token.list"),
   id: z.string().min(1).max(256),
@@ -1656,6 +1663,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   RunAttachRequestSchema,
   CancelRequestSchema,
   AccessTokenListRequestSchema,
+  AccessIntegrationListRequestSchema,
   AccessTokenRevokeRequestSchema,
   AccessTokenRotateRequestSchema,
   AccessTokenMintRequestSchema,
@@ -2685,7 +2693,7 @@ export function handleMessage(
       );
       break;
     case "commits.head":
-      task = handleCommitsHead(socket, ctx, request.id);
+      task = handleCommitsHead(socket, ctx, request.id, principal);
       break;
     case "audit.subscribe":
       if (
@@ -3866,6 +3874,18 @@ export function handleMessage(
           principal,
         ),
         auditOpts("execution", "run", request.payload?.runId ?? "*"),
+      );
+      break;
+    case "access.integration.list":
+      task = audited(
+        handleAccessIntegrationList(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+        ),
+        auditOpts("access", "access", "swamp/integration"),
       );
       break;
     case "access.token.list":

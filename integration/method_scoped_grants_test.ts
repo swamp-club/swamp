@@ -76,6 +76,7 @@ const principal = (id: string) => ({
   principal: { kind: "user" as const, id },
   collectives: [],
   groups: [],
+  client: undefined,
 });
 
 Deno.test("method-scoped grants from a grant file: a vault grant admits only its verbs, and methods a kind never matches warn and admit nothing", async () => {

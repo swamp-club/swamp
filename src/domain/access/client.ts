@@ -38,7 +38,7 @@ export interface Client {
   readonly id: string;
 }
 
-const INTEGRATION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export const INTEGRATION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export function parseClient(value: string): Client {
   const colonIndex = value.indexOf(":");
@@ -72,6 +72,34 @@ export function parseClient(value: string): Client {
 
 export function clientToString(client: Client): string {
   return `${client.kind}:${client.id}`;
+}
+
+/**
+ * The one reading of an integration's id, used only as the key to that
+ * integration's own record: nothing compares it with a particular value.
+ */
+export type ClientIntegration =
+  | { readonly kind: "none" }
+  | { readonly kind: "integration"; readonly id: string }
+  | { readonly kind: "malformed" };
+
+export function integrationOfClient(
+  client: string | undefined,
+): ClientIntegration {
+  if (client === undefined) return { kind: "none" };
+  try {
+    const parsed = parseClient(client);
+    return parsed.kind === "integration"
+      ? { kind: "integration", id: parsed.id }
+      : { kind: "none" };
+  } catch {
+    return { kind: "malformed" };
+  }
+}
+
+/** a malformed client is never trusted to be direct */
+export function isIntegrationClient(client: string | undefined): boolean {
+  return integrationOfClient(client).kind !== "none";
 }
 
 /** a token with no client is direct with no id; never stored or parsed */

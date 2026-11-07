@@ -35,7 +35,6 @@ import {
   pollerGateTiming,
   type SyncGate,
 } from "./sync_gate.ts";
-import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 import type { EventBus } from "../domain/events/event_bus.ts";
 import {
   type DatastoreConfig,
@@ -58,8 +57,24 @@ export const ACCESS_DATA_SUBDIRS: readonly string[] = [
   "data/@swamp/group",
 ];
 
+export const INTEGRATION_DATA_SUBDIRS: readonly string[] = [
+  "data/swamp/integration",
+  "data/@swamp/integration",
+];
+
+/** what a poller keeps current: the policy snapshot, or the integration list */
+export interface AccessDataReloadTarget {
+  load(): Promise<unknown>;
+  readonly unreadable: readonly { readonly cause: string }[];
+}
+
 interface AccessDataPollerCommonOptions {
-  policySnapshotLoader: PolicySnapshotLoader;
+  policySnapshotLoader: AccessDataReloadTarget;
+  subdirs?: readonly string[];
+  /** names what it reloads in its logs */
+  reloading?: string;
+  /** a workflow step's own write shows as no change here, so don't wait for one */
+  reloadEveryCycle?: boolean;
   catalogInvalidate: () => void;
   pollIntervalMs?: number;
 }
@@ -79,7 +94,10 @@ export class AccessDataPoller {
   readonly #syncService?: DatastoreSyncService;
   readonly #changeSource?: FilesystemAccessDataChangeSource;
   readonly #syncGate?: SyncGate;
-  readonly #policySnapshotLoader: PolicySnapshotLoader;
+  readonly #policySnapshotLoader: AccessDataReloadTarget;
+  readonly #subdirs: readonly string[];
+  readonly #reloadEveryCycle: boolean;
+  readonly #reloading: string;
   readonly #catalogInvalidate: () => void;
   readonly #pollIntervalMs: number;
   readonly #namespace?: string;
@@ -101,6 +119,9 @@ export class AccessDataPoller {
       this.#namespace = options.namespace;
     }
     this.#policySnapshotLoader = options.policySnapshotLoader;
+    this.#subdirs = options.subdirs ?? ACCESS_DATA_SUBDIRS;
+    this.#reloadEveryCycle = options.reloadEveryCycle ?? false;
+    this.#reloading = options.reloading ?? "policy snapshot";
     this.#catalogInvalidate = options.catalogInvalidate;
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS;
@@ -120,9 +141,10 @@ export class AccessDataPoller {
     const intervalSec = this.#pollIntervalMs / 1000;
     if (this.#changeSource) {
       logger
-        .info`Access data poller started (filesystem datastore, interval: ${intervalSec}s)`;
+        .info`Access data poller for the ${this.#reloading} started (filesystem datastore, interval: ${intervalSec}s)`;
     } else {
-      logger.info`Access data poller started (interval: ${intervalSec}s)`;
+      logger
+        .info`Access data poller for the ${this.#reloading} started (interval: ${intervalSec}s)`;
     }
   }
 
@@ -170,10 +192,10 @@ export class AccessDataPoller {
       if (count > 0) {
         if (this.#changeSource) {
           logger
-            .info`Access data poller: ${count} record(s) changed by another process, reloading policy snapshot`;
+            .info`Access data poller: ${count} record(s) changed by another process, reloading the ${this.#reloading}`;
         } else {
           logger
-            .info`Access data poller: ${count} file(s) updated, reloading policy snapshot`;
+            .info`Access data poller: ${count} file(s) updated, reloading the ${this.#reloading}`;
         }
         await cycle.run(() =>
           observeDiagnosticPhase("catalog_invalidate", {}, () => {
@@ -188,6 +210,8 @@ export class AccessDataPoller {
       // corrupt records are not retried
       const reason = count > 0
         ? "changed"
+        : this.#reloadEveryCycle
+        ? "every_cycle"
         : pending
         ? "pending_retry"
         : this.#unreadableRecords(cycle.tally) > 0
@@ -259,7 +283,7 @@ export class AccessDataPoller {
         pulled = true;
         return syncService.pullChanged({
           signal,
-          subdirs: [...ACCESS_DATA_SUBDIRS],
+          subdirs: [...this.#subdirs],
           namespace: this.#namespace,
         });
       },
@@ -283,6 +307,8 @@ export interface CreateAccessDataPollerOptions
   datastoreEngine: DatastoreEngine;
   datastoreResolver: DatastorePathResolver;
   eventBus: EventBus;
+  dataNames?: readonly string[];
+  modelTypes?: readonly string[];
 }
 
 export async function createAccessDataPoller(
@@ -290,6 +316,9 @@ export async function createAccessDataPoller(
 ): Promise<AccessDataPoller | null> {
   const common: AccessDataPollerCommonOptions = {
     policySnapshotLoader: options.policySnapshotLoader,
+    subdirs: options.subdirs,
+    reloadEveryCycle: options.reloadEveryCycle,
+    reloading: options.reloading,
     catalogInvalidate: options.catalogInvalidate,
     pollIntervalMs: options.pollIntervalMs,
   };
@@ -308,11 +337,13 @@ export async function createAccessDataPoller(
     return null;
   }
   const changeSource = new FilesystemAccessDataChangeSource({
-    dirs: ACCESS_DATA_SUBDIRS.map((subdir) => {
+    dirs: (options.subdirs ?? ACCESS_DATA_SUBDIRS).map((subdir) => {
       const [root, ...rest] = subdir.split("/");
       return options.datastoreResolver.resolvePath(root, ...rest);
     }),
     eventBus: options.eventBus,
+    dataNames: options.dataNames,
+    modelTypes: options.modelTypes,
   });
   try {
     await changeSource.prime();

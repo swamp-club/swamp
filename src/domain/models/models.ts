@@ -27,6 +27,7 @@ import "./worker/fleet_probe_model.ts";
 
 import "./access/grant_model.ts";
 import "./access/group_model.ts";
+import "./access/integration_model.ts";
 import "./access/server_token_model.ts";
 
 import "./aws/aws_models.ts";

@@ -81,7 +81,12 @@ function service(
 }
 
 function user(id = "bot", groups: string[] = []): AccessPrincipal {
-  return { principal: { kind: "user", id }, collectives: [], groups };
+  return {
+    principal: { kind: "user", id },
+    collectives: [],
+    groups,
+    client: undefined,
+  };
 }
 
 const accessAdmin = (id: string) =>

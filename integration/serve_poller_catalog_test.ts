@@ -385,6 +385,7 @@ const GRANTEE: AccessPrincipal = {
   principal: { kind: "user", id: "peer-grantee" },
   collectives: [],
   groups: [],
+  client: undefined,
 };
 const GRANTED_RESOURCE: AccessResource = {
   kind: "model",

@@ -26,8 +26,11 @@ export interface AccessPrincipal {
   readonly principal: Principal;
   readonly collectives: readonly string[];
   readonly groups: readonly string[];
-  /** read by a condition on `client`; a run's decisions leave it unset on purpose */
-  readonly client?: string;
+  /**
+   * required so no construction site can forget it, and undefined on purpose in
+   * a run's decisions; read by a condition on `client` and by the ceiling
+   */
+  readonly client: string | undefined;
 }
 
 export interface AccessResource {

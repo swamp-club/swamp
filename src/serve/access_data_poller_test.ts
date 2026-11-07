@@ -1253,3 +1253,19 @@ Deno.test("AccessDataPoller: a cycle whose pull was skipped but whose pending re
     assertEquals(wait.attributes["swamp.diagnostic.acquired"], false);
   });
 });
+
+Deno.test("AccessDataPoller: reloadEveryCycle reloads with nothing changed, because a local write pulls as no change", async () => {
+  const sync = createMockSyncService();
+  const loader = createMockPolicySnapshotLoader();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = new AccessDataPoller({
+    syncService: sync,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 20,
+    reloadEveryCycle: true,
+  });
+  poller.start();
+  await waitFor(() => loader.loadCalls >= 2, "two reloads with no change");
+  await poller.stop();
+});

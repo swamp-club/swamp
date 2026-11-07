@@ -130,7 +130,10 @@ import {
 } from "../domain/datastore_v3/partition_key.ts";
 import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
-import { isControlPlaneModelType } from "../domain/models/control_plane_types.ts";
+import {
+  isControlPlaneModelType,
+  isIntegrationModelType,
+} from "../domain/models/control_plane_types.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
 import type { YamlWorkflowRunRepository } from "../infrastructure/persistence/yaml_workflow_run_repository.ts";
@@ -173,6 +176,7 @@ import {
   type ConnectionContext,
   isCallerAuthorized,
   isCallerAuthorizedForAll,
+  refuseIntegrationCaller,
   replicationErrorForClient,
   resolveDisplayPrincipal,
 } from "./handlers/shared.ts";
@@ -407,6 +411,14 @@ export async function handleDatastoreRequest(
   );
 }
 
+function integrationRefusedResponse(): Response {
+  return Response.json({
+    status: "error",
+    code: "forbidden",
+    message: "An integration token can't use the datastore API",
+  }, { status: 403 });
+}
+
 async function answerAuthenticated(
   req: Request,
   route: DatastoreRoute,
@@ -414,6 +426,16 @@ async function answerAuthenticated(
   deps: DatastoreApiDeps,
   authenticated: ApiCaller,
 ): Promise<Response> {
+  if (
+    refuseIntegrationCaller(
+      authenticated.access,
+      crypto.randomUUID(),
+      "datastore-api",
+      deps.ctx,
+    )
+  ) {
+    return integrationRefusedResponse();
+  }
   // A follower in team mode passes a write on to the leader with the
   // caller's own credentials (swamp-club#4120), and answers reads only
   // while its copy is fresh (swamp-club#4096); after authentication, so
@@ -2718,7 +2740,9 @@ class DatastoreApi {
       // No catalog invalidate: it would make the read model replay every commit.
       await this.#catchUp();
       const identity = partition.identity;
-      if (
+      if (identity.kind === "model" && isIntegrationModelType(identity.type)) {
+        await ctx.integrationDirectory?.reload();
+      } else if (
         identity.kind === "model" && isControlPlaneModelType(identity.type)
       ) {
         await ctx.policySnapshotLoader?.load();

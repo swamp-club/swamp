@@ -46,7 +46,12 @@ import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import type { SwampError } from "../errors.ts";
-import { behaviorNotFound, wordedSwampError } from "../errors.ts";
+import {
+  behaviorNotFound,
+  validationFailed,
+  wordedSwampError,
+} from "../errors.ts";
+import { isIntegrationModelType } from "../../domain/models/control_plane_types.ts";
 import { wordedText } from "../../domain/behavior_wording.ts";
 import { getLogger } from "@logtape/logtape";
 
@@ -380,7 +385,11 @@ async function* deleteStages(
   // A refusal is reported as an event, not thrown: end the phase as the
   // failure it is, with a bounded reason.
   const refuse = (
-    reason: "not_found" | "workflow_referenced" | "live_data",
+    reason:
+      | "not_found"
+      | "workflow_referenced"
+      | "live_data"
+      | "integration_record",
     error: SwampError,
   ): ModelDeleteEvent => {
     phase.attributes({ "swamp.diagnostic.refusal": reason });
@@ -404,6 +413,15 @@ async function* deleteStages(
     return;
   }
   const { definition, type: modelType } = result;
+  if (isIntegrationModelType(modelType.normalized)) {
+    yield refuse(
+      "integration_record",
+      validationFailed(
+        `Behavior ${definition.name} holds an integration's record. It can't be deleted, because its id must stay reserved: tokens issued to it would come back to life. To stop it being used, revoke it with swamp access integration revoke`,
+      ),
+    );
+    return;
+  }
   setDeleteSpanAttributes({
     "model.name": definition.name,
     "model.type": modelType.normalized,

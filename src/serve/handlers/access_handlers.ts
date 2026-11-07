@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  createIntegrationListDeps,
+  integrationList,
+} from "../../libswamp/access/integration_list.ts";
 import { join } from "@std/path";
 import { ACCESS_DATA_SUBDIRS } from "../access_data_poller.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -696,7 +700,9 @@ export async function handleAccessCanI(
           signalRequiresExplicitGrant: !service.runImpliesSignal,
           tagRequiresExplicitGrant: !service.writeImpliesTag,
           decisions: grants.flatMap((g) =>
-            service.actionsCoveredBy(g).map(({ action: a, impliedBy }) => ({
+            service.actionsCoveredBy(g).filter(({ action: a }) =>
+              service.grantUsableThroughClient(accessPrincipal, g, a)
+            ).map(({ action: a, impliedBy }) => ({
               action: a,
               resource: `${g.resource.kind}:${g.resource.pattern}`,
               effect: g.effect,
@@ -1009,6 +1015,56 @@ export async function handleAccessReload(
     logger.error`Access policy reload failed (requested by ${who}): ${error}`;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_reload_failed", message);
+  }
+}
+
+export async function handleAccessIntegrationList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  try {
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      integrationList(
+        handlerLibSwampContext(ctx),
+        createIntegrationListDeps(ctx.repoContext.dataQueryService),
+      ),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    send(socket, {
+      type: "access.integration.list",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "access_integration_list_failed",
+      sanitizeErrorForClient(error),
+    );
   }
 }
 

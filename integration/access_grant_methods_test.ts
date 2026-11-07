@@ -45,7 +45,12 @@ function makeGrant(overrides: Partial<Grant> = {}): Grant {
 }
 
 function makePrincipal(id: string): AccessPrincipal {
-  return { principal: { kind: "user", id }, collectives: [], groups: [] };
+  return {
+    principal: { kind: "user", id },
+    collectives: [],
+    groups: [],
+    client: undefined,
+  };
 }
 
 function makeModelResource(

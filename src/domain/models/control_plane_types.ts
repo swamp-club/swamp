@@ -33,6 +33,7 @@ export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
   "swamp/server-token",
   "swamp/grant",
   "swamp/group",
+  "swamp/integration",
 ];
 
 /**
@@ -57,6 +58,13 @@ export function normalizeModelTypeName(type: string): string | null {
   }
   const stripped = normalized.replace(/^[@/]+/, "");
   return stripped.length > 0 ? stripped : null;
+}
+
+const INTEGRATION_TYPE = "swamp/integration";
+
+/** changes without a grant reload, so its commits must never reload the policy */
+export function isIntegrationModelType(type: string): boolean {
+  return normalizeModelTypeName(type) === INTEGRATION_TYPE;
 }
 
 export function isControlPlaneModelType(type: string): boolean {

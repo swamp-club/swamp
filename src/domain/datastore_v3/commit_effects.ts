@@ -19,13 +19,17 @@
 
 /** decided from the commit's partition alone, so it needs nothing but the commit */
 
-import { isControlPlaneModelType } from "../models/control_plane_types.ts";
+import {
+  isControlPlaneModelType,
+  isIntegrationModelType,
+} from "../models/control_plane_types.ts";
 import type { PartitionKey } from "./partition_key.ts";
 
 export type CommitEffect =
   | "config"
   | "lockfile"
   | "access"
+  | "integrations"
   | "runtime";
 
 export function commitEffectOf(partition: PartitionKey): CommitEffect {
@@ -36,6 +40,7 @@ export function commitEffectOf(partition: PartitionKey): CommitEffect {
     case "lockfile":
       return "lockfile";
     case "model":
+      if (isIntegrationModelType(identity.type)) return "integrations";
       return isControlPlaneModelType(identity.type) ? "access" : "runtime";
     case "run":
     case "definition":

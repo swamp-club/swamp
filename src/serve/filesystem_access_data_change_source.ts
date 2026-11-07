@@ -41,6 +41,8 @@ type Fingerprint = Map<string, RecordFingerprint>;
 export interface FilesystemAccessDataChangeSourceOptions {
   dirs: readonly string[];
   eventBus: EventBus;
+  dataNames?: readonly string[];
+  modelTypes?: readonly string[];
 }
 
 /**
@@ -52,12 +54,17 @@ export class FilesystemAccessDataChangeSource {
   readonly #dirs: readonly string[];
   readonly #eventBus: EventBus;
   readonly #unsubscribers: (() => void)[] = [];
+  readonly #dataNames: readonly string[];
+  readonly #modelTypes: readonly string[];
   #baseline: Fingerprint | null = null;
   #ownVersions = new Map<string, Set<string>>();
 
   constructor(options: FilesystemAccessDataChangeSourceOptions) {
     this.#dirs = options.dirs;
     this.#eventBus = options.eventBus;
+    this.#dataNames = options.dataNames ?? ACCESS_DATA_NAMES;
+    this.#modelTypes = options.modelTypes ??
+      [GRANT_MODEL_TYPE.normalized, GROUP_MODEL_TYPE.normalized];
     this.listen();
   }
 
@@ -65,12 +72,7 @@ export class FilesystemAccessDataChangeSource {
     if (this.#unsubscribers.length > 0) return;
     this.#unsubscribers.push(
       this.#eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
-        if (
-          event.modelType !== GRANT_MODEL_TYPE.normalized &&
-          event.modelType !== GROUP_MODEL_TYPE.normalized
-        ) {
-          return;
-        }
+        if (!this.#modelTypes.includes(event.modelType)) return;
         const own = this.#ownVersions.get(event.modelInputId) ?? new Set();
         for (const { name, version } of event.dataVersions ?? []) {
           own.add(`${name}/${version}`);
@@ -141,7 +143,7 @@ export class FilesystemAccessDataChangeSource {
       }
       for (const modelId of modelIds) {
         const entries = new Map<string, string>();
-        for (const dataName of ACCESS_DATA_NAMES) {
+        for (const dataName of this.#dataNames) {
           await walk(join(dir, modelId, dataName), dataName, entries);
         }
         const versions = new Set<string>();

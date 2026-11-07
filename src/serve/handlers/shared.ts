@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  integrationOfClient,
+  isIntegrationClient,
+} from "../../domain/access/client.ts";
+import type { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
 import type { FollowerCatchUp } from "../follower_feed.ts";
 import type { GcMutex } from "../gc_mutex.ts";
 import type { EventLoopLagReader } from "../ws_request_span.ts";
@@ -341,6 +346,7 @@ export { MAX_QUERY_RESULTS } from "../../domain/data/query_sort.ts";
 export const DEFAULT_QUERY_LIMIT = 1000;
 
 export interface ConnectionContext {
+  integrationDirectory?: IntegrationDirectory;
   repoDir: string;
   repoContext: RepositoryContext;
   followerGate?: FollowerGate;
@@ -623,12 +629,19 @@ export interface TokenSessionBinding {
   readonly principalId: string;
 }
 
+/** required so no stream can forget it and survive a revoke */
+export interface StreamSessionBinding extends TokenSessionBinding {
+  readonly client: string | undefined;
+}
+
 export type TokenSessionTerminationCause =
   | "revoked"
   | "rotated"
   | "expired"
   | "deleted"
-  | "invalid";
+  | "invalid"
+  | "integration-revoked"
+  | "integration-narrowed";
 
 // each close reason names its cause so a client can tell a revoked token from a
 // principal losing access; keep under the close-frame size limit
@@ -684,13 +697,13 @@ export interface StreamSessionHandle {
 }
 
 interface StreamSession {
-  readonly binding: TokenSessionBinding;
+  readonly binding: StreamSessionBinding;
   readonly handle: StreamSessionHandle;
 }
 
 /** the token count spans every mint of the name, so rotating does not reset it */
 export function registerStreamSession(
-  binding: TokenSessionBinding,
+  binding: StreamSessionBinding,
   handle: StreamSessionHandle,
 ): (() => void) | null {
   let streams = tokenStreams.get(binding.name);
@@ -873,6 +886,58 @@ function emitSessionTerminated(
       { name, error: error instanceof Error ? error.message : String(error) },
     );
   }
+}
+
+function clientNamesIntegration(
+  client: string | undefined,
+  id: string,
+): boolean {
+  const integration = integrationOfClient(client);
+  return integration.kind === "integration" && integration.id === id;
+}
+
+/**
+ * a request decides afresh, but a stream authorized when it opened would keep
+ * flowing; closing a session leaves a started run running
+ */
+export function terminateIntegrationSessions(
+  id: string,
+  options: Omit<
+    TerminateTokenSessionsOptions,
+    "onlyCreatedAt" | "exceptCreatedAt"
+  >,
+): number {
+  let closed = 0;
+  const names = new Set([...tokenSockets.keys(), ...tokenStreams.keys()]);
+  for (const name of names) {
+    for (const socket of [...(tokenSockets.get(name) ?? [])]) {
+      if (!clientNamesIntegration(connectionClient.get(socket), id)) continue;
+      emitSessionTerminated(
+        connectionTokens.get(socket)?.principalId ?? "",
+        getConnectionSourceIp(socket),
+        name,
+        options,
+      );
+      tokenSockets.get(name)?.delete(socket);
+      connectionTokens.delete(socket);
+      closeSession(socket, options.code, options.reason);
+      closed++;
+    }
+    if (tokenSockets.get(name)?.size === 0) tokenSockets.delete(name);
+    for (const stream of [...(tokenStreams.get(name) ?? [])]) {
+      if (!clientNamesIntegration(stream.binding.client, id)) continue;
+      emitSessionTerminated(
+        stream.binding.principalId,
+        stream.handle.sourceIp,
+        name,
+        options,
+      );
+      unregisterStream(stream);
+      closeStream(stream, options.code, options.reason);
+      closed++;
+    }
+  }
+  return closed;
 }
 
 export function getConnectionCollectives(
@@ -1430,6 +1495,24 @@ export function isCallerAuthorizedForAll(
     ctx,
     decideForCaller(caller, action, resource, ctx, true),
   );
+}
+
+/** decided rather than just refused, so the audit event names the ceiling */
+export function refuseIntegrationCaller(
+  caller: AccessCaller,
+  requestId: string,
+  surface: string,
+  ctx: ConnectionContext,
+): boolean {
+  if (!isIntegrationClient(caller.client)) return false;
+  isCallerAuthorized(
+    caller,
+    requestId,
+    "read",
+    { kind: "access", name: surface, fields: {} },
+    ctx,
+  );
+  return true;
 }
 
 export interface RequestAuthority {
