@@ -20,10 +20,31 @@
 import { Marked } from "marked";
 import TerminalRenderer from "marked-terminal";
 
+interface TableCellToken {
+  header?: boolean;
+}
+
+// deno-lint-ignore no-explicit-any
+function terminalRenderer(rendererOptions: Record<string, unknown>): any {
+  // deno-lint-ignore no-explicit-any
+  const renderer = new (TerminalRenderer as any)(rendererOptions);
+  const tablecell = renderer.tablecell;
+  // marked-terminal decodes entities in body rows but not in the header row
+  renderer.tablecell = function (
+    this: { unescape(s: string): string },
+    token: TableCellToken | string,
+  ): string {
+    const cell: string = tablecell.call(this, token);
+    return typeof token === "object" && token.header
+      ? this.unescape(cell)
+      : cell;
+  };
+  return renderer;
+}
+
 const terminalMarked = new Marked();
 terminalMarked.setOptions({
-  // deno-lint-ignore no-explicit-any
-  renderer: new (TerminalRenderer as any)(),
+  renderer: terminalRenderer({}),
 });
 
 export interface WidthOptions {
@@ -43,8 +64,7 @@ export function renderMarkdownToTerminal(
   if (options?.maxWidth) {
     const widthMarked = new Marked();
     widthMarked.setOptions({
-      // deno-lint-ignore no-explicit-any
-      renderer: new (TerminalRenderer as any)({
+      renderer: terminalRenderer({
         width: options.maxWidth,
         reflowText: true,
         tableOptions: { wordWrap: true },
@@ -121,8 +141,7 @@ function bareAutolinkText(token: LinkToken): string | undefined {
  * and can disguise where it leads.
  */
 function visibleLinkRenderer(rendererOptions: Record<string, unknown>) {
-  // deno-lint-ignore no-explicit-any
-  const renderer = new (TerminalRenderer as any)(rendererOptions);
+  const renderer = terminalRenderer(rendererOptions);
   renderer.link = function (
     this: {
       parser: { parseInline(tokens: unknown[]): string };
