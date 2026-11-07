@@ -125,7 +125,12 @@ export function createTriggerAuthorizer(
     }
 
     try {
-      const accessPrincipal = { principal, collectives: [], groups: [] };
+      const accessPrincipal = {
+        principal,
+        collectives: [],
+        groups: [],
+        client: undefined,
+      };
       const decision = loader.decisionService.decide(
         accessPrincipal,
         "run",

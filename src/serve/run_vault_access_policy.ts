@@ -387,6 +387,7 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
         principal: inputs.principal,
         groups: inputs.idpGroups,
         collectives: inputs.collectives,
+        client: undefined,
       });
     }
     const now = (this.#deps.now ?? Date.now)();
@@ -429,11 +430,13 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
         principal: inputs.principal,
         groups: record.groups,
         collectives: record.collectives,
+        client: undefined,
       }
       : {
         principal: inputs.principal,
         groups: inputs.idpGroups,
         collectives: inputs.collectives,
+        client: undefined,
       };
   }
 }

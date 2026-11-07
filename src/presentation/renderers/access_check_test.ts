@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { integrationRefusalReason } from "../../domain/access/grant_based_access_decision_service.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AccessCheckResult,
@@ -515,4 +516,20 @@ Deno.test("accessCheckRenderer log: a later allow on the run is not called a den
     ],
   }));
   assertEquals(headline.includes("depends on the run"), false);
+});
+
+Deno.test("integrationRefusalReason: names each built-in refusal, and no grant", () => {
+  assertEquals(
+    integrationRefusalReason("builtin:integration-ceiling"),
+    "above the integration's ceiling",
+  );
+  assertEquals(
+    integrationRefusalReason("builtin:integration-unknown"),
+    "the integration is not registered",
+  );
+  assertEquals(
+    integrationRefusalReason("builtin:integration-revoked"),
+    "the integration was revoked",
+  );
+  assertEquals(integrationRefusalReason("a-real-grant"), undefined);
 });

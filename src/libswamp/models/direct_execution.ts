@@ -26,6 +26,8 @@ import {
   Definition,
   definitionNameViolation,
 } from "../../domain/definitions/definition.ts";
+import { integrationDefinitionId } from "../../domain/models/access/integration_model.ts";
+import { isIntegrationModelType } from "../../domain/models/control_plane_types.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import {
@@ -640,6 +642,9 @@ export async function resolveOrCreateDefinition(
 
   const createResult = async (): Promise<DirectExecutionResult> => {
     const definition = Definition.create({
+      id: isIntegrationModelType(resolvedType.normalized)
+        ? await integrationDefinitionId(definitionName)
+        : undefined,
       name: definitionName,
       type: resolvedType.normalized,
       typeVersion: modelDef.version,

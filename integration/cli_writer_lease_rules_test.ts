@@ -39,6 +39,7 @@ import {
  * that look read-only
  */
 const PINNED = [
+  "src/cli/commands/access_integration.ts :: runIntegrationMethod",
   "src/cli/commands/access_grant.ts :: accessGrantCreateCommand",
   "src/cli/commands/access_grant.ts :: accessGrantRevokeCommand",
   "src/cli/commands/access_group.ts :: runGroupMethod",

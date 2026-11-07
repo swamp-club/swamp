@@ -88,6 +88,8 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   // The hidden shell-completion command's action, called by completion scripts.
   "action",
   "args",
+  // `access integration <verb> <id>`: an id the operator chose.
+  "id",
   // `extension promote`: an extension name or a manifest path, so a path.
   "extension-or-manifest",
   "extra",

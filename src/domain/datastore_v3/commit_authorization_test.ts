@@ -1031,6 +1031,7 @@ function grantAuthority(grants: Partial<Grant>[]): CallerAuthority {
           principal: { kind: "user", id: "member" },
           collectives: [],
           groups: [],
+          client: undefined,
         },
         action,
         resource,

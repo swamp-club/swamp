@@ -64,6 +64,7 @@ const SCOPED = [
 const EXEMPT = [
   "src/cli/commands/access_grant.ts",
   "src/cli/commands/access_group.ts",
+  "src/cli/commands/access_integration.ts",
 ];
 
 Deno.test("method runs under per-model locks are scoped with runUnderModelLocks", async () => {

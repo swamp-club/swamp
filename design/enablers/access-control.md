@@ -1,7 +1,7 @@
 ---
 audience: operator, maintainer
 enables: [serve]
-last-verified: 2026-09-14 @ 626d7507
+last-verified: 2026-11-07 @ 47eafaa7
 ---
 
 # Access Control
@@ -85,11 +85,14 @@ A token records a client, written `<kind>:<id>`, separate from its principal.
 swamp-lib's `SwampClient`.
 
 - The **kind** says what serve treats differently. `direct` applies no ceiling.
-  `integration` is reserved for an app an admin registers, whose rights will be
-  the person's grants intersected with what the admin approved. No production
-  path issues an `integration` token yet.
-- The **id** says which one, for the record. Serve's own behavior never branches
-  on it; only a grant condition an operator writes reads it.
+  `integration` is an app an admin registers, whose rights are the person's
+  grants intersected with its ceiling (see
+  [Integrations and ceilings](#integrations-and-ceilings)). No production path
+  issues an `integration` token yet.
+- The **id** says which one. Serve's behavior may depend on a client's kind. An
+  integration ID is used only as the key to that integration's own record: no code
+  compares it with a particular value or treats one ID differently from another.
+  A grant condition an operator writes may read it.
 
 | How the token is issued                 | Client             |
 | --------------------------------------- | ------------------ |
@@ -117,6 +120,199 @@ see "Actor identity" in `design/enablers/serve-audit.md` and "Run records: the
 threat model" below.
 
 Implementation: `src/domain/access/client.ts`.
+
+## Integrations and ceilings
+
+An integration is an app an admin registers with `swamp access integration`. A
+token whose client is `integration:<id>` is limited by that integration's ceiling
+on every decision, inside `GrantBasedAccessDecisionService`, so handlers change
+nothing. Effective rights are the person's grants intersected with the ceiling. A
+ceiling can narrow rights and never adds any. An unknown or revoked integration,
+or a client that does not parse, is refused.
+
+No production path issues an integration token yet: linking a person belongs to
+the delegation work. `swamp access integration` manages the records only.
+
+A refusal is an explicit deny, named `builtin:integration-ceiling`,
+`builtin:integration-unknown` or `builtin:integration-revoked`, never a null. Sites
+that fall back to an admin check on a null would otherwise let an admin person
+through. The audit event names the principal, the client and that grant.
+
+### The ceiling
+
+```json
+{
+  "version": 1,
+  "ceiling": [
+    { "actions": ["approve", "read", "run"], "resource": "workflow:@acme/deploy" }
+  ]
+}
+```
+
+- **Resources:** `workflow:` selectors only, with a wildcard only at the end.
+  Registering or changing a ceiling refuses any other kind, behaviors included, so
+  an integration token cannot run a behavior on any transport. A workflow never
+  names a method, so a ceiling has no `methods`.
+- **Actions:** only `run`, `read`, `approve` and `signal`. `write`, `tag` and `admin`
+  are refused: a `write` ceiling could create a schedule that outlives the
+  integration. Adding an action later is safe, and removing one is not.
+- **Canonical form:** order and duplicates carry no meaning. Actions are sorted and
+  deduped, entries with one resource merge, and entries sort by resource, serialized
+  as RFC 8785 JSON. The **ceiling digest** is `sha256:` and the lowercase hex of
+  those bytes. swamp-club computes the same one, from the same rules, for what a
+  person consents to.
+- **A digest only shows a change.** `ceilingWithin(consented, current)` says whether
+  a ceiling widened, so a delegation needs a copy of the ceiling a person agreed to.
+
+Implementation: `src/domain/access/ceiling.ts`.
+
+### Actions match literally
+
+A request through an integration needs two things: the ceiling names that exact
+action on that workflow, and the person would be allowed it without the integration.
+
+| Person holds    | Ceiling names | Result                                     |
+| --------------- | ------------- | ------------------------------------------ |
+| `run`           | `run`         | Run is allowed, and approve is refused     |
+| `run`           | `approve`     | Approve is allowed, through the person's implied right, unless `--approve-requires-explicit-grant` is on |
+| `approve`       | `run`         | Both are refused                           |
+| A deny on `run` | `approve`     | Approve is refused                         |
+
+Implications that grants have, such as `run` implying `approve`, never apply to a
+ceiling itself, so a ceiling allowing only `run` does not allow approving a gate.
+
+**Admin rights are not available.** Rights a person has only because they are an
+admin never pass, since the admin check is decided on `access:*`, which no ceiling
+covers. Only their explicit grants on workflows count. A restricted command needs
+that admin check, so `--restricted-commands` keeps a command from every integration
+token, even for an admin person.
+
+### What each action allows
+
+| Action    | Allows, on a workflow the ceiling names                                                                                                                                                            |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`     | Start a run, resume one (including from a job), attach to one, and cancel any run of it; save an evaluation when `read` also allows the evaluate                                                   |
+| `read`    | The definition, search, run history and logs, approvals, waits, triggers, schedules, schema, validate, an unsaved evaluate, and that workflow's health entries                                     |
+| `approve` | Approve or reject a gate                                                                                                                                                                           |
+| `signal`  | Deliver a signal to a wait                                                                                                                                                                         |
+
+**`run` includes cancel.** It reaches any run of the workflow, including another
+person's or a scheduled one, and there is no separate action to narrow this.
+Cancelling a parent also cancels its suspended children, on workflows the ceiling
+does not name. To keep cancel away from integration tokens, list `workflow.cancel`
+in `--restricted-commands`.
+
+`read` does not reach a run's data: `data.*` needs a `data` read, which no ceiling
+allows.
+
+### Transports
+
+| Transport                                       | An integration token                                                         |
+| ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| WebSocket requests                              | Decided on every request. A rule test walks every request type               |
+| HTTP read route, action route, cancel, signal   | Decided as the WebSocket is                                                  |
+| Admin routes (cluster, config, `/internal/runs`) | Refused, since they need admin                                               |
+| `/api/v1/health`                                | Answers any valid token, even with an empty ceiling, showing only what it may read |
+| Datastore API, commit feed (`commits.*`)        | Refused and audited: they replicate the repository                           |
+| Dashboard session exchange                      | Refused and audited                                                          |
+
+`swamp access check --client integration:<id>` judges a request against the
+registered ceiling as serve would, so an unregistered ID reads as refused.
+
+### What a ceiling cannot reach
+
+A ceiling applies where a run starts. Once it has, the run behaves as any run does:
+see [Workflow execution context](#workflow-execution-context). A ceiling allowing
+`run` should name specific workflows.
+
+- **Steps and child runs** have no ceiling, so a nested workflow runs even if the
+  ceiling does not name it.
+- **Vault use during a run** has no ceiling, in line with the rule that client
+  conditions never narrow a run. That includes an admin person's reach to reserved
+  vaults, if a stored workflow asks for one. Workflow run inputs stay inert, so an
+  integration token cannot name a secret through them.
+- **A run already started carries on** after its integration is narrowed or revoked,
+  including one suspended at a gate. Resuming one by request needs `run` under the
+  caller's own ceiling, so someone else can still resume it. An automatic resume
+  after a gate needs the deciding token's ceiling to cover the parent; otherwise
+  it waits for someone to resume it.
+
+### The record
+
+An integration is a `swamp/integration` control-plane record, in data
+`integration-main`, holding its ID, name, credential hash, ceiling and state. It is
+a record type of its own rather than a grant row, because a grant with a new
+subject kind stops an older serve loading any policy.
+
+- **The ID is final.** Revoking cannot be undone and the ID stays reserved, because
+  tokens issued to it would otherwise come back to life. Listing keeps showing it,
+  and `model delete`, `data delete` and `data rename` refuse its record. There is no clean-up path
+  yet.
+- **One record per ID.** The record's definition ID is derived from the integration
+  ID, because nothing in storage can refuse a create and a second record would make
+  every node refuse the ID. So registers that overlap reach one record. They can
+  still all report success, and the last write's credential is the one that matches:
+  the delegation work must close that before credentials are checked.
+- **Revoked is final, except for overlapping writes.** Each local change pulls first,
+  and serve reads a copy its poller refreshes, so a change sees what has already
+  synced. With no lock, on a store with one cache per machine a write that overlaps
+  another, or arrives before serve's next poll, is last write wins: a register can
+  still bring back a just-revoked ID. A commit-log datastore has one writer and refuses
+  it. Delegation should recheck this before it relies on the record for credentials.
+- **The credential** is `swi1.<id>.<64 hex>`, generated by the CLI and shown once at
+  registration. Serve and the repository only ever see its SHA-256 hash: a long
+  random secret has nothing to guess, so it needs no slow hash. Nothing checks it
+  yet, and it cannot be rotated.
+- **Audit:** a registration, ceiling change or revoke through serve is a behavior
+  run, audited with the principal, client, state and ceiling digests, never the hash.
+- **On a follower** every command is forwarded to the leader, including `list` and
+  `show`, so an operator does not read a copy behind a revoke they just made.
+
+### Changes apply without a grant reload
+
+Serve keeps integrations in `IntegrationDirectory`, apart from the policy snapshot,
+so `--grant-reload manual` does not hold them and reloading them never publishes held
+grant changes. Each decision reads it live.
+
+| Where                                   | A revoke or narrowing applies                                    |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| The node that took the command          | Before it replies                                                |
+| A write forwarded by a follower         | At once, because the leader decides                              |
+| A follower's own reads | When its commit feed applies the change. It refuses reads once its copy goes stale |
+| A peer on a v2 datastore                | Within `--datastore-poll-interval`, 30 s by default              |
+| A local CLI write with no `--server` on a v2 datastore | Within the same interval                          |
+
+- **With the leader gone** and storage reachable, a follower keeps answering reads,
+  and no revoke can land meanwhile, because writes need a leader.
+- **A request past its check** finishes. Approving or rejecting decides again inside
+  the run's claim, so it sees the change.
+- **Open sessions:** on each node, revoking or narrowing closes that integration's
+  WebSocket and stream sessions with code 4003, and audits it. Widening closes
+  nothing. A closed session leaves its runs running.
+- **It fails closed.** Until a load has read every record, every integration is
+  refused, and only integration tokens feel that: grants and direct tokens are
+  untouched, and serve still starts. A record that names itself but cannot be read,
+  a ceiling version this build cannot read, or copies of a record that disagree
+  refuse that integration. A token for an integration registered a moment ago is
+  refused until the record arrives.
+
+### Upgrade first
+
+Upgrade every instance before registering an integration.
+
+- **An older node ignores these records** when it loads its policy, so it still
+  starts. It does not know the type is a control-plane record, though, so on that
+  node anyone with `data` or `model` read can see the name, ceiling and hash, and a
+  member with write could forge a record a newer node would honour.
+- **An older node gives a token with an `integration:` client the person's full
+  authority,** because it applies no ceiling. So no token may be issued until every
+  instance supports ceilings, which the delegation work must check first.
+
+Implementation: `src/domain/access/integration_directory.ts`,
+`src/domain/models/access/integration_model.ts`,
+`src/domain/access/integration_credential.ts`, `src/cli/commands/access_integration.ts`.
+Guards: `integration/serve_integration_ceiling_rules_test.ts` walks every request
+type, and `integration/serve_client_rules_test.ts` pins who reads an integration ID.
 
 ## Admission
 
@@ -1353,7 +1549,8 @@ request type, and the `*` rule in
 ## Control-plane records
 
 The control plane stores its own records as behavior data beside user behaviors:
-`swamp/grant`, `swamp/group` and `swamp/server-token` for access control, and
+`swamp/grant`, `swamp/group`, `swamp/server-token` and `swamp/integration` for
+access control, and
 `swamp/enrollment-token`, `swamp/worker`, `swamp/step-lease`,
 `swamp/pending-dispatch` and `swamp/fleet-probe` for the worker fleet
 (`CONTROL_PLANE_MODEL_TYPES`). They are never user data. A grant record is the

@@ -723,6 +723,7 @@ const PINNED_HOOK_MISUSES: readonly string[] = [];
 // on the global lock run in runInCoordinatorRoot, whose flush is the
 // coordinator's push
 const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
+  "src/cli/commands/access_integration.ts: runIntegrationChange",
   "src/cli/commands/access_grant.ts: accessGrantCreateCommand",
   "src/cli/commands/access_grant.ts: accessGrantRevokeCommand",
   "src/cli/commands/access_group.ts: runGroupMethod",

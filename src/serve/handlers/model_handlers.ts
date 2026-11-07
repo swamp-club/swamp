@@ -17,9 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  INTEGRATION_DATA_NAME,
+  IntegrationSchema,
+} from "../../domain/models/access/integration_model.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
-import { isControlPlaneModelType } from "../../domain/models/control_plane_types.ts";
+import {
+  isControlPlaneModelType,
+  isIntegrationModelType,
+} from "../../domain/models/control_plane_types.ts";
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -180,6 +187,7 @@ import {
   LibSwampStreamError,
   lockTimeoutErrorForClient,
   pushChangedToRemote,
+  recordAuditedDetail,
   recordAuditedResource,
   rejectEditWithoutContent,
   resourceDecider,
@@ -360,6 +368,45 @@ interface MethodRunTarget {
    * path
    */
   run?: { definition: DefinitionLookupResult | null; resource: AccessResource };
+}
+
+/** the audit log shows what changed; the credential's hash never appears here */
+function integrationAuditDetail(run: unknown): string | undefined {
+  const artifacts = (run as {
+    dataArtifacts?: readonly { name: string; attributes?: unknown }[];
+  }).dataArtifacts;
+  const parsed = IntegrationSchema.safeParse(
+    artifacts?.find((artifact) => artifact.name === INTEGRATION_DATA_NAME)
+      ?.attributes,
+  );
+  if (!parsed.success) return undefined;
+  const { state, ceilingDigest, previousCeilingDigest } = parsed.data;
+  return `state=${state} ceiling=${ceilingDigest}${
+    previousCeilingDigest ? ` previous=${previousCeilingDigest}` : ""
+  }`;
+}
+
+/** on both run paths: the audit names what changed, and the reply waits for it */
+function integrationRunNotes(
+  socket: WebSocket,
+  requestId: string,
+  ctx: ConnectionContext,
+  target: MethodRunTarget,
+  payload: { typeArg?: string },
+) {
+  const isIntegrationRun = isIntegrationModelType(
+    executedDefinition(target)?.type.normalized ?? payload.typeArg ?? "",
+  );
+  return {
+    note(event: { kind: string; run?: unknown }): void {
+      if (!isIntegrationRun || event.kind !== "completed") return;
+      const detail = integrationAuditDetail(event.run);
+      if (detail) recordAuditedDetail(socket, requestId, detail);
+    },
+    async settle(): Promise<void> {
+      if (isIntegrationRun) await ctx.integrationDirectory?.reload();
+    },
+  };
 }
 
 function executedDefinition(
@@ -680,6 +727,7 @@ export async function handleModelMethodRun(
         ctx.cancelRegistry.deregister("method-run", requestId);
       }
     };
+    let integrationRun: ReturnType<typeof integrationRunNotes> | undefined;
     const answer = async (error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") {
         sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -720,6 +768,13 @@ export async function handleModelMethodRun(
         )
       ) return;
       const preResult = executedDefinition(target);
+      integrationRun = integrationRunNotes(
+        socket,
+        requestId,
+        ctx,
+        target,
+        payload,
+      );
 
       // The root's flush is the model lock's push or a read or list run's
       // publish on every outcome, otherwise the run's push.
@@ -862,6 +917,7 @@ export async function handleModelMethodRun(
                 )
               ) {
                 if (socket.readyState !== WebSocket.OPEN) break;
+                integrationRun?.note(event);
                 const serialized = serializeEvent(
                   event as { kind: string; [key: string]: unknown },
                 );
@@ -871,6 +927,7 @@ export async function handleModelMethodRun(
                   event: serialized,
                 });
               }
+              await integrationRun?.settle();
               send(socket, { type: "done", id: requestId });
             };
 
@@ -905,6 +962,7 @@ export async function handleModelMethodRun(
       );
       if (!answersBeforeFlush()) await telemetry?.finish(null);
     } catch (error) {
+      await integrationRun?.settle();
       if (!answered) {
         await answer(error);
       } else if (error !== answeredError) {
@@ -941,6 +999,13 @@ export async function handleModelMethodRun(
     )
   ) return;
   const preResult = executedDefinition(target);
+  const integrationRun = integrationRunNotes(
+    socket,
+    requestId,
+    ctx,
+    target,
+    payload,
+  );
   const recorded = recordedRunModel(
     preResult,
     target.run?.resource.name ?? target.resource.name,
@@ -1189,6 +1254,7 @@ export async function handleModelMethodRun(
                     }),
                 )
               ) {
+                integrationRun.note(event);
                 const serialized = serializeEvent(
                   event as { kind: string; [key: string]: unknown },
                 );
@@ -1216,6 +1282,7 @@ export async function handleModelMethodRun(
               answersBeforeFlush() && ctx.confirmReplicated === undefined &&
               ctx.holdRepliesUntilCommitted !== true
             ) {
+              await integrationRun.settle();
               buffer.finish({ kind: "done" });
               await detachedTelemetry?.finish(null);
             }
@@ -1233,6 +1300,7 @@ export async function handleModelMethodRun(
         !answersBeforeFlush() || ctx.confirmReplicated !== undefined ||
         ctx.holdRepliesUntilCommitted === true
       ) {
+        await integrationRun.settle();
         // reported finished only once its commits are replicated; answered
         // here, so a failure is not answered again below
         const unconfirmed = await confirmRunReplicated(
@@ -1248,6 +1316,8 @@ export async function handleModelMethodRun(
         }
       }
     } catch (error) {
+      // a commit that failed must not leave what it never stored in force
+      await integrationRun.settle();
       if (!answered) {
         await finishWithError(error);
       } else if (error !== answeredError) {

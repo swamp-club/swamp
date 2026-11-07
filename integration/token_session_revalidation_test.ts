@@ -493,7 +493,7 @@ function openStream(
 ): FakeStream {
   const closes: { code: number; reason: string }[] = [];
   const unregister = registerStreamSession(
-    { name, createdAt, principalId },
+    { name, createdAt, principalId, client: undefined },
     {
       sourceIp: "192.0.2.45",
       close: (code, reason) => closes.push({ code, reason }),

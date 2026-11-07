@@ -293,3 +293,31 @@ Deno.test("rename: byId with a name rejects as model not found", async () => {
     assertEquals(calls.length, 0);
   });
 });
+
+function renameOf(typeName: string) {
+  const definition = makeDefinition("integration-app");
+  const { repo: definitionRepo } = makeDefinitionRepo({
+    definition,
+    type: ModelType.create(typeName),
+  });
+  const { repo: dataRepo, calls } = makeDataRepo((_t, _m, oldName, newName) =>
+    Promise.resolve({ oldName, newName, copiedVersion: 1, newVersion: 1 })
+  );
+  const service = new DataRenameService(dataRepo, definitionRepo);
+  return {
+    calls,
+    rename: () => service.rename("integration-app", "integration-main", "x"),
+  };
+}
+
+Deno.test("rename: refuses an integration's record before touching the data", async () => {
+  const { calls, rename } = renameOf("swamp/integration");
+  await assertRejects(rename, Error, "must stay reserved");
+  assertEquals(calls, []);
+});
+
+Deno.test("rename: an ordinary behavior's data named like the record still renames", async () => {
+  const { calls, rename } = renameOf("aws/s3-bucket");
+  await rename();
+  assertEquals(calls.length, 1);
+});

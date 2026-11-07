@@ -463,6 +463,7 @@ Deno.test("deliverSignalForCaller: a caller who may not signal the workflow gets
           principal: { kind: "user" as const, id: CALLER_ID },
           collectives: [],
           groups: [],
+          client: undefined,
         };
         const resource = {
           kind: "workflow" as const,

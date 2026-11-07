@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { Ceiling } from "../src/domain/access/ceiling.ts";
+import type {
+  IntegrationLookup,
+  IntegrationStanding,
+} from "../src/domain/access/integration_directory.ts";
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServerToken } from "../src/domain/models/access/server_token_model.ts";
@@ -149,10 +154,16 @@ interface Cluster {
 async function withCluster(
   client: string | undefined,
   fn: (cluster: Cluster) => Promise<void>,
+  standings: {
+    leader?: IntegrationLookup;
+    follower?: IntegrationLookup;
+  } = {},
 ): Promise<void> {
   await withServeRepo(async (leaderRepo) => {
     const events: AuditEvent[] = [];
-    const leaderCtx = createServeCtx(leaderRepo, [WORKFLOW_GRANT]);
+    const leaderCtx = createServeCtx(leaderRepo, [WORKFLOW_GRANT], {
+      integrations: standings.leader,
+    });
     leaderCtx.auditEmitter = {
       emit: (event: AuditEvent) => events.push(event),
     } as unknown as ConnectionContext["auditEmitter"];
@@ -166,7 +177,9 @@ async function withCluster(
         since: "2026-10-29T12:00:00.000Z",
       };
       const leaderLink = new LeaderLink({ leader: () => leader });
-      const followerCtx = createServeCtx(followerRepo, [WORKFLOW_GRANT]);
+      const followerCtx = createServeCtx(followerRepo, [WORKFLOW_GRANT], {
+        integrations: standings.follower,
+      });
       followerCtx.followerGate = {
         role: "follower",
         leader: () => leader,
@@ -175,7 +188,7 @@ async function withCluster(
       followerCtx.leaderLink = leaderLink;
       const followerHttp = serveNode(
         followerCtx,
-        "direct:token",
+        standings.follower ? client : "direct:token",
         (socket, req) => {
           rememberForwardCredential(
             socket,
@@ -482,5 +495,66 @@ Deno.test({
         await server.shutdown();
       }
     });
+  },
+});
+
+Deno.test({
+  name:
+    "forwarded ceiling: a follower decides its own reads and the leader decides writes, so a revoke seen by either applies there at once",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const active: IntegrationStanding = {
+      kind: "active",
+      ceiling: Ceiling.parse({
+        version: 1,
+        ceiling: [{ actions: ["read", "run"], resource: "workflow:*" }],
+      }),
+    };
+    let onLeader: IntegrationStanding = active;
+    let onFollower: IntegrationStanding = active;
+    await withCluster(
+      CLIENT,
+      async ({ leader, leaderAddress, followerAddress }) => {
+        const name = `flow-${crypto.randomUUID()}`;
+        await saveGatedWorkflow(leader.repo, name, "gate");
+        const send = (
+          address: string,
+          type: string,
+          id = crypto.randomUUID(),
+        ) =>
+          request(
+            address,
+            { type, id, payload: { workflowIdOrName: name } },
+            (frame) =>
+              frame.type === "error" || frame.type === "done" ||
+              frame.type === type,
+          );
+        const code = (frames: Frame[]) =>
+          (frames.find((f) => f.type === "error") as
+            | { error?: { code?: string } }
+            | undefined)?.error?.code;
+        onLeader = { kind: "revoked" };
+        assertEquals(
+          code(await send(followerAddress, "workflow.run")),
+          "unauthorized",
+          "a forwarded write is decided by the leader",
+        );
+        assertEquals(
+          code(await send(leaderAddress, "workflow.run")),
+          "unauthorized",
+        );
+        onFollower = { kind: "revoked" };
+        assertEquals(
+          code(await send(followerAddress, "workflow.search")),
+          "unauthorized",
+          "a follower refuses its own reads once it has seen the revoke",
+        );
+      },
+      {
+        leader: { standingOf: () => onLeader },
+        follower: { standingOf: () => onFollower },
+      },
+    );
   },
 });

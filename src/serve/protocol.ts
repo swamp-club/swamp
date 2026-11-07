@@ -1144,6 +1144,11 @@ export type ServerRequest =
   | { type: "run.attach"; id: string; payload: RunAttachPayload }
   | { type: "cancel"; id: string }
   | {
+    type: "access.integration.list";
+    id: string;
+    payload?: Record<string, never>;
+  }
+  | {
     type: "access.token.list";
     id: string;
     payload?: AccessTokenListPayload;
@@ -1941,6 +1946,10 @@ export interface DoctorExtensionsResponse {
   data: Record<string, unknown>;
 }
 
+export interface AccessIntegrationListResponse {
+  data: Record<string, unknown>;
+}
+
 export interface AccessTokenListResponse {
   data: Record<string, unknown>;
 }
@@ -2366,6 +2375,11 @@ export type ServerMessage =
     type: "run.interrupted";
     id: string;
     payload: { runId: string; instanceId: string; reason: "instance_dead" };
+  }
+  | {
+    type: "access.integration.list";
+    id: string;
+    payload: AccessIntegrationListResponse;
   }
   | {
     type: "access.token.list";

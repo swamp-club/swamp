@@ -35,6 +35,7 @@ import { isPeerSocket } from "../peer_auth.ts";
 import {
   accessCallerOf,
   type ConnectionContext,
+  refuseIntegrationCaller,
   send,
   sendError,
 } from "./shared.ts";
@@ -53,7 +54,11 @@ export function handleCommitsHead(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  principal: Principal | null,
 ): Promise<void> {
+  if (refusedIntegration(socket, ctx, requestId, principal)) {
+    return Promise.resolve();
+  }
   const feed = ctx.commitFeed;
   if (feed === undefined) {
     sendFeedUnavailable(socket, requestId);
@@ -67,6 +72,31 @@ export function handleCommitsHead(
   return Promise.resolve();
 }
 
+/** the commit feed is what the datastore API serves, and refused the same way */
+function refusedIntegration(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+): boolean {
+  if (isPeerSocket(socket)) return false;
+  if (
+    !refuseIntegrationCaller(
+      accessCallerOf(socket, principal),
+      requestId,
+      "commit-feed",
+      ctx,
+    )
+  ) return false;
+  sendError(
+    socket,
+    requestId,
+    "unauthorized",
+    "Access denied: an integration token can't read the commit feed",
+  );
+  return true;
+}
+
 export async function handleCommitsSubscribe(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -75,6 +105,7 @@ export async function handleCommitsSubscribe(
   principal: Principal | null,
   payload: { cursor: number; features?: readonly string[] },
 ): Promise<void> {
+  if (refusedIntegration(socket, ctx, requestId, principal)) return;
   const feed = ctx.commitFeed;
   if (feed === undefined) {
     sendFeedUnavailable(socket, requestId);

@@ -141,7 +141,12 @@ async function decide(
 ): Promise<string | undefined> {
   await loader.load();
   return loader.decisionService.decide(
-    { principal: { kind: "user", id: user }, collectives: [], groups: [] },
+    {
+      principal: { kind: "user", id: user },
+      collectives: [],
+      groups: [],
+      client: undefined,
+    },
     action,
     resource,
   )?.effect;

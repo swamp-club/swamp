@@ -20,6 +20,8 @@
 import type { Data } from "./data.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
+import { isIntegrationModelType } from "../models/control_plane_types.ts";
+import type { ModelType } from "../models/model_type.ts";
 import {
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
@@ -97,6 +99,16 @@ function lookupModel(
     : findDefinitionByIdOrName(definitionRepo, modelRef);
 }
 
+// checked on the model each operation resolved, before reading its data, so no
+// failed read or separate preview can let the delete through and undo a revoke
+function refuseIntegrationRecord(modelType: ModelType): void {
+  if (isIntegrationModelType(modelType.normalized)) {
+    throw new Error(
+      "An integration's record can't be deleted, because its id must stay reserved: tokens issued to it would come back to life. To stop it being used, revoke it with swamp access integration revoke",
+    );
+  }
+}
+
 /**
  * the third pre-check closes the silent no-op left by the repository delete
  * catching NotFound on a missing version directory
@@ -124,6 +136,7 @@ export class DataDeleteService {
       );
     }
     const { definition, type: modelType } = lookup;
+    refuseIntegrationRecord(modelType);
 
     const versions = await this.dataRepo.listVersions(
       modelType,
@@ -175,6 +188,7 @@ export class DataDeleteService {
       );
     }
     const { definition, type: modelType } = lookup;
+    refuseIntegrationRecord(modelType);
 
     const versions = await this.dataRepo.listVersions(
       modelType,
@@ -212,6 +226,7 @@ export class DataDeleteService {
       );
     }
     const { definition, type: modelType } = lookup;
+    refuseIntegrationRecord(modelType);
 
     const allData = await this.dataRepo.findAllForModel(
       modelType,
@@ -280,6 +295,7 @@ export class DataDeleteService {
       );
     }
     const { definition, type: modelType } = lookup;
+    refuseIntegrationRecord(modelType);
 
     const allData = await this.dataRepo.findAllForModel(
       modelType,

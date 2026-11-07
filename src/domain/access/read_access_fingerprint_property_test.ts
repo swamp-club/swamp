@@ -51,6 +51,7 @@ const ADAM: AccessPrincipal = {
   principal: { kind: "user", id: "adam" },
   collectives: [],
   groups: ["idp-ops"],
+  client: undefined,
 };
 
 const ADAM_SUBJECTS: readonly Subject[] = [

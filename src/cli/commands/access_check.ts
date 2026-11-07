@@ -19,6 +19,7 @@
 
 import { explainedForAction } from "../../domain/access/access_resources.ts";
 import { clientToString, parseClient } from "../../domain/access/client.ts";
+import { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -135,7 +136,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--client <client:string>",
-    "Client to simulate for CEL conditions on client, as <kind>:<id>; omitted reads as direct; local checks only",
+    "Client to simulate, as <kind>:<id>, for CEL conditions on client and an integration's ceiling; omitted reads as direct; local checks only",
   )
   .option(
     "--collectives <collectives:string>",
@@ -287,10 +288,14 @@ export const accessCheckCommand = new Command()
       repoContext.unifiedDataRepo,
       eventBus,
     );
+    const integrations = new IntegrationDirectory(repoContext.unifiedDataRepo);
 
     try {
       const snapshot = await loader.load();
-      const service = new GrantBasedAccessDecisionService(snapshot);
+      await integrations.reload();
+      const service = new GrantBasedAccessDecisionService(snapshot, {
+        integrations,
+      });
 
       const accessPrincipal = {
         principal,
@@ -342,6 +347,7 @@ export const accessCheckCommand = new Command()
         decisions[0].effect === "deny";
       if (isDenied) Deno.exitCode = 1;
     } finally {
+      await integrations.dispose();
       await loader.dispose();
     }
   });

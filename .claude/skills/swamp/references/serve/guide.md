@@ -210,6 +210,30 @@ swamp access reload [--server wss://...]
 
 `swamp access policy` is an alias for `swamp access grant`.
 
+## Integrations
+
+An integration is an app an admin registers. A person's rights through it are
+their grants intersected with its ceiling, which covers only `workflow:`
+resources and allows only `run`, `read`, `approve` and `signal`. Actions match
+literally, and `run` includes cancelling any run of that workflow.
+
+```bash
+# Prints the credential once; only its hash is kept
+swamp access integration register slack-bot --name 'Slack bot' \
+  --ceiling 'run,read,approve=workflow:@acme/deploy' [--server wss://...]
+swamp access integration list [--server wss://...]
+swamp access integration show slack-bot [--server wss://...]
+swamp access integration ceiling slack-bot --ceiling 'read=workflow:@acme/*'
+swamp access integration revoke slack-bot
+```
+
+Changes apply with no `swamp access reload`. Revoking is final, and the id can't
+be used again. Upgrade every serve instance before registering one.
+
+`swamp access check --client integration:<id>` judges a request against the
+registered ceiling as well as the grants, so it reports a refusal for an id that
+isn't registered.
+
 ## Declarative Grants
 
 For production deployments, manage grants as YAML files in the `grants/`

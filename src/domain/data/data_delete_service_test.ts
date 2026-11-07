@@ -412,3 +412,65 @@ Deno.test("DataDeleteService.delete: byId with a name rejects as model not found
     assertEquals(dataRepo.deleteCalls.length, 0);
   });
 });
+
+function makeIntegrationService() {
+  const dataRepo = new FakeDataRepository();
+  dataRepo.versionsByName.set("integration-main", [1, 2]);
+  const definitionRepo = new FakeDefinitionRepository();
+  definitionRepo.findByNameGlobal = (name: string) =>
+    Promise.resolve({
+      definition: { id: "def-1", name },
+      type: ModelType.create("swamp/integration"),
+    });
+  const service = new DataDeleteService(
+    dataRepo as never,
+    definitionRepo as never,
+  );
+  return { service, dataRepo };
+}
+
+Deno.test("DataDeleteService: refuses every delete and preview of an integration's record", async () => {
+  const { service, dataRepo } = makeIntegrationService();
+  const operations = [
+    () => service.delete("rec", "integration-main"),
+    () => service.delete("rec", "integration-main", 1),
+    () => service.previewDelete("rec", "integration-main"),
+    () => service.batchDelete("rec", { kind: "all" }),
+    () => service.batchDelete("rec", { kind: "prefix", value: "integration" }),
+    () => service.batchPreviewDelete("rec", { kind: "all" }),
+  ];
+  for (const operation of operations) {
+    await assertRejects(operation, Error, "must stay reserved");
+  }
+  assertEquals(dataRepo.deleteCalls, []);
+});
+
+Deno.test("DataDeleteService: a failed read can't let a delete of an integration's record through", async () => {
+  const { service, dataRepo } = makeIntegrationService();
+  const unreadable = () => Promise.reject(new Error("storage unavailable"));
+  dataRepo.listVersions = unreadable;
+  dataRepo.findAllForModel = unreadable;
+
+  await assertRejects(
+    () => service.delete("rec", "integration-main"),
+    Error,
+    "must stay reserved",
+  );
+  await assertRejects(
+    () => service.batchDelete("rec", { kind: "all" }),
+    Error,
+    "must stay reserved",
+  );
+  assertEquals(dataRepo.deleteCalls, []);
+});
+
+Deno.test("DataDeleteService: an ordinary behavior's data named like the record is still deleted", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("integration-main", [1]);
+
+  await service.delete("my-model", "integration-main");
+
+  assertEquals(dataRepo.deleteCalls.map((c) => c.dataName), [
+    "integration-main",
+  ]);
+});

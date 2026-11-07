@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { Ceiling, CEILING_ACTIONS } from "./ceiling.ts";
+import type {
+  IntegrationLookup,
+  IntegrationStanding,
+} from "./integration_directory.ts";
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import type { Grant } from "../models/access/grant_model.ts";
@@ -59,6 +64,7 @@ const PRINCIPAL: AccessPrincipal = {
   principal: { kind: "user", id: "adam" },
   collectives: [],
   groups: ["idp-ops"],
+  client: undefined,
 };
 
 const RESOURCE: AccessResource = {
@@ -201,6 +207,7 @@ const arbPrincipal: fc.Arbitrary<AccessPrincipal> = fc.record({
   principal: { kind, id },
   collectives: [],
   groups: [],
+  client: undefined,
 }));
 
 const arbResourceKind = fc.constantFrom<ResourceKind>("workflow", "model");
@@ -249,7 +256,12 @@ Deno.test("GrantBasedAccessDecisionService: a matching deny always beats the ser
           new PolicySnapshot([...grants, deny], [], literalEvaluator),
         );
         const decision = service.decide(
-          { principal: { kind: "service", id }, collectives: [], groups: [] },
+          {
+            principal: { kind: "service", id },
+            collectives: [],
+            groups: [],
+            client: undefined,
+          },
           "run",
           RESOURCE,
         );
@@ -290,6 +302,7 @@ Deno.test("GrantBasedAccessDecisionService: a service deny that cannot be evalua
           principal: { kind: "service", id },
           collectives: [],
           groups: [],
+          client: undefined,
         };
         const decision = service.decide(principal, "run", RESOURCE);
         assert(decision?.grantId !== SERVICE_TRIGGER_DEFAULT_GRANT_ID);
@@ -316,6 +329,7 @@ Deno.test("property: a tags deny refuses the resources carrying the tag and, fai
           principal: { kind: "user" as const, id: "p" },
           collectives: [],
           groups: [],
+          client: undefined,
         };
         const snapshot = new PolicySnapshot(
           [
@@ -402,6 +416,7 @@ Deno.test("property: a deny whose condition errors never yields an allow", () =>
           principal: { kind: "user" as const, id: "p" },
           collectives: [],
           groups: [],
+          client: undefined,
         };
         const resource = {
           kind: "model" as const,
@@ -542,6 +557,7 @@ Deno.test("GrantBasedAccessDecisionService: a grant not naming client or run dec
     principal: { kind: "user", id: "alice" },
     collectives: [],
     groups: [],
+    client: undefined,
   };
   const base: AccessResource = {
     kind: "workflow",
@@ -551,7 +567,7 @@ Deno.test("GrantBasedAccessDecisionService: a grant not naming client or run dec
   fc.assert(fc.property(
     fc.array(arbUnrelatedGrant, { maxLength: 8 }),
     fc.constantFrom(...ACTIONS),
-    fc.constantFrom(undefined, "direct:cli", "integration:slack"),
+    fc.constantFrom(undefined, "direct:cli", "direct:token"),
     fc.constantFrom(
       undefined,
       { initiator: { kind: "user", id: "alice", sub: "alice" } },
@@ -574,6 +590,132 @@ Deno.test("GrantBasedAccessDecisionService: a grant not naming client or run dec
           ...(pending ? { pending: ["run"] } : {}),
         }),
         service.explain(principal, action, base),
+      );
+    },
+  ));
+});
+
+const integrationLookup = (
+  standing: IntegrationStanding,
+): IntegrationLookup => ({ standingOf: () => standing });
+
+const arbCeiling = fc.array(
+  fc.record({
+    actions: fc.array(
+      fc.constantFrom(...CEILING_ACTIONS),
+      { minLength: 1 },
+    ),
+    resource: fc.constantFrom(
+      "workflow:*",
+      "workflow:w",
+      "workflow:w*",
+      "workflow:x",
+    ),
+  }),
+  { maxLength: 4 },
+).map((ceiling) => Ceiling.parse({ version: 1, ceiling }));
+
+const arbPolicyGrants = fc.array(
+  fc.record({
+    effect: fc.constantFrom("allow" as const, "deny" as const),
+    actions: fc.array(fc.constantFrom(...ACTIONS), { minLength: 1 }),
+    pattern: fc.constantFrom("*", "w", "w*", "x"),
+    kind: fc.constantFrom(
+      "workflow" as const,
+      "access" as const,
+      "model" as const,
+    ),
+  }),
+  { maxLength: 6 },
+).map((rows) =>
+  rows.map((row, i): Grant => ({
+    id: `grant-${i}`,
+    subject: { kind: "user", name: "alice" },
+    effect: row.effect,
+    actions: row.actions,
+    resource: { kind: row.kind, pattern: row.pattern },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: new Date(0).toISOString(),
+  }))
+);
+
+const PERSON = {
+  principal: { kind: "user" as const, id: "alice" },
+  collectives: [],
+  groups: [],
+};
+
+Deno.test("effective access: across random policies a ceiling never widens rights", () => {
+  fc.assert(fc.property(
+    arbPolicyGrants,
+    arbCeiling,
+    fc.constantFrom(...ACTIONS),
+    fc.constantFrom("workflow" as const, "model" as const, "access" as const),
+    fc.constantFrom("w", "wz", "x", "*"),
+    (grants, ceiling, action, kind, name) => {
+      const service = new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+        {
+          integrations: integrationLookup({ kind: "active", ceiling }),
+        },
+      );
+      const resource: AccessResource = { kind, name, fields: { name } };
+      const direct = service.decide(
+        { ...PERSON, client: undefined },
+        action,
+        resource,
+      );
+      const through = service.decide(
+        { ...PERSON, client: "integration:app" },
+        action,
+        resource,
+      );
+      if (through?.effect === "allow") {
+        assertEquals(direct?.effect, "allow");
+        assertEquals(kind, "workflow");
+        assert(ceiling.allows(action, name));
+      }
+      if (ceiling.allows(action, name) && kind === "workflow") {
+        assertEquals(through, direct);
+      }
+    },
+  ));
+});
+
+Deno.test("effective access: an unknown, revoked or malformed integration is refused whatever the grants say", () => {
+  fc.assert(fc.property(
+    arbPolicyGrants,
+    fc.constantFrom(...ACTIONS),
+    fc.constantFrom<IntegrationStanding>(
+      { kind: "unknown" },
+      { kind: "revoked" },
+    ),
+    fc.constantFrom("integration:app", "integration:", "agent:cli"),
+    (grants, action, standing, client) => {
+      const service = new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+        { integrations: integrationLookup(standing) },
+      );
+      const principal = { ...PERSON, client };
+      const resource: AccessResource = {
+        kind: "workflow",
+        name: "w",
+        fields: { name: "w" },
+      };
+      assertEquals(service.decide(principal, action, resource)?.effect, "deny");
+      assertEquals(
+        service.decideAll(principal, action, "workflow")?.effect,
+        "deny",
+      );
+      assertEquals(
+        service.explain(principal, action, resource).map((d) => d.effect),
+        ["deny"],
+      );
+      assertEquals(
+        service.hasAnyGrantForKind(principal, action, "workflow"),
+        false,
       );
     },
   ));

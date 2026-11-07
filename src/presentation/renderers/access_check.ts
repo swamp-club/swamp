@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { integrationRefusalReason } from "../../domain/access/grant_based_access_decision_service.ts";
 import type { AccessDecision } from "../../domain/access/access_decision_service.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -262,6 +263,15 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
     }
 
     const firstDecision = result.decisions[0];
+    const reason = integrationRefusalReason(firstDecision.grantId);
+    if (reason) {
+      writeOutput(
+        `DENY: ${reason} (${result.action} → ${checkedTarget(result)})${
+          result.client ? ` as ${result.client}` : ""
+        }`,
+      );
+      return;
+    }
     const effect = firstDecision.effect.toUpperCase();
     const via = `grant ${firstDecision.grantId.slice(0, 8)}…`;
     const subject = formatSubject(firstDecision.subject);

@@ -88,12 +88,14 @@ import {
   sendError,
   sendSerialized,
   sendTraced,
+  setConnectionClient,
   setConnectionCollectives,
   setConnectionCompression,
   setConnectionLoginIdentity,
   setConnectionSourceIp,
   setConnectionTeardown,
   setConnectionToken,
+  terminateIntegrationSessions,
   terminateTokenSessions,
   type TerminateTokenSessionsOptions,
   updateCollectivesForPrincipal,
@@ -936,7 +938,7 @@ function openStream(
 ): FakeStream {
   const closes: { code: number; reason: string }[] = [];
   const unregister = registerStreamSession(
-    { name, createdAt, principalId },
+    { name, createdAt, principalId, client: undefined },
     { sourceIp, close: (code, reason) => closes.push({ code, reason }) },
   );
   if (unregister === null) throw new Error("stream refused at the cap");
@@ -999,7 +1001,7 @@ Deno.test("terminateTokenSessions: unregisters a stream before closing it, so it
   const name = `tok-${crypto.randomUUID()}`;
   const listedAtClose: number[] = [];
   const unregister = registerStreamSession(
-    { name, createdAt: MINT_1, principalId: "user:alice" },
+    { name, createdAt: MINT_1, principalId: "user:alice", client: undefined },
     {
       sourceIp: "192.0.2.20",
       close: () => listedAtClose.push(sessionsFor(name).length),
@@ -1015,7 +1017,7 @@ Deno.test("terminateTokenSessions: unregisters a stream before closing it, so it
 Deno.test("terminateTokenSessions: a stream whose close throws does not stop the others", () => {
   const name = `tok-${crypto.randomUUID()}`;
   registerStreamSession(
-    { name, createdAt: MINT_1, principalId: "user:alice" },
+    { name, createdAt: MINT_1, principalId: "user:alice", client: undefined },
     {
       sourceIp: "192.0.2.20",
       close: () => {
@@ -1035,7 +1037,7 @@ Deno.test("terminateTokenSessions: audits a closed stream with its principal and
   const events: AuditEvent[] = [];
   const order: string[] = [];
   registerStreamSession(
-    { name, createdAt: MINT_1, principalId: "user:bob" },
+    { name, createdAt: MINT_1, principalId: "user:bob", client: undefined },
     { sourceIp: "203.0.113.9", close: () => order.push("close") },
   );
 
@@ -1086,14 +1088,14 @@ Deno.test("registerStreamSession: refuses a token's stream past the cap, across 
   const other = openStream(`tok-${crypto.randomUUID()}`, MINT_1);
 
   const refused = registerStreamSession(
-    { name, createdAt: MINT_2, principalId: "user:alice" },
+    { name, createdAt: MINT_2, principalId: "user:alice", client: undefined },
     { sourceIp: "192.0.2.20", close: () => {} },
   );
   assertEquals(refused, null);
 
   streams[0].unregister();
   const freed = registerStreamSession(
-    { name, createdAt: MINT_1, principalId: "user:alice" },
+    { name, createdAt: MINT_1, principalId: "user:alice", client: undefined },
     { sourceIp: "192.0.2.20", close: () => {} },
   );
   assertEquals(typeof freed, "function");
@@ -1117,7 +1119,12 @@ Deno.test("registerStreamSession: refuses a principal's stream past the cap, acr
   const someoneElse = openStream(names[2], MINT_1);
 
   const refused = registerStreamSession(
-    { name: names[2], createdAt: MINT_1, principalId: principal },
+    {
+      name: names[2],
+      createdAt: MINT_1,
+      principalId: principal,
+      client: undefined,
+    },
     { sourceIp: "192.0.2.20", close: () => {} },
   );
   assertEquals(refused, null);
@@ -2922,4 +2929,54 @@ Deno.test("terminateTokenSessions: serve ending sessions on its own names no cli
     audit: { instanceId: "i-1", emitter: { emit: (e) => events.push(e) } },
   });
   assertEquals("client" in events[0], false);
+});
+
+Deno.test("terminateIntegrationSessions: closes only that integration's sessions and streams", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const other = `tok-${crypto.randomUUID()}`;
+  const direct = `tok-${crypto.randomUUID()}`;
+  const mine = bindToken(name, MINT_1);
+  setConnectionClient(mine.socket, "integration:one");
+  const theirs = bindToken(other, MINT_1);
+  setConnectionClient(theirs.socket, "integration:two");
+  const person = bindToken(direct, MINT_1);
+  setConnectionClient(person.socket, "direct:cli");
+  const streamCloses: number[] = [];
+  const unregister = registerStreamSession(
+    {
+      name,
+      createdAt: MINT_1,
+      principalId: "user:alice",
+      client: "integration:one",
+    },
+    {
+      sourceIp: "192.0.2.1",
+      close: (code) => {
+        streamCloses.push(code);
+      },
+    },
+  );
+  const closed = terminateIntegrationSessions("one", {
+    code: 4003,
+    reason: "Session ended: integration revoked",
+    cause: "integration-revoked",
+    initiatedBy: "system",
+  });
+  assertEquals(closed, 2);
+  assertEquals(mine.closes.map((c) => c.code), [4003]);
+  assertEquals(streamCloses, [4003]);
+  assertEquals(theirs.closes, []);
+  assertEquals(person.closes, []);
+  assertEquals(
+    terminateIntegrationSessions("one", {
+      code: 4003,
+      reason: "again",
+      cause: "integration-revoked",
+      initiatedBy: "system",
+    }),
+    0,
+  );
+  unregister?.();
+  terminate(other);
+  terminate(direct);
 });

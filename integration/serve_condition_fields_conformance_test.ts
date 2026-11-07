@@ -156,6 +156,7 @@ const CATEGORIES: Record<string, Category> = {
   "access.group.list": "access",
   "access.group.list-idp": "access",
   "access.reload": "access",
+  "access.integration.list": "access",
   "access.token.list": "access",
   "access.token.mint": "access",
   "access.token.reveal": "access",

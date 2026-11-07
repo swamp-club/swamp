@@ -88,13 +88,19 @@ Deno.test("serve client rules: no request schema or handler reads a client from 
   assertEquals(offenders, []);
 });
 
-// Each decides with no client on purpose: auth mode none has no caller, a trigger
-// has no caller's token, a deposit is replayed with no session, and a run's vault
-// use is delegated by `run`, so client conditions never narrow it.
+// Each builds a caller with no client on purpose: auth mode none has no caller,
+// and a deposit is replayed with no session. AccessPrincipal itself requires the
+// key, so the compiler holds every other site.
 const DECIDES_WITHOUT_CLIENT = [
   "src/serve/datastore_api.ts#3",
   "src/serve/http_caller_auth.ts#1",
   "src/serve/signal_http.ts#1",
+];
+
+// no client on purpose: a trigger has no caller's token, a run's vault use is
+// delegated by `run`, and access.check of another subject explains a person
+const CLIENT_LEFT_UNDEFINED = [
+  "src/serve/handlers/access_handlers.ts#1",
   "src/serve/run_vault_access_policy.ts#1",
   "src/serve/run_vault_access_policy.ts#2",
   "src/serve/run_vault_access_policy.ts#3",
@@ -122,6 +128,23 @@ Deno.test("serve client rules: every access principal names the client unless it
   );
 });
 
+Deno.test("serve client rules: only a run or a trigger decides with its client left undefined", async () => {
+  const sites: string[] = [];
+  for (const [rel, source] of await sourceFiles("src/serve")) {
+    let site = 0;
+    for (const _ of source.matchAll(/\bclient:\s*undefined\b/g)) {
+      site++;
+      sites.push(`${rel}#${site}`);
+    }
+  }
+  assertPinnedSet(
+    sites,
+    CLIENT_LEFT_UNDEFINED,
+    "decisions with the client left undefined",
+    "a request's decision with no client skips the ceiling and silently reads as direct",
+  );
+});
+
 Deno.test("serve client rules: a run's vault policy never hands a decision the run's client", async () => {
   const policy = await Deno.readTextFile(
     `${ROOT}src/serve/run_vault_access_policy.ts`,
@@ -129,7 +152,46 @@ Deno.test("serve client rules: a run's vault policy never hands a decision the r
   const start = policy.indexOf("#accessPrincipal(): Promise");
   const end = policy.indexOf("export interface RunVaultScopeContext");
   assert(start !== -1 && start < end, "the policy's markers moved");
-  assertEquals(policy.slice(start, end).includes("client"), false);
+  assertEquals(
+    policy.slice(start, end).replaceAll("client: undefined", "").includes(
+      "client",
+    ),
+    false,
+  );
+});
+
+// An id is read only as the key to that integration's own record: to find its
+// ceiling, and to close its sessions when its record changes.
+const READS_INTEGRATION_ID = [
+  "src/domain/access/grant_based_access_decision_service.ts",
+  "src/serve/handlers/shared.ts",
+];
+
+Deno.test("serve client rules: an integration id is read only to look up that integration", async () => {
+  const uses: string[] = [];
+  for (const dir of ["src/serve", "src/domain", "src/libswamp", "src/cli"]) {
+    for (const [rel, source] of await sourceFiles(dir)) {
+      if (rel === "src/domain/access/client.ts") continue;
+      if (/\bintegrationOfClient\(/.test(source)) uses.push(rel);
+    }
+  }
+  assertPinnedSet(
+    uses,
+    READS_INTEGRATION_ID,
+    "readers of an integration id",
+    "behaviour may depend on a client's kind; an id is only a key to its own record",
+  );
+});
+
+Deno.test("serve client rules: nothing in production issues an integration token", async () => {
+  const offenders: string[] = [];
+  for (const dir of ["src/serve", "src/domain", "src/libswamp", "src/cli"]) {
+    for (const [rel, source] of await sourceFiles(dir)) {
+      if (rel === "src/domain/access/client.ts") continue;
+      if (/kind:\s*["']integration["']/.test(source)) offenders.push(rel);
+    }
+  }
+  assertEquals(offenders, []);
 });
 
 Deno.test("serve client rules: behaviour never branches on a client id", async () => {

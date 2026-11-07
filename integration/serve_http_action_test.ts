@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import { Ceiling } from "../src/domain/access/ceiling.ts";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -2050,3 +2051,65 @@ async function sendOverWebSocket(
   await settled(ctx);
   return frames.map((frame) => JSON.parse(frame) as Frame);
 }
+
+function withCeilingRoute(
+  ceiling: { actions: string[]; resource: string }[],
+  fn: (
+    route: Route,
+    repo: ServeRepo,
+    ctx: ConnectionContext,
+    setCeiling: (next: { actions: string[]; resource: string }[]) => void,
+  ) => Promise<void>,
+): Promise<void> {
+  return withServeRepo(async (repo) => {
+    let current = Ceiling.parse({ version: 1, ceiling });
+    const ctx = createServeCtx(repo, [everyAction()], {
+      detached: true,
+      integrations: {
+        standingOf: () => ({ kind: "active", ceiling: current }),
+      },
+    });
+    const route = startRoute(ctx);
+    try {
+      await fn(route, repo, ctx, (next) => {
+        current = Ceiling.parse({ version: 1, ceiling: next });
+      });
+    } finally {
+      await settled(ctx).catch(() => {});
+      await route.shutdown();
+    }
+  });
+}
+
+const EVERY_CEILING_ACTION = ["approve", "read", "run", "signal"];
+
+test("the action route: a ceiling allowing only run starts a run and can't approve its gate", async () => {
+  await withCeilingRoute(
+    [{ actions: EVERY_CEILING_ACTION, resource: "workflow:*" }],
+    async (route, repo, ctx, setCeiling) => {
+      const gated = await startGated(route, repo, ctx);
+      setCeiling([{ actions: ["run"], resource: "workflow:*" }]);
+      const refused = await route.post(decision("workflow.approve", gated));
+      assertEquals(refused.status, 403, JSON.stringify(refused.body));
+      setCeiling([{ actions: ["approve"], resource: "workflow:*" }]);
+      const approved = await route.post(decision("workflow.approve", gated));
+      assert(approved.status < 300, JSON.stringify(approved.body));
+    },
+  );
+});
+
+test("the action route: a run above the ceiling is refused, and an empty ceiling refuses reads", async () => {
+  await withCeilingRoute(
+    [{ actions: ["read"], resource: "workflow:*" }],
+    async (route, repo, _ctx, setCeiling) => {
+      const name = `gated-${crypto.randomUUID()}`;
+      await saveGatedWorkflow(repo, name, "gate");
+      const refused = await route.post(start(name, crypto.randomUUID()));
+      assertEquals(refused.status, 403, JSON.stringify(refused.body));
+      assertEquals(await runCount(repo, name), 0);
+      setCeiling([]);
+      const approvals = await route.post({ type: "workflow.approvals" });
+      assertEquals(approvals.status, 403, JSON.stringify(approvals.body));
+    },
+  );
+});

@@ -68,7 +68,12 @@ function makePrincipal(
   collectives: string[] = [],
   groups: string[] = [],
 ): AccessPrincipal {
-  return { principal: { kind: "user", id }, collectives, groups };
+  return {
+    principal: { kind: "user", id },
+    collectives,
+    groups,
+    client: undefined,
+  };
 }
 
 function makeResource(
@@ -1410,7 +1415,12 @@ Deno.test("hasAnyGrantForKind: run does not imply approve when runImpliesApprove
 });
 
 function makeServicePrincipal(id: string): AccessPrincipal {
-  return { principal: { kind: "service", id }, collectives: [], groups: [] };
+  return {
+    principal: { kind: "service", id },
+    collectives: [],
+    groups: [],
+    client: undefined,
+  };
 }
 
 Deno.test("decide: service principal may run a workflow with no grants", () => {
@@ -1496,6 +1506,7 @@ Deno.test("decide: user and worker principals get no service default", () => {
         principal: { kind: "worker", id: "scheduler" },
         collectives: [],
         groups: [],
+        client: undefined,
       },
       "run",
       makeResource(),
@@ -2504,6 +2515,7 @@ Deno.test("decide: a service principal gets no signal from the trigger default",
     principal: { kind: "service" as const, id: "scheduler" },
     collectives: [],
     groups: [],
+    client: undefined,
   };
   assertEquals(
     service.decide(principal, "run", makeResource())?.effect,
@@ -2814,6 +2826,7 @@ const ALICE: AccessPrincipal = {
   principal: { kind: "user", id: "alice" },
   collectives: [],
   groups: [],
+  client: undefined,
 };
 const WORKFLOW: AccessResource = {
   kind: "workflow",
@@ -2918,14 +2931,13 @@ Deno.test("decide: a client condition applies on every kind, and an absent clien
         effect: "deny",
         actions: ["read"],
         resource: { kind, pattern },
-        condition: 'client == "integration:slack"',
+        condition: 'client == "direct:token"',
       },
     ]);
     const resource: AccessResource = { kind, name: "n", fields: { name: "n" } };
     const decide = (client?: string) =>
       service.decide({ ...ALICE, client }, "read", resource)?.effect;
-    assertEquals(decide("integration:slack"), "deny", kind);
-    assertEquals(decide("integration:other"), "allow", kind);
+    assertEquals(decide("direct:token"), "deny", kind);
     assertEquals(decide("direct:cli"), "allow", kind);
     assertEquals(decide(undefined), "allow", kind);
   }
