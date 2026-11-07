@@ -27,6 +27,7 @@ import {
   perWorkerBehaviorName,
   planLaneSteps,
   refusedPlanMessage,
+  refuseSharedLaneInstances,
 } from "./fan_out_lanes.ts";
 
 Deno.test("planLaneSteps: names one step per authored step and worker, mapped back to both", () => {
@@ -146,4 +147,22 @@ Deno.test("laneStepOf: maps a lane step back to its authored step and worker, an
   assertEquals(laneStepOf("apply", lanes), undefined);
   assertEquals(laneStepOf("[w-a]", lanes), undefined);
   assertEquals(laneStepOf("apply[w-a]", undefined), undefined);
+});
+
+Deno.test("refuseSharedLaneInstances: refuses two workers whose suffixed behaviors would be one instance", () => {
+  assertThrows(
+    () => refuseSharedLaneInstances("patch", ["host", "host-a"], ["a-b", "b"]),
+    Error,
+    "as the same instance 'host-a-b'",
+  );
+});
+
+Deno.test("refuseSharedLaneInstances: one behavior shared by a lane's steps, names built from self.worker.name and expressions pass", () => {
+  refuseSharedLaneInstances("patch", ["host", "host"], ["a-b", "b"]);
+  refuseSharedLaneInstances("patch", ["host", "verify"], ["w-a", "w-b"]);
+  refuseSharedLaneInstances(
+    "patch",
+    ["host-${{ self.worker.name }}", "host-${{ inputs.x }}"],
+    ["a", "b"],
+  );
 });

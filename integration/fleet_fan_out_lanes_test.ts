@@ -495,7 +495,6 @@ Deno.test({
     assertEquals(fleet.dispatchCounts(), { "w-a": 1, "w-b": 0 });
     const job = stored.getJob("patch")!;
     assert(job.status !== "running", job.status);
-    // the lane still queued at the cancel is settled, never left pending
     for (const name of ["verify[w-a]", "apply[w-b]", "verify[w-b]"]) {
       const status = job.getStep(name)?.status;
       assert(
@@ -685,5 +684,33 @@ Deno.test({
     });
     assertEquals(fleet.maxInFlight, 2);
     assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 2 });
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: behaviors that would share one instance across two workers refuse the plan, and nothing is sent",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await fleet.addWorker("a-b", { labels: WEB });
+    await fleet.addWorker("b", { labels: WEB });
+    await fleet.saveWorkflow({
+      name: "patch-clash",
+      inputs: {},
+      jobs: [laneJob(fleet, [
+        { name: "apply", behavior: "host" },
+        { name: "verify", after: "apply", behavior: "host-a" },
+      ])],
+    });
+
+    const run = await fleet.runWorkflow("patch-clash");
+
+    assertEquals(run.status, "failed");
+    assertStringIncludes(
+      stepError(run, "apply"),
+      "as the same instance 'host-a-b'",
+    );
+    assertEquals(fleet.dispatchCounts(), { "a-b": 0, "b": 0 });
   },
 });

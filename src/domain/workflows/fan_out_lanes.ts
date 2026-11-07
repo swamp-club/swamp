@@ -86,6 +86,31 @@ export function laneStepOf(
 }
 
 /**
+ * a suffix can make two hosts share an instance (behavior host on worker a-b,
+ * host-a on worker b); refused at plan time for names known before the run
+ */
+export function refuseSharedLaneInstances(
+  jobName: string,
+  behaviorNames: readonly string[],
+  workers: readonly string[],
+): void {
+  const owner = new Map<string, { behavior: string; worker: string }>();
+  for (const behavior of new Set(behaviorNames)) {
+    if (behavior.includes("${{")) continue;
+    for (const worker of workers) {
+      const instance = perWorkerBehaviorName(behavior, worker);
+      const clash = owner.get(instance);
+      if (clash !== undefined && clash.worker !== worker) {
+        throw new Error(
+          `Fan-out job '${jobName}' would run behavior '${behavior}' on worker '${worker}' and behavior '${clash.behavior}' on worker '${clash.worker}' as the same instance '${instance}'. Rename one of the behaviors.`,
+        );
+      }
+      owner.set(instance, { behavior, worker });
+    }
+  }
+}
+
+/**
  * only the worker's name is unique per lane, so only a name built from it is
  * left as resolved; the authored text decides, since the value is resolved
  */

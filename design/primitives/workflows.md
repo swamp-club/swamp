@@ -3230,7 +3230,10 @@ collide (step and worker names may both hold brackets).
   `-<worker>` suffix unless its authored text is built from
   `self.worker.name`, the one field unique per lane, so locks and data are per
   host. A name built from `self.worker.platform` or a label still gets the
-  suffix. Assert steps evaluate on the orchestrator against what
+  suffix. A plan in which two workers would run different behaviors as the
+  same instance (behavior `host` on worker `a-b` and `host-a` on worker `b`)
+  is refused, and nothing is sent; a name that is an expression is not known
+  until the step runs, so only literal names are checked. Assert steps evaluate on the orchestrator against what
   the lane's host steps wrote.
 - A lane fails when one of its steps fails without `allowFailure`. The job
   succeeds only if every lane does and no member failed at plan time; skipped

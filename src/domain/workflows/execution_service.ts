@@ -144,6 +144,7 @@ import {
   perWorkerBehaviorName,
   planLaneSteps,
   refusedPlanMessage,
+  refuseSharedLaneInstances,
 } from "./fan_out_lanes.ts";
 import { getWorkerPoolReader } from "../remote/worker_pool.ts";
 import { planFanOut } from "../remote/scheduler.ts";
@@ -5695,6 +5696,16 @@ export class WorkflowExecutionService {
         laneSteps = planLaneSteps(
           job.name,
           job.steps.map((step) => step.name),
+          lanes,
+        );
+        refuseSharedLaneInstances(
+          job.name,
+          job.steps.flatMap((step) =>
+            step.task.data.type === "model_method" &&
+              step.task.data.modelName !== undefined
+              ? [step.task.data.modelName]
+              : []
+          ),
           lanes,
         );
       } catch (error) {
