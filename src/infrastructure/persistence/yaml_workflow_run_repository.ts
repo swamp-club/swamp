@@ -2683,6 +2683,7 @@ function summaryToIndexEntry(
     parentRun: summary.parentRun,
     waitingOnRun: summary.waitingOnRun,
     waitsOnlyOnNestedRuns: summary.waitsOnlyOnNestedRuns,
+    startKeyLookup: summary.startKeyLookup,
   };
 }
 
@@ -2739,6 +2740,9 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
       awaitingResume: entry.awaitingResume,
       ...indexEntryLinks(entry),
       inputsOmitted: indexedInputsOmitted(entry),
+      startKeyLookup: typeof entry.startKeyLookup === "string"
+        ? entry.startKeyLookup
+        : undefined,
     });
   }
   return summaries.sort((a, b) => {

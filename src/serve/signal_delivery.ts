@@ -791,6 +791,7 @@ function emitDelivered(
       ctx.resolvedUserNames,
       caller.loginIdentity,
     ),
+    client: caller.client,
     sourceIp: caller.sourceIp,
     requestId,
     // The key is the one the wait's registration holds, never request text.
@@ -830,6 +831,7 @@ function emitHeld(
       ctx.resolvedUserNames,
       caller.loginIdentity,
     ),
+    client: caller.client,
     sourceIp: caller.sourceIp,
     requestId,
     detail:

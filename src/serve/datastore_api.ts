@@ -58,8 +58,12 @@ import {
 import { restoreNamespace, SOLO_NAMESPACE } from "../domain/data/namespace.ts";
 import {
   setActiveSpanAttributes,
+  type Span,
+  withRootSpan,
   withSpan,
 } from "../infrastructure/tracing/tracer.ts";
+import { adoptAuthenticatedParent } from "../infrastructure/tracing/adopted_parent.ts";
+import { withHttpServerSpan } from "./http_request_span.ts";
 import type { BlobRef } from "../domain/datastore_v3/blob_ref.ts";
 import { Commit, MAX_COMMIT_OPS } from "../domain/datastore_v3/commit.ts";
 import {
@@ -74,6 +78,7 @@ import {
   partitionReadAccessOf,
   partitionWriteAccessOf,
   type RequiredAccess,
+  RUN_INITIATOR_MISMATCH_REASON,
 } from "../domain/datastore_v3/commit_authorization.ts";
 import { storageNamespaceOf } from "../domain/datastore_v3/chunk_store.ts";
 import {
@@ -150,10 +155,14 @@ import type {
   UploadReservation,
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
 import {
+  AUTHORIZE_ONLY_FEATURE,
+  LEASE_HOLDER_FEATURE,
   LEASE_OPS_FEATURE,
+  RUN_INITIATOR_FEATURE,
   SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_FEATURES_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
+  SERVE_DATASTORE_PRINCIPAL_HEADER,
   STEP_STARTS_FEATURE,
 } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import type { V3Datastore } from "../infrastructure/datastore_v3/v3_datastore.ts";
@@ -188,6 +197,7 @@ import {
   type DatastoreLockLeases,
   DEFAULT_LOCK_TTL_MS,
   type LeaseBase,
+  type LeaseHolder,
   LeaseRecordNotRemovedError,
   type LeaseView,
   type LockHolder,
@@ -355,12 +365,55 @@ export async function handleDatastoreRequest(
   sourceIp: string,
   deps: DatastoreApiDeps,
 ): Promise<Response> {
-  const authenticated = await authenticateHttpCaller(req, sourceIp, {
-    authMode: deps.ctx.authConfig.mode,
-    authenticate: deps.authenticate,
-    now: deps.now,
-  });
-  if (authenticated instanceof Response) return authenticated;
+  const arrived = performance.timeOrigin + performance.now();
+  // in serve's own trace: the caller's is adopted only once this passes
+  let authSpan: Span | undefined;
+  const authenticated = await withRootSpan(
+    "swamp.serve.datastore.authenticate",
+    {},
+    (span) => {
+      authSpan = span;
+      return authenticateHttpCaller(req, sourceIp, {
+        authMode: deps.ctx.authConfig.mode,
+        authenticate: deps.authenticate,
+        now: deps.now,
+      });
+    },
+  );
+  const authMs = performance.timeOrigin + performance.now() - arrived;
+  const links = authSpan === undefined
+    ? []
+    : [{ context: authSpan.spanContext() }];
+  if (authenticated instanceof Response) {
+    return await withHttpServerSpan(req, () => authenticated, {
+      startTime: arrived,
+      links,
+    });
+  }
+  return await withHttpServerSpan(
+    req,
+    () => {
+      setActiveSpanAttributes({ "swamp.serve.auth_ms": Math.round(authMs) });
+      return answerAuthenticated(req, route, sourceIp, deps, authenticated);
+    },
+    {
+      startTime: arrived,
+      links,
+      // auth mode none authenticates nobody, so no caller picks the trace
+      parent: deps.ctx.authConfig.mode === "none"
+        ? undefined
+        : adoptAuthenticatedParent(req.headers),
+    },
+  );
+}
+
+async function answerAuthenticated(
+  req: Request,
+  route: DatastoreRoute,
+  sourceIp: string,
+  deps: DatastoreApiDeps,
+  authenticated: ApiCaller,
+): Promise<Response> {
   // A follower in team mode passes a write on to the leader with the
   // caller's own credentials (swamp-club#4120), and answers reads only
   // while its copy is fresh (swamp-club#4096); after authentication, so
@@ -390,8 +443,62 @@ export async function handleDatastoreRequest(
     : [[SERVE_DATASTORE_ACCESS_HEADER, access]];
   const logId = logIdOf(deps.v3);
   if (logId !== undefined) headers.push([SERVE_DATASTORE_LOG_HEADER, logId]);
-  headers.push([SERVE_DATASTORE_FEATURES_HEADER, STEP_STARTS_FEATURE]);
+  for (
+    const header of callerReplyHeaders(
+      deps.ctx.authConfig.mode,
+      authenticated.principal,
+    )
+  ) {
+    headers.push(header);
+  }
   return withHeaders(response, headers);
+}
+
+/**
+ * the principal is the one serve stamps on the caller's commits, which a new
+ * run record must name; encoded, as a principal id may hold any character
+ */
+export function callerReplyHeaders(
+  authMode: string,
+  principal: string,
+): [string, string][] {
+  if (authMode === "none") {
+    return [[
+      SERVE_DATASTORE_FEATURES_HEADER,
+      [STEP_STARTS_FEATURE, LEASE_HOLDER_FEATURE, AUTHORIZE_ONLY_FEATURE]
+        .join(","),
+    ]];
+  }
+  return [
+    [
+      SERVE_DATASTORE_FEATURES_HEADER,
+      [
+        STEP_STARTS_FEATURE,
+        RUN_INITIATOR_FEATURE,
+        LEASE_HOLDER_FEATURE,
+        AUTHORIZE_ONLY_FEATURE,
+      ].join(","),
+    ],
+    [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
+  ];
+}
+
+const MAX_AUTHORIZE_BODY_BYTES = 256 * 1024;
+const MAX_AUTHORIZED_COMMITS = 16;
+const MAX_AUTHORIZED_OPS = 64;
+
+function heldMessage(
+  lockKey: string,
+  outcome: { readonly heldBy: LockHolder; readonly holder?: LeaseHolder },
+): string {
+  const { holder } = outcome;
+  if (holder === undefined) return `${lockKey} is held by serve's own work`;
+  const who = outcome.heldBy === "caller"
+    ? `another command of ${holder.principal}`
+    : holder.principal;
+  return holder.explicit
+    ? `${lockKey} is held by ${who} under an explicit lease until ${holder.expiresAt}`
+    : `${lockKey} is held by ${who}`;
 }
 
 /**
@@ -466,11 +573,11 @@ function callerReadAccess(
 ): string | undefined {
   if (ctx.authConfig.mode === "none") return UNRESTRICTED_READ_ACCESS;
   const loader = ctx.policySnapshotLoader;
-  const { principal, collectives, groups } = caller.access;
+  const { principal, collectives, groups, client } = caller.access;
   if (!loader || !principal) return NO_READ_ACCESS;
   try {
     return loader.decisionService.readAccessFingerprint(
-      { principal, collectives, groups },
+      { principal, collectives, groups, client },
       ctx.authConfig.restrictedModelTypes,
     );
   } catch (error) {
@@ -560,6 +667,10 @@ async function answerDatastoreRequest(
         return req.method === "GET"
           ? await api.changes(req)
           : methodNotAllowed("GET");
+      case "authorize":
+        return req.method === "POST"
+          ? await api.authorize(req)
+          : methodNotAllowed("POST");
       case "base":
         return req.method === "GET"
           ? await api.compactedBase(req)
@@ -775,6 +886,73 @@ class DatastoreApi {
         sha256,
       );
     });
+  }
+
+  /**
+   * checks tombstones without appending, so a multi-partition delete learns of
+   * a refusal before its first commit; refusals are audited as commits' are
+   */
+  async authorize(req: Request): Promise<Response> {
+    const body = await readJson(req, MAX_AUTHORIZE_BODY_BYTES);
+    const commits = typeof body === "object" && body !== null &&
+        Array.isArray((body as { commits?: unknown }).commits)
+      ? (body as { commits: unknown[] }).commits
+      : undefined;
+    if (commits === undefined || commits.length > MAX_AUTHORIZED_COMMITS) {
+      return failure(
+        400,
+        "invalid_request",
+        `Body must be {"commits": [{"partition", "ops"}]}, at most ${MAX_AUTHORIZED_COMMITS} commits`,
+      );
+    }
+    const parsed: { partition: PartitionKey; ops: Op[] }[] = [];
+    try {
+      for (const raw of commits) {
+        const fields = raw as { partition?: unknown; ops?: unknown };
+        const partition = typeof fields.partition === "string"
+          ? parsePartition(fields.partition)
+          : undefined;
+        if (
+          partition === undefined || !Array.isArray(fields.ops) ||
+          fields.ops.length === 0 || fields.ops.length > MAX_AUTHORIZED_OPS
+        ) {
+          throw new Error("each commit names a partition and its ops");
+        }
+        const ops = await Promise.all(fields.ops.map((op) => opFromJSON(op)));
+        if (ops.some((op) => op.kind !== "tombstone")) {
+          throw new Error("only removals are authorized ahead");
+        }
+        parsed.push({ partition, ops });
+      }
+    } catch (error) {
+      return failure(
+        400,
+        "invalid_request",
+        `Malformed authorize request: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    await this.#catchUp();
+    const verdicts = [];
+    for (const { partition, ops } of parsed) {
+      const checked = await authorizeCommit(
+        partition,
+        ops,
+        this.#resolver,
+        this.#writeAuthority(),
+        "deferred",
+      );
+      verdicts.push(
+        checked.ok ? { ok: true } : {
+          ok: false,
+          reason: checked.reason,
+          opIndex: checked.opIndex,
+          message: checked.message,
+        },
+      );
+    }
+    return Response.json({ verdicts });
   }
 
   /** `POST partitions/{p}/commits`. */
@@ -1390,6 +1568,20 @@ class DatastoreApi {
         "waitMs must be a non-negative integer",
       );
     }
+    // the caller's whole remaining wait: an explicit lease outlasting it is
+    // answered at once rather than long-polled
+    const budgetMs = fields.budgetMs;
+    if (
+      budgetMs !== undefined &&
+      (typeof budgetMs !== "number" || !Number.isSafeInteger(budgetMs) ||
+        budgetMs < 0)
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        "budgetMs must be a non-negative integer",
+      );
+    }
     const refused = await this.#authorizeLock(target);
     if (refused !== undefined) return refused;
     // A kept lease on this key not adopted yet holds it (swamp-club#4258).
@@ -1404,6 +1596,7 @@ class DatastoreApi {
       signal: req.signal,
       ...(fenced ? { fenced: () => this.#leaseBase(target) } : {}),
       ...(holdMs !== undefined ? { holdMs: holdMs as number } : {}),
+      ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
     });
     switch (outcome.kind) {
       case "acquired":
@@ -1424,26 +1617,20 @@ class DatastoreApi {
           [["Retry-After", "1"]],
         );
       case "held":
-        // Who holds it is said only as far as the caller may know: itself,
-        // another caller, or serve's own work. Never another's identity.
+        // The caller passed this lock's authorization, so it may take the
+        // lock and may know who holds it; heldBy stays for older clients.
         return Response.json({
           code: "lock_held",
           heldBy: outcome.heldBy,
-          message: outcome.heldBy === "caller"
-            ? `${fields.lockKey} is held by another of this caller's commands`
-            : outcome.heldBy === "other"
-            ? `${fields.lockKey} is held by another caller`
-            : `${fields.lockKey} is held by serve's own work`,
+          ...(outcome.holder === undefined ? {} : { holder: outcome.holder }),
+          message: heldMessage(fields.lockKey as string, outcome),
         }, { status: 409, headers: { "Retry-After": "1" } });
     }
   }
 
   /**
-   * `GET locks?prefix=`: the leases serve holds on locks the caller could
-   * take itself (swamp-club#4121), each as its key, who holds it (`caller`
-   * or `other`, never who) and when it ends unless renewed. Each lock is
-   * decided without a refusal audit, since a listing refuses nothing. At
-   * most {@link MAX_LISTED_LEASES}, with `truncated` set past it.
+   * only locks the caller could take itself, each decided without a refusal
+   * audit, since a listing refuses nothing
    */
   async listLocks(req: Request): Promise<Response> {
     const prefix = new URL(req.url).searchParams.get("prefix") ?? "";
@@ -1455,6 +1642,7 @@ class DatastoreApi {
       lockKey: string;
       heldBy: LockHolder;
       expiresAt: string;
+      holder: LeaseHolder;
     }[] = [];
     let truncated = false;
     for (const lease of this.#deps.locks.list(prefix)) {
@@ -1467,6 +1655,11 @@ class DatastoreApi {
         lockKey: lease.lockKey,
         heldBy: lease.principal === this.#caller.principal ? "caller" : "other",
         expiresAt: lease.expiresAt,
+        holder: {
+          principal: lease.principal,
+          explicit: lease.explicit,
+          expiresAt: lease.expiresAt,
+        },
       });
     }
     return Response.json({ leases, truncated });
@@ -1916,6 +2109,20 @@ class DatastoreApi {
           signal: req.signal,
         },
       );
+      if (outcome.initiatorRefused !== undefined) {
+        // a record an older CLI wrote names an initiator serve now refuses;
+        // nothing can make it land, so the work is run again
+        this.#auditAccept(
+          record,
+          "failure",
+          `initiator refused under ${record.principal}'s access: ${outcome.initiatorRefused}`,
+        );
+        return failure(
+          403,
+          "quarantine_content_refused",
+          `The quarantined change cannot land: its run record does not name its author ${record.principal} as its initiator (${outcome.initiatorRefused}). Discard it with \`swamp datastore quarantine discard ${txnId}\`, then run the work again.`,
+        );
+      }
       if (outcome.contentRefused !== undefined) {
         // The author's own access refuses what the change carries or
         // names: an admin's accept overrides the write grant it lacked,
@@ -2233,6 +2440,9 @@ class DatastoreApi {
       if (checked.reason === "content-refused") {
         outcome.contentRefused = checked.message;
       }
+      if (checked.reason === RUN_INITIATOR_MISMATCH_REASON) {
+        outcome.initiatorRefused = checked.message;
+      }
       throw refusedError(checked);
     }
     const request = {
@@ -2324,6 +2534,7 @@ class DatastoreApi {
         this.#deps.ctx.resolvedUserNames,
         this.#caller.access.loginIdentity,
       ),
+      client: this.#caller.access.client,
       sourceIp: this.#caller.access.sourceIp,
       requestId: this.#requestId,
       ...(detail === undefined ? {} : { detail }),
@@ -3088,9 +3299,7 @@ function parsePartition(segment: string): PartitionKey | undefined {
 /** A refusal as the flush reads it: the error serve's reply maps to. */
 function refusedError(refusal: CommitRefusal): ServeCommitRefusedError {
   return new ServeCommitRefusedError(
-    refusal.reason === "forbidden" || refusal.reason === "content-refused"
-      ? "forbidden"
-      : "commit_refused",
+    refusalCode(refusal),
     refusal.reason,
     refusal.opIndex,
     refusal.message,
@@ -3116,6 +3325,8 @@ interface AcceptOutcome {
   reason?: string;
   /** Set when the author's own access refused the change's content. */
   contentRefused?: string;
+  /** Set when its run record names someone other than its author. */
+  initiatorRefused?: string;
 }
 
 /**
@@ -3178,12 +3389,18 @@ function quarantineTooLarge(): Response {
   );
 }
 
+function refusalCode(refusal: CommitRefusal): "forbidden" | "commit_refused" {
+  return refusal.reason === "forbidden" ||
+      refusal.reason === "content-refused" ||
+      refusal.reason === RUN_INITIATOR_MISMATCH_REASON
+    ? "forbidden"
+    : "commit_refused";
+}
+
 /** The 403 a refused commit is answered with. */
 function refusalResponse(refusal: CommitRefusal): Response {
   return Response.json({
-    code: refusal.reason === "forbidden" || refusal.reason === "content-refused"
-      ? "forbidden"
-      : "commit_refused",
+    code: refusalCode(refusal),
     reason: refusal.reason,
     opIndex: refusal.opIndex,
     message: refusal.message,

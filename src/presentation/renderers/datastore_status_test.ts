@@ -162,3 +162,24 @@ Deno.test("datastore status renderer: a serve-mode checkout shows the leases it 
   assertEquals(json.heldLeases[0].fence, 3);
   assertEquals(json.serveSectionAbsent, "serve is unreachable");
 });
+
+Deno.test("datastore status: a run record serve refused for its initiator says so and says to run the work again", () => {
+  const data: DatastoreStatusData = {
+    ...STATUS,
+    outbox: [{
+      state: "rejected",
+      partition: "run--w--r",
+      txnId: "33333333-3333-4333-8333-333333333333",
+      reason: "run.create of workflow-runs/w/workflow-run-r.yaml: refused",
+      code: "run_initiator_mismatch",
+      savedAt: "2026-10-30T12:02:00.000Z",
+    }],
+  };
+  const log = render("log", data);
+  assertStringIncludes(log, "refused for its initiator");
+  assertStringIncludes(log, "run the work again");
+  assertEquals(
+    JSON.parse(render("json", data)).outbox[0].code,
+    "run_initiator_mismatch",
+  );
+});

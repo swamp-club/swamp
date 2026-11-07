@@ -78,6 +78,46 @@ different mint of the name (swamp-club#2482). See "Tokens" in
 Implementation: `src/serve/token_auth.ts`,
 `src/domain/models/access/server_token_model.ts`.
 
+### Clients
+
+A token records a client, written `<kind>:<id>`, separate from its principal.
+"Client" here is not the OAuth client serve registers at swamp-club, nor
+swamp-lib's `SwampClient`.
+
+- The **kind** says what serve treats differently. `direct` applies no ceiling.
+  `integration` is reserved for an app an admin registers, whose rights will be
+  the person's grants intersected with what the admin approved. No production
+  path issues an `integration` token yet.
+- The **id** says which one, for the record. Serve's own behavior never branches
+  on it; only a grant condition an operator writes reads it.
+
+| How the token is issued                 | Client             |
+| --------------------------------------- | ------------------ |
+| `swamp auth login --server`             | `direct:cli`       |
+| Dashboard login                         | `direct:dashboard` |
+| `swamp access token mint`, or `mint`    | `direct:token`     |
+
+Serve writes the client when it issues the token and only reads it afterwards:
+it is not a `mint` argument, nothing in a sign-in request can choose it, and
+rotation keeps it. Authentication parses it strictly and refuses a malformed
+value with `401 invalid-client`. The stored field stays a loose string, because
+listing and GC skip a record that fails to parse and a bad value must not hide a
+token from revocation. A token issued before clients has none and reads as
+direct with no id. A dashboard session started from a pasted token keeps that
+token's client.
+
+The client labels how a token was issued, not what presents it: a copied
+`direct:cli` token still reads `direct:cli`, so a `direct` id is not a security
+boundary. So a refusal on `client` stops tokens issued to that integration. It
+does not stop the app, or the person: they can still act through the CLI, or hand
+an app a minted token that reads `direct:token`. To stop the action, deny the
+person. Grant conditions read the client (see
+[Condition evaluation](#condition-evaluation)). Runs and audit events record it;
+see "Actor identity" in `design/enablers/serve-audit.md` and "Run records: the
+threat model" below.
+
+Implementation: `src/domain/access/client.ts`.
+
 ## Admission
 
 Before authorization, an admission gate decides who may connect at all. In
@@ -769,9 +809,8 @@ workflow, and a conditioned deny such as
 only the named workflows.
 
 A deny whose condition cannot be evaluated (for example a `tags.<key>` the
-workflow does not have) withholds the default: the run is refused rather than
-allowed, so a broken restriction fails closed. Write tag conditions defensively,
-e.g. `!("trigger" in tags) || tags.trigger != "webhook"`. In a mixed-version
+workflow does not have) refuses, so a broken restriction fails closed. Write tag
+conditions defensively, e.g. `!("trigger" in tags) || tags.trigger != "webhook"`. In a mixed-version
 fleet, instances older than the service principal skip `service:` grants when
 loading policy; they also do not authorize trigger runs.
 
@@ -827,13 +866,13 @@ resource kind:
 
 | Resource kind | Available fields                                             |
 | ------------- | ------------------------------------------------------------ |
-| `workflow`    | `name`, `tags`, `collective`                                 |
+| `workflow`    | `name`, `tags`, `collective`, `run` (approve only)           |
 | `model`       | `name`, `modelType`, `tags`, `collective`, `methodName`      |
 | `data`        | `name`, `ns`, `tags`, `owner`                                |
 | `access`      | `name`                                                       |
 | `vault`       | `name`, `key`                                                |
 
-Every kind can also use `principal.sub`, `principal.groups` and
+Every kind can also use `client`, `principal.sub`, `principal.groups` and
 `principal.collectives`.
 
 The same variable list (`src/domain/access/condition_fields.ts`) serves grant
@@ -846,25 +885,229 @@ names none. `collective` and `owner` are declared but serve does not supply them
 yet: a deny that references them refuses every request of its kind, an allow
 never matches, and loading the policy logs a warning naming each such grant.
 
+`client` is a request field holding the token's `<kind>:<id>`. A token with no
+client reads as `direct:`, so `client.startsWith("direct:")` holds for it and
+`client != "integration:slack"` does not refuse it. Unlike a resource field it
+decides on kind-level checks and operations over every resource. Writing a grant
+refuses a literal no token can hold, and warns on a literal `direct:` id, since a
+direct id is not a boundary. Type and schema endpoints only look for an allow, so
+a client deny does not hide type definitions. Client conditions never narrow a
+run: `run` on a workflow or behavior delegates use of what it touches, so inside
+a run `client` reads as `direct:`. To keep an integration out of a workflow, deny
+`run` on it. A vault deny on the client stops direct requests only. That leaves
+one known limit: a secret an integration names in behavior inputs resolves in the
+run, so a client deny does not stop it until caller inputs act as the caller
+(swamp-club#4479). A vault allow on the client warns when written: it limits the
+subject's runs like any vault allow, and a condition requiring an integration
+never matches there.
+
+`run` describes the run an `approve` decision acts on, and covers `reject`, which
+is decided as `approve`: `run.initiator.kind`, `run.initiator.id`,
+`run.initiator.sub` and `run.serveDriven`. A user's `sub` is their id, so it
+compares directly with `principal.sub`. A service run's `sub` is empty, since no
+person started it and no principal's id is empty, so anyone with `approve` can
+decide it. A run with no usable initiator (none recorded, `ghost`, or text that
+does not parse) has no `run` at all, so a deny needing it refuses and an allow
+needing it does not match. A grant naming `run` on any other action is refused
+when written, because no other decision can supply it, including `[run]` and
+`[approve, read]`. So is a path `run` does not have, such as
+`run.initiatr.sub`, and a condition whose types cannot evaluate (see below). A
+stored grant that reaches a node anyway warns at load and decides by the rules
+here.
+
 **Missing fields fail closed** (swamp-club#2675). Serve authorizes every
 resource with all of its resource fields — `tags` is `{}` and `ns` is `""` when
 the resource has none, and `name` is always the resource name. A condition that
 references a resource field the resource does not carry cannot be evaluated: a
 deny that needs it refuses, and an allow that needs it does not match. The check
 is structural — the fields a condition references are read from its parsed
-expression — never inferred from an error message. A condition that reads a tag
-the resource does not have (`tags.env` on a resource with no `env` tag) is a
-different case: the resource carries its tags, so the condition decides nothing
-and other grants decide, as described above; guard such conditions with `in`.
+expression — never inferred from an error message.
+
+**A condition that errors fails closed.** Authorization does not read an error as
+no match: a deny whose condition errors at decision time refuses, whatever allow
+applies, and an allow whose condition errors does not match, so it grants
+nothing. `access check` and `access can-i` report the same. An unmatched request
+can still reach the admin fallback.
+
+This covers reading a tag the resource does not have. A deny on `tags.env ==
+"prod"` refuses `prod` resources and every resource with no `env` tag, in reads
+and listings too. A resource being created has no tags, so such a deny on `write`
+refuses creating one. A vault request is decided as a data resource with no tags,
+so such a data deny also refuses that subject's vault requests, `vault.search`
+included. To apply a deny only to resources carrying the tag, guard it: `"env" in
+tags && tags.env == "prod"`, or `has(tags.env) && ...`.
+
 A check on a resource kind as a whole (`kindResource`: type and schema
 endpoints, extensions, datastores) touches no resource, so a condition on
-resource fields decides nothing there either.
+resource fields decides nothing there; it is not an error.
+
+**Types are checked when a condition is written.** A condition is checked against
+declared types, without evaluating it, so a part a decision would skip is checked
+too: `run.initiator.kind`, `.id` and `.sub`, `principal.sub`, `client` and tag
+values are strings, `run.serveDriven` is a bool, and `principal.groups` and
+`principal.collectives` are lists of strings. `principal.email` is never supplied.
+A condition fails the check if its types cannot evaluate, or if it gives anything
+but true or false. One naming `run` or `client` also fails on `dyn()`, and on
+converting a `run` or `client` value with `int`, `uint`, `double`, `bool`,
+`timestamp` or `duration`.
+
+| Where the condition is                     | Names `run` or `client`                               | Names neither                                |
+| ------------------------------------------ | ----------------------------------------------------- | -------------------------------------------- |
+| `access grant create`, `@swamp/grant` create | Refused                                               | Refused                                      |
+| Grant file                                 | Refused: the whole file, as any grant file error      | Warning from `serve check-config`; it loads  |
+| Stored grant                               | Warning when serve loads it; decides as evaluated     | Warning when serve loads it; decides as evaluated |
+
+A stored grant is never rewritten or dropped. The warning appears once per grant
+per serve process, and again after a restart or when the grant changes, in the
+serve log only. Fix a grant written by a method by revoking it and writing it
+again, and one from a file by editing the file. A deny reading a tag with no guard
+warns at `access grant create`, from `serve check-config` for a grant file, and
+when serve loads it, and is never refused for that. That warning looks for
+an `in` or `has` on the same tag anywhere in the condition, so it does not prove
+the guard is in the right place.
+
+The check cannot catch everything, and a condition that passes is not proven to
+decide as intended:
+
+- A wrong-typed stored condition can evaluate to false rather than erroring, such
+  as a comparison of different types. As a deny it never fires, and `access check`
+  reports allow with no mention of it. The load warning is the only signal.
+- Failures that depend on values still pass, and refuse at decision time as a
+  deny: a division by zero, an index out of range, a converted tag, a value
+  converted after `cel.bind` renamed it, or a tag no guard covers.
+- A comparison of `run.initiator` with a map type-checks, and matches only a map
+  holding all three of its keys.
+- An admin's direct commit of a grant record to the datastore, such as from an
+  older CLI, is not validated when it lands. The load warning reports it.
+
+Check what a condition does on a real resource with `access check` before relying
+on it.
 
 Each request has an **aggregate condition budget** of 100 CEL evaluations. If it
 runs out, the request is denied whatever grants remain.
 
 Implementation: `src/domain/access/grant_based_access_decision_service.ts`,
 `src/domain/access/policy_snapshot.ts`.
+
+### Who can cancel a run
+
+A cancel of one workflow run, by `swamp workflow cancel --run --server`
+(`POST /api/v1/cancel/workflow-run/<id>`) or the `workflow.cancel` request the
+dashboard uses, needs `run` on the run's workflow, for any run of it: there is no
+per-run ownership, and a person with `approve` could end the run by rejecting it
+anyway. It is decided on the workflow of what would be aborted, not on a stored
+record while something holds that run id. A condition cannot narrow it, since `run`
+is not available to a `run` decision. To keep cancel admin-only, list
+`workflow.cancel` in `--restricted-commands`, which binds both routes. `deny run`
+also stops a cancel, but stops starting the workflow too.
+
+A refused caller, a missing run, a finished run and another workflow's run get the
+same not-found reply, on each route. Cancelling a parent also cancels the suspended
+children it waited on, on workflows where the caller holds no grant; the reply names
+a child only to a reader of its workflow. The audit log records the caller on the
+parent's event and names them in the reason of each child's system event.
+
+What stays different, and why:
+
+| Route                                       | Needs                                                  | Why                                                       |
+| ------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- |
+| `POST /api/v1/cancel` (bulk)                | `admin` on `access:*`                                  | It reaches every run                                      |
+| `POST /api/v1/cancel/method-run/<id>`       | `admin` on `access:*`                                  | No CLI uses it; the WebSocket `cancel` takes `run`        |
+| `POST /api/v1/cancel/workflow-run/<id>`     | `admin` on `access:*`, or `run` on the run's workflow  | An admin denied `run` keeps it, as before this rule       |
+| `workflow.cancel`                           | `run` on the run's workflow                            | An admin denied `run` is refused, as `run` decides here   |
+
+A follower authenticates a per-run cancel and forwards it with the caller's own
+credentials, so the leader decides and records it, on its policy and records.
+
+### Separation of duties
+
+To forbid self-approval, write a `deny`, once for each subject that holds `run`,
+`approve` or `admin`:
+
+```yaml
+- subject: "idp-group:approvers"
+  effect: deny
+  actions: [approve]
+  resource: "workflow:@acme/*"
+  condition: "principal.sub == run.initiator.sub"
+```
+
+An `allow` conditioned on the initiator is not enough. `run` implies `approve`
+unless serve requires an explicit grant, and an unmatched request still reaches
+the admin fallback. A deny only binds the subjects it names: there is no wildcard
+subject.
+
+A person refused on their own run sees that they are denied `approve`, and the
+audit event names the grant and the client. The gate keeps waiting, for someone
+else to decide, and the person can still cancel the run with `run` (see "Who can
+cancel a run"). Finish or cancel suspended runs with no usable initiator before
+writing such a deny: nobody it covers can decide them, and anyone with `run` on
+the workflow can cancel them.
+
+**Approve and reject decide twice.** Before any run is read, `run` is pending: a
+deny on it waits and an allow on it counts as possible, so a caller with no right
+to decide gets the same reply whether or not the run exists, and no run is read.
+Then, inside the run's claim and before anything is written, the decision is made
+on the record it will act on. A caller holding only a run-conditional allow can
+therefore tell refused from not found; they hold `approve` on that workflow.
+
+`access.can-i`, `access.check` and `workflow.approvals` follow the same split.
+An explanation that names no run marks each decision needing one `dependsOn`, and
+`workflow.approvals` sets `canDecide` per run, with
+`canDecideReason: grant-condition` when the caller could decide other runs of the
+workflow but not this one. It also sets `canCancel` and `canResume` per row and on
+`parentRun`, unaudited, and `swamp workflow approvals` offers only the commands
+those allow. `canCancel` answers for `swamp workflow cancel --server`.
+
+**What self-approval guarantees:**
+
+| Run                                     | Guarantee                                                                                                                                          |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Serve-driven                            | Holds: the initiator is the authenticated principal                                                                                                |
+| Member-driven, written since #4454      | The initiator is checked, but a gate never binds the runner against their will (see the threat model): a modified CLI skips it                    |
+| Child of a member-driven run            | Can be misattributed: any caller with `run` on an active parent's workflow can write a child naming the parent's initiator, and then approve it    |
+| Recorded before #4454                   | Self-reported, and cannot be told apart from a checked one                                                                                         |
+| No usable initiator                     | Fails closed                                                                                                                                       |
+| Older CLI during an upgrade window      | Not weakened: serve refuses the record and the work is run again                                                                                   |
+| `auth: none`                            | None: grants are never consulted, and `decidedBy` comes from the client                                                                            |
+
+An operator who needs more can add `|| !run.serveDriven` to the deny. Only serve
+can set what `serveDriven` reads, so a member's record cannot claim it. This also
+refuses legitimate approvals of member-driven runs.
+
+**Upgrade first.** Write a grant naming `client` or `run` only once every serve
+instance runs a release that supports them. An older instance treats such a deny
+as undecided, so it does not fire and any allow still applies, and it refuses to
+load such an entry from a grant file. Approve is decided on the leader, so an
+older leader misses self-approval; reads are decided where they arrive, so an
+older follower misses client denies on reads. Do not downgrade while such a grant
+exists.
+
+Failing closed on a condition that errors takes effect per instance, so a mixed
+fleet decides differently until every instance is upgraded: an older one skips the
+deny, a newer one refuses. Before upgrading, run `swamp serve check-config` with
+the new binary, since a grant file holding a refused condition stops serve
+starting. Review deny grants that read a tag and guard any that should not apply
+to untagged resources. A stored grant's warnings appear only once a new instance
+has loaded it, so `access grant list` is the way to find them beforehand. An older
+CLI and an older serve together still accept what this release refuses, so upgrade
+serve before relying on the refusal.
+
+Review stored denies on `admin` too. One whose condition always errors, such as one
+reading `principal.email`, did nothing before and now refuses its subjects `admin`,
+including the access to revoke it. If those subjects hold every admin, nobody can
+revoke it through serve, so fix it before upgrading.
+
+The read-access fingerprint changes with this rule, so a member's local copy of a
+serve datastore resets once on the first command after the upgrade, and copies
+filtered under the old rule do not keep what a deny now refuses. While instances of
+both versions answer, the fingerprint differs between them; the reset cooldown
+limits how often a copy rebuilds.
+
+Implementation: `withRunCondition` and `withRunPending` in
+`src/domain/access/access_resources.ts`, `AccessResource.pending` in
+`src/domain/access/access_decision_service.ts`, and `runDecisionGuard` in
+`src/serve/handlers/workflow_handlers.ts`.
 
 ## PolicySnapshot lifecycle
 
@@ -1649,13 +1892,37 @@ runner against their will.
    did. There is no per-run ownership refusal: one member resuming another's run
    works.
 
+**Initiator (swamp-club#4454).** A new run record names the principal serve
+stamps on its commit (the token record's principal), or, for a child run, its
+stored parent's initiator; anything else is refused with
+`run-initiator-mismatch` (`run_initiator_mismatch` in the CLI, advising an
+upgrade). Serve rewrites no bytes, and the frozen-field rule keeps it after the
+first record. A child a resume creates keeps the parent's initiator; who resumed
+it is out of scope. The rule is not limited to resumes: any caller with `run`
+on an active parent's workflow can create a child record attributed to the
+parent's initiator. Under auth mode none nothing is checked. Two upgrade windows
+are accepted, not closed: work an older CLI queued offline across a serve
+upgrade, and a leader upgraded before its followers (an old follower never
+advertises the check). Such a record is kept in the member's outbox as rejected
+and its work is run again; there is no path that accepts it as it is.
+
+**Login tokens.** An admin may revoke any token but may not reveal a login
+token (one an OAuth or device login minted) through serve.
+
+A record's `client` follows the same split. Only serve records it, so a forwarded
+first record that carries one is refused and it cannot change afterwards. A
+decision serve recorded on a member-driven run may come back without its client,
+because an older CLI strips a field it does not know, and nothing else about the
+decision may differ. A modified CLI can do the same, so on such a run the audit
+event is the authority on the client.
+
 **Out of scope:**
 
 - the step, job and run statuses, outputs and timings a member reports for a run
   they drive;
 - splitting such a report across commits.
-- `initiatedBy` and `triggerSource`, which are the member's report: the commit
-  stamp says who wrote the record.
+- `triggerSource`, a behavior's output provenance and the `initiatedBy` data
+  tag, which are the member's report: the commit stamp says who wrote them.
 - the step starts a member reports for a run they drive (swamp-club#4319). A
   start is a run's own small record that a step began, read with the run's
   record on recovery. It holds a job, a step and a start time and nothing else,

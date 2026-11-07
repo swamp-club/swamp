@@ -27,6 +27,7 @@ import {
   type ConnectionContext,
   markUncappedSocket,
   removeConnection,
+  setConnectionClient,
   setConnectionCollectives,
   setConnectionLoginIdentity,
   setConnectionSourceIp,
@@ -64,7 +65,7 @@ export interface HttpRequestRouteDeps {
  * reply through a WebSocket, so this is one, as far as serve's code uses one.
  * Frames arrive uncompressed and uncapped, so always as text.
  */
-class HttpReplySocket extends EventTarget {
+export class HttpReplySocket extends EventTarget {
   readyState: number = WebSocket.OPEN;
   readonly bufferedAmount = 0;
   onclose: ((event: CloseEvent) => void) | null = null;
@@ -182,13 +183,15 @@ export async function handleHttpRequest(
   );
 }
 
-function replyStream(
+/** a socket stand-in carrying this caller, for one request over HTTP */
+export function createCallerReplySocket(
   caller: HttpCaller,
   sourceIp: string,
-  requestText: string,
-  ctx: ConnectionContext,
-  dispatch: typeof handleMessage,
-): ReadableStream<Uint8Array<ArrayBuffer>> {
+): {
+  reply: HttpReplySocket;
+  socket: WebSocket;
+  activeRequests: Map<string, AbortController>;
+} {
   const reply = new HttpReplySocket();
   const socket = reply as unknown as WebSocket;
   markUncappedSocket(socket);
@@ -203,6 +206,7 @@ function replyStream(
     setConnectionToken(socket, caller.token);
   }
   setConnectionLoginIdentity(socket, caller.access.loginIdentity);
+  setConnectionClient(socket, caller.access.client);
 
   const activeRequests = new Map<string, AbortController>();
   // a disconnect or a revoked session aborts the request, as a closed socket's
@@ -211,6 +215,20 @@ function replyStream(
     for (const controller of activeRequests.values()) controller.abort();
     removeConnection(socket);
   });
+  return { reply, socket, activeRequests };
+}
+
+function replyStream(
+  caller: HttpCaller,
+  sourceIp: string,
+  requestText: string,
+  ctx: ConnectionContext,
+  dispatch: typeof handleMessage,
+): ReadableStream<Uint8Array<ArrayBuffer>> {
+  const { reply, socket, activeRequests } = createCallerReplySocket(
+    caller,
+    sourceIp,
+  );
 
   const encoder = new TextEncoder();
   let cancelled = false;
@@ -244,7 +262,7 @@ function replyStream(
  * the writer stops pulling while its bounded buffers are full, so the end is
  * seen only once the client has taken all but those buffers
  */
-function holdingSlotUntilRead(
+export function holdingSlotUntilRead(
   inner: ReadableStream<Uint8Array<ArrayBuffer>>,
   release: () => void,
 ): ReadableStream<Uint8Array<ArrayBuffer>> {

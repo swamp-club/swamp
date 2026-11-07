@@ -212,3 +212,31 @@ Deno.test("buildAuditEvent: leaves the actor fields out when unknown", () => {
     assertEquals("principalEmail" in event, false);
   }
 });
+
+Deno.test("buildAuditEvent: carries the client when set", () => {
+  const event = buildAuditEvent({ ...clientInput, client: "direct:cli" });
+  assertEquals(event.client, "direct:cli");
+});
+
+Deno.test("buildAuditEvent: an event with no client has no client key", () => {
+  assertEquals("client" in buildAuditEvent(clientInput), false);
+  assertEquals(
+    "client" in buildAuditEvent({ ...clientInput, client: undefined }),
+    false,
+  );
+});
+
+const clientInput = {
+  instanceId: "inst-1",
+  category: "execution",
+  stage: "response",
+  outcome: "success",
+  action: "workflow.run",
+  resourceKind: "workflow",
+  resourceName: "deploy",
+  principalKind: "user",
+  principalId: "alice",
+  initiatedBy: "user:alice",
+  sourceIp: "10.0.0.1",
+  requestId: "req-1",
+} as const;

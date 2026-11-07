@@ -47,6 +47,7 @@ import { CancelRunAction } from "../components/CancelRunAction.tsx";
 import type { CancelOutcome } from "../components/cancel_confirm.ts";
 import {
   type ApprovalInfo,
+  decisionPayload,
   expiredApprovals,
   type ExpiredGate,
   pendingApprovals,
@@ -209,12 +210,10 @@ export function Approvals(
       try {
         const reply = await request<
           { data?: { autoResumed?: boolean } }
-        >(decision === "approve" ? "workflow.approve" : "workflow.reject", {
-          workflowIdOrName: a.workflowName,
-          stepName: a.stepName,
-          runId: a.runId,
-          ...(reason !== undefined ? { reason } : {}),
-        });
+        >(
+          decision === "approve" ? "workflow.approve" : "workflow.reject",
+          decisionPayload(a, reason),
+        );
         const settled = decidedGate(decision, reply, new Date().toISOString());
         hold(a, settled);
         landed = true;

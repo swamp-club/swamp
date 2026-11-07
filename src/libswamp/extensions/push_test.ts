@@ -2982,6 +2982,171 @@ Deno.test("extensionPushPrepare: an acceptance for uncatalogued-model is invalid
   });
 });
 
+function listingArguments(count: number) {
+  return Array.from({ length: count }, (_, k) => ({
+    name: `a${k}`,
+    type: "string",
+    description: "",
+    required: false,
+  }));
+}
+
+function listingModel(
+  i: number,
+  methodCount = 1,
+  argCount = 0,
+  globalArgCount = 0,
+) {
+  return {
+    fileName: `m${i}.ts`,
+    type: `@testuser/test-ext/m${i}`,
+    version: "2026.09.25.1",
+    globalArguments: listingArguments(globalArgCount),
+    methods: Array.from({ length: methodCount }, (_, j) => ({
+      name: j === 0 ? "run" : `run${j}`,
+      description: "",
+      arguments: listingArguments(argCount),
+    })),
+    resources: [],
+    files: [],
+  };
+}
+
+function listingDeps(
+  models: ReturnType<typeof listingModel>[],
+): ExtensionPushPrepareDeps {
+  return makePrepareDeps({
+    extractContentMetadata: () =>
+      Promise.resolve({
+        models,
+        extensions: [],
+        workflows: [],
+        vaults: [],
+        datastores: [],
+        reports: [],
+        webhooks: [],
+        skills: [],
+      }),
+  });
+}
+
+Deno.test("extensionPushPrepare: a listing over the registry's model limit is one registry-listing-limit warning on the extension", async () => {
+  await withAcceptanceFixture(
+    { "models/a.ts": "export {};\n" },
+    async (dir, paths) => {
+      const result = await extensionPushPrepare(
+        ctx,
+        listingDeps(Array.from({ length: 51 }, (_, i) => listingModel(i))),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      );
+      const findings = result.reviewRulesResult.warnings.filter((w) =>
+        w.ruleId === "registry-listing-limit"
+      );
+      assertEquals(findings.length, 1);
+      assertEquals(findings[0].file, "(extension)");
+      assertEquals(findings[0].line, undefined);
+      assertEquals(findings[0].dimension, "Registry catalog");
+      assertEquals(
+        findings[0].message,
+        "The registry lists at most 50 behaviors; this extension has 51, so " +
+          "its page can list none of its behaviors, methods or arguments.",
+      );
+      assertStringIncludes(
+        findings[0].remediation ?? "",
+        "the extension still installs and runs",
+      );
+      assertStringIncludes(
+        findings[0].remediation ?? "",
+        "Split it into several",
+      );
+      assertEquals(result.reviewRulesResult.errors, []);
+    },
+  );
+});
+
+Deno.test("extensionPushPrepare: a method over the argument limit names the method, behavior type and fileName in its message", async () => {
+  await withAcceptanceFixture(
+    { "models/a.ts": "export {};\n" },
+    async (dir, paths) => {
+      const result = await extensionPushPrepare(
+        ctx,
+        listingDeps([listingModel(7, 1, 31)]),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      );
+      const messages = result.reviewRulesResult.warnings
+        .filter((w) => w.ruleId === "registry-listing-limit")
+        .map((w) => w.message);
+      assertEquals(messages.length, 1);
+      assertStringIncludes(
+        messages[0],
+        "at most 30 arguments for method run of behavior @testuser/test-ext/m7 (m7.ts); this extension has 31,",
+      );
+    },
+  );
+});
+
+Deno.test("extensionPushPrepare: a registry-listing-limit message names a camelCase list in words", async () => {
+  await withAcceptanceFixture(
+    { "models/a.ts": "export {};\n" },
+    async (dir, paths) => {
+      const result = await extensionPushPrepare(
+        ctx,
+        listingDeps([listingModel(3, 1, 0, 31)]),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      );
+      const messages = result.reviewRulesResult.warnings
+        .filter((w) => w.ruleId === "registry-listing-limit")
+        .map((w) => w.message);
+      assertEquals(messages.length, 1);
+      assertStringIncludes(
+        messages[0],
+        "at most 30 global arguments for behavior @testuser/test-ext/m3 (m3.ts)",
+      );
+    },
+  );
+});
+
+Deno.test("extensionPushPrepare: a listing within every registry limit has no registry-listing-limit warning", async () => {
+  await withAcceptanceFixture(
+    { "models/a.ts": "export {};\n" },
+    async (dir, paths) => {
+      const result = await extensionPushPrepare(
+        ctx,
+        listingDeps(
+          Array.from({ length: 50 }, (_, i) => listingModel(i, 50, 30)),
+        ),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      );
+      assertEquals(
+        result.reviewRulesResult.warnings.filter((w) =>
+          w.ruleId === "registry-listing-limit"
+        ),
+        [],
+      );
+    },
+  );
+});
+
+Deno.test("extensionPushPrepare: an acceptance for registry-listing-limit is invalid and blocks the push", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      "// swamp-quality-ignore registry-listing-limit: listed elsewhere\nexport {};\n",
+  }, async (dir, paths) => {
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        listingDeps(Array.from({ length: 51 }, (_, i) => listingModel(i))),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      )
+    ) as SwampError;
+    const details = error.details as { reviewRuleErrors: ReviewFinding[] };
+    assertStringIncludes(
+      details.reviewRuleErrors.map((f) => f.message).join("\n"),
+      '"registry-listing-limit" is not a rule that can be accepted',
+    );
+  });
+});
+
 Deno.test("extensionPushPrepare: an accepted finding in a typed directory beside the manifest is a ../ path in the summary and an archive path for the registry, never a local one", async () => {
   const dir = await Deno.makeTempDir({ prefix: "acceptances-" });
   try {

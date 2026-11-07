@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { cancelled, type SwampError } from "../errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
@@ -27,6 +28,11 @@ import type {
 import { markErrorPaths } from "../../domain/errors.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EnvVarUsageDetail } from "../../domain/models/validation_service.ts";
+import {
+  jsonByteLengthWithin,
+  RESOURCE_ATTRIBUTE_CAP_BYTES,
+  ResourceAttributeBudget,
+} from "../../domain/models/resource_attribute_budget.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { findWorkflowById } from "../../domain/workflows/workflow_lookup.ts";
 import type {
@@ -34,9 +40,13 @@ import type {
   WorkflowRun,
 } from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
-import type {
-  ResolvedStepOutputs,
+import {
+  createDataRepositoryAttributeReader,
+  type ResolvedStepOutputs,
+  type ResourceAttributeReader,
+  type ResourceReadPolicy,
   StepOutputResolver,
+  type StepResourceRef,
 } from "../../domain/workflows/step_output_resolver.ts";
 import type { WebhookPayload } from "../../domain/expressions/model_resolver.ts";
 import type {
@@ -81,6 +91,7 @@ import {
   supersedeMatchInputs,
   supersedeSuspendedRuns,
 } from "./supersede.ts";
+import type { RunStartKeyData } from "../../domain/workflows/run_start_key.ts";
 import type { EvaluatedWorkflowCache } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
 import {
@@ -361,6 +372,19 @@ export interface WorkflowRunDeps {
    * execution service loads the cache itself
    */
   supersede?: SupersedeDeps;
+  /**
+   * reads the attributes of the run's data back from the datastore for the
+   * completed event; a dep, never an input, as serve must not grant it
+   */
+  resolveCompletedOutputs?: boolean;
+  /** lowers the run's attribute budget; production runs leave it at the default */
+  resourceAttributeCapBytes?: number;
+  /**
+   * handed the live completed run, whose never-persisted sensitive values are
+   * the only mask for its data, before the completed event is yielded; a dep,
+   * never an input
+   */
+  onCompletedRun?: (run: WorkflowRun) => void;
 }
 
 export interface WorkflowRunInput {
@@ -399,6 +423,8 @@ export interface WorkflowRunInput {
   tracestate?: string;
   assertFailOnSeverity?: AssertSeverity;
   initiatedBy?: string;
+  client?: string;
+  startKey?: RunStartKeyData;
   instanceId?: string;
   triggerSource?: string;
   noSupersede?: boolean;
@@ -450,6 +476,7 @@ function mapApprovalDecision(
       status: "approved",
       approvedBy: decision.decidedBy,
       approvedAt: decision.decidedAt,
+      ...(decision.client !== undefined ? { client: decision.client } : {}),
     };
     if (stepStartedAt) {
       const decidedMs = new Date(decision.decidedAt).getTime();
@@ -462,6 +489,7 @@ function mapApprovalDecision(
     rejectedBy: decision.decidedBy,
     rejectedAt: decision.decidedAt,
     reason: decision.reason,
+    ...(decision.client !== undefined ? { client: decision.client } : {}),
   };
 }
 
@@ -470,19 +498,249 @@ export type RunStepOutputs = Record<
   Record<string, ResolvedStepOutputs>
 >;
 
+/**
+ * one run's budget over its post-run attribute reads; resolution is sequential,
+ * so the omissions drawn after a step's resolve, its child runs' included,
+ * belong to that step
+ */
+export class RunAttributeBudget {
+  readonly #budget: ResourceAttributeBudget;
+  #stepOmitted: string[] = [];
+  #childReads = false;
+
+  constructor(capBytes: number = RESOURCE_ATTRIBUTE_CAP_BYTES) {
+    this.#budget = new ResourceAttributeBudget(capBytes);
+  }
+
+  // a recorded size is decided before the read, so content past the budget is
+  // never loaded; JSON is never zero bytes, so a size of 0 counts as unrecorded
+  // and is measured after the read
+  wrap(read: ResourceAttributeReader): ResourceAttributeReader {
+    const omit = (ref: StepResourceRef) => {
+      this.#stepOmitted.push(ref.dataId);
+      return undefined;
+    };
+    return async (ref) => {
+      if (this.#budget.exhausted) return omit(ref);
+      if (this.#childReads) return await read(ref);
+      if (ref.size !== undefined && ref.size > 0) {
+        return this.#budget.admit(ref.size) ? await read(ref) : omit(ref);
+      }
+      const attributes = await read(ref);
+      if (attributes === undefined) return undefined;
+      const bytes = new TextEncoder().encode(JSON.stringify(attributes)).length;
+      return this.#budget.admit(bytes) ? attributes : omit(ref);
+    };
+  }
+
+  /**
+   * a parent renders a child run's merged outputs, never its artifacts, so the
+   * child's reads go uncharged and each child step's merged outputs are charged
+   * instead; a child step refused here is left out with its records omitted
+   */
+  async resolveChild(
+    resolve: () => Promise<ResolvedStepOutputs>,
+  ): Promise<ResolvedStepOutputs> {
+    this.#childReads = true;
+    let resolved: ResolvedStepOutputs;
+    try {
+      resolved = await resolve();
+    } finally {
+      this.#childReads = false;
+    }
+    if (!resolved.outputs) return resolved;
+    const kept: Record<string, unknown> = {};
+    const refused = new Set<string>();
+    for (const [stepName, value] of Object.entries(resolved.outputs)) {
+      const remaining = this.#budget.capBytes - this.#budget.admittedBytes;
+      const bytes = this.#budget.exhausted
+        ? undefined
+        : measuredWithin(value, remaining);
+      if (this.#budget.admit(bytes ?? remaining + 1)) {
+        // An own key: a step may be named __proto__.
+        Object.defineProperty(kept, stepName, {
+          value,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+        continue;
+      }
+      refused.add(stepName);
+      for (const group of resolved.sources ?? []) {
+        if (group.path[0] !== stepName) continue;
+        for (const record of group.records) this.#stepOmitted.push(record.id);
+      }
+    }
+    // a refused step's records hold its attributes; dropped so they are freed
+    const sources = resolved.sources?.filter((group) =>
+      !refused.has(group.path[0])
+    );
+    return {
+      ...resolved,
+      outputs: Object.keys(kept).length > 0 ? kept : undefined,
+      sources: sources && sources.length > 0 ? sources : undefined,
+    };
+  }
+
+  takeStepOmitted(): string[] | undefined {
+    const omitted = this.#stepOmitted;
+    this.#stepOmitted = [];
+    return omitted.length > 0 ? omitted : undefined;
+  }
+}
+
+// a value that cannot be measured is refused like one past the budget, so it
+// never reaches the catch that drops the whole run's attributes
+function measuredWithin(value: unknown, limit: number): number | undefined {
+  try {
+    return jsonByteLengthWithin(value, limit);
+  } catch (error) {
+    if (error instanceof RangeError) return undefined;
+    throw error;
+  }
+}
+
+function isWorkflowStepOutput(output: unknown): boolean {
+  return typeof output === "object" && output !== null &&
+    (output as { type?: unknown }).type === "workflow";
+}
+
+/** with a budget, its resolver must read through budget.wrap */
 export async function resolveRunStepOutputs(
   run: WorkflowRun,
   resolver: StepOutputResolver,
+  budget?: RunAttributeBudget,
 ): Promise<RunStepOutputs> {
   const resolved: RunStepOutputs = {};
   for (const job of run.jobs) {
     const steps: Record<string, ResolvedStepOutputs> = {};
     for (const step of job.steps) {
-      steps[step.stepName] = await resolver.resolve(step);
+      budget?.takeStepOmitted();
+      const outputs = budget && isWorkflowStepOutput(step.output)
+        ? await budget.resolveChild(() => resolver.resolve(step))
+        : await resolver.resolve(step);
+      const omitted = budget?.takeStepOmitted();
+      if (omitted) outputs.attributesOmitted = omitted;
+      steps[step.stepName] = outputs;
     }
     resolved[job.jobName] = steps;
   }
   return resolved;
+}
+
+const runLogger = getLogger(["swamp", "workflow", "run"]);
+
+/**
+ * the attributes of a finished run's data, read from the datastore as local
+ * history get reads them; a missing resource is left out, and a walk that
+ * fails or is aborted gives undefined
+ */
+export async function resolveCompletedRunOutputs(
+  run: WorkflowRun,
+  dataRepo: UnifiedDataRepository,
+  runRepo: WorkflowRunRepository,
+  signal?: AbortSignal,
+  canRead?: ResourceReadPolicy,
+  readAttributes: ResourceAttributeReader = createDataRepositoryAttributeReader(
+    dataRepo,
+  ),
+  attributeCapBytes: number = RESOURCE_ATTRIBUTE_CAP_BYTES,
+): Promise<RunStepOutputs | undefined> {
+  const budget = new RunAttributeBudget(attributeCapBytes);
+  const resolver = new StepOutputResolver({
+    readAttributes: budget.wrap(readAttributes),
+    findChildRun: (workflowId, runId) =>
+      runRepo.findById(
+        createWorkflowId(workflowId),
+        createWorkflowRunId(runId),
+      ),
+    canRead,
+    namespace: dataRepo.namespace,
+    signal,
+  });
+  try {
+    return await resolveRunStepOutputs(run, resolver, budget);
+  } catch (error) {
+    // The run is already saved; only its summary goes without attributes.
+    runLogger.debug`Data attributes of run ${run.id} not read: ${error}`;
+    return undefined;
+  }
+}
+
+export interface ExecutionEventWithOutputs {
+  event: WorkflowExecutionEvent;
+  stepOutputs?: RunStepOutputs;
+}
+
+/**
+ * holds the completed event until the source ends: the execution service saves
+ * the run after yielding it, and a read before then would delay that save
+ */
+export async function* deferCompletedForOutputs(
+  source: AsyncIterable<WorkflowExecutionEvent>,
+  resolve?: (run: WorkflowRun) => Promise<RunStepOutputs | undefined>,
+): AsyncGenerator<ExecutionEventWithOutputs> {
+  if (!resolve) {
+    for await (const event of source) yield { event };
+    return;
+  }
+  let held: WorkflowExecutionEvent | undefined;
+  try {
+    for await (const event of source) {
+      if (event.kind === "completed") {
+        held = event;
+        continue;
+      }
+      yield { event };
+    }
+  } catch (error) {
+    // a run that stops with an error yields completed first, then throws
+    if (held?.kind === "completed") {
+      const completed = held;
+      held = undefined;
+      yield { event: completed, stepOutputs: await resolve(completed.run) };
+    }
+    throw error;
+  }
+  if (held?.kind === "completed") {
+    yield { event: held, stepOutputs: await resolve(held.run) };
+  }
+}
+
+/** placed and masked through toRunData, so the live run's sensitive values apply */
+export function withRunStepOutputs(
+  view: WorkflowRunView,
+  run: WorkflowRun,
+  stepOutputs: RunStepOutputs,
+  verbose?: boolean,
+): WorkflowRunView {
+  const resolved = toRunData(run, view.path, verbose, stepOutputs);
+  return {
+    ...view,
+    jobs: view.jobs.map((job) => {
+      const resolvedJob = resolved.jobs.find((j) => j.name === job.name);
+      if (!resolvedJob) return job;
+      return {
+        ...job,
+        steps: job.steps.map((step) => {
+          const from = resolvedJob.steps.find((s) => s.name === step.name);
+          if (!from) return step;
+          return {
+            ...step,
+            ...(from.dataArtifacts !== undefined
+              ? { dataArtifacts: from.dataArtifacts }
+              : {}),
+            ...(from.outputs !== undefined ? { outputs: from.outputs } : {}),
+            ...(from.outputsPartial ? { outputsPartial: true as const } : {}),
+            ...(from.artifacts !== undefined
+              ? { artifacts: from.artifacts }
+              : {}),
+          };
+        }),
+      };
+    }),
+  };
 }
 
 export function toRunData(
@@ -539,12 +797,16 @@ export function toRunData(
           }
 
           if (step.dataArtifacts && step.dataArtifacts.length > 0) {
+            const omitted = new Set(resolved?.attributesOmitted);
             stepData.dataArtifacts = step.dataArtifacts.map((a) => ({
               dataId: a.dataId,
               name: a.name,
               version: a.version,
               tags: a.tags,
-              attributes: resolved?.attributesByDataId[a.dataId],
+              attributes: run.mask(resolved?.attributesByDataId[a.dataId]),
+              ...(omitted.has(a.dataId)
+                ? { attributesOmitted: true as const }
+                : {}),
             }));
           }
 
@@ -605,7 +867,10 @@ export function toRunData(
           }
 
           if (resolved?.outputs) {
-            stepData.outputs = resolved.outputs;
+            stepData.outputs = run.mask(resolved.outputs);
+          }
+          if (resolved?.attributesOmitted !== undefined) {
+            stepData.outputsPartial = true;
           }
 
           return stepData;
@@ -629,6 +894,7 @@ export function toRunData(
       }))
       : undefined,
     initiatedBy: run.initiatedBy,
+    ...(run.client !== undefined ? { client: run.client } : {}),
     references: run.references,
     ...(run.parentRun?.kind === "valid"
       ? {
@@ -651,6 +917,7 @@ export function mapWorkflowExecutionEvent(
   event: WorkflowExecutionEvent,
   runRepo: WorkflowRunRepository,
   verbose?: boolean,
+  stepOutputs?: RunStepOutputs,
 ): WorkflowRunEvent {
   switch (event.kind) {
     case "started":
@@ -672,7 +939,7 @@ export function mapWorkflowExecutionEvent(
         createWorkflowId(event.run.workflowId),
         createWorkflowRunId(event.run.id),
       );
-      const data = toRunData(event.run, path, verbose);
+      const data = toRunData(event.run, path, verbose, stepOutputs);
       return { kind: "completed", run: data };
     }
     case "cancelled": {
@@ -916,32 +1183,55 @@ export async function* workflowRun(
             // workflow-scope, arrive before the completed event, so the
             // accumulated list is attached there
             const reportResults: ReportResultView[] = [];
+            const outputsRepo = deps.resolveCompletedOutputs
+              ? deps.dataRepo
+              : undefined;
 
             for await (
-              const event of service.run(resolvedInput.workflowIdOrName, {
-                byId: resolvedInput.byId,
-                expectedName: resolvedInput.expectedName,
-                lastEvaluated: resolvedInput.lastEvaluated,
-                evaluatedCache: evaluatedCache ?? undefined,
-                inputs: resolvedInput.inputs,
-                runtimeTags: resolvedInput.runtimeTags,
-                signal: ctx.signal,
-                reportFilterOptions: {
-                  skipAllReports: resolvedInput.skipAllReports,
-                  skipReportNames: resolvedInput.skipReportNames,
-                  skipReportLabels: resolvedInput.skipReportLabels,
-                  reportNames: resolvedInput.reportNames,
-                  reportLabels: resolvedInput.reportLabels,
-                },
-                swampSha: resolvedInput.swampSha,
-                skipCheckNames: resolvedInput.skipCheckNames,
-                skipCheckLabels: resolvedInput.skipCheckLabels,
-                skipAllChecks: resolvedInput.skipAllChecks,
-                assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
-                initiatedBy: resolvedInput.initiatedBy,
-                instanceId: resolvedInput.instanceId,
-                triggerSource: resolvedInput.triggerSource,
-              })
+              const { event, stepOutputs } of deferCompletedForOutputs(
+                service.run(resolvedInput.workflowIdOrName, {
+                  byId: resolvedInput.byId,
+                  expectedName: resolvedInput.expectedName,
+                  lastEvaluated: resolvedInput.lastEvaluated,
+                  evaluatedCache: evaluatedCache ?? undefined,
+                  inputs: resolvedInput.inputs,
+                  runtimeTags: resolvedInput.runtimeTags,
+                  signal: ctx.signal,
+                  reportFilterOptions: {
+                    skipAllReports: resolvedInput.skipAllReports,
+                    skipReportNames: resolvedInput.skipReportNames,
+                    skipReportLabels: resolvedInput.skipReportLabels,
+                    reportNames: resolvedInput.reportNames,
+                    reportLabels: resolvedInput.reportLabels,
+                  },
+                  swampSha: resolvedInput.swampSha,
+                  skipCheckNames: resolvedInput.skipCheckNames,
+                  skipCheckLabels: resolvedInput.skipCheckLabels,
+                  skipAllChecks: resolvedInput.skipAllChecks,
+                  assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
+                  initiatedBy: resolvedInput.initiatedBy,
+                  client: resolvedInput.client,
+                  startKey: resolvedInput.startKey,
+                  instanceId: resolvedInput.instanceId,
+                  triggerSource: resolvedInput.triggerSource,
+                }),
+                outputsRepo || deps.onCompletedRun
+                  ? (run) => {
+                    deps.onCompletedRun?.(run);
+                    return outputsRepo
+                      ? resolveCompletedRunOutputs(
+                        run,
+                        outputsRepo,
+                        deps.runRepo,
+                        ctx.signal,
+                        undefined,
+                        undefined,
+                        deps.resourceAttributeCapBytes,
+                      )
+                      : Promise.resolve(undefined);
+                  }
+                  : undefined,
+              )
             ) {
               if (event.kind === "report_completed") {
                 reportResults.push({
@@ -964,6 +1254,7 @@ export async function* workflowRun(
                 event,
                 deps.runRepo,
                 resolvedInput.verbose,
+                stepOutputs,
               );
 
               // takes the domain event: pairing a step's events needs the

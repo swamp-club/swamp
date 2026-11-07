@@ -25,7 +25,11 @@ import {
   usePageApprovals,
 } from "../client/useApprovals.ts";
 import { extractArray } from "../client/extract.ts";
-import { type ApprovalInfo, pendingApprovals } from "../client/approvals.ts";
+import {
+  type ApprovalInfo,
+  decisionPayload,
+  pendingApprovals,
+} from "../client/approvals.ts";
 import { useDecidedGates } from "../client/useDecidedGates.ts";
 import {
   decidedGate,
@@ -172,11 +176,7 @@ export function Overview(
       try {
         const result = await request<{ data?: { autoResumed?: boolean } }>(
           type,
-          {
-            workflowIdOrName: a.workflowName,
-            stepName: a.stepName,
-            runId: a.runId,
-          },
+          decisionPayload(a),
         );
         hold(
           a,

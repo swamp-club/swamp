@@ -28,10 +28,11 @@ import {
 } from "../../../domain/datastore_v3/replication_lineage.ts";
 import {
   decideSidecarAction,
-  isReplicated,
+  type LitestreamSyncResponse,
   type PresenceObservation,
   SIDECAR_IDLE_TIMEOUT_MS,
   type SidecarAction,
+  syncCoverage,
   V3ReplicationError,
   V3ReplicationUnavailableError,
 } from "../../../domain/datastore_v3/litestream_replication.ts";
@@ -63,6 +64,8 @@ import {
   renderLitestreamConfig,
   type ReplicationPaths,
   replicationPathsFor,
+  verifyTempFiles,
+  verifyTempPath,
   writeLineage,
   writeLitestreamStateOwner,
 } from "./replication_files.ts";
@@ -73,6 +76,15 @@ import {
 } from "../../../domain/datastore_v3/process_liveness.ts";
 import { hostnameOf, localProcess } from "../process_identity.ts";
 import { supervisorArgs, touchUseLock } from "./replication_supervisor.ts";
+import {
+  readReplicaMaxTxid,
+  type SnapshotListRequest,
+} from "./replica_snapshot.ts";
+import {
+  restoreAndCheck,
+  type RestoreAndCheckRequest,
+} from "./litestream_restorer.ts";
+import type { LitestreamReplicaType } from "./sidecar_env.ts";
 
 export interface ReplicatorTimings {
   readonly idleMs: number;
@@ -114,7 +126,19 @@ export interface ReplicatorDeps {
   now(): number;
   sleep(ms: number): Promise<void>;
   readonly privateRoot?: string;
+  readonly replicaReader?: ReplicaReader;
 }
+
+/** reads the replica in the bucket with no sidecar running */
+export interface ReplicaReader {
+  maxTxid(request: SnapshotListRequest): Promise<string | undefined>;
+  restore(request: RestoreAndCheckRequest): Promise<unknown>;
+}
+
+const hostReplicaReader: ReplicaReader = {
+  maxTxid: readReplicaMaxTxid,
+  restore: restoreAndCheck,
+};
 
 export interface ReplicationRequest {
   readonly commitsDb: string;
@@ -141,6 +165,13 @@ export interface ReplicationHandle {
    * check passes
    */
   sync(
+    deadlineMs: number,
+    options?: SyncOptions,
+  ): Promise<string>;
+  /** passes only when readCursor of the restored replica reaches localCursor */
+  confirmFromReplica(
+    readCursor: (restored: string) => number | undefined,
+    localCursor: number,
     deadlineMs: number,
     options?: SyncOptions,
   ): Promise<string>;
@@ -285,6 +316,7 @@ export class LitestreamReplicator {
         supervisorPid,
         this.deps,
         request.assertLeaseCurrent,
+        request.replica.type,
       );
     } catch (error) {
       // A failed acquire records no use: retrying must not keep an old
@@ -728,6 +760,7 @@ class SharedHandle {
     private readonly supervisorPid: number,
     private readonly deps: ReplicatorDeps,
     private readonly assertLeaseCurrent: () => Promise<void>,
+    private readonly replicaType: LitestreamReplicaType,
   ) {}
 
   view(releaseShared: () => Promise<void>): ReplicationHandle {
@@ -735,6 +768,8 @@ class SharedHandle {
     return {
       lineageFence: this.lineageFence,
       sync: (deadlineMs, options) => this.sync(deadlineMs, options),
+      confirmFromReplica: (readCursor, localCursor, deadlineMs, options) =>
+        this.confirmFromReplica(readCursor, localCursor, deadlineMs, options),
       probe: () => this.probe(),
       release: async () => {
         if (released) return;
@@ -745,9 +780,90 @@ class SharedHandle {
   }
 
   async sync(deadlineMs: number, options: SyncOptions = {}): Promise<string> {
-    let response;
+    const startedAt = this.deps.now();
+    let response = await this.#syncOnce(deadlineMs, options);
+    let coverage = syncCoverage(response);
+    // the retries share the caller's deadline; the pause keeps a sidecar that
+    // answers short at once from being asked in a tight loop
+    while (coverage.kind === "short") {
+      await this.deps.sleep(this.deps.timings.pollMs);
+      const left = deadlineMs - (this.deps.now() - startedAt);
+      if (left <= 0) break;
+      response = await this.#syncOnce(left, options);
+      coverage = syncCoverage(response, coverage.target);
+    }
+    const txid = normalizeTxid(response.replicated_txid);
+    if (coverage.kind !== "confirmed" || txid === undefined) {
+      await this.#condemn();
+      throw new V3ReplicationError(
+        `Litestream answered ${JSON.stringify(response)}`,
+      );
+    }
+    return await this.#publishAndCheckLease(txid, options);
+  }
+
+  async confirmFromReplica(
+    readCursor: (restored: string) => number | undefined,
+    localCursor: number,
+    deadlineMs: number,
+    options: SyncOptions = {},
+  ): Promise<string> {
+    const reader = this.deps.replicaReader ?? hostReplicaReader;
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(deadlineMs),
+      ...(options.signal !== undefined ? [options.signal] : []),
+    ]);
+    const listing = {
+      binary: await this.deps.resolveBinary(),
+      config: this.paths.config,
+      source: this.paths.commitsDb,
+      replicaType: this.replicaType,
+      signal,
+    };
+    const txid = await reader.maxTxid(listing);
+    if (txid === undefined) {
+      throw new V3ReplicationError(
+        "the sidecar was gone and the replica's position could not be read",
+      );
+    }
+    const temp = verifyTempPath(this.paths);
+    let restored: number | undefined;
     try {
-      response = await withSpan(
+      await reader.restore({
+        ...listing,
+        temp,
+        txid,
+        lineageFence: this.lineageFence,
+      });
+      restored = readCursor(temp);
+    } catch (error) {
+      throw new V3ReplicationError(
+        `the sidecar was gone and the replica could not be restored to check it: ${
+          messageOf(error)
+        }`,
+        { cause: error },
+      );
+    } finally {
+      for (const file of verifyTempFiles(temp)) {
+        await Deno.remove(file).catch(() => {});
+      }
+    }
+    if (restored === undefined || restored < localCursor) {
+      throw new V3ReplicationError(
+        `the sidecar was gone and the replica holds commits up to cursor ${
+          restored ?? "unknown"
+        } of this copy's ${localCursor}`,
+      );
+    }
+    return await this.#publishAndCheckLease(txid, options);
+  }
+
+  async #syncOnce(
+    deadlineMs: number,
+    options: SyncOptions,
+  ): Promise<LitestreamSyncResponse> {
+    try {
+      return await withSpan(
         "swamp.datastore.v3.litestream.sync",
         {},
         () =>
@@ -779,13 +895,12 @@ class SharedHandle {
         { cause: error },
       );
     }
-    const txid = normalizeTxid(response.replicated_txid);
-    if (!isReplicated(response) || txid === undefined) {
-      await this.#condemn();
-      throw new V3ReplicationError(
-        `Litestream answered ${JSON.stringify(response)}`,
-      );
-    }
+  }
+
+  async #publishAndCheckLease(
+    txid: string,
+    options: SyncOptions,
+  ): Promise<string> {
     let published = false;
     const beforeLeaseCheck = options.beforeLeaseCheck;
     if (beforeLeaseCheck !== undefined) {

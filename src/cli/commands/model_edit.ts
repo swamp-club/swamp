@@ -224,6 +224,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
                 }),
                 renderer.handlers(),
               ),
+            { outputOnlyOnSuccess: true },
           ), `the behavior definition "${editIdOrName}"`);
 
       // a stored definition is edited on a copy and saved like a piped edit, so
@@ -287,6 +288,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
           "model",
           target.definition.name,
           stdinContent === null,
+          { mayRename: options.allowRename === true },
         );
       }
 

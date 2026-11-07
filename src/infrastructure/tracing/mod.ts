@@ -35,6 +35,7 @@ export {
   type Link,
   markActiveSpanError,
   runDetached,
+  type ServerSpanOptions,
   setActiveSpanAttributes,
   type Span,
   SpanStatusCode,
@@ -46,6 +47,7 @@ export {
   withSpan,
 } from "./tracer.ts";
 export { extractTraceContext, injectTraceContext } from "./propagation.ts";
+export { adoptAuthenticatedParent } from "./adopted_parent.ts";
 
 export {
   runWithParentTrace,

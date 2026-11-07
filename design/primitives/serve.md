@@ -211,9 +211,10 @@ Everything below shares the one listener, dispatched in table order
 | WebSocket | any path with `Upgrade: websocket` | token (bearer header, `bearer.<token>` subprotocol, `?token=`, or an origin-bound dashboard session cookie) unless mode `none` | Serve protocol: 121 request types in `ServerRequest` (`src/serve/protocol.ts`), handled in `src/serve/connection.ts` and `src/serve/handlers/*` |
 | HTTP | `/data/*`, `/bundle/*` | worker session bearer | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
-| HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
+| HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin; a `workflow-run` cancel takes `run` on the run's workflow instead (IP burst and per-token rate limits) | `cancelExecution` (see below) |
 | HTTP POST | `/api/v1/signal/{waitId}`, `/api/v1/signal` (by workflow and key, in the body) | token + `signal` on the wait's workflow (IP burst and per-token rate limits) | Delivers a signal to a `wait_for_signal` step (`src/serve/signal_http.ts`; see "Signal" below) |
 | HTTP POST | `/api/v1/request` | bearer token, or the dashboard session cookie from its own `Origin`, unless mode `none` | Reads whose replies can outgrow a WebSocket frame (`HTTP_REQUEST_TYPES`), streamed as NDJSON (`src/serve/http_request_route.ts`) |
+| HTTP POST | `/api/v1/action` | bearer token only, unless mode `none` (per-principal rate; failed credentials counted per token name and address) | Workflow actions for an integration (`HTTP_ACTION_TYPES`), one JSON reply each (`src/serve/http_action_route.ts`; see "Actions over HTTP" below) |
 | HTTP GET | `/api/v1/health` | any valid bearer token or dashboard session (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and behaviors they may `read`, decided on each resource's resolved name, tags and behavior type (entries that do not resolve are hidden), without run principals, workers or component detail |
 | SSE | `/api/v1/health/stream?interval=` | any valid bearer token or dashboard session; at most 10 open streams per token, else 429 | The same narrowed snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` (`src/serve/health_stream.ts`). The stream is a token session: when its token is revoked, rotated or expires, or its principal loses access, it ends with a `session-ended` event carrying the close code and reason. A change to the principal's collectives or groups ends it with 4004 so the client reconnects under the new access |
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
@@ -222,7 +223,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/auth/dashboard/session` | same-origin browser session (its own guess limit, not the IP burst) | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
-| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/` and `/health` answer `{ status: "ok", version: "1" }` in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
+| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes (a team follower's included: its copy and commit effects caught up with the leader, with no timeout, see `design/enablers/datastores.md`) and again (`shutting_down`) once shutdown begins; `/` and `/health` answer `{ status: "ok", version: "1" }` in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 `/auth/dashboard/session` does not spend the IP burst, so traffic on other
@@ -342,6 +343,120 @@ hub, which forwards `POST /w/<name>/api/v1/request` to the workspace's child
 only for a type in `FORWARDED_READS` (others get `use_websocket`), and drops
 `content-encoding` from every forwarded reply, whose body `fetch` has already
 decoded.
+
+### Actions over HTTP
+
+`POST /api/v1/action` lets an integration act for a person in one short request
+rather than a WebSocket per person. Its body is `{type, payload}`, its limit
+128 KiB, and it requires `Content-Type: application/json`. It runs each action
+through `handleMessage` against the same reply channel as the read route, so
+validation, authorization, audit and the handler are the socket's own.
+
+Three things separate it from the read route:
+
+- **Bearer only.** `HttpActionRouteDeps` has no session store, so a browser's
+  cookie cannot authenticate it; serve sends no CORS headers, so a page's
+  preflight fails too. The workspace hub and local dashboard do not forward it.
+- **Only listed types and fields.** `HTTP_ACTION_TYPES` lists
+  `workflow.run`, `workflow.resume`, `workflow.history.get`,
+  `workflow.approvals`, `workflow.approve`, `workflow.reject` and
+  `workflow.signal`. Each has a strict payload (`http_action_request.ts`), so
+  `decidedBy`, `lockHolderTokens` and the `skip*` fields are refused rather
+  than ignored. The parser builds the frame, so its request id, `suspendedOnly`,
+  `exactRun`, `strictGate`, `acceptsPending` and `acceptsReceipt` are serve's.
+- **One reply with a real status.** `http_action_reply.ts` pins each outcome to
+  a code and status. Refusals carry fixed text and no details, except that a signal refusal keeps the signal route's status, code and receipt; the audit log
+  keeps the detail.
+
+| Status | Code |
+|---|---|
+| 400 | `invalid_request` |
+| 405 | `method_not_allowed` |
+| 401 | `unauthorized` |
+| 403 | `forbidden` |
+| 404 | `not_found`, `type_not_allowed` |
+| 409 | `already_decided`, `gate_reopened`, `gate_closed`, `gate_not_open`, `ambiguous_gate`, `busy`, `idempotency_conflict`, `run_not_suspended`, `run_not_resumable` |
+| 413, 415 | `payload_too_large`, `unsupported_media_type` |
+| 429 | `rate_limited`, `too_many_runs` |
+| 500 | `action_failed`, `outcome_unknown`, `run_not_started` |
+| 503 | `still_working`, `not_leader`, `leader_upgrade_required`, `outcome_unknown`, `audit_unavailable`, `access_unavailable`, `shutting_down`, `runs_unavailable` |
+
+A caller with no grant learns nothing about a run: status and signal answer a
+refusal as `not_found` with the same body as a missing run, and approve, reject,
+start and resume decide on the workflow before reading any run, so a run named
+in the request makes no difference. A restricted-command refusal reads as
+`not_found` on status and signal for the same reason. Status takes a full run id
+only and reads that one run: a miss never scans history or falls back to a
+workflow, and no outputs are read.
+
+A decision refused by a grant conditional on the run gets `forbidden` whatever the
+gate's state: the route reads a stored gate only to choose a refusal code, and
+decides the condition on that record first. The caller can still tell a missing
+run from a refused one, since no record exists to decide on. The WebSocket keeps
+its existing text. `run_active` is not final: a decision on a gate of a run that is
+walking again gets a retryable `busy`.
+
+**Starting and resuming** answer 202 at the run's own `started` event, which comes
+after the record is saved, so status can read it at once. Input validation and
+evaluation come first, so there is no fixed time to that reply. Closing the reply
+channel then detaches the listener as `workflow run --detach` does: the run has
+its own controller, so nothing follows the caller. The audit event is written at
+that point, where an attached WebSocket client's comes at the run's end. A request
+waits at most 30 seconds, then gets a retryable `still_working` while its work
+carries on. Decisions and signals never observe a disconnect, so a saved decision
+always reaches its auto-resume; the two reads stop.
+
+**A repeated start** needs `idempotencyKey`, scoped to the person, client and
+workflow. A hash of those and a salted fingerprint of the supplied inputs and
+runtime tags sit on
+the run's record (`RunStartKey`), and the lookup hash in the run index. A retry
+gets the first run's id with `replayed: true`, audited as a replayed start, after
+authorization runs again; other inputs or tags get `idempotency_conflict`. A process-local
+claim covers the moment before the record can be read. A run that fails before
+`started` clears its key, so a retry starts afresh. A crash, or a failed save of
+that failure, can leave the key on a run that never began: a retry then reads
+that run, whose status shows what happened. This holds on one node or a
+team's leader. On several instances sharing a remote datastore a retry reaching
+another instance starts a second run, and a start not yet committed when leadership
+moves has the same gap, and so does an older binary rewriting the run index, which drops
+the lookup. The inputs fingerprint is salted and slow, which raises the price of guessing a
+low-entropy input from a run's record without ruling it out.
+
+**A repeated decision** records nothing: the `waiting_approval` check on the re-read
+under the run's reservation is what allows a write (`approve.ts`, `reject.ts`), and
+followers forward decisions, so all of them meet on the leader. `details.gateState`
+says why a decision was refused (`gate_state.ts`); it is read only after the grant
+decision, and refusal codes on the socket and CLI do not change. Two more checks
+protect a decision. `strictGate` refuses a step name more than one job uses unless
+`jobName` picks one, since step names are unique only within a job. `suspendedAt`
+names one attempt of a gate, so a decision for an attempt that a `resume --from` has
+since re-opened is refused with `gate_reopened`. The route requires `suspendedAt`.
+On the socket and CLI it is optional, so older clients keep working and a caller
+sending none decides whatever waits. The dashboard sends it from the row on screen,
+the CLI takes `--suspended-at` and first checks for the `gate-attempt` capability,
+since an older serve would drop the field. The check asks the leader: a follower
+forwards a `server.version` that sets `leader`, and answers its own otherwise. With
+no job named, the time picks the gate of a step name that several jobs use.
+
+**A repeated resume** is limited to a suspended run (`suspendedOnly`), so a retry
+cannot re-run a failed run's steps. An approved run needs `--auto-resume` (and
+`autoResume: true` when the workflow has inputs) or a `workflow.resume` to continue;
+the approve reply's `autoResumed` says which.
+
+**On a follower** the route authenticates, then forwards a write with the bytes it
+read, using the caller's own credentials, so the leader records the same principal
+and client. A forwarded success waits for this node's copy, for at most 2 seconds on a
+start. A status miss asks the leader once, covering a start through another node; a
+stale follower refuses other reads with a retryable 503. An older leader's plain-text
+404 becomes `leader_upgrade_required`. A serve too old for the route answers plain-text
+`Not found`; `server.version` advertises `http-actions` on one that has it.
+
+**Rate limits.** A person's allowance is spent only after authentication, per node and
+shared with their other traffic, so bad tokens cannot use it up. A request with no
+credential costs no lookup and is not counted. Failed credentials count per token name
+and address, so someone who knows a token's name locks out only themselves, and toward
+the address's burst limit; unlike the signal route, successful requests are not counted
+per address, since one app sends many people's calls from one address.
 
 `workflow.search` and `workflow.run.search` take `offset` and `limit` and return
 `total` beside `data`. Paging is applied after the per-workflow authorization
@@ -491,6 +606,14 @@ with another mint's secret (swamp-club#2482):
   skip the check until they are rotated or re-minted; no migration adds one,
   since hashing the current secret would bless a pairing that may already be
   wrong.
+- **Reveal through serve.** `access.token.reveal` runs the same reveal as the
+  local command on serve, for a caller with `admin` on `access:*`. A follower
+  forwards it to the leader, which has applied every mint and rotate, and it is
+  audited as a secrets action (it is in the `secret-access` report). The
+  plaintext is registered with the log redactor until the reply is sent. It
+  refuses a login token (`oauthIdentity` set, or an `oauth-` name of eight hex
+  characters from before the marker) with `token_not_revealable`: an admin may
+  revoke a member's login, never hold it. The local reveal is unchanged.
 
 The token GC takes the name lock too, around each token it collects (see
 below). One writer does not. The OAuth login mint names each token
@@ -1145,7 +1268,13 @@ server needs an upgrade (`requestNewerServerResponse`,
 
 **Cancel.** There are two paths:
 
-- HTTP cancel routes (admin only) call `cancelExecution`. It aborts the run's
+- HTTP cancel routes call `cancelExecution`. Bulk and `method-run` need admin;
+  a `workflow-run` cancel needs admin or `run` on the run's workflow
+  ("Who can cancel a run" in
+  [access control](../enablers/access-control.md)). For a non-admin,
+  `decideRunCancel` (`src/serve/run_cancel_authorization.ts`) decides on the
+  workflow each holder records, in `cancelExecution`'s own order, before anything
+  is aborted, and answers refused the same as missing. It aborts the run's
   controller and waits up to `CANCEL_GRACE_MS = 5_000` for completion. It
   returns `cancelled` if the run left the registry in time, otherwise
   `cancellation_requested` (`src/cli/commands/serve.ts`). A workflow run that
@@ -1169,8 +1298,10 @@ server needs an upgrade (`requestNewerServerResponse`,
   so is a refusal for a missing policy snapshot or principal, which on this
   path also sends no reply.
 - The WebSocket `workflow.cancel` request cancels a run by id: one this
-  instance is driving through the registry, otherwise a persisted suspended
-  run (`handleWorkflowCancel` in `src/serve/handlers/workflow_handlers.ts`).
+  instance is driving through the registry, an attached, scheduled or webhook
+  run (aborted and answered `cancellation_requested`), otherwise a persisted
+  suspended run (`handleWorkflowCancel` in
+  `src/serve/handlers/workflow_handlers.ts`).
   For a persisted run, `cancelSuspendedRunAndPush`
   (`src/serve/suspended_run_cancel.ts`) first locates the run and checks a
   `run` grant on the workflow it belongs to, holding neither the sync gate

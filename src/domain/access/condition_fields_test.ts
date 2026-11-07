@@ -16,14 +16,17 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals } from "@std/assert";
-import { Environment } from "cel-js";
 import {
   CONDITION_FIELDS,
+  conditionFieldAbsentValue,
+  conditionFieldsUnavailableForActions,
   conditionFieldZeroValue,
   referencedConditionFields,
   suppliedResourceFields,
 } from "./condition_fields.ts";
+import type { Action } from "./action.ts";
+import { assertEquals } from "@std/assert";
+import { Environment } from "cel-js";
 
 function ast(condition: string): unknown {
   const env = new Environment({ unlistedVariablesAreDyn: true });
@@ -85,17 +88,21 @@ Deno.test("referencedConditionFields: finds fields inside has() and ternaries", 
   );
 });
 
-Deno.test("CONDITION_FIELDS: methodName and a vault's key are the only request fields", () => {
+Deno.test("CONDITION_FIELDS: methodName, a vault's key and the client are the only request fields", () => {
   const request = Object.values(CONDITION_FIELDS).flat().filter((f) =>
     f.role === "request"
   ).map((f) => f.name);
-  assertEquals([...new Set(request)], ["methodName", "key"]);
+  assertEquals([...new Set(request)].sort(), ["client", "key", "methodName"]);
 });
 
 Deno.test("CONDITION_FIELDS: a vault is decided by its name, with the request's key", () => {
   assertEquals(
     CONDITION_FIELDS.vault.map((f) => [f.name, f.role, f.supplied]),
-    [["name", "resource", true], ["key", "request", true]],
+    [
+      ["name", "resource", true],
+      ["key", "request", true],
+      ["client", "request", true],
+    ],
   );
 });
 
@@ -110,4 +117,46 @@ Deno.test("suppliedResourceFields: excludes request and unsupplied fields", () =
 Deno.test("conditionFieldZeroValue: maps are empty, strings are empty", () => {
   assertEquals(conditionFieldZeroValue("map"), {});
   assertEquals(conditionFieldZeroValue("string"), "");
+});
+
+Deno.test("CONDITION_FIELDS: every kind reads the client, and an absent one reads as direct", () => {
+  for (const fields of Object.values(CONDITION_FIELDS)) {
+    const client = fields.find((f) => f.name === "client");
+    assertEquals(client?.role, "request");
+    assertEquals(conditionFieldAbsentValue(client!), "direct:");
+  }
+});
+
+Deno.test("CONDITION_FIELDS: only a workflow's approve decision can supply the run, as a resource field", () => {
+  const holders = Object.entries(CONDITION_FIELDS).filter(([, fields]) =>
+    fields.some((f) => f.name === "run")
+  );
+  assertEquals(holders.map(([kind]) => kind), ["workflow"]);
+  const run = CONDITION_FIELDS.workflow.find((f) => f.name === "run")!;
+  assertEquals(run.role, "resource");
+  assertEquals(run.actions, ["approve"]);
+});
+
+Deno.test("conditionFieldsUnavailableForActions: names the run for any action but approve", () => {
+  const ast = {
+    op: "==",
+    args: [
+      { op: ".", args: [{ op: "id", args: "run" }, "initiator"] },
+      { op: "value", args: "x" },
+    ],
+  };
+  assertEquals(
+    conditionFieldsUnavailableForActions(ast, "workflow", ["approve"]),
+    [],
+  );
+  for (
+    const actions of [["run"], ["approve", "read"], ["signal"]] as Action[][]
+  ) {
+    assertEquals(
+      conditionFieldsUnavailableForActions(ast, "workflow", actions).map((u) =>
+        u.field
+      ),
+      ["run"],
+    );
+  }
 });

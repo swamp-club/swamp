@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   SERVE_FOLLOWER_BEHIND_CODE,
   ServeFollowerBehindError,
@@ -44,6 +45,7 @@ import {
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { withMockedEnv } from "../persistence/path_test_helpers.ts";
+import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import {
   ChunkHashMismatchError,
   FramedReader,
@@ -51,8 +53,10 @@ import {
 } from "./chunk_ingest.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
+  clearServeUnreachableLatches,
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
+  latchServeUnreachable,
   MAX_HAS_HASHES,
   MAX_PUT_OP_REPLY_BYTES,
   MAX_WRITTEN_COMMIT_REPLY_BYTES,
@@ -118,6 +122,25 @@ Deno.test("ServeDatastoreClient: normalizes the origin and defaults the namespac
   assertEquals(client.namespace, "_default");
   await client.hasChunks(["a".repeat(64)], signal());
   assertEquals(requests[0].url, `${PREFIX}/chunks/has`);
+});
+
+Deno.test("ServeDatastoreClient: names its request span in a traceparent, so serve's spans join the member's trace", async () => {
+  await withCapturedSpans(async (spans) => {
+    const { client, requests } = clientWith(() => Response.json({ held: [] }));
+    await client.hasChunks(["a".repeat(64)], signal());
+    const span = findSpan(spans, "swamp.datastore.v3.serve.request");
+    const context = span.spanContext();
+    assertEquals(
+      requests[0].headers.get("traceparent"),
+      `00-${context.traceId}-${context.spanId}-01`,
+    );
+  });
+});
+
+Deno.test("ServeDatastoreClient: sends no traceparent when nothing is traced", async () => {
+  const { client, requests } = clientWith(() => Response.json({ held: [] }));
+  await client.hasChunks(["a".repeat(64)], signal());
+  assertEquals(requests[0].headers.get("traceparent"), null);
 });
 
 Deno.test("ServeDatastoreClient: sends a bearer token only when it has one, beside the extra headers", async () => {
@@ -1325,4 +1348,188 @@ Deno.test("routeTemplate: a span's route names the kind of resource, never its i
       "quarantine/{txnId}/accept",
     ],
   );
+});
+
+Deno.test("ServeDatastoreClient: once a write latched serve unreachable, a request in flight ends maybe sent and the next fails at once, until the command ends", async () => {
+  let pending = 0;
+  const { client, requests } = clientWith((req) => {
+    pending++;
+    return new Promise<Response>((_, reject) => {
+      req.signal.addEventListener("abort", () => reject(req.signal.reason));
+    });
+  });
+  try {
+    const inFlight = assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    await waitFor(() => pending === 1, "the request to be sent");
+    latchServeUnreachable(client.baseUrl, new Error("a commit timed out"));
+    assertEquals((await inFlight).sent, "maybe");
+
+    const next = await assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(next.sent, "never");
+    assertEquals(requests.length, 1, "nothing more was sent");
+  } finally {
+    clearServeUnreachableLatches();
+  }
+  const fresh = clientWith(() => Response.json({ changes: [], head: 0 }));
+  await fresh.client.changes(0, signal()).catch(() => {});
+  assertEquals(fresh.requests.length, 1, "a new command asks serve again");
+});
+
+Deno.test("ServeDatastoreClient: a dedicated HTTP client is made once, on first use, and closed by close()", async () => {
+  let made = 0;
+  let closed = 0;
+  const { client } = clientWith(
+    () => Response.json({ changes: [], head: 0 }),
+    {
+      httpClient: () => {
+        made++;
+        const http = Deno.createHttpClient({});
+        const close = http.close.bind(http);
+        http.close = () => {
+          closed++;
+          close();
+        };
+        return http;
+      },
+    },
+  );
+  for (let i = 0; i < 3; i++) {
+    await client.changes(0, signal()).catch(() => {});
+  }
+  assertEquals(made, 1);
+  client.close();
+  assertEquals(closed, 1);
+});
+
+Deno.test("ServeDatastoreClient.initiatorMode: read from serve's replies that carry its log, decoded, and never from a reply without", async () => {
+  let reply: () => Response = () => Response.json({ head: 0, commits: [] });
+  const { client } = clientWith(() => reply());
+  assertEquals(client.initiatorMode(), undefined);
+
+  const withLog = (headers: Record<string, string>) => () =>
+    Response.json({ head: 0, commits: [] }, {
+      headers: { "x-swamp-datastore-log": "log-a", ...headers },
+    });
+
+  reply = withLog({ "x-swamp-datastore-features": "step-starts" });
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.initiatorMode(), { kind: "not-checked" });
+
+  reply = withLog({
+    "x-swamp-datastore-features": "step-starts,run-initiator",
+    "x-swamp-datastore-principal": encodeURIComponent("user:zoë"),
+  });
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.initiatorMode(), {
+    kind: "checked",
+    principal: "user:zoë",
+  });
+
+  // a reply with no log header (a refusal before serve answered) says nothing
+  reply = () =>
+    Response.json({ code: "unauthorized", message: "no" }, { status: 401 });
+  await assertRejects(() =>
+    client.partitionCommits(modelPartition(), 0, signal(), 10)
+  );
+  assertEquals(client.initiatorMode(), {
+    kind: "checked",
+    principal: "user:zoë",
+  });
+
+  // the check advertised with no principal is no check this client can meet
+  reply = withLog({ "x-swamp-datastore-features": "run-initiator" });
+  await client.partitionCommits(modelPartition(), 0, signal(), 10);
+  assertEquals(client.initiatorMode(), { kind: "not-checked" });
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a held reply's holder is read, and the budget is sent from the first ask", async () => {
+  const holder = {
+    principal: "user:boss",
+    explicit: true,
+    expiresAt: "2026-11-06T10:00:00.000Z",
+  };
+  const { client, requests } = clientWith(() =>
+    Response.json({
+      code: "lock_held",
+      heldBy: "other",
+      message: "held",
+      holder,
+    }, { status: 409 })
+  );
+  const first = await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal(), {
+    budgetMs: 50_000,
+  });
+  assertEquals(first, {
+    acquired: false,
+    heldBy: "other",
+    message: "held",
+    holder,
+  });
+  assertEquals((await requests[0].json()).budgetMs, 50_000);
+});
+
+Deno.test("ServeDatastoreClient: a held reply or listing without a holder (an older serve) still reads, and a malformed holder is left out", async () => {
+  const { client } = clientWith((_req, call) =>
+    call === 1
+      ? Response.json({
+        code: "lock_held",
+        heldBy: "other",
+        message: "held",
+        holder: { principal: 7 },
+      }, { status: 409 })
+      : Response.json({
+        leases: [{
+          lockKey: LOCK_KEY,
+          heldBy: "other",
+          expiresAt: "2026-10-29T12:00:30.000Z",
+          holder: {
+            principal: "user:boss",
+            explicit: true,
+            expiresAt: "2026-10-29T12:00:30.000Z",
+          },
+        }],
+        truncated: false,
+      })
+  );
+  assertEquals(await client.acquireLock(LOCK_KEY, 30_000, 2_000, signal()), {
+    acquired: false,
+    heldBy: "other",
+    message: "held",
+  });
+  const listing = await client.listLocks("data/", signal());
+  assertEquals(listing?.leases[0].holder, {
+    principal: "user:boss",
+    explicit: true,
+    expiresAt: "2026-10-29T12:00:30.000Z",
+  });
+});
+
+Deno.test("ServeDatastoreClient.authorizeRemovals: reads a verdict per commit, and an older serve without the route is no answer", async () => {
+  const { client, requests } = clientWith(() =>
+    Response.json({
+      verdicts: [{ ok: true }, {
+        ok: false,
+        reason: "forbidden",
+        message: "Not authorized to write model:web (definition.delete)",
+      }],
+    })
+  );
+  const commit = { partition: modelPartition(), ops: [] };
+  assertEquals(
+    await client.authorizeRemovals([commit, commit], signal()),
+    [{ ok: true }, {
+      ok: false,
+      reason: "forbidden",
+      message: "Not authorized to write model:web (definition.delete)",
+    }],
+  );
+  assertEquals(requests[0].url, `${PREFIX}/authorize`);
+  const older = clientWith(() => new Response("no", { status: 404 })).client;
+  assertEquals(await older.authorizeRemovals([commit], signal()), undefined);
 });

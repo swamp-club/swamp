@@ -67,9 +67,14 @@ function renderLockStatusLog(data: DatastoreLockStatusData): void {
 }
 
 function renderServeLeaseLog(data: ServeLeaseStatusData): void {
-  const holder = data.heldBy === "caller"
-    ? "another command of yours"
-    : "another caller";
+  const who = data.holder === undefined
+    ? (data.heldBy === "caller" ? "another command of yours" : "another caller")
+    : data.heldBy === "caller"
+    ? `${data.holder.principal} (you, in another command)`
+    : data.holder.principal;
+  const holder = data.holder?.explicit === true
+    ? `${who}, under an explicit lease`
+    : who;
   writeOutput(
     [
       `${bold("Serve Lease:")} ${red("held")} [${data.lockKey}]`,

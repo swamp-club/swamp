@@ -211,3 +211,54 @@ Deno.test("AuditChainState: an event without actor identity keeps its digest", a
   const b = await new AuditChainState().chain(withUndefined);
   assertEquals(a.digest, b.digest);
 });
+
+Deno.test("AuditChainState: an event with no client keeps its digest, set undefined or left out", async () => {
+  const event = makeEvent("same");
+  const a = await new AuditChainState().chain(event);
+  const b = await new AuditChainState().chain({ ...event, client: undefined });
+  assertEquals(a.digest, b.digest);
+});
+
+Deno.test("AuditChainState: the digest covers the client", async () => {
+  const event = makeEvent("same");
+  const without = await new AuditChainState().chain(event);
+  const direct = await new AuditChainState().chain({
+    ...event,
+    client: "direct:cli",
+  });
+  const integration = await new AuditChainState().chain({
+    ...event,
+    client: "integration:ops-slack",
+  });
+  assertEquals(without.digest === direct.digest, false);
+  assertEquals(direct.digest === integration.digest, false);
+});
+
+Deno.test("verifyChain: a chain mixing events with and without a client verifies, and a stored JSON round trip changes nothing", async () => {
+  const state = new AuditChainState();
+  const events = [
+    await state.chain(makeEvent("old-shape")),
+    await state.chain({ ...makeEvent("new"), client: "direct:cli" }),
+    await state.chain(makeEvent("no-credential")),
+    await state.chain({ ...makeEvent("app"), client: "integration:ops-slack" }),
+  ];
+  const stored = events.map((e) =>
+    JSON.parse(JSON.stringify(e)) as ChainedAuditEvent
+  );
+  assertEquals(await verifyChain(stored), { valid: true });
+});
+
+Deno.test("verifyChain: changing or removing a client breaks the chain where it happened", async () => {
+  const state = new AuditChainState();
+  const events = [
+    await state.chain({ ...makeEvent("first"), client: "direct:cli" }),
+    await state.chain({ ...makeEvent("second"), client: "direct:cli" }),
+  ];
+  const changed = structuredClone(events) as ChainedAuditEvent[];
+  (changed[1] as { client?: string }).client = "integration:ops-slack";
+  assertEquals(await verifyChain(changed), { valid: false, brokenAt: 2 });
+
+  const removed = structuredClone(events) as ChainedAuditEvent[];
+  delete (removed[0] as { client?: string }).client;
+  assertEquals(await verifyChain(removed), { valid: false, brokenAt: 1 });
+});

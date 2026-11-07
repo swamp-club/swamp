@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { splitServerToken } from "./token_auth.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+
+const logger = getSwampLogger(["serve", "rate-limit"]);
 
 interface RateLimitEntry {
   count: number;
@@ -86,6 +89,17 @@ export function rateLimitKey(
   return `ip:${ip}`;
 }
 
+/**
+ * failures counted per address too, so someone who knows a token's name can only
+ * lock out themselves, never the token's real holder
+ */
+export function rateLimitKeyWithAddress(
+  token: string | null,
+  ip: string,
+): string {
+  return `${rateLimitKey(token, ip)}|address:${ip}`;
+}
+
 export function checkIpBurst(ip: string): RateLimitResult {
   return checkBucket(ipBurstBuckets, ip, MAX_IP_BURST, IP_BURST_WINDOW_MS);
 }
@@ -148,7 +162,20 @@ export async function limitFailedAttempts<T extends { readonly ok: boolean }>(
   try {
     const result = await attempt();
     if (result.ok) clearFailedAttempts(key);
-    else recordFailedAttempt(key);
+    else {
+      recordFailedAttempt(key);
+      const entry = principalBuckets.get(key);
+      if (entry?.count === MAX_PRINCIPAL_ATTEMPTS) {
+        logger.warn(
+          "{key} failed authentication {count} times in a row; it is refused on this node for {seconds}s",
+          {
+            key,
+            count: entry.count,
+            seconds: Math.ceil((entry.resetAt - Date.now()) / 1000),
+          },
+        );
+      }
+    }
     return { limited: false, result };
   } finally {
     // released on every path, or a throwing attempt would hold its slot forever

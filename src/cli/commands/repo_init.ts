@@ -46,6 +46,7 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { VERSION } from "./version.ts";
 import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
+import { repoPruneCommand } from "./repo_prune.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -242,4 +243,5 @@ export const repoCommand = new Command()
   .description("Manage swamp repositories")
   .action(groupCommandAction)
   .command("init", repoInitCommand)
-  .command("upgrade", repoUpgradeCommand);
+  .command("upgrade", repoUpgradeCommand)
+  .command("prune", repoPruneCommand);

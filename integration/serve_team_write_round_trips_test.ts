@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { AsyncResource } from "node:async_hooks";
 import { assert, assertEquals } from "@std/assert";
@@ -42,6 +43,7 @@ import {
   MODEL_METHOD_RUN_SYNTAX,
 } from "../src/cli/commands/model_method_run.ts";
 import { workflowRunCommand } from "../src/cli/commands/workflow_run.ts";
+import { setRunCheckpointIntervalForTesting } from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
 import { dataGetCommand } from "../src/cli/commands/data_get.ts";
 import { dataListCommand } from "../src/cli/commands/data_list.ts";
 import {
@@ -171,6 +173,26 @@ async function runCommand(
   });
 }
 
+async function copyChunkFiles(repoDir: string): Promise<number> {
+  const copies = join(repoDir, ".swamp", "_datastore_v3_copies");
+  let count = 0;
+  const walk = async (dir: string): Promise<void> => {
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.isDirectory) await walk(join(dir, entry.name));
+      else if (/^[0-9a-f]{64}$/.test(entry.name)) count++;
+    }
+  };
+  for await (const copy of Deno.readDir(copies)) {
+    const blobs = join(copies, copy.name, "_blobs");
+    try {
+      await walk(blobs);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  return count;
+}
+
 function parentIdOf(span: ReadableSpan): string {
   return span.parentSpanId ?? "";
 }
@@ -201,6 +223,7 @@ async function withMember(fn: (member: Member) => Promise<void>) {
     // definitions and workflows are shared through serve, as in team mode
     const serve = await scratch.serve({
       managedConfig: true,
+      commitFeed: true,
       grants: [
         ...MEMBER,
         { actions: ["read", "write", "run"], kind: "workflow", pattern: "*" },
@@ -326,37 +349,69 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
+    // A paced checkpoint firing mid-run on a slow host races a step's lock.
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
+    try {
+      await withMember(async (member) => {
+        const run = () =>
+          runCommand(
+            member.scratch,
+            member.client,
+            member.env,
+            ["workflow", "run"],
+            (root) => {
+              root.command("cmd", workflowRunCommand);
+            },
+            [WORKFLOW],
+          );
+        const step = [
+          ...FORWARD, // the step's start, before its lock
+          LOCK,
+          ...CATCH_UP,
+          ...FORWARD, // its data under the lock
+          ...FORWARD, // the run record, still under the lock
+          RELEASE,
+        ];
+        assertEquals(await steadyState(member, run), [
+          ...CATCH_UP,
+          ...FORWARD, // the run record
+          ...FORWARD, // the evaluated workflow
+          ...FORWARD, // the run's evaluated workflow with its record
+          ...step,
+          ...step,
+          ...FORWARD, // the run's summary report
+          HAS, // the run record, over the inline limit by its end
+          ...FORWARD,
+        ]);
+      });
+    } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "team-mode method run: a write's requests to serve do not grow with history another member wrote (swamp-club#4457)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
     await withMember(async (member) => {
-      const run = () =>
-        runCommand(
-          member.scratch,
-          member.client,
-          member.env,
-          ["workflow", "run"],
-          (root) => {
-            root.command("cmd", workflowRunCommand);
-          },
-          [WORKFLOW],
-        );
-      const step = [
-        LOCK,
-        ...CATCH_UP,
-        ...FORWARD, // the step's start
-        ...FORWARD, // its data under the lock
-        RELEASE,
-        ...FORWARD, // the run's checkpoint
-      ];
-      assertEquals(await steadyState(member, run), [
-        ...CATCH_UP,
-        ...FORWARD,
-        ...FORWARD,
-        ...FORWARD,
-        ...FORWARD,
-        ...step,
-        ...step,
-        HAS, // the run record, over the inline limit by its end
-        ...FORWARD,
-      ]);
+      const before = await steadyState(member, () => methodRun(member, WRITER));
+      const other: Member = {
+        ...member,
+        client: await member.scratch.client("other", {
+          bucket: member.scratch.bucket(),
+          managedConfig: true,
+        }),
+      };
+      for (let i = 0; i < 50; i++) await methodRun(other, WRITER);
+      let after: string[] = [];
+      await withCapturedSpans(async (spans) => {
+        await methodRun(member, WRITER);
+        after = requestsOf(spans);
+      });
+      assertEquals(after, before);
     });
   },
 });
@@ -554,6 +609,44 @@ Deno.test({
         fetches.map((span) => parentNames.get(parentIdOf(span))),
         Array(4).fill("swamp.datastore.v3.readmodel.prefetch"),
       );
+      assertEquals(await copyChunkFiles(member.client.repoDir), 0);
+      const paths = await readCommand(
+        member.scratch,
+        member.client,
+        member.env,
+        async (repos) => {
+          const writer = await repos.definitionRepo.findByName(
+            member.serve.modelType,
+            WRITER,
+          );
+          assert(writer !== null);
+          const found: [string, string][] = [];
+          for (let i = 0; i < 4; i++) {
+            const data = await repos.unifiedDataRepo.findByName(
+              member.serve.modelType,
+              writer.id,
+              `big-${i}`,
+            );
+            assert(data !== null);
+            found.push([
+              `${i}`,
+              repos.unifiedDataRepo.getContentPath(
+                member.serve.modelType,
+                writer.id,
+                `big-${i}`,
+                data.version,
+              ),
+            ]);
+          }
+          return found;
+        },
+      );
+      for (const [i, path] of paths) {
+        assertEquals(
+          JSON.parse(await Deno.readTextFile(path)),
+          { body: i.repeat(CHUNKED_BYTES) },
+        );
+      }
     });
   },
 });

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeLeaseLapsedError } from "../../infrastructure/datastore_v3/serve_lock.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
 import { checkLastEvaluation } from "../last_evaluated_trust.ts";
@@ -37,6 +38,7 @@ import {
   cancelOnLeaseLost,
   createLockProgressWriter,
   createWorkflowRunClaims,
+  datastoreRootOf,
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
   signalWaitsOf,
@@ -118,9 +120,13 @@ import {
 import {
   createWorkflowRunRenderer,
   renderWorkflowRunAccepted,
+  showsDataAttributes,
 } from "../../presentation/renderers/workflow_run.ts";
 import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
-import { resolveCliInitiatedBy } from "../auth_context.ts";
+import {
+  assertRunInitiatorKnown,
+  resolveCliInitiatedBy,
+} from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
   CA_CERT_DESCRIPTION,
@@ -133,7 +139,11 @@ import {
 } from "../remote_run.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
-import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
+import {
+  releaseRegisteredLocks,
+  suppressSyncExitOnSignal,
+} from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { watchV3ServeFeeds } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -163,7 +173,7 @@ export function workflowStepLockHook(
   );
   // a serve-mode checkout working offline judges each step before it starts:
   // one that changes things needs its behavior's lease
-  return async (modelType, modelId, step) => {
+  return async (modelType, modelId, step, signal) => {
     if (step !== undefined) {
       await assertOfflineRunAllowed(datastoreConfig, {
         modelType,
@@ -173,7 +183,7 @@ export function workflowStepLockHook(
         methodKind: await methodKindOf(modelType, step.methodName),
       });
     }
-    return await hook(modelType, modelId, step);
+    return await hook(modelType, modelId, step, signal);
   };
 }
 
@@ -642,6 +652,10 @@ export const workflowRunCommand = new Command()
               dataRepo: repoContext.unifiedDataRepo,
               definitionRepo: repoContext.definitionRepo,
               telemetrySink,
+              resolveCompletedOutputs: showsDataAttributes(
+                ctx.outputMode,
+                ctx.verbosity === "quiet",
+              ),
               supersede: {
                 findSuspendedRuns: (workflowId, signal) =>
                   runRepo.findByStatus(workflowId, "suspended", signal),
@@ -684,6 +698,8 @@ export const workflowRunCommand = new Command()
             shutdownHandle = registerShutdownHandler({
               handler: () => abort.abort(),
               forceExitOnRepeat: true,
+              dataWrites: processDataWrites,
+              beforeForceExit: releaseRegisteredLocks,
             });
             const baseLibCtx = libSwampContextForRepo(repoContext, {
               signal: abort.signal,
@@ -700,7 +716,9 @@ export const workflowRunCommand = new Command()
               )
               : [cliInputs];
 
-            const initiatedBy = await resolveCliInitiatedBy();
+            const datastoreRoot = datastoreRootOf(unlocked.datastoreConfig);
+            assertRunInitiatorKnown(datastoreRoot);
+            const initiatedBy = await resolveCliInitiatedBy(datastoreRoot);
 
             if (options.junit && inputSets.length > 1) {
               throw new UserError(
@@ -866,6 +884,12 @@ export const workflowRunCommand = new Command()
       await runCheckpointer.close();
       shutdownHandle?.dispose();
       exitSuppress.dispose();
+    }
+    // a run the lapse stopped exits as the lapse, once its root committed;
+    // one that finished first keeps its own exit
+    const lapsed = stepLeaseLost.signal.reason;
+    if (lapsed instanceof ServeLeaseLapsedError && Deno.exitCode === 1) {
+      throw lapsed;
     }
   })
   .command("search", workflowRunSearchCommand);

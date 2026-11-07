@@ -142,7 +142,6 @@ const PINNED_REDECLARATIONS: readonly string[] = [
   "src/domain/extensions/extension_rubric_scorer.ts: RubricFactor",
   "src/domain/extensions/extension_rubric_scorer.ts: RubricScore",
   "src/domain/extensions/extension_rubric_scorer.ts: findManifestRoot",
-  "src/presentation/output/console_writer.ts: stripAnsi",
   "src/presentation/renderers/auth_login.ts: stripAnsi",
 ];
 

@@ -104,15 +104,16 @@ for (const flag of ["--behavior", "--model"]) {
   });
 
   Deno.test({
-    name: `datastore lock release: ${flag} value is validated as type/id`,
+    name:
+      `datastore lock release: ${flag} names a behavior by name too, and one that does not exist is refused naming the type/id form`,
     sanitizeOps: false,
     sanitizeResources: false,
     fn: async () => {
       await withRepo(async (dir) => {
         await assertRejects(
-          () => release(dir, [flag, "no-slash"]),
+          () => release(dir, [flag, "no-such-behavior"]),
           UserError,
-          'Invalid --model format: "no-slash"',
+          "type/id",
         );
       });
     },

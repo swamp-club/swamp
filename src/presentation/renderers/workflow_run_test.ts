@@ -20,6 +20,7 @@
 import {
   assert,
   assertEquals,
+  assertRejects,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -30,11 +31,20 @@ import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view
 import {
   createWorkflowRunRenderer,
   renderWorkflowRunAccepted,
+  showsDataAttributes,
 } from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  deeplyNestedAttributes,
+  nestedTreeDepth,
+} from "../output/json_stream_test_helpers.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../../domain/data/data.ts";
 
 function makeRunView(
-  status: "succeeded" | "failed",
+  status: "succeeded" | "failed" | "cancelled",
 ): WorkflowRunView {
   return {
     id: "run-1",
@@ -300,6 +310,110 @@ Deno.test("ConsoleWorkflowRunRenderer: shows inline data artifacts", async () =>
   assertStringIncludes(output, "total_records");
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: -q lists data artifacts by name without their attributes", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+    quiet: true,
+  });
+  const runView = makeRunView("succeeded");
+  runView.jobs[0].steps[0].dataArtifacts![0].attributes = {
+    stdout: "STEP-STDOUT",
+  };
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Data produced");
+  assertStringIncludes(output, "api-records");
+  assertEquals(output.includes("STEP-STDOUT"), false, output);
+});
+
+Deno.test("showsDataAttributes: only quiet log output leaves data attributes out", () => {
+  assertEquals(showsDataAttributes("log", false), true);
+  assertEquals(showsDataAttributes("log", true), false);
+  assertEquals(showsDataAttributes("json", false), true);
+  assertEquals(showsDataAttributes("json", true), true);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: report and log artifacts stay out of the data box when they carry attributes", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const runView = makeRunView("succeeded");
+  runView.jobs[0].steps[0].dataArtifacts!.push(
+    {
+      dataId: "d-2",
+      name: "report-summary",
+      version: 1,
+      tags: {},
+      attributes: { hidden_report: 1 },
+    },
+    {
+      dataId: "d-3",
+      name: "log",
+      version: 1,
+      tags: {},
+      attributes: { hidden_log: 1 },
+    },
+  );
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "total_records");
+  assertEquals(output.includes("hidden_report"), false, output);
+  assertEquals(output.includes("hidden_log"), false, output);
+});
+
+function runViewWithHiddenArtifacts(): WorkflowRunView {
+  const runView = makeRunView("succeeded");
+  const hiddenTags = { [SUMMARY_DISPLAY_TAG]: SUMMARY_DISPLAY_HIDDEN };
+  runView.jobs[0].steps[0].dataArtifacts!.push({
+    dataId: "d-2",
+    name: "step-scratch",
+    version: 1,
+    tags: hiddenTags,
+  });
+  runView.workflowDataArtifacts = [{
+    dataId: "d-3",
+    name: "workflow-scratch",
+    version: 1,
+    tags: hiddenTags,
+  }];
+  return runView;
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: display-hidden step and workflow artifacts stay out of the data box", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(simpleEvents(runViewWithHiddenArtifacts())),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "api-records");
+  assertEquals(output.includes("step-scratch"), false, output);
+  assertEquals(output.includes("workflow-scratch"), false, output);
+});
+
+Deno.test("JsonWorkflowRunRenderer: keeps display-hidden artifacts", async () => {
+  const renderer = createWorkflowRunRenderer("json", {
+    workflowName: "test-pipeline",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(simpleEvents(runViewWithHiddenArtifacts())),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "step-scratch");
+  assertStringIncludes(output, "workflow-scratch");
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: error event throws UserError", () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
@@ -498,6 +612,20 @@ Deno.test("ConsoleWorkflowRunRenderer: cancelled run sets workflowFailed()", asy
   assertEquals(renderer.workflowFailed(), true);
   assertStringIncludes(lines.join("\n"), "Cancelled");
   assertStringIncludes(lines.join("\n"), "user interrupt");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a run that completes cancelled fails and never reads as succeeded", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events = simpleEvents(makeRunView("cancelled"));
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(renderer.workflowFailed(), true);
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Cancelled");
+  assertEquals(output.includes("succeeded"), false);
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: forEach steps show [index] notation", async () => {
@@ -837,6 +965,25 @@ Deno.test("JsonWorkflowRunRenderer: completed serializes WorkflowRunView", async
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.workflowName, "test-pipeline");
     assertEquals(parsed.status, "succeeded");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonWorkflowRunRenderer: a run that completes cancelled fails", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    await consumeStream(
+      toStream(simpleEvents(makeRunView("cancelled"))),
+      renderer.handlers(),
+    );
+    assertEquals(renderer.workflowFailed(), true);
+    assertEquals(JSON.parse(logs[0]).status, "cancelled");
   } finally {
     console.log = originalLog;
   }
@@ -2940,4 +3087,138 @@ Deno.test("JsonWorkflowRunRenderer: a suspended run carries the key holders a st
 
   const plain = await renderJson([suspended]);
   assertEquals("waitKeyHolders" in (plain.stdout[0] as object), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: an artifact past the attribute budget says its content is not shown", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const runView = makeRunView("succeeded");
+  runView.jobs[0].steps[0].dataArtifacts!.push({
+    dataId: "d-omitted",
+    name: "bulk-item",
+    version: 1,
+    tags: {},
+    attributesOmitted: true,
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "bulk-item");
+  assertStringIncludes(output, "content not shown: run output limit reached");
+});
+
+Deno.test("JsonWorkflowRunRenderer: an artifact past the attribute budget carries attributesOmitted", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const runView = makeRunView("succeeded");
+    runView.jobs[0].steps[0].dataArtifacts!.push({
+      dataId: "d-omitted",
+      name: "bulk-item",
+      version: 1,
+      tags: {},
+      attributesOmitted: true,
+    });
+    await consumeStream(toStream(simpleEvents(runView)), renderer.handlers());
+    const parsed = JSON.parse(logs.at(-1)!);
+    const artifact = parsed.jobs[0].steps[0].dataArtifacts.at(-1);
+    assertEquals(artifact.attributesOmitted, true);
+    assertEquals("attributes" in artifact, false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+function deeplyNestedRunView(
+  status: "succeeded" | "cancelled",
+): WorkflowRunView {
+  const run = makeRunView(status);
+  run.jobs[0].steps[0].dataArtifacts![0].attributes = deeplyNestedAttributes();
+  return run;
+}
+
+const OUTCOME_STREAMS: {
+  kind: string;
+  status: "succeeded" | "cancelled";
+  failed: boolean;
+  events: (run: WorkflowRunView) => WorkflowRunEvent[];
+}[] = [
+  {
+    kind: "completed",
+    status: "succeeded",
+    failed: false,
+    events: (run) => simpleEvents(run),
+  },
+  {
+    kind: "cancelled",
+    status: "cancelled",
+    failed: true,
+    events: (run) => [{ kind: "cancelled", run }],
+  },
+  {
+    kind: "suspended",
+    status: "succeeded",
+    failed: false,
+    events: (run) => [{
+      kind: "suspended",
+      run,
+      jobId: "extract",
+      stepId: "fetch",
+      prompt: "Approve?",
+    }],
+  },
+];
+
+for (const outcome of OUTCOME_STREAMS) {
+  Deno.test(`JsonWorkflowRunRenderer: a ${outcome.kind} run whose attributes nest past JSON.stringify's stack limit prints whole`, async () => {
+    const run = deeplyNestedRunView(outcome.status);
+    assertThrows(() => JSON.stringify(run, null, 2), RangeError);
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const lines = await captureOutputAsync(async () => {
+      await consumeStream(toStream(outcome.events(run)), renderer.handlers());
+    });
+    assertEquals(renderer.workflowFailed(), outcome.failed);
+    assertEquals(lines.length, 1);
+    const parsed = JSON.parse(lines[0]);
+    assertEquals(parsed.status, outcome.status);
+    assertEquals(
+      nestedTreeDepth(parsed.jobs[0].steps[0].dataArtifacts[0].attributes),
+      { depth: 6_000, leaf: [0, 1, 2] },
+    );
+  });
+}
+
+Deno.test("JsonWorkflowRunRenderer: a run whose JSON cannot be printed is reported as unprinted output naming the run and its saved status", async () => {
+  const renderer = createWorkflowRunRenderer("json", {
+    workflowName: "test-pipeline",
+  });
+  const originalLog = console.log;
+  console.log = () => {
+    throw new Error("no space left on device");
+  };
+  try {
+    const error = await assertRejects(
+      () =>
+        consumeStream(
+          toStream(simpleEvents(makeRunView("succeeded"))),
+          renderer.handlers(),
+        ),
+      UserError,
+    );
+    assertStringIncludes(error.message, "run-1");
+    assertStringIncludes(error.message, "status succeeded");
+    assertStringIncludes(error.message, "JSON output could not be written");
+    assertStringIncludes(error.message, "no space left on device");
+    assertEquals(error.message.includes("total_records"), false);
+  } finally {
+    console.log = originalLog;
+  }
 });

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -436,5 +436,127 @@ Deno.test({
         assertEquals(unnamed.exitCode, 1);
       },
     );
+  },
+});
+
+Deno.test("accessCheckCommand: --client is refused with --server, since a request cannot name a client", async () => {
+  const { accessCheckCommand } = await import("./access_check.ts");
+  const root = new Command()
+    .globalOption("--json", "JSON output")
+    .command("check", accessCheckCommand);
+  const refusal = await assertRejects(() =>
+    root.parse([
+      "check",
+      "--json",
+      "--server",
+      "ws://127.0.0.1:1",
+      "--token",
+      "test.token",
+      "--subject",
+      "user:adam",
+      "--action",
+      "run",
+      "--on",
+      "workflow:w",
+      "--client",
+      "integration:slack",
+    ])
+  );
+  assertStringIncludes(
+    (refusal as Error).message,
+    "--client is not supported with --server",
+  );
+});
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local --client reaches the decision and is named in the result",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo([
+      ["--subject", "user:a", "--allow", "read", "--on", "workflow:*"],
+      [
+        "--subject",
+        "user:a",
+        "--deny",
+        "read",
+        "--on",
+        "workflow:*",
+        "--when",
+        'client == "integration:slack"',
+      ],
+    ], async (dir) => {
+      const check = (...extra: string[]) =>
+        runAccess("check", [
+          "--repo-dir",
+          dir,
+          "--subject",
+          "user:a",
+          "--action",
+          "read",
+          "--on",
+          "workflow:w",
+          ...extra,
+        ]);
+      const slack = await check("--client", "integration:slack");
+      assertEquals(slack.exitCode, 1);
+      assertEquals(JSON.parse(slack.output).client, "integration:slack");
+      const direct = await check();
+      assertEquals(direct.exitCode, 0);
+      assertEquals(JSON.parse(direct.output).client, undefined);
+      await assertRejects(() => check("--client", "nonsense"));
+      await assertRejects(() => check("--field", "client=direct:cli"));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local --field run decides like a whole run, and a partial one is refused",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo([
+      ["--subject", "user:a", "--allow", "approve", "--on", "workflow:*"],
+      [
+        "--subject",
+        "user:a",
+        "--deny",
+        "approve",
+        "--on",
+        "workflow:*",
+        "--when",
+        "principal.sub == run.initiator.sub || !run.serveDriven",
+      ],
+    ], async (dir) => {
+      const check = (...extra: string[]) =>
+        runAccess("check", [
+          "--repo-dir",
+          dir,
+          "--subject",
+          "user:a",
+          "--action",
+          "approve",
+          "--on",
+          "workflow:w",
+          ...extra,
+        ]);
+      const own = await check("--field", "run.initiator.sub=a");
+      assertEquals(own.exitCode, 1);
+      const other = await check("--field", "run.initiator.sub=b");
+      assertEquals(other.exitCode, 0);
+      const member = await check(
+        "--field",
+        "run.initiator.sub=b",
+        "--field",
+        "run.serveDriven=false",
+      );
+      assertEquals(member.exitCode, 1);
+      await assertRejects(() => check("--field", "run.serveDriven=false"));
+      await assertRejects(() =>
+        check("--field", "run.initiator.sub=b", "--field", "run.nope=1")
+      );
+    });
   },
 });

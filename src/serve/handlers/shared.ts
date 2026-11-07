@@ -403,6 +403,10 @@ export interface ConnectionContext {
   hotReload?: boolean;
   serveConfigPath?: string;
   scheduledExecution?: ScheduledExecutionService;
+  webhookRuns?: Pick<
+    import("../webhook.ts").WebhookService,
+    "workflowOfRun" | "cancelByRunId"
+  >;
   workflowReloader?: () => Promise<number>;
   extensionChangeReloader?: () => Promise<
     import("../protocol.ts").ServeReloadResponse
@@ -496,6 +500,7 @@ const connectionGroups = new WeakMap<WebSocket, readonly string[]>();
 const connectionPrincipalId = new WeakMap<WebSocket, string>();
 const connectionSourceIp = new WeakMap<WebSocket, string>();
 const connectionLoginIdentity = new WeakMap<WebSocket, ActorIdentity>();
+const connectionClient = new WeakMap<WebSocket, string>();
 const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
@@ -653,6 +658,8 @@ export interface TerminateTokenSessionsOptions {
   readonly reason: string;
   readonly cause: TokenSessionTerminationCause;
   readonly initiatedBy: string;
+  /** of the request ending the sessions; serve's own revalidation has none */
+  readonly client?: string;
   readonly requestId?: string;
   readonly audit?: TokenSessionAuditContext;
 }
@@ -854,6 +861,7 @@ function emitSessionTerminated(
       principalKind: principal.kind,
       principalId: principal.id,
       initiatedBy: options.initiatedBy,
+      client: options.client,
       sourceIp,
       requestId: options.requestId ?? crypto.randomUUID(),
       detail: options.cause,
@@ -928,6 +936,48 @@ export function getConnectionLoginIdentity(
   return connectionLoginIdentity.get(socket);
 }
 
+export function setConnectionClient(
+  socket: WebSocket,
+  client: string | undefined,
+): void {
+  if (client !== undefined) connectionClient.set(socket, client);
+}
+
+export function getConnectionClient(socket: WebSocket): string | undefined {
+  return connectionClient.get(socket);
+}
+
+/**
+ * Binds what a credential proved to its connection. A follower forwards the
+ * credential, so the leader binds the same values from its own read of it.
+ */
+export function bindAuthenticatedConnection(
+  socket: WebSocket,
+  auth: {
+    readonly principalId: string;
+    readonly collectives: readonly string[];
+    readonly groups: readonly string[];
+    readonly tokenName: string;
+    readonly tokenCreatedAt: string;
+    readonly oauthIdentity?: ActorIdentity;
+    readonly client?: string;
+  },
+): void {
+  setConnectionCollectives(
+    socket,
+    auth.collectives,
+    auth.groups,
+    auth.principalId,
+  );
+  setConnectionToken(socket, {
+    name: auth.tokenName,
+    createdAt: auth.tokenCreatedAt,
+    principalId: auth.principalId,
+  });
+  setConnectionLoginIdentity(socket, auth.oauthIdentity);
+  setConnectionClient(socket, auth.client);
+}
+
 export function connectionActorIdentity(
   socket: WebSocket,
   principal: Principal | null,
@@ -962,9 +1012,10 @@ export interface AccessCaller {
   readonly groups: readonly string[];
   readonly sourceIp: string;
   readonly loginIdentity?: ActorIdentity;
+  readonly client?: string;
 }
 
-type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity">;
+type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity" | "client">;
 
 export function accessCallerOf(
   socket: WebSocket,
@@ -976,6 +1027,7 @@ export function accessCallerOf(
     groups: connectionGroups.get(socket) ?? [],
     sourceIp: getConnectionSourceIp(socket),
     loginIdentity: connectionLoginIdentity.get(socket),
+    client: connectionClient.get(socket),
   };
 }
 
@@ -1013,13 +1065,15 @@ function decideForCaller(
   const collectives = [...caller.collectives];
   const groups = [...caller.groups];
   const service = ctx.policySnapshotLoader.decisionService;
+  const accessPrincipal: AccessPrincipal = {
+    principal,
+    collectives,
+    groups,
+    client: caller.client,
+  };
   const decision = every
-    ? service.decideAll(
-      { principal, collectives, groups },
-      action,
-      resource.kind,
-    )
-    : service.decide({ principal, collectives, groups }, action, resource);
+    ? service.decideAll(accessPrincipal, action, resource.kind)
+    : service.decide(accessPrincipal, action, resource);
 
   if (decision && decision.effect === "allow") {
     return { kind: "allowed", decision };
@@ -1027,7 +1081,7 @@ function decideForCaller(
 
   if (!decision) {
     const adminDecision = service.decide(
-      { principal, collectives, groups },
+      accessPrincipal,
       "admin",
       { kind: "access", name: "*", fields: {} },
     );
@@ -1090,6 +1144,7 @@ export async function decideSubjectAccess(
     principal,
     collectives: record.collectives,
     groups: record.groups,
+    client: record.client,
   };
   const service = loader.decisionService;
   const decision = service.decide(subjectPrincipal, action, resource);
@@ -1551,6 +1606,7 @@ function emitDenialFrom(
       ctx.resolvedUserNames,
       origin.loginIdentity,
     ),
+    client: origin.client,
     sourceIp: origin.sourceIp,
     requestId,
     detail,
@@ -1631,6 +1687,7 @@ export function callerResourceDecider(
     principal,
     collectives: [...caller.collectives],
     groups: [...caller.groups],
+    client: caller.client,
   };
   const adminDecision = service.decide(
     accessPrincipal,
@@ -1727,7 +1784,12 @@ export function authorizeAnyOrReject(
   const collectives = connectionCollectives.get(socket) ?? [];
   const groups = connectionGroups.get(socket) ?? [];
   const service = ctx.policySnapshotLoader.decisionService;
-  const accessPrincipal: AccessPrincipal = { principal, collectives, groups };
+  const accessPrincipal: AccessPrincipal = {
+    principal,
+    collectives,
+    groups,
+    client: connectionClient.get(socket),
+  };
 
   if (
     kinds.some((k) => service.hasAnyGrantForKind(accessPrincipal, action, k))
@@ -1812,6 +1874,7 @@ function accessPrincipalOf(
     principal,
     collectives: [...caller.collectives],
     groups: [...caller.groups],
+    client: caller.client,
   };
 }
 
@@ -2391,6 +2454,35 @@ export function recordAuditedResource(
   }
 }
 
+const auditedDetails = new WeakMap<WebSocket, Map<string, string>>();
+
+/** a success worth telling apart in the log, such as a replayed start */
+export function recordAuditedDetail(
+  socket: WebSocket,
+  requestId: string,
+  detail: string,
+): void {
+  let details = auditedDetails.get(socket);
+  if (!details) {
+    details = new Map();
+    auditedDetails.set(socket, details);
+  }
+  details.set(requestId, detail);
+  if (details.size > MAX_ERRORED_REQUESTS) {
+    details.delete(details.keys().next().value!);
+  }
+}
+
+export function takeAuditedDetail(
+  socket: WebSocket,
+  requestId: string,
+): string | undefined {
+  const details = auditedDetails.get(socket);
+  const detail = details?.get(requestId);
+  details?.delete(requestId);
+  return detail;
+}
+
 export function takeAuditedResource(
   socket: WebSocket,
   requestId: string,
@@ -2409,6 +2501,20 @@ function clientErrorReasonOf(details: unknown): string | undefined {
   }
   return CLIENT_ERROR_REASONS.has(details.reason) ? details.reason : undefined;
 }
+
+/** codes a request can end with when the datastore could not confirm its write */
+export const REPLICATION_REFUSALS = {
+  notLeader: SERVE_NOT_LEADER_CODE,
+  writerBusy: V3_WRITER_BUSY_CODE,
+  unconfirmed: [
+    V3_REPLICATION_UNCONFIRMED_CODE,
+    WRITER_FENCED_CODE,
+    COMMIT_UNREACHABLE_CODE,
+    COMMIT_PARTLY_COMMITTED_CODE,
+    RUN_PARTLY_COMMITTED_CODE,
+    V3_STORAGE_UNREACHABLE_CODE,
+  ],
+} as const;
 
 export function isServerFailureCode(code: string): boolean {
   if (code === "internal_error") return true;
@@ -2582,6 +2688,7 @@ export interface RunCancelAudit {
   resourceName: string;
   principal: Principal | null;
   loginIdentity?: ActorIdentity;
+  client?: string;
   sourceIp: string;
   requestId: string;
   outcome: AuditOutcome;
@@ -2612,6 +2719,7 @@ export function emitRunCancelAudit(
       ctx.resolvedUserNames,
       audit.loginIdentity,
     ),
+    client: audit.client,
     sourceIp: audit.sourceIp,
     requestId: audit.requestId,
     detail: audit.detail,

@@ -347,3 +347,209 @@ Deno.test("renderApprovals: --quiet prints no cancel command for a nested run wh
   );
   assertEquals(lines, []);
 });
+
+Deno.test("renderApprovals: a caller refused on this run is offered only its cancel", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
+      pending({ canDecide: false, canDecideReason: "grant-condition" }),
+    ])
+  );
+  assertEquals(lines, [`  swamp workflow cancel wipe-drive --run ${RUN_ID}`]);
+});
+
+const CANCEL_LINE = `  swamp workflow cancel wipe-drive --run ${RUN_ID}`;
+
+function logsAndCommands(
+  row: PendingApproval,
+  expiredRows: ExpiredApproval[] = [],
+) {
+  const logged: string[] = [];
+  const ctx = hintTestContext();
+  const info = (message: unknown) => logged.push(String(message));
+  const withLog = { ...ctx, logger: { info } } as unknown as typeof ctx;
+  const lines = captureStdout(() =>
+    renderApprovals(withLog, [row], expiredRows)
+  );
+  return {
+    logged: logged.filter((l) =>
+      l.includes("You can't") || l.includes("may refuse")
+    ),
+    lines,
+  };
+}
+
+const HINT_CASES: Array<{
+  name: string;
+  row: Partial<PendingApproval>;
+  logged: string[];
+  cancel: boolean;
+}> = [
+  {
+    name: "a condition refuses, and the caller may cancel",
+    row: {
+      canDecide: false,
+      canDecideReason: "grant-condition",
+      canCancel: true,
+    },
+    logged: [
+      "  You can't decide this run: a grant condition refuses you, for example if you started it",
+    ],
+    cancel: true,
+  },
+  {
+    name: "a condition refuses, and the caller may not cancel",
+    row: {
+      canDecide: false,
+      canDecideReason: "grant-condition",
+      canCancel: false,
+    },
+    logged: [
+      "  You can't decide or cancel this run: a grant condition refuses you, so someone else must decide it",
+    ],
+    cancel: false,
+  },
+  {
+    name: "an older serve does not say whether the caller may cancel",
+    row: { canDecide: false, canDecideReason: "grant-condition" },
+    logged: [
+      "  You can't decide this run: a grant condition refuses you, for example if you started it",
+      "  This server may refuse a cancel without admin",
+    ],
+    cancel: true,
+  },
+  {
+    name: "grants allow neither",
+    row: { canDecide: false, canCancel: false },
+    logged: [
+      "  You can't decide or cancel this run on this server",
+    ],
+    cancel: false,
+  },
+  {
+    name: "grants allow only the cancel",
+    row: { canDecide: false, canCancel: true },
+    logged: ["  You can't decide this run on this server"],
+    cancel: true,
+  },
+];
+
+for (const c of HINT_CASES) {
+  Deno.test(`renderApprovals: when ${c.name}, the hint says so and offers no approve or reject`, () => {
+    const { logged, lines } = logsAndCommands(pending(c.row));
+    assertEquals(logged, c.logged);
+    assertEquals(lines, c.cancel ? [CANCEL_LINE] : []);
+  });
+}
+
+Deno.test("renderApprovals: an approver offered no resume is one serve says may not resume", () => {
+  const commands = (row: Partial<PendingApproval>) =>
+    logsAndCommands(pending({ canDecide: true, ...row })).lines.map((l) =>
+      l.trim().split(" ").slice(0, 3).join(" ")
+    );
+  assertEquals(commands({ canCancel: false, canResume: false }), [
+    "swamp workflow approve",
+    "swamp workflow reject",
+  ]);
+  // a server restricting cancel to admins leaves a run holder's resume alone
+  assertEquals(commands({ canCancel: false, canResume: true }), [
+    "swamp workflow approve",
+    "swamp workflow reject",
+    "After approval: swamp",
+  ]);
+});
+
+Deno.test("renderApprovals: an expired nested run keeps the warning about its parent when the parent's cancel is not the caller's", () => {
+  const parentRun = {
+    workflowId: "parent-id",
+    workflowName: "parent-wf",
+    runId: PARENT_RUN_ID,
+    stepName: "nested",
+    serveStarted: true,
+  };
+  const warning = (canCancel: boolean) =>
+    logsAndCommands(pending({ canDecide: true }), [
+      expired({ parentRun: { ...parentRun, canCancel }, parentWaiting: true }),
+    ]).lines.at(-1);
+  assertEquals(
+    warning(false),
+    "  Nested run of parent-wf: the parent stays suspended after this cancel",
+  );
+  assertEquals(
+    warning(true)?.includes("; cancel it with swamp workflow cancel"),
+    true,
+  );
+});
+
+Deno.test("renderApprovals: a caller who may not act on the parent still sees that it waits", () => {
+  const parentRun = {
+    workflowId: "parent-id",
+    workflowName: "parent-wf",
+    runId: PARENT_RUN_ID,
+    stepName: "nested",
+  };
+  assertEquals(
+    logsAndCommands(
+      pending({
+        canDecide: true,
+        canResume: true,
+        parentRun: { ...parentRun, canResume: false },
+        parentWaiting: true,
+      }),
+    ).lines.at(-1),
+    "  Nested run of parent-wf: once this run finishes, someone who holds run on it must resume it",
+  );
+  assertEquals(
+    logsAndCommands(pending({ canDecide: true }), [
+      expired({
+        canCancel: false,
+        parentRun: { ...parentRun, serveStarted: true },
+        parentWaiting: true,
+      }),
+    ]).lines.at(-1),
+    "  Nested run of parent-wf: the parent waits on it",
+  );
+});
+
+Deno.test("renderApprovals: a local listing, which carries neither field, is unchanged", () => {
+  const { logged, lines } = logsAndCommands(pending());
+  assertEquals(logged, []);
+  assertEquals(lines.length, 3);
+});
+
+Deno.test("renderApprovals: an expired gate offers its cancel only to who may use it", () => {
+  const { logged, lines } = logsAndCommands(pending({ canDecide: true }), [
+    expired({ canCancel: false }),
+  ]);
+  assertEquals(logged, [
+    "  You can't cancel this run on this server",
+  ]);
+  assertEquals(lines.some((l) => l.includes("workflow cancel")), false);
+});
+
+Deno.test("renderApprovals: json carries canCancel on pending and expired rows", () => {
+  const ctx = { ...hintTestContext(), outputMode: "json" } as ReturnType<
+    typeof hintTestContext
+  >;
+  const original = console.log;
+  let printed = "";
+  console.log = (text: string) => {
+    printed = text;
+  };
+  try {
+    renderApprovals(ctx, [pending({ canCancel: false })], [
+      expired({ canCancel: true }),
+    ]);
+  } finally {
+    console.log = original;
+  }
+  const parsed = JSON.parse(printed);
+  assertEquals(parsed.approvals[0].canCancel, false);
+  assertEquals(parsed.expired[0].canCancel, true);
+});
+
+Deno.test("renderApprovals: a caller who may decide keeps the approve and reject commands", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [pending({ canDecide: true })])
+  );
+  assertEquals(lines.some((l) => l.includes("workflow approve")), true);
+});

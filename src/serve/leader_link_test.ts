@@ -26,6 +26,11 @@ import {
   leaderTarget,
 } from "./leader_link.ts";
 import { TEAM_PEER_HEADER } from "./peer_auth.ts";
+import { withSpan } from "../infrastructure/tracing/tracer.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../infrastructure/tracing/span_test_helpers.ts";
 
 const LEADER: ServeLeader = {
   instanceId: "instance-a",
@@ -124,6 +129,32 @@ Deno.test("LeaderLink.forward: sends the request to the leader at the same path 
     method: "POST",
     auth: "Bearer bob.secret",
     body: "payload",
+  });
+});
+
+Deno.test("LeaderLink.forward: names this node's span as the leader's parent, not the caller's", async () => {
+  await withCapturedSpans(async (spans) => {
+    let traceparent: string | null = null;
+    await withSpan("follower", {}, async () => {
+      const reply = await link((_input, init) => {
+        traceparent = new Headers(init?.headers).get("traceparent");
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }).forward(
+        new Request("http://lb.example/api/v1/datastore/_default/locks", {
+          method: "POST",
+          headers: {
+            traceparent:
+              "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          },
+        }),
+      );
+      await reply.body?.cancel();
+    });
+    const follower = findSpan(spans, "follower").spanContext();
+    assertEquals(
+      traceparent,
+      `00-${follower.traceId}-${follower.spanId}-01`,
+    );
   });
 });
 

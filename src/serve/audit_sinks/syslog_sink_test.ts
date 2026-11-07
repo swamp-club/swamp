@@ -123,3 +123,14 @@ Deno.test("formatRfc5424: escapes close bracket in structured data", () => {
   const msg = formatRfc5424(event, "test-host");
   assertStringIncludes(msg, "key\\]bracket");
 });
+
+Deno.test("formatRfc5424: names the client when set", () => {
+  assertStringIncludes(
+    formatRfc5424(makeEvent({ client: "direct:cli" }), "host"),
+    'client="direct:cli"',
+  );
+});
+
+Deno.test("formatRfc5424: an event with no client has no client field", () => {
+  assert(!formatRfc5424(makeEvent(), "host").includes("client="));
+});

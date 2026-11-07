@@ -45,6 +45,15 @@ const logger = getSwampLogger(["workflow", "checkpoint"]);
  */
 export const RUN_CHECKPOINT_INTERVAL_MS = 2_000;
 
+let checkpointIntervalMs = RUN_CHECKPOINT_INTERVAL_MS;
+
+/** read when a checkpointer is constructed; an explicit `intervalMs` wins */
+export function setRunCheckpointIntervalForTesting(
+  ms: number | undefined,
+): void {
+  checkpointIntervalMs = ms ?? RUN_CHECKPOINT_INTERVAL_MS;
+}
+
 /**
  * a save checkpoints at once if none started within the interval or a
  * top-level run ends; otherwise one trailing checkpoint starts when the
@@ -91,7 +100,7 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     options: { intervalMs?: number; now?: () => number } = {},
   ) {
     this.#repoContext = repoContext;
-    this.#intervalMs = options.intervalMs ?? RUN_CHECKPOINT_INTERVAL_MS;
+    this.#intervalMs = options.intervalMs ?? checkpointIntervalMs;
     this.#now = options.now ?? Date.now;
   }
 

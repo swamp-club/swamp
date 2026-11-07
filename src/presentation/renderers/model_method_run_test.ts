@@ -30,6 +30,10 @@ import type { ModelMethodRunEvent } from "../../libswamp/models/run.ts";
 import type { ModelMethodRunView } from "../../libswamp/models/model_method_run_view.ts";
 import { createModelMethodRunRenderer } from "./model_method_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../../domain/data/data.ts";
 
 function makeRunView(
   status: ModelMethodRunView["status"],
@@ -219,6 +223,55 @@ Deno.test("ConsoleModelMethodRunRenderer: shows inline data artifacts on success
   assertStringIncludes(output, "Data produced");
   assertStringIncludes(output, "result");
   assertStringIncludes(output, "exitCode");
+});
+
+function runViewWithHiddenArtifact(): ModelMethodRunView {
+  const view = makeRunView("succeeded");
+  view.dataArtifacts.push(
+    {
+      id: "art-2",
+      name: "scratch",
+      path: "/data/scratch/v1",
+      tags: { [SUMMARY_DISPLAY_TAG]: SUMMARY_DISPLAY_HIDDEN },
+    },
+    { id: "art-3", name: "report-summary", path: "/data/report-summary/v1" },
+    { id: "art-4", name: "log", path: "/data/log/v1" },
+  );
+  return view;
+}
+
+Deno.test("ConsoleModelMethodRunRenderer: leaves display-hidden, report and log artifacts out of the data box", async () => {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+  });
+  const events = fullEventStream(runViewWithHiddenArtifact()).filter((e) =>
+    e.kind !== "data_artifact_saved"
+  );
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Data produced");
+  assertStringIncludes(output, "result");
+  assertEquals(output.includes("scratch"), false);
+  assertEquals(output.includes("report-summary"), false);
+});
+
+Deno.test("JsonModelMethodRunRenderer: keeps a display-hidden artifact and its tags", async () => {
+  const renderer = createModelMethodRunRenderer("json", {
+    modelName: "test-model",
+    methodName: "run",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream([{ kind: "completed", run: runViewWithHiddenArtifact() }]),
+      renderer.handlers(),
+    );
+  });
+  const parsed = JSON.parse(lines.join("\n")) as ModelMethodRunView;
+  const scratch = parsed.dataArtifacts.find((a) => a.name === "scratch");
+  assertEquals(scratch?.tags?.[SUMMARY_DISPLAY_TAG], SUMMARY_DISPLAY_HIDDEN);
 });
 
 Deno.test("ConsoleModelMethodRunRenderer: error event throws UserError", () => {
@@ -809,4 +862,66 @@ Deno.test("ModelMethodRunRenderer: a destination refusal is an error carrying it
     assertStringIncludes(error.message, "method argument 'workingDir'");
     assertStringIncludes(error.message, "secret 'DB_PASS' in vault 'prod'");
   }
+});
+
+function makeOmittedRunView(): ModelMethodRunView {
+  return {
+    ...makeRunView("succeeded"),
+    dataArtifacts: [
+      {
+        id: "art-1",
+        name: "first",
+        path: "/data/first/v1",
+        attributes: { exitCode: 0 },
+      },
+      {
+        id: "art-2",
+        name: "second",
+        path: "/data/second/v1",
+        attributesOmitted: true,
+      },
+    ],
+  };
+}
+
+Deno.test("JsonModelMethodRunRenderer: an artifact past the attribute budget carries attributesOmitted and no attributes", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createModelMethodRunRenderer("json", {
+      modelName: "test-model",
+      methodName: "run",
+    });
+    await consumeStream(
+      toStream(fullEventStream(makeOmittedRunView())),
+      renderer.handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.status, "succeeded");
+    assertEquals(parsed.dataArtifacts[0].attributes, { exitCode: 0 });
+    assertEquals(parsed.dataArtifacts[1].attributesOmitted, true);
+    assertEquals("attributes" in parsed.dataArtifacts[1], false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: an artifact past the attribute budget says its content is not shown and how to read it", async () => {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(fullEventStream(makeOmittedRunView())),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "content not shown: run output limit reached");
+  assertStringIncludes(
+    output,
+    `1 artifact not shown; read one with swamp data query 'modelName == "test-model" && name == "second"' --select content`,
+  );
 });

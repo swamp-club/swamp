@@ -19,13 +19,19 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  AppendUnrecordedError,
+  COMMIT_LEASE_LOST_CODE,
   COMMIT_PARTLY_COMMITTED_CODE,
+  CommitLeaseLostError,
   CommitUnreachableError,
+  LEASE_LAPSED_CODE,
+  MayLandLaterError,
   PartitionsRefusedError,
   RUN_PARTLY_COMMITTED_CODE,
   RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { ValidationError } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
@@ -1305,3 +1311,157 @@ Deno.test("buildErrorJson: inFlight is copied only as a literal true from serve_
     );
   }
 });
+
+function leaseLost(
+  reasons: readonly ("lease-lost" | "stale-lease")[] = ["lease-lost"],
+): PartitionsRefusedError {
+  return new PartitionsRefusedError(
+    reasons.map((reason, i) => ({
+      partition: partitionOf({
+        kind: "model",
+        type: ModelType.create("command/shell"),
+        id: `0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a5${i}`,
+      }),
+      reason,
+      message: "This commit's model lease is not held: take the lock again " +
+        "and retry",
+      versions: [],
+    })),
+    [],
+  );
+}
+
+Deno.test("exitCodeForError: a lease-lost refusal exits 75 only when nothing of the command landed", () => {
+  assertEquals(exitCodeForError(leaseLost(), { commandLanded: false }), 75);
+  assertEquals(exitCodeForError(leaseLost(), { commandLanded: true }), 1);
+  assertEquals(exitCodeForError(leaseLost()), 1);
+  const wrapped = new Error("the run's end commit failed", {
+    cause: leaseLost(),
+  });
+  assertEquals(exitCodeForError(wrapped, { commandLanded: false }), 75);
+});
+
+Deno.test("exitCodeForError: a refusal that is not all lease-lost keeps exit 1", () => {
+  assertEquals(
+    exitCodeForError(leaseLost(["lease-lost", "stale-lease"]), {
+      commandLanded: false,
+    }),
+    1,
+  );
+  assertEquals(
+    exitCodeForError(leaseLost(["stale-lease"]), { commandLanded: false }),
+    1,
+  );
+});
+
+Deno.test("exitCodeForError: a step refusal and a lapsed lease follow the landed rule", () => {
+  const step = new CommitLeaseLostError("Serve refused this step's writes");
+  assertEquals(exitCodeForError(step, { commandLanded: false }), 75);
+  assertEquals(exitCodeForError(step, { commandLanded: true }), 1);
+  const lapsed = new UserError("The lock lapsed", LEASE_LAPSED_CODE);
+  assertEquals(exitCodeForError(lapsed, { commandLanded: false }), 75);
+  assertEquals(exitCodeForError(lapsed, { commandLanded: true }), 1);
+});
+
+Deno.test("exitCodeForError: a fenced writer exits 75 only for a reason that committed nothing, and only when nothing landed", () => {
+  for (const reason of ["taken-over", "released", "copy-restoring"] as const) {
+    const fenced = new WriterFencedError(1, 2, reason);
+    assertEquals(exitCodeForError(fenced, { commandLanded: false }), 75);
+    assertEquals(exitCodeForError(fenced, { commandLanded: true }), 1);
+  }
+  const published = new WriterFencedError(1, 2, "published");
+  assertEquals(exitCodeForError(published, { commandLanded: false }), 1);
+});
+
+Deno.test("renderError: a lease-lost refusal is a coded user error with no stack, and its hint fits what landed and the command", () => {
+  const json = JSON.parse(
+    captureStderr(() =>
+      renderError(leaseLost(), "json", "behavior", { commandLanded: false })
+    ),
+  );
+  assertEquals(json.code, COMMIT_LEASE_LOST_CODE);
+  assertEquals("stack" in json, false);
+  assertStringIncludes(
+    json.hint,
+    "Nothing this command changed in the datastore was committed",
+  );
+
+  const workflow = JSON.parse(
+    captureStderr(() =>
+      renderError(leaseLost(), "json", "behavior", {
+        commandLanded: true,
+        workflowCommand: true,
+      })
+    ),
+  );
+  assertStringIncludes(workflow.hint, "swamp workflow resume");
+
+  const method = JSON.parse(
+    captureStderr(() =>
+      renderError(leaseLost(), "json", "behavior", { commandLanded: true })
+    ),
+  );
+  assertStringIncludes(method.hint, "check the behavior's data");
+
+  const log = captureStderr(() =>
+    renderError(leaseLost(), "log", "behavior", { commandLanded: false })
+  );
+  assertStringIncludes(log, "Error:");
+  assertEquals(log.includes("    at "), false);
+});
+
+Deno.test("renderError: a lease-lost refusal the outbox could not discard keeps its may-land code and words", () => {
+  const mayLand = new MayLandLaterError(leaseLost(), new Error("disk full"));
+  const json = JSON.parse(
+    captureStderr(() =>
+      renderError(mayLand, "json", "behavior", { commandLanded: true })
+    ),
+  );
+  assertEquals(json.code, "datastore_v3_commit_may_land");
+  assertEquals(exitCodeForError(mayLand, { commandLanded: false }), 1);
+});
+
+Deno.test("exitCodeForError: an unreachable serve or commit exits 1 once something of the command landed, and keeps 75 otherwise", () => {
+  for (
+    const code of [
+      "datastore_v3_commit_unreachable",
+      "datastore_v3_serve_unreachable",
+    ]
+  ) {
+    const error = new UserError("unreachable", code);
+    assertEquals(exitCodeForError(error, { commandLanded: true }), 1);
+    assertEquals(exitCodeForError(error, { commandLanded: false }), 75);
+    assertEquals(exitCodeForError(error), 75);
+  }
+});
+
+for (
+  const [label, wrap] of [
+    ["raw", (refusal: Error) => refusal],
+    [
+      "wrapped in a direct append's failure",
+      (refusal: Error) => new AppendUnrecordedError(refusal, true),
+    ],
+  ] as const
+) {
+  Deno.test(`renderError: a run record refused for its initiator, ${label}, is shown under its own code with the upgrade advice`, () => {
+    const refusal = Object.assign(
+      new Error(
+        "run.create of workflow-runs/w/workflow-run-r.yaml: its initiator is not user:m1; upgrade your swamp CLI",
+      ),
+      { code: "forbidden", reason: "run-initiator-mismatch" },
+    );
+    const stderrLogs: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
+    try {
+      renderError(wrap(refusal), "json");
+    } finally {
+      console.error = originalError;
+    }
+    const parsed = JSON.parse(stderrLogs[0]);
+    assertEquals(parsed.code, "run_initiator_mismatch");
+    assertStringIncludes(parsed.error, "upgrade");
+    assertEquals(parsed.stack, undefined);
+  });
+}

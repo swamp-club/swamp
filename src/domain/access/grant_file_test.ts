@@ -1322,3 +1322,40 @@ grants:
   assertEquals(result.warnings[0].message.includes("workflow grant"), true);
   assertEquals(result.warnings[1].message.includes("'write'"), true);
 });
+
+Deno.test("parseGrantFile: refuses a run or client condition whose types cannot evaluate, and keeps an older one with a warning", () => {
+  const parse = (actions: string, condition: string) =>
+    parseGrantFile(
+      "g.yaml",
+      `grants:\n  - subject: "user:a"\n    effect: deny\n    actions: [${actions}]\n    resource: "workflow:*"\n    condition: '${condition}'\n`,
+      validateGrantCondition,
+    );
+  const refused = parse("approve", "!run.initiator.sub");
+  assertEquals(refused.entries, []);
+  assertStringIncludes(refused.errors[0].message, "cannot evaluate");
+  assertEquals(parse("read", "dyn(client) > 1").errors.length, 1);
+  const older = parse("read", "principal.sub > 1");
+  assertEquals(older.errors, []);
+  assertEquals(older.entries.length, 1);
+  assertStringIncludes(older.warnings[0].message, "cannot evaluate");
+});
+
+Deno.test("parseGrantFile: refuses a condition on the run for any action but approve, and carries condition warnings", () => {
+  const parse = (actions: string, condition: string) =>
+    parseGrantFile(
+      "g.yaml",
+      `grants:\n  - subject: "user:a"\n    effect: deny\n    actions: [${actions}]\n    resource: "workflow:*"\n    condition: '${condition}'\n`,
+      validateGrantCondition,
+    );
+  const self = "principal.sub == run.initiator.sub";
+  assertEquals(parse("approve", self).errors, []);
+  assertStringIncludes(parse("run", self).errors[0].message, "names run");
+  assertStringIncludes(
+    parse("approve, read", self).errors[0].message,
+    "names run",
+  );
+  assertStringIncludes(
+    parse("read", 'client != "direct:cli"').warnings[0].message,
+    "not a security boundary",
+  );
+});

@@ -38,6 +38,12 @@ import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
+import {
+  ambiguousGateRefusal,
+  type GateTarget,
+  reopenedGateRefusal,
+  waitingGate,
+} from "./gate_refusals.ts";
 import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
 import { settleOrphanedNestedRun } from "../../domain/workflows/orphaned_nested_run.ts";
 import type { EvaluatedWorkflowLookup } from "../../domain/workflows/abort_settlement.ts";
@@ -56,6 +62,7 @@ export interface WorkflowApproveData {
   stepName: string;
   approved: true;
   decidedBy: string;
+  client?: string;
   reason: string | null;
   allGatesDecided: boolean;
   /**
@@ -71,7 +78,7 @@ export type WorkflowApproveEvent =
   | { kind: "completed"; data: WorkflowApproveData }
   | { kind: "error"; error: SwampError };
 
-export interface WorkflowApproveInput {
+export interface WorkflowApproveInput extends GateTarget {
   workflowIdOrName: string;
   /**
    * look up by id only, so the decision lands on the workflow the caller
@@ -83,10 +90,10 @@ export interface WorkflowApproveInput {
    * is accepted
    */
   expectedName?: string;
-  stepName: string;
   reason?: string;
   runId?: string;
   decidedBy?: string;
+  client?: string;
 }
 
 export interface WorkflowApproveDeps {
@@ -103,6 +110,8 @@ export interface WorkflowApproveDeps {
   fetchMissing?: (
     run: { workflowId: string; runId: string },
   ) => Promise<void>;
+  /** decides the run about to be acted on; set by serve, which replies itself */
+  authorizeRun?: (run: WorkflowRun) => boolean;
 }
 
 export function createWorkflowApproveDeps(
@@ -145,22 +154,20 @@ async function approveClaimedRun(
   // decided only under the claim of the id as stored
   if (run.id !== claimKey) return { storedAs: run.id };
 
+  // first, on the record this claim holds, before anything here writes
+  if (deps.authorizeRun && !deps.authorizeRun(run)) {
+    return { error: validationFailed("Not authorized to decide this run") };
+  }
+
   const orphaned = await settleOrphanedNestedRun(deps, run, workflow);
   if (orphaned) return { error: orphanedNestedRunError(orphaned) };
 
-  let step:
-    | import("../../domain/workflows/workflow_run.ts").StepRun
-    | undefined;
-  let jobName: string | undefined;
-  for (const job of run.jobs) {
-    const s = job.getStep(input.stepName);
-    // A nested workflow step waiting on its child run is not a gate.
-    if (s && s.status === "waiting_approval" && !s.isNestedWait) {
-      step = s;
-      jobName = job.jobName;
-      break;
-    }
-  }
+  const ambiguous = ambiguousGateRefusal(run, input);
+  if (ambiguous) return { error: ambiguous };
+
+  const gate = waitingGate(run, input);
+  const step = gate?.step;
+  const jobName = gate?.jobName;
   if (!step || !jobName) {
     return {
       error: nestedWaitGateError(run, input.stepName) ??
@@ -169,6 +176,9 @@ async function approveClaimedRun(
         ),
     };
   }
+
+  const reopened = reopenedGateRefusal(step, input);
+  if (reopened) return { error: reopened };
 
   const wfJob = workflow.jobs.find((j) => j.name === jobName);
   const timeout = evaluateApprovalTimeout(
@@ -192,6 +202,7 @@ async function approveClaimedRun(
     approved: true,
     reason: input.reason,
     decidedBy,
+    ...(input.client !== undefined ? { client: input.client } : {}),
     decidedAt: new Date().toISOString(),
   });
   step.succeed();
@@ -279,6 +290,7 @@ export async function* workflowApprove(
             stepName: input.stepName,
             approved: true,
             decidedBy,
+            ...(input.client !== undefined ? { client: input.client } : {}),
             reason: input.reason ?? null,
             allGatesDecided,
             ...(awaitingParent ? { awaitingParent } : {}),

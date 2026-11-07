@@ -117,6 +117,7 @@ import {
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { vaultReferenceText } from "../secrets/run_sensitive_values.ts";
 import { argumentParseContext } from "../untrusted_parse.ts";
+import { RESOURCE_ATTRIBUTE_CAP_BYTES } from "./resource_attribute_budget.ts";
 import {
   type SecretOccurrences,
   secretOccurrencesOf,
@@ -895,6 +896,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   workflowGateService?:
     import("./workflow_gate_service.ts").WorkflowGateService;
 
+  constructor(
+    private readonly resourceAttributeCapBytes = RESOURCE_ATTRIBUTE_CAP_BYTES,
+  ) {}
+
   execute(
     definition: Definition,
     method: MethodDefinition,
@@ -934,7 +939,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       argsResult.data,
       context.redactor,
     );
-    if (onArgumentsValidated) await onArgumentsValidated();
+    if (onArgumentsValidated) {
+      await withSpan(
+        "swamp.method.arguments_validated",
+        {},
+        () => onArgumentsValidated(),
+      );
+    }
     const secretBag = context.vaultSecrets;
 
     // globalArgs is wrapped in a Proxy that throws a clear error when the
@@ -2089,6 +2100,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             methodName,
             this.modelInvocationService,
             this.workflowGateService,
+            this.resourceAttributeCapBytes,
           );
           const executionResult = await withSpan("swamp.method.execute", {
             "model.type": context.modelType.normalized,

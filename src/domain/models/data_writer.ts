@@ -27,12 +27,17 @@ import {
   RESERVED_TAG_PREFIX,
 } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
-import { RECORD_KIND_TAG } from "../data/data.ts";
+import {
+  RECORD_KIND_TAG,
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../data/data.ts";
 import type {
   DeferredWriteReceipt,
   UnifiedDataRepository,
 } from "../data/repositories.ts";
 import type { ModelType } from "./model_type.ts";
+import type { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import type {
   DataHandle,
@@ -1126,6 +1131,7 @@ export function createResourceWriter(
   deferred = false,
   os: typeof Deno.build.os = Deno.build.os,
   outputNames?: ExecutionOutputNames,
+  attributeBudget?: ResourceAttributeBudget,
 ): {
   writeResource: (
     specName: string,
@@ -1139,6 +1145,7 @@ export function createResourceWriter(
   const handles: DataHandle[] = [];
   const deferredReceipts: DeferredWriteReceipt[] = [];
   const portabilityWarned = new Set<string>();
+  let attributesOmittedLogged = false;
   const assertWriteTagsUnreserved = writeTagsGuard(
     modelType,
     definitionTags,
@@ -1281,6 +1288,9 @@ export function createResourceWriter(
 
     // Stamped after every override, so only the writer sets it.
     resolvedTags[RECORD_KIND_TAG] = "resource";
+    if (spec.display === false) {
+      resolvedTags[SUMMARY_DISPLAY_TAG] = SUMMARY_DISPLAY_HIDDEN;
+    }
 
     claimed.settle = outputNames?.claim(instanceName, "resource", specName);
 
@@ -1414,7 +1424,15 @@ export function createResourceWriter(
     );
 
     const handle = await writer.writeText(serialized);
-    handle.attributes = { ...data };
+    if (!attributeBudget || attributeBudget.admit(handle.size)) {
+      handle.attributes = { ...data };
+    } else if (!attributesOmittedLogged) {
+      attributesOmittedLogged = true;
+      writerLogger.debug(
+        "Resource attributes past {cap} bytes in this run are left off their handles, starting at {specName} {name}",
+        { cap: attributeBudget.capBytes, specName, name: instanceName },
+      );
+    }
     handles.push(handle);
     const receipt = writer.getDeferredReceipt();
     if (receipt) {
@@ -2441,6 +2459,9 @@ export function createFileWriterFactory(
     }
 
     resolvedTags[RECORD_KIND_TAG] = "file";
+    if (spec.display === false) {
+      resolvedTags[SUMMARY_DISPLAY_TAG] = SUMMARY_DISPLAY_HIDDEN;
+    }
 
     checkDataNamePortability(
       instanceName,

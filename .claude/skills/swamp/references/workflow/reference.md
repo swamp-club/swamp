@@ -393,6 +393,14 @@ stdin item.
 }
 ```
 
+Each data artifact carries its `attributes` until the run's artifacts pass 16
+MiB of stored JSON; later artifacts carry `attributesOmitted: true` instead. A
+nested workflow step counts only its child's merged `outputs` against the
+budget, not the child's artifacts. A step whose merged `outputs` left any
+resource or child step out carries `outputsPartial: true`. The same budget
+applies to `swamp workflow history get --json`; `swamp workflow history outputs`
+reads every resource. Read the omitted content with `swamp data get`.
+
 ## Workflow History
 
 ### Search Run History
@@ -965,6 +973,10 @@ swamp workflow resume  <workflow-name> --run <run-id> --input authKeyName=deploy
 swamp workflow approvals  # list pending approvals and expired gates with run IDs
 ```
 
+For a decision prepared earlier, such as by a script, pass the gate's
+`suspendedAt` from `swamp workflow approvals --json` as `--suspended-at`. It is
+refused with `gate_reopened` if a resume has asked the gate again since.
+
 A resume `--input` adds inputs the run does not have, such as the vault key name
 of a credential minted during the gate. A value the run already has cannot
 change (`--json` code `resume_input_immutable` locally, `workflow_resume_failed`
@@ -987,12 +999,14 @@ added or moved, or a job added, renamed or removed); the run stays suspended
 until `swamp workflow cancel <wf> --run <id>`, or, for a run `swamp serve`
 started, `swamp workflow cancel --run <id> --server <url>`. The serve cancel
 also clears a serve-started run whose approval gate has timed out, and a run
-left `running` by a serve process that has died. A gate past its `timeout` can
-no longer be approved or rejected: `swamp workflow approvals` lists it in a
-separate expired section with the cancel command for its run (an `expired` array
-in `--json`), and the dashboard's Approvals & Signals view has a Cancel button
-for it. If it answers that the run was not cancelled, the reply says what still
-holds it. See
+left `running` by a serve process that has died. It needs `run` on the run's
+workflow, or admin; a caller refused gets the same "No cancellable" reply as a
+missing run, and `workflow approvals --json` says per run in `canCancel`. A gate
+past its `timeout` can no longer be approved or rejected:
+`swamp workflow approvals` lists it in a separate expired section with the
+cancel command for its run (an `expired` array in `--json`), and the dashboard's
+Approvals & Signals view has a Cancel button for it. If it answers that the run
+was not cancelled, the reply says what still holds it. See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **`wait_for_signal`** - Suspend the workflow until a JSON message arrives or a

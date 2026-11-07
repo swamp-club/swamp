@@ -229,6 +229,13 @@ and returns `{status, txid, replicated_txid}`. `status` is `synced` or
   _started after the commit returned_ comes back with status `synced` or
   `no_change` and `replicated_txid >= txid`. One call confirms every commit
   before it, so a burst of commits costs one sync.
+- **One transaction short is not a failure.** Litestream 0.5.17 reads `txid`
+  after its wait returns (`Store.SyncDB`), so a write its monitor picked up in
+  that gap answers `txid` N with `replicated_txid` N-1 while the commit asked
+  about is covered. swamp syncs again and accepts the first later answer whose
+  `replicated_txid` reaches the first answer's `txid`; the retries share the one
+  sync deadline, and only when it passes does the sync fail and the sidecar get
+  replaced (swamp-club#4432).
 - A forced sync costs one LTX upload: 9–15 ms on local emulators, about 44 ms
   with a warm connection and 30 ms RTT, and about 165 ms on a cold per-command
   connection (see the startup table).
@@ -988,7 +995,18 @@ clears their list (swamp-club#3337), on start and every hour. This is the one
 change that is live on filesystem-v3 serve today, and it changes no file
 content. A systemd-managed serve needs `KillMode=mixed` or `process`: under the
 default `control-group` the detached supervisor and Litestream are signalled
-with serve and race its closing sync.
+with serve, within about 1 ms, and Litestream exits (after its own final sync)
+before serve's closing sync runs. The unit `serve daemon enable` writes sets
+`KillMode=mixed`. For a unit swamp does not write, or a container that
+signals every process, serve skips its closing compaction once the sidecar is
+gone, so it commits nothing no replica holds, and confirms without a sidecar:
+nothing committed since the last confirmed sync needs no check, and otherwise
+it restores the replica into a temp file and passes only if the restored commit
+store reaches the local high-water mark. It never starts a sidecar or lets go
+of its hold or lease for this, so no follower can take over in the middle of
+it. Comparing Litestream's local LTX position with the WAL does not work here:
+with Litestream gone, serve's last connection close checkpoints and deletes
+`commits.db-wal` before the closing sync (swamp-club#4432).
 
 **Measured** on macOS arm64 with the compiled binary and a file replica:
 

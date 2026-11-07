@@ -19,6 +19,8 @@
 
 import { z } from "zod";
 import {
+  SERVE_CAPABILITY_GATE_ATTEMPT,
+  SERVE_CAPABILITY_HTTP_ACTIONS,
   SERVE_CAPABILITY_LITERAL_INPUTS,
   SERVE_CAPABILITY_RESUME_FROM_JOB,
   SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
@@ -64,6 +66,10 @@ import {
 } from "../domain/serve_audit/audit_hmac.ts";
 import type { AuditSubscriptionFilter } from "./audit_sinks/websocket_sink.ts";
 import { formatCefLine } from "./audit_sinks/cef_formatter.ts";
+import {
+  AUDIT_CSV_HEADER,
+  formatAuditCsvRow,
+} from "./audit_sinks/csv_formatter.ts";
 import {
   GIT_SHA as SERVER_GIT_SHA,
   VERSION as SERVER_VERSION,
@@ -164,6 +170,7 @@ import {
   handleAccessReload,
   handleAccessTokenList,
   handleAccessTokenMint,
+  handleAccessTokenReveal,
   handleAccessTokenRevoke,
   handleAccessTokenRotate,
   withServerTokenWriteLock,
@@ -218,6 +225,7 @@ import {
   connectionActorIdentity,
   type ConnectionContext,
   emitRunCancelAudit,
+  getConnectionClient,
   getConnectionLoginIdentity,
   getConnectionSourceIp,
   isAuthorized,
@@ -240,7 +248,7 @@ export {
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
-import { redactingFor } from "./handlers/nested_run_redaction.ts";
+import { runStreamFor } from "./handlers/run_data_attributes.ts";
 import { followerRefusal } from "./follower_requests.ts";
 import { isPeerSocket, PEER_REQUESTS } from "./peer_auth.ts";
 import {
@@ -256,6 +264,11 @@ export type { ConnectionContext } from "./handlers/shared.ts";
 
 export const MAX_ACTIVE_REQUESTS = 100;
 const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
+
+const SignalIdempotencyKeySchema = z.string()
+  .max(SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH)
+  .refine(isIdempotencyKey, `must be ${IDEMPOTENCY_KEY_FORM}`)
+  .optional();
 
 const WorkflowRunRequestSchema = z.object({
   type: z.literal("workflow.run"),
@@ -277,6 +290,7 @@ const WorkflowRunRequestSchema = z.object({
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
     noSupersede: z.boolean().optional(),
+    idempotencyKey: SignalIdempotencyKeySchema,
     lockHolderTokens: z.string().max(MAX_FORWARDED_LOCK_TOKENS_LENGTH)
       .optional(),
   }),
@@ -819,6 +833,8 @@ const WorkflowHistoryGetRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     workflowIdOrName: z.string(),
+    allAttributes: z.boolean().optional(),
+    exactRun: z.boolean().optional(),
   }),
 });
 
@@ -891,6 +907,9 @@ const WorkflowApproveRequestSchema = z.object({
   payload: z.object({
     workflowIdOrName: z.string(),
     stepName: z.string(),
+    jobName: z.string().optional(),
+    strictGate: z.boolean().optional(),
+    suspendedAt: z.string().max(64).optional(),
     reason: z.string().optional(),
     runId: z.string().optional(),
     decidedBy: z.string().max(256).optional(),
@@ -903,6 +922,9 @@ const WorkflowRejectRequestSchema = z.object({
   payload: z.object({
     workflowIdOrName: z.string(),
     stepName: z.string(),
+    jobName: z.string().optional(),
+    strictGate: z.boolean().optional(),
+    suspendedAt: z.string().max(64).optional(),
     reason: z.string().optional(),
     runId: z.string().optional(),
     decidedBy: z.string().max(256).optional(),
@@ -912,11 +934,6 @@ const WorkflowRejectRequestSchema = z.object({
 // a wait ID, when present, is the address and strips other fields; only a UUID
 // is accepted, via normalizeWaitId as HTTP and CLI do. Without one, workflow
 // and key are the address, only bounded here
-const SignalIdempotencyKeySchema = z.string()
-  .max(SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH)
-  .refine(isIdempotencyKey, `must be ${IDEMPOTENCY_KEY_FORM}`)
-  .optional();
-
 const WorkflowSignalRequestSchema = z.object({
   type: z.literal("workflow.signal"),
   id: z.string().min(1).max(256),
@@ -983,6 +1000,7 @@ const WorkflowResumeRequestSchema = z.object({
     runId: z.string().optional(),
     from: z.string().optional(),
     fromJob: z.string().optional(),
+    suspendedOnly: z.boolean().optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     traceparent: z.string().optional(),
     tracestate: z.string().optional(),
@@ -1271,6 +1289,14 @@ const AccessTokenMintRequestSchema = z.object({
   }),
 });
 
+const AccessTokenRevealRequestSchema = z.object({
+  type: z.literal("access.token.reveal"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+  }),
+});
+
 const ModelEditRequestSchema = z.object({
   type: z.literal("model.edit"),
   id: z.string().min(1).max(256),
@@ -1528,6 +1554,7 @@ const ServeConfigRequestSchema = z.object({
 const ServerVersionRequestSchema = z.object({
   type: z.literal("server.version"),
   id: z.string().min(1).max(256),
+  payload: z.object({ leader: z.boolean().optional() }).optional(),
 });
 
 const ServerRequestSchema = z.discriminatedUnion("type", [
@@ -1632,6 +1659,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AccessTokenRevokeRequestSchema,
   AccessTokenRotateRequestSchema,
   AccessTokenMintRequestSchema,
+  AccessTokenRevealRequestSchema,
   ModelEditRequestSchema,
   ModelTypeDescribeRequestSchema,
   ModelTypeSearchRequestSchema,
@@ -2021,7 +2049,11 @@ export function handleMessage(
   // a follower takes no write and runs nothing: it forwards with the caller's
   // credential, or refuses when no leader is reachable; before the handler runs
   // so no step's side effect happens first
-  const notLeader = followerRefusal(request.type, ctx.followerGate);
+  const notLeader = followerRefusal(
+    request.type,
+    ctx.followerGate,
+    request.type === "server.version" && request.payload?.leader === true,
+  );
   if (
     notLeader !== undefined && !notLeader.reads &&
     forwarderFor(socket, ctx.leaderLink, ctx.feedBarrier)?.forward(
@@ -2066,6 +2098,7 @@ export function handleMessage(
       methodName,
       resolvedUserNames: ctx.resolvedUserNames,
       actor: connectionActorIdentity(socket, principal, ctx),
+      client: getConnectionClient(socket),
       socket,
     };
   }
@@ -2103,6 +2136,8 @@ export function handleMessage(
                 SERVE_CAPABILITY_LITERAL_INPUTS,
                 SERVE_CAPABILITY_RESUME_FROM_JOB,
                 SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
+                SERVE_CAPABILITY_HTTP_ACTIONS,
+                SERVE_CAPABILITY_GATE_ATTEMPT,
               ],
             },
           }),
@@ -2566,8 +2601,6 @@ export function handleMessage(
             outcome: request.payload.outcome,
             resource: request.payload.resource,
           };
-          const csvHeader =
-            "id,timestamp,instanceId,category,action,stage,outcome,principalKind,principalId,initiatedBy,sourceIp,requestId,resourceKind,resourceName,decision.effect,decision.grantId,detail";
           const cefOpts = ctx.auditNamespace
             ? { namespace: ctx.auditNamespace }
             : undefined;
@@ -2608,41 +2641,9 @@ export function handleMessage(
                 },
               });
             } else {
-              const csvRows = sorted.map((e) => {
-                const fields = [
-                  e.id,
-                  e.timestamp,
-                  e.instanceId,
-                  e.category,
-                  e.action,
-                  e.stage,
-                  e.outcome,
-                  e.principalKind,
-                  e.principalId,
-                  e.initiatedBy,
-                  e.sourceIp,
-                  e.requestId,
-                  e.resourceKind,
-                  e.resourceName,
-                  e.decision?.effect ?? "",
-                  e.decision?.grantId ?? "",
-                  e.detail ?? "",
-                ];
-                return fields.map((f) => {
-                  let s = String(f);
-                  if (/^[=+\-@\t\r]/.test(s)) {
-                    s = `\t${s}`;
-                  }
-                  if (
-                    s.includes(",") || s.includes('"') || s.includes("\n")
-                  ) {
-                    return `"${s.replace(/"/g, '""')}"`;
-                  }
-                  return s;
-                }).join(",");
-              });
+              const csvRows = sorted.map(formatAuditCsvRow);
               const csvData = totalCount === sorted.length
-                ? [csvHeader, ...csvRows].join("\n")
+                ? [AUDIT_CSV_HEADER, ...csvRows].join("\n")
                 : csvRows.join("\n");
               send(socket, {
                 type: "audit.export",
@@ -3951,6 +3952,19 @@ export function handleMessage(
         auditOpts("access", "access", request.payload.name),
       );
       break;
+    case "access.token.reveal":
+      task = audited(
+        handleAccessTokenReveal(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "access", request.payload.name),
+      );
+      break;
     case "model.edit":
       task = audited(
         confirmed(() =>
@@ -4466,6 +4480,7 @@ async function handleCancelRun(
       resourceName: requestId,
       principal,
       loginIdentity: getConnectionLoginIdentity(socket),
+      client: getConnectionClient(socket),
       sourceIp: getConnectionSourceIp(socket),
       requestId,
       outcome: cancelled ? "success" : "failure",
@@ -4683,9 +4698,13 @@ async function handleRunAttach(
     requestId,
     controller,
     payload.afterSeq ?? 0,
-    run.kind === "method-run"
-      ? undefined
-      : redactingFor(ctx, socket, principal),
+    run.kind === "method-run" ? undefined : runStreamFor(
+      ctx,
+      socket,
+      principal,
+      run.completedRun ?? {},
+      controller.signal,
+    ),
   );
 }
 

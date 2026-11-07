@@ -32,6 +32,9 @@ import {
   GLOBAL_LOCK_KEY,
   registerDatastoreSync,
   registerDatastoreSyncNamed,
+  releaseLocksOnInterrupt,
+  releaseRegisteredLocks,
+  suppressSyncExitOnSignal,
 } from "./datastore_sync_coordinator.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import {
@@ -780,4 +783,70 @@ Deno.test("registerDatastoreSyncNamed: slow global lock on a datastore no other 
 Deno.test("registerDatastoreSyncNamed: slow lock without a scope is silent", async () => {
   const warnings = await slowLockWarnings(`none-${crypto.randomUUID()}`, {});
   assertEquals(warnings, []);
+});
+
+Deno.test("releaseLocksOnInterrupt: releases no lock while a command owns shutdown", async () => {
+  const lock = new FakeLock();
+  const key = `interrupt-suppressed-${crypto.randomUUID()}`;
+  await registerDatastoreSyncNamed(key, { lock, label: "@test/interrupt" });
+  const suppress = suppressSyncExitOnSignal();
+  try {
+    releaseLocksOnInterrupt();
+    await Promise.resolve();
+    assertEquals(lock.releaseCount, 0);
+    assertEquals(getRegisteredLockKeys().includes(key), true);
+  } finally {
+    suppress.dispose();
+    await flushDatastoreSyncNamed(key);
+  }
+  assertEquals(lock.releaseCount, 1);
+});
+
+Deno.test("registerDatastoreSyncNamed: an aborted lock wait registers nothing", async () => {
+  const lock = new FakeLock();
+  const seen: Array<AbortSignal | undefined> = [];
+  lock.acquire = (signal?: AbortSignal) => {
+    seen.push(signal);
+    return Promise.reject(signal?.reason);
+  };
+  const abort = new AbortController();
+  abort.abort(new Error("run cancelled"));
+  const key = `aborted-wait-${crypto.randomUUID()}`;
+
+  await assertRejects(
+    () =>
+      registerDatastoreSyncNamed(key, {
+        lock,
+        label: "@test/aborted",
+        signal: abort.signal,
+      }),
+    Error,
+    "run cancelled",
+  );
+
+  assertEquals(seen, [abort.signal]);
+  assertEquals(getRegisteredLockKeys().includes(key), false);
+  assertEquals(lock.releaseCount, 0);
+});
+
+Deno.test("releaseRegisteredLocks: releases every registered lock, and stops waiting on one that hangs at its bound", async () => {
+  const lock = new FakeLock();
+  const hanging = new FakeLock();
+  const never = Promise.withResolvers<void>();
+  hanging.release = () => never.promise;
+  const key = `force-exit-${crypto.randomUUID()}`;
+  const hangingKey = `force-exit-hang-${crypto.randomUUID()}`;
+  await registerDatastoreSyncNamed(key, { lock, label: "@test/force" });
+  await registerDatastoreSyncNamed(hangingKey, {
+    lock: hanging,
+    label: "@test/force-hang",
+  });
+  try {
+    await releaseRegisteredLocks(10);
+    assertEquals(lock.releaseCount, 1);
+  } finally {
+    never.resolve();
+    await flushDatastoreSyncNamed(key);
+    await flushDatastoreSyncNamed(hangingKey);
+  }
 });

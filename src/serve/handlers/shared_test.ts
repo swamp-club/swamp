@@ -2890,3 +2890,36 @@ Deno.test("send: a reply over the default 64 MiB frame limit is refused, not sen
   assertEquals(sent.length, 1);
   assertEquals(sent[0].type, "error");
 });
+
+Deno.test("terminateTokenSessions: the audit event names the client of the request ending the sessions", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const events: AuditEvent[] = [];
+  const session = makeClosableSocket("198.51.100.7");
+  setConnectionCollectives(session.socket, [], [], "user:alice");
+  setConnectionToken(session.socket, {
+    name,
+    createdAt: MINT_1,
+    principalId: "user:alice",
+  });
+  terminate(name, {
+    client: "integration:ops-slack",
+    audit: { instanceId: "i-1", emitter: { emit: (e) => events.push(e) } },
+  });
+  assertEquals(events[0].client, "integration:ops-slack");
+});
+
+Deno.test("terminateTokenSessions: serve ending sessions on its own names no client", () => {
+  const name = `tok-${crypto.randomUUID()}`;
+  const events: AuditEvent[] = [];
+  const session = makeClosableSocket("198.51.100.7");
+  setConnectionCollectives(session.socket, [], [], "user:alice");
+  setConnectionToken(session.socket, {
+    name,
+    createdAt: MINT_1,
+    principalId: "user:alice",
+  });
+  terminate(name, {
+    audit: { instanceId: "i-1", emitter: { emit: (e) => events.push(e) } },
+  });
+  assertEquals("client" in events[0], false);
+});

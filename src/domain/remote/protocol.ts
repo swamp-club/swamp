@@ -612,6 +612,7 @@ export const DISPATCH_SECRET_LOAD_REFUSALS = [
   "not_in_dispatch",
   "resource_claim_refused",
   "vault_access_denied",
+  "secret_not_found",
   "vault_error",
   "access_ended",
   "audit_unavailable",

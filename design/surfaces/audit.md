@@ -17,7 +17,10 @@ actions to swamp workflow runs.
   `normalizeHookInput()` dispatches on `HookTool` to `normalizeClaude`,
   `normalizeCursor`, `normalizeKiro`, `normalizeOpenCode` and
   `normalizeCopilot`. Each documents its payload shape in a comment; only the
-  Copilot one links an upstream contract URL. New tools are added here.
+  Copilot one links an upstream contract URL. New tools are added here. Claude's
+  normalizer takes both of Claude Code's shell tools, `Bash` and `PowerShell`
+  (on by default on Windows, opt-in elsewhere); both carry the command in
+  `tool_input.command`.
 
 - **JSONL repository**
   (`src/infrastructure/persistence/jsonl_audit_repository.ts`): writes one row
@@ -44,6 +47,30 @@ actions to swamp workflow runs.
   them is an initialized repository the row is dropped — the hook never
   creates a `.swamp/` directory, so a hook firing in a git worktree or other
   non-repo directory cannot leave a half-initialized repository behind.
+
+- **`swamp audit install --user` / `uninstall --user`**
+  (`src/cli/commands/audit_install.ts`, `src/domain/audit/user_hook.ts`): add
+  or remove swamp's Claude audit hook in the user's Claude Code settings,
+  `settings.json` in `CLAUDE_CONFIG_DIR` when set, else in `~/.claude`. Claude Code loads project hooks only from the
+  folder a session starts in (`.claude/settings.local.json` from the git root,
+  or the start folder on Windows and before Claude Code 2.1.211), so a repo
+  nested below its git root, or one a session starts above, never runs its own
+  hook. The user-level hook records calls whose working directory is inside
+  any swamp repo, because recording resolves the repo from the payload's `cwd`
+  and drops rows outside one. A call run from above the repo (a `cd` inside a
+  subshell, or `--repo-dir`) carries the outer `cwd` and is not recorded. The
+  cost is a swamp process for every Bash and PowerShell call in every project,
+  about 0.45 s each, most of it binary startup. Install merges with
+  `mergeAuditHooks` like the repo config, keeps every other key, refuses a file
+  that does not parse, and writes through a symlinked file or `.claude` dir to
+  its target so a dotfiles link stays a link. It keeps the file mode, refuses a
+  file owned by another user, and refuses when the file changes between its
+  read and the rename. Uninstall removes only entries
+  equal to one swamp wrote. Claude Code runs an identical handler defined in
+  several settings files once, even under different matchers, so a repo hook
+  plus the user hook records each call once; two different audit handlers
+  both run, which `doctor audit` flags. `--user` is the only scope; the repo hook belongs to `swamp repo
+  upgrade`.
 
 - **`swamp audit`**: shows the merged timeline. With `--server` it sends
   `audit.timeline` to `swamp serve`, which needs `admin` on `access:audit`. Its
@@ -114,7 +141,12 @@ runs `swamp audit record --from-hook` in any form (a backgrounded wrapper, an
 extra `timeout`) keeps that hook, and swamp's own entry is not added beside it:
 two hooks would record every tool call twice. For Claude, only entries whose
 matcher covers `Bash` count, judged by Claude Code's own matcher rules (a list
-of exact names, or an unanchored regex). Where an earlier upgrade did add
+of exact names, or an unanchored regex). Swamp's Claude entry matches
+`Bash|PowerShell`; before the merge, an entry equal to the Bash-only one earlier
+versions wrote is replaced in place, since the merge would otherwise count it as
+an existing hook and never widen it. A user's own Bash-only variant is kept.
+Swamp's Claude allow-list grants `Bash(swamp ...)` rules only, so swamp calls
+through the PowerShell tool still ask for permission. Where an earlier upgrade did add
 swamp's entry next to a user's variant, the merge removes swamp's entry again.
 Only entries whose serialised JSON equals swamp's own entry are ever removed;
 every other entry, including one that differs from swamp's only in key order,

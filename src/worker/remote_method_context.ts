@@ -60,6 +60,10 @@ import {
   shipsReferencesOnly,
 } from "../domain/remote/protocol.ts";
 import { SecretLoader, secretReadKey } from "../domain/vaults/secret_loader.ts";
+import {
+  isSecretNotFoundError,
+  SecretNotFoundError,
+} from "../domain/vaults/secret_not_found_error.ts";
 import type { DataPlaneClient, RemoteDataHandle } from "./data_plane_client.ts";
 
 const logger = getSwampLogger(["worker", "method-context"]);
@@ -295,13 +299,21 @@ function createRemoteVaultService(
 
   const proxy = {
     get: async (vaultName: string, secretKey: string) => {
-      const value = claimsThroughRoute
-        ? await loadSecret(vaultName, secretKey)
-        : (await resolveSecret({
-          vaultName,
-          secretKey,
-          ...(resource ? { resource } : {}),
-        })).value as string;
+      let value: string | undefined;
+      try {
+        value = claimsThroughRoute
+          ? await loadSecret(vaultName, secretKey)
+          : (await resolveSecret({
+            vaultName,
+            secretKey,
+            ...(resource ? { resource } : {}),
+          })).value as string;
+      } catch (error) {
+        if (isSecretNotFoundError(error)) {
+          throw new SecretNotFoundError(vaultName, secretKey, { cause: error });
+        }
+        throw error;
+      }
       // the redactor learns the value before the method does, so output and
       // console lines are scrubbed before they leave the worker
       if (typeof value === "string") redactor.addSecret(value);

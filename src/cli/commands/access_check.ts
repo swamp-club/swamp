@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { explainedForAction } from "../../domain/access/access_resources.ts";
+import { clientToString, parseClient } from "../../domain/access/client.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -60,6 +62,37 @@ import type { AccessCheckResult } from "../../presentation/renderers/access_chec
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** a partial run would make a condition error, and a deny that errors does not fire */
+function simulatedFields(
+  raw: string[] | undefined,
+): Record<string, unknown> {
+  const fields = parseFieldFlags(raw);
+  if (!Object.hasOwn(fields, "run")) return fields;
+  const { initiator, serveDriven, ...other } = fields.run as {
+    initiator?: { sub?: unknown; [key: string]: unknown };
+    serveDriven?: unknown;
+  };
+  const sub = initiator?.sub;
+  const { sub: _sub, ...otherInitiator } = initiator ?? {};
+  if (
+    typeof sub !== "string" || Object.keys(other).length > 0 ||
+    Object.keys(otherInitiator).length > 0 ||
+    (serveDriven !== undefined && serveDriven !== "true" &&
+      serveDriven !== "false")
+  ) {
+    throw new UserError(
+      "--field run needs run.initiator.sub, and may add run.serveDriven=true or false; a run with no initiator is refused on the server",
+    );
+  }
+  return {
+    ...fields,
+    run: {
+      initiator: { kind: "user", id: sub, sub },
+      serveDriven: serveDriven !== "false",
+    },
+  };
+}
+
 export const accessCheckCommand = new Command()
   .name("check")
   .description(
@@ -101,6 +134,10 @@ export const accessCheckCommand = new Command()
     "Method to check against method-scoped grants: a behavior method, or a vault verb such as get or put",
   )
   .option(
+    "--client <client:string>",
+    "Client to simulate for CEL conditions on client, as <kind>:<id>; omitted reads as direct; local checks only",
+  )
+  .option(
     "--collectives <collectives:string>",
     "Comma-separated collective memberships to simulate for collective: grants and CEL conditions (principal.collectives)",
   )
@@ -138,6 +175,11 @@ export const accessCheckCommand = new Command()
       if (options.field && (options.field as string[]).length > 0) {
         throw new UserError(
           "--field is not supported with --server: the server evaluates conditions against its own resource context",
+        );
+      }
+      if (options.client !== undefined) {
+        throw new UserError(
+          "--client is not supported with --server: the server reads the client from the caller's own session and a request cannot name one; check locally with --client",
         );
       }
       if (options.groups) {
@@ -211,6 +253,23 @@ export const accessCheckCommand = new Command()
       );
     }
     const action: Action = actionResult.data;
+    if (
+      (options.field as string[] | undefined)?.some((f) =>
+        f.startsWith("client=")
+      )
+    ) {
+      throw new UserError(
+        "--field client is not read: a resource field cannot stand in for the client; use --client",
+      );
+    }
+    let client: string | undefined;
+    if (options.client !== undefined) {
+      try {
+        client = clientToString(parseClient(options.client as string));
+      } catch (error) {
+        throw new UserError((error as Error).message);
+      }
+    }
     const resource = parseResourceFlag(options.on as string);
 
     const collectives = options.collectives
@@ -237,6 +296,7 @@ export const accessCheckCommand = new Command()
         principal,
         collectives,
         groups,
+        client,
       };
       // resolve the resource from the repo as serve does, so a grant on its
       // stored type or a condition on its tags applies.
@@ -245,7 +305,7 @@ export const accessCheckCommand = new Command()
         resource.kind,
         resource.pattern,
         {
-          ...parseFieldFlags(options.field as string[] | undefined),
+          ...simulatedFields(options.field as string[] | undefined),
           ...(options.method ? { methodName: options.method as string } : {}),
         },
         (error) => {
@@ -262,7 +322,7 @@ export const accessCheckCommand = new Command()
       const decisions = service.explain(
         accessPrincipal,
         action,
-        accessResource,
+        explainedForAction(accessResource, action),
       );
 
       const result = {
@@ -272,6 +332,7 @@ export const accessCheckCommand = new Command()
         collectives,
         decisions,
         ...(options.method ? { method: options.method as string } : {}),
+        ...(client !== undefined ? { client } : {}),
       };
 
       const renderer = createAccessCheckRenderer(ctx.outputMode);

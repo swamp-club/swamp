@@ -19,7 +19,23 @@
 
 import { Environment } from "cel-js";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
-import { CONDITION_FIELDS } from "../../domain/access/condition_fields.ts";
+import type { Action } from "../../domain/access/action.ts";
+import {
+  type ClientLiteralFinding,
+  clientLiteralFinding,
+  clientPrefixFinding,
+} from "../../domain/access/client.ts";
+import {
+  BINDING_MACROS,
+  CONDITION_FIELDS,
+  conditionFieldsUnavailableForActions,
+  type ConditionFindingsReader,
+  PRINCIPAL_CHECKED_AS,
+  referencedConditionFields,
+  unguardedTagMessage,
+  unknownRunPaths,
+} from "../../domain/access/condition_fields.ts";
+import type { Effect } from "../../domain/access/effect.ts";
 import type {
   ConditionTypeLiteral,
   ConditionTypeLiteralReader,
@@ -38,6 +54,7 @@ export const MAX_CONDITION_COST = 500;
 export interface GrantConditionValidationResult {
   valid: boolean;
   error?: string;
+  warnings?: readonly string[];
 }
 
 interface ASTNode {
@@ -249,9 +266,168 @@ function createGrantConditionEnvironment(kind: ResourceKind): Environment {
   return env;
 }
 
+const checkEnvironments = new Map<ResourceKind, Environment>();
+
+/** used only to check a condition; decisions evaluate in the untyped environment */
+function checkEnvironment(kind: ResourceKind): Environment {
+  let env = checkEnvironments.get(kind);
+  if (env) return env;
+  env = new Environment({ unlistedVariablesAreDyn: false });
+  registerArithmeticOverloads(env);
+  for (const field of CONDITION_FIELDS[kind]) {
+    const checkedAs = field.checkedAs ?? field.type;
+    if (typeof checkedAs === "string") {
+      env.registerVariable(field.name, checkedAs);
+    } else {
+      env.registerVariable({ name: field.name, schema: { ...checkedAs } });
+    }
+  }
+  env.registerVariable({
+    name: "principal",
+    schema: { ...PRINCIPAL_CHECKED_AS },
+  });
+  checkEnvironments.set(kind, env);
+  return env;
+}
+
+const FIELD_TYPES_HINT =
+  "run.initiator.kind, .id and .sub, principal.sub, client and tag values are strings, run.serveDriven is a bool, and principal.groups and principal.collectives are lists of strings; for example principal.sub == run.initiator.sub";
+
+// each fails at decision time for most strings, whatever the types say
+const VALUE_DEPENDENT_CONVERSIONS: ReadonlySet<string> = new Set([
+  "bool",
+  "double",
+  "duration",
+  "int",
+  "timestamp",
+  "uint",
+]);
+
+const FIELDS_REFUSED_WHEN_WRITTEN = ["run", "client"];
+
+function namesFieldRefusedWhenWritten(
+  node: unknown,
+  kind: ResourceKind,
+): boolean {
+  return referencedConditionFields(node, kind).some((name) =>
+    FIELDS_REFUSED_WHEN_WRITTEN.includes(name)
+  );
+}
+
+/** a dyn() hides from the type check whatever it wraps */
+function typeCheckEvasion(
+  node: ASTNode,
+  kind: ResourceKind,
+): string | undefined {
+  let found: string | undefined;
+  const walk = (current: ASTNode): void => {
+    if (found) return;
+    if (current.op === "call" && Array.isArray(current.args)) {
+      const [name, callArgs] = current.args as [string, unknown];
+      if (name === "dyn") {
+        found =
+          `Condition uses dyn(), which hides the types it needs checked: remove it. ${FIELD_TYPES_HINT}`;
+        return;
+      }
+      if (
+        VALUE_DEPENDENT_CONVERSIONS.has(name) &&
+        namesFieldRefusedWhenWritten(callArgs, kind)
+      ) {
+        found =
+          `Condition converts a run or client value with ${name}(), which fails at decision time: compare the value as it is. ${FIELD_TYPES_HINT}`;
+        return;
+      }
+    }
+    visitChildren(current.args, walk);
+  };
+  walk(node);
+  return found;
+}
+
+function conditionTypeIssue(
+  condition: string,
+  ast: ASTNode,
+  kind: ResourceKind,
+): string | undefined {
+  const checked = checkEnvironment(kind).check(condition);
+  if (!checked.valid) {
+    const [reason] = String(checked.error?.message ?? checked.error).split(
+      "\n",
+    );
+    return `Condition's types cannot evaluate (${reason}): as a deny it refuses whatever it errors on and never fires where it reads false, and as an allow it does not match. ${FIELD_TYPES_HINT}`;
+  }
+  if (namesFieldRefusedWhenWritten(ast, kind)) {
+    const evasion = typeCheckEvasion(ast, kind);
+    if (evasion) return evasion;
+  }
+  if (checked.type !== "bool" && checked.type !== "dyn") {
+    return `Condition gives a ${checked.type}, not true or false, so it never matches: as a deny it never fires, and as an allow it does not match. Write a comparison. ${FIELD_TYPES_HINT}`;
+  }
+  return undefined;
+}
+
+function unguardedTagsOf(ast: ASTNode, kind: ResourceKind): string[] {
+  if (!referencedConditionFields(ast, kind).includes("tags")) return [];
+  const read = new Set<string>();
+  const guarded = new Set<string>();
+  const isTags = (node: unknown): boolean => isTypeVariable(node, "tags");
+  const walk = (node: ASTNode): void => {
+    const { op, args } = node;
+    if (op === "in" && Array.isArray(args) && isTags(args[1])) {
+      const literal = stringValue(args[0]);
+      if (literal !== null) guarded.add(literal);
+    }
+    if (op === "call" && Array.isArray(args) && args[0] === "has") {
+      const [target] = args[1] as unknown[];
+      if (
+        isASTNode(target) && target.op === "." && Array.isArray(target.args) &&
+        isTags(target.args[0]) && typeof target.args[1] === "string"
+      ) {
+        guarded.add(target.args[1]);
+      }
+      return;
+    }
+    if (op === "." && Array.isArray(args) && isTags(args[0])) {
+      if (typeof args[1] === "string") read.add(args[1]);
+      return;
+    }
+    if (op === "[]" && Array.isArray(args) && isTags(args[0])) {
+      const literal = stringValue(args[1]);
+      if (literal !== null) read.add(literal);
+    }
+    visitChildren(args, walk);
+  };
+  walk(ast);
+  return [...read].filter((tag) => !guarded.has(tag));
+}
+
+/**
+ * reports, never decides, so it reads as nothing for a condition it cannot
+ * parse and never throws: a policy load must survive any stored condition
+ */
+export const readConditionFindings: ConditionFindingsReader = (
+  condition,
+  kind,
+) => {
+  if (condition.length > MAX_CONDITION_LENGTH) return { unguardedTags: [] };
+  try {
+    const parsed = checkEnvironment(kind).parse(condition) as unknown as {
+      ast: ASTNode;
+    };
+    const typeIssue = conditionTypeIssue(condition, parsed.ast, kind);
+    return {
+      ...(typeIssue ? { typeIssue } : {}),
+      unguardedTags: unguardedTagsOf(parsed.ast, kind),
+    };
+  } catch {
+    return { unguardedTags: [] };
+  }
+};
+
 export function validateGrantCondition(
   condition: string,
   resourceKind: ResourceKind,
+  grant?: { readonly actions: readonly Action[]; readonly effect: Effect },
 ): GrantConditionValidationResult {
   if (condition.length > MAX_CONDITION_LENGTH) {
     return {
@@ -319,7 +495,68 @@ export function validateGrantCondition(
     }
   }
 
-  return { valid: true };
+  if (CONDITION_FIELDS[resourceKind].some((f) => f.name === "run")) {
+    const [unknownPath] = unknownRunPaths(parsed.ast);
+    if (unknownPath) {
+      return {
+        valid: false,
+        error:
+          `Condition names ${unknownPath}, which a run does not have: use run.initiator.kind, run.initiator.id, run.initiator.sub or run.serveDriven`,
+      };
+    }
+  }
+
+  const clientFindings: ClientLiteralFinding[] = [];
+  const clientLiterals: ConditionTypeLiteral[] = [];
+  collectTypeLiterals(parsed.ast, "client", clientLiterals);
+  for (const { literal, match } of clientLiterals) {
+    const finding = match === "exact"
+      ? clientLiteralFinding(literal)
+      : match === "prefix"
+      ? clientPrefixFinding(literal)
+      : undefined;
+    if (finding) clientFindings.push(finding);
+  }
+  const neverMatches = clientFindings.find((f) => f.kind === "never-matches");
+  if (neverMatches) return { valid: false, error: neverMatches.message };
+
+  if (grant) {
+    const [unavailable] = conditionFieldsUnavailableForActions(
+      parsed.ast,
+      resourceKind,
+      grant.actions,
+    );
+    if (unavailable) {
+      return {
+        valid: false,
+        error:
+          `Condition names ${unavailable.field}, which a '${unavailable.action}' decision cannot supply: it is available only for ${
+            unavailable.allowed.join(", ")
+          }`,
+      };
+    }
+  }
+
+  const typeIssue = conditionTypeIssue(condition, parsed.ast, resourceKind);
+  if (typeIssue && namesFieldRefusedWhenWritten(parsed.ast, resourceKind)) {
+    return { valid: false, error: typeIssue };
+  }
+
+  const warnings = clientFindings.map((f) => f.message);
+  if (typeIssue) warnings.push(typeIssue);
+  if (grant?.effect === "deny") {
+    const unguarded = unguardedTagsOf(parsed.ast, resourceKind);
+    if (unguarded.length > 0) warnings.push(unguardedTagMessage(unguarded));
+  }
+  if (
+    grant?.effect === "allow" && resourceKind === "vault" &&
+    referencedConditionFields(parsed.ast, resourceKind).includes("client")
+  ) {
+    warnings.push(
+      "A vault allow limits this subject's runs to the vaults it is allowed, whatever its condition, and inside a run client reads as direct, so a condition requiring an integration never matches there",
+    );
+  }
+  return warnings.length > 0 ? { valid: true, warnings } : { valid: true };
 }
 
 function typeVariable(kind: ResourceKind): string | null {
@@ -378,6 +615,14 @@ function collectTypeLiterals(
   }
   if (op === "rcall" && Array.isArray(args)) {
     const [method, receiver, callArgs] = args as [string, unknown, unknown[]];
+    // a comprehension binding this name means its own variable in the body
+    const binder = callArgs?.[0];
+    if (
+      BINDING_MACROS.has(method) && isTypeVariable(binder, variable)
+    ) {
+      collectTypeLiterals(receiver, variable, out);
+      return;
+    }
     const match = TYPE_LITERAL_METHODS[method];
     if (match && isTypeVariable(receiver, variable)) {
       const literal = stringValue(callArgs?.[0]);

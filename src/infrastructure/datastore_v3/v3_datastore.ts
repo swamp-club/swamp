@@ -105,7 +105,11 @@ import {
   SERVE_UPSTREAM_STATE_FILE,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
-import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import {
+  noteServeInitiator,
+  serveInitiatorAt,
+  serveUpstreamAt,
+} from "./serve_upstream_registry.ts";
 import type { OfflineFlushPort } from "./offline_flush.ts";
 import { createQuarantineDeposit } from "./quarantine_deposit.ts";
 import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
@@ -570,6 +574,8 @@ export interface V3Datastore {
   ): Promise<void>;
   /** the read model alone, for a copy just caught up with catchUpForWrite */
   catchUpReadModel?(signal?: AbortSignal): Promise<void>;
+  serveFeedCursor?(): number;
+  sentToServe?(txnId: string): boolean;
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   readonly offlineFlushPort?: OfflineFlushPort;
   readonly serveCopyId?: string;
@@ -666,6 +672,8 @@ interface CheckoutUnits {
 }
 
 const checkoutUnits = new Map<string, CheckoutUnits>();
+
+const MAX_FORWARDED_REMEMBERED = 4096;
 
 /**
  * a sweep runs only under the writer lease, so a writer that may overlap one is
@@ -856,6 +864,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     );
     serveClient.checkAccess(serveAccessCheck(serveState, serveClient.baseUrl));
   }
+  // seeded from the checkout, which an offline command runs on; a catch-up
+  // that reaches serve replaces it
+  if (serveState !== undefined) {
+    try {
+      const stored = serveState.initiator();
+      if (
+        stored !== undefined &&
+        serveInitiatorAt(options.datastorePath) === undefined
+      ) {
+        noteServeInitiator(options.datastorePath, stored);
+      }
+    } catch (readError) {
+      logger
+        .debug`Could not read what serve said of run initiators: ${readError}`;
+    }
+  }
   const serveCatchUp = serveClient !== undefined && serveState !== undefined
     ? new ServeCatchUp({
       client: serveClient,
@@ -969,7 +993,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             await batch.discard();
           }
         },
-        mark: (keys, state, reason) => outbox.markState(keys, state, reason),
+        mark: (keys, state, reason, code) =>
+          outbox.markState(keys, state, reason, code),
         settle: (keys) => outbox.settle(keys),
         recordOwnLanded: (key, at, carry) =>
           outbox.recordLandedOffline(
@@ -1056,10 +1081,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const faultedSink = faultsForTesting?.wrapSink?.(baseSink) ?? baseSink;
   // noted before it is sent: serve's feed can bring the commit to a catch-up
   // before its reply does. One that never lands never comes back in the feed
+  const forwarded = new Set<string>();
   const sink: OutboxCommitSink = serveSink === undefined ? faultedSink : {
     ...faultedSink,
     append: (commit) => {
       units.sent.add(commit.txnId);
+      forwarded.add(commit.txnId);
+      // a long-lived process keeps only its recent sends
+      if (forwarded.size > MAX_FORWARDED_REMEMBERED) {
+        forwarded.delete(forwarded.values().next().value!);
+      }
       return faultedSink.append(commit);
     },
   };
@@ -1068,6 +1099,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
    * so; a write is refused
    */
   let contactRecorded = false;
+  let reachedServe = false;
   const catchUpFromServe = async (
     signal: AbortSignal,
     mode: "read" | "write",
@@ -1079,6 +1111,16 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     if (serveOfflineAt(options.datastorePath) !== undefined) return;
     try {
       await serveCatchUp.catchUp(signal);
+      reachedServe = true;
+      // a catch-up that read serve's feed heard serve, whatever its features
+      const initiator = serveClient!.initiatorMode() ?? { kind: "not-checked" };
+      noteServeInitiator(options.datastorePath, initiator);
+      try {
+        serveState?.recordInitiator(initiator);
+      } catch (recordError) {
+        logger
+          .debug`Could not record what serve said of run initiators: ${recordError}`;
+      }
       // Once per command: the last contact, and serve's clock then, are what
       // a later offline command judges its leases and times by.
       if (!contactRecorded && serveState !== undefined) {
@@ -1217,7 +1259,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       ? { serveUpstreamStore: serveSink.upstream }
       : {}),
     ...(offlineFlushPort !== undefined ? { offlineFlushPort } : {}),
-    ...(serveState !== undefined ? { serveCopyId: serveState.copyId() } : {}),
+    ...(serveState !== undefined
+      ? {
+        serveCopyId: serveState.copyId(),
+        serveFeedCursor: () => serveState.feedCursor(),
+        sentToServe: (txnId: string) => forwarded.has(txnId),
+      }
+      : {}),
     async catchUp(signal) {
       await catchUpFromServe(signal ?? lifetime.signal, "read");
       await unreachableAsCatchUpError(() =>
@@ -1463,6 +1511,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         configLoaded(partition) {
           readModel.clearConfigBases(unitNamespace.toString(), partition);
         },
+        reachedServe: () =>
+          reachedServe && serveOfflineAt(options.datastorePath) === undefined,
         committedBeforeThrowing(error: unknown): boolean {
           return wasThrownAfterCommit(error);
         },
@@ -2026,8 +2076,12 @@ export async function unreachableAsCatchUpError<T>(
 const DIRECT_APPEND_ATTEMPTS = 3;
 const DIRECT_APPEND_BACKOFF_MS = 250;
 
-/** a commit that may have landed is retried too: it lands the same bytes again */
+/**
+ * a commit that may have landed is retried too: it lands the same bytes again;
+ * serve unreachable is not retried, as the run stops at that commit
+ */
 function isTransientAppendFailure(error: unknown): boolean {
+  if (fromUnreachableServe(error)) return false;
   if (isNetworkFailure(error) || error instanceof MayLandLaterError) {
     return true;
   }
@@ -2035,6 +2089,21 @@ function isTransientAppendFailure(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code;
   return code === V3_SERVE_UNREACHABLE_CODE ||
     code === V3_STORAGE_UNREACHABLE_CODE;
+}
+
+function fromUnreachableServe(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8; depth++) {
+    if (
+      (current as { code?: unknown } | undefined)?.code ===
+        V3_SERVE_UNREACHABLE_CODE
+    ) {
+      return true;
+    }
+    if (!(current instanceof Error)) return false;
+    current = current.cause;
+  }
+  return false;
 }
 
 function isStepStartChange(change: TypedChange): boolean {

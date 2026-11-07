@@ -23,7 +23,10 @@
  */
 
 import { resolve } from "@std/path";
-import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
+import type {
+  ServeInitiatorMode,
+  ServeUpstreamTarget,
+} from "../../domain/datastore_v3/serve_upstream.ts";
 import type { ServeDatastoreClient } from "./serve_datastore_client.ts";
 
 export interface ServeUpstreamBinding {
@@ -34,6 +37,23 @@ export interface ServeUpstreamBinding {
 }
 
 const bindings = new Map<string, ServeUpstreamBinding>();
+
+// what this process last learned from serve, or what the checkout stored
+const initiators = new Map<string, ServeInitiatorMode>();
+
+export function noteServeInitiator(
+  datastorePath: string,
+  mode: ServeInitiatorMode,
+): void {
+  initiators.set(resolve(datastorePath), mode);
+}
+
+/** undefined: not heard from serve since this swamp was upgraded */
+export function serveInitiatorAt(
+  datastorePath: string,
+): ServeInitiatorMode | undefined {
+  return initiators.get(resolve(datastorePath));
+}
 
 export function registerServeUpstream(
   binding: ServeUpstreamBinding,
@@ -57,4 +77,5 @@ export function hasServeUpstream(): boolean {
 
 export function resetServeUpstreamBindingsForTesting(): void {
   bindings.clear();
+  initiators.clear();
 }

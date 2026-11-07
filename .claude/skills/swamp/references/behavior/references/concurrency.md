@@ -63,9 +63,12 @@ swamp behavior lease release my-server
 ```
 
 `swamp datastore lock status` in such a checkout also lists the leases serve
-holds (holder `caller` or `other`, never who). An explicit lease survives a
-serve leader takeover; an admin ends an abandoned one with
-`swamp datastore lock release --force --behavior type/id`.
+holds, with the holder's principal and whether each is an explicit lease. When
+another caller's explicit lease outlasts the wait, a command that needs the
+behavior is refused at once (exit 75), naming the holder and when the lease
+ends; a run's renewing lease is waited for. An explicit lease survives a serve
+leader takeover; an admin ends an abandoned one with
+`swamp datastore lock release --force --behavior <name>` (or `type/id`).
 
 ### Working offline
 
@@ -81,8 +84,11 @@ before), the checkout works offline from its local copy:
   next writing command (a method or workflow run, a data save) that reaches
   serve sends it, renumbering its versions after any written meanwhile.
   Read-only commands never send it.
-- A command that started online and lost serve midway still exits 75 with
-  nothing changed.
+- A command that started online and lost serve midway stops at its next commit,
+  or when its behavior lease lapses (about 30 s without a renewal). It exits 75
+  when nothing of the command landed, and 1 when something did: resume a
+  workflow run with `swamp workflow resume` or settle it with
+  `swamp workflow recover` instead of rerunning it.
 
 To work offline on a behavior, take its lease first:
 `swamp behavior lease acquire my-server --for 8h`.
@@ -95,7 +101,7 @@ in):
 ```bash
 swamp datastore lock status                          # show who holds locks
 swamp datastore lock release --force                 # release the global lock
-swamp datastore lock release --force --model type/id # release a per-behavior lock
+swamp datastore lock release --force --behavior <name> # release a per-behavior lock (or type/id)
 ```
 
 The `--force` flag is required. These commands bypass normal acquire/release and

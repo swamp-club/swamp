@@ -47,6 +47,7 @@ import {
   WorkflowRun,
   type WorkflowRunData,
 } from "./workflow_run.ts";
+import type { RunStartKeyData } from "./run_start_key.ts";
 import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {
   acquireContinuation,
@@ -194,6 +195,11 @@ import {
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
+import {
+  DATA_WRITE_STOP_GRACE_MS,
+  InFlightDataWrites,
+  processDataWrites,
+} from "../data/in_flight_data_writes.ts";
 import { CompositeUnifiedDataRepository } from "../data/composite_data_repository.ts";
 import { CompositeDataQueryService } from "../data/composite_data_query_service.ts";
 import type { ResourceOverrides } from "../definitions/definition.ts";
@@ -387,6 +393,7 @@ import {
   observeExecution,
 } from "../remote/observability.ts";
 import { StepStartUnrecordedError } from "./step_start.ts";
+import { RunSaveHorizon } from "./run_save_horizon.ts";
 import {
   currentVaultAccess,
   runGeneratorWithVaultAccess,
@@ -861,6 +868,8 @@ export interface StepExecutionContext {
   sensitiveValues: RunSensitiveValues;
   sanitizedTasks?: SanitizedTaskOverlay;
   stepProvenance?: StepProvenanceOverlay;
+  /** the run's started writes, waited for when the run is cancelled */
+  inFlightDataWrites?: InFlightDataWrites;
   reportFilterOptions?: ReportFilterOptions;
   swampSha?: string;
   skipCheckNames?: string[];
@@ -943,6 +952,7 @@ export const STEP_STOP_GRACE_MS = 4_000;
  * each records its own cancellation first
  */
 class InFlightMethodRuns {
+  readonly dataWrites = new InFlightDataWrites(processDataWrites);
   readonly #pending = new Set<Promise<void>>();
   readonly #signal: AbortSignal | undefined;
   #abortedAt: number | undefined;
@@ -973,18 +983,23 @@ class InFlightMethodRuns {
    * also start at the abort still see the run finish; a run whose cleanup
    * outlasted the grace does not wait
    */
-  async settle(graceMs: number): Promise<void> {
+  async settle(
+    graceMs: number,
+    options: { readonly quiet?: boolean } = {},
+  ): Promise<void> {
     if (this.#pending.size === 0) return;
     const remaining = (this.#abortedAt ?? performance.now()) + graceMs -
       performance.now();
     if (remaining <= 0) return;
-    getSwampLogger(["workflow", "cancel"]).info(
-      "Waiting up to {seconds}s for {count} method(s) to stop",
-      {
-        seconds: Math.ceil(remaining / 1000),
-        count: this.#pending.size,
-      },
-    );
+    if (options.quiet !== true) {
+      getSwampLogger(["workflow", "cancel"]).info(
+        "Waiting up to {seconds}s for {count} method(s) to stop",
+        {
+          seconds: Math.ceil(remaining / 1000),
+          count: this.#pending.size,
+        },
+      );
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, remaining);
@@ -993,6 +1008,32 @@ class InFlightMethodRuns {
       await Promise.race([Promise.allSettled([...this.#pending]), timeout]);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /**
+   * counted from the abort like settle; a write started after the run settled
+   * is not waited for, as the step lock is released in teardown
+   */
+  async settleDataWrites(graceMs: number): Promise<void> {
+    if (this.dataWrites.size === 0) return;
+    const remaining = (this.#abortedAt ?? performance.now()) + graceMs -
+      performance.now();
+    if (remaining <= 0) return;
+    const logger = getSwampLogger(["workflow", "cancel"]);
+    logger.info(
+      "Waiting up to {seconds}s for {count} data write(s) to finish",
+      {
+        seconds: Math.ceil(remaining / 1000),
+        count: this.dataWrites.size,
+      },
+    );
+    const left = await this.dataWrites.settle(remaining);
+    if (left > 0) {
+      logger.warn(
+        "Stopped waiting for {count} data write(s); their data may not have been saved",
+        { count: left },
+      );
     }
   }
 
@@ -1006,10 +1047,15 @@ async function awaitInFlightWork(
   methodRuns: InFlightMethodRuns,
   stepStopGraceMs: number | undefined,
 ): Promise<void> {
+  const graceMs = stepStopGraceMs ?? STEP_STOP_GRACE_MS;
   await Promise.all([
     awaitNestedRuns(nestedRuns),
-    methodRuns.settle(stepStopGraceMs ?? STEP_STOP_GRACE_MS),
+    methodRuns.settle(graceMs),
   ]);
+  const dataGraceMs = graceMs + DATA_WRITE_STOP_GRACE_MS - STEP_STOP_GRACE_MS;
+  await methodRuns.settleDataWrites(dataGraceMs);
+  // a method whose write just landed still saves its output and reports
+  await methodRuns.settle(dataGraceMs, { quiet: true });
 }
 
 /**
@@ -1288,6 +1334,8 @@ export type StepLockHook = (
   modelId: string,
   /** for a hook that judges the step before it starts; a hook may ignore it */
   step?: { readonly methodName: string; readonly behaviorName: string },
+  /** stops the wait once the step is cancelled; a hook may ignore it */
+  signal?: AbortSignal,
 ) => Promise<StepLockResult>;
 
 export interface StepExecutorDeps {
@@ -2263,11 +2311,15 @@ export class DefaultStepExecutor implements StepExecutor {
         modelType.normalized,
         originalDefinition.id,
         { methodName: task.methodName, behaviorName: originalDefinition.name },
+        ctx.signal,
       );
       flushLock = lockResult.flush;
       heldLockIds = lockResult.lentLocks ?? lockResult.heldLockIds;
     }
     try {
+      // a step queued on a sibling's lock must not start its side effect once
+      // the run is cancelled; inside the try so the finally still releases
+      ctx.signal.throwIfAborted();
       // Save evaluated arguments with runtime expressions still raw and
       // sensitive values masked or referenced, without forwarded input aliases.
       const persisted = persistEvaluatedDefinition(
@@ -2686,6 +2738,7 @@ export class DefaultStepExecutor implements StepExecutor {
           vaultSecrets: secretBag,
           placement: resolvedPlacement,
           declaredWrites: ctx.declaredWrites,
+          inFlightDataWrites: ctx.inFlightDataWrites,
           skipCheckNames: ctx.skipCheckNames,
           skipCheckLabels: ctx.skipCheckLabels,
           skipAllChecks: ctx.skipAllChecks,
@@ -3069,6 +3122,7 @@ interface StepOptions {
   skipAllChecks?: boolean;
   assertFailOnSeverity?: AssertSeverity;
   initiatedBy?: string;
+  client?: string;
   /**
    * `root.key` binding paths (e.g. `inputs.token`, `self.item`) whose values
    * came from resume-time inputs. Those are audited by key only and must
@@ -3148,6 +3202,9 @@ export class WorkflowExecutionService {
    * serve shutdown marks an aborted run interrupted; defaults to never closing
    */
   runWriteFence: RunWriteFence = OPEN_RUN_WRITE_FENCE;
+
+  /** step events queue behind the run loop's saves; one landed save holds them all */
+  readonly #runSaveHorizon = new RunSaveHorizon();
 
   /**
    * the continuation claims a resume of a suspended run takes; unset where the
@@ -3334,6 +3391,8 @@ export class WorkflowExecutionService {
       skipAllChecks?: boolean;
       assertFailOnSeverity?: AssertSeverity;
       initiatedBy?: string;
+      client?: string;
+      startKey?: RunStartKeyData;
       instanceId?: string;
       triggerSource?: string;
       references?: Record<string, string>;
@@ -3410,6 +3469,7 @@ export class WorkflowExecutionService {
     const tracer = getTracer();
 
     let workflowRun: WorkflowRun | undefined;
+    let runStartReported = false;
     // The evaluated workflow the walk settles against, set with workflowRun
     // so a cancel from the catch below settles the same way.
     let settleWorkflow: Workflow | undefined;
@@ -3671,7 +3731,9 @@ export class WorkflowExecutionService {
           mergedTags,
           options?.initiatedBy,
           options?.triggerSource,
+          options?.client,
         );
+        if (options?.startKey) run.recordStartKey(options.startKey);
         this.startedRunIds.add(run.id);
         // a serve run records who triggered it, so a resume is held to that
         // principal's vault access, not the resumer's
@@ -3787,6 +3849,7 @@ export class WorkflowExecutionService {
       // can read at once
       await this.saveRun(workflow.id, run);
 
+      runStartReported = true;
       yield {
         kind: "started",
         runId: run.id,
@@ -3824,6 +3887,7 @@ export class WorkflowExecutionService {
         workflowTags: workflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: options?.initiatedBy,
+        client: options?.client,
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
@@ -3926,24 +3990,24 @@ export class WorkflowExecutionService {
             // Saved so a run whose owner is killed mid-step still shows the
             // step started: `workflow cancel` settles it from this record,
             // and interrupting the run marks it unknown rather than pending.
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_failed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "failed");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
-            await this.saveRun(workflow.id, run);
+            await this.saveRunForEvent(workflow.id, run, event);
           }
           if (event.kind === "job_completed" && event.status === "failed") {
             anyJobFailed = true;
@@ -4068,6 +4132,8 @@ export class WorkflowExecutionService {
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
+      // the caller was told nothing started, so a retry of its key starts afresh
+      if (!runStartReported) workflowRun?.clearStartKey();
       if (
         workflowRun && options?.signal?.aborted
       ) {
@@ -4746,6 +4812,7 @@ export class WorkflowExecutionService {
         workflowTags: resolvedWorkflow.tags,
         runtimeTags: options?.runtimeTags,
         initiatedBy: existingRun.initiatedBy,
+        client: existingRun.client,
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
@@ -4858,24 +4925,24 @@ export class WorkflowExecutionService {
             // Saved so a run whose owner is killed mid-step still shows the
             // step started: `workflow cancel` settles it from this record,
             // and interrupting the run marks it unknown rather than pending.
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_failed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "failed");
             if (event.dataHandles) {
               dataHandlesByStep.set(key, event.dataHandles);
             }
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_skipped") {
             stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
-            await this.saveRun(workflow.id, existingRun);
+            await this.saveRunForEvent(workflow.id, existingRun, event);
           }
           if (event.kind === "job_completed" && event.status === "failed") {
             anyJobFailed = true;
@@ -5542,7 +5609,7 @@ export class WorkflowExecutionService {
         "job.name": job.name,
       },
     });
-    const generator = bindGeneratorToSpan(
+    const generator = this.#stamped(bindGeneratorToSpan(
       stepSpan,
       this.runStepInSpan(
         stepSpan,
@@ -5558,7 +5625,7 @@ export class WorkflowExecutionService {
         forEachIndex,
         forEachTemplate,
       ),
-    );
+    ));
     if (!progress) {
       yield* generator;
       return;
@@ -7140,6 +7207,7 @@ export class WorkflowExecutionService {
       // same place (a serve-owned child is never killed by pid from the CLI).
       instanceId: options.instanceId,
       initiatedBy: options.initiatedBy,
+      client: options.client,
       signal: options.signal,
       secretRedactor: options.secretRedactor,
       sensitiveValues: options.sensitiveValues,
@@ -7318,9 +7386,14 @@ export class WorkflowExecutionService {
     ctx: StepExecutionContext,
     options: StepOptions,
   ): Promise<unknown> {
+    const dataWrites = options.inFlightMethodRuns?.dataWrites;
     const execution = runWithRejectionReport(
       createRejectionReport(),
-      () => this.executor.execute(step, ctx),
+      () =>
+        this.executor.execute(
+          step,
+          dataWrites ? { ...ctx, inFlightDataWrites: dataWrites } : ctx,
+        ),
     );
     return options.inFlightMethodRuns?.track(execution) ?? execution;
   }
@@ -7727,6 +7800,7 @@ export class WorkflowExecutionService {
       );
       return;
     }
+    const mark = this.#runSaveHorizon.begin();
     await this.runWriteFence.track(
       run.id,
       (async () => {
@@ -7754,8 +7828,28 @@ export class WorkflowExecutionService {
           }
           throw error;
         }
+        this.#runSaveHorizon.landed(run, mark);
       })(),
     );
+  }
+
+  /** a step event a landed save already holds needs no save of its own */
+  private async saveRunForEvent(
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+    event: WorkflowExecutionEvent,
+  ): Promise<void> {
+    if (this.#runSaveHorizon.covers(run, event)) return;
+    await this.saveRun(workflowId, run);
+  }
+
+  async *#stamped(
+    events: AsyncGenerator<WorkflowExecutionEvent>,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    for await (const event of events) {
+      this.#runSaveHorizon.stamp(event);
+      yield event;
+    }
   }
 
   /**

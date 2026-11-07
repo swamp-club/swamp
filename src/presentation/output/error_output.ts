@@ -47,14 +47,21 @@ import {
   V3_SERVE_UNREACHABLE_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
   V3_WRITER_BUSY_CODE,
+  WriterFencedError,
+  type WriterFencedReason,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   CATCH_UP_UNREACHABLE_CODE,
   READ_MODEL_BUSY_CODE,
 } from "../../domain/datastore_v3/read_model.ts";
 import {
+  COMMIT_LEASE_LOST_CODE,
   COMMIT_UNREACHABLE_CODE,
+  CommitLeaseLostError,
+  LEASE_LAPSED_CODE,
+  leaseLostRefusalOf,
   recoveryNeedsAcknowledgement,
+  runInitiatorMismatchOf,
   RunPartlyCommittedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 
@@ -70,6 +77,52 @@ function forwardedInFlight(err: Error): boolean {
   const details = (err as { details?: unknown }).details;
   return typeof details === "object" && details !== null &&
     (details as { inFlight?: unknown }).inFlight === true;
+}
+
+/** what the failed command did, which a retry-safe exit depends on */
+export interface ErrorPresentationContext {
+  /**
+   * absent: a lost or lapsed lease and a fenced writer assume something
+   * landed and exit 1; the unreachable codes keep their exit 75
+   */
+  readonly commandLanded?: boolean;
+  readonly workflowCommand?: boolean;
+}
+
+/** the writer that took over found nothing of this command committed */
+const FENCED_NOTHING_COMMITTED: ReadonlySet<WriterFencedReason> = new Set([
+  "taken-over",
+  "released",
+  "copy-restoring",
+]);
+
+/** a lost or lapsed lease, as the coded error the user is shown */
+function leaseErrorOf(error: unknown): Error | undefined {
+  const refusal = leaseLostRefusalOf(error);
+  if (refusal !== undefined) {
+    const coded = new CommitLeaseLostError(refusal.message);
+    coded.cause = refusal;
+    return coded;
+  }
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return error instanceof Error &&
+      (code === COMMIT_LEASE_LOST_CODE || code === LEASE_LAPSED_CODE)
+    ? error
+    : undefined;
+}
+
+function leaseHint(context: ErrorPresentationContext): string {
+  if (context.commandLanded === false) {
+    return "Nothing this command changed in the datastore was committed: " +
+      "run it again once the behavior's lock is free, after checking " +
+      "anything its methods may already have changed outside swamp.";
+  }
+  return context.workflowCommand === true
+    ? "Steps of this run may have been committed before the lease was lost: " +
+      "resume the run with 'swamp workflow resume', or settle it with " +
+      "'swamp workflow recover', rather than running the workflow again."
+    : "Some of this command's changes may have been committed before the " +
+      "lease was lost: check the behavior's data before running it again.";
 }
 
 /**
@@ -149,7 +202,20 @@ export function buildErrorJson(
  * retry with backoff; 1 otherwise, including fenced, may-land and
  * partly-committed datastore errors where a blind retry is unsafe.
  */
-export function exitCodeForError(error: unknown): number {
+export function exitCodeForError(
+  error: unknown,
+  context: ErrorPresentationContext = {},
+): number {
+  const nothingLanded = context.commandLanded === false;
+  // refused or cancelled before writing: a retry is safe only if nothing
+  // else of the command landed
+  if (leaseErrorOf(error) !== undefined) return nothingLanded ? 75 : 1;
+  if (
+    error instanceof WriterFencedError &&
+    FENCED_NOTHING_COMMITTED.has(error.reason)
+  ) {
+    return nothingLanded ? 75 : 1;
+  }
   const code = (error as { code?: unknown })?.code;
   if (typeof code === "string" && code.toLowerCase() === "lock_timeout") {
     return 75;
@@ -164,15 +230,20 @@ export function exitCodeForError(error: unknown): number {
   if (code === V3_WRITER_BUSY_CODE) return 75;
   // Another process's catch-up outlasted the wait: nothing was read.
   if (code === READ_MODEL_BUSY_CODE) return 75;
-  // A commit given up because the storage was unreachable: nothing landed.
-  if (code === COMMIT_UNREACHABLE_CODE) return 75;
+  // A commit given up because the storage was unreachable: nothing of it
+  // landed, though an earlier commit of the command may have.
+  if (code === COMMIT_UNREACHABLE_CODE) {
+    return context.commandLanded === true ? 1 : 75;
+  }
   // cut off from the storage before writing, or while catching up: nothing
   // changed
   if (code === V3_STORAGE_UNREACHABLE_CODE) return 75;
   if (code === CATCH_UP_UNREACHABLE_CODE) return 75;
   // the serve the datastore is written through is unreachable: the write was
   // refused, not sent to the storage
-  if (code === V3_SERVE_UNREACHABLE_CODE) return 75;
+  if (code === V3_SERVE_UNREACHABLE_CODE) {
+    return context.commandLanded === true ? 1 : 75;
+  }
   // a serve node that does not lead refused the write
   if (code === SERVE_NOT_LEADER_CODE) return 75;
   // a follower whose copy is behind the caller's refused a read while it
@@ -255,15 +326,19 @@ export function renderError(
   error: unknown,
   outputMode?: OutputMode,
   surface: CommandSurface = "behavior",
+  context: ErrorPresentationContext = {},
 ): void {
   // a refused stale config edit is the user's to resolve, not a crash
-  const err = configEditConflictOf(error) ??
+  const leaseError = leaseErrorOf(error);
+  const err = configEditConflictOf(error) ?? leaseError ??
+    runInitiatorMismatchOf(error) ??
     (error instanceof Error ? error : new Error(String(error)));
   const message = messageFor(err, surface);
   // A certificate-store failure is an environment problem the user can fix,
   // not a swamp bug, so it gets no stack trace even when it arrives raw.
   const certStoreHint = platformCertStoreHint(err.message);
-  const hint = tlsErrorHint(err.message) ?? certStoreHint;
+  const hint = tlsErrorHint(err.message) ?? certStoreHint ??
+    (leaseError !== undefined ? leaseHint(context) : undefined);
 
   if (outputMode === "json") {
     const json = buildErrorJson(err, surface);

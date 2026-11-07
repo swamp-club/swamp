@@ -380,6 +380,60 @@ Deno.test("handleVaultDelete: with force, a provider's coded not-found Error for
   }
 });
 
+Deno.test("handleVaultDelete: with force, a provider's secret_not_found error is a no-op success whatever its wording", async () => {
+  const type = `@test/secret-not-found-${crypto.randomUUID()}`;
+  const provider = (name: string): VaultProvider & VaultDeleteProvider => ({
+    get: () => Promise.reject(new Error("unused")),
+    put: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+    getName: () => name,
+    delete: () =>
+      Promise.reject(
+        Object.assign(new Error("item is absent"), {
+          code: "secret_not_found",
+        }),
+      ),
+  });
+  vaultTypeRegistry.register({
+    type,
+    name: "secret_not_found vault",
+    description: "Throws an error carrying the secret_not_found code on delete",
+    isBuiltIn: false,
+    createProvider: provider,
+  });
+  try {
+    await withTempDir(async (dir) => {
+      const repoContext = createRepositoryContext({
+        repoDir: dir,
+        enableIndexing: false,
+      });
+      try {
+        await repoContext.vaultConfigRepo.save(
+          VaultConfig.create(crypto.randomUUID(), "absent-vault", type, {}),
+        );
+      } finally {
+        repoContext.catalogStore.close();
+      }
+      const socket = createMockSocket();
+
+      await handleVaultDelete(
+        socket,
+        createAnnotateCtx(dir),
+        "req-delete",
+        { vaultName: "absent-vault", key: "no-such-key", force: true },
+        new AbortController(),
+        null,
+      );
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "vault.delete");
+      assertEquals(response.payload.data.noOp, true);
+    });
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
+});
+
 type VaultSyncEvent = { kind: "mark"; relPath?: string } | { kind: "push" };
 
 async function runVaultCreate(

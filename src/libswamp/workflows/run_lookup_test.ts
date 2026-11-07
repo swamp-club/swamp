@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { createRunMatcher } from "./run_lookup.ts";
+import { createRunMatcher, exactRunReference } from "./run_lookup.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type {
   WorkflowId,
@@ -201,4 +201,31 @@ Deno.test("createRunMatcher: repeated lookups reflect the current persisted stat
   assertEquals((await match(TARGET_ID)).match?.status, "running");
   status = "succeeded";
   assertEquals((await match(TARGET_ID)).match?.status, "succeeded");
+});
+
+Deno.test("exactRunReference: finds only a full id, and looks nowhere else", async () => {
+  const run = makeRun(TARGET_ID, "running");
+  const asked: string[] = [];
+  const repo = {
+    findGlobalById: (id: WorkflowRunId) => {
+      asked.push(id);
+      return Promise.resolve(
+        id === TARGET_ID
+          ? { run, workflowId: WORKFLOW_ID, workflowName: "test-workflow" }
+          : null,
+      );
+    },
+  } as unknown as Parameters<typeof exactRunReference>[0];
+
+  assertEquals(await exactRunReference(repo, TARGET_ID.toUpperCase()), {
+    kind: "run",
+    run,
+  });
+  assertEquals(await exactRunReference(repo, OTHER_ID), { kind: "not_found" });
+  assertEquals(asked, [TARGET_ID, OTHER_ID]);
+
+  assertEquals(await exactRunReference(repo, TARGET_ID.slice(0, 8)), {
+    kind: "not_found",
+  });
+  assertEquals(asked.length, 2);
 });

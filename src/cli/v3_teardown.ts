@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeUnreachableError } from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
 import {
   CommitUnreachableError,
@@ -85,7 +86,9 @@ function failedReachingStorage(error: unknown): boolean {
       current instanceof CommitUnreachableError ||
       current instanceof RunPartlyCommittedError ||
       current instanceof V3StorageUnreachableError ||
-      current instanceof ReadModelCatchUpUnreachableError
+      current instanceof ReadModelCatchUpUnreachableError ||
+      // serve, which the checkout writes through, is the storage it reaches
+      current instanceof ServeUnreachableError
     ) {
       return true;
     }

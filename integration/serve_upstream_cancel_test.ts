@@ -103,6 +103,7 @@ async function startedRun(
     workflowName: workflow.name,
     status: "running",
     startedAt: "2026-11-02T10:00:00.000Z",
+    initiatedBy: "user:caller",
     pid: OWNER_PID,
     jobs: [{
       jobName: "main",

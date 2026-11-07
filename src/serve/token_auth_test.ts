@@ -28,8 +28,11 @@ import {
   readServerTokenRecord,
   type ServerTokenAuthDeps,
   ServerTokenNotFoundError,
+  setTokenRefusalNodeState,
   splitServerToken,
 } from "./token_auth.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   type ServerToken,
@@ -916,4 +919,154 @@ Deno.test("authenticateServerToken: a cached secret is read again after a minute
   nowMs += 1;
   assertEquals((await auth("test-token.secret-value")).ok, true);
   assertEquals(reads, 2);
+});
+
+async function capturingTokenAuthLogs(
+  fn: () => Promise<void>,
+): Promise<LogRecord[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "token-auth"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records;
+}
+
+Deno.test("authenticateServerToken: a refusal log names the reason and the node's uptime, readiness, role and catch-up", async () => {
+  const catchUp = { live: true, applied: 41, lastAskedLeaderHead: 44 };
+  setTokenRefusalNodeState(() => ({
+    uptimeSeconds: 21,
+    ready: true,
+    role: "follower",
+    catchUp,
+  }));
+  try {
+    const records = await capturingTokenAuthLogs(async () => {
+      await authenticateWithDeps(
+        "missing-token.secret",
+        makeAuthDeps({
+          readToken: () =>
+            Promise.reject(new ServerTokenNotFoundError("missing-token")),
+        }),
+      );
+    });
+    const refusal = records.find((record) =>
+      record.rawMessage.toString().startsWith("Token authentication failed")
+    );
+    assertEquals(refusal?.properties.reason, "no-definition");
+    assertEquals(refusal?.properties.node, {
+      uptimeSeconds: 21,
+      ready: true,
+      role: "follower",
+      catchUp,
+    });
+    assertEquals(
+      JSON.stringify(refusal?.properties).includes('secret"'),
+      false,
+    );
+  } finally {
+    setTokenRefusalNodeState(undefined);
+  }
+});
+
+Deno.test("authenticateServerToken: a refusal log without serve's node state still logs the reason", async () => {
+  const records = await capturingTokenAuthLogs(async () => {
+    await authenticateWithDeps("test-token.wrong-secret", makeAuthDeps());
+  });
+  const refusal = records.find((record) =>
+    record.rawMessage.toString().startsWith("Token authentication failed")
+  );
+  assertEquals(refusal?.properties.reason, "secret-mismatch");
+  assertEquals(refusal?.properties.node, null);
+});
+
+Deno.test("authenticateServerToken: returns the client the token records", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve({
+          ...activeToken(),
+          client: "integration:ops-slack",
+        }),
+    }),
+  );
+  assertEquals(result.ok && result.client, "integration:ops-slack");
+});
+
+Deno.test("authenticateServerToken: a token from before clients authenticates with none", async () => {
+  const result = await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps(),
+  );
+  assertEquals(result.ok, true);
+  assertEquals("client" in result, false);
+});
+
+Deno.test("authenticateServerToken: a malformed client is refused, not passed on", async () => {
+  for (
+    const client of ["cli", "direct:ops-slack", "agent:cli", "integration:"]
+  ) {
+    const events: AuditEvent[] = [];
+    const result = await authenticateWithDeps(
+      "test-token.secret-value",
+      makeAuthDeps({
+        readToken: () => Promise.resolve({ ...activeToken(), client }),
+      }),
+      events,
+    );
+    assertEquals(
+      result,
+      { ok: false, error: "Authentication failed", reason: "invalid-client" },
+      client,
+    );
+    assertEquals(events, []);
+  }
+});
+
+Deno.test("authenticateServerToken: the token-use audit event names the client", async () => {
+  const events: AuditEvent[] = [];
+  await authenticateWithDeps(
+    "test-token.secret-value",
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve({ ...activeToken(), client: "direct:cli" }),
+    }),
+    events,
+  );
+  assertEquals(events[0].client, "direct:cli");
+});
+
+Deno.test("authenticateDashboardSession: returns the client its token records, and refuses a malformed one", async () => {
+  const session = (client: string) => {
+    const token = activeToken({ client });
+    return authenticateDashboardSession(
+      { tokenName: token.name, tokenCreatedAt: token.createdAt },
+      fakeTokenRepoContext(
+        { id: "token-id" },
+        new TextEncoder().encode(JSON.stringify(token)),
+      ),
+    );
+  };
+  const accepted = await session("direct:dashboard");
+  assertEquals(accepted.ok && accepted.client, "direct:dashboard");
+  const refused = await session("direct:nonsense");
+  assertEquals(
+    !refused.ok && refused.reason,
+    "invalid-client",
+  );
 });

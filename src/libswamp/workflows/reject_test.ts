@@ -423,3 +423,72 @@ Deno.test("workflowReject: settles against the run's evaluated snapshot", async 
   // gate, where settling from the records alone would cancel it.
   assertEquals(run.getJob("main-prod")!.getStep("post")!.status, "skipped");
 });
+
+Deno.test("workflowReject: a decision for an earlier attempt of the gate is refused and records nothing", async () => {
+  const { deps, target, targetRun } = makeCollidingDeps();
+  const step = targetRun.getJob("main")!.getStep("gate")!;
+
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: target.name,
+      stepName: "gate",
+      decidedBy: "approver",
+      suspendedAt: new Date(step.startedAt!.getTime() - 1000).toISOString(),
+    }),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") assertEquals(last.error.code, "gate_reopened");
+  assertEquals(step.approvalDecision, undefined);
+  assertEquals(targetRun.status, "suspended");
+});
+
+Deno.test("workflowReject: a name in two jobs is refused when the gate must be unique", async () => {
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: ["a", "b"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  for (const name of ["a", "b"]) {
+    const job = run.getJob(name)!;
+    job.start();
+    job.getStep("gate")!.start();
+    job.getStep("gate")!.waitForApproval();
+  }
+  run.suspend();
+  const deps = {
+    runClaims: unclaimedRuns,
+    findEvaluatedWorkflow: () => Promise.resolve(null),
+    workflowRepo: {
+      findByName: () => Promise.resolve(workflow),
+      findById: () => Promise.resolve(null),
+    },
+    runRepo: {
+      findById: () => Promise.resolve(run),
+      findAllByWorkflowId: () => Promise.resolve([run]),
+      save: () => Promise.resolve(),
+    },
+  } as unknown as WorkflowRejectDeps;
+
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      strictGate: true,
+    }),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "error");
+  if (last?.kind === "error") assertEquals(last.error.code, "ambiguous_gate");
+  assertEquals(run.status, "suspended");
+});

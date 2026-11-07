@@ -42,6 +42,8 @@ import {
   shutdownExecutionMetrics,
 } from "./src/infrastructure/tracing/otel_metrics_init.ts";
 import { commandSurfaceFromArgs } from "./src/cli/command_surface_args.ts";
+import { extractCommandInfo } from "./src/cli/telemetry_integration.ts";
+import { commandLanded } from "./src/infrastructure/datastore_v3/command_landed.ts";
 import {
   isDispatchRunnerInvocation,
   redirectConsoleToStderr,
@@ -54,6 +56,8 @@ import {
   isBundleProbeHostInvocation,
   runBundleProbeHost,
 } from "./src/infrastructure/runtime/bundle_probe_host.ts";
+import { isTelemetrySenderInvocation } from "./src/infrastructure/telemetry/telemetry_sender_process.ts";
+import { runTelemetrySenderMain } from "./src/infrastructure/telemetry/telemetry_sender_main.ts";
 
 if (import.meta.main) {
   // A v3 writer's Litestream supervisor (swamp-club#3416) runs none of the
@@ -66,6 +70,10 @@ if (import.meta.main) {
   // the parent's SWAMP_BUILD_VERSION, so it runs before that is set below.
   if (isBundleProbeHostInvocation(Deno.args)) {
     Deno.exit(await runBundleProbeHost(VERSION));
+  }
+  // The detached telemetry sender a command starts: no tracing, no CLI.
+  if (isTelemetrySenderInvocation(Deno.args)) {
+    Deno.exit(await runTelemetrySenderMain(Deno.args));
   }
   Deno.env.set("SWAMP_BUILD_VERSION", VERSION);
   // The dispatch runner's stdout is an RPC frame stream; nothing, including
@@ -86,8 +94,13 @@ if (import.meta.main) {
     await initializeLogging({
       jsonMode: outputMode === "json",
     });
-    renderError(error, outputMode, commandSurfaceFromArgs(Deno.args));
-    errorExitCode = exitCodeForError(error);
+    const context = {
+      commandLanded: commandLanded(),
+      workflowCommand:
+        extractCommandInfo([...Deno.args]).command === "workflow",
+    };
+    renderError(error, outputMode, commandSurfaceFromArgs(Deno.args), context);
+    errorExitCode = exitCodeForError(error, context);
   } finally {
     // Drain the OTLP logs signal before spans — shutdownLogs() awaits the
     // exporter's in-flight sends so the last log records aren't cut by

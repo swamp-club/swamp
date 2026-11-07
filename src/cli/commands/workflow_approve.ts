@@ -43,6 +43,7 @@ import {
   formatCommandTarget,
   remoteGateRefusalUserError,
   requestServerResponse,
+  requireGateAttemptCheck,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   withRemoteOptions,
@@ -129,13 +130,21 @@ export const workflowApproveCommand = withRemoteOptions(
       "Approve with reason",
       "swamp workflow approve deploy-with-gate verify-build --reason 'Verified'",
     )
+    .example(
+      "Approve only the attempt you read",
+      "swamp workflow approve deploy-with-gate verify-build --run <run-id> --suspended-at 2026-11-06T10:00:00.000Z",
+    )
     .arguments("<workflow_id_or_name:string> <step_name:string>")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option("--reason <reason:string>", "Reason for approval")
-    .option("--run <run_id:string>", "Target a specific run ID"),
+    .option("--run <run_id:string>", "Target a specific run ID")
+    .option(
+      "--suspended-at <time:string>",
+      "Decide only this attempt of the gate, using suspendedAt from 'swamp workflow approvals --json'; refused if the gate has been asked again since",
+    ),
   DECIDED_ON_SERVE_OPTION_TEXTS,
 ).action(
   async function (
@@ -154,6 +163,9 @@ export const workflowApproveCommand = withRemoteOptions(
         server,
         options,
       );
+      if (options.suspendedAt !== undefined) {
+        await requireGateAttemptCheck({ server, token });
+      }
       const response = await requestServerResponse<WorkflowApproveResponse>(
         { server, token },
         {
@@ -163,6 +175,7 @@ export const workflowApproveCommand = withRemoteOptions(
             stepName,
             reason: options.reason as string | undefined,
             runId: options.run as string | undefined,
+            suspendedAt: options.suspendedAt as string | undefined,
           },
         },
       ).catch((error: unknown) => {
@@ -226,6 +239,7 @@ export const workflowApproveCommand = withRemoteOptions(
               stepName,
               reason: options.reason as string | undefined,
               runId: options.run as string | undefined,
+              suspendedAt: options.suspendedAt as string | undefined,
             }),
             {
               resolving: () => {},

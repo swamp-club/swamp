@@ -75,12 +75,14 @@ function context(
     context: {
       deps: {
         ctx,
+        // no authenticated caller: initiators are checked in their own tests
+        caller: { principal: null, collectives: [], groups: [], sourceIp: "" },
         partition: partitionOf({
           kind: "run",
           workflowId: WORKFLOW,
           runId: RUN,
         }),
-      } as ContentCheckContext["deps"],
+      } as unknown as ContentCheckContext["deps"],
       authority: {
         allows: (action) => {
           asked.push(action);

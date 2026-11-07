@@ -46,6 +46,12 @@ import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { grant } from "./serve_request_harness.ts";
 import {
+  findSpan,
+  SpanKind,
+  withCapturedSpans,
+} from "../src/infrastructure/tracing/span_test_helpers.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import {
   blobSaveOps,
   commitBody,
   dataMetadata,
@@ -410,6 +416,119 @@ Deno.test({
         assertEquals(server.policyLoads, allowed ? 1 : 0);
       });
     }
+  },
+});
+
+const MEMBER_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736";
+const MEMBER_SPAN = "00f067aa0ba902b7";
+
+async function tracedChanges(
+  server: Server,
+  authenticated: boolean,
+  flags: string,
+): Promise<Response> {
+  const route = matchDatastoreRoute("/api/v1/datastore/_default/changes");
+  assert(route !== undefined);
+  return await handleDatastoreRequest(
+    new Request("http://serve.test/api/v1/datastore/_default/changes", {
+      headers: {
+        authorization: "Bearer member-token",
+        traceparent: `00-${MEMBER_TRACE}-${MEMBER_SPAN}-${flags}`,
+      },
+    }),
+    route,
+    "127.0.0.1",
+    {
+      ctx: server.ctx,
+      v3: undefined,
+      ledger: new UploadLedger(),
+      locks: server.locks,
+      authenticate: () =>
+        Promise.resolve(
+          authenticated
+            ? {
+              ok: true,
+              principalId: "user:caller",
+              collectives: [],
+              groups: [],
+              tokenName: "t",
+              tokenCreatedAt: "2026-01-01T00:00:00Z",
+            }
+            : {
+              ok: false as const,
+              error: "refused",
+              reason: "revoked" as const,
+            },
+        ),
+    },
+  );
+}
+
+const CHANGES_SPAN = "GET /api/v1/datastore/{namespace}/changes";
+
+Deno.test({
+  name:
+    "datastore API: an authenticated member's traceparent parents serve's span; a refused caller's is ignored (swamp-club#4457)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withCapturedSpans(async (spans) => {
+        const answered = await tracedChanges(server, true, "01");
+        await answered.body?.cancel();
+        const adopted = findSpan(spans, CHANGES_SPAN);
+        assertEquals(adopted.kind, SpanKind.SERVER);
+        assertEquals(adopted.spanContext().traceId, MEMBER_TRACE);
+        assertEquals(adopted.parentSpanId, MEMBER_SPAN);
+        assertEquals(adopted.attributes["http.response.status_code"], 409);
+        const auth = findSpan(spans, "swamp.serve.datastore.authenticate");
+        assertEquals(auth.parentSpanId, undefined);
+        assert(auth.spanContext().traceId !== MEMBER_TRACE);
+        assertEquals(
+          adopted.links.map((link) => link.context.spanId),
+          [auth.spanContext().spanId],
+        );
+
+        const before = spans.length;
+        const refused = await tracedChanges(server, false, "01");
+        await refused.body?.cancel();
+        assertEquals(refused.status, 401);
+        const root = findSpan(spans.slice(before), CHANGES_SPAN);
+        assert(root.spanContext().traceId !== MEMBER_TRACE);
+        assertEquals(root.parentSpanId, undefined);
+        assertEquals(root.attributes["http.response.status_code"], 401);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a member's sampled flag neither forces nor suppresses serve's own sampling (swamp-club#4457)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await withCapturedSpans(async (spans) => {
+        const unsampled = await tracedChanges(server, true, "00");
+        await unsampled.body?.cancel();
+        assertEquals(
+          findSpan(spans, CHANGES_SPAN).spanContext().traceId,
+          MEMBER_TRACE,
+        );
+
+        const before = spans.length;
+        await withMockedEnv({ OTEL_TRACES_SAMPLER: "always_off" }, async () => {
+          const sampled = await tracedChanges(server, true, "01");
+          await sampled.body?.cancel();
+        });
+        assertEquals(
+          spans.slice(before).filter((span) => span.name === CHANGES_SPAN)
+            .length,
+          0,
+        );
+      });
+    });
   },
 });
 

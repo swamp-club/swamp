@@ -54,6 +54,8 @@ export interface HttpCallerAuthDeps {
    * it; absent, only a bearer token is accepted
    */
   readonly dashboardSession?: HttpCallerSessionAuth;
+  /** what a failed credential counts against; rateLimitKey unless given */
+  readonly failedAttemptKey?: (token: string, sourceIp: string) => string;
 }
 
 export interface HttpCallerSessionAuth {
@@ -112,7 +114,7 @@ export async function authenticateHttpCaller(
     return httpFailure(401, "unauthorized", "Unauthorized: token required");
   }
   const guarded = await limitFailedAttempts(
-    rateLimitKey(token, sourceIp),
+    (deps.failedAttemptKey ?? rateLimitKey)(token, sourceIp),
     () => deps.authenticate(token, sourceIp),
   );
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
@@ -192,6 +194,7 @@ function authenticatedCaller(
       groups: auth.groups,
       sourceIp,
       loginIdentity: auth.oauthIdentity,
+      client: auth.client,
     },
     principal: auth.principalId,
     token: {

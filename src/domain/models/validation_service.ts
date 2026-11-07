@@ -128,6 +128,9 @@ export function envVarWarningText(): WordedText {
   );
 }
 
+export const UNCHECKED_SECRET_REFERENCES_WARNING_NAME =
+  "Secret references not checked";
+
 export class ValidationWarning {
   private constructor(
     readonly name: string,
@@ -135,8 +138,24 @@ export class ValidationWarning {
     readonly details?: EnvVarUsageDetail[],
     readonly templates?: ForeignTemplateDetail[],
     readonly modelMessage: string = message,
+    readonly secretReferences?: UncheckedSecretReference[],
   ) {
     markModelWording(this, modelMessage);
+  }
+
+  static uncheckedSecretReferences(
+    references: UncheckedSecretReference[],
+  ): ValidationWarning {
+    const message =
+      "The vault could not confirm these references: it did not answer, or a provider without an existence check could not read the key. The checks, policy checks included, received them as stored text, so neither their values nor whether their fields accept a secret were checked. A run checks both with the delivered values and fails if the vault still cannot answer.";
+    return new ValidationWarning(
+      UNCHECKED_SECRET_REFERENCES_WARNING_NAME,
+      message,
+      undefined,
+      undefined,
+      message,
+      references,
+    );
   }
 
   static envVarUsage(
@@ -185,6 +204,13 @@ export interface ForeignTemplateDetail {
 export interface EnvVarUsageDetail {
   path: string;
   envVar: string;
+}
+
+export interface UncheckedSecretReference {
+  location: string;
+  vaultName: string;
+  key: string;
+  reason: string;
 }
 
 export class ValidationResult {
@@ -315,6 +341,8 @@ export interface CheckArgumentDelivery {
   globalArgs: Record<string, unknown>;
   unresolvedMethodArgs: Record<string, unknown>;
   vaultSecrets?: MethodContext["vaultSecrets"];
+  /** references the vault could not answer for; the checks got their stored text */
+  uncheckedReferences?: UncheckedSecretReference[];
 }
 
 export interface ModelValidationService {
@@ -563,18 +591,21 @@ export class DefaultModelValidationService implements ModelValidationService {
 
     const results = await Promise.all(validations);
 
+    let checkWarnings: ValidationWarning[] = [];
     if (
       modelDef.checks && checkContext &&
       !results.some((result) =>
         result.name === "Secret usage" && !result.passed
       )
     ) {
-      const checkResults = await this.runCheckValidations(
-        upgrade.definition,
-        modelDef,
-        checkContext,
-      );
+      const { results: checkResults, warnings } = await this
+        .runCheckValidations(
+          upgrade.definition,
+          modelDef,
+          checkContext,
+        );
       results.push(...checkResults);
+      checkWarnings = warnings;
     }
 
     const warnings = [
@@ -583,6 +614,7 @@ export class DefaultModelValidationService implements ModelValidationService {
         ...templateScan.foreign.map(({ path, text }) => ({ path, text })),
         ...foreignExpressions,
       ]),
+      ...checkWarnings,
     ];
 
     return { results, warnings };
@@ -696,7 +728,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     definition: Definition,
     modelDef: ModelDefinition,
     checkContext: CheckValidationContext,
-  ): Promise<ValidationResult[]> {
+  ): Promise<{ results: ValidationResult[]; warnings: ValidationWarning[] }> {
     const checks = modelDef.checks!;
     const results: ValidationResult[] = [];
     const defChecks = definition.checkSelection;
@@ -721,7 +753,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     });
 
     // No check to run means nothing to deliver: no probe, no load.
-    if (applicable.length === 0) return results;
+    if (applicable.length === 0) return { results, warnings: [] };
 
     // What the checks receive. In a typed run the shared delivery step
     // provides it, and a refusal or a failed load fails every applicable
@@ -740,7 +772,10 @@ export class DefaultModelValidationService implements ModelValidationService {
         resolvedGlobalArgs = delivered.globalArgs;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return [ValidationResult.fail("Check argument delivery", message)];
+        return {
+          results: [ValidationResult.fail("Check argument delivery", message)],
+          warnings: [],
+        };
       }
     } else if (checkContext.resolveRuntimeExpressions) {
       try {
@@ -827,7 +862,13 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
     }
 
-    return results;
+    const unchecked = delivered?.uncheckedReferences ?? [];
+    return {
+      results,
+      warnings: unchecked.length > 0
+        ? [ValidationWarning.uncheckedSecretReferences(unchecked)]
+        : [],
+    };
   }
 
   private validateWithSchema(

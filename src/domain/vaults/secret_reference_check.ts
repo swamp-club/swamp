@@ -21,9 +21,13 @@ import type {
   SecretBagRegistry,
   SecretReference,
 } from "./secret_bag_registry.ts";
+import { VaultAccessDeniedError } from "./run_vault_access.ts";
+import { isSecretNotFoundError } from "./secret_not_found_error.ts";
 import {
+  oneLineReason,
   secretReferenceError,
   SecretReferenceUnavailableError,
+  SecretReferenceUncheckedError,
 } from "./secret_reference_errors.ts";
 import type { VaultService } from "./vault_service.ts";
 
@@ -49,26 +53,44 @@ export async function checkSecretReference(
   },
 ): Promise<void> {
   const { vaultName, key } = reference;
+  const context =
+    `Failed to resolve vault expression ${options.call} (at ${options.location})`;
   try {
     await vaultService.authorizeRead(vaultName, key);
+    const configured = vaultService.getVaultNames().includes(vaultName);
     await options.registry.confirmExists(reference, async () => {
-      if (vaultService.supportsExistenceCheck(vaultName)) {
-        if (!await vaultService.has(vaultName, key)) {
-          throw new SecretReferenceUnavailableError(
-            reference,
-            options.call,
-            options.location,
-          );
+      try {
+        if (vaultService.supportsExistenceCheck(vaultName)) {
+          if (!await vaultService.has(vaultName, key)) {
+            throw new SecretReferenceUnavailableError(
+              reference,
+              options.call,
+              options.location,
+            );
+          }
+          return;
         }
-        return;
+        const probed = await vaultService.get(vaultName, key, PROBE_PURPOSE);
+        options.redactor?.addSecret(probed);
+      } catch (error) {
+        // A store's not-found is an answer; only a provider failing to answer is unchecked.
+        if (
+          !configured || error instanceof SecretReferenceUnavailableError ||
+          error instanceof VaultAccessDeniedError ||
+          isSecretNotFoundError(error)
+        ) {
+          throw error;
+        }
+        throw new SecretReferenceUncheckedError(
+          reference,
+          options.location,
+          oneLineReason(error),
+          context,
+        );
       }
-      const probed = await vaultService.get(vaultName, key, PROBE_PURPOSE);
-      options.redactor?.addSecret(probed);
     });
   } catch (error) {
-    throw secretReferenceError(
-      `Failed to resolve vault expression ${options.call} (at ${options.location})`,
-      error,
-    );
+    if (error instanceof SecretReferenceUncheckedError) throw error;
+    throw secretReferenceError(context, error, reference);
   }
 }

@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertInstanceOf, assertMatch } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertMatch,
+  assertRejects,
+} from "@std/assert";
+import { getRegisteredLockKeys } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { WorkflowExecutionService } from "../domain/workflows/execution_service.ts";
 import {
   createStepLockHook,
@@ -364,6 +370,57 @@ Deno.test("createStepLockHook: names the lock it took by the nonce in its lock f
     } finally {
       await lock.flush();
     }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("createStepLockHook: a step cancelled while waiting for its model lock stops waiting and holds nothing", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-step-lock-hook-" });
+  try {
+    const homeDir = join(repoDir, "test-home");
+    await new RepoService(VERSION, {
+      homeDir,
+      configDir: join(homeDir, ".config", "swamp"),
+    }).init(RepoPath.create(repoDir), { tools: [] });
+    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      throw new Error("expected a filesystem datastore");
+    }
+    const modelId = crypto.randomUUID();
+    const hook = createStepLockHook(
+      repoDir,
+      stubRepoContext(),
+      datastoreConfig,
+      undefined,
+      undefined,
+    );
+    const held = await hook("test/step-lock-hook", modelId);
+    try {
+      const abort = new AbortController();
+      const waiting = hook(
+        "test/step-lock-hook",
+        modelId,
+        undefined,
+        abort.signal,
+      );
+      abort.abort(new Error("run cancelled"));
+      await assertRejects(() => waiting, Error, "run cancelled");
+      const lockKeys = getRegisteredLockKeys().filter((key) =>
+        key.includes(modelId)
+      );
+      assertEquals(lockKeys.length, 1);
+    } finally {
+      await held.flush();
+    }
+    assertEquals(
+      getRegisteredLockKeys().filter((key) => key.includes(modelId)),
+      [],
+    );
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(repoDir, { recursive: true }).catch(() => {});

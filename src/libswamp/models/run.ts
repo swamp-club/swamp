@@ -55,6 +55,7 @@ import type { ReportResultView } from "./model_method_run_view.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { ResourceAttributeBudget } from "../../domain/models/resource_attribute_budget.ts";
 import type { DataHandle, ModelDefinition } from "../../domain/models/model.ts";
 import {
   type MethodExecutionService,
@@ -323,6 +324,8 @@ export interface ModelMethodRunDeps {
     persistedProvenance?: ProvenanceMap,
   ) => Promise<void>;
   createExecutionService: () => MethodExecutionService;
+  /** lowers the run's attribute budget; production runs leave it at the default */
+  resourceAttributeCapBytes?: number;
   createVaultService: () => Promise<VaultService>;
   dataRepo: UnifiedDataRepository;
   catalogStore?: CatalogStore;
@@ -1642,6 +1645,9 @@ export async function* modelMethodRun(
                 "swamp.model.method.post_execute",
               );
               const dataArtifacts: DataArtifactView[] = [];
+              const attributeBudget = new ResourceAttributeBudget(
+                deps.resourceAttributeCapBytes,
+              );
               deps.onWrittenVersions?.(
                 writtenVersionsOfHandles(
                   execResult.dataHandles ?? [],
@@ -1670,7 +1676,18 @@ export async function* modelMethodRun(
                   });
 
                   let attributes: Record<string, unknown> | undefined;
+                  let attributesOmitted = false;
+                  // JSON is never zero bytes, so a size of 0 was not recorded:
+                  // such content is measured after its read instead of before
+                  const sized = handle.size > 0;
                   if (handle.metadata.contentType === "application/json") {
+                    attributesOmitted = attributeBudget.exhausted ||
+                      (sized && !attributeBudget.admit(handle.size));
+                  }
+                  if (
+                    handle.metadata.contentType === "application/json" &&
+                    !attributesOmitted
+                  ) {
                     try {
                       const content = await deps.dataRepo.getContent(
                         modelType,
@@ -1678,7 +1695,12 @@ export async function* modelMethodRun(
                         handle.name,
                         handle.version,
                       );
-                      if (content) {
+                      if (
+                        content && !sized &&
+                        !attributeBudget.admit(content.length)
+                      ) {
+                        attributesOmitted = true;
+                      } else if (content) {
                         const text = new TextDecoder().decode(content);
                         attributes = JSON.parse(text) as Record<
                           string,
@@ -1695,6 +1717,10 @@ export async function* modelMethodRun(
                     name: handle.name,
                     path: dataPath,
                     attributes,
+                    tags: handle.tags,
+                    ...(attributesOmitted
+                      ? { attributesOmitted: true as const }
+                      : {}),
                   });
                   yield {
                     kind: "data_artifact_saved",

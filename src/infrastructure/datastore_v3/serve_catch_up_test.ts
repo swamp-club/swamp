@@ -236,6 +236,24 @@ Deno.test("ServeCatchUp.catchUp: replaying pages already applied appends nothing
   });
 });
 
+Deno.test("ServeCatchUp.catchUp: the command's own commit, read back by its partition and met again in the feed, appends nothing (swamp-club#4457)", async () => {
+  await withCheckout(async ({ state, store, serve, catchUp, appends }) => {
+    serve.land(await other(1));
+    await catchUp.catchUp(signal());
+    assertEquals(state.feedCursor(), 1);
+
+    serve.land(await other(2));
+    await catchUp.catchUpPartition("", MODEL, signal());
+    assertEquals(appends, [1, 2]);
+    assertEquals(state.feedCursor(), 1, "the read-back leaves the cursor");
+
+    assertEquals(await catchUp.catchUp(signal()), { applied: 0 });
+    assertEquals(appends, [1, 2], "the own commit is not appended again");
+    assertEquals(await copySeqs(store), [1, 2]);
+    assertEquals(state.feedCursor(), 2);
+  });
+});
+
 Deno.test("ServeCatchUp.catchUp: a commit serve filters leaves a hole and later commits still apply", async () => {
   await withCheckout(async ({ store, state, serve, catchUp }) => {
     serve.land(await other(1));

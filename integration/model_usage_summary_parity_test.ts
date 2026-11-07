@@ -170,7 +170,7 @@ Deno.test("model usage summary: counts match an unlimited output search for the 
             effect: "deny",
             actions: READ,
             resource: { kind: "model", pattern: "*" },
-            condition: 'tags.env == "prod"',
+            condition: '"env" in tags && tags.env == "prod"',
           }),
         ],
         4,

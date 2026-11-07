@@ -45,6 +45,7 @@ import {
 import {
   DEFAULT_REPLICATOR_TIMINGS,
   LitestreamReplicator,
+  type ReplicaReader,
   type ReplicatorDeps,
   resetForeignLitestreamState,
 } from "./litestream_replicator.ts";
@@ -392,11 +393,88 @@ Deno.test({
   async fn() {
     await withWorld(async (world, db) => {
       const replicator = new LitestreamReplicator(world.deps());
-      world.syncAnswer = () =>
-        Promise.resolve({ status: "synced", txid: 4, replicated_txid: 3 });
+      let syncs = 0;
+      world.syncAnswer = () => {
+        syncs++;
+        return Promise.resolve({
+          status: "synced",
+          txid: 3 + syncs,
+          replicated_txid: 3,
+        });
+      };
       const handle = await replicator.acquire(world.request(db, 1));
-      await assertRejects(() => handle.sync(5_000), V3ReplicationError);
+      await assertRejects(
+        () => handle.sync(5_000),
+        V3ReplicationError,
+        '"replicated_txid":3',
+      );
+      assert(syncs > 1, "a short answer is synced again before failing");
       assertEquals(world.leaseChecks, 0);
+      await handle.release();
+      assert(
+        await isMarkedForReplacement(
+          world.paths,
+          world.sidecars[0].supervisorPid,
+        ),
+        "a sync that never confirms condemns the sidecar",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a sync one txid short is confirmed once a later sync reaches its txid",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const answers = [
+        { status: "synced", txid: 7, replicated_txid: 6 },
+        { status: "synced", txid: 8, replicated_txid: 7 },
+      ];
+      world.syncAnswer = () => Promise.resolve(answers.shift()!);
+      const handle = await replicator.acquire(world.request(db, 1));
+      const published: string[] = [];
+      const txid = await handle.sync(5_000, {
+        beforeLeaseCheck: (at) => {
+          published.push(at);
+          return Promise.resolve();
+        },
+      });
+      assertEquals(answers.length, 0);
+      assertEquals(txid, "0000000000000007");
+      assertEquals(published, ["0000000000000007"]);
+      assertEquals(world.leaseChecks, 1);
+      await handle.release();
+      assertEquals(
+        await isMarkedForReplacement(
+          world.paths,
+          world.sidecars[0].supervisorPid,
+        ),
+        false,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator: a later answer below the first txid does not confirm a short sync",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const answers = [
+        { status: "synced", txid: 7, replicated_txid: 6 },
+        { status: "synced", txid: 9, replicated_txid: 6 },
+        { status: "no_change", txid: 9, replicated_txid: 7 },
+      ];
+      world.syncAnswer = () => Promise.resolve(answers.shift()!);
+      const handle = await replicator.acquire(world.request(db, 1));
+      const txid = await handle.sync(5_000);
+      assertEquals(answers.length, 0);
+      assertEquals(txid, "0000000000000007");
       await handle.release();
     });
   },
@@ -1255,5 +1333,125 @@ Deno.test({
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
+  },
+});
+
+function fakeReplicaReader(maxTxid: string | undefined) {
+  const temps: string[] = [];
+  const reader: ReplicaReader = {
+    maxTxid: () => Promise.resolve(maxTxid),
+    restore: async (request) => {
+      temps.push(request.temp);
+      await Deno.writeTextFile(request.temp, "restored");
+    },
+  };
+  return { reader, temps };
+}
+
+Deno.test({
+  name:
+    "LitestreamReplicator.confirmFromReplica: a restored replica at the local cursor confirms and publishes its txid",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const { reader, temps } = fakeReplicaReader("0000000000000009");
+      const replicator = new LitestreamReplicator(
+        world.deps({ replicaReader: reader }),
+      );
+      const handle = await replicator.acquire(world.request(db, 1));
+      const published: string[] = [];
+      const txid = await handle.confirmFromReplica(
+        () => 12,
+        12,
+        5_000,
+        {
+          beforeLeaseCheck: (at) => {
+            published.push(at);
+            return Promise.resolve();
+          },
+        },
+      );
+      assertEquals(txid, "0000000000000009");
+      assertEquals(published, ["0000000000000009"]);
+      assertEquals(world.leaseChecks, 1);
+      assertEquals(temps.length, 1);
+      await assertRejects(() => Deno.stat(temps[0]), Deno.errors.NotFound);
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.confirmFromReplica: a replica behind the local cursor confirms nothing and leaves no temp file",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const { reader, temps } = fakeReplicaReader("0000000000000009");
+      const replicator = new LitestreamReplicator(
+        world.deps({ replicaReader: reader }),
+      );
+      const handle = await replicator.acquire(world.request(db, 1));
+      await assertRejects(
+        () => handle.confirmFromReplica(() => 11, 12, 5_000),
+        V3ReplicationError,
+        "up to cursor 11 of this copy's 12",
+      );
+      await assertRejects(
+        () => handle.confirmFromReplica(() => undefined, 12, 5_000),
+        V3ReplicationError,
+        "up to cursor unknown",
+      );
+      assertEquals(world.leaseChecks, 0);
+      for (const temp of temps) {
+        await assertRejects(() => Deno.stat(temp), Deno.errors.NotFound);
+      }
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.confirmFromReplica: an unreadable replica position confirms nothing",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const { reader, temps } = fakeReplicaReader(undefined);
+      const replicator = new LitestreamReplicator(
+        world.deps({ replicaReader: reader }),
+      );
+      const handle = await replicator.acquire(world.request(db, 1));
+      await assertRejects(
+        () => handle.confirmFromReplica(() => 12, 12, 5_000),
+        V3ReplicationError,
+        "position could not be read",
+      );
+      assertEquals(temps.length, 0);
+      await handle.release();
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "LitestreamReplicator.confirmFromReplica: a lease taken over meanwhile is refused as sync refuses it",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const { reader } = fakeReplicaReader("0000000000000009");
+      const replicator = new LitestreamReplicator(
+        world.deps({ replicaReader: reader }),
+      );
+      const handle = await replicator.acquire(world.request(db, 1));
+      world.leaseCurrent = false;
+      await assertRejects(
+        () => handle.confirmFromReplica(() => 12, 12, 5_000),
+        V3ReplicationError,
+        "lost its writer lease",
+      );
+      assertEquals(world.leaseChecks, 1);
+      await handle.release();
+    });
   },
 });

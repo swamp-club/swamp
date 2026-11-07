@@ -71,6 +71,18 @@ Deno.test("readAccessFingerprint: is a hex SHA-256 digest", () => {
   assertMatch(fingerprintOf([READ_DATA]), /^[0-9a-f]{64}$/);
 });
 
+Deno.test("readAccessFingerprint: is pinned, so a change to how the same inputs decide must bump the format", () => {
+  assertEquals(
+    readAccessFingerprint(
+      { principal: { kind: "user", id: "adam" }, collectives: [], groups: [] },
+      [],
+      [],
+      [],
+    ),
+    "379220434c2d47fd758f02bb3d6339abcfc655f4d04ae586130c81e825eeb8e7",
+  );
+});
+
 Deno.test("readAccessFingerprint: ignores grant order and metadata", () => {
   const other = makeGrant({
     id: "g-other",
@@ -242,4 +254,23 @@ Deno.test("readAccessFingerprint: serve's restricted behavior types change it, i
     ]),
   );
   assertEquals(service.readAccessFingerprint(ADAM, []), none);
+});
+
+Deno.test("readAccessFingerprint: differs by client, so tokens of one person never share a read view", () => {
+  const principal = {
+    principal: { kind: "user" as const, id: "alice" },
+    collectives: [],
+    groups: [],
+  };
+  const direct = readAccessFingerprint(principal, [], [], []);
+  assertNotEquals(
+    direct,
+    readAccessFingerprint(
+      { ...principal, client: "integration:s" },
+      [],
+      [],
+      [],
+    ),
+  );
+  assertEquals(direct, readAccessFingerprint(principal, [], [], []));
 });

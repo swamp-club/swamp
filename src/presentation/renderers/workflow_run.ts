@@ -39,6 +39,8 @@ import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import { signalByKeyCommand } from "../../domain/workflows/signal_wait.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
+import { UserError } from "../../domain/errors.ts";
+import { prettyJson } from "../output/json_stream.ts";
 import { formatReportFrame } from "../output/report_frame.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
 import { dim, green, red, yellow } from "@std/fmt/colors";
@@ -50,6 +52,7 @@ import {
   type DataBoxOptions,
   formatDuration,
   formatTimestamp,
+  isUserFacingArtifact,
   PipeWriter,
   renderDataBox,
   STATUS_COLORS,
@@ -69,14 +72,6 @@ export interface WorkflowRunRenderOpts {
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
   workflowFailed(): boolean;
-}
-
-function isUserFacingArtifact(
-  artifact: { name: string },
-): boolean {
-  if (artifact.name.startsWith("report-")) return false;
-  if (artifact.name === "log") return false;
-  return true;
 }
 
 const QUIET_BUFFER_LIMIT = 500;
@@ -727,7 +722,19 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           }
         }
 
-        if (e.run.status === "failed") {
+        if (e.run.status === "cancelled") {
+          this._failed = true;
+          writeBlankLine();
+          writeOutput(
+            this.pipe.statusLine(
+              "system",
+              "Cancelled",
+              STATUS_COLORS.warn,
+              `workflow ${this.workflowName}`,
+              formatTimestamp(),
+            ),
+          );
+        } else if (e.run.status === "failed") {
           this._failed = true;
           const stepError = extractFirstStepError(e.run);
           const duration = e.run.duration
@@ -1082,6 +1089,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
   }
 
   private renderDataArtifacts(run: WorkflowRunView): void {
+    const withAttributes = showsDataAttributes("log", this.quiet);
     const artifacts: DataArtifact[] = [];
     for (const job of run.jobs) {
       for (const step of job.steps) {
@@ -1090,7 +1098,10 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             if (!isUserFacingArtifact(artifact)) continue;
             artifacts.push({
               name: artifact.name,
-              attributes: artifact.attributes,
+              attributes: withAttributes ? artifact.attributes : undefined,
+              ...(withAttributes && artifact.attributesOmitted
+                ? { attributesOmitted: true as const }
+                : {}),
               source: job.name,
             });
           }
@@ -1102,7 +1113,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
         if (!isUserFacingArtifact(artifact)) continue;
         artifacts.push({
           name: artifact.name,
-          attributes: artifact.attributes,
+          attributes: withAttributes ? artifact.attributes : undefined,
         });
       }
     }
@@ -1187,6 +1198,19 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   private readonly _waitKeyHolders: WaitKeyHolder[] = [];
 
   constructor(private readonly inputsReplayed?: boolean) {}
+
+  // the run is saved before its outcome prints, so a print failure must not
+  // read as a run failure; prettyJson has no depth limit, only a size one
+  private writeRun(run: WorkflowRunView, value: unknown): void {
+    try {
+      unguardedConsole.log(prettyJson(value));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `Workflow run ${run.id} was saved with status ${run.status}, but its JSON output could not be written: ${message}`,
+      );
+    }
+  }
 
   private resultFields(): {
     waitKeyHolders?: WaitKeyHolder[];
@@ -1302,16 +1326,14 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       report_completed: () => {},
       report_failed: () => {},
       completed: (e) => {
-        if (e.run.status === "failed") this._failed = true;
-        unguardedConsole.log(
-          JSON.stringify({ ...e.run, ...this.resultFields() }, null, 2),
-        );
+        if (e.run.status === "failed" || e.run.status === "cancelled") {
+          this._failed = true;
+        }
+        this.writeRun(e.run, { ...e.run, ...this.resultFields() });
       },
       cancelled: (e) => {
         this._failed = true;
-        unguardedConsole.log(
-          JSON.stringify({ ...e.run, ...this.resultFields() }, null, 2),
-        );
+        this.writeRun(e.run, { ...e.run, ...this.resultFields() });
       },
       suspended: (e) => {
         // on a nested wait the gate to decide is the nested run's own, else the
@@ -1387,46 +1409,38 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
           ...(namedWaits.length > 0 ? { nestedSignalWaits: namedWaits } : {}),
         };
         if (signalRequired) {
-          unguardedConsole.log(JSON.stringify(
-            {
-              ...e.run,
-              signalRequired,
-              ...waitsField,
-              ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
-              ...this.resultFields(),
-            },
-            null,
-            2,
-          ));
-          return;
-        }
-        unguardedConsole.log(JSON.stringify(
-          {
+          this.writeRun(e.run, {
             ...e.run,
-            approvalRequired: gate
-              ? {
-                workflowName: gate.workflowName ?? nested?.workflowName,
-                runId: gate.runId,
-                stepId: gate.stepId,
-                jobId: gate.jobId,
-                prompt: gate.prompt,
-                timeout: gate.timeout,
-              }
-              : {
-                workflowName: e.run.workflowName,
-                runId: e.run.id,
-                stepId: e.stepId,
-                jobId: e.jobId,
-                prompt: e.prompt,
-                timeout: e.timeout,
-              },
+            signalRequired,
             ...waitsField,
             ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
             ...this.resultFields(),
-          },
-          null,
-          2,
-        ));
+          });
+          return;
+        }
+        this.writeRun(e.run, {
+          ...e.run,
+          approvalRequired: gate
+            ? {
+              workflowName: gate.workflowName ?? nested?.workflowName,
+              runId: gate.runId,
+              stepId: gate.stepId,
+              jobId: gate.jobId,
+              prompt: gate.prompt,
+              timeout: gate.timeout,
+            }
+            : {
+              workflowName: e.run.workflowName,
+              runId: e.run.id,
+              stepId: e.stepId,
+              jobId: e.jobId,
+              prompt: e.prompt,
+              timeout: e.timeout,
+            },
+          ...waitsField,
+          ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
+          ...this.resultFields(),
+        });
       },
       error: (e) => {
         throw userErrorFromSwampError(e.error);
@@ -1437,6 +1451,14 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
   workflowFailed(): boolean {
     return this._failed;
   }
+}
+
+/**
+ * a step's stdout is one of its attributes and -q hides step output; callers
+ * skip reading what is not shown
+ */
+export function showsDataAttributes(mode: OutputMode, quiet: boolean): boolean {
+  return mode === "json" || !quiet;
 }
 
 export function createWorkflowRunRenderer(

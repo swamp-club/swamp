@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { nameLockHolder } from "./auth_context.ts";
+import { CommitLeaseLostError } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { serveUpstreamAt } from "../infrastructure/datastore_v3/serve_upstream_registry.ts";
 import type { ServeUpstreamTarget } from "../domain/datastore_v3/serve_upstream.ts";
 import { recordServeUpstreamFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
@@ -1564,6 +1566,8 @@ export async function requireInitializedRepoUnlocked(
         ? { ownerCheck: options.v3OwnerCheck }
         : {}),
     });
+    // the hold caught up from serve, which named the caller's principal
+    nameLockHolder(datastoreRootOf(datastoreConfig));
   }
 
   const repoPath = RepoPath.create(repoDir);
@@ -1791,6 +1795,12 @@ function serveLockOf(
         maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
       }),
   });
+}
+
+/** the datastore root a serve-mode checkout's state is kept under, if local */
+export function datastoreRootOf(config: DatastoreConfig): string | undefined {
+  const locking = lockingConfigOf(config);
+  return isCustomDatastoreConfig(locking) ? undefined : locking.path;
 }
 
 /**
@@ -2619,7 +2629,7 @@ async function checkpointStepUnderLease(
     return;
   }
   if (outcome === "refused") {
-    throw new UserError(
+    throw new CommitLeaseLostError(
       "Serve refused this step's writes while it held the behavior's lock: " +
         "the lease may have lapsed. See 'swamp datastore lock status'",
     );
@@ -2764,6 +2774,8 @@ export interface AcquireModelLocksOptions {
    */
   pull?: boolean;
   failIfBusy?: boolean;
+  /** stops every lock wait; nothing taken so far stays held */
+  signal?: AbortSignal;
 }
 
 /**
@@ -3281,7 +3293,9 @@ async function waitForGlobalLockRelease(
   config: DatastoreConfig,
   write: LockProgressWriter,
   next: string,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
     write(
@@ -3298,7 +3312,8 @@ async function waitForGlobalLockRelease(
       { resource: ".datastore.lock" },
       async () => {
         while (true) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          await pollDelay(1_000, signal);
+          signal?.throwIfAborted();
           const info = await globalLock.inspect();
           if (!info) break;
           const acquiredAt = new Date(info.acquiredAt).getTime();
@@ -3560,6 +3575,7 @@ export async function acquireModelLocks(
       config,
       write,
       "per-model locks",
+      options?.signal,
     );
   }
 
@@ -3640,6 +3656,7 @@ export async function acquireModelLocks(
           scope: { kind: "model", modelType, modelId },
           shareable: isCustomDatastoreConfig(config),
         },
+        signal: options?.signal,
       });
       lockKeys.push(coordinatorKey);
       heldLocks.push(lock);
@@ -3674,7 +3691,8 @@ export async function acquireModelLocks(
           { resource: ".datastore.lock" },
           async () => {
             while (true) {
-              await new Promise((resolve) => setTimeout(resolve, 1_000));
+              await pollDelay(1_000, options?.signal);
+              options?.signal?.throwIfAborted();
               const info = await globalLock.inspect();
               if (!info) break;
               const acquiredAt = new Date(info.acquiredAt).getTime();

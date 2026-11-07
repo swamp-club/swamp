@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { isZodSchemaLike } from "../zod_compat.ts";
 import { boundedRecord } from "../untrusted_parse.ts";
+import type { InFlightDataWrites } from "../data/in_flight_data_writes.ts";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Environment } from "cel-js";
 import { getLogger, type Logger } from "@logtape/logtape";
@@ -63,6 +64,8 @@ export interface ResourceOutputSpec {
   sensitiveOutput?: boolean;
 
   vaultName?: string;
+
+  display?: boolean;
 }
 
 export interface FileOutputSpec {
@@ -77,6 +80,8 @@ export interface FileOutputSpec {
   streaming?: boolean;
 
   tags?: Record<string, string>;
+
+  display?: boolean;
 }
 
 export const ResourceOutputSpecSchema = z.object({
@@ -88,6 +93,7 @@ export const ResourceOutputSpecSchema = z.object({
   tags: z.record(z.string(), z.string()).optional(),
   sensitiveOutput: z.boolean().optional(),
   vaultName: z.string().optional(),
+  display: z.boolean().optional(),
 });
 
 export const FileOutputSpecSchema = z.object({
@@ -97,6 +103,7 @@ export const FileOutputSpecSchema = z.object({
   garbageCollection: GarbageCollectionSchema,
   streaming: z.boolean().optional(),
   tags: z.record(z.string(), z.string()).optional(),
+  display: z.boolean().optional(),
 });
 
 export interface ResourceWriteOverrides {
@@ -245,6 +252,9 @@ export interface MethodContext {
    * forces fail-instead-of-redispatch on worker disconnect
    */
   declaredWrites?: boolean;
+
+  /** the run's started writes; absent outside a workflow run */
+  inFlightDataWrites?: InFlightDataWrites;
 
   onEvent?: (event: MethodExecutionEvent) => void;
 

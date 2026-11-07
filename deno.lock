@@ -45,7 +45,7 @@
     "npm:@opentelemetry/sdk-logs@~0.57.2": "0.57.2_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/sdk-metrics@^1.30.1": "1.30.1_@opentelemetry+api@1.9.1",
     "npm:@opentelemetry/sdk-trace-base@^1.30.1": "1.30.1_@opentelemetry+api@1.9.1",
-    "npm:@opentelemetry/semantic-conventions@^1.40.0": "1.40.0",
+    "npm:@opentelemetry/semantic-conventions@1.28.0": "1.28.0",
     "npm:@tailwindcss/vite@^4.3.3": "4.3.3_vite@6.4.5_yaml@2.9.0",
     "npm:@types/d3-ease@^3.0.2": "3.0.2",
     "npm:@types/d3-force@^3.0.10": "3.0.10",
@@ -937,7 +937,7 @@
       "integrity": "sha512-OOCM2C/QIURhJMuKaekP3TRBxBKxG/TWWA0TL2J6nXUtDnuCtccy49LUJF8xPFXMX+0LMcxFpCo8M9cGY1W6rQ==",
       "dependencies": [
         "@opentelemetry/api",
-        "@opentelemetry/semantic-conventions@1.28.0"
+        "@opentelemetry/semantic-conventions"
       ]
     },
     "@opentelemetry/otlp-transformer@0.57.2_@opentelemetry+api@1.9.1": {
@@ -958,7 +958,7 @@
       "dependencies": [
         "@opentelemetry/api",
         "@opentelemetry/core",
-        "@opentelemetry/semantic-conventions@1.28.0"
+        "@opentelemetry/semantic-conventions"
       ]
     },
     "@opentelemetry/sdk-logs@0.57.2_@opentelemetry+api@1.9.1": {
@@ -984,14 +984,12 @@
         "@opentelemetry/api",
         "@opentelemetry/core",
         "@opentelemetry/resources",
-        "@opentelemetry/semantic-conventions@1.28.0"
-      ]
+        "@opentelemetry/semantic-conventions"
+      ],
+      "deprecated": true
     },
     "@opentelemetry/semantic-conventions@1.28.0": {
       "integrity": "sha512-lp4qAiMTD4sNWW4DbKLBkfiMZ4jbAboJIGOQr5DvciMRI494OapieI9qiODpOt0XBr1LjIDy1xAGAnVs5supTA=="
-    },
-    "@opentelemetry/semantic-conventions@1.40.0": {
-      "integrity": "sha512-cifvXDhcqMwwTlTK04GBNeIe7yyo28Mfby85QXFe1Yk8nmi36Ab/5UQwptOx84SsoGNRg+EVSjwzfSZMy6pmlw=="
     },
     "@protobufjs/aspromise@1.1.2": {
       "integrity": "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ=="
@@ -2772,7 +2770,7 @@
       "npm:@opentelemetry/sdk-logs@~0.57.2",
       "npm:@opentelemetry/sdk-metrics@^1.30.1",
       "npm:@opentelemetry/sdk-trace-base@^1.30.1",
-      "npm:@opentelemetry/semantic-conventions@^1.40.0",
+      "npm:@opentelemetry/semantic-conventions@1.28.0",
       "npm:@types/react@^19.2.14",
       "npm:@vercel/beautiful-mermaid@~0.1.5",
       "npm:croner@^9.1.0",

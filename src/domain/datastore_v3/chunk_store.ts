@@ -207,6 +207,11 @@ export interface PrefetchingStorage {
   ): Promise<void>;
 }
 
+// drops what it fetched once the files made from it are durable; serve keeps it
+export interface ReleasingStorage {
+  releaseFetched(signal: AbortSignal): Promise<void>;
+}
+
 export class ChunkStore {
   readonly chunkBytes: number;
   readonly #storage: DatastoreStorage;
@@ -400,6 +405,11 @@ export class ChunkStore {
       hashes,
       signal,
     );
+  }
+
+  async releaseFetched(signal: AbortSignal): Promise<void> {
+    const storage = this.#storage as Partial<ReleasingStorage>;
+    await storage.releaseFetched?.(signal);
   }
 
   /**

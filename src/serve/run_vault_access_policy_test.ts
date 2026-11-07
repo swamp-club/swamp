@@ -945,3 +945,98 @@ Deno.test("decideRunVaultAccess: with keyUnknown a key-conditioned allow scoped 
   );
   assertEquals(del.rule, "key-undetermined");
 });
+
+Deno.test("createRunVaultScope: a refusal names the client captured with the principal", async () => {
+  const { events, emitter } = recorder();
+  const scope = createRunVaultScope({
+    authMode: "token",
+    policySnapshotLoader: { decisionService: service([grant()]) },
+    auditEmitter: emitter,
+    instanceId: "i-1",
+  }, {
+    source: "session",
+    principal: { kind: "user", id: "bot" },
+    idpGroups: ["eng"],
+    collectives: [],
+    client: "integration:ops-slack",
+  });
+  assert(scope);
+  await assertRejects(
+    () =>
+      runWithVaultAccess(
+        scope.access,
+        () => scope.access.check("erp", "read", "get", "k"),
+      ),
+    VaultAccessDeniedError,
+  );
+  assertEquals(events[0].client, "integration:ops-slack");
+});
+
+Deno.test("resumeRunVaultScope: a resume's refusal names the client the run recorded", async () => {
+  const { events, emitter } = recorder();
+  const scope = resumeRunVaultScope({
+    authMode: "token",
+    policySnapshotLoader: { decisionService: service([grant()]) },
+    auditEmitter: emitter,
+    instanceId: "i-1",
+  }, {
+    id: "run-1",
+    initiatedBy: "user:bot",
+    client: "direct:cli",
+    triggeringPrincipal: {
+      kind: "user",
+      id: "bot",
+      membership: { localGroups: [], idpGroups: [], collectives: [] },
+    },
+  });
+  assert(scope);
+  await assertRejects(
+    () =>
+      runWithVaultAccess(
+        scope.access,
+        () => scope.access.check("erp", "read", "get", "k"),
+      ),
+    VaultAccessDeniedError,
+  );
+  assertEquals(events[0].client, "direct:cli");
+});
+
+Deno.test("decideRunVaultAccess: a run reads no client, so a client deny stops a request and not a run", () => {
+  const scoped = service([
+    grant({
+      effect: "deny",
+      actions: ["read"],
+      resource: { kind: "vault", pattern: "prod" },
+      condition: 'client == "integration:slack"',
+    }),
+  ]);
+  const decision = decideRunVaultAccess(scoped, user(), "prod", "read", "get");
+  assertEquals(decision.allowed, true);
+});
+
+Deno.test("createRunVaultScope: a run started through an integration uses the vault its client is denied", async () => {
+  const deps = {
+    authMode: "token" as const,
+    policySnapshotLoader: {
+      decisionService: service([
+        grant({
+          effect: "deny",
+          actions: ["read"],
+          resource: { kind: "vault", pattern: "prod" },
+          condition: 'client == "integration:slack"',
+        }),
+      ]),
+    },
+  };
+  const scope = createRunVaultScope(deps, {
+    source: "session",
+    principal: { kind: "user", id: "bot" },
+    idpGroups: [],
+    collectives: [],
+    client: "integration:slack",
+  });
+  assertEquals(
+    (await scope!.access.policies[0].decide("prod", "read", "get")).allowed,
+    true,
+  );
+});

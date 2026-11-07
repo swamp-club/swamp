@@ -255,7 +255,7 @@ Distributed lock for serializing write access across processes.
 
 ```typescript
 interface DistributedLock {
-  acquire(): Promise<void>;
+  acquire(signal?: AbortSignal): Promise<void>;
   release(): Promise<void>;
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   inspect(): Promise<LockInfo | null>;
@@ -263,12 +263,17 @@ interface DistributedLock {
 }
 ```
 
-### `acquire()`
+### `acquire(signal?)`
 
 Acquire the lock. Starts an internal heartbeat to prevent expiry. Retries until
 `maxWaitMs`. Force-acquires stale locks (TTL expired).
 
 Throws `LockTimeoutError` if the lock cannot be acquired within `maxWaitMs`.
+
+`signal` is optional: swamp passes a cancelled step's signal so the wait stops.
+Honour it by rejecting with `signal.reason` between retries, holding nothing;
+never abort a request that may already have granted the lock. A provider that
+ignores it keeps waiting until `maxWaitMs`.
 
 ### `release()`
 

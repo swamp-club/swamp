@@ -68,6 +68,8 @@ export interface CommitLogEngine {
   readonly forwardsToServe?: boolean;
   configLoaded?(partition: PartitionKey): void;
   staleConfigEdits?(partition: PartitionKey): Promise<StaleConfigRecord[]>;
+  /** this command caught up from serve, and serve was reachable then */
+  reachedServe?(): boolean;
 }
 
 export interface StaleConfigRecord {
@@ -503,12 +505,23 @@ export async function startConfigEdit(
   kind: DefinitionKind,
   name: string,
   inEditor: boolean,
+  options: { readonly mayRename?: boolean } = {},
 ): Promise<void> {
   if (inEditor) {
     markConfigLoaded(repoContext, kind, name);
-  } else {
-    await assertConfigEditCurrent(repoContext, kind, name);
+    return;
   }
+  // serve decides the grant before the base, so a caller without the grant is
+  // never shown who changed it; a rename commits its new name first, so it,
+  // and anything offline, is still refused here
+  const commitLog = commitLogOf(repoContext);
+  if (
+    options.mayRename === false && commitLog?.forwardsToServe === true &&
+    commitLog.reachedServe?.() === true
+  ) {
+    return;
+  }
+  await assertConfigEditCurrent(repoContext, kind, name);
 }
 
 export function rootCommittedBeforeThrowing(

@@ -27,6 +27,7 @@ import type {
 import type { Definition } from "../definitions/definition.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import type {
+  DataWriter,
   MethodContext,
   MethodDefinition,
   MethodResult,
@@ -43,8 +44,16 @@ import {
   createResourceWriter,
 } from "./data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
+import {
+  type InFlightDataWrites,
+  processDataWrites,
+} from "../data/in_flight_data_writes.ts";
 import { withConsoleGuard } from "./console_guard.ts";
 import { processTraceEnv } from "./process_trace_env.ts";
+import {
+  RESOURCE_ATTRIBUTE_CAP_BYTES,
+  ResourceAttributeBudget,
+} from "./resource_attribute_budget.ts";
 
 /**
  * without props a single-brace span is left as written so plain output such as
@@ -133,6 +142,28 @@ export interface MethodExecutor {
   ): Promise<MethodResult>;
 }
 
+/** each call that persists a version counts as a started write */
+function trackedDataWriter(
+  writer: DataWriter,
+  dataWrites: InFlightDataWrites,
+): DataWriter {
+  return {
+    get dataId() {
+      return writer.dataId;
+    },
+    get name() {
+      return writer.name;
+    },
+    writeAll: (content) => dataWrites.track(writer.writeAll(content)),
+    writeText: (text) => dataWrites.track(writer.writeText(text)),
+    writeLine: (line) => writer.writeLine(line),
+    writeStream: (stream, options) =>
+      dataWrites.track(writer.writeStream(stream, options)),
+    getFilePath: () => writer.getFilePath(),
+    finalize: () => dataWrites.track(writer.finalize()),
+  };
+}
+
 /**
  * runs every step without remote placement from live in-process objects given
  * at construction, ignoring the serialized parts of ExecutionRequest
@@ -154,6 +185,7 @@ export class InProcessExecutor {
       ) => ReturnType<NonNullable<MethodContext["runModel"]>>;
     },
     private readonly workflowGateService?: WorkflowGateService,
+    private readonly resourceAttributeCapBytes = RESOURCE_ATTRIBUTE_CAP_BYTES,
   ) {}
 
   async execute(
@@ -188,6 +220,7 @@ export class InProcessExecutor {
       deferred,
       Deno.build.os,
       outputNames,
+      new ResourceAttributeBudget(this.resourceAttributeCapBytes),
     );
 
     const {
@@ -250,6 +283,8 @@ export class InProcessExecutor {
           dataQueryService.query(predicate, { select })
         : undefined);
 
+    const dataWrites = this.context.inFlightDataWrites ?? processDataWrites;
+
     this.contextWithWriters = {
       ...this.context,
       methodName: this.methodName,
@@ -259,12 +294,17 @@ export class InProcessExecutor {
         this.context.onEvent,
         this.context.redactor,
       ),
-      writeResource,
+      writeResource: (specName, name, data, overrides) =>
+        dataWrites.track(writeResource(specName, name, data, overrides)),
       readResource,
       deleteResource,
       readModelData,
       queryData,
-      createFileWriter,
+      createFileWriter: (specName, name, overrides) =>
+        trackedDataWriter(
+          createFileWriter(specName, name, overrides),
+          dataWrites,
+        ),
     };
 
     if (this.modelInvocationService?.invoke) {

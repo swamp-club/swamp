@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { ensureDir, walk } from "@std/fs";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -49,7 +54,9 @@ import {
   VaultConfig,
 } from "../src/domain/vaults/vault_config.ts";
 import { VaultSecretBag } from "../src/domain/vaults/vault_secret_bag.ts";
+import { SecretNotFoundError } from "../src/domain/vaults/secret_not_found_error.ts";
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
+import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import {
   CelEvaluator,
   createExtensionCelEnvironment,
@@ -834,15 +841,25 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       `\${{ env.${unsetVariable} }}`,
     );
 
-    const checksBeforeMissing = f.checked.length;
+    // A get-only provider cannot tell a missing key from a failure to answer,
+    // so the reference is unchecked: stored text for the check, and a warning.
     const missing = await deps.validateModel(missingDef, f.model, f.type);
-    const missingCheck = missing.results.find((r) =>
-      r.name === "Check argument delivery"
+    assertEquals(
+      missing.results.filter((r) => !r.passed),
+      [],
+      JSON.stringify(missing.results),
     );
-    assertEquals(missingCheck?.passed, false);
-    assertStringIncludes(missingCheck?.error ?? "", "no-such-key");
-    assertEquals(f.checked.length, checksBeforeMissing);
-    assertValueFree(f, JSON.stringify(missing), "the missing-key failure");
+    assertEquals(
+      f.checked.at(-1)!.globalArgs.token,
+      "${{ vault.get('prod', 'no-such-key') }}",
+    );
+    assertEquals(
+      missing.warnings.find((w) => w.name === "Secret references not checked")
+        ?.secretReferences?.map((r) => r.key),
+      ["no-such-key"],
+    );
+    assertValueFree(f, JSON.stringify(missing), "the unchecked reference");
+    const checksBeforeMissing = f.checked.length;
 
     // A vault reached through an alias is refused as the run refuses it,
     // before any check runs and with no read.
@@ -935,16 +952,219 @@ Deno.test("typed local behavior: validate reports value-free diagnostics, delive
       f.model,
       f.type,
     );
-    const besideMissingCheck = besideMissing.results.find((r) =>
-      r.name === "Check argument delivery"
+    assertEquals(
+      besideMissing.results.filter((r) => !r.passed),
+      [],
+      JSON.stringify(besideMissing.results),
     );
-    assertEquals(besideMissingCheck?.passed, false);
-    assertStringIncludes(
-      besideMissingCheck?.error ?? "",
-      "no-such-key-either",
+    assertEquals(
+      besideMissing.warnings.find((w) =>
+        w.name === "Secret references not checked"
+      )?.secretReferences?.map((r) => r.key),
+      ["no-such-key-either"],
     );
-    assertEquals(f.checked.length, checksBeforeOrdered);
+    assertEquals(f.checked.length, checksBeforeOrdered + 1);
     await assertNoPlaintextOnDisk(f);
+  });
+});
+
+Deno.test("typed local behavior: validate leaves a reference the vault cannot answer for as stored text with a warning, while a denial, an unconfigured vault, a missing key has() reports and a failed load still fail, and a run still fails", async () => {
+  await withFixture(async (f) => {
+    const unreachable = "1Password CLI (op) is not installed or not in PATH.";
+    const types: string[] = [];
+    const register = (
+      has: ((key: string) => Promise<boolean>) | undefined,
+      get: (key: string) => Promise<string>,
+    ) => {
+      const type = `@test/unanswering-${crypto.randomUUID()}`;
+      types.push(type);
+      vaultTypeRegistry.register({
+        type,
+        name: "Unanswering vault",
+        description: "A provider whose backend fails",
+        isBuiltIn: false,
+        createProvider: (name: string) => ({
+          ...(has === undefined ? {} : { has }),
+          get,
+          put: () => Promise.resolve(),
+          list: () => Promise.resolve([]),
+          getName: () => name,
+        }),
+      });
+      return type;
+    };
+    try {
+      const downType = register(
+        () => Promise.reject(new Error(unreachable)),
+        () => Promise.reject(new Error(unreachable)),
+      );
+      const strictType = register(
+        (key) => Promise.resolve(key === "present"),
+        () => Promise.reject(new Error("backend dropped the read")),
+      );
+      let countedCalls = 0;
+      const countedType = register(
+        () => {
+          countedCalls++;
+          return Promise.reject(new Error(unreachable));
+        },
+        () => Promise.reject(new Error(unreachable)),
+      );
+      const notFoundType = register(
+        undefined,
+        (key) => Promise.reject(new SecretNotFoundError("gone", key)),
+      );
+      const vaultConfigs = new YamlVaultConfigRepository(f.repoDir);
+      await vaultConfigs.save(
+        VaultConfig.create(
+          createVaultConfigId(crypto.randomUUID()),
+          "counted",
+          countedType,
+          {},
+        ),
+      );
+      for (
+        const [name, type] of [
+          ["down", downType],
+          ["strict", strictType],
+          ["gone", notFoundType],
+        ]
+      ) {
+        await vaultConfigs.save(
+          VaultConfig.create(
+            createVaultConfigId(crypto.randomUUID()),
+            name,
+            type,
+            {},
+          ),
+        );
+      }
+      const define = (name: string, token: string) =>
+        f.save(Definition.create({
+          name,
+          type: f.type.normalized,
+          globalArguments: { token },
+          methods: { [METHOD]: { arguments: {} } },
+        }));
+      const downText = "${{ vault.get('down', 'item') }}";
+      const downDef = await define("down", downText);
+      const deps = createModelValidateDeps(
+        f.repoDir,
+        { method: METHOD },
+        undefined,
+        f.dataRepo,
+        f.catalog,
+        f.definitionRepo,
+      );
+
+      const down = await deps.validateModel(downDef, f.model, f.type);
+      assertEquals(
+        down.results.filter((r) => !r.passed),
+        [],
+        JSON.stringify(down.results),
+      );
+      assertEquals(
+        down.results.find((r) => r.name === "Check: see-args")?.passed,
+        true,
+      );
+      assertEquals(f.checked.at(-1)!.globalArgs.token, downText);
+      assertEquals(f.checked.at(-1)!.loaded, false);
+      const warning = down.warnings.find((w) =>
+        w.name === "Secret references not checked"
+      );
+      assertEquals(warning?.secretReferences, [{
+        location: "globalArguments.token:1:1",
+        vaultName: "down",
+        key: "item",
+        reason: unreachable,
+      }]);
+
+      // validate asks the provider once for a reference, however many passes it makes.
+      const counted = await deps.validateModel(
+        await define("counted", "${{ vault.get('counted', 'item') }}"),
+        f.model,
+        f.type,
+      );
+      assertEquals(countedCalls, 1);
+      assertEquals(
+        counted.warnings.find((w) => w.name === "Secret references not checked")
+          ?.secretReferences?.length,
+        1,
+      );
+
+      const failures: [string, string, string][] = [
+        ["gone", "${{ vault.get('gone', 'item') }}", "not found"],
+        ["strict-missing", "${{ vault.get('strict', 'absent') }}", "not found"],
+        [
+          "strict-load",
+          "${{ vault.get('strict', 'present') }}",
+          "backend dropped the read",
+        ],
+        [
+          "nowhere",
+          "${{ vault.get('nowhere', 'item') }}",
+          "Vault 'nowhere' not found",
+        ],
+      ];
+      for (const [name, token, reason] of failures) {
+        const checksBefore = f.checked.length;
+        const outcome = await deps.validateModel(
+          await define(name, token),
+          f.model,
+          f.type,
+        );
+        const delivery = outcome.results.find((r) =>
+          r.name === "Check argument delivery"
+        );
+        assertEquals(delivery?.passed, false, name);
+        assertStringIncludes(delivery?.error ?? "", reason, name);
+        assertEquals(f.checked.length, checksBefore, name);
+        assertEquals(
+          outcome.warnings.some((w) =>
+            w.name === "Secret references not checked"
+          ),
+          false,
+          name,
+        );
+      }
+
+      const denied = await f.access(
+        () => deps.validateModel(downDef, f.model, f.type),
+        [VAULT],
+      );
+      const deniedDelivery = denied.results.find((r) =>
+        r.name === "Check argument delivery"
+      );
+      assertEquals(deniedDelivery?.passed, false);
+      assertStringIncludes(deniedDelivery?.error ?? "", "refused");
+
+      f.vaultService.registerVault({
+        name: "down",
+        type: downType,
+        config: {},
+      });
+      const checksBeforeRun = f.checked.length;
+      const receivedBeforeRun = f.received.length;
+      // A run needs the value: the provider's failure stops it.
+      await assertRejects(
+        () =>
+          collect<ModelMethodRunEvent>(
+            modelMethodRun(createLibSwampContext(), f.runDeps(), {
+              modelIdOrName: "down",
+              methodName: METHOD,
+              inputs: {},
+              lastEvaluated: false,
+            }),
+          ),
+        Error,
+        `Failed to resolve vault expression vault.get('down', 'item') (at globalArguments.token:1:1): ${unreachable}`,
+      );
+      assertEquals(f.checked.length, checksBeforeRun);
+      assertEquals(f.received.length, receivedBeforeRun);
+      await assertNoPlaintextOnDisk(f);
+    } finally {
+      for (const type of types) vaultTypeRegistry.invalidateType(type);
+    }
   });
 });
 

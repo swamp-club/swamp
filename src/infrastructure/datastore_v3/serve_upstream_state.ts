@@ -28,6 +28,7 @@ import { ensureDirSync } from "@std/fs";
 import { DatabaseSync } from "node:sqlite";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { useWalJournal } from "./sqlite_wal.ts";
+import type { ServeInitiatorMode } from "../../domain/datastore_v3/serve_upstream.ts";
 
 export const SERVE_UPSTREAM_STATE_SCHEMA_NEWER_CODE =
   "datastore_v3_serve_state_schema_newer";
@@ -101,6 +102,13 @@ const MIGRATIONS: readonly string[] = [
      id INTEGER PRIMARY KEY CHECK (id = 1),
      at TEXT NOT NULL,
      clock_offset_ms INTEGER
+   );`,
+  // whether serve checks run initiators, and this token's principal, which an
+  // offline run names; no row: serve not heard from since the upgrade
+  `CREATE TABLE IF NOT EXISTS initiator (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     mode TEXT NOT NULL,
+     principal TEXT
    );`,
 ];
 
@@ -377,6 +385,37 @@ export class ServeUpstreamState {
     });
   }
 
+  initiator(): ServeInitiatorMode | undefined {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      "SELECT mode, principal FROM initiator WHERE id = 1",
+    ).get() as { mode: string; principal: string | null } | undefined;
+    if (row === undefined) return undefined;
+    return row.mode === "checked" && row.principal !== null
+      ? { kind: "checked", principal: row.principal }
+      : { kind: "not-checked" };
+  }
+
+  /** written only when it changes, so a command's catch-up costs no write */
+  recordInitiator(mode: ServeInitiatorMode): void {
+    this.#assertOpen();
+    const principal = mode.kind === "checked" ? mode.principal : null;
+    const known = this.initiator();
+    if (
+      known?.kind === mode.kind &&
+      (known.kind === "checked" ? known.principal : null) === principal
+    ) {
+      return;
+    }
+    this.#transaction(() => {
+      this.#db.prepare(
+        `INSERT INTO initiator (id, mode, principal) VALUES (1, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET mode = excluded.mode,
+           principal = excluded.principal`,
+      ).run(mode.kind, principal);
+    });
+  }
+
   copyId(): string {
     this.#assertOpen();
     return (this.#db.prepare("SELECT copy_id FROM copy WHERE id = 1").get() as {
@@ -498,6 +537,14 @@ export class ServeUpstreamState {
   finishCallerReset(fingerprint: string, accessResetAt?: number): void {
     this.#assertOpen();
     this.#transaction(() => {
+      // another token may stand for another principal; an access reset keeps
+      // the token, and a cut-short reset still holds the old fingerprint here
+      const stored = this.#db.prepare(
+        "SELECT fingerprint FROM caller WHERE id = 1",
+      ).get() as { fingerprint: string } | undefined;
+      if (stored?.fingerprint !== fingerprint) {
+        this.#db.exec("DELETE FROM initiator");
+      }
       this.#db.prepare(
         `INSERT INTO caller (id, fingerprint, resetting) VALUES (1, ?, 0)
          ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint,

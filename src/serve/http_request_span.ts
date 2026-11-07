@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type ServerSpanOptions,
   SpanStatusCode,
   withServerSpan,
 } from "../infrastructure/tracing/mod.ts";
@@ -25,7 +26,7 @@ import {
   datastoreRouteTemplate,
   matchDatastoreRoute,
 } from "./datastore_routes.ts";
-import { SERVE_REQUEST_PATH } from "./protocol.ts";
+import { SERVE_ACTION_PATH, SERVE_REQUEST_PATH } from "./protocol.ts";
 
 // Routes `swamp serve` answers at a fixed path; serve_http_route_span_rules_test
 // fails when the handler in src/cli/commands/serve.ts answers one missing here.
@@ -45,6 +46,7 @@ const EXACT_ROUTES: ReadonlySet<string> = new Set([
   "/api/v1/serve/config",
   "/api/v1/cancel",
   SERVE_REQUEST_PATH,
+  SERVE_ACTION_PATH,
   "/internal/runs",
   "/dashboard",
 ]);
@@ -88,34 +90,49 @@ function isWebSocketUpgrade(req: Request): boolean {
 }
 
 /**
- * WebSocket upgrades pass untraced; only the route template is recorded, never
- * path, query, headers or body, since webhook routes may hold a secret and
- * data-plane paths carry data names
+ * The server span for one HTTP request: only the route template is recorded,
+ * never path, query, headers or body, since webhook routes may hold a secret
+ * and data-plane paths carry data names.
+ */
+export function withHttpServerSpan(
+  req: Request,
+  handle: () => Response | Promise<Response>,
+  options: ServerSpanOptions = {},
+): Promise<Response> {
+  const route = resolveHttpRoute(new URL(req.url).pathname);
+  const method = KNOWN_METHODS.has(req.method) ? req.method : "_OTHER";
+  const name = route ? `${method} ${route}` : method;
+  const attributes: Record<string, string> = {
+    "http.request.method": method,
+  };
+  if (method !== req.method) {
+    attributes["http.request.method_original"] = req.method;
+  }
+  if (route) attributes["http.route"] = route;
+
+  return withServerSpan(name, attributes, async (span) => {
+    const response = await handle();
+    span.setAttribute("http.response.status_code", response.status);
+    if (response.status >= 500) {
+      span.setStatus({ code: SpanStatusCode.ERROR });
+    }
+    return response;
+  }, options);
+}
+
+/**
+ * WebSocket upgrades pass untraced. Datastore routes open their span in
+ * handleDatastoreRequest, once the caller is authenticated, so an
+ * authenticated member's trace can be adopted.
  */
 export function traceHttpRequests<A extends Deno.Addr = Deno.Addr>(
   handler: Deno.ServeHandler<A>,
 ): Deno.ServeHandler<A> {
   return (req, info) => {
     if (isWebSocketUpgrade(req)) return handler(req, info);
-
-    const route = resolveHttpRoute(new URL(req.url).pathname);
-    const method = KNOWN_METHODS.has(req.method) ? req.method : "_OTHER";
-    const name = route ? `${method} ${route}` : method;
-    const attributes: Record<string, string> = {
-      "http.request.method": method,
-    };
-    if (method !== req.method) {
-      attributes["http.request.method_original"] = req.method;
+    if (matchDatastoreRoute(new URL(req.url).pathname) !== undefined) {
+      return handler(req, info);
     }
-    if (route) attributes["http.route"] = route;
-
-    return withServerSpan(name, attributes, async (span) => {
-      const response = await handler(req, info);
-      span.setAttribute("http.response.status_code", response.status);
-      if (response.status >= 500) {
-        span.setStatus({ code: SpanStatusCode.ERROR });
-      }
-      return response;
-    });
+    return withHttpServerSpan(req, () => handler(req, info));
   };
 }

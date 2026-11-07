@@ -111,6 +111,15 @@ function formatWarningLines(
         lines.push(`    ${detail.path} passes ${bold(detail.text)}`);
       }
     }
+    if (w.secretReferences) {
+      for (const detail of w.secretReferences) {
+        lines.push(
+          `    ${detail.location} reads ${
+            bold(`${detail.vaultName}/${detail.key}`)
+          }: ${detail.reason}`,
+        );
+      }
+    }
     lines.push(`    ${yellow(arrow)} ${messageFor(w, surface)}`);
   }
   return lines;

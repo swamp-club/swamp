@@ -32,6 +32,7 @@ export type DatastoreRoute =
     readonly partition: string;
   }
   | { readonly kind: "changes"; readonly namespace: string }
+  | { readonly kind: "authorize"; readonly namespace: string }
   | { readonly kind: "base"; readonly namespace: string }
   | { readonly kind: "locks"; readonly namespace: string }
   | {
@@ -86,6 +87,9 @@ export function matchDatastoreRoute(
   if (rest.length === 1 && rest[0] === "changes") {
     return { kind: "changes", namespace };
   }
+  if (rest.length === 1 && rest[0] === "authorize") {
+    return { kind: "authorize", namespace };
+  }
   if (rest.length === 1 && rest[0] === "base") {
     return { kind: "base", namespace };
   }
@@ -124,6 +128,8 @@ export function datastoreRouteTemplate(route: DatastoreRoute): string {
       return "/api/v1/datastore/{namespace}/partitions/{partition}/commits";
     case "changes":
       return "/api/v1/datastore/{namespace}/changes";
+    case "authorize":
+      return "/api/v1/datastore/{namespace}/authorize";
     case "base":
       return "/api/v1/datastore/{namespace}/base";
     case "locks":

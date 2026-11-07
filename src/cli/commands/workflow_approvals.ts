@@ -110,7 +110,13 @@ function renderExpired(
       "  Expired at:   {expiredAt} (timeout {timeoutSeconds}s)",
       { expiredAt: item.expiredAt, timeoutSeconds: item.timeoutSeconds },
     );
-    if (!quiet) writeOutput(`  ${cancelCommand(item, target)}`);
+    if (item.canCancel === false) {
+      cliCtx.logger.info(
+        "  You can't cancel this run on this server",
+      );
+    } else if (!quiet) {
+      writeOutput(`  ${cancelCommand(item, target)}`);
+    }
     if (item.parentRun) {
       if (item.parentWaiting === false) {
         cliCtx.logger.info(
@@ -121,16 +127,33 @@ function renderExpired(
           },
         );
       } else if (!quiet) {
-        writeOutput(
-          `  Nested run of ${
-            escapeControlCharacters(item.parentRun.workflowName)
-          }: the parent stays suspended after this cancel; cancel it with ${
-            cancelCommand(item.parentRun, target)
-          }`,
-        );
+        const parentName = escapeControlCharacters(item.parentRun.workflowName);
+        if (item.canCancel === false) {
+          writeOutput(`  Nested run of ${parentName}: the parent waits on it`);
+        } else {
+          const cancelParent = item.parentRun.canCancel === false
+            ? ""
+            : `; cancel it with ${cancelCommand(item.parentRun, target)}`;
+          writeOutput(
+            `  Nested run of ${parentName}: the parent stays suspended after this cancel${cancelParent}`,
+          );
+        }
       }
     }
   }
+}
+
+function decisionRefusal(item: PendingApproval): string | undefined {
+  if (item.canDecide !== false) return undefined;
+  const condition = item.canDecideReason === "grant-condition";
+  if (item.canCancel === false) {
+    return condition
+      ? "  You can't decide or cancel this run: a grant condition refuses you, so someone else must decide it"
+      : "  You can't decide or cancel this run on this server";
+  }
+  return condition
+    ? "  You can't decide this run: a grant condition refuses you, for example if you started it"
+    : "  You can't decide this run on this server";
 }
 
 export function renderApprovals(
@@ -172,6 +195,16 @@ export function renderApprovals(
             { inputs: inputsDigest },
           );
         }
+        const refusal = decisionRefusal(item);
+        if (refusal) cliCtx.logger.info(refusal);
+        // serve always answers canCancel, so a refusal without it is an older
+        // serve, whose CLI cancel needs admin
+        const cancelMayBeRefused = item.canDecide === false &&
+          item.canCancel === undefined;
+        if (cancelMayBeRefused) {
+          cliCtx.logger.info("  This server may refuse a cancel without admin");
+        }
+        const mayCancel = item.canCancel !== false;
         // commands go through writeOutput because LogTape quotes values and the
         // pretty sink wraps lines, breaking copy-pasted commands; step names
         // are shell-quoted since any non-empty string is valid
@@ -181,10 +214,10 @@ export function renderApprovals(
         // A serve instance fetches a parent record it does not hold before
         // it decides, so a record missing there may only not be local yet.
         const parentGone = item.parentMissing === true && server === undefined;
-        if (item.parentEnded || parentGone) {
-          // the run above it ended, or its record is gone: the gate cannot be
-          // decided, so only the cancel is offered
-          if (!quiet) {
+        if (item.parentEnded || parentGone || item.canDecide === false) {
+          // the run above it ended, its record is gone, or this caller is
+          // refused on this run: only the cancel is offered, to who may use it
+          if (!quiet && mayCancel) {
             writeOutput(
               `  ${
                 cancelCommand(
@@ -201,14 +234,18 @@ export function renderApprovals(
           writeOutput(
             `  swamp workflow reject  ${workflow} ${step} --run ${item.runId}${target}`,
           );
-          writeOutput(
-            `  After approval: swamp workflow resume ${workflow} --run ${item.runId}${target}`,
-          );
+          if (item.canResume !== false) {
+            writeOutput(
+              `  After approval: swamp workflow resume ${workflow} --run ${item.runId}${target}`,
+            );
+          }
         }
         if (item.parentRun) {
           if (parentGone) {
             cliCtx.logger.info(
-              "  Nested run of {parentWorkflow} ({parentRunId}): the parent run's record no longer exists, so this run cannot continue. Cancel it, or restore the record",
+              mayCancel
+                ? "  Nested run of {parentWorkflow} ({parentRunId}): the parent run's record no longer exists, so this run cannot continue. Cancel it, or restore the record"
+                : "  Nested run of {parentWorkflow} ({parentRunId}): the parent run's record no longer exists, so this run cannot continue",
               {
                 parentWorkflow: item.parentRun.workflowName,
                 parentRunId: item.parentRun.runId,
@@ -224,7 +261,9 @@ export function renderApprovals(
             );
           } else if (item.parentEnded) {
             cliCtx.logger.info(
-              "  Nested run of {parentWorkflow} ({parentRunId}): the parent ended or moved on, so this gate can no longer be decided. Cancel this run",
+              mayCancel
+                ? "  Nested run of {parentWorkflow} ({parentRunId}): the parent ended or moved on, so this gate can no longer be decided. Cancel this run"
+                : "  Nested run of {parentWorkflow} ({parentRunId}): the parent ended or moved on, so this gate can no longer be decided",
               {
                 parentWorkflow: item.parentRun.workflowName,
                 parentRunId: item.parentRun.runId,
@@ -237,6 +276,12 @@ export function renderApprovals(
                 parentWorkflow: item.parentRun.workflowName,
                 parentRunId: item.parentRun.runId,
               },
+            );
+          } else if (!quiet && item.parentRun.canResume === false) {
+            writeOutput(
+              `  Nested run of ${
+                escapeControlCharacters(item.parentRun.workflowName)
+              }: once this run finishes, someone who holds run on it must resume it`,
             );
           } else if (!quiet) {
             writeOutput(

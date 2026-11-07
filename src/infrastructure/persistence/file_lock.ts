@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { lockHolderName } from "./lock_holder_name.ts";
 import { hostname } from "node:os";
 import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
@@ -97,9 +98,8 @@ function buildLockInfo(
   skipping?: readonly string[],
 ): LockInfo {
   const host = hostname();
-  const user = Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? "unknown";
   return {
-    holder: `${user}@${host}`,
+    holder: `${lockHolderName()}@${host}`,
     hostname: host,
     pid: Deno.pid,
     acquiredAt: new Date().toISOString(),
@@ -239,7 +239,7 @@ export class FileLock implements DistributedLock {
     }
   }
 
-  async acquire(): Promise<void> {
+  async acquire(signal?: AbortSignal): Promise<void> {
     const details: { resource: string; holderRunId?: string } = {
       resource: this.lockPath,
     };
@@ -249,7 +249,7 @@ export class FileLock implements DistributedLock {
     });
     const attempts = { retries: 0 };
     try {
-      await wait.run(() => this.acquireObserved(details, attempts));
+      await wait.run(() => this.acquireObserved(details, attempts, signal));
       wait.attributes({
         "swamp.diagnostic.acquired": true,
         "swamp.diagnostic.retries": attempts.retries,
@@ -272,6 +272,7 @@ export class FileLock implements DistributedLock {
   private async acquireObserved(
     details: { holderRunId?: string },
     attempts: { retries: number },
+    signal: AbortSignal | undefined,
   ): Promise<void> {
     const startTime = Date.now();
     this.releasing = false;
@@ -284,6 +285,7 @@ export class FileLock implements DistributedLock {
     let currentBackoff = this.retryIntervalMs;
 
     while (true) {
+      signal?.throwIfAborted();
       // checked on every iteration, including retries after stale lock cleanup
       const elapsed = Date.now() - startTime;
       if (elapsed >= this.maxWaitMs) {
@@ -328,9 +330,7 @@ export class FileLock implements DistributedLock {
         remaining,
         this.maxBackoffMs,
       );
-      if (sleepMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, sleepMs));
-      }
+      if (sleepMs > 0) await sleepUnlessAborted(sleepMs, signal);
       currentBackoff = nextBackoffMs;
     }
   }
@@ -614,4 +614,24 @@ export class FileLock implements DistributedLock {
       return null;
     }
   }
+}
+
+/** resolves early on abort; the caller's next check throws the reason */
+function sleepUnlessAborted(
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }

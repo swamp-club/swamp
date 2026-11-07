@@ -436,6 +436,23 @@ Deno.test("release workflow publishes GCS and GitHub assets before UAT", async (
     String(steps[stage].with?.path).trim().split("\n"),
     ["dist/release_body.md", ...publishedFiles],
   );
+  const build = steps.findIndex((s) => s.name === "Build binaries");
+  const sizeCheck = steps.findIndex((s) => s.name === "Check binary sizes");
+  const checksumStep = steps.findIndex((s) => s.name === "Create checksums");
+  assert(build >= 0 && sizeCheck > build && checksumStep > sizeCheck);
+  assert(sizeCheck < publish);
+  assertEquals(steps[sizeCheck].if, undefined);
+  for (
+    const expected of [
+      "x86_64-unknown-linux-gnu=dist/swamp-linux-x86_64",
+      "aarch64-unknown-linux-gnu=dist/swamp-linux-aarch64",
+      "x86_64-apple-darwin=dist/swamp-darwin-x86_64",
+      "aarch64-apple-darwin=dist/swamp-darwin-aarch64",
+      "x86_64-pc-windows-msvc=dist/swamp-windows-x86_64",
+    ]
+  ) {
+    assertStringIncludes(steps[sizeCheck].run ?? "", expected);
+  }
   const checksums = steps.find((s) => s.name === "Create checksums");
   assertEquals(
     checksums?.run?.split("\n")[0],

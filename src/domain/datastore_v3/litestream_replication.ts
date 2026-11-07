@@ -137,6 +137,30 @@ export function isReplicated(response: LitestreamSyncResponse): boolean {
   return local !== undefined && remote !== undefined && remote >= local;
 }
 
+export type SyncCoverage =
+  | { readonly kind: "confirmed" }
+  | { readonly kind: "short"; readonly target: bigint }
+  | { readonly kind: "failed" };
+
+/**
+ * Litestream reads txid after its sync returned, so a write picked up in that
+ * gap answers N with replicated N-1; the commits before the request are only
+ * proven covered once a later answer's replicated_txid reaches that first txid
+ */
+export function syncCoverage(
+  response: LitestreamSyncResponse,
+  target?: bigint,
+): SyncCoverage {
+  const { status, txid, replicated_txid: replicated } = response;
+  if (status !== "synced" && status !== "no_change") return { kind: "failed" };
+  const local = txidOf(txid);
+  const remote = txidOf(replicated);
+  if (local === undefined || remote === undefined) return { kind: "failed" };
+  const goal = target ?? local;
+  if (remote >= goal) return { kind: "confirmed" };
+  return { kind: "short", target: goal };
+}
+
 function txidOf(value: unknown): bigint | undefined {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
     return BigInt(value);

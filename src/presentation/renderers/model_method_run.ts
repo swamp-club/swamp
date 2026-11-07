@@ -33,6 +33,7 @@ import {
   type DataBoxOptions,
   formatDuration,
   formatTimestamp,
+  isUserFacingArtifact,
   renderDataBox,
   STATUS_COLORS,
   writeBlankLine,
@@ -264,14 +265,20 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
   }
 
   private renderDataArtifacts(
-    artifacts: Array<{ name: string; attributes?: Record<string, unknown> }>,
+    artifacts: Array<{
+      name: string;
+      attributes?: Record<string, unknown>;
+      attributesOmitted?: true;
+      tags?: Record<string, string>;
+    }>,
     options?: DataBoxOptions,
   ): void {
     const dataArtifacts: DataArtifact[] = artifacts
-      .filter((a) => !a.name.startsWith("report-") && a.name !== "log")
+      .filter(isUserFacingArtifact)
       .map((a) => ({
         name: a.name,
         attributes: a.attributes,
+        ...(a.attributesOmitted ? { attributesOmitted: true as const } : {}),
       }));
     const lines = renderDataBox(dataArtifacts, options);
     for (const line of lines) {

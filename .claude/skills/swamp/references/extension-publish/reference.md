@@ -211,12 +211,12 @@ swamp extension push manifest.yaml --yes --json
 
 **Verify:** The command exits successfully and reports the published version.
 
-Check the completed summary for a `Registry warnings:` block
-(`warnings.registry` in JSON, one `{ "message": ... }` per warning;
-`registryWarningsOmitted` counts any beyond the first 20). The push succeeded,
-but the registry discarded something the client sent — typically
-`contentMetadata` over a registry limit, so the listing was extracted from the
-archive instead. Relay each warning to the user.
+Check the end of the completed summary for a
+`Pushed, but the registry reported N warnings:` block (`warnings.registry` in
+JSON, one `{ "message": ... }` per warning; `registryWarningsOmitted` counts any
+beyond the first 20). The push succeeded, but the registry discarded something
+the client sent — typically `contentMetadata` over a registry limit, so the
+listing was extracted from the archive instead. Relay each warning to the user.
 
 `--yes` also waives safety and review warnings; the completed summary records
 them under `acceptedWarnings` so the user can see what was waived, and its

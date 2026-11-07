@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeLeaseLapsedError } from "../../infrastructure/datastore_v3/serve_lock.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -65,7 +66,10 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
-import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import {
+  createWorkflowRunRenderer,
+  showsDataAttributes,
+} from "../../presentation/renderers/workflow_run.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -75,7 +79,11 @@ import { renderAwaitingParent } from "./nested_run_hints.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { awaitingParentOf } from "../../libswamp/workflows/nested_runs.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
-import { mapWorkflowExecutionEvent } from "../../libswamp/workflows/run.ts";
+import {
+  deferCompletedForOutputs,
+  mapWorkflowExecutionEvent,
+  resolveCompletedRunOutputs,
+} from "../../libswamp/workflows/run.ts";
 import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
@@ -102,7 +110,11 @@ import {
 } from "../remote_run.ts";
 import { SERVE_CAPABILITY_RESUME_FROM_JOB } from "../../serve/protocol.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
-import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
+import {
+  releaseRegisteredLocks,
+  suppressSyncExitOnSignal,
+} from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -545,15 +557,34 @@ export const workflowResumeCommand = withRemoteOptions(
         tracestate,
         (async function* () {
           for await (
-            const event of service.resume(workflowName, run.id, {
-              signal: abort.signal,
-              swampSha: GIT_SHA,
-              inputs: resumeInputs,
-              fromStep,
-              fromJob,
-            })
+            const { event, stepOutputs } of deferCompletedForOutputs(
+              service.resume(workflowName, run.id, {
+                signal: abort.signal,
+                swampSha: GIT_SHA,
+                inputs: resumeInputs,
+                fromStep,
+                fromJob,
+              }),
+              showsDataAttributes(
+                  cliCtx.outputMode,
+                  cliCtx.verbosity === "quiet",
+                )
+                ? (completed) =>
+                  resolveCompletedRunOutputs(
+                    completed,
+                    repoContext.unifiedDataRepo,
+                    runRepo,
+                    abort.signal,
+                  )
+                : undefined,
+            )
           ) {
-            yield mapWorkflowExecutionEvent(event, runRepo);
+            yield mapWorkflowExecutionEvent(
+              event,
+              runRepo,
+              undefined,
+              stepOutputs,
+            );
           }
         })(),
       );
@@ -579,6 +610,8 @@ export const workflowResumeCommand = withRemoteOptions(
     const shutdownHandle = registerShutdownHandler({
       handler: () => abort.abort(),
       forceExitOnRepeat: true,
+      dataWrites: processDataWrites,
+      beforeForceExit: releaseRegisteredLocks,
     });
     const disarmTimeout = timeoutMs !== undefined
       ? abortOnTimeout(abort, timeoutMs)
@@ -690,6 +723,12 @@ export const workflowResumeCommand = withRemoteOptions(
       shutdownHandle.dispose();
       exitSuppress.dispose();
       ephemeral.dispose();
+    }
+    // a run the lapse stopped exits as the lapse, once its root committed;
+    // one that finished first keeps its own exit
+    const lapsed = stepLeaseLost.signal.reason;
+    if (lapsed instanceof ServeLeaseLapsedError && Deno.exitCode === 1) {
+      throw lapsed;
     }
     if (!finished) return;
 

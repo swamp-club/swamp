@@ -93,7 +93,7 @@ export function emitServeOfflineNotice(notice: ServeOfflineNotice): void {
 }
 
 const QUEUED_MESSAGE =
-  "Serve is unreachable, so this work is saved in this checkout and will be sent to serve by the next command that reaches it";
+  "Serve is unreachable, so this work is saved in this checkout and will be sent to serve by the next command that writes to the datastore once serve is reachable again; a command that only reads does not send it";
 
 const offline = new Map<string, OfflineEntry>();
 

@@ -3654,6 +3654,21 @@ the definition's partition that is no longer the commit store's version
 refuses the command with `config_edit_conflict` before it changes
 anything; a rename then never creates its new name.
 
+In a checkout written through serve whose command reached serve
+(`CommitLogEngine.reachedServe`), an edit skips that local refusal: serve
+decides the caller's grant before the base, so a caller without the grant is
+refused `forbidden` and never learns who changed the definition or when, and
+one with it gets `config_edit_conflict` from serve. Offline, or with no
+contact, the local refusal stays. A delete keeps it, and in a serve-mode
+checkout first sends `POST authorize` (swamp-club#4454): one output removal,
+one removal per data name, and the definition's tombstone last, within serve's
+caps (16 commits, 64 ops, the body under 256 KiB), which serve runs through
+`authorizeCommit` and appends nothing. Names past the caps are judged at
+commit.
+A refused one stops the delete before anything is removed. A serve without
+the route answers 404 and the delete runs as before; a grant revoked between
+the check and the commits can still leave part of a delete.
+
 The extension lockfile's put expects the lockfile record the commit store
 held when the transaction hydrated (`CommitLogEngine.storedVersion`,
 `SqliteCommitStore.recordSha256`; not the read model, which applies this
@@ -4033,6 +4048,18 @@ catch-up and the rest of a catch-up that meets a compacted base after it has
 applied commits replay in full, and so does one resumed after a crash: from
 the bound on, every file is where a full replay leaves it. On the dogfood
 repos a clone wrote 13.7k files instead of 40-48k.
+
+**Fetching chunks for a page (swamp-club#4457).** Before a page applies, the
+read model fetches together every chunk the page's writes will read: puts of
+keys the checkout projects, less the writes a net replay skips
+(`#prefetchChunks`); a compacted base load does the same for its staged
+files. A replay, recovery included, fetches this way too, so a fresh clone or
+a recovery no longer reads a member's large outputs one chunk at a time. A
+serve-backed copy keeps no chunk it fetched once the files made from it are
+durable (`CachedServeStorage.releaseFetched`, after each page's barrier):
+serve holds them, and a later read fetches again. A chunk the checkout stored
+itself, through `put` or a chunk stage, is never released, so an unsent
+offline commit keeps its chunks.
 
 **Netted base load (swamp-club#3916).** A net catch-up that meets a compacted
 base before applying anything plans the base and the tail after it together.
@@ -6321,8 +6348,11 @@ records lets the join go ahead: the fence still refuses its commits.
 **Refusals change nothing.** A command v3 refuses must leave the datastore
 byte-identical. Lease contention (`datastore_v3_writer_busy`) exits 75, as
 v2's `lock_timeout` does: nothing changed, so a retry with backoff is safe.
-`datastore_v3_writer_fenced` exits 1: a command whose lease was taken over
-may have landed some of its commits, so it is not blindly retried. `datastore sync` and `datastore migrate-index` open a v3
+`datastore_v3_writer_fenced` exits 75 only when the takeover, a forced
+release or a copy still being restored stopped the command before any of its
+commits landed; otherwise, and always for a writer that had already published
+its head, it exits 1, since a command that landed some commits is not blindly
+retried (the landed rule below). `datastore sync` and `datastore migrate-index` open a v3
 datastore read-only before libswamp refuses them, so they take no lease;
 `integration/datastore_v3_writer_lease_test.ts` checks every refusal.
 
@@ -7466,11 +7496,19 @@ below describes them.
   waits at serve at most 10 s (`waitMs`), so a waiting client asks again
   rather than polls; at most 256 leases per principal (`429
   too_many_leases`). The routes are rate-limited like the others.
-- **What a refusal tells.** `409 lock_held` says only `heldBy`: `caller`
+- **What a refusal tells.** `409 lock_held` says `heldBy`: `caller`
   (another command of the same principal), `other` (another principal) or
-  `serve` (serve's own work), never who. `swamp datastore lock status` on
-  serve shows serve's process as the holder of every lease, as for its own
-  runs.
+  `serve` (serve's own work), and, for a lease, `holder`: its principal,
+  whether it is explicit, and when it ends. The caller has passed the lock's
+  authorization, so it may take the lock and may know who holds it
+  (swamp-club#4454). `swamp datastore lock status` on serve shows serve's
+  process as the holder of every lease, as for its own runs.
+- **Waiting that cannot help.** Serve advertises `lease-holder`; a client that
+  sees it sends `budgetMs`, its whole remaining wait. When an explicit lease
+  outlasts it, serve answers `lock_held` at once instead of long-polling; a
+  renewing run lease is still waited for, so its release is caught at once.
+  The client refuses an explicit lease that ends after its deadline by
+  serve's clock after one ask, its own from another checkout included.
 - **The client.** `ServeLock` asks with `waitMs` up to the time left (at most
   half the request timeout) until the lock timeout, then throws
   `LockTimeoutError`. It renews at a third of the TTL; a renewal serve
@@ -7553,7 +7591,8 @@ which behaves as above.
   releases the lock, so they reach serve naming the lease.
 - **Lock status.** `GET locks?prefix=` lists the leases serve holds on locks
   the caller could take, each decided without a refusal audit: `lockKey`,
-  `heldBy` (`caller` or `other`, never who) and `expiresAt`, at most 512 with
+  `heldBy` (`caller` or `other`), `expiresAt` and `holder` (principal and
+  whether it is explicit), at most 512 with
   `truncated` past it. A follower refuses it: leases are the leader's.
   `swamp datastore lock status` in a serve-mode checkout reports them as
   `serve_lease` events, and nothing else: it binds no storage and needs no
@@ -7896,15 +7935,37 @@ never relies on:
 | Unreachable when the command starts, the work needs a lease the checkout does not hold | `datastore_v3_offline_lease_required`, nothing ran | 75 |
 | Unreachable when the command starts, a definition edit | `datastore_v3_offline_config_edit`, naming the definition by kind and name, nothing changed | 75 |
 | Unreachable when the command starts, a copy that never read serve's feed | `datastore_v3_serve_unreachable` (`ServeNeverReadError`): an empty copy would pass for an empty datastore, so nothing is read or changed | 75 |
-| Unreachable mid-command, request never sent | `datastore_v3_serve_unreachable`, outbox entry discarded, nothing changed (the offline rules never judged this command's work) | 75 |
+| Unreachable mid-command, request never sent | `datastore_v3_serve_unreachable`, outbox entry discarded, nothing changed (the offline rules never judged this command's work) | 75, or 1 when an earlier commit of the command landed |
 | Unreachable after the request may have reached serve | outbox entry kept; the next recovery settles or re-sends it | 1 (may land) |
 | `401` | the `swamp auth server-login --server …` hint | 1 |
 | `409 stale_seq` | caught up and retried | — |
 | `409 precondition_failed` | `config_edit_conflict` for a managed-config definition or the lockfile (swamp-club#4097); otherwise serve's "changed by … at …" message, as a local expect-failed | 1 |
 | `409 datastore_v3_writer_fenced` | the same code | 1 |
+| `409 commit_lease-lost` | `datastore_v3_commit_lease_lost`, no stack trace, with a hint for the command (resume or recover a workflow run; rerun, or check the behavior's data, for a method run) | 75 if nothing of the command landed, else 1 |
+| Lease lapsed (not renewed in time, force-released, or expired at serve) | `datastore_v3_lease_lapsed`: the work under it is cancelled and the run reports the lapse | 75 if nothing of the command landed, else 1 |
 | `503` storage unreachable, writer busy, replication | the same code (serve now answers storage-unreachable and writer-busy as 503, not 500) | 75 |
 | `403` | serve's message and the op's index | 1 |
 | `410 commits_compacted` | serve's compacted base is loaded; a serve with no base route keeps the refusal | 1 (old serve) |
+
+**What landed decides exit 75.** Exit 75 promises a blind retry is safe, so
+a lost lease, a lapsed lease, a fenced writer and an unreachable commit exit
+75 only when nothing of the command landed. The record is per command (one
+CLI process): a commit to any partition but a run's counts, as does one that
+may have reached serve; run records do not, since a rerun makes a new run
+(`command_landed.ts`).
+
+**A run with no explicit lease stops when serve is gone.** It stops at its
+next commit, or when its model lease lapses locally, whichever comes first;
+the renewal interval and the per-renewal deadline (one attempt, ending before
+the next tick, on the lease's own HTTP connection) are unchanged, so one
+stalled renewal never ends a run. Once a commit or a lease left unrenewed
+shows serve unreachable, the rest of the command fails at once instead of
+waiting out a request timeout per call, requests in flight included
+(`latchServeUnreachable`; a read never sets it). The teardown is then
+bounded and releases the writer straight away, leaving kept entries for the
+next command. A run under an explicit lease stops the same way; the next
+command works offline under the lease and queues. Offline mode still begins
+only at a command's start.
 
 A read that cannot reach serve uses the copy as it is and warns that it may be
 out of date; in json mode it says so as a `datastore_offline` notice on
@@ -7971,7 +8032,8 @@ while serve is unreachable, within these rules (`offline_write_policy.ts`,
 - **Queued, not sent.** An allowed commit goes to the outbox marked
   `offline` and the command succeeds (exit 0), warning once that the work
   is saved in this checkout and will be sent by the next command that
-  reaches serve. Version numbers count queued entries, so two offline
+  writes once serve is reachable: only a command that takes the writer hold
+  flushes the outbox, a read-only one never does. Version numbers count queued entries, so two offline
   commands, or two commits to one partition in one unit, never share a
   version or seq (an indexed `outbox_versions` table, not every entry's
   body). Chunk reads use the local cache only. A later command, offline or
@@ -8310,12 +8372,21 @@ nothing was taken, so a retry is safe), in one place per surface:
   (`serve_follower_behind`, see "Team mode: the CLI's serve upstream"), after
   authentication and the read check (swamp-club#4254).
 - Readiness: a node that starts as a follower with a leader feed reports
-  `/ready` only once its copy holds the head the leader names
-  (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`). It stops
-  trying after 30 seconds, so with a last feed check in flight the wait can
-  reach about 35, and it stops at once if it takes the lead or shuts down. A node
-  restored from the bucket after a takeover can trail the members' copies,
-  and the team address would otherwise route them to it (swamp-club#4254).
+  `/ready` only once its copy holds the head the leader names and the
+  follower's commit effects (policy snapshot, config) are applied through
+  what its read model held at that moment, so commits still landing cannot
+  hold it back (`awaitFirstFollowerCatchUp`, `src/serve/follower_ready.ts`;
+  `effectsReachNow`, `src/serve/follower_policy_wiring.ts`). A token check reads
+  the token record from that copy, so a node ready before it would refuse
+  tokens the other node accepts. The wait has no timeout: past 30 seconds it
+  logs where the copy stands, then again every minute, and stays 503; it stops
+  at once if the node takes the lead or shuts down. A node restored from the
+  bucket after a takeover can trail the members' copies, and the team address
+  would otherwise route them to it (swamp-club#4254, swamp-club#4432). A
+  refused token is logged with its reason and the node's uptime, readiness,
+  role and catch-up state (the cursor applied, and the leader head named at the
+  last check, which can trail it), and a token name locked out after five
+  failures in a row is logged when the lock starts.
 - Webhooks: a verified delivery gets a 503 with `Retry-After`, naming no
   leader. Cron fires are left to the leader (the fire dedup answers
   "claimed by another instance"), as they are by a leader whose lease was
@@ -8626,7 +8697,18 @@ serve-mode checkout watch serve's feed while they run (`watchV3ServeFeeds`,
 stopped when the datastores close). The watch is a wake-up: when a frame
 brings commits, the checkout's own catch-up reads them through the changes
 feed, with its filtering, base loads and gaps. Short commands need nothing
-new; serve never watches.
+new; serve never watches. It wakes only for what the copy lacks
+(swamp-club#4457): the `commits.head` reply starts a catch-up only past the
+feed cursor the copy has applied, since the command caught up just before it
+started watching, and a frame whose commits this process sent itself
+(`sentToServe`, the txnIds its sink forwarded) asks serve nothing, since the
+commit's own read-back already put it in the copy: it only brings the read
+model up (`catchUpReadModel`), so the next command does not pay for applying
+this one's commits. A frame with another
+writer's commit still starts one. A write then makes two catch-ups, the
+writer hold's and the lock's, not four, and a later catch-up that meets the
+command's own commit again in the changes feed appends nothing (`#append`
+skips a seq the copy already holds).
 
 Such a catch-up can run while one of the command's units is open, and the
 feed brings back the commits the command itself sent, a mid-run checkpoint

@@ -62,6 +62,7 @@ async function forwardRun(
           id: runId,
           workflowId: WORKFLOW,
           workflowName: "deploy",
+          initiatedBy: "user:caller",
           status,
           tags: {},
           jobs: [],

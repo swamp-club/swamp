@@ -37,6 +37,7 @@ export interface DataOutputSpecDescribeData {
   garbageCollection?: number | string;
   streaming?: boolean;
   tags?: Record<string, string>;
+  display?: boolean;
 }
 
 export interface MethodDescribeData {
@@ -247,6 +248,7 @@ export function buildDataOutputSpecs(
         lifetime: spec.lifetime,
         garbageCollection: spec.garbageCollection,
         tags: spec.tags,
+        ...(spec.display !== undefined ? { display: spec.display } : {}),
       }),
     )
     : [];
@@ -262,6 +264,7 @@ export function buildDataOutputSpecs(
         garbageCollection: spec.garbageCollection,
         streaming: spec.streaming,
         tags: spec.tags,
+        ...(spec.display !== undefined ? { display: spec.display } : {}),
       }),
     )
     : [];

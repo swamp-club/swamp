@@ -19,6 +19,10 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { MockVaultProvider } from "./mock_vault_provider.ts";
+import {
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 
 Deno.test("MockVaultProvider - constructor", async (t) => {
   await t.step("should set the vault name", () => {
@@ -64,10 +68,13 @@ Deno.test("MockVaultProvider - get", async (t) => {
     const provider = new MockVaultProvider("test-vault");
     const error = await assertRejects(
       () => provider.get("non-existent-key"),
-      Error,
+      SecretNotFoundError,
     );
     assertStringIncludes(error.message, "Secret 'non-existent-key' not found");
     assertStringIncludes(error.message, "mock vault 'test-vault'");
+    assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+    assertEquals(error.vaultName, "test-vault");
+    assertEquals(error.key, "non-existent-key");
   });
 
   await t.step("should round-trip an empty-string secret", async () => {

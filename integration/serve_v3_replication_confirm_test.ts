@@ -257,3 +257,42 @@ Deno.test({
     }, { deps: { control: counting.control } });
   },
 });
+
+Deno.test({
+  name:
+    "serve write confirmation: a sync Litestream answers one txid short is synced again and the write is confirmed",
+  ignore,
+  async fn() {
+    const state = { syncs: 0, shortNext: 0 };
+    const control = {
+      info: unixLitestreamControl.info,
+      sync: async (socket: string, db: string, deadline: number) => {
+        state.syncs++;
+        const answer = await unixLitestreamControl.sync(socket, db, deadline);
+        if (state.shortNext === 0) return answer;
+        state.shortNext--;
+        // As when Litestream reads its txid after a later write landed.
+        const replicated = answer.replicated_txid;
+        return {
+          ...answer,
+          replicated_txid: typeof replicated === "number"
+            ? replicated - 1
+            : (BigInt(`0x${String(replicated)}`) - 1n).toString(16)
+              .padStart(16, "0"),
+        };
+      },
+    };
+    await withReplicationEnv(async (env) => {
+      await holdV3Writer(env.config, env.repoDir, { retakeLost: true });
+      const { socket, replies } = observingSocket(env);
+      await writeRequest(env, socket, "w0");
+      const before = state.syncs;
+      state.shortNext = 1;
+      await writeRequest(env, socket, "w1");
+      assertEquals(replies[1].message.type, "done");
+      assert(replies[1].published >= replies[1].committed);
+      assertEquals(state.syncs - before, 2);
+      await closeV3Datastores();
+    }, { deps: { control } });
+  },
+});

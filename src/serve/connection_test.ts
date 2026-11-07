@@ -5345,7 +5345,7 @@ Deno.test("handleConnection: frames arriving on a closing session are not served
   socket.onclose?.(new CloseEvent("close"));
 });
 
-Deno.test("handleMessage: server.version lists the literal-inputs, resume-from-job and schedule-catch-up capabilities (swamp-club#3205, swamp-club#3815, swamp-club#4370)", async () => {
+Deno.test("handleMessage: server.version lists its capabilities", async () => {
   using ctx = {
     ...makeCtx(modeTokenConfig, []),
     auditEmitter: { emit: () => {} },
@@ -5366,6 +5366,8 @@ Deno.test("handleMessage: server.version lists the literal-inputs, resume-from-j
     "literal-inputs",
     "resume-from-job",
     "schedule-catch-up",
+    "http-actions",
+    "gate-attempt",
   ]);
 });
 

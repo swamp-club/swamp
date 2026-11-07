@@ -155,7 +155,7 @@ import { resolveSupersededSkillDirs } from "../domain/repo/superseded_skills.ts"
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
-import { loadIdentity, USER_AGENT } from "./load_identity.ts";
+import { loadIdentity } from "./load_identity.ts";
 import {
   isCollectiveToken,
   setAuthenticated,
@@ -178,7 +178,7 @@ import { isTelemetryDisabledByEnv } from "../infrastructure/telemetry/telemetry_
 import { JsonTelemetryFlushRecordRepository } from "../infrastructure/persistence/json_telemetry_flush_record_repository.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
 import { YamlVaultConfigRepository } from "../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
+import { sendTelemetryAtCommandEnd } from "./telemetry_end_of_command.ts";
 import {
   buildInvocationContext,
   clearActiveTelemetryContext,
@@ -1725,7 +1725,17 @@ async function checkForMissingPulledExtensions(
     const detail = ` (e.g. ${files.slice(0, 3).join(", ")})`;
     return `${items.map((m) => m.name).join(", ")}${detail}`;
   };
-  const shared = missing.filter((m) => !localOnly.has(m.name));
+  // a team checkout's shared lockfile lists every extension the team pulled:
+  // one this checkout never installed is reinstalled when a command needs it
+  const shared: typeof missing = [];
+  for (const m of missing) {
+    if (localOnly.has(m.name)) continue;
+    if (
+      localLockfilePath !== undefined &&
+      await isAbsentFromDisk(repoDir, m.name, entries[m.name])
+    ) continue;
+    shared.push(m);
+  }
   const local: typeof missing = [];
   for (const m of missing) {
     if (!localOnly.has(m.name)) continue;
@@ -2060,23 +2070,7 @@ async function recordAndFlushError(
     sensitiveValues,
   );
 
-  // distinct_id is required by the sender; skip the flush if neither userId nor
-  // repoId resolved
-  const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
-  if (distinctId) {
-    const sender = new HttpTelemetrySender(
-      telemetryCtx.telemetryEndpoint,
-      USER_AGENT,
-    );
-    await telemetryCtx.service.flushTelemetry({
-      sender,
-      distinctId,
-      repoId: telemetryCtx.repoId,
-      authToken: telemetryCtx.authToken ?? undefined,
-      keepFlushed: telemetryCtx.keepFlushed,
-      signal: AbortSignal.timeout(2000),
-    });
-  }
+  await sendTelemetryAtCommandEnd(telemetryCtx, { succeeded: false });
 }
 
 function endInvocation(): void {
@@ -2748,38 +2742,7 @@ async function runInvocation(
             startTime,
           );
 
-          // distinct_id is required by the sender; if neither userId nor repoId
-          // resolved, skip the flush and leave the entry spooled for a future
-          // run
-          const distinctId = telemetryCtx.userId ?? telemetryCtx.repoId;
-          if (distinctId) {
-            const sender = new HttpTelemetrySender(
-              telemetryCtx.telemetryEndpoint,
-              USER_AGENT,
-            );
-            const flushResult = await telemetryCtx.service.flushTelemetry({
-              sender,
-              distinctId,
-              repoId: telemetryCtx.repoId,
-              authToken: telemetryCtx.authToken ?? undefined,
-              keepFlushed: telemetryCtx.keepFlushed,
-              signal: AbortSignal.timeout(2000),
-            });
-            if (!flushResult.result.ok) {
-              const detail = flushResult.result.reason
-                ? ` (${flushResult.result.reason})`
-                : "";
-              logger.warn(
-                `Telemetry flush failed${detail} — entries are queued locally and will retry on the next invocation`,
-              );
-            }
-          }
-
-          // Cleanup with bounded timeout so Deno.exit() doesn't kill it
-          await Promise.race([
-            telemetryCtx.service.cleanupOldTelemetry(),
-            new Promise<void>((r) => setTimeout(r, 3000)),
-          ]);
+          await sendTelemetryAtCommandEnd(telemetryCtx, { succeeded: true });
         } catch {
           // Best effort — never break the CLI for telemetry failures
         }

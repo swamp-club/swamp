@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RUN_INITIATOR_MISMATCH_CODE } from "../../domain/datastore_v3/commit_authorization.ts";
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import type { DatastoreStatusEvent } from "../../libswamp/datastores/status.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
@@ -110,6 +111,13 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
             );
             if (entry.reason !== undefined) {
               lines.push(`    ${dim(entry.reason)}`);
+            }
+            if (entry.code === RUN_INITIATOR_MISMATCH_CODE) {
+              lines.push(
+                "    This run record was refused for its initiator: an older " +
+                  "swamp CLI wrote it. Upgrade swamp and run the work again; " +
+                  "it cannot be sent as it is.",
+              );
             }
           }
         }

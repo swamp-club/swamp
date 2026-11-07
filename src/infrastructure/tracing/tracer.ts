@@ -242,20 +242,34 @@ function runInSpan<T>(
   });
 }
 
-/**
- * always a new trace root, as serve runs inside the never-ending swamp.cli
- * span; inbound traceparent is ignored so unauthenticated callers cannot choose
- * the trace joined
- */
+export interface ServerSpanOptions {
+  /** an authenticated caller's trace, from `adoptAuthenticatedParent` only */
+  readonly parent?: Context;
+  readonly startTime?: number;
+  readonly links?: readonly Link[];
+}
+
+// a root, as serve runs inside the never-ending swamp.cli span, unless given an authenticated caller's parent
 export function withServerSpan<T>(
   name: string,
   attributes: Attributes,
   fn: (span: Span) => Promise<T>,
+  options: ServerSpanOptions = {},
 ): Promise<T> {
   const tracer = getTracer();
+  const spanOptions: SpanOptions = {
+    kind: SpanKind.SERVER,
+    attributes,
+    ...(options.parent === undefined ? { root: true } : {}),
+    ...(options.startTime === undefined
+      ? {}
+      : { startTime: options.startTime }),
+    ...(options.links === undefined ? {} : { links: [...options.links] }),
+  };
   return tracer.startActiveSpan(
     name,
-    { kind: SpanKind.SERVER, root: true, attributes },
+    spanOptions,
+    options.parent ?? context.active(),
     (span) => {
       return fn(span).then(
         (result) => {

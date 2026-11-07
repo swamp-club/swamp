@@ -44,6 +44,7 @@ import {
   type SecurityCheckResult,
 } from "../../infrastructure/security/file_security_check.ts";
 import { errorPaths, markErrorPaths } from "../errors.ts";
+import { SecretNotFoundError } from "./secret_not_found_error.ts";
 
 const logger = getLogger(["vaults", "local-encryption"]);
 
@@ -276,9 +277,10 @@ export class LocalEncryptionVaultProvider
       return decryptedValue;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        throw new Error(
-          `Secret '${secretKey}' not found in local vault '${this.name}'`,
-        );
+        throw new SecretNotFoundError(this.name, secretKey, {
+          message:
+            `Secret '${secretKey}' not found in local vault '${this.name}'`,
+        });
       }
       throw this.retrieveError(secretKey, error);
     }
@@ -394,9 +396,10 @@ export class LocalEncryptionVaultProvider
       await Deno.remove(encryptedFilePath);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        throw new Error(
-          `Secret '${secretKey}' not found in local vault '${this.name}'`,
-        );
+        throw new SecretNotFoundError(this.name, secretKey, {
+          message:
+            `Secret '${secretKey}' not found in local vault '${this.name}'`,
+        });
       }
       throw new Error(
         `Failed to delete secret '${secretKey}': ${

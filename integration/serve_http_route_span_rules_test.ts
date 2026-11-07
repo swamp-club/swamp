@@ -20,7 +20,10 @@
 import { assert, assertEquals } from "@std/assert";
 import { fromFileUrl } from "@std/path";
 import { resolveHttpRoute } from "../src/serve/http_request_span.ts";
-import { SERVE_REQUEST_PATH } from "../src/serve/protocol.ts";
+import {
+  SERVE_ACTION_PATH,
+  SERVE_REQUEST_PATH,
+} from "../src/serve/protocol.ts";
 
 const SERVE_COMMAND = fromFileUrl(
   new URL("../src/cli/commands/serve.ts", import.meta.url),
@@ -29,6 +32,7 @@ const SERVE_COMMAND = fromFileUrl(
 // A route compared through a constant in serve.ts must be listed here.
 const ROUTE_CONSTANTS: Readonly<Record<string, string>> = {
   SERVE_REQUEST_PATH,
+  SERVE_ACTION_PATH,
 };
 
 const LITERAL_ROUTE = /===\s*"(\/[^"]*)"/g;
@@ -37,7 +41,7 @@ const CONSTANT_ROUTE =
 
 // Floors at the current counts, so a scan that stops matching fails loudly.
 const MIN_LITERAL_ROUTES = 15;
-const MIN_CONSTANT_ROUTES = 1;
+const MIN_CONSTANT_ROUTES = 2;
 
 const SCAN_LIMIT = "The scan sees only === comparisons; a route matched by " +
   "switch/case, !==, startsWith or a Set lookup is not checked.";

@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   awaitFirstFollowerCatchUp,
   FOLLOWER_READY_RETRY_MS,
+  FOLLOWER_READY_STALL_LOG_MS,
   FOLLOWER_READY_WAIT_MS,
 } from "./follower_ready.ts";
 
@@ -53,20 +54,27 @@ Deno.test("awaitFirstFollowerCatchUp: returns once the copy holds the leader's h
   assertEquals(c.pauses, [FOLLOWER_READY_RETRY_MS, FOLLOWER_READY_RETRY_MS]);
 });
 
-Deno.test("awaitFirstFollowerCatchUp: gives up at the bound, so a slow restore cannot hold the node out of rotation", async () => {
+Deno.test("awaitFirstFollowerCatchUp: keeps waiting past the bound, saying so at the bound and then every stall interval", async () => {
   const c = clock();
   let asked = 0;
+  const stalls: number[] = [];
+  const answersUntil = FOLLOWER_READY_WAIT_MS + 2 * FOLLOWER_READY_STALL_LOG_MS;
   const outcome = await awaitFirstFollowerCatchUp({
     caughtUp: () => {
       asked++;
-      return Promise.resolve(false);
+      return Promise.resolve(c.now() >= answersUntil);
     },
     ended: () => false,
+    stalled: (waited) => stalls.push(waited),
     now: c.now,
     pause: c.pause,
   });
-  assertEquals(outcome, "timed-out");
-  assertEquals(asked, FOLLOWER_READY_WAIT_MS / FOLLOWER_READY_RETRY_MS + 1);
+  assertEquals(outcome, "caught-up");
+  assertEquals(stalls, [
+    FOLLOWER_READY_WAIT_MS,
+    FOLLOWER_READY_WAIT_MS + FOLLOWER_READY_STALL_LOG_MS,
+  ]);
+  assertEquals(asked, answersUntil / FOLLOWER_READY_RETRY_MS + 1);
 });
 
 Deno.test("awaitFirstFollowerCatchUp: ends as soon as the node leads or shuts down", async () => {

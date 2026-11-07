@@ -47,6 +47,14 @@ export class RunNotSuspendedError extends UserError {
   }
 }
 
+/** nothing to act on, told apart from a run that refuses the operation */
+export class SuspendedRunNotFoundError extends UserError {
+  constructor(message: string) {
+    super(message);
+    this.name = "SuspendedRunNotFoundError";
+  }
+}
+
 export interface SuspendedRunInfo {
   workflowName: string;
   workflowId: string;
@@ -67,7 +75,7 @@ export interface WorkflowLookupOptions {
   expectedName?: string;
 }
 
-function lookupWorkflow(
+export function lookupWorkflow(
   workflowRepo: WorkflowRepository,
   workflowIdOrName: string,
   lookup: WorkflowLookupOptions,
@@ -94,7 +102,9 @@ export async function resolveSuspendedRun(
     lookup,
   );
   if (!workflow) {
-    throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+    throw new SuspendedRunNotFoundError(
+      `Workflow not found: ${workflowIdOrName}`,
+    );
   }
 
   if (runId) {
@@ -103,7 +113,7 @@ export async function resolveSuspendedRun(
       createWorkflowRunId(runId),
     );
     if (!run) {
-      throw new UserError(`Workflow run not found: ${runId}`);
+      throw new SuspendedRunNotFoundError(`Workflow run not found: ${runId}`);
     }
     if (run.status !== "suspended") {
       throw new RunNotSuspendedError(

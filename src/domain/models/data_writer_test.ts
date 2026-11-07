@@ -57,12 +57,17 @@ import {
   sensitiveVaultReferences,
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
+import { ResourceAttributeBudget } from "./resource_attribute_budget.ts";
 import type { ResourceOutputSpec } from "./model.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { sensitiveOutputTargetVaults } from "./sensitive_output_vault.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
-import { Data } from "../data/data.ts";
+import {
+  Data,
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../data/data.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { SecretRedactor } from "../secrets/secret_redactor.ts";
@@ -76,6 +81,10 @@ import {
   VaultAccessDeniedError,
 } from "../vaults/run_vault_access.ts";
 import { ResourceSensitiveFieldsInvalidError } from "../vaults/secret_reference_errors.ts";
+import {
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "../vaults/secret_not_found_error.ts";
 import { ExecutionOutputNames } from "./execution_output_names.ts";
 import { UserError } from "../errors.ts";
 
@@ -1411,6 +1420,37 @@ Deno.test("createResourceReader: resolves vault references when VaultService pro
   assertEquals(result?.secret, "resolved-secret");
 });
 
+Deno.test("createResourceReader: a missing vault key rejects with the store's own secret_not_found error", async () => {
+  const vaultService = createTestVaultService();
+  const data = {
+    name: "my-resource",
+    secret: "${{ vault.get('test-vault', 'gone') }}",
+  };
+  const encoded = new TextEncoder().encode(JSON.stringify(data));
+  const mockData = createMockDataEntity({
+    [SENSITIVE_FIELDS_TAG]: JSON.stringify(["secret"]),
+  });
+  const repo = {
+    ...createMockRepo(),
+    getContent: () => Promise.resolve(encoded),
+    findByName: () => Promise.resolve(mockData),
+  };
+
+  const readResource = createResourceReader(
+    repo,
+    modelType,
+    modelId,
+    vaultService,
+  );
+  const error = await assertRejects(
+    () => readResource("my-instance"),
+    SecretNotFoundError,
+  );
+  assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+  assertEquals(error.vaultName, "test-vault");
+  assertEquals(error.key, "gone");
+});
+
 Deno.test("createResourceReader: resolves vault references in nested objects", async () => {
   const vaultService = createTestVaultService();
   await vaultService.put("test-vault", "nested-key", "nested-secret");
@@ -2396,6 +2436,64 @@ Deno.test("createResourceWriter: attributes is a shallow copy of the data", asyn
   const handle = await writeResource("item", "test-item", data);
   data.value = "mutated";
   assertEquals(handle.attributes, { value: "hello" });
+});
+
+function budgetedWriter(capBytes: number) {
+  return createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    testResources,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    false,
+    Deno.build.os,
+    undefined,
+    new ResourceAttributeBudget(capBytes),
+  );
+}
+
+Deno.test("createResourceWriter: a budget admits attributes up to its cap", async () => {
+  const serialized = JSON.stringify({ value: "hello" }).length;
+  const { writeResource } = budgetedWriter(serialized * 2);
+
+  const first = await writeResource("item", "first", { value: "hello" });
+  const second = await writeResource("item", "second", { value: "hello" });
+  assertEquals(first.attributes, { value: "hello" });
+  assertEquals(second.attributes, { value: "hello" });
+});
+
+Deno.test("createResourceWriter: handles past the budget carry no attributes but are still written", async () => {
+  const serialized = JSON.stringify({ value: "hello" }).length;
+  const { writeResource, getHandles } = budgetedWriter(serialized);
+
+  const first = await writeResource("item", "first", { value: "hello" });
+  const second = await writeResource("item", "second", { value: "hello" });
+  const third = await writeResource("item", "third", { value: "hi" });
+  assertEquals(first.attributes, { value: "hello" });
+  assertEquals(second.attributes, undefined);
+  assertEquals(third.attributes, undefined);
+  assertEquals(second.size, serialized);
+  assertEquals(getHandles().map((h) => h.name), ["first", "second", "third"]);
+  assertEquals(getHandles()[1].attributes, undefined);
+});
+
+Deno.test("createResourceWriter: the budget counts stored bytes, not string length", async () => {
+  const data = { value: "日本語のテキスト" };
+  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
+  assert(JSON.stringify(data).length < bytes);
+  const { writeResource } = budgetedWriter(bytes - 1);
+
+  const handle = await writeResource("item", "wide", data);
+  assertEquals(handle.size, bytes);
+  assertEquals(handle.attributes, undefined);
 });
 
 Deno.test("resolveSensitiveVaultRefs: resolves only specified field paths", async () => {
@@ -3920,6 +4018,112 @@ Deno.test("createFileWriterFactory: stamps the record kind after every tag sourc
   assertEquals(handle.tags[RECORD_KIND_TAG], "file");
   assertEquals(handle.tags["specName"], "log");
   assertEquals(handle.tags["type"], "override-type");
+});
+
+Deno.test("createResourceWriter: a display: false spec stamps the hidden display tag", async () => {
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    {
+      hidden: { ...testResources.item, display: false },
+      shown: { ...testResources.item, display: true },
+      plain: testResources.item,
+    },
+  );
+
+  const hidden = await writeResource("hidden", "a", { value: "v" });
+  assertEquals(hidden.tags[SUMMARY_DISPLAY_TAG], SUMMARY_DISPLAY_HIDDEN);
+  const shown = await writeResource("shown", "b", { value: "v" });
+  assertEquals(SUMMARY_DISPLAY_TAG in shown.tags, false);
+  const plain = await writeResource("plain", "c", { value: "v" });
+  assertEquals(SUMMARY_DISPLAY_TAG in plain.tags, false);
+});
+
+Deno.test("createFileWriterFactory: a display: false spec stamps the hidden display tag", async () => {
+  const { createFileWriter } = createFileWriterFactory(
+    createMockRepo(),
+    modelType,
+    modelId,
+    {
+      hidden: { ...testFiles.log, display: false },
+      shown: { ...testFiles.log, display: true },
+      plain: testFiles.log,
+    },
+  );
+
+  const hidden = await createFileWriter("hidden", "a").writeText("x");
+  assertEquals(hidden.tags[SUMMARY_DISPLAY_TAG], SUMMARY_DISPLAY_HIDDEN);
+  const shown = await createFileWriter("shown", "b").writeText("x");
+  assertEquals(SUMMARY_DISPLAY_TAG in shown.tags, false);
+  const plain = await createFileWriter("plain", "c").writeText("x");
+  assertEquals(SUMMARY_DISPLAY_TAG in plain.tags, false);
+});
+
+Deno.test("createResourceWriter: no tag source can forge or clear the display tag", async () => {
+  const hiddenSpec = { hidden: { ...testResources.item, display: false } };
+  const forged = { [SUMMARY_DISPLAY_TAG]: "shown" };
+  const cases = [
+    {
+      resources: hiddenSpec,
+      runtimeTags: forged,
+      message: `Tag '${SUMMARY_DISPLAY_TAG}' from --tag is reserved`,
+    },
+    {
+      resources: { hidden: { ...testResources.item, tags: forged } },
+      runtimeTags: undefined,
+      message: `Tag '${SUMMARY_DISPLAY_TAG}' from the default tags`,
+    },
+  ];
+  for (const { resources, runtimeTags, message } of cases) {
+    const repo = createCountingRepo();
+    const { writeResource } = createResourceWriter(
+      repo,
+      modelType,
+      modelId,
+      resources,
+      undefined,
+      undefined,
+      undefined,
+      runtimeTags,
+    );
+    await assertRejects(
+      () => writeResource("hidden", "main", { value: "v" }),
+      Error,
+      message,
+    );
+    assertEquals(repo.writes(), 0);
+  }
+
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    hiddenSpec,
+  );
+  await assertRejects(
+    () =>
+      writeResource("hidden", "main", { value: "v" }, {
+        tags: { [SUMMARY_DISPLAY_TAG]: "shown" },
+      }),
+    Error,
+    `Tag '${SUMMARY_DISPLAY_TAG}' from the write overrides`,
+  );
+});
+
+Deno.test("createFileWriterFactory: no tag source can forge or clear the display tag", () => {
+  const { createFileWriter } = createFileWriterFactory(
+    createMockRepo(),
+    modelType,
+    modelId,
+    { hidden: { ...testFiles.log, display: false } },
+    { [SUMMARY_DISPLAY_TAG]: "shown" },
+  );
+  assertThrows(
+    () => createFileWriter("hidden", "main"),
+    Error,
+    `Tag '${SUMMARY_DISPLAY_TAG}' from the workflow's tags is reserved`,
+  );
 });
 
 Deno.test("createResourceWriter: the writer still sets its own sensitive-fields tag after vaulting", async () => {

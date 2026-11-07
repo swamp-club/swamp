@@ -44,6 +44,7 @@ export interface DataOutputSpec {
   garbageCollection?: number | string;
   streaming?: boolean;
   tags?: Record<string, string>;
+  display?: boolean;
 }
 
 /** Mirrors MethodDescribeData in src/libswamp/types/schema_helpers.ts. */

@@ -503,6 +503,37 @@ export function peekDatastoreOwner(path: string): DatastoreOwner | undefined {
   }
 }
 
+/**
+ * the cursor highWaterMark() reports, read from a file this process does not
+ * open as a store (a restored replica); undefined when it cannot be read
+ */
+export function peekHighWaterCursor(path: string): number | undefined {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+  } catch {
+    return undefined;
+  }
+  try {
+    db.exec("BEGIN");
+    try {
+      const row = db.prepare(
+        "SELECT cursor FROM commits ORDER BY cursor DESC LIMIT 1",
+      ).get() as { cursor: number } | undefined;
+      if (row !== undefined) return row.cursor;
+      return (db.prepare("SELECT point FROM compaction WHERE id = 1").get() as
+        | { point: number }
+        | undefined)?.point ?? 0;
+    } finally {
+      db.exec("COMMIT");
+    }
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
+  }
+}
+
 /** Error code for a `commits.db` written by a newer swamp. */
 export const COMMIT_STORE_SCHEMA_NEWER_CODE = "datastore_v3_schema_newer";
 

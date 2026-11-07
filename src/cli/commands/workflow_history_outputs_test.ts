@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
+import { stepOutputsOf } from "./workflow_history_outputs.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 
 function extractOutputs(
@@ -122,4 +124,43 @@ Deno.test("extractOutputs: collects from multiple jobs", () => {
   assertEquals(Object.keys(outputs).length, 2);
   assertEquals(outputs["compile"].artifactId, "art_1");
   assertEquals(outputs["push"].deploymentId, "dep_1");
+});
+
+Deno.test("stepOutputsOf: collects each step's outputs", () => {
+  const runView: WorkflowRunView = {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "test-wf",
+    status: "succeeded",
+    jobs: [{
+      name: "job1",
+      status: "succeeded",
+      steps: [
+        { name: "write", status: "succeeded", outputs: { id: "a" } },
+        { name: "check", status: "succeeded" },
+      ],
+    }],
+  };
+  assertEquals(stepOutputsOf(runView), { write: { id: "a" } });
+});
+
+Deno.test("stepOutputsOf: a partial step is refused rather than printed incomplete", () => {
+  const runView: WorkflowRunView = {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "test-wf",
+    status: "succeeded",
+    jobs: [{
+      name: "job1",
+      status: "succeeded",
+      steps: [{
+        name: "write",
+        status: "succeeded",
+        outputs: { id: "a" },
+        outputsPartial: true,
+      }],
+    }],
+  };
+  const error = assertThrows(() => stepOutputsOf(runView), UserError);
+  assertStringIncludes(error.message, "write");
 });

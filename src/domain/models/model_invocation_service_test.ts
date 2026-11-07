@@ -56,6 +56,7 @@ import { literalOccurrence } from "../expressions/cel_grammar.ts";
 import { ProvenanceMap } from "../expressions/provenance_map.ts";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { join } from "@std/path";
 import { z } from "zod";
 import { messageFor } from "../behavior_wording.ts";
 
@@ -1621,4 +1622,178 @@ Deno.test("ModelInvocationService: a nested invocation hands its run's unread re
     delivered?.unreadReferences?.unreadReferenceFor(reference)?.reason,
     "op: command not found",
   );
+});
+
+async function withPulledRoot(
+  fn: (pulledRoot: string) => Promise<void>,
+): Promise<void> {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_invocation_auth_" });
+  try {
+    await fn(join(repo, ".swamp", "pulled-extensions"));
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repo, { recursive: true });
+    }
+  }
+}
+
+async function writeManifest(
+  pulledRoot: string,
+  name: string,
+  dependencies: string[],
+): Promise<void> {
+  const dir = join(pulledRoot, ...name.split("/"));
+  await Deno.mkdir(dir, { recursive: true });
+  const deps = dependencies.length === 0
+    ? ""
+    : `dependencies:\n${dependencies.map((d) => `  - "${d}"`).join("\n")}\n`;
+  await Deno.writeTextFile(
+    join(dir, "manifest.yaml"),
+    `manifestVersion: 1\nname: "${name}"\nversion: "2026.01.01.1"\nmodels:\n  - model.ts\n${deps}`,
+  );
+}
+
+function registerExtensionType(
+  rawType: string,
+  extensionName: string,
+): ModelType {
+  const type = ModelType.create(rawType);
+  modelRegistry.register({
+    type,
+    version: "2026.01.01.1",
+    globalArguments: z.object({}),
+    methods: {
+      run: {
+        description: "authorization test method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+    extensionName,
+  });
+  return type;
+}
+
+async function invokeAcrossExtensions(options: {
+  pulledRoot: string;
+  caller: { type: string; extensionName: string };
+  target: { type: string; extensionName: string };
+}): Promise<RunModelResult> {
+  const callerType = registerExtensionType(
+    options.caller.type,
+    options.caller.extensionName,
+  );
+  const targetType = registerExtensionType(
+    options.target.type,
+    options.target.extensionName,
+  );
+  try {
+    const targetDef = Definition.create({
+      name: "auth-target",
+      type: targetType.normalized,
+    });
+    const svc = new ModelInvocationService({
+      executionService: {
+        execute: () => Promise.resolve({ dataHandles: [] }),
+        executeWorkflow: () => Promise.resolve({ dataHandles: [] }),
+      },
+      commonDeps: {
+        dataRepository: {
+          findAllForModel: () => Promise.resolve([]),
+          getContent: () => Promise.resolve(null),
+        },
+        definitionRepository: {
+          findByNameGlobal: (name: string) =>
+            Promise.resolve(
+              name === "auth-target"
+                ? { definition: targetDef, type: targetType }
+                : null,
+            ),
+          findById: () => Promise.resolve(null),
+          save: () => Promise.resolve(),
+        },
+        createCelEnvironment: () =>
+          ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+      } as unknown as CommonMethodContextDeps,
+      evaluationService: passthroughEvaluator,
+      repoDir: "/tmp/test-repo",
+      pulledExtensionsRoot: options.pulledRoot,
+    });
+    return await svc.invoke(
+      { definition: "auth-target", method: "run" },
+      makeStubContext({ modelType: callerType }),
+    );
+  } finally {
+    modelRegistry.invalidateType(callerType);
+    modelRegistry.invalidateType(targetType);
+  }
+}
+
+Deno.test("ModelInvocationService: a nested-name extension may invoke a type from its own collective", async () => {
+  await withPulledRoot(async (pulledRoot) => {
+    await writeManifest(pulledRoot, "@swamp/gcp/gmail", []);
+    const id = crypto.randomUUID();
+    const result = await invokeAcrossExtensions({
+      pulledRoot,
+      caller: {
+        type: `@swamp/gcp/gmail/users-messages-${id}`,
+        extensionName: "@swamp/gcp/gmail",
+      },
+      target: { type: `@swamp/ssh-${id}`, extensionName: "@swamp/ssh" },
+    });
+    assertEquals(result.ok, true);
+  });
+});
+
+Deno.test("ModelInvocationService: a declared nested dependency authorizes a call into another collective", async () => {
+  await withPulledRoot(async (pulledRoot) => {
+    await writeManifest(pulledRoot, "@acme/gcp/gmail", ["@other/aws/ec2"]);
+    const id = crypto.randomUUID();
+    const result = await invokeAcrossExtensions({
+      pulledRoot,
+      caller: { type: `@acme/gmail-${id}`, extensionName: "@acme/gcp/gmail" },
+      target: { type: `@other/ec2-${id}`, extensionName: "@other/aws/ec2" },
+    });
+    assertEquals(result.ok, true);
+  });
+});
+
+Deno.test("ModelInvocationService: a call into another collective without the nested dependency is refused", async () => {
+  await withPulledRoot(async (pulledRoot) => {
+    await writeManifest(pulledRoot, "@acme/gcp/gmail", ["@other/aws"]);
+    const id = crypto.randomUUID();
+    const result = await invokeAcrossExtensions({
+      pulledRoot,
+      caller: { type: `@acme/gmail-${id}`, extensionName: "@acme/gcp/gmail" },
+      target: { type: `@other/ec2-${id}`, extensionName: "@other/aws/ec2" },
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, `add "@other/aws/ec2"`);
+    }
+  });
+});
+
+Deno.test("ModelInvocationService: a caller whose manifest cannot be loaded is refused", async () => {
+  await withPulledRoot(async (pulledRoot) => {
+    await writeManifest(pulledRoot, "@swamp/gcp/gmail", []);
+    const id = crypto.randomUUID();
+    const result = await invokeAcrossExtensions({
+      pulledRoot,
+      caller: {
+        type: `@swamp/gcp/gmail/users-messages-${id}`,
+        extensionName: "@swamp/gcp",
+      },
+      target: { type: `@swamp/ssh-${id}`, extensionName: "@swamp/ssh" },
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(
+        result.error.message,
+        `Cannot verify dependencies for extension "@swamp/gcp"`,
+      );
+    }
+  });
 });

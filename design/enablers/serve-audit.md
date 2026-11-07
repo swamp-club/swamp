@@ -242,10 +242,22 @@ an operator can tell who acted without looking up the sub:
 - Like `principalId` and `initiatedBy`, they are stored in clear and are not
   covered by HMAC mode. Anyone granted `admin` on `access:audit` can read them.
 
-The fields are added only when set, so the chain digest of an event without
-them is unchanged. JSON outputs (`swamp audit log --json`, JSON export,
+The client behind a request (see "Clients" in
+`design/enablers/access-control.md`) is recorded as `client`, in clear like
+`principalId`. It comes only from the authenticated credential, and a follower
+forwards that credential, so a forwarded request records what a direct one would.
+An event with no caller's credential behind it, such as a scheduled run, a
+webhook, a worker's secret load, a login, or serve ending a token's sessions on
+its own, has none, and neither does a token
+issued before clients.
+
+These fields are added only when set, so the chain digest of an event without
+them is unchanged, and the digest covers them when they are set. JSON outputs (`swamp audit log --json`, JSON export,
 webhook, store and WebSocket sinks) carry them. Syslog, CEF, CSV export and the
-`swamp audit log` table keep their fixed fields. The dashboard's Activity view
+`swamp audit log` table keep their fixed fields for the username and email, but
+carry `client`: a `client=` key in syslog, `cs4` with `cs4Label=client` in CEF,
+a `client` column after `initiatedBy` in CSV, so consumers must parse CSV by its
+header, and a last `CLIENT` column in the table. The dashboard's Activity view
 names the actor by username, email, or both, falling back to `initiatedBy`.
 
 ## Query API

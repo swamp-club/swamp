@@ -61,6 +61,7 @@ The config JSON is validated against `configSchema` if provided.
 ```typescript
 // extensions/vaults/hashicorp.ts
 import { z } from "npm:zod";
+import { SecretNotFoundError } from "jsr:@swamp-club/swamp-testing";
 
 class HashiCorpVaultProvider {
   private readonly name: string;
@@ -97,9 +98,7 @@ class HashiCorpVaultProvider {
     );
     if (!resp.ok) {
       if (resp.status === 404) {
-        throw new Error(
-          `Secret '${secretKey}' not found in vault '${this.name}'`,
-        );
+        throw new SecretNotFoundError(this.name, secretKey);
       }
       throw new Error(`Failed to get '${secretKey}': ${resp.status}`);
     }

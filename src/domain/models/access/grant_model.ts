@@ -26,7 +26,7 @@ import {
   type MethodResult,
   type ModelDefinition,
 } from "../model.ts";
-import { ActionSchema } from "../../access/action.ts";
+import { type Action, ActionSchema } from "../../access/action.ts";
 import { type Effect, EffectSchema } from "../../access/effect.ts";
 import { GrantSourceSchema } from "../../access/grant_source.ts";
 import {
@@ -41,6 +41,7 @@ import {
 } from "../../access/subject.ts";
 import { parsePrincipal, PrincipalSchema } from "../../access/principal.ts";
 import {
+  readConditionFindings,
   readConditionTypeLiterals,
   validateGrantCondition,
 } from "../../../infrastructure/cel/grant_condition_environment.ts";
@@ -76,6 +77,7 @@ const GRANT_DATA_NAME = "grant-main";
 export interface GrantCreateInputs {
   subject: string;
   effect: Effect;
+  actions: readonly Action[];
   resourceKind: string;
   resourcePattern: string;
   condition?: string;
@@ -98,13 +100,24 @@ export function checkGrantCreateInputs(
     `${inputs.resourceKind}:${inputs.resourcePattern}`,
   );
 
+  let conditionWarnings: readonly string[] = [];
   if (inputs.condition) {
-    const validation = validateGrantCondition(inputs.condition, resource.kind);
+    const validation = validateGrantCondition(inputs.condition, resource.kind, {
+      actions: inputs.actions,
+      effect: inputs.effect,
+    });
     if (!validation.valid) {
       throw new Error(
         `Invalid grant condition: ${validation.error}`,
       );
     }
+    // a file or stored grant with one keeps loading and warns; a new grant is refused
+    const { typeIssue } = readConditionFindings(
+      inputs.condition,
+      resource.kind,
+    );
+    if (typeIssue) throw new Error(`Invalid grant condition: ${typeIssue}`);
+    conditionWarnings = validation.warnings ?? [];
   }
 
   // a condition literal no type is spelled as matches nothing, so a new grant
@@ -132,7 +145,19 @@ export function checkGrantCreateInputs(
       }`,
     );
   }
-  return { subject, resource, warnings: spelling };
+  return {
+    subject,
+    resource,
+    warnings: [
+      ...spelling,
+      ...conditionWarnings.map((message) => ({
+        part: "condition" as const,
+        written: inputs.condition ?? "",
+        canonical: inputs.condition ?? "",
+        message,
+      })),
+    ],
+  };
 }
 
 async function readGrant(context: MethodContext): Promise<Grant | null> {

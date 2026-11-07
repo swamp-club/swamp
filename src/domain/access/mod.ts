@@ -97,6 +97,16 @@ export {
 } from "./grant_source.ts";
 
 export {
+  type Client,
+  type ClientKind,
+  clientToString,
+  DIRECT_CLI_CLIENT,
+  DIRECT_DASHBOARD_CLIENT,
+  DIRECT_TOKEN_CLIENT,
+  parseClient,
+} from "./client.ts";
+
+export {
   parsePrincipal,
   type Principal,
   type PrincipalKind,

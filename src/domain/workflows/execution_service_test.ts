@@ -4454,6 +4454,148 @@ class TrackingRunRepository implements WorkflowRunRepository {
   }
 }
 
+/** holds the save of a step start until the iterations behind it have finished */
+class BacklogRunRepository extends InMemoryWorkflowRunRepository {
+  readonly landed: Map<string, string>[] = [];
+  holdUntilSucceeded = 0;
+
+  override async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    const steps = () => run.jobs.flatMap((job) => job.steps);
+    const expected = this.holdUntilSucceeded;
+    if (expected > 0 && steps().some((step) => step.status === "running")) {
+      this.holdUntilSucceeded = 0;
+      await waitFor(
+        () =>
+          steps().filter((step) => step.status === "succeeded").length >=
+            expected,
+        "every iteration to finish behind the held save",
+      );
+    }
+    this.landed.push(
+      new Map(steps().map((step) => [step.stepName, step.status])),
+    );
+    return super.save(workflowId, run);
+  }
+}
+
+const BACKLOG_ITEMS = 200;
+
+function backlogWorkflow(): Workflow {
+  return Workflow.create({
+    name: "foreach-save-backlog",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "item-${{ self._index }}",
+            task: StepTask.model("test-model", "run"),
+            forEach: { item: "id", in: "${{ inputs.ids }}" },
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+const backlogIds = Array.from({ length: BACKLOG_ITEMS }, (_, i) => `${i}`);
+
+function assertEventsFollowTheirSave(
+  event: WorkflowExecutionEvent,
+  runRepo: BacklogRunRepository,
+): void {
+  if (event.kind !== "step_started" && event.kind !== "step_completed") return;
+  const status = runRepo.landed.at(-1)?.get(event.stepId);
+  const allowed = event.kind === "step_started"
+    ? ["running", "succeeded"]
+    : ["succeeded"];
+  assert(
+    status !== undefined && allowed.includes(status),
+    `${event.kind} of ${event.stepId} read before a save holding it landed (saved as ${status})`,
+  );
+}
+
+Deno.test("execute: a parallel forEach whose iterations all finish behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new BacklogRunRepository();
+    const workflow = backlogWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    runRepo.holdUntilSucceeded = BACKLOG_ITEMS;
+
+    let stepEvents = 0;
+    let completed: WorkflowRun | undefined;
+    for await (
+      const event of service.run(workflow.name, { inputs: { ids: backlogIds } })
+    ) {
+      assertEventsFollowTheirSave(event, runRepo);
+      if (event.kind === "step_started" || event.kind === "step_completed") {
+        stepEvents++;
+      }
+      if (event.kind === "completed") completed = event.run;
+    }
+
+    assertEquals(completed?.status, "succeeded");
+    assertEquals(stepEvents, BACKLOG_ITEMS * 2);
+    assert(
+      runRepo.landed.length < 10,
+      `expected a handful of saves for ${stepEvents} step events, got ${runRepo.landed.length}`,
+    );
+  });
+});
+
+Deno.test("resume: a failed parallel forEach whose retried iterations all finish behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new BacklogRunRepository();
+    const executor = new CountingStepExecutor();
+    const workflow = backlogWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    for (let i = 0; i < BACKLOG_ITEMS; i++) executor.failing.add(`item-${i}`);
+    const failed = await service.execute(workflow.name, {
+      inputs: { ids: backlogIds },
+    });
+    assertEquals(failed.status, "failed");
+
+    executor.failing.clear();
+    runRepo.holdUntilSucceeded = BACKLOG_ITEMS;
+    const savesBefore = runRepo.landed.length;
+    let stepEvents = 0;
+    let completed: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, failed.id)) {
+      assertEventsFollowTheirSave(event, runRepo);
+      if (event.kind === "step_started" || event.kind === "step_completed") {
+        stepEvents++;
+      }
+      if (event.kind === "completed") completed = event.run;
+    }
+
+    assertEquals(completed?.status, "succeeded");
+    assertEquals(stepEvents, BACKLOG_ITEMS * 2);
+    const saves = runRepo.landed.length - savesBefore;
+    assert(
+      saves < 10,
+      `expected a handful of saves for ${stepEvents} step events, got ${saves}`,
+    );
+  });
+});
+
 Deno.test("CONTRACT: success run emits events in exact order", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -18486,6 +18628,7 @@ async function runStepUnderLockHook(
     Promise.resolve({}),
   resources: ModelDefinition["resources"] = {},
   labels?: Record<string, string>,
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<{
   error: unknown;
   outputs: import("../models/model_output.ts").ModelOutput[];
@@ -18563,7 +18706,7 @@ async function runStepUnderLockHook(
           jobName: "job",
           stepName: "step",
           repoDir: tempDir,
-          signal: new AbortController().signal,
+          signal,
           step,
           catalogStore,
           authoredExpressions: new Set(),
@@ -18648,6 +18791,65 @@ Deno.test("DefaultStepExecutor: takes the step lock before the step writes anyth
     runId: outputs[0].id,
     status: "completed",
   }]);
+});
+
+function cancelledWhileQueued(labels?: Record<string, string>) {
+  const controller = new AbortController();
+  const seen: Array<AbortSignal | undefined> = [];
+  let ran = 0;
+  let lock: ReturnType<typeof countingLockHook> | undefined;
+  const result = runStepUnderLockHook(
+    () => {
+      lock = countingLockHook(() => {
+        controller.abort(new Error("run cancelled"));
+        return Promise.resolve();
+      });
+      return (modelType, modelId, step, signal) => {
+        seen.push(signal);
+        return lock!.hook(modelType, modelId, step, signal);
+      };
+    },
+    "execute",
+    () => {
+      ran++;
+      return Promise.resolve({});
+    },
+    {},
+    labels,
+    controller.signal,
+  );
+  return {
+    result,
+    signal: controller.signal,
+    seen,
+    ran: () => ran,
+    flushes: () => lock?.flushes(),
+  };
+}
+
+Deno.test("DefaultStepExecutor: a step whose lock arrives after the run was cancelled never runs its method", async () => {
+  const queued = cancelledWhileQueued();
+  const { error, outputs, evaluatedCount, tracker } = await queued.result;
+
+  assert(error instanceof Error, `unexpected error: ${error}`);
+  assertEquals(error.message, "run cancelled");
+  assertEquals(queued.seen, [queued.signal]);
+  assertEquals(queued.ran(), 0);
+  assertEquals(queued.flushes(), 1);
+  assertEquals(outputs.length, 0);
+  assertEquals(evaluatedCount, 0);
+  assertEquals(tracker.registrations.length, 0);
+});
+
+Deno.test("DefaultStepExecutor: a placed step whose lock arrives after the run was cancelled is never dispatched", async () => {
+  const queued = cancelledWhileQueued({ region: "eu" });
+  const { error, outputs } = await queued.result;
+
+  assert(error instanceof Error, `unexpected error: ${error}`);
+  assertEquals(error.message, "run cancelled");
+  assertEquals(queued.ran(), 0);
+  assertEquals(queued.flushes(), 1);
+  assertEquals(outputs.length, 0);
 });
 
 Deno.test("DefaultStepExecutor: releases the step lock when the step fails before the method runs", async () => {
@@ -19669,7 +19871,8 @@ Deno.test("DefaultStepExecutor: a method cancelled with a reason records that re
 });
 
 Deno.test("DefaultStepExecutor: a cleanup method the cleanup grace cuts off is recorded cancelled as cleanup grace expired (swamp-club#2922)", async () => {
-  const signal = cleanupGraceSignal(1);
+  // long enough for the method to start: a grace already run out never starts it
+  const signal = cleanupGraceSignal(500);
   const { outputs, tracker } = await runModelStep({ signal }, async () => {
     await waitFor(() => signal.aborted, "the cleanup grace to run out");
     throw new Error("process exited with signal SIGTERM");
@@ -19764,7 +19967,7 @@ class GatedRunRepository extends SpyWorkflowRunRepository {
 async function registerMethodModel(
   tempDir: string,
   definitionNames: string[],
-  execute: () => Promise<Record<string, never>>,
+  execute: ModelDefinition["methods"][string]["execute"],
 ): Promise<ModelType> {
   const { z } = await import("zod");
   const { modelRegistry } = await import("../models/model.ts");
@@ -19885,6 +20088,54 @@ Deno.test("run(): a cancelled run waits for its parallel model methods to save t
       assertEquals(step.status, "failed", name);
       assertEquals(step.error, CANCELLED_STEP_ERROR, name);
     }
+  });
+});
+
+Deno.test("run(): a cancelled run waits for a data write its method started until the write lands", async () => {
+  await withTempDir(async (tempDir) => {
+    const controller = new AbortController();
+    let landed = false;
+    let started = 0;
+    // two steps share the level, so the level stops waiting at the abort
+    await registerMethodModel(tempDir, ["m1", "m2"], async (_args, context) => {
+      if (++started === 2) return {};
+      controller.abort();
+      const write = new Promise<void>((resolve) =>
+        setTimeout(() => {
+          landed = true;
+          resolve();
+        }, 200)
+      );
+      assertExists(context.inFlightDataWrites);
+      await context.inFlightDataWrites.track(write);
+      return {};
+    });
+    const workflow = Workflow.create({
+      name: "write-cancel-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [methodStep("w1", "m1"), methodStep("w2", "m2")],
+        }),
+      ],
+    });
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      new RecordingRunTracker(),
+      new InFlightCountingExecutor(new DefaultStepExecutor()),
+    );
+
+    const { run } = await runUntilAborted(
+      service,
+      workflow,
+      controller.signal,
+      undefined,
+      SHORT_STEP_STOP_GRACE_MS,
+    );
+
+    assertEquals(run.status, "cancelled");
+    assertEquals(landed, true);
   });
 });
 

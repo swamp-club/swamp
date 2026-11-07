@@ -48,7 +48,7 @@ means denied.
 | Effects    | `allow`, `deny` (deny wins)                                                                                  |
 | Actions    | `run`, `read`, `write`, `approve`, `signal`, `tag`, `admin`                                                  |
 | Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `access:*`                                   |
-| Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                                         |
+| Conditions | CEL expressions via `--when 'tags.env == "staging"'`, including `client` and, for `approve`, `run`           |
 
 Admin on `access:*` implies all actions (superuser).
 
@@ -117,6 +117,35 @@ curl -X POST https://<host>/api/v1/signal \
   -H "Authorization: Bearer <name>.<secret>" -H "Idempotency-Key: build-812" \
   -d '{"workflow":"<name>","key":"<key>","payload":{"verdict":"ship"}}'
 ```
+
+### Acting over HTTP
+
+`POST /api/v1/action` runs workflow actions for an integration: bearer token
+only, per-person rate limit, one JSON reply with a stable `code` on failure.
+
+```bash
+curl -X POST https://<host>/api/v1/action \
+  -H "Authorization: Bearer <name>.<secret>" -H "Content-Type: application/json" \
+  -d '{"type":"workflow.run","payload":{"workflowIdOrName":"<name>","idempotencyKey":"button-812"}}'
+# 202 {"data":{"runId":"...","replayed":false}}; a retry with the same key returns
+# the same run with replayed true, and other inputs get idempotency_conflict
+
+curl ... -d '{"type":"workflow.history.get","payload":{"runId":"<full id>"}}'
+curl ... -d '{"type":"workflow.approvals"}'   # each row's suspendedAt names the attempt
+curl ... -d '{"type":"workflow.approve","payload":{"workflowIdOrName":"<name>","runId":"<id>","stepName":"<gate>","suspendedAt":"<from the row>"}}'
+```
+
+A success is `{requestId, type, data}`, with the action's result in `data`; a
+failure is `{code, message}`, plus `requestId` once the action was dispatched.
+`workflow.reject`, `workflow.resume` (runId required, suspended runs only) and
+`workflow.signal` work the same way. Fields not listed for a type are refused. A
+repeated decision gets `already_decided`, a decision for an attempt since
+re-opened `gate_reopened`, and a step name in several jobs `ambiguous_gate`
+until `jobName` picks one (read the job from status). A paused run reads
+`suspended` in status. An approved run continues with `--auto-resume`, or
+`autoResume: true` when it has inputs, or a `workflow.resume`; the reply's
+`autoResumed` says which. A repeated start is safe only on one node or a team
+leader.
 
 `swamp workflow run --server` prints the wait ID and the signal command with
 `--server` when the run suspends on a wait, its own or a nested run's, and for a
@@ -223,6 +252,53 @@ Apply with `swamp access reload --server wss://...`. Reload validates all files
 first — rejects the entire reload if any file is invalid. The reconciler only
 touches `source: file:*` grants; CLI-created grants are independent. Both
 `.yaml` and `.yml` are accepted; flat directory only.
+
+## Separation of Duties
+
+Forbid self-approval with a deny, once per subject holding `run`, `approve` or
+`admin`. An allow alone is not enough: `run` implies `approve`, and admins fall
+back to allowed. There is no wildcard subject. `reject` is decided as `approve`.
+
+```bash
+swamp access grant create --subject idp-group:approvers --deny approve \
+  --on 'workflow:@acme/*' --when 'principal.sub == run.initiator.sub'
+```
+
+`run` is available only on workflow grants with exactly the `approve` action. A
+run with no usable initiator fails closed, so finish or cancel such runs first.
+A service run has an empty `run.initiator.sub`, so people can approve it.
+
+Refuse an integration with a condition on `client`, written `<kind>:<id>`:
+
+```bash
+swamp access grant create --subject group:ops --deny run \
+  --on 'workflow:@acme/*' --when 'client == "integration:slack"'
+```
+
+- A token with no client reads as `direct:`.
+- This refuses tokens issued to that integration, not the person, who can still
+  use the CLI. A `direct:` id is not a boundary: a copied token keeps it.
+- Client conditions never narrow a run. A vault deny on `client` stops direct
+  requests; deny `run` on the workflow to keep an integration out of it.
+- Upgrade every serve instance before writing these grants: an older one does
+  not enforce the deny.
+
+A condition whose types cannot evaluate is refused when written. A deny whose
+condition errors at decision time refuses, and an allow does not match. That
+includes reading a tag the resource lacks, so guard a deny meant only for tagged
+resources: `"env" in tags && tags.env == "prod"`.
+
+Check a condition locally, since a server reads the client from the caller's own
+session:
+
+```bash
+swamp access check --subject user:alice --action run \
+  --on 'workflow:@acme/deploy' --client integration:slack
+```
+
+Add `--field run.initiator.sub=alice` to check a condition on the run.
+Self-approval's limits for member-driven runs are in
+`design/enablers/access-control.md`.
 
 ## Vault Access
 
@@ -557,9 +633,15 @@ separate process on the serve host (e.g. `kubectl exec`): with a remote
 datastore, a running serve does not pull out-of-process token definitions, so
 the token fails until serve restarts.
 
-The mint output does not include the credential, and `reveal` has no `--server`.
-Run `swamp access token reveal <name> --yes` where the serve's repo or datastore
-is reachable.
+The mint output does not include the credential. Reveal it through the same
+serve (admin only; answered by the leader and audited):
+
+```bash
+swamp access token reveal <name> --yes --server wss://swamp.example.com
+```
+
+A login token (`oauth-…`, minted by an OAuth or device login) is not revealable
+through serve, even by an admin (`token_not_revealable`); revoke it instead.
 
 `swamp worker token create <name> --duration <d> --server <url>` also stores the
 secret in `_token-secrets` unless `--vault <name>` names another vault on the

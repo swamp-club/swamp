@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import "../src/domain/models/models.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { datastoreLockCommand } from "../src/cli/commands/datastore_lock.ts";
 import { datastoreStatusCommand } from "../src/cli/commands/datastore_status.ts";
@@ -29,11 +29,13 @@ import {
 import { serveUpstreamRunsLocally } from "../src/cli/serve_upstream.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
 import type { ModelType } from "../src/domain/models/model_type.ts";
 import {
   type Client,
   endCommand,
   latestOf,
+  MEMBER,
   readCommand,
   type Scratch,
   type Serve,
@@ -235,6 +237,7 @@ async function datastoreCommandJson(
   serve: Serve,
   client: Client,
   args: readonly string[],
+  env: Record<string, string | undefined> = serveEnv(serve, "alice-token"),
 ): Promise<unknown[]> {
   const root = new Command()
     .globalOption("--json", "JSON output")
@@ -256,7 +259,7 @@ async function datastoreCommandJson(
   try {
     await withClientEnv(
       scratch,
-      serveEnv(serve, "alice-token"),
+      env,
       ["datastore", ...args.slice(0, 1)],
       () =>
         root.parse([
@@ -310,6 +313,194 @@ Deno.test({
       assertEquals(reported.type, bucket.typeName);
 
       assertEquals(bucket.touched(), []);
+    });
+  },
+});
+
+/** another command of the checkout writing: a Worker holds its writer lease */
+async function holdWriter(root: string): Promise<{ release(): Promise<void> }> {
+  const worker = new Worker(
+    new URL("./serve_upstream_lease_holder_worker.ts", import.meta.url).href,
+    { type: "module" },
+  );
+  const messages: string[] = [];
+  worker.onmessage = (event: MessageEvent<string>) =>
+    void messages.push(event.data);
+  const reply = async (expected: string) => {
+    await waitFor(
+      () => messages.some((m) => m === expected || m.startsWith("failed")),
+      `the writer holder to answer ${expected}`,
+      { timeoutMs: 60_000 },
+    );
+    const failed = messages.find((m) => m.startsWith("failed"));
+    if (failed !== undefined) {
+      worker.terminate();
+      throw new Error(failed);
+    }
+  };
+  await reply("loaded");
+  worker.postMessage({ kind: "hold", root });
+  await reply("held");
+  return {
+    async release() {
+      worker.postMessage("release");
+      try {
+        await reply("released");
+      } finally {
+        worker.terminate();
+      }
+    },
+  };
+}
+
+Deno.test({
+  name:
+    "serve upstream locks: an admin force-releases a behavior's lease by id from a member's checkout while that member's command still writes there",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: [
+          ...MEMBER,
+          { user: "carol", actions: ["admin"], kind: "access", pattern: "*" },
+        ],
+      });
+      const member = await scratch.client("a");
+      const type = serve.modelType.normalized;
+      const id = serve.models.web;
+      // A copy built for the member, so the admin's command is another caller.
+      await readCommand(
+        scratch,
+        member,
+        serveEnv(serve, "alice-token"),
+        () => Promise.resolve(),
+      );
+      const lockKey = `data/${type}/${id}/.lock`;
+      const taken = await fetch(
+        `${serve.origin}/api/v1/datastore/_default/locks`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer alice-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ lockKey, ttlMs: 60_000, waitMs: 0 }),
+        },
+      );
+      assertEquals(taken.status, 201, await taken.text());
+
+      const writer = await holdWriter(
+        serveUpstreamLocalRoot(member.repoDir, serve.origin, ""),
+      );
+      const carol = {
+        ...serveEnv(serve, "carol-token"),
+        SWAMP_LOCK_TIMEOUT_MS: "2000",
+      };
+      let released: unknown[];
+      try {
+        const wrongType = await assertRejects(() =>
+          datastoreCommandJson(
+            scratch,
+            serve,
+            member,
+            ["lock", "release", "--force", "--behavior", `other/kind/${id}`],
+            carol,
+          )
+        );
+        assertStringIncludes(
+          String(wrongType),
+          `Behavior ${id} is of type ${type}, not other/kind: nothing was released`,
+        );
+        released = await datastoreCommandJson(
+          scratch,
+          serve,
+          member,
+          // the id as typed, in any case
+          [
+            "lock",
+            "release",
+            "--force",
+            "--behavior",
+            `${type}/${id.toUpperCase()}`,
+          ],
+          // short, so a release that waited for the writer fails fast
+          carol,
+        );
+      } finally {
+        await writer.release();
+      }
+      assertEquals(released, [{ released: true, leaseHolder: "user:caller" }]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream locks: an admin force-releases a behavior's lease by its bare name, resolved at serve, while that member's command still writes there",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: [
+          ...MEMBER,
+          { user: "carol", actions: ["admin"], kind: "access", pattern: "*" },
+        ],
+      });
+      const member = await scratch.client("a");
+      const type = serve.modelType.normalized;
+      const id = serve.models.web;
+      await readCommand(
+        scratch,
+        member,
+        serveEnv(serve, "alice-token"),
+        () => Promise.resolve(),
+      );
+      const lockKey = `data/${type}/${id}/.lock`;
+      const taken = await fetch(
+        `${serve.origin}/api/v1/datastore/_default/locks`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer alice-token",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ lockKey, ttlMs: 60_000, waitMs: 0 }),
+        },
+      );
+      assertEquals(taken.status, 201, await taken.text());
+
+      const writer = await holdWriter(
+        serveUpstreamLocalRoot(member.repoDir, serve.origin, ""),
+      );
+      const carol = {
+        ...serveEnv(serve, "carol-token"),
+        SWAMP_LOCK_TIMEOUT_MS: "2000",
+      };
+      let released: unknown[];
+      try {
+        const unknown = await assertRejects(() =>
+          datastoreCommandJson(
+            scratch,
+            serve,
+            member,
+            ["lock", "release", "--force", "--behavior", "no-such-behavior"],
+            carol,
+          )
+        );
+        assertStringIncludes(String(unknown), "type/id");
+        released = await datastoreCommandJson(
+          scratch,
+          serve,
+          member,
+          ["lock", "release", "--force", "--behavior", "web"],
+          carol,
+        );
+      } finally {
+        await writer.release();
+      }
+      assertEquals(released, [{ released: true, leaseHolder: "user:caller" }]);
     });
   },
 });

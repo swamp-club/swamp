@@ -19,6 +19,7 @@
 
 import { green, red, yellow } from "@std/fmt/colors";
 import type { OutputMode } from "../output/output.ts";
+import { prettyJson } from "../output/json_stream.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import type {
@@ -31,10 +32,15 @@ export function renderWorkflowRunDisplay(
   mode: OutputMode,
 ): void {
   if (mode === "json") {
-    console.log(JSON.stringify(data, null, 2));
+    // resource attributes can nest deeper than JSON.stringify's stack allows
+    console.log(prettyJson(data));
   } else {
     renderLogWorkflowRun(data);
   }
+}
+
+function viaClient(client: string | undefined): string {
+  return client !== undefined ? ` via ${escapeControlCharacters(client)}` : "";
 }
 
 function keySuffix(key: string | undefined): string {
@@ -135,15 +141,15 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         const a = step.approval;
         if (a.status === "approved") {
           writeOutput(
-            `      ${green("Approved")} by ${a.approvedBy ?? "unknown"} at ${
-              formatTimestamp(a.approvedAt)
-            }`,
+            `      ${green("Approved")} by ${a.approvedBy ?? "unknown"}${
+              viaClient(a.client)
+            } at ${formatTimestamp(a.approvedAt)}`,
           );
         } else if (a.status === "rejected") {
           writeOutput(
-            `      ${red("Rejected")} by ${a.rejectedBy ?? "unknown"} at ${
-              formatTimestamp(a.rejectedAt)
-            }`,
+            `      ${red("Rejected")} by ${a.rejectedBy ?? "unknown"}${
+              viaClient(a.client)
+            } at ${formatTimestamp(a.rejectedAt)}`,
           );
           if (a.reason) {
             writeOutput(`      Reason: ${a.reason}`);

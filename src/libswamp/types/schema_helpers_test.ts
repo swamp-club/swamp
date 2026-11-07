@@ -24,7 +24,10 @@ import {
   toMethodDescribeData,
   zodToJsonSchema,
 } from "./schema_helpers.ts";
-import type { ResourceOutputSpec } from "../../domain/models/model.ts";
+import type {
+  FileOutputSpec,
+  ResourceOutputSpec,
+} from "../../domain/models/model.ts";
 
 Deno.test("zodToJsonSchema: handles z.record(z.unknown())", () => {
   const schema = z.record(z.string(), z.unknown());
@@ -189,6 +192,35 @@ Deno.test("buildDataOutputSpecs: builds specs from resources and files", () => {
   assertEquals(result[0].kind, "resource");
   assertEquals(result[0].description, "Current state");
   assertEquals(result[0].lifetime, "infinite");
+});
+
+Deno.test("buildDataOutputSpecs: carries display only when the spec sets it", () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    hidden: {
+      schema: z.object({ phase: z.string() }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+      display: false,
+    },
+    shown: {
+      schema: z.object({ phase: z.string() }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  };
+  const files: Record<string, FileOutputSpec> = {
+    blob: {
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      display: false,
+    },
+  };
+  const result = buildDataOutputSpecs(resources, files);
+  const bySpec = Object.fromEntries(result.map((s) => [s.specName, s]));
+  assertEquals(bySpec.hidden.display, false);
+  assertEquals("display" in bySpec.shown, false);
+  assertEquals(bySpec.blob.display, false);
 });
 
 Deno.test("buildDataOutputSpecs: returns empty array when no specs", () => {

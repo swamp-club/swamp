@@ -159,6 +159,19 @@ export interface ModelDeleteDeps {
     id: DefinitionId,
   ) => Promise<void>;
   isExpired?: (data: Data) => Promise<boolean>;
+  /**
+   * asks serve, before anything is removed, whether every removal will be
+   * allowed; undefined when it will, or when nothing can ask
+   */
+  preflightDelete?: (plan: ModelDeletePlan) => Promise<SwampError | undefined>;
+}
+
+/** what a delete will remove beyond the definition itself */
+export interface ModelDeletePlan {
+  readonly type: ModelType;
+  readonly definition: Definition;
+  readonly outputs: readonly { id: string; methodName: string }[];
+  readonly data: readonly { name: string; version: number }[];
 }
 
 export function createModelDeleteDeps(
@@ -474,6 +487,30 @@ async function* deleteStages(
       return found;
     },
   );
+  const removedData = input.force ? [...expired, ...live] : expired;
+  if (
+    deps.preflightDelete !== undefined &&
+    (outputs.length > 0 || removedData.length > 0)
+  ) {
+    // each partition commits on its own, the definition last: a refusal of
+    // the definition after the data went would leave half a delete
+    const refusal = await deps.preflightDelete({
+      type: modelType,
+      definition,
+      outputs,
+      data: removedData.map((data) => ({
+        name: data.name,
+        version: data.version,
+      })),
+    });
+    if (refusal !== undefined) {
+      phase.attributes({ "swamp.diagnostic.refusal": "preflight" });
+      phase.end("error");
+      yield { kind: "error", error: refusal };
+      return;
+    }
+  }
+
   let outputsDeleted = 0;
   // One phase for the loop, never one per output.
   await observeDiagnosticPhase("output_removal", {}, async ({ tally }) => {

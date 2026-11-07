@@ -210,6 +210,71 @@ Deno.test("JsonModelValidateRenderer - includes the templates of a template synt
   }
 });
 
+const uncheckedWarningData = {
+  modelId: "def-2",
+  modelName: "demo-ai",
+  type: "@swamp/typesafe-ai",
+  validations: [{ name: "Check: api-key-configured", passed: true }],
+  warnings: [{
+    name: "Secret references not checked",
+    message: "The vault could not be reached to check these references.",
+    secretReferences: [{
+      location: "globalArguments.apiKey:1:1",
+      vaultName: "demo",
+      key: "some-item",
+      reason: "1Password CLI (op) is not installed or not in PATH.",
+    }],
+  }],
+  passed: true,
+};
+
+Deno.test("ModelValidateRenderer - log mode lists each secret reference not checked with its reason", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("log");
+    await consumeStream(
+      toStream([{ kind: "completed", data: uncheckedWarningData }]),
+      renderer.handlers(),
+    );
+    const combined = stripAnsiCode(logs.join("\n"));
+    assertStringIncludes(combined, "Secret references not checked");
+    assertStringIncludes(
+      combined,
+      "    globalArguments.apiKey:1:1 reads demo/some-item: 1Password CLI (op) is not installed or not in PATH.",
+    );
+    assertStringIncludes(combined, "Result: PASSED");
+    assertEquals(renderer.passed(), true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonModelValidateRenderer - includes the secret references of an unchecked-references warning", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelValidateRenderer("json");
+    await consumeStream(
+      toStream([{ kind: "completed", data: uncheckedWarningData }]),
+      renderer.handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.warnings[0].name, "Secret references not checked");
+    assertEquals(
+      parsed.warnings[0].secretReferences,
+      uncheckedWarningData.warnings[0].secretReferences,
+    );
+    assertEquals(parsed.passed, true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 const SHARED_REMEDY =
   "If this is another service's template syntax, build it with CEL string concatenation.";
 

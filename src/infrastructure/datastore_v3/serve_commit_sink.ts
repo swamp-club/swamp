@@ -23,6 +23,8 @@
  * that may have reached it keeps its entry
  */
 
+import { latchServeUnreachable } from "./serve_datastore_client.ts";
+import { noteCommandLanded } from "./command_landed.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { CommitOutbox } from "../../domain/datastore_v3/commit_outbox.ts";
 import type { CommitStoreAppendResult } from "../../domain/datastore_v3/commit_store.ts";
@@ -192,7 +194,24 @@ export function createServeCommitSink(
     withSpan(
       "swamp.datastore.v3.serve.forward",
       {},
-      () => forwardIn(commit, leaseId),
+      async () => {
+        try {
+          return await forwardIn(commit, leaseId);
+        } catch (error) {
+          if (error instanceof ServeUnreachableError) {
+            latchServeUnreachable(client.baseUrl, error);
+            if (error.sent === "maybe") {
+              noteCommandLanded(
+                commit.partition,
+                commit.ops.flatMap((op) =>
+                  "intent" in op ? [op.intent.kind] : []
+                ),
+              );
+            }
+          }
+          throw error;
+        }
+      },
     );
 
   const forwardIn = async (

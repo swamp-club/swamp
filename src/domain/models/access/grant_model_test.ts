@@ -499,3 +499,69 @@ Deno.test("checkGrantCreateInputs: returns the parsed inputs and selector warnin
   assertEquals(checked.warnings.length, 1);
   assertEquals(checked.warnings[0].message.includes("model:@acme/*"), true);
 });
+
+Deno.test("checkGrantCreateInputs: refuses the run on any action but approve, and returns condition warnings", () => {
+  const self = {
+    ...VALID_CREATE_ARGS,
+    effect: "deny" as const,
+    condition: "principal.sub == run.initiator.sub",
+  };
+  assertThrows(
+    () => checkGrantCreateInputs({ ...self, actions: ["run"] }),
+    Error,
+    "names run",
+  );
+  for (
+    const condition of [
+      "!run.initiator.sub",
+      'run.serveDriven == "false"',
+      "run.initiator.sub > 1",
+      'principal.sub == "x" && !run.initiator.sub',
+    ]
+  ) {
+    for (const effect of ["allow", "deny"] as const) {
+      assertThrows(
+        () =>
+          checkGrantCreateInputs({
+            ...self,
+            effect,
+            actions: ["approve"],
+            condition,
+          }),
+        Error,
+        "Invalid grant condition: Condition",
+      );
+    }
+  }
+  for (
+    const condition of ["principal.sub > 1", "tags.env > 1", "!name == true"]
+  ) {
+    assertThrows(
+      () =>
+        checkGrantCreateInputs({
+          ...VALID_CREATE_ARGS,
+          effect: "deny",
+          condition,
+        }),
+      Error,
+      "Invalid grant condition",
+    );
+  }
+  assertStringIncludes(
+    checkGrantCreateInputs({
+      ...VALID_CREATE_ARGS,
+      effect: "deny",
+      condition: 'tags.env == "prod"',
+    }).warnings[0].message,
+    "without checking the tag exists",
+  );
+  assertEquals(
+    checkGrantCreateInputs({ ...self, actions: ["approve"] }).warnings,
+    [],
+  );
+  const warned = checkGrantCreateInputs({
+    ...VALID_CREATE_ARGS,
+    condition: 'client != "direct:cli"',
+  });
+  assertStringIncludes(warned.warnings[0].message, "not a security boundary");
+});

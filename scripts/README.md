@@ -59,6 +59,26 @@ with an empty filename and zero mtime. Consumers should use the uploaded archive
 directly; any repackager must use this same format. Windows ZIPs are preserved
 byte-for-byte from the build.
 
+# Binary size limits
+
+`scripts/compile.ts` embeds only the npm packages reachable from `main.ts`, so
+the dashboard's build packages stay out of the binary.
+`scripts/check_binary_size.ts` fails when a binary exceeds its target's limit in
+`scripts/binary_size_limits.json`. `verify-build` checks the host target, and
+the release workflow checks all five before anything uploads.
+
+Each limit is a release build's size plus about 15 MB, in megabytes (1,000,000
+bytes). A release build includes the dashboard, which `verify-build` does not
+build, so set limits from
+`deno run build-dashboard && deno run compile --target <target>`. When a size
+increase is intended, raise the limit in the same change so reviewers see it. A
+leak smaller than the margin passes.
+
+```sh
+deno task check-binary-size swamp
+deno task check-binary-size x86_64-apple-darwin=dist/swamp-darwin-x86_64
+```
+
 # License Compliance
 
 Swamp generates a [CycloneDX](https://cyclonedx.org/) Software Bill of Materials

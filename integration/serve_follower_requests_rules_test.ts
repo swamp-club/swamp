@@ -23,6 +23,7 @@ import {
   FOLLOWER_FORWARDED_REQUESTS,
   FOLLOWER_READ_REQUESTS,
 } from "../src/serve/follower_requests.ts";
+import { HTTP_ACTION_TYPES } from "../src/serve/protocol.ts";
 import { CONFIRMED_WRITE_REQUESTS } from "../src/serve/write_confirmation.ts";
 
 const ROOT = join(import.meta.dirname!, "..");
@@ -86,5 +87,34 @@ Deno.test("follower requests: the HTTP cancel route forwards on a follower only 
   assert(
     authenticated > open && authenticated < refusal,
     "the cancel route's follower forward must come after its authentication",
+  );
+});
+
+Deno.test("follower requests: every action is forwarded or read, so a follower can answer it", () => {
+  assert(HTTP_ACTION_TYPES.size > 0, "no action types");
+  for (const type of HTTP_ACTION_TYPES) {
+    assert(
+      FOLLOWER_FORWARDED_REQUESTS.has(type) !==
+        FOLLOWER_READ_REQUESTS.has(type),
+      `${type} must be in exactly one of the follower lists`,
+    );
+  }
+});
+
+Deno.test("follower requests: the action route forwards only after authentication, with the body it read", async () => {
+  const source = await Deno.readTextFile(
+    join(ROOT, "src", "serve", "http_action_route.ts"),
+  );
+  const authenticated = source.indexOf("await authenticateHttpCaller(");
+  const read = source.indexOf("await readBodyWithLimit(", authenticated);
+  // the first call in the file, so no earlier forward can pass unnoticed
+  const forward = source.indexOf("followerHttpForward(");
+  assert(authenticated > 0, "the route's authentication was not found");
+  assert(read > authenticated, "the body must be read after authentication");
+  assert(forward > read, "the forward must follow authentication and the read");
+  const call = source.slice(forward, source.indexOf("});", forward));
+  assert(
+    call.includes("body: bytes"),
+    "the forward must pass the bytes it read: the request body is consumed",
   );
 });

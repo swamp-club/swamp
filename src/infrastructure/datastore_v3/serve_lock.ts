@@ -23,6 +23,8 @@
  * fires once and the work is cancelled; unfenced only logs
  */
 
+import { UserError } from "../../domain/errors.ts";
+import { LEASE_LAPSED_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   type DistributedLock,
   type LockInfo,
@@ -38,6 +40,11 @@ import type { ExplicitLease } from "./explicit_model_leases.ts";
 import { dropServeLease, holdServeLease } from "./serve_lease_registry.ts";
 import { ServeUpstreamError } from "./serve_upstream_errors.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
+import {
+  latchServeUnreachable,
+  serveDatastoreClientFor,
+} from "./serve_datastore_client.ts";
 
 const logger = getSwampLogger(["datastore", "lock", "serve"]);
 
@@ -47,16 +54,19 @@ const RETRY_INTERVAL_MS = 100;
 const MAX_BACKOFF_MS = 1_000;
 
 const MAX_DEADLINE_MARGIN_MS = 2_000;
+/** serve frees an unreleased lease at its TTL, so a release never waits long */
+const RELEASE_DEADLINE_MS = 5_000;
 
 /**
  * the work under a lapsed fenced lease does not hold the lock, so it is
  * cancelled and serve refuses any commit it still sends
  */
-export class ServeLeaseLapsedError extends Error {
+export class ServeLeaseLapsedError extends UserError {
   constructor(readonly lockKey: string, readonly reason: string) {
     super(
       `The lock ${lockKey} at serve lapsed (${reason}), so this work was ` +
         `cancelled: another command may now hold it`,
+      LEASE_LAPSED_CODE,
     );
     this.name = "ServeLeaseLapsedError";
   }
@@ -146,16 +156,17 @@ export class ServeLock implements DistributedLock {
    * @throws ServeUnreachableError when serve cannot be reached: the
    *   command ends before it changes anything
    */
-  acquire(): Promise<void> {
+  acquire(signal?: AbortSignal): Promise<void> {
     return withSpan(
       "swamp.datastore.v3.serve.lock.acquire",
       {},
-      () => this.#acquire(),
+      () => this.#acquire(signal),
     );
   }
 
-  async #acquire(): Promise<void> {
+  async #acquire(signal: AbortSignal | undefined): Promise<void> {
     if (this.#lease !== undefined || this.#localOnly) return;
+    signal?.throwIfAborted();
     const offline = this.#options.offline?.();
     if (offline !== undefined) {
       await this.#acquireOffline(offline);
@@ -169,6 +180,9 @@ export class ServeLock implements DistributedLock {
     let heldBy = "another caller";
     try {
       while (true) {
+        // checked between asks only: aborting an ask serve may have granted
+        // would leave its lease held at serve until the TTL
+        signal?.throwIfAborted();
         const remaining = this.#options.maxWaitMs - (this.#now() - started);
         if (remaining <= 0) {
           throw this.#timeout(client, heldBy, this.#now() - started);
@@ -189,6 +203,7 @@ export class ServeLock implements DistributedLock {
           this.#ttlMs,
           waitMs,
           hold.signal,
+          { budgetMs: remaining },
         );
         if (reply.acquired) {
           this.#client = client;
@@ -202,11 +217,18 @@ export class ServeLock implements DistributedLock {
           this.#startHeartbeat();
           break;
         }
-        heldBy = reply.heldBy === "caller"
-          ? "another command of this caller"
-          : reply.heldBy === "serve"
-          ? "serve's own work"
-          : "another caller";
+        heldBy = describeHolder(reply.heldBy, reply.holder);
+        // an explicit lease that ends after this wait would only be waited
+        // out to the same refusal
+        if (
+          outlastsWait(
+            reply.holder,
+            started + this.#options.maxWaitMs,
+            client.baseUrl,
+          )
+        ) {
+          throw this.#timeout(client, heldBy, this.#now() - started);
+        }
         // Serve answered before its wait was up (a lock it could not wait
         // on): pause before asking again.
         if (this.#now() - asked < waitMs || waitMs === 0) {
@@ -214,7 +236,7 @@ export class ServeLock implements DistributedLock {
             backoff,
             Math.max(0, remaining - (this.#now() - asked)),
           );
-          await new Promise((resolve) => setTimeout(resolve, pause));
+          await sleepUnlessAborted(pause, signal);
           backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
         }
       }
@@ -427,7 +449,10 @@ export class ServeLock implements DistributedLock {
     }
     if (lease === undefined || client === undefined) return;
     try {
-      await client.releaseLock(lease.leaseId, new AbortController().signal);
+      await client.releaseLock(
+        lease.leaseId,
+        AbortSignal.timeout(RELEASE_DEADLINE_MS),
+      );
     } catch (error) {
       // Serve frees it once its TTL passes without a renewal.
       logger
@@ -474,8 +499,22 @@ export class ServeLock implements DistributedLock {
     return this.#lease?.holdMs ?? this.#ttlMs;
   }
 
+  #renewIntervalMs(): number {
+    return Math.max(1, Math.floor(this.#holdTtlMs() / 3));
+  }
+
+  /**
+   * one attempt that ends before the next tick, so a stalled renewal never
+   * holds up the one after it
+   */
+  #renewDeadlineMs(client: ServeLockClient): number {
+    const interval = this.#renewIntervalMs();
+    const margin = Math.min(MAX_DEADLINE_MARGIN_MS, Math.floor(interval / 5));
+    return Math.max(1, Math.min(client.timeoutMs, interval - margin));
+  }
+
   #startHeartbeat(): void {
-    const interval = Math.max(1, Math.floor(this.#holdTtlMs() / 3));
+    const interval = this.#renewIntervalMs();
     this.#heartbeat = setInterval(() => {
       if (this.#renewing !== undefined) return;
       this.#renewing = this.#renew().finally(() => {
@@ -503,7 +542,10 @@ export class ServeLock implements DistributedLock {
       const renewed = await client.renewLock(
         lease.leaseId,
         this.#holdTtlMs(),
-        hold.signal,
+        AbortSignal.any([
+          hold.signal,
+          AbortSignal.timeout(this.#renewDeadlineMs(client)),
+        ]),
       );
       if (this.#lease !== lease || this.#lost) return;
       if (renewed === undefined) {
@@ -549,6 +591,15 @@ export class ServeLock implements DistributedLock {
       this.#stopHeartbeat();
       logger
         .warn`Could not renew the lock ${this.#displayKey()} at serve before its lease ran out`;
+      // serve did not answer for a whole lease: the rest of the command
+      // fails at once rather than waiting out a timeout per call
+      const baseUrl = this.#client?.baseUrl;
+      if (baseUrl !== undefined) {
+        latchServeUnreachable(
+          baseUrl,
+          new Error(`the lease on ${this.#displayKey()} lapsed unrenewed`),
+        );
+      }
       this.#lapse("it could not be renewed in time");
     }, due);
   }
@@ -607,7 +658,14 @@ export function createServeLock(
 ): ServeLock | undefined {
   const binding = serveUpstreamAt(datastorePath);
   if (binding === undefined) return undefined;
-  return new ServeLock({ ...options, client: binding.client });
+  return new ServeLock({
+    ...options,
+    // a renewal on the pool an upload is using could queue behind it
+    client: () =>
+      serveDatastoreClientFor(binding.target, binding.namespace, {
+        ownConnection: true,
+      }),
+  });
 }
 
 function hostOf(url: string): string {
@@ -616,4 +674,24 @@ function hostOf(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** resolves early on abort; the caller's next check throws the reason */
+function sleepUnlessAborted(
+  ms: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }

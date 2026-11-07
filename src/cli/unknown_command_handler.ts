@@ -24,6 +24,7 @@ import { getOutputModeFromArgs } from "./context.ts";
 import { buildErrorJson } from "../presentation/output/error_output.ts";
 import { takeAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
 import { isBooleanFlag } from "./boolean_flags.ts";
+import { UserError } from "../domain/errors.ts";
 
 export function extractUnknownName(errorMessage: string): string | undefined {
   const match = errorMessage.match(/^Unknown command "([^"]+)"/);
@@ -189,6 +190,9 @@ function buildContextSuggestions(
     );
     suggestions.push(
       `swamp repo upgrade`,
+    );
+    suggestions.push(
+      `swamp repo prune`,
     );
     suggestions.push(
       `swamp update`,
@@ -400,9 +404,16 @@ export function unknownSubcommandBehindOption(
   return first;
 }
 
+/** a usage error: the json shape carries no stack */
+export function unknownCommandErrorJson(
+  message: string,
+): Record<string, unknown> {
+  return buildErrorJson(new UserError(message));
+}
+
 function exitWithMessage(message: string): never {
   if (getOutputModeFromArgs(Deno.args) === "json") {
-    const jsonError = buildErrorJson(new Error(message));
+    const jsonError = unknownCommandErrorJson(message);
     Object.assign(jsonError, takeAuthGateWarning());
     // deno-lint-ignore no-console
     console.error(JSON.stringify(jsonError, null, 2));

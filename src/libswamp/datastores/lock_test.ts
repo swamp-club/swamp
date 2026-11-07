@@ -866,3 +866,28 @@ Deno.test("datastoreLockRelease: a member checkout without --behavior releases n
     { kind: "completed", data: { released: false, reason: "no lock held" } },
   ]);
 });
+
+Deno.test("datastoreLockStatus: a serve lease carries the holder serve names", async () => {
+  const holder = {
+    principal: "user:boss",
+    explicit: true,
+    expiresAt: "2026-10-29T12:00:30.000Z",
+  };
+  const lease = {
+    lockKey: "data/aws/ec2/0b6c4bb4-9d61-4f0c-9a43-6f0c1f7b2a01/.lock",
+    heldBy: "other" as const,
+    expiresAt: "2026-10-29T12:00:30.000Z",
+    holder,
+  };
+  const events = await collect(
+    datastoreLockStatus(
+      createLibSwampContext(),
+      makeStatusDeps({
+        listServeLeases: () =>
+          Promise.resolve({ leases: [lease], truncated: false }),
+      }),
+      { datastoreType: "filesystem", isFilesystemDatastore: true },
+    ),
+  );
+  assertEquals(events[0], { kind: "serve_lease", data: lease });
+});

@@ -130,3 +130,18 @@ Deno.test("RunCancelRegistry.cancelAll: records the given reason on every run", 
   assertEquals(abortMessage(a), "cancelled by user:alice");
   assertEquals(abortMessage(b), "cancelled by user:alice");
 });
+
+Deno.test("RunCancelRegistry.workflowOf: names the workflow a run was registered with", () => {
+  const registry = new RunCancelRegistry();
+  registry.register("workflow-run", "r1", new AbortController(), {
+    id: "wf-1",
+    name: "deploy",
+  });
+  registry.register("workflow-run", "r2", new AbortController());
+  assertEquals(registry.workflowOf("workflow-run", "r1"), {
+    id: "wf-1",
+    name: "deploy",
+  });
+  assertEquals(registry.workflowOf("workflow-run", "r2"), undefined);
+  assertEquals(registry.workflowOf("method-run", "r1"), undefined);
+});

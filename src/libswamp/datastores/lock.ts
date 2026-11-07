@@ -124,11 +124,12 @@ export interface DatastoreLockStatusData {
   lockScope?: string;
 }
 
-/** who holds the lease is reported only as caller or other, never who */
+/** heldBy for older serves; holder when serve names who holds it */
 export interface ServeLeaseStatusData {
   lockKey: string;
   heldBy: "caller" | "other";
   expiresAt: string;
+  holder?: { principal: string; explicit: boolean; expiresAt: string };
 }
 
 export type DatastoreLockStatusEvent =
@@ -212,6 +213,7 @@ export async function* datastoreLockStatus(
             lockKey: lease.lockKey,
             heldBy: lease.heldBy,
             expiresAt: lease.expiresAt,
+            ...(lease.holder === undefined ? {} : { holder: lease.holder }),
           },
         };
       }

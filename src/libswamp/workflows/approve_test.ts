@@ -744,3 +744,173 @@ Deno.test("workflowApprove: approves a forEach-expanded gate inside its timeout"
   assertEquals(last?.kind, "completed");
   assertEquals(step.status, "succeeded");
 });
+
+Deno.test("workflowApprove: authorizeRun decides the run read under the claim, and a refusal writes nothing", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const deps = makeDeps(workflow, run);
+  let saved = 0;
+  const save = deps.runRepo.save.bind(deps.runRepo);
+  deps.runRepo.save = (...args) => {
+    saved++;
+    return save(...args);
+  };
+  const seen: string[] = [];
+  deps.authorizeRun = (decided) => {
+    seen.push(decided.id);
+    return false;
+  };
+  const refused = await approve(deps, "gate");
+  assertEquals(refused?.kind, "error");
+  assertEquals(seen, [run.id]);
+  assertEquals(saved, 0);
+  assertEquals(run.getJob("main")!.getStep("gate")!.status, "waiting_approval");
+});
+
+Deno.test("workflowApprove: a run replaced after it was first located is decided as stored", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const first = suspendAtGates(workflow, ["gate"]);
+  const replaced = WorkflowRun.fromData({
+    ...first.toData(),
+    initiatedBy: "user:alice",
+  });
+  const deps = makeDeps(workflow, first);
+  // the claim is located from the listing; the decision reads the record again
+  deps.runRepo.findById = () => Promise.resolve(replaced);
+  const seen: (string | undefined)[] = [];
+  deps.authorizeRun = (decided) => {
+    seen.push(decided.initiatedBy);
+    return false;
+  };
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: workflow.name,
+      stepName: "gate",
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(seen, ["user:alice"]);
+});
+
+Deno.test("workflowReject: authorizeRun refuses before anything is written", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const deps = rejectDeps(makeDeps(workflow, run));
+  let saved = 0;
+  const save = deps.runRepo.save.bind(deps.runRepo);
+  deps.runRepo.save = (...args) => {
+    saved++;
+    return save(...args);
+  };
+  deps.authorizeRun = () => false;
+  const events = await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: workflow.name,
+      stepName: "gate",
+    }),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(saved, 0);
+  assertEquals(run.getJob("main")!.getStep("gate")!.status, "waiting_approval");
+});
+
+async function approveWith(
+  deps: WorkflowApproveDeps,
+  target: {
+    jobName?: string;
+    strictGate?: boolean;
+    suspendedAt?: string;
+  },
+): Promise<WorkflowApproveEvent | undefined> {
+  const events = await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      decidedBy: "approver",
+      ...target,
+    }),
+  );
+  return events.at(-1);
+}
+
+Deno.test("workflowApprove: a decision for an earlier attempt of the gate is refused and records nothing", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const step = run.getJob("main")!.getStep("gate")!;
+
+  const stale = await approveWith(makeDeps(workflow, run), {
+    suspendedAt: new Date(step.startedAt!.getTime() - 1000).toISOString(),
+  });
+
+  assertEquals(stale?.kind, "error");
+  if (stale?.kind === "error") assertEquals(stale.error.code, "gate_reopened");
+  assertEquals(step.approvalDecision, undefined);
+  assertEquals(step.status, "waiting_approval");
+});
+
+Deno.test("workflowApprove: a decision naming the current attempt goes through", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  const step = run.getJob("main")!.getStep("gate")!;
+
+  const last = await approveWith(makeDeps(workflow, run), {
+    suspendedAt: step.startedAt!.toISOString(),
+  });
+
+  assertEquals(last?.kind, "completed");
+});
+
+function twoJobGates(): { workflow: Workflow; run: WorkflowRun } {
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: ["a", "b"].map((name) =>
+      Job.create({
+        name,
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        ],
+      })
+    ),
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  for (const name of ["a", "b"]) {
+    const job = run.getJob(name)!;
+    job.start();
+    job.getStep("gate")!.start();
+    job.getStep("gate")!.waitForApproval();
+  }
+  run.suspend();
+  return { workflow, run };
+}
+
+Deno.test("workflowApprove: a name in two jobs is refused when the gate must be unique, until the job is named", async () => {
+  const { workflow, run } = twoJobGates();
+  const deps = makeDeps(workflow, run);
+
+  const ambiguous = await approveWith(deps, { strictGate: true });
+  assertEquals(ambiguous?.kind, "error");
+  if (ambiguous?.kind === "error") {
+    assertEquals(ambiguous.error.code, "ambiguous_gate");
+  }
+
+  const named = await approveWith(deps, { strictGate: true, jobName: "b" });
+  assertEquals(named?.kind, "completed");
+  assertEquals(run.getJob("a")!.getStep("gate")!.approvalDecision, undefined);
+  assertEquals(
+    run.getJob("b")!.getStep("gate")!.approvalDecision?.decidedBy,
+    "approver",
+  );
+});
+
+Deno.test("workflowApprove: a caller naming no job decides the first waiting gate, as before", async () => {
+  const { workflow, run } = twoJobGates();
+
+  const last = await approveWith(makeDeps(workflow, run), {});
+
+  assertEquals(last?.kind, "completed");
+  assertEquals(
+    run.getJob("a")!.getStep("gate")!.approvalDecision?.decidedBy,
+    "approver",
+  );
+});

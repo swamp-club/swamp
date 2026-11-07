@@ -109,7 +109,7 @@ Deno.test({
         await repos.workflowRepo.save(workflow);
       });
 
-      const run = WorkflowRun.create(workflow);
+      const run = WorkflowRun.create(workflow, undefined, "user:caller");
       const afterCatchUp = await writeCommand(
         scratch,
         client,
@@ -163,7 +163,7 @@ Deno.test({
         await repos.workflowRepo.save(workflow);
       });
 
-      const run = WorkflowRun.create(workflow);
+      const run = WorkflowRun.create(workflow, undefined, "user:caller");
       // Serve refuses the root's commit of the run, after its checkpoint
       // landed: the unit drops its later save.
       let runCommits = 0;
@@ -230,7 +230,7 @@ Deno.test({
         await repos.workflowRepo.save(workflow);
       });
 
-      const run = WorkflowRun.create(workflow);
+      const run = WorkflowRun.create(workflow, undefined, "user:caller");
       const path = join(
         swampPath(client.repoDir, "workflow-runs", workflow.id),
         `workflow-run-${run.id}.yaml`,
@@ -338,7 +338,7 @@ Deno.test({
         await repos.workflowRepo.save(workflow);
       });
 
-      const run = WorkflowRun.create(workflow);
+      const run = WorkflowRun.create(workflow, undefined, "user:caller");
       // The command's root drops its save after the checkpoint landed; its
       // teardown has not recovered the drop yet.
       const runCommits = await withRunCommitRefused(run, async () => {
@@ -396,7 +396,7 @@ Deno.test({
         await repos.workflowRepo.save(workflow);
       });
 
-      const run = WorkflowRun.create(workflow);
+      const run = WorkflowRun.create(workflow, undefined, "user:caller");
       // Root B opens in the same command and stays open while the
       // command's root, A, drops its save.
       const release = Promise.withResolvers<void>();

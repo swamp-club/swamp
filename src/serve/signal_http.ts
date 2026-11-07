@@ -101,7 +101,7 @@ export interface SignalHttpDeps {
   ) => Promise<ServerTokenAuthResult>;
 }
 
-const STATUS: Record<SignalDeliveryResult["status"], number> = {
+export const SIGNAL_STATUS: Record<SignalDeliveryResult["status"], number> = {
   delivered: 200,
   // Held for a wait that has not opened: accepted, and not yet acted on.
   pending: 202,
@@ -194,6 +194,7 @@ export async function handleSignalHttpRequest(
       groups: auth.groups,
       sourceIp,
       loginIdentity: auth.oauthIdentity,
+      client: auth.client,
     };
   }
 
@@ -315,7 +316,7 @@ export async function handleSignalHttpRequest(
   const { status, run: _run, workflow: _workflow, ...rest } = result as
     & typeof result
     & { run?: unknown; workflow?: unknown };
-  return Response.json({ status, ...rest }, { status: STATUS[status] });
+  return Response.json({ status, ...rest }, { status: SIGNAL_STATUS[status] });
 }
 
 /**
@@ -356,6 +357,7 @@ function emitResponseAudit(
       ctx.resolvedUserNames,
       caller.loginIdentity,
     ),
+    client: caller.client,
     sourceIp,
     requestId,
     detail: result.status === "delivered" ? undefined : result.status,

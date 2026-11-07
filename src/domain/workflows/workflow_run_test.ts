@@ -3967,3 +3967,47 @@ Deno.test("JobRun: a job run recorded before fan-out plans loads and saves witho
     written,
   );
 });
+
+Deno.test("WorkflowRun: records the client that started it and round-trips it", () => {
+  const run = WorkflowRun.create(
+    createGatedWorkflow(),
+    {},
+    "user:alice",
+    "api",
+    "integration:ops-slack",
+  );
+  assertEquals(run.client, "integration:ops-slack");
+  const data = run.toData();
+  assertEquals(data.client, "integration:ops-slack");
+  assertEquals(WorkflowRun.fromData(data).client, "integration:ops-slack");
+});
+
+Deno.test("WorkflowRun: a run with no client writes no client key, and an older record loads", () => {
+  const data = WorkflowRun.create(createGatedWorkflow()).toData();
+  assertEquals("client" in data, false);
+  assertEquals(WorkflowRun.fromData(data).client, undefined);
+});
+
+Deno.test("WorkflowRun: a gate decision round-trips the client behind it", () => {
+  const run = WorkflowRun.create(createGatedWorkflow());
+  const step = run.getJob("main")!.getStep("gate-a")!;
+  step.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:bob",
+    client: "direct:cli",
+    decidedAt: new Date().toISOString(),
+  });
+  const loaded = WorkflowRun.fromData(run.toData());
+  assertEquals(
+    loaded.getJob("main")!.getStep("gate-a")!.approvalDecision?.client,
+    "direct:cli",
+  );
+});
+
+Deno.test("WorkflowRun: an unfamiliar client value still loads, so a record never fails on it", () => {
+  const data = {
+    ...WorkflowRun.create(createGatedWorkflow()).toData(),
+    client: "future-kind:thing",
+  };
+  assertEquals(WorkflowRun.fromData(data).client, "future-kind:thing");
+});

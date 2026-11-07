@@ -136,9 +136,27 @@ export function actionCommand(
       const reason = typeof p.reason === "string" && p.reason.trim() !== ""
         ? [`--reason=${p.reason}`]
         : [];
+      if (
+        p.suspendedAt !== undefined && (typeof p.suspendedAt !== "string" ||
+          Number.isNaN(Date.parse(p.suspendedAt)))
+      ) {
+        return { kind: "invalid", message: "The request's time is not valid." };
+      }
+      const attempt = p.suspendedAt !== undefined
+        ? [`--suspended-at=${p.suspendedAt}`]
+        : [];
       return {
         kind: "command",
-        args: ["workflow", verb, workflow, step, run, ...reason, "--json"],
+        args: [
+          "workflow",
+          verb,
+          workflow,
+          step,
+          run,
+          ...reason,
+          ...attempt,
+          "--json",
+        ],
         detached: false,
         runId,
       };

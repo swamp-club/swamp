@@ -33,6 +33,8 @@ export interface DataArtifactRefData {
   version: number;
   tags: Record<string, string>;
   attributes?: Record<string, unknown>;
+  /** content left out: the run's attribute budget was spent */
+  attributesOmitted?: true;
 }
 
 export interface AssertResultView {
@@ -52,6 +54,7 @@ export interface ApprovalView {
   timeoutAt?: string;
   reason?: string;
   approvalDuration?: number;
+  client?: string;
 }
 
 /**
@@ -86,6 +89,8 @@ export interface StepRunView {
   assertResult?: AssertResultView;
   approval?: ApprovalView;
   outputs?: Record<string, unknown>;
+  /** outputs merge only the resources read within the run's attribute budget */
+  outputsPartial?: true;
   skipReason?: StepSkipReasonView;
   /**
    * Set when the failure is structural. `workflow_changed`: a failed-run
@@ -163,6 +168,7 @@ export interface WorkflowRunView {
   reports?: ReportResultView[];
   workflowDataArtifacts?: DataArtifactRefData[];
   initiatedBy?: string;
+  client?: string;
   references?: Record<string, string>;
   parentRun?: {
     workflowId: string;

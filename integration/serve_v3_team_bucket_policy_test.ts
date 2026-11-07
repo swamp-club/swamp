@@ -578,7 +578,7 @@ Deno.test({
             "the follower trails the member",
           );
           await follower.send({ kind: "leaderHead", cursor: leaderHead });
-          assertEquals(await follower.send({ kind: "ready" }), "timed-out");
+          assertEquals(await follower.send({ kind: "ready" }), "behind");
 
           target = followerOrigin;
           const refused = await assertRejects(

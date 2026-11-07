@@ -32,6 +32,9 @@ import {
 
 const TOKEN_DATA_NAME = "token-main";
 
+// login tokens minted before oauthIdentity existed carry only this name
+const LOGIN_TOKEN_NAME = /^oauth-[0-9a-f]{8}$/;
+
 function escapeCelString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -69,10 +72,16 @@ export function createServerTokenRevealDeps(
   };
 }
 
+export interface ServerTokenRevealOptions {
+  /** serve's reveal: an admin may revoke a member's login token, never hold it */
+  readonly refuseLoginTokens?: boolean;
+}
+
 export async function* serverTokenReveal(
   _ctx: LibSwampContext,
   deps: ServerTokenRevealDeps,
   name: string,
+  options: ServerTokenRevealOptions = {},
 ): AsyncGenerator<ServerTokenRevealEvent> {
   yield* withGeneratorSpan(
     "swamp.access.token.reveal",
@@ -123,6 +132,20 @@ export async function* serverTokenReveal(
       }
 
       const token = parsed.data;
+      if (
+        options.refuseLoginTokens === true &&
+        (token.oauthIdentity !== undefined || LOGIN_TOKEN_NAME.test(name))
+      ) {
+        yield {
+          kind: "error" as const,
+          error: {
+            code: "token_not_revealable",
+            message:
+              `Server token '${name}' is a login token, which is not revealable; it can be revoked`,
+          },
+        };
+        return;
+      }
       if (token.state === "revoked") {
         yield {
           kind: "error" as const,

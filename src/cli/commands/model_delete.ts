@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { serveUpstreamAt } from "../../infrastructure/datastore_v3/serve_upstream_registry.ts";
+import { preflightDeleteAtServe } from "../../infrastructure/datastore_v3/delete_preflight.ts";
 import { Command } from "@cliffy/command";
 import { assertConfigEditCurrent } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { runAsUserConfigEdit } from "../../infrastructure/datastore_v3/config_edit_scope.ts";
@@ -37,6 +39,7 @@ import {
   createModelDeleteDeps,
   modelDelete,
   type ModelDeleteData,
+  type ModelDeletePlan,
   modelDeletePreview,
 } from "../../libswamp/models/delete.ts";
 import {
@@ -50,6 +53,7 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
+  datastoreRootOf,
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
@@ -224,13 +228,34 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
               });
               // The context's definition repo resolves auto-definitions in the
               // datastore, where a configured datastore keeps them.
-              const deps = createModelDeleteDeps(
+              const baseDeps = createModelDeleteDeps(
                 repoDir,
                 datastoreResolver,
                 undefined,
                 repoContext.markDirty,
                 repoContext.definitionRepo,
               );
+              // through serve, every removal is asked about before the first
+              // commits, so a refused one leaves nothing half deleted
+              const datastoreRoot = datastoreRootOf(datastoreConfig);
+              const upstream = datastoreRoot === undefined
+                ? undefined
+                : serveUpstreamAt(datastoreRoot);
+              const deps = upstream === undefined ? baseDeps : {
+                ...baseDeps,
+                preflightDelete: async (plan: ModelDeletePlan) => {
+                  const client = upstream.client();
+                  try {
+                    return await preflightDeleteAtServe(
+                      client,
+                      plan,
+                      new AbortController().signal,
+                    );
+                  } finally {
+                    client.close();
+                  }
+                },
+              };
               const force = !!options.force;
 
               let preview;

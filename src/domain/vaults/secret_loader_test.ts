@@ -33,6 +33,10 @@ import {
   type SecretRead,
   secretReadKey,
 } from "./secret_loader.ts";
+import {
+  SECRET_NOT_FOUND_CODE,
+  SecretNotFoundError,
+} from "./secret_not_found_error.ts";
 import { checkSecretReference } from "./secret_reference_check.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
 import { VaultService } from "./vault_service.ts";
@@ -119,6 +123,21 @@ Deno.test("SecretLoader.load: a failed read names the vault, the key and the loc
     "Failed to load secret 'missing' from vault 'v' (at methods.run.arguments.cmd): ",
   );
   assertEquals(error.message.includes("other-s3cret"), false);
+});
+
+Deno.test("SecretLoader.load: a missing key keeps the secret_not_found code, naming the reference, with the store's error as cause", async () => {
+  const { service } = mockVault({});
+  const bag = new VaultSecretBag(new SecretBagRegistry());
+  const sentinel = bag.addSecret({ vaultName: "v", key: "gone" }, "loc");
+  const error = await assertRejects(
+    () => loaderOver(service).load(bag, sentinel),
+    SecretNotFoundError,
+    "Failed to load secret 'gone' from vault 'v' (at loc): ",
+  );
+  assertEquals(error.code, SECRET_NOT_FOUND_CODE);
+  assertEquals(error.vaultName, "v");
+  assertEquals(error.key, "gone");
+  assertEquals(error.cause instanceof SecretNotFoundError, true);
 });
 
 Deno.test("SecretLoader.load: a load runs under the run's vault access, and a refusal keeps its code", async () => {

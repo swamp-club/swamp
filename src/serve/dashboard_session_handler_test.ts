@@ -619,3 +619,37 @@ Deno.test("handleDashboardSession: logouts with unknown cookies count as guesses
   }
   assertEquals(await logout(unknownSessionCookie()), 429);
 });
+
+Deno.test("handleDashboardSession: a dashboard login mints direct:dashboard", async () => {
+  let minted: string | undefined;
+  await handleDashboardSession(
+    new Request("https://serve.test/auth/dashboard/device/token", {
+      method: "POST",
+      headers: { origin: "https://serve.test" },
+      body: JSON.stringify({
+        deviceCode: "device-code",
+        client: "integration:ops-slack",
+      }),
+    }),
+    {
+      ...createDeps(),
+      deviceAuthDeps: {
+        ...deviceAuthDeps,
+        mintServerToken: (
+          _principalId,
+          _principalEmail,
+          _collectives,
+          _groups,
+          _repoDir,
+          _repoContext,
+          _username,
+          client,
+        ) => {
+          minted = client;
+          return Promise.resolve("oauth-operator.secret");
+        },
+      },
+    },
+  );
+  assertEquals(minted, "direct:dashboard");
+});

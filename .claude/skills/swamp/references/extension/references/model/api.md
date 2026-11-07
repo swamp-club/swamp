@@ -96,6 +96,12 @@ files: {
 },
 ```
 
+**Hiding from the run summary:** Set `display: false` on a resource or file spec
+to leave its records out of the "Data produced" box after `swamp behavior run`
+and `swamp workflow run`. The data is still written, returned as a handle, and
+listed by `data list` and every `--json` output; swamp tags each record
+`_swamp.display: hidden`.
+
 ---
 
 ## Reading Bundled Assets
@@ -311,6 +317,13 @@ Returned by `writeResource` and writer methods:
 | `metadata`   | Metadata for the data artifact (see below)                   |
 | `attributes` | Top-level resource attributes (resource kind only, optional) |
 
+`attributes` is absent once a run's written resources pass 16 MiB of stored
+JSON; the data is still written. Read content through
+`context.dataRepository.getContent` rather than relying on `attributes` in a
+method or report that may write or read many resources. The `--json` result of a
+method run or workflow run applies its own 16 MiB budget and marks artifacts
+past it `attributesOmitted: true`.
+
 **`metadata` sub-fields:**
 
 | Field               | Type                      | Description                                              |
@@ -360,6 +373,27 @@ readResource(
   available
 - Cast the result using `z.infer<typeof YourSchema>` to get type-safe access
   (the data was already validated against the schema on write)
+- If a sensitive field's vault key no longer exists (the secret was deleted, or
+  the vault config now points at a different vault), it rejects with an error
+  whose `code` is `"secret_not_found"`. Any other vault failure rejects with a
+  different error. Check with `isSecretNotFoundError` from
+  `jsr:@swamp-club/swamp-testing`, or by comparing `err.code`, never with
+  `instanceof`: each bundle has its own copy of the class.
+
+```typescript
+import { isSecretNotFoundError } from "jsr:@swamp-club/swamp-testing";
+
+let session: Session | null;
+try {
+  session = await context.readResource!("session") as Session | null;
+} catch (err) {
+  if (!isSecretNotFoundError(err)) throw err; // broken vault: fail, don't retry
+  session = null; // the cached secret is gone: recreate it
+}
+```
+
+To test that branch, give the test context a `readResource` that throws
+`new SecretNotFoundError("my-vault", "key")` from the same package.
 
 **Low-level alternative for binary data:**
 
@@ -673,6 +707,13 @@ execute: (async (
 | `context.modelType`            | `string`                                                                                       | The behavior type string (e.g. `@myorg/my-behavior`) |
 | `context.modelId`              | `string`                                                                                       | The behavior instance ID                             |
 | `context.traceHeaders`         | `Readonly<Record<string, string>> \| undefined`                                                | This execution's W3C trace headers                   |
+
+A cancelled run (Ctrl+C, `--timeout`, `swamp workflow cancel`) aborts
+`context.signal`, waits about 4 s for the method to stop, then a little longer
+only for a `writeResource` or file save already under way; a write the method
+starts after that is lost. A method with an external side effect (creating a
+remote task, charging a card) should write a pending record before the side
+effect, pass `context.signal` to its own calls, and finalize the record after.
 
 For the cross-behavior APIs, see
 [Cross-Behavior Access](#cross-behavior-access). Locally,

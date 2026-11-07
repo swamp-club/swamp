@@ -205,8 +205,10 @@ steps:
 2. `swamp workflow approve <workflow> <step> --run <id>` marks the step
    succeeded in the saved record; nothing executes. The local command does no
    authorization. It records `decidedBy` from `$USER`/`$USERNAME`, or
-   `"unknown"` (`src/libswamp/workflows/approve.ts`). Only the `--server` path
-   authorizes: the `workflow.approve` handler checks the `approve` action, not
+   `"unknown"` (`src/libswamp/workflows/approve.ts`), and no client. Through
+   serve, the decision also records the `client` of the caller's token, as the
+   run records the client that started it (see "Clients" in
+   `design/enablers/access-control.md`). Only the `--server` path authorizes: the `workflow.approve` handler checks the `approve` action, not
    `run`. A `run` grant implies `approve`, so existing grants keep working, and
    an `approve`-only grant can decide gates without being able to execute the
    workflow. With `--approve-requires-explicit-grant`, serve stops counting
@@ -244,7 +246,8 @@ When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
 
 The resume uses the workflow name and run id the approval resolved, not the
 request fields. It counts against the approver's principal for the
-`ActiveRunRegistry` caps, and the run keeps its original `initiatedBy`. With
+`ActiveRunRegistry` caps, and the run keeps its original `initiatedBy` and
+`client`. With
 auto-resume on, an `approve` grant releases a run that was authorized when it
 started; that is the point of the opt-in. The approver cannot supply inputs on
 this path.
@@ -468,7 +471,10 @@ whose `dependsOn` is met stays `pending`, and its job stays `pending` or ends
 The run still reports the rejected gate
 as its failed step. `swamp workflow resume <workflow> --run <id> --from <gate>`
 reopens that settled work along with the rejected gate: each gate asks again,
-with its approval `timeout` counted from the new wait.
+with its approval `timeout` counted from the new wait. Each attempt has its own
+start time, which a decision can name with `suspendedAt` (`--suspended-at`): a
+decision for an earlier attempt is refused with `gate_reopened`. With no job
+named, the time also picks among gates that share a step name.
 
 **Gates inside a nested workflow (swamp-club#2736).** A workflow step runs its
 child workflow as a run of its own. When the child suspends at a gate, the
@@ -2460,7 +2466,12 @@ step succeeded; falsy marks it failed with the resolved `message`. The
 **Exit code control (`--fail-on`):** `swamp workflow run` accepts
 `--fail-on <severity>` (default `low`). The run exits non-zero only if an
 assert failure is at or above the threshold. A `low` failure under
-`--fail-on high` is recorded but does not change the exit code.
+`--fail-on high` is recorded but does not change the exit code. Independent
+of `--fail-on`, a run that ends `failed` or `cancelled` always exits non-zero,
+whichever event reports it: a run whose record was already cancelled ends
+with a `completed` event carrying the `cancelled` status, and that must not
+read as success. A run cancelled because its model lease lapsed exits with
+`datastore_v3_lease_lapsed` (75 when nothing of the command landed).
 
 **JUnit XML output (`--junit`):** `swamp workflow run --junit [--out <file>]`
 emits one `<testcase>` per assert step, with a `<failure>` element when false.
@@ -3509,7 +3520,10 @@ swamp-club#3266).
 
 Each workflow keeps a run index, `.runs-index.json`, in the repo-local
 `.swamp/workflow-runs/{workflow-uuid}/`, wherever the datastore keeps its run
-records. It holds one summary entry per run, keyed by run id. A save updates
+records. It holds one summary entry per run, keyed by run id. An entry may carry
+`startKeyLookup`, the hash of the idempotency key that started the run: the record
+holds the whole `RunStartKey` (lookup, salt, fingerprint) and decides, since the index is not trusted, and the key appears
+in no run view. Adding it needed no schema version, as an older entry holds no key. A save updates
 the index of the repository it is made in, so records another repository
 writes to a shared datastore reach this index only through the checks below. A read trusts the index while it lists as many
 runs as there are records. When the counts differ, it stats every record, in
@@ -3973,8 +3987,8 @@ This is how a run `swamp serve` started is cleared once it suspends. That
 includes a run with an expired gate and one whose resume refuses a changed
 workflow. A local cancel refuses such a run, and supersede skips it. Any serve
 instance can cancel it, not only the one that started it, because each serve
-start records a fresh `instanceId`. The endpoint's admin check still applies,
-and the change runs under the sync gate and is pushed like any handler
+start records a fresh `instanceId`. The endpoint's check still applies (admin,
+or `run` on the run's workflow), and the change runs under the sync gate and is pushed like any handler
 mutation. A run that is already cancelled or finished gets `404`. A suspended
 run that another operation holds gets `409`.
 
@@ -4172,6 +4186,29 @@ engine evaluates the remaining steps in topological order:
   dead owner is swamp-club#2930.
   A method that answers late does not change the step: it stays `failed` with
   reason `cancelled`, while its method run records what the method did.
+- A data write a method has already started (`writeResource`, or a file
+  writer's save) is waited for past that grace, until
+  `DATA_WRITE_STOP_GRACE_MS` (4.75 s) after the cancellation, inside the run so
+  it is pushed with the run (`InFlightDataWrites`,
+  `src/domain/data/in_flight_data_writes.ts`). A write that starts after the
+  run has settled is not waited for: the step's model lock is released in
+  teardown, so it would race other writers. A method that does an external side
+  effect should therefore write a pending record before it and honour
+  `context.signal`.
+- A step queued on its model's lock behind a sibling (two steps on one
+  behavior instance take turns on its lock) stops waiting when the
+  cancellation fires, and a step whose lock arrives after it never starts its
+  method: no side effect, no method run. The first Ctrl+C no longer releases
+  the model locks of `workflow run`, `workflow resume` or `behavior run`,
+  which own their shutdown (`suppressSyncExitOnSignal`): a method still
+  running keeps its lock until it settles or the command's teardown releases
+  it.
+- A second Ctrl+C exits 130, but first waits up to `DATA_WRITE_STOP_GRACE_MS`
+  for data writes already started, then releases the command's registered
+  locks (bounded), since it skips the teardown that would; a third exits at
+  once. The wait never
+  pushes: on a remote datastore the record syncs on the next command, and on a
+  v3 datastore the uncommitted root unit still loses it.
 - Steps, `forEach` iterations and jobs that the interrupted level never started
   (queued behind a `concurrency` limit) are settled at the end of that level as
   if they had been reached: skipped when their `dependsOn` is not met (reason

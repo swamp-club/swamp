@@ -17,13 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { mapWorkflowExecutionEvent } from "../libswamp/workflows/run.ts";
+import type { CompletedRunSlot } from "./handlers/run_data_attributes.ts";
+import {
+  deferCompletedForOutputs,
+  mapWorkflowExecutionEvent,
+} from "../libswamp/workflows/run.ts";
 import { createStepLockHook, createWorkflowRunDeps } from "./deps.ts";
+import { withRunCondition } from "../domain/access/access_resources.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
 import { isWireEvent, serializeEvent } from "./serializer.ts";
+import { UserError } from "../domain/errors.ts";
 import {
   resolveResumableRun,
   RunNotSuspendedError,
+  SuspendedRunNotFoundError,
 } from "../domain/workflows/suspended_run_resolver.ts";
 import {
   isServeDrivenRun,
@@ -139,8 +146,16 @@ export interface DetachedResumeRequest {
 }
 
 export type DetachedResumeResult =
-  | { ok: true; runId: string; buffer: RunEventBuffer }
-  | { ok: false; code: string; message: string };
+  | {
+    ok: true;
+    runId: string;
+    buffer: RunEventBuffer;
+    completedRun: CompletedRunSlot;
+  }
+  | { ok: false; code: string; message: string; refusal?: ResumeRefusal };
+
+/** told apart here since a refused resume shares one code */
+export type ResumeRefusal = "not_found" | "nested_pending" | "refused";
 
 function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
   return request.lostRaceIsOrdinary === true &&
@@ -188,6 +203,7 @@ export async function startDetachedResume(
           error,
           request.canReadWorkflow,
         ),
+        refusal: "nested_pending",
       };
     }
     if (error instanceof OrphanedNestedRunError) {
@@ -198,6 +214,7 @@ export async function startDetachedResume(
           error,
           request.canReadWorkflow,
         ),
+        refusal: "refused",
       };
     }
     return {
@@ -206,6 +223,12 @@ export async function startDetachedResume(
         ? RUN_NOT_SUSPENDED_CODE
         : "workflow_resume_failed",
       message: sanitizeErrorForClient(error),
+      // anything else is a fault, not an answer: a caller may try it again
+      ...(error instanceof SuspendedRunNotFoundError
+        ? { refusal: "not_found" as const }
+        : error instanceof UserError
+        ? { refusal: "refused" as const }
+        : {}),
     };
   }
 
@@ -215,6 +238,7 @@ export async function startDetachedResume(
   const runController = new AbortController();
   const runId: string = resolvedRun.id;
   const startedAt = new Date();
+  const completedRun: CompletedRunSlot = {};
 
   let resolveCompletion!: () => void;
   const completion = new Promise<void>((r) => {
@@ -232,6 +256,7 @@ export async function startDetachedResume(
       startedAt,
       completion,
       principalId: request.principalId,
+      completedRun,
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -326,19 +351,25 @@ export async function startDetachedResume(
             );
             const doResume = async () => {
               for await (
-                const event of runGeneratorWithVaultAccess(
-                  vaultScope?.access,
-                  () =>
-                    service.resume(workflowName, resolvedRun.id, {
-                      signal: runController.signal,
-                      inputs: request.inputs ?? {},
-                      fromStep: request.from,
-                      fromJob: request.fromJob,
-                      suspendedOnly: request.suspendedOnly,
-                      instanceId: ctx.instanceId,
-                      continuation: request.continuation,
-                      requireCurrentRecord: request.requireCurrentRecord,
-                    }),
+                const { event } of deferCompletedForOutputs(
+                  runGeneratorWithVaultAccess(
+                    vaultScope?.access,
+                    () =>
+                      service.resume(workflowName, resolvedRun.id, {
+                        signal: runController.signal,
+                        inputs: request.inputs ?? {},
+                        fromStep: request.from,
+                        fromJob: request.fromJob,
+                        suspendedOnly: request.suspendedOnly,
+                        instanceId: ctx.instanceId,
+                        continuation: request.continuation,
+                        requireCurrentRecord: request.requireCurrentRecord,
+                      }),
+                  ),
+                  (completed) => {
+                    completedRun.run = completed;
+                    return Promise.resolve(undefined);
+                  },
                 )
               ) {
                 const mapped = mapWorkflowExecutionEvent(event, runRepo);
@@ -530,7 +561,7 @@ export async function startDetachedResume(
     });
   }
 
-  return { ok: true, runId, buffer };
+  return { ok: true, runId, buffer, completedRun };
 }
 
 export interface ApprovalOutcome {
@@ -722,7 +753,18 @@ export async function autoResumeParentAfterChild(
     return skip("policy");
   }
   if (
-    !(await decideSubjectAccess(ctx, subject, grant, resolution.resource))
+    !(await decideSubjectAccess(
+      ctx,
+      subject,
+      grant,
+      // serve decided a gate on the child; the parent's own run is what it moves
+      grant === "approve"
+        ? withRunCondition(resolution.resource, {
+          initiatedBy: parent.initiatedBy,
+          serveDriven: isServeDrivenRun(parent),
+        })
+        : resolution.resource,
+    ))
   ) {
     return skip("not_authorized");
   }

@@ -21,6 +21,7 @@ import {
   DASHBOARD_SESSION_COOKIE,
   extractDashboardSessionId,
 } from "./token_auth.ts";
+import { DIRECT_DASHBOARD_CLIENT } from "../domain/access/client.ts";
 import {
   type DeviceAuthDeps,
   handleDeviceAuth,
@@ -177,6 +178,7 @@ export async function handleDashboardSession(
     return await handleDeviceAuth(req, deps.deviceAuthDeps, {
       startPath: "/auth/dashboard/device",
       tokenPath: "/auth/dashboard/device/token",
+      client: DIRECT_DASHBOARD_CLIENT,
       onAuthenticated: async (token) =>
         sessionCreatedResponse(
           await deps.authenticateToken(token),

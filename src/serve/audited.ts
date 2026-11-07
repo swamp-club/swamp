@@ -27,6 +27,7 @@ import type { Principal } from "../domain/access/principal.ts";
 import {
   clearRequestErrored,
   resolveDisplayPrincipal,
+  takeAuditedDetail,
   takeAuditedResource,
   wasRequestErrored,
 } from "./handlers/shared.ts";
@@ -44,6 +45,7 @@ export interface AuditedOptions {
   readonly methodName?: string;
   readonly resolvedUserNames?: Record<string, string>;
   readonly actor?: ActorIdentity;
+  readonly client?: string;
   readonly socket?: WebSocket;
 }
 
@@ -91,10 +93,15 @@ export function audited(
       principalId,
       initiatedBy,
       actor: options.actor,
+      client: options.client,
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,
-      detail: errored ? "handler sent error response" : undefined,
+      detail: errored
+        ? "handler sent error response"
+        : options.socket
+        ? takeAuditedDetail(options.socket, options.requestId)
+        : undefined,
     }));
   }, (error: unknown) => {
     if (options.socket) {
@@ -112,6 +119,7 @@ export function audited(
       principalId,
       initiatedBy,
       actor: options.actor,
+      client: options.client,
       sourceIp: options.sourceIp,
       requestId: options.requestId,
       methodName: options.methodName,

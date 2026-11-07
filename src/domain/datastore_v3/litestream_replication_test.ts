@@ -25,6 +25,7 @@ import {
   shouldIdleExit,
   SIDECAR_IDLE_TIMEOUT_MS,
   type SidecarObservation,
+  syncCoverage,
   V3_REPLICATION_UNCONFIRMED_CODE,
   V3ReplicationError,
   V3ReplicationUnavailableError,
@@ -40,6 +41,48 @@ Deno.test("isReplicated: synced or no_change with the replica caught up confirms
       replicated_txid: "000000000000000a",
     }),
   );
+});
+
+Deno.test("syncCoverage: an answer one txid short is short against its own txid", () => {
+  assertEquals(
+    syncCoverage({ status: "synced", txid: 8, replicated_txid: 7 }),
+    { kind: "short", target: 8n },
+  );
+  assertEquals(
+    syncCoverage({
+      status: "no_change",
+      txid: "000000000000000a",
+      replicated_txid: "0000000000000009",
+    }),
+    { kind: "short", target: 10n },
+  );
+});
+
+Deno.test("syncCoverage: a later answer confirms once it reaches the first target", () => {
+  assertEquals(
+    syncCoverage({ status: "synced", txid: 9, replicated_txid: 8 }, 8n),
+    { kind: "confirmed" },
+  );
+  assertEquals(
+    syncCoverage({ status: "synced", txid: 9, replicated_txid: 7 }, 8n),
+    { kind: "short", target: 8n },
+  );
+});
+
+Deno.test("syncCoverage: an unreadable or failed answer is a failure, never short", () => {
+  for (
+    const response of [
+      { status: "error", txid: 5, replicated_txid: 4 },
+      { status: "synced_local", txid: 5, replicated_txid: 4 },
+      { status: "synced", txid: 5 },
+      { status: "synced", replicated_txid: 4 },
+      { status: "synced", txid: 5, replicated_txid: "zz" },
+      { status: "synced", txid: -1, replicated_txid: 4 },
+    ]
+  ) {
+    assertEquals(syncCoverage(response), { kind: "failed" });
+    assertEquals(syncCoverage(response, 3n), { kind: "failed" });
+  }
 });
 
 Deno.test("isReplicated: anything else confirms nothing", () => {

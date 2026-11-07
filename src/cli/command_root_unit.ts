@@ -56,6 +56,11 @@ export interface CommandRootUnitOptions {
    * log-mode commands. A v2 root holds nothing.
    */
   output?: OutputHoldMode;
+  /**
+   * a refusal thrown after the root committed (a config edit conflict) must
+   * not follow the result it refused
+   */
+  outputOnlyOnSuccess?: boolean;
 }
 
 const logger = getSwampLogger(["cli", "root-unit"]);
@@ -109,7 +114,9 @@ export async function runCommandInRootUnit<T>(
   } catch (error) {
     outcome = { error };
   }
-  hold?.end(committed);
+  hold?.end(
+    committed && !(options.outputOnlyOnSuccess === true && "error" in outcome),
+  );
 
   if (options.release !== undefined) {
     try {

@@ -80,6 +80,17 @@ import {
   RUN_CANCEL_GRACE_MS,
   type SuspendedRunCancelResult,
 } from "../../serve/suspended_run_cancel.ts";
+import {
+  decideRunCancel,
+  type RunCancelDecision,
+  runCancelResource,
+  WORKFLOW_CANCEL_COMMAND,
+} from "../../serve/run_cancel_authorization.ts";
+import {
+  callerNestedRunReadDecider,
+  readableNestedCascade,
+} from "../../serve/handlers/nested_run_redaction.ts";
+import type { CancelTargetWorkflow } from "../../libswamp/workflows/cancel_suspended.ts";
 import { createTriggerAuthorizer } from "../../serve/trigger_authorizer.ts";
 import {
   runVaultScopeContext,
@@ -103,23 +114,24 @@ import {
   redactServeOptions,
 } from "../../serve/handlers/admin_handlers.ts";
 import {
+  type AccessCaller,
+  bindAuthenticatedConnection,
   cancelActor,
   cancelReasonFor,
   closeConnectionsForPrincipal,
   type ConnectionContext,
   emitRunCancelAudit,
   emitSystemAuditEvent,
+  isCallerAuthorized,
+  isRestrictedCommand,
   listTokenSessions,
   MAX_CANCEL_REASON_LENGTH,
   registerStreamSession,
   removeConnection,
   resolveConnectionCompression,
   sanitizeErrorForClient,
-  setConnectionCollectives,
   setConnectionCompression,
-  setConnectionLoginIdentity,
   setConnectionSourceIp,
-  setConnectionToken,
   terminateTokenSessions,
   updateCollectivesForPrincipal,
 } from "../../serve/handlers/shared.ts";
@@ -144,7 +156,10 @@ import {
 import {
   ControlPlaneDashboardSessionStore,
 } from "../../serve/dashboard_session_store.ts";
-import { traceHttpRequests } from "../../serve/http_request_span.ts";
+import {
+  traceHttpRequests,
+  withHttpServerSpan,
+} from "../../serve/http_request_span.ts";
 import {
   resolveOAuthClientCredentials,
   SECRET_WITHOUT_CLIENT_ID_MESSAGE,
@@ -161,6 +176,7 @@ import {
   extractDashboardSessionId,
   extractWebSocketToken,
   readServerTokenRecord,
+  setTokenRefusalNodeState,
   shouldInvalidateDashboardSession,
 } from "../../serve/token_auth.ts";
 import {
@@ -460,9 +476,11 @@ import {
   DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
 } from "../../serve/club_heartbeat_service.ts";
 import {
+  SERVE_ACTION_PATH,
   SERVE_REQUEST_PATH,
   type ServeReloadResponse,
 } from "../../serve/protocol.ts";
+import { handleHttpActionRequest } from "../../serve/http_action_route.ts";
 import { handleHttpRequest } from "../../serve/http_request_route.ts";
 import { createServeReloadRenderer } from "../../presentation/renderers/serve_reload.ts";
 import {
@@ -494,6 +512,7 @@ import {
   usernameSubjectsNeedOAuthMessage,
 } from "../../domain/access/grant_username_resolution.ts";
 import {
+  readConditionFindings,
   readConditionTypeLiterals,
   validateGrantCondition,
 } from "../../infrastructure/cel/grant_condition_environment.ts";
@@ -726,16 +745,22 @@ export interface CancelDeps {
   reason?: string;
   cancelSuspended?: (id: string) => Promise<SuspendedRunCancelResult>;
   cascadeEnded?: (id: string) => Promise<Partial<NestedCascadeResult>>;
+  /** a resume can register the run after the caller was decided on its record */
+  mayAbortActive?: () => Promise<boolean>;
 }
 
 export interface CancelAuthorizationRequest {
   principal: Principal;
   loginIdentity?: ActorIdentity;
+  client?: string;
   collectives: readonly string[];
   groups: readonly string[];
   sourceIp: string;
   execution?: { type: ExecutionType; id: string };
 }
+
+/** admin reaches every run; run is decided per run, on the leader */
+export type CancelAuthority = "admin" | "run";
 
 export function authorizeCancelRequest(
   ctx: Pick<
@@ -746,7 +771,7 @@ export function authorizeCancelRequest(
     | Pick<PolicySnapshotLoader, "decisionService">
     | undefined,
   request: CancelAuthorizationRequest,
-): Response | undefined {
+): { refusal: Response } | { authority: CancelAuthority } {
   const auditRefusal = (detail: string) =>
     emitRunCancelAudit(ctx, {
       action: request.execution ? "cancel" : "cancel.all",
@@ -758,6 +783,7 @@ export function authorizeCancelRequest(
       resourceName: request.execution?.id ?? "*",
       principal: request.principal,
       loginIdentity: request.loginIdentity,
+      client: request.client,
       sourceIp: request.sourceIp,
       requestId: crypto.randomUUID(),
       outcome: "denied",
@@ -765,29 +791,234 @@ export function authorizeCancelRequest(
     });
   if (!policySnapshotLoader) {
     auditRefusal("access_not_configured");
-    return Response.json({
-      status: "error",
-      message:
-        "Authorization enforcement is enabled but no policy snapshot is available",
-    }, { status: 403 });
+    return {
+      refusal: Response.json({
+        status: "error",
+        message:
+          "Authorization enforcement is enabled but no policy snapshot is available",
+      }, { status: 403 }),
+    };
   }
   const decision = policySnapshotLoader.decisionService.decide(
     {
       principal: request.principal,
       collectives: [...request.collectives],
       groups: [...request.groups],
+      client: request.client,
     },
     "admin",
     { kind: "access", name: "*", fields: {} },
   );
-  if (!decision || decision.effect !== "allow") {
-    auditRefusal("admin required");
-    return Response.json({
+  if (decision?.effect === "allow") return { authority: "admin" };
+  if (request.execution?.type === "workflow-run") return { authority: "run" };
+  auditRefusal("admin required");
+  return {
+    refusal: Response.json({
       status: "error",
       message: "Access denied: cancel requires admin permission",
-    }, { status: 403 });
+    }, { status: 403 }),
+  };
+}
+
+export interface RunCancelRequest {
+  req: Request;
+  executionType: ExecutionType;
+  executionId: string;
+  authority: CancelAuthority;
+  caller: AccessCaller;
+}
+
+/** the leader's answer to a per-run cancel; a follower forwards before this */
+export async function respondToRunCancel(
+  ctx: ConnectionContext,
+  { req, executionType, executionId, authority, caller }: RunCancelRequest,
+  { cancelRegistry, activeRunRegistry }: Pick<CancelDeps, "cancelRegistry"> & {
+    activeRunRegistry?: ActiveRunRegistry;
+  },
+): Promise<Response> {
+  const requested = await readCancelRequestReason(req);
+  if (!requested.ok) {
+    return Response.json({
+      status: "error",
+      message: requested.message,
+    }, { status: requested.status });
   }
-  return undefined;
+  const principal = caller.principal;
+  const reason = cancelReasonFor(cancelActor(principal, ctx), requested.reason);
+  const audit = {
+    action: "cancel",
+    resourceKind: executionType === "method-run" ? "model" : "workflow",
+    resourceName: executionId,
+    principal,
+    loginIdentity: caller.loginIdentity,
+    client: caller.client,
+    sourceIp: caller.sourceIp,
+    requestId: crypto.randomUUID(),
+  };
+  const notFound = () =>
+    Response.json({
+      status: "not_found",
+      message: cancelNotFoundMessage(executionType, executionId),
+    }, { status: 404 });
+
+  // the gates every WebSocket request passes; bulk and an admin's cancel on
+  // these routes do not pass them
+  if (authority === "run") {
+    if (
+      ctx.auditEmitter && ctx.auditFailOpen === false &&
+      (ctx.auditWal?.isFull === true ||
+        ctx.auditWal?.hasDroppedEvents === true ||
+        ctx.auditEmitter.durableStalled)
+    ) {
+      return Response.json({
+        status: "error",
+        message:
+          "Request rejected: audit subsystem cannot durably record events (fail-secure mode)",
+      }, { status: 503 });
+    }
+    if (
+      isRestrictedCommand(
+        WORKFLOW_CANCEL_COMMAND,
+        ctx.authConfig.restrictedCommands,
+      ) &&
+      !isCallerAuthorized(
+        caller,
+        audit.requestId,
+        "admin",
+        { kind: "access", name: WORKFLOW_CANCEL_COMMAND, fields: {} },
+        ctx,
+      )
+    ) {
+      emitRunCancelAudit(ctx, {
+        ...audit,
+        outcome: "denied",
+        detail: "admin required",
+      });
+      return Response.json({
+        status: "error",
+        message:
+          `Access denied: ${WORKFLOW_CANCEL_COMMAND} is restricted to admins on this server`,
+      }, { status: 403 });
+    }
+    // refused and absent answer alike, so a caller cannot probe which runs exist
+    let decision: RunCancelDecision;
+    try {
+      decision = await decideRunCancel(
+        ctx,
+        caller,
+        executionId,
+        audit.requestId,
+      );
+    } catch (error) {
+      emitRunCancelAudit(ctx, {
+        ...audit,
+        outcome: "failure",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      return notFound();
+    }
+    if (decision !== "allowed") {
+      emitRunCancelAudit(
+        ctx,
+        decision === "refused"
+          ? { ...audit, outcome: "denied", detail: "run required" }
+          : {
+            ...audit,
+            outcome: "failure",
+            detail: cancelNotFoundMessage(executionType, executionId),
+          },
+      );
+      return notFound();
+    }
+  }
+
+  const mayCancelStored = async (workflow: CancelTargetWorkflow) => {
+    if (authority === "admin") return true;
+    const resource = await runCancelResource(
+      ctx.repoContext.workflowRepo,
+      workflow,
+    );
+    return resource !== undefined &&
+      isCallerAuthorized(caller, audit.requestId, "run", resource, ctx);
+  };
+  const scheduled = ctx.scheduledExecution;
+  const webhooks = ctx.webhookRuns;
+  let result: CancelResult;
+  try {
+    result = await cancelExecution(
+      executionType,
+      executionId,
+      {
+        cancelRegistry,
+        activeRunRegistry,
+        reason,
+        scheduledCancelByRunId: scheduled
+          ? (id) => scheduled.cancelByRunId(id, reason)
+          : undefined,
+        webhookCancelByRunId: webhooks
+          ? (id) => webhooks.cancelByRunId(id, reason)
+          : undefined,
+        cancelSuspended: (id) =>
+          cancelSuspendedRunAndPush(
+            ctx,
+            { runId: id, reason },
+            mayCancelStored,
+          ),
+        cascadeEnded: (id) => cascadeEndedRunAndPush(ctx, id, reason),
+        ...(authority === "run"
+          ? {
+            mayAbortActive: async () =>
+              await decideRunCancel(
+                ctx,
+                caller,
+                executionId,
+                audit.requestId,
+              ) === "allowed",
+          }
+          : {}),
+      },
+    );
+  } catch (error) {
+    emitRunCancelAudit(ctx, {
+      ...audit,
+      outcome: "failure",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return Response.json({
+      status: "error",
+      message: sanitizeErrorForClient(error),
+    }, { status: 500 });
+  }
+  const succeeded = result.status === "cancelled" ||
+    result.status === "cancellation_requested";
+  emitRunCancelAudit(ctx, {
+    ...audit,
+    outcome: succeeded ? "success" : "failure",
+    detail: succeeded ? result.status : result.message,
+  });
+  if (result.status === "not_found") return notFound();
+  if (result.status === "conflict") {
+    return Response.json({
+      status: result.status,
+      message: result.message,
+    }, { status: 409 });
+  }
+  if (authority === "admin") {
+    return Response.json(cancelSuccessBody(result, reason));
+  }
+  const {
+    cancelledNestedRuns: _cancelled,
+    stopRequestedNestedRuns: _stopping,
+    detachedNestedRuns: _detached,
+    ...rest
+  } = result;
+  return Response.json(cancelSuccessBody({
+    ...rest,
+    ...await readableNestedCascade(
+      result,
+      callerNestedRunReadDecider(ctx, caller),
+    ),
+  }, reason));
 }
 
 const CHAIN_RECONSTRUCT_LOOKBACK_DAYS = 14;
@@ -845,6 +1076,13 @@ async function reconstructChainStateFromStore(
   return null;
 }
 
+function cancelNotFoundMessage(
+  executionType: ExecutionType,
+  executionId: string,
+): string {
+  return `No cancellable ${executionType} with id ${executionId}`;
+}
+
 export async function cancelExecution(
   executionType: ExecutionType,
   executionId: string,
@@ -891,6 +1129,7 @@ export async function cancelExecution(
         };
       case "active":
         // A resume registered the run after the registry miss above.
+        if (deps.mayAbortActive && !(await deps.mayAbortActive())) break;
         found = deps.activeRunRegistry?.cancel(executionId, deps.reason) ??
           false;
         abortedActive = found;
@@ -912,7 +1151,7 @@ export async function cancelExecution(
       status: "not_found",
       executionType,
       executionId,
-      message: `No cancellable ${executionType} with id ${executionId}`,
+      message: cancelNotFoundMessage(executionType, executionId),
     };
   }
   const activeRun = deps.activeRunRegistry?.get(executionId);
@@ -941,6 +1180,14 @@ export async function cancelExecution(
         };
       }
       if (left.status === "active") {
+        if (deps.mayAbortActive && !(await deps.mayAbortActive())) {
+          return {
+            status: "not_found",
+            executionType,
+            executionId,
+            message: cancelNotFoundMessage(executionType, executionId),
+          };
+        }
         deps.activeRunRegistry?.cancel(executionId, deps.reason);
         return { status: "cancellation_requested", executionType, executionId };
       }
@@ -1067,8 +1314,7 @@ export function cancelSuccessBody(
     executionType: result.executionType,
     executionId: result.executionId,
     ...(result.executionType === "workflow-run" ? { reason } : {}),
-    // The endpoint requires admin on every resource, so the nested runs need
-    // no further check.
+    // the caller filters these for anyone but an admin on every resource
     ...(result.cancelledNestedRuns
       ? { cancelledNestedRuns: result.cancelledNestedRuns }
       : {}),
@@ -3336,6 +3582,7 @@ export const serveCommand = new Command()
     const v3Follows = v3Role === "follower";
     let serveLeadership: ServeLeadership | undefined;
     let serveFollowerFeed: FollowerFeed | undefined;
+    let serveFollowerEffectsReachNow: (() => () => boolean) | undefined;
     // the leader's timers a follower starts once it first leads; a leader that
     // loses the lead shuts down, which stops them
     const leaderStarts: Array<() => void> = [];
@@ -4798,6 +5045,7 @@ export const serveCommand = new Command()
         writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
       },
       readConditionTypeLiterals,
+      readConditionFindings,
     );
     // created before the boot load so on a filesystem datastore it fingerprints
     // the access data first, and a peer write landing after the load still
@@ -6514,6 +6762,7 @@ export const serveCommand = new Command()
       });
 
       const webhookRejections = new WebhookRejectionCoalescer();
+      connectionCtx.webhookRuns = webhookService;
       webhookService.setEventHandler((event) => {
         // Audit before the output branch so --json mode audits too.
         auditWebhookEvent(connectionCtx, event, webhookRejections);
@@ -6614,6 +6863,14 @@ export const serveCommand = new Command()
     let shuttingDown = false;
     const enableInternalApi = merged.enableInternalApi;
     const serverStartedAt = Date.now();
+    setTokenRefusalNodeState(() => ({
+      uptimeSeconds: Math.round((Date.now() - serverStartedAt) / 1000),
+      ready: isReady && !shuttingDown,
+      role: serveLeadership?.role ?? "single",
+      ...(serveFollowerFeed !== undefined
+        ? { catchUp: serveFollowerFeed.describeCatchUp() }
+        : {}),
+    }));
 
     const runMetricsTracker = new RunMetricsTracker();
 
@@ -7027,18 +7284,7 @@ export const serveCommand = new Command()
               req,
               upgradeOpts,
             );
-            setConnectionCollectives(
-              socket,
-              result.collectives,
-              result.groups,
-              result.principalId,
-            );
-            setConnectionToken(socket, {
-              name: result.tokenName,
-              createdAt: result.tokenCreatedAt,
-              principalId: result.principalId,
-            });
-            setConnectionLoginIdentity(socket, result.oauthIdentity);
+            bindAuthenticatedConnection(socket, result);
             setConnectionSourceIp(socket, remoteAddr);
             setConnectionCompression(
               socket,
@@ -7111,9 +7357,13 @@ export const serveCommand = new Command()
             "No-auth HTTP API request rejected: {reason} from {ip}",
             { reason: requestTrust.reason, ip: clientAddress() },
           );
-          return new Response(`Forbidden: ${requestTrust.reason}`, {
+          const forbidden = new Response(`Forbidden: ${requestTrust.reason}`, {
             status: 403,
           });
+          // refused before handleDatastoreRequest, which opens a datastore route's span
+          return matchDatastoreRoute(apiUrl.pathname) === undefined
+            ? forbidden
+            : await withHttpServerSpan(req, () => forbidden);
         }
 
         const datastoreRoute = matchDatastoreRoute(apiUrl.pathname);
@@ -7143,6 +7393,21 @@ export const serveCommand = new Command()
                 }),
             },
           );
+        }
+
+        if (apiUrl.pathname === SERVE_ACTION_PATH) {
+          return await handleHttpActionRequest(req, clientAddress(), {
+            ctx: connectionCtx,
+            authenticate: (token, sourceIp) =>
+              authenticateServerToken(token, resolvedRepoDir, repoContext, {
+                emitter: connectionCtx.auditEmitter,
+                instanceId: connectionCtx.instanceId,
+                sourceIp,
+                ingress: "http-action",
+                resolvedUserNames: connectionCtx.resolvedUserNames,
+                onUsernamesResolved: rememberTokenUsernames,
+              }),
+          });
         }
 
         if (apiUrl.pathname === SERVE_REQUEST_PATH) {
@@ -7181,6 +7446,11 @@ export const serveCommand = new Command()
           let cancelAuditPrincipal: ReturnType<typeof parsePrincipal> | null =
             null;
           let cancelLoginIdentity: ActorIdentity | undefined;
+          let cancelClient: string | undefined;
+          let cancelCollectives: readonly string[] = [];
+          let cancelGroups: readonly string[] = [];
+          // with no auth there is no caller to decide on, as on every route
+          let cancelAuthority: CancelAuthority = "admin";
           const cancelRemoteAddr = trustProxy
             ? (req.headers.get("x-forwarded-for")
               ?.split(",")[0]?.trim() ??
@@ -7267,12 +7537,16 @@ export const serveCommand = new Command()
               const cancelPrincipal = parsePrincipal(authResult.principalId);
               cancelAuditPrincipal = cancelPrincipal;
               cancelLoginIdentity = authResult.oauthIdentity;
-              const refusal = authorizeCancelRequest(
+              cancelClient = authResult.client;
+              cancelCollectives = authResult.collectives;
+              cancelGroups = authResult.groups;
+              const authorization = authorizeCancelRequest(
                 connectionCtx,
                 policySnapshotLoader,
                 {
                   principal: cancelPrincipal,
                   loginIdentity: authResult.oauthIdentity,
+                  client: authResult.client,
                   collectives: authResult.collectives,
                   groups: authResult.groups,
                   sourceIp: cancelRemoteAddr,
@@ -7284,7 +7558,8 @@ export const serveCommand = new Command()
                     : undefined,
                 },
               );
-              if (refusal) return refusal;
+              if ("refusal" in authorization) return authorization.refusal;
+              cancelAuthority = authorization.authority;
             }
             if (authConfig.mode === "none" && !hasJsonContentType(req)) {
               return Response.json({
@@ -7304,88 +7579,24 @@ export const serveCommand = new Command()
             if (cancelForwarded !== undefined) return await cancelForwarded;
           }
           if (cancelMatch) {
-            const executionType = cancelMatch[1] as ExecutionType;
-            const executionId = cancelMatch[2];
-            const requested = await readCancelRequestReason(req);
-            if (!requested.ok) {
-              return Response.json({
-                status: "error",
-                message: requested.message,
-              }, { status: requested.status });
-            }
-            const reason = cancelReasonFor(
-              cancelActor(cancelAuditPrincipal, connectionCtx),
-              requested.reason,
-            );
-            const audit = {
-              action: "cancel",
-              resourceKind: executionType === "method-run"
-                ? "model"
-                : "workflow",
-              resourceName: executionId,
-              principal: cancelAuditPrincipal,
-              loginIdentity: cancelLoginIdentity,
-              sourceIp: cancelRemoteAddr,
-              requestId: crypto.randomUUID(),
-            };
-            let result: CancelResult;
-            try {
-              result = await cancelExecution(
-                executionType,
-                executionId,
-                {
-                  cancelRegistry,
-                  activeRunRegistry,
-                  reason,
-                  scheduledCancelByRunId: scheduledExecution
-                    ? (id) => scheduledExecution.cancelByRunId(id, reason)
-                    : undefined,
-                  webhookCancelByRunId: webhookService
-                    ? (id) => webhookService!.cancelByRunId(id, reason)
-                    : undefined,
-                  // The endpoint already required admin on every resource, so
-                  // the run's own workflow needs no further check.
-                  cancelSuspended: (id) =>
-                    cancelSuspendedRunAndPush(
-                      connectionCtx,
-                      { runId: id, reason },
-                      () => true,
-                    ),
-                  cascadeEnded: (id) =>
-                    cascadeEndedRunAndPush(connectionCtx, id, reason),
+            return await respondToRunCancel(
+              connectionCtx,
+              {
+                req,
+                executionType: cancelMatch[1] as ExecutionType,
+                executionId: cancelMatch[2],
+                authority: cancelAuthority,
+                caller: {
+                  principal: cancelAuditPrincipal,
+                  collectives: cancelCollectives,
+                  groups: cancelGroups,
+                  sourceIp: cancelRemoteAddr,
+                  loginIdentity: cancelLoginIdentity,
+                  client: cancelClient,
                 },
-              );
-            } catch (error) {
-              emitRunCancelAudit(connectionCtx, {
-                ...audit,
-                outcome: "failure",
-                detail: error instanceof Error ? error.message : String(error),
-              });
-              return Response.json({
-                status: "error",
-                message: sanitizeErrorForClient(error),
-              }, { status: 500 });
-            }
-            const succeeded = result.status === "cancelled" ||
-              result.status === "cancellation_requested";
-            emitRunCancelAudit(connectionCtx, {
-              ...audit,
-              outcome: succeeded ? "success" : "failure",
-              detail: succeeded ? result.status : result.message,
-            });
-            if (result.status === "not_found") {
-              return Response.json({
-                status: result.status,
-                message: result.message,
-              }, { status: 404 });
-            }
-            if (result.status === "conflict") {
-              return Response.json({
-                status: result.status,
-                message: result.message,
-              }, { status: 409 });
-            }
-            return Response.json(cancelSuccessBody(result, reason));
+              },
+              { cancelRegistry, activeRunRegistry },
+            );
           }
           if (url.pathname === "/api/v1/cancel") {
             const requested = await readBulkCancelBody(req);
@@ -7435,6 +7646,7 @@ export const serveCommand = new Command()
               resourceName: "*",
               principal: cancelAuditPrincipal,
               loginIdentity: cancelLoginIdentity,
+              client: cancelClient,
               sourceIp: cancelRemoteAddr,
               requestId: crypto.randomUUID(),
               outcome: "success",
@@ -8147,6 +8359,7 @@ export const serveCommand = new Command()
       }
       rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
+      setTokenRefusalNodeState(undefined);
       setRemoteOnlyMode(false);
       ac.abort();
       if (pidPath) {
@@ -8433,6 +8646,7 @@ export const serveCommand = new Command()
         // it is refused as behind
         connectionCtx.followerCatchUp = () => followerFeed.caughtUp();
         serveFollowerFeed = followerFeed;
+        serveFollowerEffectsReachNow = () => followerPolicy.effectsReachNow();
       }
       const leadership = new ServeLeadership({
         instanceId,
@@ -8986,16 +9200,28 @@ export const serveCommand = new Command()
     if (
       followerFeedAtBoot !== undefined && serveLeadership?.role === "follower"
     ) {
-      const outcome = await awaitFirstFollowerCatchUp({
-        caughtUp: async () =>
-          await followerFeedAtBoot.caughtUp() === "caught-up",
+      const effectsReachNow = serveFollowerEffectsReachNow;
+      let effectsReached: (() => boolean) | undefined;
+      await awaitFirstFollowerCatchUp({
+        caughtUp: async () => {
+          if (effectsReached === undefined) {
+            if (await followerFeedAtBoot.caughtUp() !== "caught-up") {
+              return false;
+            }
+            effectsReached = effectsReachNow?.() ?? (() => true);
+          }
+          return effectsReached();
+        },
         ended: () => shuttingDown || serveLeadership?.role !== "follower",
+        stalled: (waitedMs) =>
+          logger.warn(
+            "This serve node's copy has not caught up with the leader after {seconds}s; /ready stays 503 until it has: {state}",
+            {
+              seconds: Math.round(waitedMs / 1000),
+              state: followerFeedAtBoot.describeCatchUp(),
+            },
+          ),
       });
-      if (outcome === "timed-out") {
-        logger.warn(
-          "This serve node's copy did not catch up with the leader within the readiness wait; it reports ready anyway, and refuses reads it is behind on until it has",
-        );
-      }
     }
     isReady = true;
     logger.info("Startup complete — /ready is now serving 200");

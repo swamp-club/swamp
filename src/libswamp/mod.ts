@@ -132,12 +132,17 @@ export {
 } from "./account_notices/notice.ts";
 
 export {
+  deferCompletedForOutputs,
+  type ExecutionEventWithOutputs,
   extractStepArtifacts,
   inputValidationFailed,
   mapWorkflowExecutionEvent,
   type NestedSignalWaitData,
+  resolveCompletedRunOutputs,
+  type RunStepOutputs,
   toRunData,
   type WaitKeyHolder,
+  withRunStepOutputs,
   workflowExecutionFailed,
   workflowNotFound,
   workflowRun,
@@ -920,6 +925,12 @@ export {
   type WorkflowHistoryLogsInput,
 } from "./workflows/history_logs.ts";
 export {
+  AMBIGUOUS_GATE_CODE,
+  GATE_REOPENED_CODE,
+  type GateTarget,
+} from "./workflows/gate_refusals.ts";
+export { exactRunReference } from "./workflows/run_lookup.ts";
+export {
   resolveRunReference,
   type RunReference,
   type RunReferenceDeps,
@@ -1417,6 +1428,7 @@ export {
   type ModelDeleteDeps,
   type ModelDeleteEvent,
   type ModelDeleteInput,
+  type ModelDeletePlan,
   type ModelDeletePreview,
   modelDeletePreview,
 } from "./models/delete.ts";
@@ -1720,6 +1732,8 @@ export {
 export {
   createRepoInitDeps,
   createRepoUpgradeDeps,
+  type FindPrunableSettings,
+  type PrunableToolSettings,
   repoInit,
   type RepoInitData,
   type RepoInitDeps,
@@ -1731,6 +1745,20 @@ export {
   type RepoUpgradeEvent,
   type RepoUpgradeInput,
 } from "./repo/init.ts";
+
+export {
+  createRepoPruneDeps,
+  repoPrune,
+  type RepoPruneData,
+  type RepoPruneDeps,
+  type RepoPruneEvent,
+  type RepoPruneFailure,
+  type RepoPruneInput,
+  type RepoPruneItem,
+  type RepoPrunePreview,
+  repoPrunePreview,
+  type RepoPruneSkip,
+} from "./repo/prune.ts";
 
 export {
   createVersionDeps,
@@ -1831,6 +1859,16 @@ export {
   type AuditTimelineInput,
   createAuditTimelineDeps,
 } from "./audit/timeline.ts";
+
+export {
+  auditInstall,
+  auditUninstall,
+  type AuditUserHookData,
+  type AuditUserHookDeps,
+  type AuditUserHookEvent,
+  createAuditUserHookDeps,
+  resolveClaudeUserConfigDir,
+} from "./audit/install.ts";
 
 export {
   createUpdateCheckDeps,

@@ -28,11 +28,24 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
-import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../src/domain/workflows/workflow_id.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  resolveCompletedRunOutputs,
+  withRunStepOutputs,
+  workflowRun,
+} from "../src/libswamp/workflows/run.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../src/domain/data/data.ts";
+import { isUserFacingArtifact } from "../src/presentation/output/console_writer.ts";
 import {
   createWorkflowHistoryGetDeps,
   workflowHistoryGet,
@@ -77,6 +90,13 @@ async function withRepo(
         lifetime: "infinite",
         garbageCollection: 20,
       },
+      bookkeeping: {
+        description: "A record kept for queries, not for the run summary",
+        schema: z.object({ stdout: z.string(), exitCode: z.number() }),
+        lifetime: "infinite",
+        garbageCollection: 20,
+        display: false,
+      },
     },
     methods: {
       write: {
@@ -87,6 +107,18 @@ async function withRepo(
             stdout: WriteArgs.parse(args).text,
             exitCode: 0,
           });
+          return { dataHandles: [handle] };
+        },
+      },
+      writeQuietly: {
+        description: "Write a record the run summary leaves out",
+        arguments: WriteArgs,
+        execute: async (args, context) => {
+          const handle = await context.writeResource!(
+            "bookkeeping",
+            "bookkeeping",
+            { stdout: WriteArgs.parse(args).text, exitCode: 0 },
+          );
           return { dataHandles: [handle] };
         },
       },
@@ -481,5 +513,194 @@ Deno.test("step outputs: a run whose steps wrote nothing exports a completed wal
       }
       assertEquals(diagnosticPhases(spans, "owner_index"), []);
     });
+  });
+});
+
+async function completedRunView(
+  repo: RepositoryContext,
+  dir: string,
+  workflow: Workflow,
+  resolveCompletedOutputs: boolean,
+): Promise<{ view: WorkflowRunView; statusAtFirstRead?: string }> {
+  const deps = await createWorkflowRunDeps(dir, repo, {
+    type: "filesystem",
+    path: join(dir, ".swamp"),
+  });
+  const dataRepo = deps.dataRepo!;
+  const observed: { statusAtFirstRead?: string } = {};
+  const watchedRepo = new Proxy(dataRepo, {
+    get(target, prop, receiver) {
+      if (prop !== "getContent") return Reflect.get(target, prop, receiver);
+      return async (...args: Parameters<typeof dataRepo.getContent>) => {
+        if (observed.statusAtFirstRead === undefined) {
+          const saved = await repo.workflowRunRepo.findLatestByWorkflowId(
+            workflow.id,
+          );
+          observed.statusAtFirstRead = saved?.status ?? "missing";
+        }
+        return target.getContent(...args);
+      };
+    },
+  });
+  let view: WorkflowRunView | undefined;
+  for await (
+    const event of workflowRun(
+      createLibSwampContext(),
+      { ...deps, dataRepo: watchedRepo, resolveCompletedOutputs },
+      { workflowIdOrName: workflow.name },
+    )
+  ) {
+    if (event.kind === "completed") view = event.run;
+    if (event.kind === "error") throw new Error(event.error.message);
+  }
+  return { view: view!, ...observed };
+}
+
+Deno.test("step outputs: a completed run shows its data attributes once the run is saved, only when asked to", async () => {
+  await withRepo(async (repo, dir) => {
+    const workflow = Workflow.create({
+      name: "completed-attributes",
+      jobs: [Job.create({
+        name: "main",
+        steps: [writeStep("write_record", "hello")],
+      })],
+    });
+    await repo.workflowRepo.save(workflow);
+
+    const asked = await completedRunView(repo, dir, workflow, true);
+    const result = stepView(asked.view, "write_record").dataArtifacts!
+      .find((a) => a.name === "result");
+    assertEquals(result?.attributes, { stdout: "hello", exitCode: 0 });
+    assertEquals(asked.statusAtFirstRead, "succeeded");
+
+    const saved = await repo.workflowRunRepo.findById(
+      createWorkflowId(workflow.id),
+      createWorkflowRunId(asked.view.id),
+    );
+    assertEquals(JSON.stringify(saved!.toData()).includes("hello"), false);
+
+    const notAsked = await completedRunView(repo, dir, workflow, false);
+    const unresolved = stepView(notAsked.view, "write_record").dataArtifacts!
+      .find((a) => a.name === "result");
+    assertEquals(unresolved?.attributes, undefined);
+    assertEquals(notAsked.statusAtFirstRead, undefined);
+  });
+});
+
+Deno.test("step outputs: serve's run hands the live run over once it is saved, and its attributes are read under the caller's read policy", async () => {
+  await withRepo(async (repo, dir) => {
+    const workflow = Workflow.create({
+      name: "served-attributes",
+      jobs: [Job.create({
+        name: "main",
+        steps: [writeStep("write_record", "hello")],
+      })],
+    });
+    await repo.workflowRepo.save(workflow);
+    let live: WorkflowRun | undefined;
+    let savedStatusAtHook: string | undefined;
+    let pendingCheck: Promise<void> = Promise.resolve();
+    const deps = await createWorkflowRunDeps(
+      dir,
+      repo,
+      { type: "filesystem", path: join(dir, ".swamp") },
+      undefined,
+      undefined,
+      {
+        onCompletedRun: (run) => {
+          live = run;
+          pendingCheck = repo.workflowRunRepo.findLatestByWorkflowId(
+            workflow.id,
+          ).then((saved) => {
+            savedStatusAtHook = saved?.status ?? "missing";
+          });
+        },
+      },
+    );
+    let view: WorkflowRunView | undefined;
+    for await (
+      const event of workflowRun(createLibSwampContext(), deps, {
+        workflowIdOrName: workflow.name,
+      })
+    ) {
+      if (event.kind === "completed") view = event.run;
+      if (event.kind === "error") throw new Error(event.error.message);
+    }
+    await pendingCheck;
+
+    assertEquals(savedStatusAtHook, "succeeded");
+    assertEquals(live?.id, view?.id);
+    const bare = stepView(view!, "write_record").dataArtifacts!
+      .find((a) => a.name === "result");
+    assertEquals(bare?.attributes, undefined);
+
+    const refused = await resolveCompletedRunOutputs(
+      live!,
+      repo.unifiedDataRepo,
+      repo.workflowRunRepo,
+      undefined,
+      () => Promise.resolve(false),
+    );
+    const allowed = await resolveCompletedRunOutputs(
+      live!,
+      repo.unifiedDataRepo,
+      repo.workflowRunRepo,
+      undefined,
+      () => Promise.resolve(true),
+    );
+    const refusedView = withRunStepOutputs(view!, live!, refused!);
+    const allowedView = withRunStepOutputs(view!, live!, allowed!);
+    assertEquals(
+      stepView(refusedView, "write_record").dataArtifacts!
+        .find((a) => a.name === "result")?.attributes,
+      undefined,
+    );
+    assertEquals(
+      stepView(allowedView, "write_record").dataArtifacts!
+        .find((a) => a.name === "result")?.attributes,
+      { stdout: "hello", exitCode: 0 },
+    );
+  });
+});
+
+Deno.test("step outputs: a record whose spec says display false keeps its handle, run record entry and data, and only the summary leaves it out", async () => {
+  await withRepo(async (repo, dir) => {
+    const workflow = Workflow.create({
+      name: "quiet-record",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          writeStep("write_record", "shown"),
+          Step.create({
+            name: "write_bookkeeping",
+            task: StepTask.model("writer", "writeQuietly", { text: "kept" }),
+          }),
+        ],
+      })],
+    });
+    await repo.workflowRepo.save(workflow);
+
+    const { view } = await completedRunView(repo, dir, workflow, true);
+    const quiet = stepView(view, "write_bookkeeping").dataArtifacts!
+      .find((a) => a.name === "bookkeeping");
+    const shown = stepView(view, "write_record").dataArtifacts!
+      .find((a) => a.name === "result");
+    assertEquals(quiet?.tags?.[SUMMARY_DISPLAY_TAG], SUMMARY_DISPLAY_HIDDEN);
+    assertEquals(quiet?.attributes, { stdout: "kept", exitCode: 0 });
+    assertEquals(isUserFacingArtifact(quiet!), false);
+    assertEquals(shown?.tags?.[SUMMARY_DISPLAY_TAG], undefined);
+    assertEquals(isUserFacingArtifact(shown!), true);
+
+    const saved = await repo.workflowRunRepo.findById(
+      createWorkflowId(workflow.id),
+      createWorkflowRunId(view.id),
+    );
+    const savedArtifacts = saved!.getJob("main")!.getStep("write_bookkeeping")!
+      .dataArtifacts;
+    const savedQuiet = savedArtifacts.find((a) => a.name === "bookkeeping");
+    assertEquals(
+      savedQuiet?.tags[SUMMARY_DISPLAY_TAG],
+      SUMMARY_DISPLAY_HIDDEN,
+    );
   });
 });

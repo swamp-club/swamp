@@ -22,6 +22,10 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import type { WorkflowHistoryGetEvent } from "../../libswamp/workflows/history_get.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowHistoryGetRenderer } from "./workflow_history_get.ts";
+import {
+  deeplyNestedAttributes,
+  nestedTreeDepth,
+} from "../output/json_stream_test_helpers.ts";
 
 const testData = {
   id: "run-1",
@@ -126,4 +130,45 @@ Deno.test("createWorkflowHistoryGetRenderer: the JSON error keeps the not_found 
   );
   assertEquals(error.message, message);
   assertEquals(error.code, "not_found");
+});
+
+Deno.test("JsonWorkflowHistoryGetRenderer: a run whose attributes nest past JSON.stringify's stack limit prints whole", async () => {
+  const data = {
+    ...testData,
+    jobs: [{
+      name: "main",
+      status: "succeeded" as const,
+      steps: [{
+        name: "deep",
+        status: "succeeded" as const,
+        dataArtifacts: [{
+          dataId: "d-1",
+          name: "main",
+          version: 1,
+          tags: {},
+          attributes: deeplyNestedAttributes(),
+        }],
+      }],
+    }],
+  };
+  assertThrows(() => JSON.stringify(data, null, 2), RangeError);
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowHistoryGetRenderer("json");
+    await consumeStream(
+      toStream([{ kind: "resolving" }, { kind: "completed", data }]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = originalLog;
+  }
+  assertEquals(logs.length, 1);
+  const parsed = JSON.parse(logs[0]);
+  assertEquals(parsed.id, "run-1");
+  assertEquals(
+    nestedTreeDepth(parsed.jobs[0].steps[0].dataArtifacts[0].attributes),
+    { depth: 6_000, leaf: [0, 1, 2] },
+  );
 });

@@ -18,9 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
+import { unicodeWidth } from "@std/cli/unicode-width";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
+import { mapControlCharacters } from "../../domain/control_characters.ts";
 import { dataQueryCommand } from "../../domain/data/data_query_command.ts";
+import {
+  SUMMARY_DISPLAY_HIDDEN,
+  SUMMARY_DISPLAY_TAG,
+} from "../../domain/data/data.ts";
 
 export type ColorFn = (str: string) => string;
 
@@ -202,6 +208,7 @@ export class PipeWriter {
 export interface DataArtifact {
   name: string;
   attributes?: Record<string, unknown>;
+  attributesOmitted?: true;
   source?: string;
 }
 
@@ -209,6 +216,17 @@ export interface DataBoxOptions {
   globalArguments?: Record<string, unknown>;
   methodArguments?: Record<string, unknown>;
   modelName?: string;
+}
+
+export function isUserFacingArtifact(
+  artifact: { name: string; tags?: Record<string, string> },
+): boolean {
+  if (artifact.name.startsWith("report-")) return false;
+  if (artifact.name === "log") return false;
+  if (artifact.tags?.[SUMMARY_DISPLAY_TAG] === SUMMARY_DISPLAY_HIDDEN) {
+    return false;
+  }
+  return true;
 }
 
 export function renderDataBox(
@@ -220,48 +238,59 @@ export function renderDataBox(
   if (artifacts.length === 0 && !hasArgs) return [];
 
   const lines: string[] = [];
-  const sections: string[][] = [];
+  const sections: BoxRow[][] = [];
   const retrievalHints: string[] = [];
 
   if (hasArgs) {
-    const argEntries: string[] = [];
+    const argRows: BoxRow[] = [];
     const allArgs = {
       ...options?.globalArguments,
       ...options?.methodArguments,
     };
     const keys = Object.keys(allArgs);
-    const maxKeyLen = Math.max(...keys.map((k) => k.length), 1);
+    const keyWidth = keyColumnWidth(keys);
     for (const key of keys) {
-      const val = allArgs[key];
-      let formatted: string;
-      if (val === null || val === undefined) {
-        formatted = dim("null");
-      } else if (typeof val === "string") {
-        formatted = truncateString(val, MAX_VALUE_WIDTH);
-      } else if (typeof val === "number" || typeof val === "boolean") {
-        formatted = String(val);
-      } else {
-        formatted = truncateString(JSON.stringify(val), MAX_VALUE_WIDTH);
-      }
-      argEntries.push(`    ${dim(key.padEnd(maxKeyLen))}   ${formatted}`);
+      argRows.push([
+        { text: "    " },
+        ...keyColumn(key, keyWidth),
+        ...argumentValue(allArgs[key]),
+      ]);
     }
-    sections.push([` ${bold("Arguments")}`, ...argEntries]);
+    sections.push([
+      [{ text: " " }, { text: "Arguments", style: bold }],
+      ...argRows,
+    ]);
   }
 
   if (artifacts.length > 0) {
-    const dataEntries: string[] = [];
+    const dataRows: BoxRow[] = [];
     const complexArtifactNames: string[] = [];
+    const omittedArtifactNames: string[] = [];
 
     for (const artifact of artifacts) {
-      const sourceSuffix = artifact.source
-        ? dim(`    from ${artifact.source}`)
-        : "";
-      dataEntries.push(`  ${bold(artifact.name)}${sourceSuffix}`);
+      dataRows.push([
+        { text: "  " },
+        ...firstLine(artifact.name, bold),
+        ...(artifact.source
+          ? [
+            { text: "    from ", style: dim },
+            ...firstLine(artifact.source, dim),
+          ]
+          : []),
+      ]);
+
+      if (artifact.attributesOmitted) {
+        dataRows.push([{
+          text: "    content not shown: run output limit reached",
+          style: dim,
+        }]);
+        omittedArtifactNames.push(artifact.name);
+      }
 
       if (artifact.attributes) {
         const keys = Object.keys(artifact.attributes);
         const displayKeys = keys.slice(0, 10);
-        const maxKeyLen = Math.max(...displayKeys.map((k) => k.length), 1);
+        const keyWidth = keyColumnWidth(displayKeys);
 
         for (const key of displayKeys) {
           const val = artifact.attributes[key];
@@ -274,18 +303,18 @@ export function renderDataBox(
               complexArtifactNames.push(artifact.name);
             }
           }
-          dataEntries.push(
-            ...formatAttributeEntries(
-              key,
-              val,
-              maxKeyLen,
-              "    ",
-            ),
-          );
+          dataRows.push([
+            { text: "    " },
+            ...keyColumn(key, keyWidth),
+            ...attributeValue(val),
+          ]);
         }
 
         if (keys.length > 10) {
-          dataEntries.push(dim(`    +${keys.length - 10} more`));
+          dataRows.push([{
+            text: `    +${keys.length - 10} more`,
+            style: dim,
+          }]);
           if (!complexArtifactNames.includes(artifact.name)) {
             complexArtifactNames.push(artifact.name);
           }
@@ -306,16 +335,33 @@ export function renderDataBox(
         );
       }
     }
+    // one hint for all of them: a run past the limit can omit thousands
+    if (omittedArtifactNames.length > 0 && options?.modelName) {
+      const count = omittedArtifactNames.length;
+      retrievalHints.push(
+        dim(
+          `  → ${count} ${
+            count === 1 ? "artifact" : "artifacts"
+          } not shown; read one with ${
+            dataQueryCommand({
+              modelName: options.modelName,
+              dataName: omittedArtifactNames[0],
+            }, { includeContent: true })
+          }`,
+        ),
+      );
+    }
 
-    sections.push([` ${bold("Data produced")}`, ...dataEntries]);
+    sections.push([
+      [{ text: " " }, { text: "Data produced", style: bold }],
+      ...dataRows,
+    ]);
   }
 
-  const allEntries = sections.flatMap((s, i) => i > 0 ? ["", ...s] : s);
+  const rows = sections.flatMap((s, i) => i > 0 ? [[], ...s] : s);
+  const fitted = rows.map((row) => fitRow(row, BOX_CONTENT_WIDTH));
 
-  const maxWidth = Math.min(
-    Math.max(maxOf(allEntries.map((e) => stripAnsi(e).length)) ?? 0, 20),
-    80,
-  );
+  const maxWidth = Math.max(maxOf(fitted.map((f) => f.width)) ?? 0, 20);
   const boxWidth = maxWidth + 2;
   const top = dim(`  ┌${"─".repeat(boxWidth)}┐`);
   const bottom = dim(`  └${"─".repeat(boxWidth)}┘`);
@@ -324,10 +370,8 @@ export function renderDataBox(
 
   lines.push("");
   lines.push(top);
-  for (const entry of allEntries) {
-    const visLen = stripAnsi(entry).length;
-    const pad = Math.max(0, boxWidth - visLen);
-    lines.push(`${side}${entry}${" ".repeat(pad)}${sideEnd}`);
+  for (const { line, width } of fitted) {
+    lines.push(`${side}${line}${" ".repeat(boxWidth - width)}${sideEnd}`);
   }
   lines.push(`${side}${" ".repeat(boxWidth)}${sideEnd}`);
   lines.push(bottom);
@@ -336,62 +380,119 @@ export function renderDataBox(
   return lines;
 }
 
-const MAX_VALUE_WIDTH = 60;
+const BOX_CONTENT_WIDTH = 80;
+const ELLIPSIS = "...";
 
-function truncateString(s: string, max: number): string {
-  const firstLine = s.split("\n")[0];
-  if (firstLine.length <= max) {
-    return s.includes("\n") ? `${firstLine}${dim("...")}` : firstLine;
-  }
-  return `${firstLine.slice(0, max)}${dim("...")}`;
+interface BoxSegment {
+  readonly text: string;
+  readonly style?: (s: string) => string;
 }
 
-function formatAttributeEntries(
-  key: string,
-  value: unknown,
-  keyPad: number,
-  indent: string,
-): string[] {
-  if (value === null || value === undefined) {
-    return [`${indent}${dim(key.padEnd(keyPad))}   ${dim("null")}`];
+type BoxRow = readonly BoxSegment[];
+
+function paint(segment: BoxSegment, text: string): string {
+  return segment.style && text ? segment.style(text) : text;
+}
+
+// Measures and cuts plain text, painting afterwards, so a color escape is never split.
+function fitRow(
+  row: BoxRow,
+  width: number,
+): { line: string; width: number } {
+  const total = segmentsWidth(row);
+  if (total <= width) {
+    return { line: row.map((s) => paint(s, s.text)).join(""), width: total };
   }
-  if (typeof value === "string") {
-    return [
-      `${indent}${dim(key.padEnd(keyPad))}   ${
-        truncateString(value, MAX_VALUE_WIDTH)
-      }`,
-    ];
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return [`${indent}${dim(key.padEnd(keyPad))}   ${String(value)}`];
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      return [`${indent}${dim(key.padEnd(keyPad))}   ${dim("[]")}`];
+  const room = width - ELLIPSIS.length;
+  let used = 0;
+  let line = "";
+  for (const segment of row) {
+    let kept = "";
+    for (const char of segment.text) {
+      const charWidth = unicodeWidth(char);
+      if (used + charWidth > room) break;
+      kept += char;
+      used += charWidth;
     }
-    return [
-      `${indent}${dim(key.padEnd(keyPad))}   ${dim(`${value.length} items`)}`,
-    ];
+    line += paint(segment, kept);
+    if (kept.length < segment.text.length) break;
   }
-  if (typeof value === "object") {
-    const keys = Object.keys(value as Record<string, unknown>);
-    if (keys.length === 0) {
-      return [`${indent}${dim(key.padEnd(keyPad))}   ${dim("{}")}`];
-    }
-    return [
-      `${indent}${dim(key.padEnd(keyPad))}   ${dim("object")}`,
-    ];
-  }
+  return { line: `${line}${dim(ELLIPSIS)}`, width: used + ELLIPSIS.length };
+}
+
+function segmentsWidth(segments: readonly BoxSegment[]): number {
+  return segments.reduce((n, s) => n + unicodeWidth(s.text), 0);
+}
+
+function keyColumnWidth(keys: string[]): number {
+  return Math.max(
+    maxOf(keys.map((k) => segmentsWidth(firstLine(k, dim)))) ?? 0,
+    1,
+  );
+}
+
+function keyColumn(key: string, keyWidth: number): BoxSegment[] {
+  const segments = firstLine(key, dim);
   return [
-    `${indent}${dim(key.padEnd(keyPad))}   ${
-      truncateString(String(value), MAX_VALUE_WIDTH)
-    }`,
+    ...segments,
+    { text: `${" ".repeat(keyWidth - segmentsWidth(segments))}   ` },
   ];
 }
 
-function stripAnsi(str: string): string {
-  // deno-lint-ignore no-control-regex
-  return str.replace(/\x1b\[[0-9;]*m/g, "");
+// deno-lint-ignore no-control-regex
+const STRING_SEQUENCE = /\x1b[\]PX^_][^\x07\x1b]*(?:\x07|\x1b\\)?/g;
+// deno-lint-ignore no-control-regex
+const CSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
+// Box text comes from model output, so anything a terminal would act on instead
+// of print is dropped; a lone CR ends the line because the terminal returns there.
+function firstLine(s: string, style?: ColorFn): BoxSegment[] {
+  const end = s.search(/[\r\n]/);
+  const line = end === -1 ? s : s.slice(0, end);
+  const text = mapControlCharacters(
+    line.replace(STRING_SEQUENCE, "").replace(CSI_SEQUENCE, "").replaceAll(
+      "\t",
+      " ",
+    ),
+    () => "",
+  );
+  return end === -1
+    ? [{ text, style }]
+    : [{ text, style }, { text: ELLIPSIS, style: dim }];
+}
+
+function argumentValue(value: unknown): BoxSegment[] {
+  if (value === null || value === undefined) {
+    return [{ text: "null", style: dim }];
+  }
+  if (typeof value === "string") return firstLine(value);
+  if (typeof value === "number" || typeof value === "boolean") {
+    return [{ text: String(value) }];
+  }
+  return firstLine(JSON.stringify(value));
+}
+
+function attributeValue(value: unknown): BoxSegment[] {
+  if (value === null || value === undefined) {
+    return [{ text: "null", style: dim }];
+  }
+  if (typeof value === "string") return firstLine(value);
+  if (typeof value === "number" || typeof value === "boolean") {
+    return [{ text: String(value) }];
+  }
+  if (Array.isArray(value)) {
+    return [{
+      text: value.length === 0 ? "[]" : `${value.length} items`,
+      style: dim,
+    }];
+  }
+  if (typeof value === "object") {
+    return [{
+      text: Object.keys(value).length === 0 ? "{}" : "object",
+      style: dim,
+    }];
+  }
+  return firstLine(String(value));
 }
 
 export function writeGutterLine(

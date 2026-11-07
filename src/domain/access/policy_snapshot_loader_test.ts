@@ -26,7 +26,10 @@ import {
 } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { readConditionTypeLiterals } from "../../infrastructure/cel/grant_condition_environment.ts";
+import {
+  readConditionFindings,
+  readConditionTypeLiterals,
+} from "../../infrastructure/cel/grant_condition_environment.ts";
 import { Data } from "../data/data.ts";
 import type {
   FindAllForTypeOptions,
@@ -992,6 +995,73 @@ Deno.test("PolicySnapshotLoader.load: warns once about methods a grant's kind ne
     snapshot!.grantsForSubjects(["user:adam"]).length,
     3,
   );
+});
+
+Deno.test("PolicySnapshotLoader.load: warns once about a condition that fails the type check and a deny with an unguarded tag, and keeps the grants", async () => {
+  const wrongTyped = makeGrant({
+    effect: "deny",
+    actions: ["approve"],
+    resource: { kind: "workflow", pattern: "*" },
+    condition: 'run.serveDriven == "false"',
+  });
+  const unguardedDeny = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "*" },
+    condition: 'tags.env == "prod"',
+  });
+  const unguardedAllow = makeGrant({
+    resource: { kind: "model", pattern: "*" },
+    condition: 'tags.env == "prod"',
+  });
+  const unparsable = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "*" },
+    condition: "tags.env ==",
+  });
+  const fromFile = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "*" },
+    condition: 'tags.team == "a"',
+    source: "file:a.yaml",
+  });
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: wrongTyped, modelId: "g1", dataName: "grant-main" },
+      { attrs: unguardedDeny, modelId: "g2", dataName: "grant-main" },
+      { attrs: unguardedAllow, modelId: "g3", dataName: "grant-main" },
+      { attrs: unparsable, modelId: "g4", dataName: "grant-main" },
+      { attrs: fromFile, modelId: "g5", dataName: "grant-main" },
+    ],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(
+    dataRepo,
+    new EventBus(),
+    "auto",
+    {},
+    undefined,
+    readConditionFindings,
+  );
+  let granted = 0;
+  const warnings = await capturingLoaderWarnings(async () => {
+    const { grantCount } = await loader.loadWithCounts();
+    granted = grantCount;
+    await loader.load();
+  });
+  await loader.dispose();
+
+  assertEquals(granted, 5);
+  const forWrongTyped = warnings.filter((w) => w.includes(wrongTyped.id));
+  assertEquals(forWrongTyped.length, 1);
+  assertEquals(forWrongTyped[0].includes("cannot evaluate"), true);
+  const forUnguarded = warnings.filter((w) => w.includes(unguardedDeny.id));
+  assertEquals(forUnguarded.length, 1);
+  assertEquals(forUnguarded[0].includes("tags.env"), true);
+  assertEquals(forUnguarded[0].includes("Revoke it"), true);
+  const forFile = warnings.filter((w) => w.includes(fromFile.id));
+  assertEquals(forFile[0].includes("Fix it in its grant file"), true);
+  assertEquals(warnings.filter((w) => w.includes(unguardedAllow.id)), []);
+  assertEquals(warnings.filter((w) => w.includes(unparsable.id)), []);
 });
 
 Deno.test("PolicySnapshotLoader.load: reports a spelling again once its grant returns after a revoke", async () => {

@@ -27,7 +27,10 @@ import {
   createWorkflowRunId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  isServeDrivenRun,
+  type WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
 import {
   evaluateApprovalTimeout,
   gateTimeoutSeconds,
@@ -54,11 +57,21 @@ export interface PendingApproval {
   prompt: string | undefined;
   inputs: Readonly<Record<string, unknown>>;
   initiatedBy?: string;
+  /** only serve can mark a run this way, so a member's report cannot claim it */
+  serveDriven?: boolean;
+  /** set by serve for the caller; absent on a local listing */
+  canDecide?: boolean;
+  canDecideReason?: "grant-condition";
+  /** set by serve for the caller; absent on a local listing or an older serve */
+  canCancel?: boolean;
+  canResume?: boolean;
   parentRun?: {
     workflowId: string;
     workflowName: string;
     runId: string;
     stepName: string;
+    canCancel?: boolean;
+    canResume?: boolean;
   };
   /**
    * With `parentRun`: whether the parent still waits on this run. False once
@@ -88,12 +101,16 @@ export interface ExpiredApproval {
   timeoutSeconds: number;
   expiredAt: string;
   serveStarted: boolean;
+  canCancel?: boolean;
+  canResume?: boolean;
   parentRun?: {
     workflowId: string;
     workflowName: string;
     runId: string;
     stepName: string;
     serveStarted: boolean;
+    canCancel?: boolean;
+    canResume?: boolean;
   };
   parentWaiting?: boolean;
 }
@@ -294,6 +311,7 @@ export async function* workflowApprovals(
             ...(run.initiatedBy !== undefined
               ? { initiatedBy: run.initiatedBy }
               : {}),
+            ...(isServeDrivenRun(run) ? { serveDriven: true } : {}),
             ...(parentRun ? { parentRun, parentWaiting } : {}),
             ...(verdict && isOrphaned(verdict)
               ? {

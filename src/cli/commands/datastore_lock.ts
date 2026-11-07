@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { requestServerResponse, ServerResponseError } from "../remote_run.ts";
+import type { ModelGetResponse } from "../../serve/protocol.ts";
+import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
 import { Command } from "@cliffy/command";
 import {
   createContext,
@@ -48,7 +51,15 @@ import {
   modelSpecTypeMatches,
   parseModelSpec,
 } from "../../libswamp/datastores/lock.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  findDefinitionByIdOrName,
+  isUuid,
+} from "../../domain/models/model_lookup.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import {
+  type ServeDatastoreClient,
+  serveDatastoreClientFor,
+} from "../../infrastructure/datastore_v3/serve_datastore_client.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import { v3WriterLockHandle } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { v3DatastoreConfigOf } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -180,7 +191,7 @@ const datastoreLockReleaseCommand = new Command()
   )
   .option(
     "--behavior, --model <behavior:string>",
-    "Release a specific behavior's lock (type/id format, e.g. aws-ec2/my-server; --model is the kept legacy spelling)",
+    "Release a specific behavior's lock, by its name or as type/id (e.g. my-server or aws-ec2/<id>; --model is the kept legacy spelling)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -226,71 +237,77 @@ const datastoreLockReleaseCommand = new Command()
 
     let lock;
     if (modelSpec) {
+      // type/id, type/name, or a bare name or id, as other --behavior options
       const parsed = parseModelSpec(modelSpec);
-      if (!parsed) {
-        throw new UserError(
-          `Invalid --model format: "${modelSpec}". Expected "type/id" ` +
-            `(e.g. aws-ec2/my-server, or @org/name/my-server for scoped extension types).`,
-        );
-      }
       // a checkout written through serve asks serve to end the lease on the
       // behavior, whoever holds it: admin only.
       if (resolution.serveUpstream !== undefined) {
-        const binding = serveUpstreamAt(
-          (await v3LocationOf(resolution)).path,
-        );
-        if (binding === undefined) {
-          throw new Error("Internal error: the serve upstream is not bound");
+        // never open the checkout's copy: rebuilding it would wait on the
+        // writer lock of the very command whose lease is being ended
+        if (parsed !== null && isUuid(parsed.modelId)) {
+          await releaseServeLeaseById(
+            cliCtx,
+            serveDatastoreClientFor(
+              resolution.serveUpstream,
+              config.namespace ?? "",
+            ),
+            parsed.modelType,
+            parsed.modelId,
+          );
+          return;
         }
+        const nameOrId = parsed?.modelId ?? modelSpec;
+        const found = await behaviorAtServe(
+          resolution.serveUpstream,
+          nameOrId,
+        );
+        if (found === undefined) throw behaviorNotFound(modelSpec);
+        // The type the spec names must be the behavior's: a wrong type
+        // never ends the lease of another behavior with that name.
+        if (
+          parsed !== null && !modelSpecTypeMatches(parsed.modelType, found.type)
+        ) {
+          throw new UserError(
+            `Behavior ${parsed.modelId} is of type ${found.type}, ` +
+              `not ${parsed.modelType}: nothing was released. ` +
+              `Pass --behavior ${found.type}/${parsed.modelId}.`,
+          );
+        }
+        await releaseServeLeaseById(
+          cliCtx,
+          serveDatastoreClientFor(
+            resolution.serveUpstream,
+            config.namespace ?? "",
+          ),
+          found.type,
+          found.id,
+        );
+        return;
+      }
+      if (parsed === null) {
         const { repoContext } = await requireInitializedRepoReadOnly({
           repoDir,
           outputMode: cliCtx.outputMode,
         });
         const found = await findDefinitionByIdOrName(
           repoContext.definitionRepo,
-          parsed.modelId,
+          modelSpec,
         );
         if (found === null || found === undefined) {
-          throw new UserError(`Behavior not found: ${modelSpec}`);
+          throw behaviorNotFound(modelSpec);
         }
-        // The type the spec names must be the behavior's: a wrong type
-        // never ends the lease of another behavior with that name.
-        if (!modelSpecTypeMatches(parsed.modelType, found.type.normalized)) {
-          throw new UserError(
-            `Behavior ${parsed.modelId} is of type ${found.type.normalized}, ` +
-              `not ${parsed.modelType}: nothing was released. ` +
-              `Pass --behavior ${found.type.normalized}/${parsed.modelId}.`,
-          );
-        }
-        const lockKey = modelLockKey(
-          undefined,
+        lock = await createModelLock(
+          config,
           found.type.normalized,
           found.definition.id,
         );
-        const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const renderer = createDatastoreLockReleaseRenderer(cliCtx.outputMode);
-        await consumeStream(
-          datastoreLockRelease(
-            ctx,
-            createServeLeaseReleaseDeps(async () => {
-              const client = binding.client();
-              try {
-                // Bounded by the client's own per-request timeout.
-                return await client.forceReleaseLock(
-                  lockKey,
-                  new AbortController().signal,
-                );
-              } finally {
-                client.close();
-              }
-            }),
-            {},
-          ),
-          renderer.handlers(),
+      } else {
+        lock = await createModelLock(
+          config,
+          parsed.modelType,
+          parsed.modelId,
         );
-        return;
       }
-      lock = await createModelLock(config, parsed.modelType, parsed.modelId);
     } else if (v3 !== undefined) {
       lock = v3WriterLockHandle(v3.path);
     } else {
@@ -312,3 +329,122 @@ export const datastoreLockCommand = new Command()
   .description("Manage datastore locks")
   .command("status", datastoreLockStatusCommand)
   .command("release", datastoreLockReleaseCommand);
+
+function behaviorNotFound(spec: string): UserError {
+  return new UserError(
+    `Behavior not found: ${spec}. Name it by its name, or by type/id ` +
+      `(e.g. aws-ec2/<id>); nothing was released.`,
+  );
+}
+
+// a behavior the caller may not read answers as one that does not exist;
+// serve's handler reports an unknown name as a failed get
+const NOT_FOUND_AT_SERVE: ReadonlySet<string> = new Set([
+  "not_found",
+  "unauthorized",
+  "forbidden",
+]);
+
+function notFoundAtServe(error: ServerResponseError): boolean {
+  return NOT_FOUND_AT_SERVE.has(error.code ?? "") ||
+    (error.code === "model_get_failed" &&
+      error.serverMessage.startsWith("Behavior not found"));
+}
+
+/**
+ * serve's model.get, under the caller's read grant: a behavior the caller may
+ * not read is not found, like one that does not exist
+ */
+async function behaviorAtServe(
+  target: ServeUpstreamTarget,
+  nameOrId: string,
+): Promise<{ type: string; id: string } | undefined> {
+  let reply: ModelGetResponse;
+  try {
+    reply = await requestServerResponse<ModelGetResponse>(
+      {
+        server: target.serverUrl,
+        ...(target.token === undefined ? {} : { token: target.token }),
+        ...(target.caCerts === undefined
+          ? {}
+          : { caCerts: [...target.caCerts] }),
+        headers: { ...target.extraHeaders },
+      },
+      { type: "model.get", payload: { modelIdOrName: nameOrId } },
+    );
+  } catch (error) {
+    if (error instanceof ServerResponseError && notFoundAtServe(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+  const { type, id } = reply.data as { type?: unknown; id?: unknown };
+  if (typeof type !== "string" || typeof id !== "string") return undefined;
+  return { type, id };
+}
+
+async function releaseServeLeaseById(
+  cliCtx: ReturnType<typeof createContext>,
+  client: ServeDatastoreClient,
+  specType: string,
+  modelId: string,
+): Promise<void> {
+  let modelType: string;
+  try {
+    modelType = ModelType.create(specType).normalized;
+  } catch {
+    throw new UserError(
+      `Invalid behavior type "${specType}": nothing was released.`,
+    );
+  }
+  // serve keys a lease by the canonical, lowercase id
+  const id = modelId.toLowerCase();
+  const lockKey = modelLockKey(undefined, modelType, id);
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const renderer = createDatastoreLockReleaseRenderer(cliCtx.outputMode);
+  try {
+    await consumeStream(
+      datastoreLockRelease(
+        ctx,
+        createServeLeaseReleaseDeps(async () => {
+          // Bounded by the client's own per-request timeout.
+          const outcome = await client.forceReleaseLock(
+            lockKey,
+            new AbortController().signal,
+          );
+          if (!outcome.released) {
+            await refuseWrongType(client, modelType, id);
+          }
+          return outcome;
+        }),
+        {},
+      ),
+      renderer.handlers(),
+    );
+  } finally {
+    client.close();
+  }
+}
+
+/**
+ * a lease on the id under another type means the spec named the wrong type:
+ * said as the definition lookup said it, so the admin can pass the right one
+ */
+async function refuseWrongType(
+  client: ServeDatastoreClient,
+  modelType: string,
+  modelId: string,
+): Promise<void> {
+  const listing = await client.listLocks("data/", new AbortController().signal)
+    .catch(() => undefined);
+  for (const lease of listing?.leases ?? []) {
+    const match = /^data\/(.+)\/([^/]+)\/\.lock$/.exec(lease.lockKey);
+    if (match === null || match[2] !== modelId || match[1] === modelType) {
+      continue;
+    }
+    throw new UserError(
+      `Behavior ${modelId} is of type ${match[1]}, not ${modelType}: ` +
+        `nothing was released. Pass --behavior ${match[1]}/${modelId}.`,
+    );
+  }
+}

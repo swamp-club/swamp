@@ -146,6 +146,13 @@ diagnostic flow (preflight checks, output shapes, common failures, escalation to
 other tiers), see the `swamp-troubleshooting` skill's
 `references/health-checks.md`.
 
+Claude Code reads project hooks only from the folder a session starts in (the
+git root, for `.claude/settings.local.json`). For a swamp repo nested below its
+git root, or sessions started above the repo, run `swamp audit install --user`
+to add the audit hook to `~/.claude/settings.json`; it records calls whose
+working directory is inside any swamp repo. `swamp audit uninstall --user`
+removes it.
+
 ## Upgrade a Repository
 
 Update an existing repository to the latest swamp version. This updates skills,
@@ -190,9 +197,28 @@ swamp repo upgrade --tool none
 ```
 
 Dropping a tool from the list does **not** delete its on-disk files (`.kiro/`,
-etc.) — remove them by hand if desired. Adding a tool that didn't share a skills
-directory with the previous primary surfaces an `extensionsToReinstall` warning
-naming pulled extensions that need to be re-installed for the new tool.
+etc.) — remove them by hand if desired. When swamp's own settings for the
+dropped tool remain (audit hooks that still run swamp on every tool call,
+swamp's plugin files, the Kiro `swamp` agent), the upgrade names those files in
+`prunableSettings` and suggests `swamp repo prune`, which removes them:
+
+```bash
+swamp repo prune --dry-run --json  # list what would be removed
+swamp repo prune --yes             # remove without a prompt (--json never prompts)
+```
+
+When `enrolledTools` is empty and `claude` is listed, the repo may only have
+picked up `tools: []` from an older upgrade and still use claude: ask before
+pruning, and if it does, run `swamp repo upgrade --tool claude` instead.
+
+Prune touches only built-in tools that are not enrolled, and only entries and
+files swamp owns: user hooks, `permissions.allow`, skills and instructions files
+stay, a file is deleted only when nothing else is left in it, and symlinked or
+out-of-repo files are skipped and listed under `skipped`. A file prune tried to
+change but could not (a permission error, for example) is listed under `failed`,
+and the command exits 1. Adding a tool that didn't share a skills directory with
+the previous primary surfaces an `extensionsToReinstall` warning naming pulled
+extensions that need to be re-installed for the new tool.
 
 Legacy extension layouts are automatically migrated during upgrade. See
 [references/troubleshooting.md](references/troubleshooting.md) for details on

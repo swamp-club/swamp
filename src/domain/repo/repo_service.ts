@@ -70,6 +70,10 @@ import {
 } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { BRIEF_HEADER } from "../start/brief.ts";
+import {
+  isKiroAuditCommand,
+  isKiroAuditHookEntry,
+} from "./audit_hook_command.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
 
@@ -90,11 +94,6 @@ const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
 const LEGACY_CLAUDE_VAULT_ALLOW = "Bash(swamp vault:*)";
 
 const KIRO_AUDIT_COMMAND = "swamp audit record --from-hook --tool kiro";
-// matches swamp's audit hook command exactly (bare or absolute-path binary,
-// nothing after), so upgrade deletes only that and keeps a command the user
-// extended
-const KIRO_AUDIT_COMMAND_PATTERN =
-  /^(?:swamp|"[^"]*swamp(?:\.exe)?"|\S*[\\/]swamp(?:\.exe)?) audit record --from-hook --tool kiro$/;
 
 // legacy Kiro IDE settings that Kiro IDE 1.0 does not read (rules moved to
 // permissions.yaml outside the repo); upgrade removes these exact entries
@@ -106,20 +105,6 @@ const LEGACY_KIRO_IDE_SETTINGS: Record<string, string> = {
 // legacy Amp allowlist entry that Amp does not read as amp.commands; upgrade
 // removes this exact entry
 const LEGACY_AMP_ALLOW = "swamp *";
-
-function isKiroAuditCommand(command: unknown): boolean {
-  return typeof command === "string" &&
-    KIRO_AUDIT_COMMAND_PATTERN.test(command.trim());
-}
-
-function isKiroAuditHookEntry(hook: unknown): boolean {
-  const entry = hook as
-    | { trigger?: unknown; action?: { command?: unknown } }
-    | null;
-  return (entry?.trigger === "PostToolUse" ||
-    entry?.trigger === "postToolUse") &&
-    isKiroAuditCommand(entry?.action?.command);
-}
 
 export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
 
@@ -336,6 +321,44 @@ export const CLAUDE_AUDIT_HOOK_SHAPE: AuditHookShape = {
       : [],
   applies: (entry) => claudeMatcherCoversBash(entry.matcher),
 };
+
+const CLAUDE_AUDIT_HOOK_EVENTS = ["PostToolUse", "PostToolUseFailure"];
+
+function claudeAuditHookEntry(matcher: string): Record<string, unknown> {
+  return {
+    matcher,
+    hooks: [{ type: "command", command: "swamp audit record --from-hook" }],
+  };
+}
+
+export function claudeAuditHooks(): Record<string, unknown[]> {
+  return Object.fromEntries(
+    CLAUDE_AUDIT_HOOK_EVENTS.map((event) => [
+      event,
+      [claudeAuditHookEntry("Bash|PowerShell")],
+    ]),
+  );
+}
+
+export const LEGACY_CLAUDE_AUDIT_HOOK_ENTRY: Readonly<Record<string, unknown>> =
+  claudeAuditHookEntry("Bash");
+
+/** mergeAuditHooks alone would count the Bash-only entry as present and never widen it */
+export function migrateLegacyClaudeAuditHooks(
+  hooks: Record<string, unknown>,
+): Record<string, unknown> {
+  const legacyJson = JSON.stringify(LEGACY_CLAUDE_AUDIT_HOOK_ENTRY);
+  const current = claudeAuditHooks();
+  const migrated = { ...hooks };
+  for (const event of CLAUDE_AUDIT_HOOK_EVENTS) {
+    const entries = migrated[event];
+    if (!Array.isArray(entries)) continue;
+    migrated[event] = entries.map((entry) =>
+      JSON.stringify(entry) === legacyJson ? current[event][0] : entry
+    );
+  }
+  return migrated;
+}
 
 export const CURSOR_AUDIT_HOOK_SHAPE: AuditHookShape = flatAuditHookShape(
   "swamp audit record --from-hook --tool cursor",
@@ -620,7 +643,11 @@ export class RepoService {
       existingMarker,
       this.currentVersion,
     );
-    updatedMarker.tools = tools;
+    // writing [] for a marker that never had tools would turn its implicit
+    // claude into an explicit none
+    if (options.tools !== undefined || existingMarker.tools !== undefined) {
+      updatedMarker.tools = tools;
+    }
 
     let skillsUpdated = await this.installGlobalSkills(tools);
 
@@ -1667,30 +1694,7 @@ directly). Every \`swamp model …\` spelling remains supported.
   }
 
   private getClaudeHooks(): Record<string, unknown[]> {
-    return {
-      PostToolUse: [
-        {
-          matcher: "Bash",
-          hooks: [
-            {
-              type: "command",
-              command: "swamp audit record --from-hook",
-            },
-          ],
-        },
-      ],
-      PostToolUseFailure: [
-        {
-          matcher: "Bash",
-          hooks: [
-            {
-              type: "command",
-              command: "swamp audit record --from-hook",
-            },
-          ],
-        },
-      ],
-    };
+    return claudeAuditHooks();
   }
 
   private async createFileIfNotExists(
@@ -1769,7 +1773,7 @@ directly). Every \`swamp model …\` spelling remains supported.
 
     const ourHooks = this.getClaudeHooks();
     const mergedHooks = mergeAuditHooks(
-      existingSettings.hooks ?? {},
+      migrateLegacyClaudeAuditHooks(existingSettings.hooks ?? {}),
       ourHooks,
       CLAUDE_AUDIT_HOOK_SHAPE,
     );
