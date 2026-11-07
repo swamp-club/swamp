@@ -3133,16 +3133,24 @@ and run only if either failed.
 ### Fan-out Jobs (`fanOut`)
 
 A fan-out job runs once per matching worker, as a lane pinned to that worker
-(swamp-club#4379). This version accepts, validates and stores the field, but
-**a fan-out job does not run yet**: until the lane engine ships, starting a run
-of a workflow that holds one fails with a `UserError` saying fan-out jobs are
-not available in this version. One check (`refuseFanOutJobs` in
-`src/domain/workflows/fan_out_job.ts`) covers every entry. It runs at run
-start, before any run record exists, so CLI, serve, schedule, webhook and
-nested runs all hit it. It also runs at the top of a resume, so a workflow
-edited to add `fanOut` after a run began cannot run the job as an ordinary job,
-and again on the cached workflow a `--last-evaluated` run swaps in, since those
-steps run rather than the file's.
+(swamp-club#4379, swamp-club#4506). It needs serve's worker pool, so it runs only
+through `swamp serve` (`--server`). The checks in
+`src/domain/workflows/fan_out_job.ts` run at run start, before any run record
+exists, so CLI, serve, schedule, webhook and nested runs all hit them, and
+again on the cached workflow a `--last-evaluated` run swaps in:
+
+- `refuseFanOutRun` refuses a run with no registered pool (a local run):
+  "fanOut needs the worker pool of swamp serve; run it with --server".
+- It also refuses, for this release, a workflow that holds a fan-out job and
+  any step that can suspend (`manual_approval`, `wait_for_signal` or a nested
+  `workflow` step) in any job: resuming a fan-out run is not available yet, so
+  a suspended run could never finish.
+- `refuseFanOutResume` refuses `workflow resume`, `workflow recover` and the
+  CLI's recover command with "resuming a run with a fan-out job arrives in the
+  next release". It refuses when the workflow has a fan-out job or when the
+  run record holds a fan-out plan, so an edit that removes `fanOut` cannot
+  reopen the run as a plain job. The CLI's recover checks before it touches
+  the record.
 
 `fanOut` takes the short form `all` or an object parsed by
 `FanOutPolicySchema` (`src/domain/remote/fan_out.ts`): `offline`
@@ -3191,8 +3199,42 @@ fanOutPlan:
     - name: "patch[host-a]" # job[worker]
       worker: host-a
       instanceUuid: …
-      steps: [{ stepName: apply, status: pending }]
+      steps: [] # always empty: lane steps are the job's own steps
 ```
+
+**Running a fan-out job.** At job start the execution service reads the pool
+through the registered `WorkerPoolReader`, plans with `planFanOut` and
+`planBatches` (one batch until rollouts arrive), records the plan, replaces
+the job's authored step records with one record per lane step, and saves the
+run before any lane starts. A lane step is named `step[worker]`, for example
+`apply[web-01]`, and is an ordinary step of the job with no forEach template,
+so the step-start journal, interrupt marking, the run-record judge and history
+see it like any step. `fan_out_lanes.ts` refuses a plan whose lane names would
+collide (step and worker names may both hold brackets).
+
+- A refused plan (an empty match, or fewer live members than `minWorkers`)
+  fails the job's authored steps with a message naming the selector and the
+  live count, and nothing is dispatched.
+- Each lane walks the job's step DAG on its own, level by level; a lane never
+  waits on another lane's level. `job.concurrency`, then `workflow.concurrency`,
+  capped by `SWAMP_MAX_CONCURRENT_STEPS`, limits the lanes in flight.
+- A lane's `dependsOn` conditions, guards and cleanup rules read only that
+  lane's steps (`JobRun.laneView`). `self.worker` (`name`, `labels`,
+  `platform`, `arch`) is in scope for every step's guard, inputs and global
+  arguments, and `steps.<name>` inside a lane reads that lane's step. A later
+  job cannot read a fan-out job's step outputs through `steps.<name>`, since
+  there is no single value across lanes; it reads lane results through data.
+- Every behavior step dispatches to the lane's worker. `behaviorName` gets a
+  `-<worker>` suffix unless it already references `self.worker`, so locks and
+  data are per host. Assert steps evaluate on the orchestrator against what
+  the lane's host steps wrote.
+- A lane fails when one of its steps fails without `allowFailure`. The job
+  succeeds only if every lane does and no member failed at plan time; skipped
+  and excluded members do not fail it. Cancelling a run stops new lanes and
+  steps and settles the rest, as for a plain job.
+- A nested workflow holding a fan-out job runs its lanes like a top-level run,
+  since the pool reader is module-level and reaches the child's execution
+  service. A `workflow` step inside a fan-out job stays refused.
 
 A binary from before this change reads an unknown job-run key and drops it on
 its next save, so a run that an older

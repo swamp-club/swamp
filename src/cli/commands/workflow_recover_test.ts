@@ -647,3 +647,92 @@ Deno.test("workflowRecoverCommand: leaves a running run whose owner is alive", a
     assertEquals(reloaded?.status, "running");
   });
 });
+
+Deno.test("workflowRecoverCommand: an interrupted run that holds a fan-out plan is refused before its record is touched", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = Workflow.fromData(
+      {
+        id: crypto.randomUUID(),
+        name: "fleet",
+        jobs: [{
+          name: "main",
+          fanOut: "all",
+          labels: { role: "web" },
+          steps: [{
+            name: "deploy",
+            task: {
+              type: "model_method",
+              modelType: "test-model",
+              modelName: "deploy",
+              methodName: "run",
+            },
+          }],
+        }],
+      } as Parameters<typeof Workflow.fromData>[0],
+    );
+    await repoContext.workflowRepo.save(workflow);
+    const startedAt = "2026-09-20T10:00:00.000Z";
+    const run = WorkflowRun.fromData({
+      id: crypto.randomUUID(),
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "interrupted",
+      startedAt,
+      completedAt: startedAt,
+      jobs: [{
+        jobName: "main",
+        status: "unknown",
+        startedAt,
+        steps: [{
+          stepName: "deploy[w-a]",
+          status: "unknown",
+          startedAt,
+          error: "interrupted: server_crash",
+        }],
+        fanOutPlan: {
+          members: [{
+            worker: "w-a",
+            instanceUuid: "u-a",
+            disposition: "dispatch",
+            batch: 0,
+          }],
+          plannedLanes: 1,
+          maxFailures: null,
+          batches: [["w-a"]],
+          lanes: [{
+            name: "main[w-a]",
+            worker: "w-a",
+            instanceUuid: "u-a",
+            steps: [],
+          }],
+        },
+      }],
+      tags: { interrupt_reason: "server_crash" },
+    });
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    const stored = async () =>
+      JSON.stringify(
+        (await repoContext.workflowRunRepo.findById(
+          workflow.id,
+          createWorkflowRunId(run.id),
+        ))?.toData(),
+      );
+    const before = await stored();
+
+    await assertRejects(
+      () =>
+        recover([
+          "fleet",
+          "--acknowledge-unknown",
+          "--json",
+          "--repo-dir",
+          dir,
+        ]),
+      UserError,
+      "resuming a run with a fan-out job arrives in the next release",
+    );
+
+    assertEquals(await stored(), before);
+  });
+});

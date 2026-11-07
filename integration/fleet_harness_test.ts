@@ -23,8 +23,9 @@
  * really hold, and the fleet pattern's target expression names each worker.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import "../src/domain/models/models.ts";
+import { getWorkerPoolReader } from "../src/domain/remote/worker_pool.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Fleet } from "./fleet_harness.ts";
 
@@ -139,5 +140,21 @@ Deno.test({
       fleet.worker("w-two").received.map((d) => d.stepName),
       ["scan-w-two"],
     );
+  },
+});
+
+Deno.test({
+  name:
+    "fleet harness: serve's worker pool reader is registered while the fleet runs and cleared when it is disposed",
+  ...SANITIZE,
+  fn: async () => {
+    {
+      await using fleet = await Fleet.start();
+      await fleet.addWorker("w-a", { labels: { fleet: "web" } });
+      const reader = getWorkerPoolReader();
+      assert(reader !== null);
+      assertEquals((await reader.readPool()).map((w) => w.name), ["w-a"]);
+    }
+    assertEquals(getWorkerPoolReader(), null);
   },
 });

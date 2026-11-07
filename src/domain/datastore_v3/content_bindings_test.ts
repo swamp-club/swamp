@@ -823,3 +823,101 @@ Deno.test("judgeRunRecord: a nested step may hold its child's decision without t
   assertEquals(judged(DENIED).refusal, undefined);
   assert(judged({ ...DENIED, reason: "changed" }).refusal !== undefined);
 });
+
+const FAN_OUT_PLAN = {
+  members: [{
+    worker: "w-a",
+    instanceUuid: "u-a",
+    disposition: "dispatch" as const,
+    batch: 0,
+  }],
+  plannedLanes: 1,
+  maxFailures: null,
+  batches: [["w-a"]],
+  lanes: [{
+    name: "patch[w-a]",
+    worker: "w-a",
+    instanceUuid: "u-a",
+    steps: [],
+  }],
+};
+
+function fanOutRun(
+  steps: StepRunData[],
+  plan?: typeof FAN_OUT_PLAN,
+): WorkflowRunData {
+  return run([], {
+    jobs: [{
+      jobName: "patch",
+      status: "running",
+      steps,
+      ...(plan ? { fanOutPlan: plan } : {}),
+    }],
+  } as Partial<WorkflowRunData>);
+}
+
+Deno.test("judgeRunRecord: a fan-out plan is added once, while its job's steps are all pending, and the lanes then progress", () => {
+  const planned = fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN);
+  assertEquals(judge(fanOutRun([step("apply")]), planned).refusal, undefined);
+  assertEquals(
+    judge(
+      planned,
+      fanOutRun([step("apply[w-a]", { status: "succeeded" })], FAN_OUT_PLAN),
+    ).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a fan-out plan in a run's first record, or added after its job's steps began, is refused", () => {
+  assertStringIncludes(
+    judge(undefined, fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN)).refusal ??
+      "",
+    "earlier record does not hold",
+  );
+  assertStringIncludes(
+    judge(
+      fanOutRun([step("apply", { status: "running" })]),
+      fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN),
+    ).refusal ?? "",
+    "after its steps began",
+  );
+});
+
+Deno.test("judgeRunRecord: a recorded fan-out plan cannot be changed, dropped, or its job removed", () => {
+  const planned = fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN);
+  assertStringIncludes(
+    judge(
+      planned,
+      fanOutRun(
+        [step("apply[w-a]")],
+        { ...FAN_OUT_PLAN, maxFailures: 3 } as never,
+      ),
+    ).refusal ?? "",
+    "changes the fan-out plan",
+  );
+  assertStringIncludes(
+    judge(planned, fanOutRun([step("apply[w-a]")])).refusal ?? "",
+    "changes the fan-out plan",
+  );
+  assertStringIncludes(
+    judge(planned, run([])).refusal ?? "",
+    "drops job 'patch'",
+  );
+});
+
+Deno.test("judgeRunRecord: a fan-out plan whose lanes hold steps of their own is refused", () => {
+  const withLaneSteps = {
+    ...FAN_OUT_PLAN,
+    lanes: [{
+      ...FAN_OUT_PLAN.lanes[0],
+      steps: [step("apply", { status: "succeeded" })] as never[],
+    }],
+  };
+  assertStringIncludes(
+    judge(
+      fanOutRun([step("apply")]),
+      fanOutRun([step("apply[w-a]")], withLaneSteps),
+    ).refusal ?? "",
+    "holds lane steps",
+  );
+});

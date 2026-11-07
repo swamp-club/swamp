@@ -28,6 +28,7 @@ import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { Workflow } from "./workflow.ts";
+import { StepStart } from "./step_start.ts";
 import {
   CANCELLED_STEP_ERROR,
   JobRun,
@@ -682,5 +683,114 @@ Deno.test("StepRun gate timeout: it is the timeout of the latest wait, survives 
         }
       },
     ),
+  );
+});
+
+// lanes: authored steps x workers, recorded as plain job steps
+const LANE_STEPS = ["apply", "verify"];
+const LANE_WORKERS = ["w-a", "w-b", "w-c"];
+const LANE_NAMES = LANE_WORKERS.flatMap((worker) =>
+  LANE_STEPS.map((step) => `${step}[${worker}]`)
+);
+
+function laneRun(): WorkflowRun {
+  const run = WorkflowRun.fromData({
+    id: "33333333-4444-4555-8666-777777777777",
+    workflowId: "22222222-3333-4444-8555-666666666666",
+    workflowName: "fleet",
+    status: "running",
+    startedAt: "2026-11-07T00:00:00.000Z",
+    tags: {},
+    jobs: [{
+      jobName: "patch",
+      status: "running",
+      startedAt: "2026-11-07T00:00:00.000Z",
+      steps: LANE_STEPS.map((stepName) => ({ stepName, status: "pending" })),
+    }],
+  });
+  const job = run.getJob("patch")!;
+  job.recordFanOutPlan({
+    kind: "planned",
+    members: LANE_WORKERS.map((worker) => ({
+      worker,
+      instanceUuid: `u-${worker}`,
+      disposition: "dispatch" as const,
+    })),
+    plannedLanes: LANE_WORKERS.length,
+    maxFailures: null,
+  }, [LANE_WORKERS]);
+  job.expandLanes(LANE_NAMES);
+  return run;
+}
+
+type LaneOp =
+  | { kind: "start"; lane: number }
+  | { kind: "finish"; lane: number; ok: boolean }
+  | { kind: "save" };
+
+const laneOp: fc.Arbitrary<LaneOp> = fc.oneof(
+  fc.record({
+    kind: fc.constant("start" as const),
+    lane: fc.nat(LANE_NAMES.length - 1),
+  }),
+  fc.record({
+    kind: fc.constant("finish" as const),
+    lane: fc.nat(LANE_NAMES.length - 1),
+    ok: fc.boolean(),
+  }),
+  fc.record({ kind: fc.constant("save" as const) }),
+);
+
+Deno.test("WorkflowRun (property): lane step starts in the journal land on their own lane step after a crash, and no authored step reappears", () => {
+  fc.assert(
+    fc.property(fc.array(laneOp, { maxLength: 30 }), (ops) => {
+      const live = laneRun();
+      // the plan is checkpointed before any lane starts
+      let committed = live.toData();
+      const starts: StepStart[] = [];
+      let clock = Date.parse("2026-11-07T00:00:01.000Z");
+      for (const op of ops) {
+        if (op.kind === "save") {
+          committed = live.toData();
+          continue;
+        }
+        const step = live.getJob("patch")!.getStep(LANE_NAMES[op.lane])!;
+        if (op.kind === "start" && step.status === "pending") {
+          clock += 1000;
+          step.start(new Date(clock));
+          starts.push(StepStart.create({
+            workflowId: live.workflowId,
+            runId: live.id,
+            jobName: "patch",
+            stepName: step.stepName,
+            startedAt: clock,
+          }));
+        } else if (op.kind === "finish" && step.status === "running") {
+          if (op.ok) step.succeed();
+          else step.fail("broke");
+        }
+      }
+
+      const recovered = WorkflowRun.fromData(
+        JSON.parse(JSON.stringify(committed)),
+      );
+      const before = new Map(
+        recovered.getJob("patch")!.steps.map((s) => [s.stepName, s.status]),
+      );
+      recovered.interruptOrphaned("crash", starts);
+      const after = recovered.getJob("patch")!.steps;
+
+      assertEquals(after.map((s) => s.stepName), LANE_NAMES);
+      const journalled = new Set(starts.map((start) => start.stepName));
+      for (const step of after) {
+        const was = before.get(step.stepName)!;
+        if (was === "succeeded" || was === "failed") {
+          assertEquals(step.status, was, step.stepName);
+        } else if (journalled.has(step.stepName) || was === "running") {
+          assertEquals(step.status, "unknown", step.stepName);
+        }
+      }
+    }),
+    { numRuns: 1000 },
   );
 });

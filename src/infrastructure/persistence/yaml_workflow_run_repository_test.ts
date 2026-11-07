@@ -5638,7 +5638,6 @@ Deno.test("YamlWorkflowRunRepository: a job run's fan-out plan round-trips throu
         maxFailures: null,
       },
       [["host-a"]],
-      job.steps.map((step) => step.stepName),
     );
     await repo.save(workflow.id, run);
 

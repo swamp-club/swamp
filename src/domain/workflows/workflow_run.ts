@@ -188,11 +188,13 @@ const FanOutMemberRecordSchema = z.object({
   batch: z.number().int().nonnegative().optional(),
 });
 
+// lane steps live in the job's steps, where every run-record check sees them;
+// the array stays for the release that shipped it, which requires the key
 const FanOutLaneRecordSchema = z.object({
   name: z.string().min(1),
   worker: z.string().min(1),
   instanceUuid: z.string().min(1),
-  steps: z.array(StepRunSchema),
+  steps: z.array(StepRunSchema).max(0),
 });
 
 export const FanOutPlanRecordSchema = z.object({
@@ -209,7 +211,12 @@ export interface FanOutLaneRun {
   readonly name: string;
   readonly worker: string;
   readonly instanceUuid: string;
-  readonly steps: readonly StepRun[];
+}
+
+// what a step's dependsOn and cleanup rules read: a job, or one lane of it
+export interface StepStatusView {
+  getStatus(ref: string): RunStatus | undefined;
+  skippedByGuard(ref: string): boolean;
 }
 
 export interface FanOutPlanRecord {
@@ -838,7 +845,6 @@ export class JobRun implements TriggerEvaluationContext {
           name: lane.name,
           worker: lane.worker,
           instanceUuid: lane.instanceUuid,
-          steps: lane.steps.map((step) => StepRun.fromData(step)),
         })),
       },
     );
@@ -851,7 +857,6 @@ export class JobRun implements TriggerEvaluationContext {
   recordFanOutPlan(
     plan: Extract<FanOutPlan, { kind: "planned" }>,
     batches: readonly (readonly string[])[],
-    stepNames: readonly string[],
   ): void {
     if (this._fanOutPlan !== undefined) {
       throw new Error(`Job '${this.jobName}' already holds a fan-out plan`);
@@ -906,7 +911,6 @@ export class JobRun implements TriggerEvaluationContext {
           name: fanOutLaneName(this.jobName, worker),
           worker,
           instanceUuid: member.instanceUuid,
-          steps: stepNames.map((name) => StepRun.pending(name)),
         }];
       }),
     };
@@ -926,6 +930,33 @@ export class JobRun implements TriggerEvaluationContext {
 
   get steps(): ReadonlyArray<StepRun> {
     return this._steps;
+  }
+
+  /**
+   * replaces the job's authored step records with its lanes' records; no
+   * forEach template, so nothing groups lanes as iterations of one step
+   */
+  expandLanes(laneStepNames: readonly string[]): void {
+    if (this._fanOutPlan === undefined) {
+      throw new Error(`Job '${this.jobName}' has no fan-out plan to expand`);
+    }
+    const started = this._steps.find((step) => step.status !== "pending");
+    if (started !== undefined) {
+      throw new Error(
+        `Job '${this.jobName}' cannot expand its lanes: step '${started.stepName}' is already ${started.status}`,
+      );
+    }
+    this._steps.splice(0, this._steps.length);
+    for (const name of laneStepNames) this._steps.push(StepRun.pending(name));
+  }
+
+  /** dependsOn and cleanup rules of a lane read only that lane's steps */
+  laneView(laneStepOf: (authored: string) => string): StepStatusView {
+    return {
+      getStatus: (ref) => this.getStep(laneStepOf(ref))?.status,
+      skippedByGuard: (ref) =>
+        this.getStep(laneStepOf(ref))?.skipReason?.kind === "guarded",
+    };
   }
 
   /**
@@ -1158,7 +1189,7 @@ export class JobRun implements TriggerEvaluationContext {
           name: lane.name,
           worker: lane.worker,
           instanceUuid: lane.instanceUuid,
-          steps: lane.steps.map((step) => step.toData()),
+          steps: [],
         })),
       };
     }

@@ -278,6 +278,9 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
     }
   }
 
+  const fanOut = fanOutPlanRefusal(before, after);
+  if (fanOut !== undefined) return refuse(fanOut);
+
   const seen = new Set<string>();
   for (const job of after.jobs) {
     for (const step of job.steps) {
@@ -454,6 +457,45 @@ function added<T>(
 ): T[] {
   const held = new Set((before ?? []).map((entry) => canonical(entry)));
   return (after ?? []).filter((entry) => !held.has(canonical(entry)));
+}
+
+/**
+ * a plan is written once, while its job's steps are all still pending, and
+ * never changed or dropped; lane records carry no steps of their own
+ */
+function fanOutPlanRefusal(
+  before: WorkflowRunData | undefined,
+  after: WorkflowRunData,
+): string | undefined {
+  for (const job of after.jobs) {
+    const plan = job.fanOutPlan;
+    const prior = before?.jobs.find((candidate) =>
+      candidate.jobName === job.jobName
+    );
+    if (prior?.fanOutPlan !== undefined) {
+      if (!same(prior.fanOutPlan, plan)) {
+        return `it changes the fan-out plan of job '${job.jobName}'`;
+      }
+      continue;
+    }
+    if (plan === undefined) continue;
+    if (prior === undefined) {
+      return `it adds a fan-out plan to job '${job.jobName}', which the run's earlier record does not hold`;
+    }
+    if (prior.steps.some((step) => step.status !== "pending")) {
+      return `it adds a fan-out plan to job '${job.jobName}' after its steps began`;
+    }
+    if (plan.lanes.some((lane) => lane.steps.length > 0)) {
+      return `its fan-out plan for job '${job.jobName}' holds lane steps outside the job's steps`;
+    }
+  }
+  for (const prior of before?.jobs ?? []) {
+    if (prior.fanOutPlan === undefined) continue;
+    if (!after.jobs.some((job) => job.jobName === prior.jobName)) {
+      return `it drops job '${prior.jobName}', which holds a fan-out plan`;
+    }
+  }
+  return undefined;
 }
 
 function same(a: unknown, b: unknown): boolean {

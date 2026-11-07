@@ -20,7 +20,11 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import type { FanOutPolicy, FanOutSelector } from "./fan_out.ts";
-import { eligibleWorkers, planFanOut } from "./scheduler.ts";
+import {
+  eligibleWorkers,
+  laneDispatchVerdict,
+  planFanOut,
+} from "./scheduler.ts";
 import type { PoolWorker, PoolWorkerStatus } from "./worker_pool.ts";
 
 const STATUSES: PoolWorkerStatus[] = [
@@ -191,4 +195,45 @@ Deno.test("planFanOut: minWorkers refuses exactly when fewer members are dispatc
     { numRuns: 500 },
   );
   assert(refused > 50, `only ${refused} runs were refused`);
+});
+
+Deno.test("laneDispatchVerdict: a lane is only ever sent to its planned instance, connected and neither unverified nor draining", () => {
+  fc.assert(
+    fc.property(
+      fc.uuid(),
+      fc.option(
+        fc.record({
+          instanceUuid: fc.oneof(fc.uuid(), fc.constant("planned")),
+          status: fc.constantFrom(
+            "idle" as const,
+            "busy" as const,
+            "unverified" as const,
+            "draining" as const,
+          ),
+          connected: fc.boolean(),
+        }),
+        { nil: null },
+      ),
+      (_seed, worker) => {
+        const verdict = laneDispatchVerdict(
+          { worker: "w", instanceUuid: "planned" },
+          worker,
+        );
+        if (verdict.kind === "dispatch") {
+          assert(worker !== null);
+          assertEquals(worker.instanceUuid, "planned");
+          assert(worker.connected);
+          assert(worker.status === "idle" || worker.status === "busy");
+        }
+        if (verdict.kind === "wait") {
+          assert(
+            worker === null ||
+              (!worker.connected && worker.instanceUuid === "planned" &&
+                (worker.status === "idle" || worker.status === "busy")),
+          );
+        }
+      },
+    ),
+    { numRuns: 500 },
+  );
 });

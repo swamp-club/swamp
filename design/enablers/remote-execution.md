@@ -1594,11 +1594,12 @@ by the steps ready in the current level and their concurrency caps. A
 free-running ready-step queue that dispatches across level boundaries is future
 work.
 
-### Fan-out planning (dormant)
+### Fan-out jobs and lanes
 
-The planning core for a job that runs once per matching worker is in place, but
-nothing calls it yet: the job-level `fanOut` field that will use it is the next
-phase of swamp-club#3824. It is all pure domain code apart from one port.
+A job with `fanOut` runs once per matching worker, as a lane pinned to that
+worker (swamp-club#3824; the job field and its rules are in "Fan-out Jobs" in
+`design/primitives/workflows.md`). Planning is pure domain code apart from one
+port, and the lane engine in `execution_service.ts` uses it at job start.
 
 - **`WorkerPoolReader`** (`src/domain/remote/worker_pool.ts`) returns the pool
   a plan is made from. Serve's implementation
@@ -1634,6 +1635,45 @@ The value objects (`FanOutPolicy`, `RolloutPolicy`, `FanOutPlan`,
 `FanOutMember`) live in `src/domain/remote/fan_out.ts`, not with the workflow
 placement fields: workflows already depends on remote, and the reverse import
 would make the two contexts depend on each other.
+
+**Registering the pool.** Serve registers its reader with
+`setWorkerPoolReader` (`src/domain/remote/worker_pool.ts`) beside
+`setRemoteStepDispatcher`, and clears it on shutdown. The setter is
+module-level for the same reason as the dispatcher's: a nested workflow runs on
+a fresh execution service, and a child holding a fan-out job must still reach
+the pool. With no reader registered (a local run), a fan-out run is refused
+before anything runs.
+
+**Pinning a lane.** Each lane step's placement is a fixed target, the planned
+worker, carried with the member's instance UUID as `StepPlacement.lane`. It
+does not use the affinity pin map: `assertPinHeld` fails a step at once when
+its pinned worker is disconnected, which would fail every `offline: wait` lane
+on its first dispatch, and an affinity group binds on its first step rather
+than at plan time. The lane pin gives the same guarantee, since a lane never
+moves, with nothing to release when the job ends.
+
+**Eligibility at dispatch.** Before every attempt of a lane step,
+`laneDispatchVerdict` (`src/domain/remote/scheduler.ts`) reads the worker's
+live snapshot:
+
+- unverified, draining, or another instance enrolled under the planned name:
+  the step fails with `WorkerIneligibleError` (`worker_ineligible`) and nothing
+  is sent. This holds for every lane step, not only the first, as a draining
+  pinned worker already fails an affinity group today.
+- disconnected or absent: the step queues on its target until the worker
+  reconnects, or fails at `queueTimeout` with the usual "Timed out waiting for
+  a worker matching target" error.
+- a worker lost mid-dispatch follows the plain lost-worker rules: a step that
+  had not written is re-dispatched, to the same target only, and one that had
+  written fails.
+
+**Run-record integrity.** Lane steps are ordinary steps of the job, so the
+v3 run-record judge (`judgeRunRecord` in
+`src/domain/datastore_v3/content_bindings.ts`) checks their outputs and data
+like any step. It also freezes the plan: a run's first record holds none, a
+plan may be added only while every step of its job is pending, its lanes carry
+no steps of their own, and once present it never changes and its job is never
+dropped.
 
 ### Host launching is a swamp workflow
 

@@ -43,6 +43,41 @@ export interface StepPlacement {
    * pinned worker disconnects
    */
   affinityKey?: string;
+  /** set only by the fan-out lane engine; the lane's step never moves off this worker */
+  lane?: FanOutLanePin;
+}
+
+export interface FanOutLanePin {
+  readonly worker: string;
+  readonly instanceUuid: string;
+}
+
+export type LaneDispatchVerdict =
+  | { kind: "dispatch" }
+  | { kind: "wait" }
+  | {
+    kind: "ineligible";
+    reason: "unverified" | "draining" | "replaced";
+  };
+
+/**
+ * a lane never queues behind a worker that may not take it: unverified or
+ * draining fails it, and so does another machine enrolled under the name
+ */
+export function laneDispatchVerdict(
+  lane: FanOutLanePin,
+  worker:
+    | Pick<SchedulableWorker, "instanceUuid" | "status" | "connected">
+    | null,
+): LaneDispatchVerdict {
+  if (worker === null) return { kind: "wait" };
+  if (worker.instanceUuid !== lane.instanceUuid) {
+    return { kind: "ineligible", reason: "replaced" };
+  }
+  if (worker.status === "unverified" || worker.status === "draining") {
+    return { kind: "ineligible", reason: worker.status };
+  }
+  return worker.connected ? { kind: "dispatch" } : { kind: "wait" };
 }
 
 export interface SchedulableWorker {

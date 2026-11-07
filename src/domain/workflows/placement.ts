@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import type { FanOutLanePin } from "../remote/scheduler.ts";
 
 export const PlacementFieldsSchema = z.object({
   target: z.string().optional(),
@@ -34,6 +35,7 @@ export interface ResolvedPlacement {
   platform?: string;
   queueTimeoutMs?: number;
   affinityKey?: string;
+  lane?: FanOutLanePin;
 }
 
 /**

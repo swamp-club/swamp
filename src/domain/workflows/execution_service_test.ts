@@ -30,6 +30,12 @@ import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts
 import type { RunWriteFence } from "./run_write_fence.ts";
 import { runProgressSnapshots } from "../remote/run_progress.ts";
 import {
+  getWorkerPoolReader,
+  type PoolWorker,
+  setWorkerPoolReader,
+} from "../remote/worker_pool.ts";
+import { FAN_OUT_NEEDS_SERVE, FAN_OUT_RESUME_DEFERRED } from "./fan_out_job.ts";
+import {
   type ObservationOutcome,
   setExecutionObserver,
 } from "../remote/observability.ts";
@@ -25123,8 +25129,21 @@ Deno.test("WorkflowExecutionService: a nested run's refused step start reaches t
   });
 });
 
-const FAN_OUT_REFUSAL =
-  "fan-out jobs are not available in this version of swamp";
+const FAN_OUT_NO_POOL = FAN_OUT_NEEDS_SERVE;
+const FAN_OUT_NO_RESUME = FAN_OUT_RESUME_DEFERRED;
+
+async function withPoolReader<T>(
+  pool: PoolWorker[],
+  body: () => Promise<T>,
+): Promise<T> {
+  const before = getWorkerPoolReader();
+  setWorkerPoolReader({ readPool: () => Promise.resolve(pool) });
+  try {
+    return await body();
+  } finally {
+    setWorkerPoolReader(before);
+  }
+}
 
 function withFanOutJob(workflow: Workflow, jobName: string): Workflow {
   const data = workflow.toData();
@@ -25151,7 +25170,7 @@ function withFanOutJob(workflow: Workflow, jobName: string): Workflow {
   );
 }
 
-Deno.test("run: a workflow with a fan-out job is refused before any run exists or any step runs", async () => {
+Deno.test("run: a local run of a workflow with a fan-out job, with no worker pool, is refused before any run exists or any step runs", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = withFanOutJob(createRetryWorkflow(), "deploy");
     const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
@@ -25160,7 +25179,7 @@ Deno.test("run: a workflow with a fan-out job is refused before any run exists o
       () => service.execute(workflow.name),
       UserError,
     );
-    assertStringIncludes(error.message, FAN_OUT_REFUSAL);
+    assertStringIncludes(error.message, FAN_OUT_NO_POOL);
     assertStringIncludes(error.message, "fan-out job 'deploy'");
     assertEquals(executor.calls.size, 0);
     assertEquals(runRepo.saves, 0);
@@ -25184,7 +25203,7 @@ Deno.test("resume: a run whose workflow gained a fan-out job is refused without 
     await assertRejects(
       () => drainResume(service, workflow.name, failed.id),
       UserError,
-      FAN_OUT_REFUSAL,
+      FAN_OUT_NO_RESUME,
     );
 
     assertEquals(runRepo.saves, saves);
@@ -25195,14 +25214,14 @@ Deno.test("resume: a run whose workflow gained a fan-out job is refused without 
   });
 });
 
-Deno.test("run: with --last-evaluated, a fan-out job in the cached workflow is refused before any step runs", async () => {
+Deno.test("run: with --last-evaluated and no worker pool, a fan-out job in the cached workflow is refused before any step runs", async () => {
   const workflow = createRetryWorkflow();
   const { error, executedSteps } = await runReservedTagWorkflow(workflow, {
     lastEvaluated: withFanOutJob(workflow, "deploy"),
   });
 
   assertEquals(executedSteps, []);
-  assertStringIncludes((error as Error).message, FAN_OUT_REFUSAL);
+  assertStringIncludes((error as Error).message, FAN_OUT_NO_POOL);
   assertStringIncludes((error as Error).message, "fan-out job 'deploy'");
 });
 
@@ -25233,7 +25252,7 @@ Deno.test("recover: a run whose workflow gained a fan-out job is refused and lef
         }
       },
       UserError,
-      FAN_OUT_REFUSAL,
+      FAN_OUT_NO_RESUME,
     );
 
     assertEquals(runRepo.saves, saves);
@@ -25244,6 +25263,252 @@ Deno.test("recover: a run whose workflow gained a fan-out job is refused and lef
       "unknown",
     );
     assertEquals(executor.calls.size, 0);
+  });
+});
+
+function poolWorker(name: string): PoolWorker {
+  return {
+    name,
+    instanceUuid: `uuid-${name}`,
+    labels: { role: "web" },
+    platform: "linux",
+    arch: "x86_64",
+    status: "idle",
+    connected: true,
+  };
+}
+
+class LaneRecordingExecutor extends CountingStepExecutor {
+  readonly lanes = new Map<string, unknown>();
+
+  override execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    this.lanes.set(`${ctx.jobName}/${ctx.stepName}`, {
+      lane: ctx.lane,
+      worker: (ctx.expressionContext?.self as Record<string, unknown>)?.worker,
+    });
+    return super.execute(step, ctx);
+  }
+}
+
+Deno.test("run: a fan-out job plans against the worker pool and runs one lane per worker, each step pinned to its worker with self.worker bound", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(createRetryWorkflow(), "deploy");
+    const executor = new LaneRecordingExecutor();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const run = await withPoolReader(
+      [poolWorker("w-a"), poolWorker("w-b")],
+      () => service.execute(workflow.name),
+    );
+
+    assertEquals(run.status, "succeeded");
+    const deploy = run.getJob("deploy")!;
+    assertEquals(
+      deploy.steps.map((step) => [step.stepName, step.status]),
+      [["push[w-a]", "succeeded"], ["push[w-b]", "succeeded"]],
+    );
+    assertEquals(
+      deploy.fanOutPlan?.lanes.map((lane) => lane.name),
+      ["deploy[w-a]", "deploy[w-b]"],
+    );
+    assertEquals(executor.lanes.get("deploy/push[w-b]"), {
+      lane: { worker: "w-b", instanceUuid: "uuid-w-b" },
+      worker: {
+        name: "w-b",
+        labels: { role: "web" },
+        platform: "linux",
+        arch: "x86_64",
+      },
+    });
+    assertEquals(executor.count("build/compile"), 1);
+  });
+});
+
+Deno.test("run: a fan-out job's plan is saved before any of its lanes starts", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(createRetryWorkflow(), "deploy");
+    const { service, runRepo } = await setupRetry(tempDir, workflow);
+    await withPoolReader(
+      [poolWorker("w-a"), poolWorker("w-b")],
+      () => service.execute(workflow.name),
+    );
+
+    const first = runRepo.saved.find((data) =>
+      data.jobs.some((job) => job.fanOutPlan !== undefined)
+    );
+    assert(first !== undefined);
+    const deploy = first.jobs.find((job) => job.jobName === "deploy")!;
+    assertEquals(
+      deploy.steps.map((step) => [step.stepName, step.status]),
+      [["push[w-a]", "pending"], ["push[w-b]", "pending"]],
+    );
+  });
+});
+
+Deno.test("run: a fan-out job whose plan is refused fails with the selector and live count, and none of its steps runs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(createRetryWorkflow(), "deploy");
+    const { service, executor } = await setupRetry(tempDir, workflow);
+    const run = await withPoolReader(
+      [],
+      () => service.execute(workflow.name),
+    );
+
+    assertEquals(run.status, "failed");
+    const push = run.getJob("deploy")!.getStep("push")!;
+    assertEquals(push.status, "failed");
+    assertEquals(
+      push.error,
+      "Fan-out job 'deploy' needs at least 1 worker matching labels role=web that is connected or waiting, and 0 are; nothing was sent.",
+    );
+    assertEquals(run.getJob("deploy")!.fanOutPlan, undefined);
+    assertEquals(executor.count("deploy/push"), 0);
+  });
+});
+
+Deno.test("run: a workflow with a fan-out job and a step that can suspend is refused before any run exists, even with a worker pool", async () => {
+  await withTempDir(async (tempDir) => {
+    const data = withFanOutJob(createRetryWorkflow(), "deploy").toData();
+    const workflow = Workflow.fromData(
+      {
+        ...data,
+        jobs: [...data.jobs, {
+          name: "gate",
+          steps: [{
+            name: "approve",
+            task: { type: "manual_approval", prompt: "go?" },
+          }],
+        }],
+      } as Parameters<typeof Workflow.fromData>[0],
+    );
+    const { runRepo, executor, service } = await setupRetry(tempDir, workflow);
+
+    const error = await withPoolReader(
+      [poolWorker("w-a")],
+      () => assertRejects(() => service.execute(workflow.name), UserError),
+    );
+    assertStringIncludes(error.message, "step 'approve' in job 'gate'");
+    assertStringIncludes(error.message, FAN_OUT_NO_RESUME);
+    assertEquals(executor.calls.size, 0);
+    assertEquals(runRepo.saves, 0);
+  });
+});
+
+Deno.test("resume: a run whose record holds a fan-out plan is refused after fanOut is edited out of the workflow", async () => {
+  await withTempDir(async (tempDir) => {
+    const plain = createRetryWorkflow();
+    const workflow = withFanOutJob(plain, "deploy");
+    const { workflowRepo, runRepo, executor, service } = await setupRetry(
+      tempDir,
+      workflow,
+    );
+    executor.failing.add("deploy/push[w-a]");
+    const failed = await withPoolReader(
+      [poolWorker("w-a")],
+      () => service.execute(workflow.name),
+    );
+    assertEquals(failed.status, "failed");
+    await workflowRepo.save(plain);
+    const saves = runRepo.saves;
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, failed.id),
+      UserError,
+      FAN_OUT_NO_RESUME,
+    );
+    assertEquals(runRepo.saves, saves);
+  });
+});
+
+Deno.test("run: a child workflow holding a fan-out job, run without a worker pool, is refused before any of its steps and fails the parent's step", async () => {
+  await withTempDir(async (tempDir) => {
+    const child = withFanOutJob(
+      Workflow.create({
+        name: "fan-child",
+        jobs: [Job.create({ name: "patch", steps: [modelStep("apply")] })],
+      }),
+      "patch",
+    );
+    const parent = Workflow.create({
+      name: "fan-parent",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "call",
+          task: StepTask.workflow("fan-child"),
+        })],
+      })],
+    });
+    const { service, executor, workflowRepo } = await setupRetry(
+      tempDir,
+      parent,
+    );
+    await workflowRepo.save(child);
+
+    const run = await service.execute(parent.name);
+
+    assertEquals(run.status, "failed");
+    assertStringIncludes(
+      run.getJob("main")!.getStep("call")!.error ?? "",
+      FAN_OUT_NO_POOL,
+    );
+    assertEquals(executor.calls.size, 0);
+  });
+});
+
+Deno.test("run: with --last-evaluated, a fan-out job runs its lanes and self.worker resolves per lane in a guard the evaluation left for run time", async () => {
+  await withTempDir(async (tempDir) => {
+    const data = withFanOutJob(createRetryWorkflow(), "deploy").toData();
+    const workflow = Workflow.fromData(
+      {
+        ...data,
+        jobs: data.jobs.map((job) =>
+          job.name !== "deploy" ? job : {
+            ...job,
+            steps: job.steps.map((step) => ({
+              ...step,
+              guard: '${{ self.worker.name == "w-a" }}',
+            })),
+          }
+        ),
+      } as Parameters<typeof Workflow.fromData>[0],
+    );
+    const workflowRepo = new InMemoryWorkflowRepository();
+    await workflowRepo.save(workflow);
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      workflow,
+      undefined,
+      new Set(extractExpressions(workflow.toData()).map((e) => e.raw)),
+      undefined,
+      [],
+      { inputs: {} },
+    );
+    const executor = new CountingStepExecutor();
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      new InMemoryWorkflowRunRepository(),
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const run = await withPoolReader(
+      [poolWorker("w-a"), poolWorker("w-b")],
+      () => service.execute(workflow.name, { lastEvaluated: true }),
+    );
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(
+      run.getJob("deploy")!.steps.map((step) => [step.stepName, step.status]),
+      [["push[w-a]", "skipped"], ["push[w-b]", "succeeded"]],
+    );
+    assertEquals(executor.count("deploy/push[w-a]"), 0);
+    assertEquals(executor.count("deploy/push[w-b]"), 1);
   });
 });
 
