@@ -221,7 +221,8 @@ changes that aren't tied to a single building block:
   `datastoreTypeRegistry`) either uses a per-run type name built with
   `crypto.randomUUID()`, or registers unconditionally and calls `invalidateType`
   in a `finally`. Guard with `has()` only when the registered provider captures
-  nothing from the test body.
+  nothing from the test body. A test that authenticates through serve's HTTP
+  routes as a fixed principal calls `resetRateLimitState()` before it runs.
 - Restore env vars with `if (original !== undefined)` — truthiness checks delete
   vars that were set to the empty string.
 
@@ -254,6 +255,10 @@ changes that aren't tied to a single building block:
 - Tests must run on Linux, macOS, and Windows. Use `assertPathEquals` from
   `src/infrastructure/persistence/path_test_helpers.ts` for path-string
   comparisons — `assertEquals` against forward-slash literals fails on Windows.
+  Windows also has a shallower stack and a coarser clock: build the expected
+  value for input nested thousands deep without recursion (never with
+  `JSON.stringify`), and never assume a file just written is timestamped at or
+  before `Date.now()`.
 - Use `@std/path` (`dirname`, `basename`, `join`, `fromFileUrl`, `SEPARATOR`)
   for all path operations. Never hand-roll with `lastIndexOf("/")`,
   `split("/").pop()`, `URL.pathname`, or `"/"`-prefixed concatenation.

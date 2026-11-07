@@ -29,7 +29,10 @@ const cleanupGraceSignals = new WeakSet<AbortSignal>();
  * AbortSignal.any is not remembered and reads as a timeout
  */
 export function cleanupGraceSignal(ms: number): AbortSignal {
-  const signal = AbortSignal.timeout(ms);
+  return asCleanupGrace(AbortSignal.timeout(ms));
+}
+
+export function asCleanupGrace(signal: AbortSignal): AbortSignal {
   cleanupGraceSignals.add(signal);
   return signal;
 }

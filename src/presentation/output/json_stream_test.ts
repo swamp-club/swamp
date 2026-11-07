@@ -19,7 +19,11 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { prettyJson, prettyJsonChunks, writeJsonValue } from "./json_stream.ts";
-import { nestedTreeDepth } from "./json_stream_test_helpers.ts";
+import {
+  deeplyNestedAttributes,
+  nestedTreeDepth,
+  prettyNestedText,
+} from "./json_stream_test_helpers.ts";
 
 function collectingSink(maxPerWrite = Infinity) {
   const parts: Uint8Array[] = [];
@@ -78,19 +82,22 @@ Deno.test("writeJsonValue: a value whose JSON is too large for one string is wri
   assertEquals(last, "\n".charCodeAt(0));
 });
 
-function nestedArrays(depth: number): unknown {
-  let value: unknown = [0, 1, 2];
-  for (let i = 0; i < depth; i++) value = [value];
-  return { i: 0, tree: value };
-}
-
 // past the depth a recursive walk survives; pretty output grows with depth
 // squared, so the chunks are checked in place rather than joined
 const DEEP = 5_000;
 
+Deno.test("prettyNestedText: matches JSON.stringify where its recursion survives", () => {
+  for (const depth of [0, 1, 2, 50]) {
+    assertEquals(
+      prettyNestedText(depth),
+      JSON.stringify(deeplyNestedAttributes(depth), null, 2),
+    );
+  }
+});
+
 Deno.test("prettyJsonChunks: a deeply nested value yields JSON.stringify(value, null, 2) piece by piece", () => {
-  const value = nestedArrays(DEEP);
-  const expected = JSON.stringify(value, null, 2);
+  const value = deeplyNestedAttributes(DEEP);
+  const expected = prettyNestedText(DEEP);
   let offset = 0;
   for (const chunk of prettyJsonChunks(value)) {
     assertEquals(expected.startsWith(chunk, offset), true);
@@ -100,9 +107,10 @@ Deno.test("prettyJsonChunks: a deeply nested value yields JSON.stringify(value, 
 });
 
 Deno.test("writeJsonValue: a deeply nested value is written whole", async () => {
-  const value = nestedArrays(DEEP);
+  const value = deeplyNestedAttributes(DEEP);
   const expectedBytes =
-    new TextEncoder().encode(JSON.stringify(value, null, 2)).length + 1;
+    new TextEncoder().encode(prettyNestedText(DEEP)).length +
+    1;
   let written = 0;
   let last = 0;
   await writeJsonValue(value, (bytes) => {
@@ -139,9 +147,11 @@ Deno.test("prettyJson: returns JSON.stringify(value, null, 2), and still does pa
     d: new Date(0),
   };
   assertEquals(prettyJson(shallow), JSON.stringify(shallow, null, 2));
-  const deep = nestedArrays(DEEP);
-  assertEquals(prettyJson(deep), JSON.stringify(deep, null, 2));
-  const tooDeep = nestedArrays(6_000);
+  assertEquals(
+    prettyJson(deeplyNestedAttributes(DEEP)),
+    prettyNestedText(DEEP),
+  );
+  const tooDeep = deeplyNestedAttributes(6_000);
   assertThrows(() => JSON.stringify(tooDeep, null, 2), RangeError);
   assertEquals(nestedTreeDepth(JSON.parse(prettyJson(tooDeep))), {
     depth: 6_000,

@@ -38,3 +38,19 @@ export function nestedTreeDepth(
   }
   return { depth, leaf: node };
 }
+
+/** JSON.stringify(deeplyNestedAttributes(depth), null, 2), built without recursion */
+export function prettyNestedText(depth: number): string {
+  const indent = (level: number) => "  ".repeat(level);
+  const parts = ['{\n  "i": 0,\n  "tree": '];
+  for (let level = 1; level <= depth; level++) {
+    parts.push(`[\n${indent(level + 1)}`);
+  }
+  const leaf = indent(depth + 2);
+  parts.push(`[\n${leaf}0,\n${leaf}1,\n${leaf}2\n${indent(depth + 1)}]`);
+  for (let level = depth; level >= 1; level--) {
+    parts.push(`\n${indent(level)}]`);
+  }
+  parts.push("\n}");
+  return parts.join("");
+}

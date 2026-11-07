@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  asCleanupGrace,
   cancelCause,
   CLEANUP_GRACE_EXPIRED_CAUSE,
   cleanupGraceSignal,
@@ -88,6 +89,14 @@ Deno.test("cleanupGraceSignal: has no cause until the grace runs out", () => {
 Deno.test("cleanupGraceSignal: an expired grace is its own cause", async () => {
   const signal = cleanupGraceSignal(1);
   await waitFor(() => signal.aborted, "the grace to run out");
+  assertEquals(cancelCause(signal), CLEANUP_GRACE_EXPIRED_CAUSE);
+});
+
+Deno.test("asCleanupGrace: a remembered signal reads as an expired grace once aborted", () => {
+  const controller = new AbortController();
+  const signal = asCleanupGrace(controller.signal);
+  assertEquals(cancelCause(signal), undefined);
+  controller.abort();
   assertEquals(cancelCause(signal), CLEANUP_GRACE_EXPIRED_CAUSE);
 });
 

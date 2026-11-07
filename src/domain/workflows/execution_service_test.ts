@@ -137,7 +137,7 @@ import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import {
-  cleanupGraceSignal,
+  asCleanupGrace,
   isCleanupGraceSignal,
 } from "../models/cancel_cause.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
@@ -19871,11 +19871,12 @@ Deno.test("DefaultStepExecutor: a method cancelled with a reason records that re
 });
 
 Deno.test("DefaultStepExecutor: a cleanup method the cleanup grace cuts off is recorded cancelled as cleanup grace expired (swamp-club#2922)", async () => {
-  // long enough for the method to start: a grace already run out never starts it
-  const signal = cleanupGraceSignal(500);
-  const { outputs, tracker } = await runModelStep({ signal }, async () => {
-    await waitFor(() => signal.aborted, "the cleanup grace to run out");
-    throw new Error("process exited with signal SIGTERM");
+  // run out from inside the method: a grace already run out never starts it
+  const grace = new AbortController();
+  const signal = asCleanupGrace(grace.signal);
+  const { outputs, tracker } = await runModelStep({ signal }, () => {
+    grace.abort();
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
   });
 
   assertEquals(outputs[0].status, "cancelled");
