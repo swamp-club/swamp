@@ -1285,7 +1285,7 @@ Deno.test("workflowValidate all: the skipped count is filtered by include", asyn
   assertEquals(data.pulledWorkflowsSkipped, 1);
 });
 
-Deno.test("workflowValidate all: a pulled workflow shadowed by a repo workflow the caller cannot read is not counted", async () => {
+Deno.test("workflowValidate all: a repo workflow the caller cannot read does not shadow a readable pulled workflow from the count", async () => {
   const data = await validateAllData(
     makeDeps({
       findAllWorkflows: () =>
@@ -1301,7 +1301,7 @@ Deno.test("workflowValidate all: a pulled workflow shadowed by a repo workflow t
   );
 
   assertEquals(data.workflows, []);
-  assertEquals(data.pulledWorkflowsSkipped, 0);
+  assertEquals(data.pulledWorkflowsSkipped, 1);
 });
 
 Deno.test("workflowValidate all: an empty repository still reports the skipped count, and zero without the port", async () => {

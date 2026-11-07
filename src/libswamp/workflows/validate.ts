@@ -406,8 +406,7 @@ async function* validateAll(
   deps: WorkflowValidateDeps,
   include: (workflow: WorkflowIdentity) => boolean = () => true,
 ): AsyncIterable<WorkflowValidateEvent> {
-  const ownWorkflows = await deps.findAllWorkflows();
-  const allWorkflows = ownWorkflows.filter((workflow) =>
+  const allWorkflows = (await deps.findAllWorkflows()).filter((workflow) =>
     include({ name: workflow.name, tags: workflow.tags ?? {} })
   );
 
@@ -419,11 +418,12 @@ async function* validateAll(
       broken,
     ) => include({ name: broken.name ?? broken.file, tags: {} }));
 
-  // a name the repo's own workflows hold resolves to them, readable or not
-  const ownNames = new Set(ownWorkflows.map((w) => w.name));
+  // shadowing is decided against readable workflows only, so the count never
+  // depends on, or reveals, a workflow the caller cannot read
+  const checkedNames = new Set(allWorkflows.map((w) => w.name));
   const pulledWorkflowsSkipped = deps.findSkippedWorkflows
     ? (await deps.findSkippedWorkflows()).filter((w) =>
-      !ownNames.has(w.name) &&
+      !checkedNames.has(w.name) &&
       include({ name: w.name, tags: w.tags ?? {} })
     ).length
     : 0;
