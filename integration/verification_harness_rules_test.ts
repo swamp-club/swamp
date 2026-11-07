@@ -114,6 +114,67 @@ function reviewSteps(workflow: ReviewsWorkflow): readonly WorkflowStep[] {
   return job.steps ?? [];
 }
 
+Deno.test("verify-build: the test step is capped and skips type checking, and a type error still fails the run", async () => {
+  const workflow = parseYaml(
+    await Deno.readTextFile(
+      join(ROOT, "verification", "workflow-verify-build.yaml"),
+    ),
+  ) as {
+    readonly jobs: readonly {
+      readonly name: string;
+      readonly dependsOn?: readonly {
+        readonly job: string;
+        readonly condition: { readonly type: string };
+      }[];
+      readonly steps: readonly {
+        readonly name: string;
+        readonly task: {
+          readonly inputs: {
+            readonly run: string;
+            readonly timeout?: number;
+          };
+        };
+      }[];
+    }[];
+  };
+  const job = (name: string) => {
+    const found = workflow.jobs.find((j) => j.name === name);
+    if (!found) throw new Error(`No "${name}" job in verify-build`);
+    return found;
+  };
+  const step = (jobName: string, name: string) => {
+    const found = job(jobName).steps.find((s) => s.name === name);
+    if (!found) throw new Error(`No "${name}" step in verify-build`);
+    return found;
+  };
+
+  const tests = step("tests", "run-tests").task.inputs;
+  assertEquals((tests.timeout ?? 0) > 0, true, "run-tests has no timeout");
+  assertStringIncludes(tests.run, "deno task test --no-check");
+  assertEquals(
+    step("static-analysis", "type-check").task.inputs.run,
+    "deno task check",
+  );
+  assertEquals(
+    job("compile").dependsOn?.find((d) => d.job === "static-analysis")
+      ?.condition.type,
+    "succeeded",
+  );
+});
+
+Deno.test("flaky test detection: every test command skips type checking", async () => {
+  const source = await Deno.readTextFile(
+    join(ROOT, ".github", "workflows", "flaky-tests.yml"),
+  );
+  const commands = source.split("\n").filter((line) =>
+    line.includes("deno task test")
+  );
+  assertEquals(commands.length, 2);
+  for (const command of commands) {
+    assertStringIncludes(command, "deno task test --no-check");
+  }
+});
+
 Deno.test("review prompts: the expected set is present", async () => {
   const found: string[] = [];
   for await (const entry of Deno.readDir(PROMPTS_DIR)) {

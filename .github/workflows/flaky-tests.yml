@@ -42,7 +42,7 @@ jobs:
         shell: bash
         env:
           NO_COLOR: "1"
-        run: deno task test --repeats 3 2>&1 | tee test.log
+        run: deno task test --no-check --repeats 3 2>&1 | tee test.log
 
       - name: Summarise failures
         if: failure()
@@ -135,7 +135,7 @@ jobs:
 
               const body = [
                 "The scheduled flaky-test detection workflow (.github/workflows/flaky-tests.yml) failed.",
-                "It runs `deno task test --repeats 3` on Linux and macOS every 6 hours; the run summary lists the failing tests per OS.",
+                "It runs `deno task test --no-check --repeats 3` on Linux and macOS every 6 hours; the run summary lists the failing tests per OS.",
                 "",
                 `Run: ${runUrl}`,
                 "",

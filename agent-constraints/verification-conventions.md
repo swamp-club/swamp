@@ -21,6 +21,13 @@ fires regardless of pass/fail.
 All steps use `command/shell` which correctly fails on non-zero exit code —
 lint, test, and compile failures are reported accurately.
 
+The `run-tests` step skips type checking, because `type-check` covers every file
+and `compile` depends on it. The step is capped at 15 minutes, and a normal run
+takes about 5. A cap failure means the run stalled or the machine is overloaded,
+and it loses Deno's final error details, though the per-test lines stay in the
+run log. If a test runs far past its neighbours before the cap, capture a stack
+with `gdb -batch -p <pid> -ex 'thread apply all bt 25'` before killing it.
+
 ## Agent Reviews (Host Workflow)
 
 Reviews run as a swamp workflow on the host (not in a container) so the reviewer
