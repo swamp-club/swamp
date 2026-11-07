@@ -21,7 +21,12 @@ import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { CLI_ARGS, isolatedHomeEnv } from "./test_helpers.ts";
+import {
+  CLI_ARGS,
+  isolatedHomeEnv,
+  UNREACHABLE_TELEMETRY_ENDPOINT,
+  waitForTelemetrySender,
+} from "./test_helpers.ts";
 import { writeGateCredential } from "./auth_gate_fixture.ts";
 
 interface CliRunResult {
@@ -74,10 +79,14 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(dir);
   } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(dir, { recursive: true });
+    try {
+      await waitForTelemetrySender(join(dir, "xdg"));
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
     }
   }
 }
@@ -88,20 +97,20 @@ function baseChildEnv(): Record<string, string> {
     const value = Deno.env.get(key);
     if (value !== undefined) env[key] = value;
   }
+  // Every run, repo init included, stays off the default endpoint, and entries
+  // stay on disk for the test to inspect.
+  env.SWAMP_TELEMETRY_ENDPOINT = UNREACHABLE_TELEMETRY_ENDPOINT;
   return env;
 }
 
-async function pinTelemetryEndpoint(repoDir: string): Promise<void> {
-  // Pin telemetry to a localhost port nothing listens on so the
-  // post-command flush dies fast and entries stay on disk for us to
-  // inspect. keepFlushed: true preserves the file even if a flush did
-  // somehow succeed (renamed to .flushed.json).
+async function keepFlushedTelemetry(repoDir: string): Promise<void> {
+  // Preserves the file even if a flush did somehow succeed (renamed to
+  // .flushed.json).
   const markerPath = join(repoDir, ".swamp.yaml");
   const marker = await Deno.readTextFile(markerPath);
   await Deno.writeTextFile(
     markerPath,
-    marker +
-      "\ntelemetryEndpoint: http://127.0.0.1:1\ntelemetryKeepFlushed: true\n",
+    marker + "\ntelemetryKeepFlushed: true\n",
   );
 }
 
@@ -137,6 +146,7 @@ async function createShellModel(
 interface PersistedEntry {
   id: string;
   invocation: { command: string; subcommand?: string; args: string[] };
+  endpoint?: string;
   result: { status: string };
   parentInvocationId?: string;
   workflowContext?: {
@@ -178,7 +188,7 @@ Deno.test({
         childEnvWith(),
       );
       assertEquals(init.code, 0, `repo init failed: ${init.stderr}`);
-      await pinTelemetryEndpoint(repoDir);
+      await keepFlushedTelemetry(repoDir);
 
       await createShellModel(repoDir, "echo-ok", "echo hello");
       await createShellModel(repoDir, "echo-fail", "exit 1");
@@ -277,6 +287,10 @@ Deno.test({
       const persisted = await readPersistedEntries(
         configDir,
       ) as unknown as PersistedEntry[];
+
+      for (const entry of persisted) {
+        assertEquals(entry.endpoint, UNREACHABLE_TELEMETRY_ENDPOINT);
+      }
 
       // Find the parent entry for `workflow run`. It carries no
       // workflowContext (workflowContext is for child entries only).

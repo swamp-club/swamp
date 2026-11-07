@@ -20,7 +20,9 @@
 import { dirname, fromFileUrl, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { getSwampDataDir } from "../src/infrastructure/persistence/paths.ts";
+import { SENDER_LOCK_FILE } from "../src/infrastructure/telemetry/telemetry_sender_process.ts";
 import { withGateCredentialEnv } from "./auth_gate_fixture.ts";
 
 const PROJECT_ROOT = join(dirname(fromFileUrl(import.meta.url)), "..");
@@ -62,6 +64,34 @@ export function isolatedHomeEnv(homeDir: string): Record<string, string> {
     USERPROFILE: homeDir,
     DENO_DIR: DENO_CACHE_DIR,
   };
+}
+
+/** nothing listens here, so a spawned CLI's telemetry send fails at once */
+export const UNREACHABLE_TELEMETRY_ENDPOINT = "http://127.0.0.1:1";
+
+/**
+ * a spawned CLI's detached sender recreates its telemetry dir when it records a
+ * failed send, so a test removing that dir waits first. The sender releases the
+ * lock last, and its parent claims it before starting it
+ */
+export async function waitForTelemetrySender(
+  configDir: string,
+  options: { readonly timeoutMs?: number } = {},
+): Promise<void> {
+  const lockPath = join(configDir, "swamp", "telemetry", SENDER_LOCK_FILE);
+  await waitFor(
+    async () => {
+      try {
+        await Deno.stat(lockPath);
+        return false;
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return true;
+        throw error;
+      }
+    },
+    "the telemetry sender to release its lock",
+    { timeoutMs: options.timeoutMs ?? 60_000 },
+  );
 }
 
 /**
