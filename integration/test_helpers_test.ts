@@ -17,13 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { EmbeddedDenoRuntime } from "../src/infrastructure/runtime/embedded_deno_runtime.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
   linkSharedSwampDenoCache,
   SHARED_SWAMP_DENO_CACHE,
+  waitForTelemetrySender,
 } from "./test_helpers.ts";
 
 // Creating a symlink on Windows needs a privilege the helper may not have.
@@ -78,4 +79,34 @@ Deno.test({
       await Deno.remove(sentinel).catch(() => {});
     }
   },
+});
+
+Deno.test("waitForTelemetrySender: waits while the sender holds its lock, and returns once it is released", async () => {
+  const configDir = await Deno.makeTempDir({ prefix: "swamp-sender-wait-" });
+  try {
+    const telemetryDir = join(configDir, "swamp", "telemetry");
+    await Deno.mkdir(telemetryDir, { recursive: true });
+    const lockPath = join(telemetryDir, "sender.lock");
+    await Deno.writeTextFile(lockPath, "token");
+
+    await assertRejects(
+      () => waitForTelemetrySender(configDir, { timeoutMs: 0 }),
+      Error,
+      "the telemetry sender to release its lock",
+    );
+
+    await Deno.remove(lockPath);
+    await waitForTelemetrySender(configDir, { timeoutMs: 0 });
+  } finally {
+    await Deno.remove(configDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("waitForTelemetrySender: returns at once when no telemetry dir exists", async () => {
+  const configDir = await Deno.makeTempDir({ prefix: "swamp-sender-wait-" });
+  try {
+    await waitForTelemetrySender(configDir, { timeoutMs: 0 });
+  } finally {
+    await Deno.remove(configDir, { recursive: true }).catch(() => {});
+  }
 });

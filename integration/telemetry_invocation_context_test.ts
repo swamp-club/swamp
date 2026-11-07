@@ -19,7 +19,12 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { CLI_ARGS, isolatedHomeEnv } from "./test_helpers.ts";
+import {
+  CLI_ARGS,
+  isolatedHomeEnv,
+  UNREACHABLE_TELEMETRY_ENDPOINT,
+  waitForTelemetrySender,
+} from "./test_helpers.ts";
 import { writeGateCredential } from "./auth_gate_fixture.ts";
 
 interface CliRunResult {
@@ -69,10 +74,14 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(dir);
   } finally {
-    if (Deno.build.os === "windows") {
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(dir, { recursive: true });
+    try {
+      await waitForTelemetrySender(join(dir, "xdg"));
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(dir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(dir, { recursive: true });
+      }
     }
   }
 }
@@ -83,9 +92,9 @@ function baseChildEnv(): Record<string, string> {
     const value = Deno.env.get(key);
     if (value !== undefined) env[key] = value;
   }
-  // Pin telemetry to a localhost endpoint that nothing listens on so the
-  // post-command flush dies fast and does not pollute the test's persisted
-  // file. The test reads the still-unflushed local entry directly.
+  // Every run, repo init included, stays off the default endpoint, and the
+  // test reads the still-unflushed local entry directly.
+  env.SWAMP_TELEMETRY_ENDPOINT = UNREACHABLE_TELEMETRY_ENDPOINT;
   env.SWAMP_DEBUG = "0";
   return env;
 }
@@ -113,15 +122,11 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
     );
     assertEquals(init.code, 0, `repo init failed: ${init.stderr}`);
 
-    // Pin a telemetryEndpoint that nothing is listening on so the
-    // post-command flush bails fast and the entry stays on disk for us
-    // to inspect. Append the field to the existing marker.
     const markerPath = join(dir, ".swamp.yaml");
     const marker = await Deno.readTextFile(markerPath);
     await Deno.writeTextFile(
       markerPath,
-      marker +
-        "\ntelemetryEndpoint: http://127.0.0.1:1\ntelemetryKeepFlushed: true\n",
+      marker + "\ntelemetryKeepFlushed: true\n",
     );
 
     // a real command through the full action pipeline (--version exits before
@@ -136,6 +141,19 @@ Deno.test("CLI bootstrap stamps invocationContext on persisted telemetry", async
 
     const persisted = await readPersistedEntries(configDir);
     assert(persisted.length > 0, "no telemetry entries were written");
+
+    // The spool also holds the sender's flush record, which is not an entry.
+    const entries = persisted.filter((entry) => entry.invocation !== undefined);
+    assert(
+      entries.some((entry) => {
+        const inv = entry.invocation as Record<string, unknown>;
+        return inv.command === "repo" && inv.subcommand === "init";
+      }),
+      "no entry matched the repo init invocation",
+    );
+    for (const entry of entries) {
+      assertEquals(entry.endpoint, UNREACHABLE_TELEMETRY_ENDPOINT);
+    }
 
     const target = persisted.find((entry) => {
       const inv = entry.invocation as Record<string, unknown> | undefined;
