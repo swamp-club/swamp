@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
@@ -25,7 +30,11 @@ import {
   runWorker,
   type WorkerStatusEvent,
 } from "./connect.ts";
-import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import {
+  ChannelClosedError,
+  RpcChannel,
+  RpcError,
+} from "../domain/remote/rpc_channel.ts";
 import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
   type EnrollParams,
@@ -898,10 +907,8 @@ Deno.test("runWorker: a dispatch sent before a refused enroll reply is never run
   );
 
   await waitFor(() => answered, "early dispatch answered");
-  assertEquals(
-    ["unknown_method", "handler_failed"].includes(codeOf(outcome)!),
-    false,
-  );
+  // the worker drops the connection as it stops, so serve gets no step result
+  assertInstanceOf(outcome, ChannelClosedError);
 });
 
 Deno.test("runWorker: a dispatch sent before the enroll reply is never run when the gate refuses the worker", async () => {
@@ -929,8 +936,6 @@ Deno.test("runWorker: a dispatch sent before the enroll reply is never run when 
   );
 
   await waitFor(() => answered, "early dispatch answered");
-  assertEquals(
-    ["unknown_method", "handler_failed"].includes(codeOf(outcome)!),
-    false,
-  );
+  // the worker drops the connection as it stops, so serve gets no step result
+  assertInstanceOf(outcome, ChannelClosedError);
 });
