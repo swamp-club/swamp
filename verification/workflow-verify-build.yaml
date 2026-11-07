@@ -105,6 +105,7 @@ jobs:
             # The tests run under a fresh TMPDIR that must be empty when they
             # finish: a test that leaves a temp dir behind fails the step
             # (swamp-club#3854). The path stays short for AF_UNIX sockets.
+            # The static-analysis job type-checks every file and gates compile.
             run: |
               set -e
               LITESTREAM_DATA="/tmp/swamp-verify-build-${{ run.id }}-litestream"
@@ -114,7 +115,7 @@ jobs:
               TEST_TMP="/tmp/swamp-verify-build-${{ run.id }}-tmp"
               rm -rf "$TEST_TMP"
               mkdir "$TEST_TMP"
-              TMPDIR="$TEST_TMP" deno task test
+              TMPDIR="$TEST_TMP" deno task test --no-check
               LEFT="$(ls -A "$TEST_TMP")"
               if [ -n "$LEFT" ]; then
                 echo "Tests left these temp entries behind in $TEST_TMP; remove each when its test ends:" >&2
@@ -123,6 +124,8 @@ jobs:
               fi
               rm -rf "$TEST_TMP"
             workingDir: "/tmp/swamp-verify-build-${{ run.id }}"
+            # A stalled run fails at the cap instead of waiting to be killed.
+            timeout: 900000
 
   # ── Dependency Audit ─────────────────────────────────────────
   - name: deps-audit

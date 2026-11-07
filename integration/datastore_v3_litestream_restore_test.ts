@@ -66,8 +66,17 @@ const ignore = SIDECAR_TESTS_IGNORED;
 
 const STALL_MS = 14_000;
 
+// deno test has no per-test timeout, so this bounds a worker that never answers
+const REQUEST_TIMEOUT_MS = 120_000;
+
+// a worker that cannot report its sidecars by then is abandoned; they idle out
+const TEARDOWN_PIDS_WAIT_MS = 5_000;
+
 interface Machine {
-  send(request: MachineRequest): Promise<unknown>;
+  send(
+    request: MachineRequest,
+    options?: { readonly timeoutMs?: number },
+  ): Promise<unknown>;
   crash(): Promise<void>;
   stopSidecars(): Promise<void>;
 }
@@ -115,7 +124,11 @@ async function withMachines(
     { [V3_REPLICA_ENV]: replica },
     () => initializeV3Datastore(datastorePath, "test"),
   );
-  const workers: { worker: Worker; pids: () => Promise<number[]> }[] = [];
+  const workers: {
+    worker: Worker;
+    pids: () => Promise<number[]>;
+    abandon: () => void;
+  }[] = [];
   const pids = new Set<number>();
   const world: World = {
     root,
@@ -129,8 +142,23 @@ async function withMachines(
       );
       let queue: Promise<unknown> = Promise.resolve();
       let alive = true;
-      const call = (request: MachineRequest) =>
-        new Promise<unknown>((done, fail) => {
+      // set once this worker is given up on: it is terminated, so no later
+      // request can be answered
+      let dead: Error | undefined;
+      let failPending: ((error: Error) => void) | undefined;
+      const call = (request: MachineRequest, timeoutMs: number) => {
+        if (dead !== undefined) return Promise.reject(dead);
+        const limit = timeoutMs + (request.kind === "pause" ? request.ms : 0);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        return new Promise<unknown>((done, fail) => {
+          failPending = fail;
+          timer = setTimeout(() => {
+            dead = new Error(
+              `machine-${name}: ${request.kind} did not answer within ${limit}ms`,
+            );
+            worker.terminate();
+            fail(dead);
+          }, limit);
           worker.onmessage = (event: MessageEvent<MachineResponse>) => {
             const response = event.data;
             if (response.ok) done(response.value);
@@ -141,11 +169,20 @@ async function withMachines(
             fail(new Error(event.message));
           };
           worker.postMessage(request);
-        });
-      const send = (request: MachineRequest) => {
-        const next = queue.then(() => call(request));
+        }).finally(() => clearTimeout(timer));
+      };
+      const send = (
+        request: MachineRequest,
+        { timeoutMs = REQUEST_TIMEOUT_MS }: { readonly timeoutMs?: number } =
+          {},
+      ) => {
+        const next = queue.then(() => call(request, timeoutMs));
         queue = next.catch(() => {});
         return next;
+      };
+      const abandon = () => {
+        dead ??= new Error(`machine-${name}: abandoned at teardown`);
+        failPending?.(dead);
       };
       const remember = async () => {
         if (!alive) return [];
@@ -153,7 +190,7 @@ async function withMachines(
         for (const pid of launched) pids.add(pid);
         return launched;
       };
-      workers.push({ worker, pids: remember });
+      workers.push({ worker, pids: remember, abandon });
       await send({
         kind: "init",
         hostname: `machine-${name}`,
@@ -219,8 +256,16 @@ async function withMachines(
   try {
     await fn(world);
   } finally {
-    for (const { worker, pids: remember } of workers) {
-      await remember().catch(() => {});
+    for (const { worker, pids: remember, abandon } of workers) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        remember().catch(() => {}),
+        new Promise((done) => {
+          timer = setTimeout(done, TEARDOWN_PIDS_WAIT_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+      abandon();
       worker.terminate();
     }
     for (const pid of pids) killSidecarAtTeardown(pid);
@@ -240,6 +285,45 @@ interface ReadResult {
 async function read(machine: Machine): Promise<ReadResult> {
   return await machine.send({ kind: "read" }) as ReadResult;
 }
+
+Deno.test({
+  name:
+    "v3 restore harness: a machine that never answers fails its request, naming it, and later requests fail at once",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      await assertRejects(
+        () => a.send({ kind: "spin", ms: 30_000 }, { timeoutMs: 500 }),
+        Error,
+        "machine-a: spin did not answer within 500ms",
+      );
+      await assertRejects(
+        () => a.send({ kind: "fence" }),
+        Error,
+        "machine-a: spin did not answer",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "v3 restore harness: teardown does not wait behind a request still in flight",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    let stuck: Promise<unknown> | undefined;
+    await withMachines(async (world) => {
+      const a = await world.machine("a");
+      stuck = a.send({ kind: "spin", ms: 30_000 });
+    });
+    await assertRejects(
+      () => stuck!,
+      Error,
+      "machine-a: abandoned at teardown",
+    );
+  },
+});
 
 Deno.test({
   name:

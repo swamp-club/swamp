@@ -91,6 +91,7 @@ export type MachineRequest =
   | { readonly kind: "confirm" }
   | { readonly kind: "read" }
   | { readonly kind: "pause"; readonly ms: number }
+  | { readonly kind: "spin"; readonly ms: number }
   | { readonly kind: "upkeep"; readonly probeMs: number }
   | { readonly kind: "stopUpkeep" }
   | { readonly kind: "pids" }
@@ -348,6 +349,7 @@ async function handle(request: MachineRequest): Promise<unknown> {
         return { commits, restored: refresh.restored ?? null };
       });
     case "pause":
+    case "spin":
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, request.ms);
       return undefined;
     case "upkeep":
