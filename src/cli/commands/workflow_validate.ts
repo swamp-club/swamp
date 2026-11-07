@@ -28,6 +28,7 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createWorkflowValidateDeps,
+  pulledExtensionWorkflowScope,
   workflowValidate,
   type WorkflowValidateAllData,
   type WorkflowValidateData,
@@ -36,6 +37,7 @@ import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
 import { createWorkflowValidateRenderer } from "../../presentation/renderers/workflow_validate.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -52,7 +54,10 @@ export const workflowValidateCommand = withRemoteOptions(
     .name("validate")
     .description("Validate a workflow against its schema")
     .example("Validate a workflow", "swamp workflow validate deploy-pipeline")
-    .example("Validate all workflows", "swamp workflow validate")
+    .example(
+      "Validate the repo's own workflows (a pulled extension's workflow is validated by name)",
+      "swamp workflow validate",
+    )
     .arguments("[workflow_id_or_name:string]")
     .option(
       "--repo-dir <dir:string>",
@@ -99,16 +104,22 @@ export const workflowValidateCommand = withRemoteOptions(
   await modelRegistry.ensureLoaded();
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createWorkflowValidateDeps(
-    repoContext.workflowRepo,
-    repoContext.definitionRepo,
-    workflowsDirFor(repoDir),
-    () =>
-      VaultService.fromRepository(repoDir, {
-        vaultsDir,
-        defaultVaultName: marker?.defaultVault,
-      }),
-  );
+  const deps = {
+    ...createWorkflowValidateDeps(
+      repoContext.workflowRepo,
+      repoContext.definitionRepo,
+      workflowsDirFor(repoDir),
+      () =>
+        VaultService.fromRepository(repoDir, {
+          vaultsDir,
+          defaultVaultName: marker?.defaultVault,
+        }),
+    ),
+    ...pulledExtensionWorkflowScope(
+      repoContext,
+      resolvePulledExtensionsRoot(repoDir),
+    ),
+  };
 
   const renderer = createWorkflowValidateRenderer(cliCtx.outputMode);
   await consumeStream(

@@ -1249,6 +1249,11 @@ drops a workflow silently.
 Consumers never depend on these file names: pull discovers workflows by the
 `name` field inside each YAML.
 
+A consumer's bare `swamp workflow validate` checks only the repo's own
+workflows. A pulled workflow names behavior instances from the author's repo,
+which can collide with the consumer's, so validate skips and counts it
+(`pulledWorkflowsSkipped`) and checks it only when named.
+
 ### Additional Files
 
 `additionalFiles` go under `files/`, keeping their relative paths. A manifest

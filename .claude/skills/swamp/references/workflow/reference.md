@@ -302,8 +302,14 @@ inputs match required method/workflow arguments.
 
 ```bash
 swamp workflow validate my-workflow --json
-swamp workflow validate --json  # Validate all
+swamp workflow validate --json  # Validate the repo's own workflows
 ```
+
+Without a name, validate checks the repo's own workflows: `workflows/`,
+`extensions/workflows/` and local extension sources. Workflows bundled in pulled
+extensions are skipped, since their behavior names are the extension author's
+placeholders, and counted in `pulledWorkflowsSkipped` (log mode prints a
+`Skipped:` line). Name a pulled workflow to validate it.
 
 **Output shape (single):**
 

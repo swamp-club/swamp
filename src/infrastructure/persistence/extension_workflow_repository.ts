@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { parse as parseYaml } from "@std/yaml";
 import { isIoError } from "./io_errors.ts";
@@ -71,6 +71,12 @@ export async function* extensionWorkflowFiles(
       yield path;
     }
   }
+}
+
+function isWithin(rootDir: string, dir: string): boolean {
+  const rel = relative(rootDir, dir);
+  return rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${SEPARATOR}`) && !isAbsolute(rel));
 }
 
 /**
@@ -254,11 +260,29 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
   }
 
   async findAll(): Promise<Workflow[]> {
+    return await this.collect(this.workflowsDirs);
+  }
+
+  /** The workflows in dirs that are not `rootDir` or inside it. */
+  async findAllOutside(rootDir: string): Promise<Workflow[]> {
+    return await this.collect(
+      this.workflowsDirs.filter((dir) => !isWithin(rootDir, dir)),
+    );
+  }
+
+  /** The workflows in dirs that are `rootDir` or inside it. */
+  async findAllUnder(rootDir: string): Promise<Workflow[]> {
+    return await this.collect(
+      this.workflowsDirs.filter((dir) => isWithin(rootDir, dir)),
+    );
+  }
+
+  private async collect(dirs: readonly string[]): Promise<Workflow[]> {
     currentDiagnosticTally().add("extension_workflow_walks");
     const workflows: Workflow[] = [];
     const seenNames = new Set<string>();
 
-    for (const dir of this.workflowsDirs) {
+    for (const dir of dirs) {
       try {
         for await (const path of extensionWorkflowFiles(dir)) {
           try {

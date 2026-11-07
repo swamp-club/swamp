@@ -37,6 +37,7 @@ import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { ExtensionWorkflowRepository } from "../../infrastructure/persistence/extension_workflow_repository.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { DefaultModelValidationService } from "../../domain/models/validation_service.ts";
@@ -87,6 +88,8 @@ export interface WorkflowValidateAllData {
   totalPassed: number;
   totalFailed: number;
   totalWarnings: number;
+  /** Workflows bundled in pulled extensions that this run did not check. */
+  pulledWorkflowsSkipped: number;
   passed: boolean;
 }
 
@@ -128,6 +131,11 @@ export interface WorkflowValidateDeps {
   findWorkflowById: (id: string) => Promise<Workflow | null>;
   findWorkflowByName: (name: string) => Promise<Workflow | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
+  /**
+   * workflows bundled in pulled extensions, which a validate of every
+   * workflow counts as skipped instead of checking
+   */
+  findSkippedWorkflows?: () => Promise<Workflow[]>;
   validate: (workflow: Workflow) => Promise<WorkflowValidationResult[]>;
   /**
    * raw-scans workflow files that fail schema parsing, which the repository
@@ -333,6 +341,34 @@ export function createWorkflowValidateDeps(
   };
 }
 
+/**
+ * a validate of every workflow checks the repo's own workflows and skips
+ * pulled extensions' ones: their behavior names are the extension author's
+ */
+export function pulledExtensionWorkflowScope(
+  repos: {
+    yamlWorkflowRepo: Pick<WorkflowRepository, "findAll">;
+    extensionWorkflowRepo:
+      | Pick<ExtensionWorkflowRepository, "findAllOutside" | "findAllUnder">
+      | null;
+  },
+  pulledExtensionsRoot: string,
+): Pick<WorkflowValidateDeps, "findAllWorkflows" | "findSkippedWorkflows"> {
+  const extension = repos.extensionWorkflowRepo;
+  return {
+    findAllWorkflows: async () => {
+      const own = await repos.yamlWorkflowRepo.findAll();
+      if (!extension) return own;
+      const ownNames = new Set(own.map((w) => w.name));
+      const authored = (await extension.findAllOutside(pulledExtensionsRoot))
+        .filter((w) => !ownNames.has(w.name));
+      return [...own, ...authored];
+    },
+    findSkippedWorkflows: async () =>
+      extension ? await extension.findAllUnder(pulledExtensionsRoot) : [],
+  };
+}
+
 function toBrokenValidateData(broken: BrokenWorkflow): WorkflowValidateData {
   return {
     workflowId: broken.id ?? "",
@@ -383,6 +419,15 @@ async function* validateAll(
       broken,
     ) => include({ name: broken.name ?? broken.file, tags: {} }));
 
+  // a name a checked workflow holds resolves to it, so it is not skipped
+  const checkedNames = new Set(allWorkflows.map((w) => w.name));
+  const pulledWorkflowsSkipped = deps.findSkippedWorkflows
+    ? (await deps.findSkippedWorkflows()).filter((w) =>
+      !checkedNames.has(w.name) &&
+      include({ name: w.name, tags: w.tags ?? {} })
+    ).length
+    : 0;
+
   if (allWorkflows.length === 0 && brokenWorkflows.length === 0) {
     yield {
       kind: "completed",
@@ -391,6 +436,7 @@ async function* validateAll(
         totalPassed: 0,
         totalFailed: 0,
         totalWarnings: 0,
+        pulledWorkflowsSkipped,
         passed: true,
       },
     };
@@ -427,6 +473,7 @@ async function* validateAll(
       totalPassed,
       totalFailed,
       totalWarnings,
+      pulledWorkflowsSkipped,
       passed: totalFailed === 0,
     },
   };

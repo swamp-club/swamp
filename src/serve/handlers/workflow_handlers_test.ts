@@ -41,6 +41,7 @@ import {
   handleWorkflowSearch,
   handleWorkflowTriggerGet,
   handleWorkflowTriggerSet,
+  handleWorkflowValidate,
   WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
 import "../../domain/models/models.ts";
@@ -2942,5 +2943,78 @@ Deno.test("handleWorkflowTriggerGet: effective catch-up is null when neither set
 
     assertEquals(frame.payload.data.builtIn.catchUp, null);
     assertEquals(frame.payload.data.effective.catchUp, null);
+  });
+});
+
+Deno.test("handleWorkflowValidate: without a workflow, skips pulled extension workflows and counts only those the caller may read", async () => {
+  await withHistoryRepo(async (dir) => {
+    const ownDir = join(dir, "workflows");
+    const extensionsDir = join(dir, "extensions", "workflows");
+    const pulledDir = join(
+      dir,
+      ".swamp",
+      "pulled-extensions",
+      "@someone",
+      "ext",
+      "workflows",
+    );
+    const [own] = await writeExtensionWorkflows(
+      join(dir, "scratch"),
+      ["own-wf"],
+    );
+    await writeExtensionWorkflows(extensionsDir, ["authored-ext-wf"]);
+    await writeExtensionWorkflows(pulledDir, [
+      "readable-pulled",
+      "hidden-pulled",
+    ]);
+    const yamlWorkflowRepo = new YamlWorkflowRepository(dir, undefined, ownDir);
+    await yamlWorkflowRepo.save(own);
+    const extensionWorkflowRepo = new ExtensionWorkflowRepository(
+      extensionsDir,
+      [pulledDir],
+    );
+    const snapshot = new PolicySnapshot([
+      readGrant("own", "own-wf"),
+      readGrant("authored", "authored-ext-wf"),
+      readGrant("pulled", "readable-pulled"),
+    ], []);
+    const ctx = {
+      repoDir: dir,
+      authConfig: { ...searchAuthBase, mode: "token" },
+      policySnapshotLoader: {
+        snapshot,
+        decisionService: new GrantBasedAccessDecisionService(snapshot),
+      } as unknown as PolicySnapshotLoader,
+      repoContext: {
+        definitionRepo: new YamlDefinitionRepository(dir),
+        yamlWorkflowRepo,
+        extensionWorkflowRepo,
+        workflowRepo: new CompositeWorkflowRepository(
+          yamlWorkflowRepo,
+          extensionWorkflowRepo,
+        ),
+      },
+    } as unknown as ConnectionContext;
+
+    const { socket, frames } = makeSearchSocket();
+    await handleWorkflowValidate(
+      socket,
+      ctx,
+      "req-validate",
+      undefined,
+      new AbortController(),
+      searchPrincipal,
+    );
+
+    assertEquals(frames.length, 1);
+    const data = frames[0].payload?.data as unknown as {
+      workflows: Array<{ workflowName: string }>;
+      pulledWorkflowsSkipped: number;
+    };
+    assertEquals(
+      data.workflows.map((w) => w.workflowName),
+      ["own-wf", "authored-ext-wf"],
+    );
+    assertEquals(data.pulledWorkflowsSkipped, 1);
   });
 });

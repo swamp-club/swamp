@@ -38,7 +38,9 @@ import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_erro
 import {
   createWorkflowValidateDeps,
   isWorkflowValidateAllData,
+  pulledExtensionWorkflowScope,
   workflowValidate,
+  type WorkflowValidateAllData,
   type WorkflowValidateData,
   type WorkflowValidateDeps,
   type WorkflowValidateEvent,
@@ -1234,4 +1236,140 @@ Deno.test("createWorkflowValidateDeps: a fan-out job with a target fails Schema 
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+async function validateAllData(
+  deps: WorkflowValidateDeps,
+  include?: (
+    workflow: { name: string; tags: Record<string, string> },
+  ) => boolean,
+): Promise<WorkflowValidateAllData> {
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, { include }),
+  );
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  if (!isWorkflowValidateAllData(completed.data)) {
+    throw new Error("expected all data");
+  }
+  return completed.data;
+}
+
+Deno.test("workflowValidate all: counts the skipped workflows a checked workflow does not shadow by name", async () => {
+  const data = await validateAllData(makeDeps({
+    findAllWorkflows: () => Promise.resolve([makeWorkflow("own")]),
+    findSkippedWorkflows: () =>
+      Promise.resolve([makeWorkflow("pulled"), makeWorkflow("own")]),
+  }));
+
+  assertEquals(data.workflows.map((w) => w.workflowName), ["own"]);
+  assertEquals(data.pulledWorkflowsSkipped, 1);
+  assertEquals(data.passed, true);
+});
+
+Deno.test("workflowValidate all: the skipped count is filtered by include", async () => {
+  const data = await validateAllData(
+    makeDeps({
+      findAllWorkflows: () => Promise.resolve([makeWorkflow("own")]),
+      findSkippedWorkflows: () =>
+        Promise.resolve([
+          Workflow.create({ name: "readable", tags: { env: "dev" } }),
+          Workflow.create({ name: "hidden", tags: { env: "prod" } }),
+        ]),
+    }),
+    (workflow) => workflow.name === "own" || workflow.tags.env === "dev",
+  );
+
+  assertEquals(data.pulledWorkflowsSkipped, 1);
+});
+
+Deno.test("workflowValidate all: an empty repository still reports the skipped count, and zero without the port", async () => {
+  const empty = await validateAllData(makeDeps({
+    findAllWorkflows: () => Promise.resolve([]),
+    findSkippedWorkflows: () => Promise.resolve([makeWorkflow("pulled")]),
+  }));
+  assertEquals(empty.workflows, []);
+  assertEquals(empty.pulledWorkflowsSkipped, 1);
+
+  const withoutPort = await validateAllData(makeDeps());
+  assertEquals(withoutPort.pulledWorkflowsSkipped, 0);
+});
+
+Deno.test("workflowValidate single: a named workflow is validated without consulting the skipped workflows", async () => {
+  const pulled = makeWorkflow("pulled");
+  let skippedRead = false;
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(
+      createLibSwampContext(),
+      makeDeps({
+        findWorkflowByName: (name) =>
+          Promise.resolve(name === "pulled" ? pulled : null),
+        findAllWorkflows: () => Promise.resolve([]),
+        findSkippedWorkflows: () => {
+          skippedRead = true;
+          return Promise.resolve([pulled]);
+        },
+      }),
+      { workflowIdOrName: "pulled" },
+    ),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals((completed.data as WorkflowValidateData).workflowName, "pulled");
+  assertEquals(skippedRead, false);
+});
+
+Deno.test("pulledExtensionWorkflowScope: the repo's workflows win a name over extension workflows outside the pulled root", async () => {
+  const ownShared = makeWorkflow("shared");
+  const roots: string[] = [];
+  const scope = pulledExtensionWorkflowScope(
+    {
+      yamlWorkflowRepo: {
+        findAll: () => Promise.resolve([ownShared, makeWorkflow("own")]),
+      },
+      extensionWorkflowRepo: {
+        findAllOutside: (root) => {
+          roots.push(root);
+          return Promise.resolve([makeWorkflow("shared"), makeWorkflow("ext")]);
+        },
+        findAllUnder: (root) => {
+          roots.push(root);
+          return Promise.resolve([makeWorkflow("pulled")]);
+        },
+      },
+    },
+    "/repo/.swamp/pulled-extensions",
+  );
+
+  const checked = await scope.findAllWorkflows();
+  assertEquals(checked.map((w) => w.name), ["shared", "own", "ext"]);
+  assertEquals(checked[0], ownShared);
+  assertEquals(
+    (await scope.findSkippedWorkflows!()).map((w) => w.name),
+    ["pulled"],
+  );
+  assertEquals(roots, [
+    "/repo/.swamp/pulled-extensions",
+    "/repo/.swamp/pulled-extensions",
+  ]);
+});
+
+Deno.test("pulledExtensionWorkflowScope: without an extension repository only the repo's workflows are checked and none skipped", async () => {
+  const scope = pulledExtensionWorkflowScope(
+    {
+      yamlWorkflowRepo: {
+        findAll: () => Promise.resolve([makeWorkflow("own")]),
+      },
+      extensionWorkflowRepo: null,
+    },
+    "/repo/.swamp/pulled-extensions",
+  );
+
+  assertEquals((await scope.findAllWorkflows()).map((w) => w.name), ["own"]);
+  assertEquals(await scope.findSkippedWorkflows!(), []);
 });
