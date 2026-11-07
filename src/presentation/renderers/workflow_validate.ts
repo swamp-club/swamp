@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, green, red, yellow } from "@std/fmt/colors";
+import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import {
   isWorkflowValidateAllData,
@@ -72,6 +72,16 @@ function formatSummary(
     parts.push(`${failedCount} failed`);
   }
   return parts.join(", ");
+}
+
+function formatSkipped(data: WorkflowValidateAllData): string | undefined {
+  // older servers omit the count
+  const skipped = data.pulledWorkflowsSkipped ?? 0;
+  if (skipped === 0) return undefined;
+  const noun = skipped === 1 ? "workflow" : "workflows";
+  return `${bold(cyan("Skipped:"))} ${skipped} ${noun} from pulled extensions ${
+    dim("(validate one by name: swamp workflow validate <name>)")
+  }`;
 }
 
 function formatResult(passed: boolean, label: string): string {
@@ -129,12 +139,14 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
     this._passed = data.passed;
 
     if (data.workflows.length === 0) {
-      writeOutput(`${bold(cyan("No workflows to validate"))}`);
+      const skipped = formatSkipped(data);
+      const empty = `${bold(cyan("No workflows to validate"))}`;
+      writeOutput(skipped === undefined ? empty : `${empty}\n${skipped}`);
       return;
     }
 
     const lines: string[] = [];
-    lines.push(bold(cyan("Validating all workflows...")));
+    lines.push(bold(cyan("Validating workflows...")));
 
     for (const workflow of data.workflows) {
       lines.push("");
@@ -151,6 +163,8 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
       parts.push(`${data.totalWarnings} warning(s)`);
     }
     lines.push(`${bold(cyan("Summary:"))} ${parts.join(", ")}`);
+    const skipped = formatSkipped(data);
+    if (skipped !== undefined) lines.push(skipped);
     lines.push(formatResult(data.passed, "Overall"));
     writeOutput(lines.join("\n"));
   }

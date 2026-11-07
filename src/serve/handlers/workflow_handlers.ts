@@ -73,6 +73,7 @@ import {
 } from "../../libswamp/workflows/reject.ts";
 import {
   createWorkflowValidateDeps,
+  pulledExtensionWorkflowScope,
   workflowValidate,
 } from "../../libswamp/workflows/validate.ts";
 import {
@@ -206,7 +207,10 @@ import {
   withSpan,
 } from "../../infrastructure/tracing/mod.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
-import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  resolvePulledExtensionsRoot,
+  SWAMP_SUBDIRS,
+} from "../../infrastructure/persistence/paths.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
@@ -3426,11 +3430,17 @@ export async function handleWorkflowValidate(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = createWorkflowValidateDeps(
-      ctx.repoContext.workflowRepo,
-      ctx.repoContext.definitionRepo,
-      workflowsDirFor(ctx.repoDir),
-    );
+    const deps = {
+      ...createWorkflowValidateDeps(
+        ctx.repoContext.workflowRepo,
+        ctx.repoContext.definitionRepo,
+        workflowsDirFor(ctx.repoDir),
+      ),
+      ...pulledExtensionWorkflowScope(
+        ctx.repoContext,
+        resolvePulledExtensionsRoot(ctx.repoDir),
+      ),
+    };
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

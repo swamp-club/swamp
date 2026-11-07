@@ -885,6 +885,7 @@ export {
 export {
   createWorkflowValidateDeps,
   isWorkflowValidateAllData,
+  pulledExtensionWorkflowScope,
   type ValidationItemData as WorkflowValidationItemData,
   workflowValidate,
   type WorkflowValidateAllData,

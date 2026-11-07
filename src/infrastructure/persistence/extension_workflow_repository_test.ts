@@ -1176,3 +1176,102 @@ Deno.test("ExtensionWorkflowRepository: counts each scan and full read in the cu
     );
   });
 });
+
+async function writeWorkflowIn(dir: string, name: string): Promise<void> {
+  await ensureDir(dir);
+  await Deno.writeTextFile(
+    join(dir, `${name}.yaml`),
+    stringifyYaml(createWorkflowYaml(name)),
+  );
+}
+
+Deno.test("ExtensionWorkflowRepository findAllOutside: keeps the base and source dirs and drops dirs under the root", async () => {
+  await withTempDir(async (dir) => {
+    const base = join(dir, "extensions", "workflows");
+    const source = join(dir, "my-ext", "workflows");
+    const pulledRoot = join(dir, ".swamp", "pulled-extensions");
+    const pulled = join(pulledRoot, "@keeb", "docker", "workflows");
+    await writeWorkflowIn(base, "base-wf");
+    await writeWorkflowIn(source, "source-wf");
+    await writeWorkflowIn(pulled, "pulled-wf");
+
+    const repo = new ExtensionWorkflowRepository(base, [source, pulled]);
+
+    assertEquals(
+      (await repo.findAllOutside(pulledRoot)).map((w) => w.name),
+      ["base-wf", "source-wf"],
+    );
+    assertEquals(
+      (await repo.findAllUnder(pulledRoot)).map((w) => w.name),
+      ["pulled-wf"],
+    );
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository findAllOutside: a sibling whose name starts with the root's is outside it", async () => {
+  await withTempDir(async (dir) => {
+    const pulledRoot = join(dir, "pulled");
+    const sibling = join(dir, "pulled-extra", "workflows");
+    const dotted = join(pulledRoot, "..x", "workflows");
+    await writeWorkflowIn(sibling, "sibling-wf");
+    await writeWorkflowIn(dotted, "dotted-wf");
+
+    const repo = new ExtensionWorkflowRepository(sibling, [dotted]);
+
+    assertEquals(
+      (await repo.findAllOutside(pulledRoot)).map((w) => w.name),
+      ["sibling-wf"],
+    );
+    assertEquals(
+      (await repo.findAllUnder(pulledRoot)).map((w) => w.name),
+      ["dotted-wf"],
+    );
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository findAllUnder: reads the dirs updateAdditionalDirs set", async () => {
+  await withTempDir(async (dir) => {
+    const base = join(dir, "extensions", "workflows");
+    const pulledRoot = join(dir, ".swamp", "pulled-extensions");
+    const pulled = join(pulledRoot, "ext", "workflows");
+    await ensureDir(base);
+    await writeWorkflowIn(pulled, "late-wf");
+
+    const repo = new ExtensionWorkflowRepository(base);
+    assertEquals(await repo.findAllUnder(pulledRoot), []);
+
+    repo.updateAdditionalDirs([pulled]);
+    assertEquals(
+      (await repo.findAllUnder(pulledRoot)).map((w) => w.name),
+      ["late-wf"],
+    );
+  });
+});
+
+Deno.test("ExtensionWorkflowRepository findAllOutside: the first dir wins a name, as in findAll", async () => {
+  await withTempDir(async (dir) => {
+    const base = join(dir, "extensions", "workflows");
+    const source = join(dir, "src-ext", "workflows");
+    const pulledRoot = join(dir, ".swamp", "pulled-extensions");
+    await ensureDir(base);
+    await ensureDir(source);
+    await Deno.writeTextFile(
+      join(base, "shared.yaml"),
+      stringifyYaml(
+        createWorkflowYaml("shared", "11111111-1111-4111-8111-111111111111"),
+      ),
+    );
+    await Deno.writeTextFile(
+      join(source, "shared.yaml"),
+      stringifyYaml(
+        createWorkflowYaml("shared", "22222222-2222-4222-8222-222222222222"),
+      ),
+    );
+
+    const repo = new ExtensionWorkflowRepository(base, [source]);
+    const outside = await repo.findAllOutside(pulledRoot);
+
+    assertEquals(outside.length, 1);
+    assertEquals(outside[0].id, "11111111-1111-4111-8111-111111111111");
+  });
+});
