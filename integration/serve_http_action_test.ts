@@ -36,6 +36,7 @@ import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { handleMessage, MAX_ACTIVE_REQUESTS } from "../src/serve/connection.ts";
 import { handleHttpActionRequest } from "../src/serve/http_action_route.ts";
 import { SERVE_ACTION_PATH } from "../src/serve/protocol.ts";
+import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
 import {
   DASHBOARD_SESSION_COOKIE,
   type ServerTokenAuthResult,
@@ -244,7 +245,11 @@ function test(name: string, fn: () => Promise<void>): void {
     name: `serve HTTP action route: ${name}`,
     sanitizeOps: false,
     sanitizeResources: false,
-    fn,
+    fn: async () => {
+      // the limiter is module state, so a repeat would inherit the spent allowance
+      resetRateLimitState();
+      await fn();
+    },
   });
 }
 

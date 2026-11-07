@@ -133,6 +133,10 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 
 const EDIT_TEST_TYPE = ModelType.create("command/shell");
 
+// a file's timestamp can run ahead of Date.now() (Windows), and the index would
+// rightly re-read a file it cannot yet trust
+const aheadOfFileTimes = () => Date.now() + 60_000;
+
 function createEditCtx(
   repoDir: string,
   definitionRepo: YamlDefinitionRepository,
@@ -1068,6 +1072,7 @@ Deno.test("handleModelOutputSearch and handleModelMethodHistorySearch: with a de
     // Settled at once, so a request's check of the index relists nothing.
     const definitionIndex = new DefinitionIdIndex(definitionRepo, {
       racyWindowMs: 0,
+      now: aheadOfFileTimes,
     });
     await definitionIndex.begin();
 
@@ -1247,6 +1252,7 @@ async function withHeldDefinitionReads(
     // Settled at once, so a request's check of the index relists nothing.
     const definitionIndex = new DefinitionIdIndex(definitionRepo, {
       racyWindowMs: 0,
+      now: aheadOfFileTimes,
     });
     await definitionIndex.begin();
     // a file whose stat has not moved is answered without a read, so moving
@@ -1329,6 +1335,7 @@ Deno.test("handleModelOutputSearch: with a definition index, a repeat request re
     // Settled at once, so only a stat that moved has a request read a file.
     const definitionIndex = new DefinitionIdIndex(definitionRepo, {
       racyWindowMs: 0,
+      now: aheadOfFileTimes,
     });
     await definitionIndex.begin();
     const ctx: ConnectionContext = {
