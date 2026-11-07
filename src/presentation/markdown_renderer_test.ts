@@ -308,3 +308,48 @@ Deno.test("renderUntrustedMarkdownToTerminal: wraps to the given width", () => {
     assert(line.length <= 30, line);
   }
 });
+
+const ENTITY_TABLE = "| '*' accts | a & b | <x> \"q\" | `'c'` | &amp;lt; |\n" +
+  "| --- | --- | --- | --- | --- |\n" +
+  "| '*' accts | a & b | <x> \"q\" | `'c'` | &amp;lt; |\n";
+
+const TABLE_RENDERERS: Array<[string, (md: string) => string]> = [
+  ["renderMarkdownToTerminal", (md) => renderMarkdownToTerminal(md)],
+  [
+    "renderMarkdownToTerminal with maxWidth",
+    (md) => renderMarkdownToTerminal(md, { maxWidth: 120 }),
+  ],
+  [
+    "renderUntrustedMarkdownToTerminal",
+    (md) => renderUntrustedMarkdownToTerminal(md),
+  ],
+];
+
+function tableRowCells(rendered: string): string[][] {
+  return stripAnsiCode(rendered)
+    .split("\n")
+    .filter((line) => line.startsWith("│"))
+    .map((line) => line.split("│").slice(1, -1).map((cell) => cell.trim()));
+}
+
+for (const [name, render] of TABLE_RENDERERS) {
+  Deno.test(`${name}: a table header cell prints quotes, ampersands and angle brackets as written`, () => {
+    const [header] = tableRowCells(render(ENTITY_TABLE));
+    assertEquals(header.slice(0, 3), ["'*' accts", "a & b", '<x> "q"']);
+    assert(!/&(#39|amp|quot|lt|gt);/.test(header.join(" ")), header.join());
+  });
+
+  Deno.test(`${name}: a table header cell prints the same text as the same body cell`, () => {
+    const [header, body] = tableRowCells(render(ENTITY_TABLE));
+    assertEquals(header, body);
+  });
+}
+
+Deno.test("renderMarkdownToTerminal: body cells and prose keep printing literal characters", () => {
+  const result = stripAnsiCode(
+    renderMarkdownToTerminal(`it's a & b\n\n${ENTITY_TABLE}`),
+  );
+  assertStringIncludes(result, "it's a & b");
+  const [, body] = tableRowCells(result);
+  assertEquals(body, ["'*' accts", "a & b", '<x> "q"', "'c'", "<"]);
+});
