@@ -686,7 +686,6 @@ Deno.test("StepRun gate timeout: it is the timeout of the latest wait, survives 
   );
 });
 
-// lanes: authored steps x workers, recorded as plain job steps
 const LANE_STEPS = ["apply", "verify"];
 const LANE_WORKERS = ["w-a", "w-b", "w-c"];
 const LANE_NAMES = LANE_WORKERS.flatMap((worker) =>
@@ -745,7 +744,6 @@ Deno.test("WorkflowRun (property): lane step starts in the journal land on their
   fc.assert(
     fc.property(fc.array(laneOp, { maxLength: 30 }), (ops) => {
       const live = laneRun();
-      // the plan is checkpointed before any lane starts
       let committed = live.toData();
       const starts: StepStart[] = [];
       let clock = Date.parse("2026-11-07T00:00:01.000Z");

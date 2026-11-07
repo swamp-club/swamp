@@ -328,7 +328,6 @@ export class SummaryService {
   }
 }
 
-// a lane step names its authored step's behavior, on that lane's worker
 function laneModelName(
   stepModels: ReadonlyMap<string, string>,
   stepName: string,

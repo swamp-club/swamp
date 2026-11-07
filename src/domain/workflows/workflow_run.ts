@@ -188,8 +188,8 @@ const FanOutMemberRecordSchema = z.object({
   batch: z.number().int().nonnegative().optional(),
 });
 
-// lane steps live in the job's steps, where every run-record check sees them;
-// the array stays for the release that shipped it, which requires the key
+// always empty: lane steps live in the job's steps, where every run-record
+// check sees them; kept because older readers require the key
 const FanOutLaneRecordSchema = z.object({
   name: z.string().min(1),
   worker: z.string().min(1),

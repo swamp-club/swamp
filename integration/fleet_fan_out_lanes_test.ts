@@ -43,6 +43,7 @@ interface LaneStepSpec {
   expr?: string;
   guard?: string;
   allowFailure?: boolean;
+  behavior?: string;
 }
 
 function laneJob(fleet: Fleet, steps: LaneStepSpec[], job: object = {}) {
@@ -68,7 +69,7 @@ function laneJob(fleet: Fleet, steps: LaneStepSpec[], job: object = {}) {
         : {
           type: "model_method",
           modelType: fleet.modelType.normalized,
-          modelName: "host-patch",
+          modelName: step.behavior ?? "host-patch",
           methodName: "run",
         },
     })),
@@ -493,9 +494,14 @@ Deno.test({
     assert(stored.status !== "running" && stored.status !== "succeeded");
     assertEquals(fleet.dispatchCounts(), { "w-a": 1, "w-b": 0 });
     const job = stored.getJob("patch")!;
+    assert(job.status !== "running", job.status);
+    // the lane still queued at the cancel is settled, never left pending
     for (const name of ["verify[w-a]", "apply[w-b]", "verify[w-b]"]) {
-      assert(job.getStep(name)?.status !== "running", name);
-      assert(job.getStep(name)?.status !== "succeeded", name);
+      const status = job.getStep(name)?.status;
+      assert(
+        status !== "running" && status !== "succeeded" && status !== "pending",
+        `${name} ${status}`,
+      );
     }
   },
 });
@@ -599,5 +605,85 @@ Deno.test({
       "host-patch-w-a.yaml",
       "host-patch-w-b.yaml",
     ]);
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: after a cancel a started lane still runs its cleanup step, as a plain job does, and a lane not yet started sends nothing",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    const a = await fleet.addWorker("w-a", { labels: WEB });
+    await fleet.addWorker("w-b", { labels: WEB });
+    await fleet.saveWorkflow({
+      name: "patch-cleanup",
+      inputs: {},
+      jobs: [laneJob(fleet, [
+        { name: "apply" },
+        { name: "release", after: "apply", allowFailure: true },
+      ], { concurrency: 1 })],
+    });
+    a.behavior = { kind: "hold" };
+    const controller = new AbortController();
+
+    const running = fleet.runWorkflow("patch-cleanup", {
+      signal: controller.signal,
+    }).catch(() => undefined);
+    await waitFor(() => a.heldCount === 1, "lane w-a's apply in flight");
+    a.behavior = { kind: "succeed" };
+    controller.abort();
+    a.release(true);
+    await running;
+
+    assertEquals(a.received.map((r) => r.stepName), [
+      "apply[w-a]",
+      "release[w-a]",
+    ]);
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 0 });
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: SWAMP_MAX_CONCURRENT_STEPS is one ceiling across lanes whose levels hold several steps",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    const workers = await Promise.all(
+      ["w-a", "w-b"].map((name) =>
+        fleet.addWorker(name, { labels: WEB, capacity: 2 })
+      ),
+    );
+    await fleet.saveWorkflow({
+      name: "patch-wide",
+      inputs: {},
+      jobs: [laneJob(fleet, [
+        { name: "left", behavior: "host-left" },
+        { name: "right", behavior: "host-right" },
+      ], {
+        concurrency: 2,
+      })],
+    });
+    for (const worker of workers) worker.behavior = { kind: "hold" };
+
+    await withMockedEnv({ SWAMP_MAX_CONCURRENT_STEPS: "2" }, async () => {
+      let done = false;
+      const running = fleet.runWorkflow("patch-wide").finally(() => {
+        done = true;
+      });
+      const held = () => workers.reduce((n, w) => n + w.heldCount, 0);
+      await waitFor(() => held() === 2, "the ceiling's two steps in flight");
+      while (!done) {
+        await waitFor(
+          () => done || workers.some((w) => w.heldCount > 0),
+          "a step in flight or the run done",
+        );
+        for (const worker of workers) worker.release(true);
+      }
+      assertEquals((await running).status, "succeeded");
+    });
+    assertEquals(fleet.maxInFlight, 2);
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 2 });
   },
 });

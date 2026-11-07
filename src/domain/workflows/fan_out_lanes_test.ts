@@ -60,7 +60,7 @@ Deno.test("laneStepName: the step name followed by the worker in brackets", () =
   assertEquals(laneStepName("apply", "web-01"), "apply[web-01]");
 });
 
-Deno.test("perWorkerBehaviorName: suffixes the worker unless the name already references self.worker", () => {
+Deno.test("perWorkerBehaviorName: suffixes the worker unless the name is built from self.worker.name", () => {
   assertEquals(
     perWorkerBehaviorName("host-patch", "web-01"),
     "host-patch-web-01",
@@ -72,6 +72,14 @@ Deno.test("perWorkerBehaviorName: suffixes the worker unless the name already re
       "patch-${{ self.worker.name }}",
     ),
     "patch-web-01",
+  );
+  assertEquals(
+    perWorkerBehaviorName(
+      "patch-linux",
+      "web-01",
+      "patch-${{ self.worker.platform }}",
+    ),
+    "patch-linux-web-01",
   );
 });
 

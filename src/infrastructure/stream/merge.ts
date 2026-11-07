@@ -118,6 +118,30 @@ export async function* mergeWithConcurrency<T>(
   );
 }
 
+/** a limit shared by streams that run under different merges */
+export interface SharedGate {
+  run<T>(stream: AsyncIterable<T>, signal?: AbortSignal): AsyncIterable<T>;
+}
+
+// a stream aborted while waiting for a slot ends without starting
+export function sharedGate(limit: number): SharedGate {
+  const semaphore = new Semaphore(limit);
+  return {
+    async *run<T>(stream: AsyncIterable<T>, signal?: AbortSignal) {
+      try {
+        await semaphore.acquire(signal);
+      } catch {
+        return;
+      }
+      try {
+        yield* stream;
+      } finally {
+        semaphore.release();
+      }
+    },
+  };
+}
+
 export interface GatedStream<T> {
   stream: AsyncIterable<T>;
   // Acquired in this order before the stream starts and released when it ends.

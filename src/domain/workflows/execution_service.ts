@@ -381,8 +381,11 @@ import {
   StepOutputResolver,
 } from "./step_output_resolver.ts";
 import {
+  merge,
   mergeGated,
   mergeWithConcurrency,
+  type SharedGate,
+  sharedGate,
 } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
@@ -1736,7 +1739,7 @@ export class DefaultStepExecutor implements StepExecutor {
         affinityKey: ctx.affinityKey,
       };
     }
-    // a lane's step goes to its planned worker and nowhere else
+    // replaces any placement: a lane never moves off its planned worker
     if (ctx.lane) {
       resolvedPlacement = {
         target: ctx.lane.worker,
@@ -5660,7 +5663,11 @@ export class WorkflowExecutionService {
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const reader = getWorkerPoolReader();
-    if (reader === null) throw new UserError(FAN_OUT_NEEDS_SERVE);
+    if (reader === null) {
+      throw new UserError(
+        `Workflow '${workflow.name}' has fan-out job '${job.name}': ${FAN_OUT_NEEDS_SERVE}.`,
+      );
+    }
     const policy = job.fanOutPolicy!;
     const fields = mergePlacementFields(
       workflow.placementFields,
@@ -5727,6 +5734,11 @@ export class WorkflowExecutionService {
     const memberByName = new Map(
       plan.members.map((member) => [member.worker, member]),
     );
+    const globalLimit = readGlobalConcurrencyLimit();
+    // one host ceiling for every lane's steps, as one forEach level shares it
+    const hostSlots = globalLimit && globalLimit > 0
+      ? sharedGate(globalLimit)
+      : undefined;
     const laneStreams = lanes.map((worker) =>
       this.runFanOutLane(
         workflow,
@@ -5741,12 +5753,12 @@ export class WorkflowExecutionService {
         laneWorkerScope(poolByName.get(worker)!),
         expressionContext,
         options,
+        hostSlots,
       )
     );
-    // the host ceiling caps lanes in flight, as it caps a forEach's iterations
     const laneLimit = resolveEffectiveConcurrency(
       job.concurrency ?? workflow.concurrency,
-      readGlobalConcurrencyLimit(),
+      globalLimit,
     );
     for await (
       const event of mergeWithConcurrency(
@@ -5759,8 +5771,27 @@ export class WorkflowExecutionService {
       yield event;
     }
 
-    // steps the abort left running are failed, as runJobInSpan does
-    if (options.signal?.aborted) failAbandonedSteps(jobRun);
+    // steps the abort left running are failed, as runJobInSpan does; a lane
+    // still queued at the abort never started, so it is settled and sends nothing
+    if (options.signal?.aborted) {
+      failAbandonedSteps(jobRun);
+      const levels = this.sortService.sort(
+        job.steps.map((step) => ({
+          name: step.name,
+          weight: step.weight,
+          dependencies: step.getDependencyNames(),
+        })),
+      ).levels;
+      for (const worker of lanes) {
+        const stepOf = (authored: string) => laneStepName(authored, worker);
+        const view = jobRun.laneView(stepOf);
+        for (const name of levels.flat()) {
+          const stepRun = jobRun.getStep(stepOf(name));
+          if (stepRun?.status !== "pending") continue;
+          settleUnstartedStep(job.getStep(name), stepRun, jobRun, view);
+        }
+      }
+    }
     const laneRuns = lanes.map((worker) =>
       job.steps.map((step) => jobRun.getStep(laneStepName(step.name, worker))!)
     );
@@ -5805,6 +5836,7 @@ export class WorkflowExecutionService {
     scope: ReturnType<typeof laneWorkerScope>,
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
+    hostSlots: SharedGate | undefined,
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const laneOptions: StepOptions = { ...options, lane };
     // copies, not the run's maps: a lane's outputs end with the lane
@@ -5815,51 +5847,91 @@ export class WorkflowExecutionService {
     };
     const binding: ForEachBinding = { name: "worker", value: scope };
     const view = jobRun.laneView(lane.stepOf);
-    const sorted = this.sortService.sort(
+    const levels = this.sortService.sort(
       job.steps.map((step) => ({
         name: step.name,
         weight: step.weight,
         dependencies: step.getDependencyNames(),
       })),
-    );
-    const globalLimit = readGlobalConcurrencyLimit();
+    ).levels;
+    const pending = (authored: string) =>
+      jobRun.getStep(lane.stepOf(authored))?.status === "pending";
     const settle = (names: readonly string[]) => {
       for (const name of names) {
-        const stepRun = jobRun.getStep(lane.stepOf(name));
-        if (stepRun?.status !== "pending") continue;
-        settleUnstartedStep(job.getStep(name), stepRun, jobRun, view);
+        if (!pending(name)) continue;
+        settleUnstartedStep(
+          job.getStep(name),
+          jobRun.getStep(lane.stepOf(name))!,
+          jobRun,
+          view,
+        );
       }
     };
-    const levels = sorted.levels;
-    for (const [index, level] of levels.entries()) {
+    const stepStream = (authored: string, stepOptions: StepOptions) => {
+      const stream = this.runStep(
+        workflow,
+        run,
+        job,
+        jobRun,
+        lane.stepOf(authored),
+        job.getStep(authored),
+        binding,
+        laneContext,
+        stepOptions,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+      return hostSlots === undefined
+        ? stream
+        : hostSlots.run(stream, stepOptions.signal);
+    };
+
+    let cleanupOptions: StepOptions | undefined;
+    for (const level of levels) {
       if (options.signal?.aborted) {
-        for (const later of levels.slice(index)) settle(later);
-        return;
+        // as a plain job: after the abort only cleanup steps run, under the
+        // cleanup grace signal; the rest are settled
+        const runnable = level.filter((name) =>
+          pending(name) && runsAfterFailure(job.getStep(name)!, job, view)
+        );
+        settle(level.filter((name) => !runnable.includes(name)));
+        if (runnable.length === 0) continue;
+        cleanupOptions ??= {
+          ...laneOptions,
+          signal: cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS),
+          cleanupStepLevel: true,
+        };
+        for await (
+          const event of merge(
+            runnable.map((name) => stepStream(name, cleanupOptions!)),
+            cleanupOptions.signal,
+          )
+        ) {
+          yield event;
+        }
+        settle(runnable);
+        continue;
       }
-      const limits = new Map<string, number>();
-      if (globalLimit) limits.set(HOST_GATE, globalLimit);
-      const streams = level.map((authored) => ({
-        stream: this.runStep(
-          workflow,
-          run,
-          job,
-          jobRun,
-          lane.stepOf(authored),
-          job.getStep(authored),
-          binding,
-          laneContext,
-          laneOptions,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-        ),
-        gates: [LEVEL_GATE, HOST_GATE],
-      }));
-      for await (const event of mergeGated(streams, limits, options.signal)) {
+      for await (
+        const event of merge(
+          level.map((name) => stepStream(name, laneOptions)),
+          options.signal,
+        )
+      ) {
         yield event;
       }
-      if (options.signal?.aborted) settle(level);
+      if (options.signal?.aborted) {
+        // only this lane's: other lanes' steps may still be finishing
+        for (const name of level) {
+          const stepRun = jobRun.getStep(lane.stepOf(name));
+          if (stepRun?.status === "running") {
+            stepRun.failStoppedByAbort(CANCELLED_STEP_ERROR);
+          }
+        }
+        settle(level);
+      }
     }
   }
 

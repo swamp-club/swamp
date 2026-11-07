@@ -3217,7 +3217,9 @@ collide (step and worker names may both hold brackets).
   live count, and nothing is dispatched.
 - Each lane walks the job's step DAG on its own, level by level; a lane never
   waits on another lane's level. `job.concurrency`, then `workflow.concurrency`,
-  capped by `SWAMP_MAX_CONCURRENT_STEPS`, limits the lanes in flight.
+  capped by `SWAMP_MAX_CONCURRENT_STEPS`, limits the lanes in flight, and
+  `SWAMP_MAX_CONCURRENT_STEPS` is also one ceiling on the steps in flight
+  across all lanes.
 - A lane's `dependsOn` conditions, guards and cleanup rules read only that
   lane's steps (`JobRun.laneView`). `self.worker` (`name`, `labels`,
   `platform`, `arch`) is in scope for every step's guard, inputs and global
@@ -3225,13 +3227,18 @@ collide (step and worker names may both hold brackets).
   job cannot read a fan-out job's step outputs through `steps.<name>`, since
   there is no single value across lanes; it reads lane results through data.
 - Every behavior step dispatches to the lane's worker. `behaviorName` gets a
-  `-<worker>` suffix unless it already references `self.worker`, so locks and
-  data are per host. Assert steps evaluate on the orchestrator against what
+  `-<worker>` suffix unless its authored text is built from
+  `self.worker.name`, the one field unique per lane, so locks and data are per
+  host. A name built from `self.worker.platform` or a label still gets the
+  suffix. Assert steps evaluate on the orchestrator against what
   the lane's host steps wrote.
 - A lane fails when one of its steps fails without `allowFailure`. The job
   succeeds only if every lane does and no member failed at plan time; skipped
-  and excluded members do not fail it. Cancelling a run stops new lanes and
-  steps and settles the rest, as for a plain job.
+  and excluded members do not fail it. Cancelling a run starts no new lane. A
+  lane not yet started is settled and sends nothing. A started lane settles as
+  a plain job does: its running step fails as stopped by the abort, its
+  cleanup steps (those `runsAfterFailure` allows) still run under the cleanup
+  grace signal, and the rest are settled.
 - A nested workflow holding a fan-out job runs its lanes like a top-level run,
   since the pool reader is module-level and reaches the child's execution
   service. A `workflow` step inside a fan-out job stays refused.

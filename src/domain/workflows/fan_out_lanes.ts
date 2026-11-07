@@ -86,15 +86,15 @@ export function laneStepOf(
 }
 
 /**
- * a name whose authored text already varies per worker is left as resolved;
- * the check reads the authored text, since by now the expression is resolved
+ * only the worker's name is unique per lane, so only a name built from it is
+ * left as resolved; the authored text decides, since the value is resolved
  */
 export function perWorkerBehaviorName(
   name: string,
   worker: string,
   authoredName: string = name,
 ): string {
-  return authoredName.includes("self.worker") ? name : `${name}-${worker}`;
+  return authoredName.includes("self.worker.name") ? name : `${name}-${worker}`;
 }
 
 export function laneWorkerScope(worker: PoolWorker): LaneWorkerScope {
