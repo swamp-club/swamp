@@ -57,8 +57,8 @@ jobs:
             if [ -f test.log ] && grep -Eq '^ *FAILURES *$' test.log; then
               awk '/^ *FAILURES *$/{f=1} f' test.log
             elif [ -f test.log ]; then
-              # No FAILURES block: the run died early (OOM, timeout, type
-              # check), so show where it stopped.
+              # No FAILURES block: the run died early (OOM, timeout), so show
+              # where it stopped.
               tail -n 50 test.log
             else
               echo "No test log was produced."
