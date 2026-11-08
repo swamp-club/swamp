@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -2322,5 +2323,60 @@ Deno.test({
       new UploadLedger(),
       { vouchLimits: { partitions: 1024, commits: 2 } },
     );
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a commit that lands but cannot be confirmed as replicated is logged by serve, not only answered to the member (swamp-club#4522)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const captured: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => captured.push(record) },
+      loggers: [
+        {
+          category: ["serve", "datastore-api"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      await withServer(writer(), async (server) => {
+        server.ctx.confirmReplicated = () =>
+          Promise.reject(
+            new Error(
+              "the replicated state could not be published: GCS putObject failed HTTP 429 rateLimitExceeded",
+            ),
+          );
+        const content = new TextEncoder().encode("0123456789abcdef");
+        const sha = await sha256Hex(content);
+        const committed = await post(
+          partitionPath(server),
+          "alice-token",
+          commitBody({
+            expectedSeq: 0,
+            txnId: crypto.randomUUID(),
+            ops: await blobSaveOps(server, "vpc", 1, content),
+            chunks: [{ sha256: sha, size: content.length }],
+          }, [content]),
+        );
+        assertEquals(committed.status, 503, JSON.stringify(committed.json));
+        assertEquals(committed.json.seq, 1);
+      });
+      const warnings = captured.map((r) =>
+        r.message.map((p) => String(p)).join("")
+      );
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(warnings[0], "Commit 1 to partition");
+      assertStringIncludes(warnings[0], "could not be confirmed");
+      assertStringIncludes(warnings[0], "HTTP 429 rateLimitExceeded");
+    } finally {
+      await reset();
+    }
   },
 });

@@ -67,6 +67,7 @@ import {
   resolveV3ReplicaSetting,
   type V3ReplicaPaths,
 } from "./litestream/replica_target_resolver.ts";
+import { retryingControlPlane, retryingStorage } from "./bucket_write_retry.ts";
 
 /** a bucket datastore's subdirectory is also its local root */
 export const V3_LOCAL_COPIES_DIR = "_datastore_v3_copies";
@@ -267,12 +268,15 @@ export function bindV3BucketDatastore(
     return rememberLocation(config, root);
   }
   Deno.mkdirSync(root, { recursive: true });
-  const controlPlane = datastoreWriterLeaseStore(provider, config.type);
+  const controlPlane = retryingControlPlane(
+    datastoreWriterLeaseStore(provider, config.type),
+  );
   // assertV3Hosting checked it is there.
-  const storage = provider.storage?.();
-  if (storage === undefined) {
+  const providerStorage = provider.storage?.();
+  if (providerStorage === undefined) {
     throw new V3HostingUnsupportedError(config.type, ["storage()"]);
   }
+  const storage = retryingStorage(providerStorage);
   let confirming: Promise<void> | undefined;
   const binding: V3BucketBinding = {
     type: config.type,

@@ -1238,6 +1238,8 @@ class DatastoreApi {
           error,
           "internal_error",
         );
+        logger
+          .warn`Commit ${result.seq} to partition ${partition} landed but could not be confirmed as replicated (${code}): ${error}`;
         return Response.json({ code, message, seq: result.seq }, {
           status: 503,
         });
@@ -2196,6 +2198,8 @@ class DatastoreApi {
           error,
           "internal_error",
         );
+        logger
+          .warn`Quarantine accept ${txnId} landed but could not be confirmed as replicated (${code}): ${error}`;
         this.#auditAccept(record, "failure", "replication not confirmed");
         return Response.json({ code, message }, { status: 503 });
       }

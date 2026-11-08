@@ -30,6 +30,7 @@ import {
   createInMemoryRemote,
   EXTENSION_2026_10_01_SEMANTICS,
   EXTENSION_2026_10_20_SEMANTICS,
+  InMemoryRateLimitError,
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 import { assertSyncServiceConformance } from "./datastore_conformance.ts";
@@ -2196,4 +2197,98 @@ Deno.test("repairUnpushedFiles: is left out when asked, and takes an injected fa
     await assertRejects(() => service.repairUnpushedFiles!(), Error, "boom");
     assertEquals(remote.files().has("data/m/stranded"), false);
   });
+});
+
+Deno.test("createInMemoryRemote: mutationRateLimit refuses a second write to one object inside the interval, GCS-shaped", async () => {
+  let now = 1_000;
+  const remote = createInMemoryRemote({
+    controlPlane: true,
+    mutationRateLimit: { intervalMs: 1_000, now: () => now },
+  });
+  const store = remote.datastoreControlPlaneStore!();
+  const bytes = new TextEncoder().encode("a");
+  await store.put("lineage/head.json", bytes);
+  now += 999;
+  const refused = await assertRejects(
+    () => store.put("lineage/head.json", new TextEncoder().encode("b")),
+    InMemoryRateLimitError,
+    "HTTP 429 rateLimitExceeded",
+  );
+  assertEquals(refused.name, "GcsOperationError");
+  assertEquals(refused.httpStatusCode, 429);
+  assertEquals(refused.code, "rateLimitExceeded");
+  assertEquals(
+    remote.controlPlaneRecords().get("_control/lineage/head.json"),
+    bytes,
+  );
+  // Another object has its own window.
+  await store.put("lineage/other.json", bytes);
+  now += 1;
+  await store.put("lineage/head.json", bytes);
+  assertEquals(
+    remote.mutations().map(({ key, refused }) => [key, refused]),
+    [
+      ["_control/lineage/head.json", false],
+      ["_control/lineage/head.json", true],
+      ["_control/lineage/other.json", false],
+      ["_control/lineage/head.json", false],
+    ],
+  );
+});
+
+Deno.test("createInMemoryRemote: mutationRateLimit answers S3's 503 SlowDown, and an existing key's putIfAbsent is no write", async () => {
+  let now = 0;
+  const remote = createInMemoryRemote({
+    controlPlane: true,
+    mutationRateLimit: { intervalMs: 1_000, provider: "s3", now: () => now },
+  });
+  const store = remote.datastoreControlPlaneStore!();
+  const bytes = new TextEncoder().encode("a");
+  assertEquals(await store.putIfAbsent!("k", bytes), true);
+  assertEquals(await store.putIfAbsent!("k", bytes), false);
+  const refused = await assertRejects(
+    () => store.delete("k"),
+    InMemoryRateLimitError,
+    "HTTP 503 SlowDown",
+  );
+  assertEquals(refused.name, "S3OperationError");
+  assertEquals(refused.httpStatusCode, 503);
+  now += 1_000;
+  await store.delete("k");
+  assertEquals(remote.mutations().filter((m) => m.refused).length, 1);
+});
+
+Deno.test("createInMemoryRemote: mutationRateLimit covers chunk puts and touches", async () => {
+  let now = 0;
+  const remote = createInMemoryRemote({
+    storage: true,
+    mutationRateLimit: { intervalMs: 1_000, now: () => now },
+  });
+  const storage = remote.storage!();
+  const signal = new AbortController().signal;
+  const sha = "ab".padEnd(64, "0");
+  await storage.put("ns", sha, new Uint8Array([1]), signal);
+  await assertRejects(
+    () => storage.touch!("ns", [sha], signal),
+    InMemoryRateLimitError,
+  );
+  now += 1_000;
+  assertEquals((await storage.touch!("ns", [sha], signal)).size, 0);
+  assertEquals(
+    remote.mutations().map(({ key }) => key),
+    [
+      `_blobs/ns/sha256/ab/${sha}`,
+      `_blobs/ns/sha256/ab/${sha}`,
+      `_blobs/ns/sha256/ab/${sha}`,
+    ],
+  );
+});
+
+Deno.test("createInMemoryRemote: without mutationRateLimit nothing is limited or logged", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  const store = remote.datastoreControlPlaneStore!();
+  const bytes = new TextEncoder().encode("a");
+  await store.put("k", bytes);
+  await store.put("k", bytes);
+  assertEquals(remote.mutations(), []);
 });

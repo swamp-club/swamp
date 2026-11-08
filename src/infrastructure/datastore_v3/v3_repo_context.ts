@@ -148,6 +148,9 @@ import {
   V3ReplicationUnavailableError,
 } from "../../domain/datastore_v3/litestream_replication.ts";
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
+import { HeadPublishPacer } from "../../domain/datastore_v3/head_publish_pacer.ts";
+import { abortableSleep } from "../http/rate_limit.ts";
+import { withBucketWriteDeadline } from "./bucket_write_retry.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
@@ -1974,6 +1977,52 @@ const MIN_QUEUED_SYNC_MS = 500;
 
 const publishing = new Map<string, Promise<unknown>>();
 
+// A bucket refuses rewriting one object faster than about once a second, and
+// a lineage head is one object per lineage and writer fence.
+const headPacers = new Map<
+  string,
+  { readonly head: string; readonly pacer: HeadPublishPacer }
+>();
+
+function headPacerFor(
+  datastore: string,
+  lineageFence: number,
+  writerFence: number,
+): HeadPublishPacer | undefined {
+  if (v3BucketBindingAt(datastore) === undefined) return undefined;
+  const head = `${lineageFence}/${writerFence}`;
+  const known = headPacers.get(datastore);
+  if (known?.head === head) return known.pacer;
+  const pacer = new HeadPublishPacer();
+  headPacers.set(datastore, { head, pacer });
+  return pacer;
+}
+
+async function waitForHeadPacer(
+  pacer: HeadPublishPacer | undefined,
+  deadlineMs: number,
+  signal: AbortSignal | undefined,
+): Promise<number> {
+  const wait = pacer?.waitMs(Date.now()) ?? 0;
+  if (wait <= 0) return 0;
+  if (wait >= deadlineMs) {
+    throw new V3ReplicationError(
+      `the sync did not finish within ${
+        Math.round(deadlineMs / 1000)
+      }s: the last head was published too recently to publish another`,
+    );
+  }
+  try {
+    await abortableSleep(wait, signal);
+  } catch (error) {
+    throw new V3ReplicationError(
+      error instanceof Error ? error.message : String(error),
+      { cause: error },
+    );
+  }
+  return wait;
+}
+
 /**
  * a sidecar signalled with this process (a unit's whole cgroup) did its own
  * final sync but can no longer say so: the replica is read instead, never a
@@ -2034,6 +2083,10 @@ async function syncAndPublishNow(
     await use.sync(deadlineMs, signal === undefined ? {} : { signal });
     return undefined;
   }
+  const pacer = headPacerFor(datastore, use.lineageFence, writerFence);
+  // Commits landing during the wait are covered by the mark taken below.
+  const left = deadlineMs -
+    await waitForHeadPacer(pacer, deadlineMs, signal);
   // taken before the sync: what the sync covers. A serve that lost its lease
   // meanwhile still publishes this head before its lease check fails; it covers
   // only commits nobody acknowledged
@@ -2042,6 +2095,7 @@ async function syncAndPublishNow(
   const confirmOptions = {
     ...(signal === undefined ? {} : { signal }),
     beforeLeaseCheck: async (txid: string) => {
+      pacer?.attempted(Date.now());
       first = await publishV3Head(copy, {
         lineageFence: use.lineageFence,
         writerFence,
@@ -2050,16 +2104,18 @@ async function syncAndPublishNow(
       });
     },
   };
-  if (via === "replica") {
-    await use.confirmFromReplica(
-      peekHighWaterCursor,
-      mark.cursor,
-      deadlineMs,
-      confirmOptions,
-    );
-  } else {
-    await use.sync(deadlineMs, confirmOptions);
-  }
+  await withBucketWriteDeadline(Date.now() + left, async () => {
+    if (via === "replica") {
+      await use.confirmFromReplica(
+        peekHighWaterCursor,
+        mark.cursor,
+        left,
+        confirmOptions,
+      );
+    } else {
+      await use.sync(left, confirmOptions);
+    }
+  });
   publishedMarks.set(
     datastore,
     Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
