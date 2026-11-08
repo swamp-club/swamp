@@ -44,6 +44,7 @@ import {
 import type { WritableDatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { resolveCustomProvider } from "../persistence/datastore_global_lock.ts";
 import {
+  type CatchUpOptions,
   datastoreKeyFilter,
   openV3Datastore,
   v3CommitsDbPath,
@@ -701,15 +702,19 @@ const feedWatches: ServeFeedWatch[] = [];
  * under the lock reads every version another machine wrote; holdV3Writer's
  * catch-up ran before the lock was taken
  */
-export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
+export async function catchUpV3HandlesAt(
+  datastorePath: string,
+  options?: CatchUpOptions,
+): Promise<void> {
   const path = resolve(datastorePath);
   for (const handle of [...opened.values()]) {
     if (resolve(handle.datastorePath) !== path) continue;
     if (handle.catchUpForWrite !== undefined) {
       await handle.catchUpForWrite();
-      await (handle.catchUpReadModel?.() ?? handle.catchUp());
+      await (handle.catchUpReadModel?.(undefined, options) ??
+        handle.catchUp(undefined, options));
     } else {
-      await handle.catchUp();
+      await handle.catchUp(undefined, options);
     }
   }
 }

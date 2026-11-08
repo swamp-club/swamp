@@ -18,9 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals, assertExists } from "@std/assert";
+import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import { z } from "zod";
-import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
+import {
+  acquireModelLocks,
+  acquirePublishLocksOrDefer,
+  requireInitializedRepoUnlocked,
+} from "../src/cli/repo_context.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { Job } from "../src/domain/workflows/job.ts";
@@ -198,6 +202,82 @@ Deno.test({
         } finally {
           shutdown.dispose();
           modelRegistry.invalidateType(type);
+        }
+      });
+    } finally {
+      resetCommandStopForTesting();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "serve upstream: once a command is told to stop, a publish still takes its lock and catches up, while a new model lock does not (swamp-club#4512)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    resetCommandStopForTesting();
+    try {
+      await withScratch(async (scratch) => {
+        const serve = await scratch.serve();
+        const alice = await scratch.client("a");
+        const type = serve.modelType;
+        const model = {
+          modelType: type.normalized,
+          modelId: serve.models.web,
+        };
+        const stopRequests: (() => void)[] = [];
+        const shutdown = registerShutdownHandler({
+          handler: () => {},
+          stopsCatchUps: true,
+        }, {
+          os: "windows",
+          listenForStopRequests: (handler) => {
+            stopRequests.push(handler);
+            return () => {};
+          },
+        });
+        try {
+          await withClientEnv(
+            scratch,
+            serveEnv(serve, "alice-token"),
+            ["model", "method"],
+            async () => {
+              try {
+                const ctx = await requireInitializedRepoUnlocked({
+                  repoDir: alice.repoDir,
+                  outputMode: "json",
+                });
+                stopRequests[0]();
+                await assertRejects(() =>
+                  acquireModelLocks(
+                    ctx.datastoreConfig,
+                    [model],
+                    alice.repoDir,
+                    ctx.syncService,
+                    ctx.repoContext.catalogStore,
+                    () => {},
+                    { repoContext: ctx.repoContext },
+                  )
+                );
+                const publish = await acquirePublishLocksOrDefer(
+                  ctx.datastoreConfig,
+                  model,
+                  [],
+                  alice.repoDir,
+                  ctx.syncService,
+                  ctx.repoContext.catalogStore,
+                  { repoContext: ctx.repoContext },
+                );
+                assertExists(publish, "the publish was not deferred");
+                await publish.release();
+              } finally {
+                await endCommand();
+              }
+            },
+          );
+        } finally {
+          shutdown.dispose();
         }
       });
     } finally {

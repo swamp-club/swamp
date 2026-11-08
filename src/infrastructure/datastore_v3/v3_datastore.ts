@@ -561,7 +561,7 @@ export interface V3Datastore {
   readonly catalogStore: CatalogStore;
   readonly namespace: string;
   readonly writer: CommitWriter;
-  catchUp(signal?: AbortSignal): Promise<void>;
+  catchUp(signal?: AbortSignal, options?: CatchUpOptions): Promise<void>;
   /** a catch-up that first resets the read model to apply every commit again */
   replayEveryCommit(signal?: AbortSignal): Promise<void>;
   /**
@@ -574,7 +574,10 @@ export interface V3Datastore {
     options?: { readonly mayGoOffline?: boolean },
   ): Promise<void>;
   /** the read model alone, for a copy just caught up with catchUpForWrite */
-  catchUpReadModel?(signal?: AbortSignal): Promise<void>;
+  catchUpReadModel?(
+    signal?: AbortSignal,
+    options?: CatchUpOptions,
+  ): Promise<void>;
   serveFeedCursor?(): number;
   sentToServe?(txnId: string): boolean;
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
@@ -767,6 +770,11 @@ export function offlineSubjectOf(partition: PartitionKey): string {
   }
 }
 
+export interface CatchUpOptions {
+  /** for a publish of what a stopped command produced, which must still land */
+  readonly ignoresStop?: boolean;
+}
+
 export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // SQLite cannot open a database through a symlinked directory here, so the
   // stores open on canonical paths: a checkout or datastore reached through
@@ -861,8 +869,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   const lifetime = new AbortController();
   // A command told to stop leaves a catch-up at its next commit; a commit
   // already being sent keeps lifetime.signal alone.
-  const catchUpSignal = (signal?: AbortSignal): AbortSignal =>
-    AbortSignal.any([signal ?? lifetime.signal, commandStopSignal()]);
+  const catchUpSignal = (
+    signal?: AbortSignal,
+    options?: CatchUpOptions,
+  ): AbortSignal =>
+    options?.ignoresStop === true
+      ? signal ?? lifetime.signal
+      : AbortSignal.any([signal ?? lifetime.signal, commandStopSignal()]);
   if (serveClient !== undefined && serveState !== undefined) {
     serveClient.checkLog(
       serveLogCheck(serveState, serveClient.baseUrl, dirname(commitsDbPath)),
@@ -1271,10 +1284,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         sentToServe: (txnId: string) => forwarded.has(txnId),
       }
       : {}),
-    async catchUp(signal) {
-      await catchUpFromServe(catchUpSignal(signal), "read");
+    async catchUp(signal, catchUpOptions) {
+      await catchUpFromServe(catchUpSignal(signal, catchUpOptions), "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUp(catchUpSignal(signal))
+        readModel.catchUp(catchUpSignal(signal, catchUpOptions))
       );
     },
     async replayEveryCommit(signal) {
@@ -1298,9 +1311,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             catchUpOptions?.mayGoOffline === true,
           );
         },
-        async catchUpReadModel(signal?: AbortSignal) {
+        async catchUpReadModel(
+          signal?: AbortSignal,
+          catchUpOptions?: CatchUpOptions,
+        ) {
           await unreachableAsCatchUpError(() =>
-            readModel.catchUp(catchUpSignal(signal))
+            readModel.catchUp(catchUpSignal(signal, catchUpOptions))
           );
         },
       }
