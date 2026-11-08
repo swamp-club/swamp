@@ -1623,7 +1623,8 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to codex", async
     const instructionsStat = await Deno.stat(instructionsPath);
     assertEquals(instructionsStat.isFile, true);
     const content = await Deno.readTextFile(instructionsPath);
-    assertStringIncludes(content, "# Project");
+    assertStringIncludes(content, "\n# Swamp\n");
+    assertEquals(content.includes("\n# Project\n"), false);
     assertStringIncludes(content, "swamp");
   });
 });
@@ -1646,7 +1647,8 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to copilot", asy
     const instructionsStat = await Deno.stat(instructionsPath);
     assertEquals(instructionsStat.isFile, true);
     const content = await Deno.readTextFile(instructionsPath);
-    assertStringIncludes(content, "# Project");
+    assertStringIncludes(content, "\n# Swamp\n");
+    assertEquals(content.includes("\n# Project\n"), false);
     assertStringIncludes(content, "swamp");
   });
 });
@@ -1671,7 +1673,8 @@ Deno.test("RepoService.upgrade prepends managed section when file has no swamp c
       content,
       "<!-- BEGIN swamp managed section - DO NOT EDIT -->",
     );
-    assertStringIncludes(content, "# Project");
+    assertStringIncludes(content, "\n# Swamp\n");
+    assertEquals(content.includes("\n# Project\n"), false);
     assertStringIncludes(content, "# Old content");
 
     const beginIdx = content.indexOf(
@@ -4896,4 +4899,100 @@ Deno.test({
       );
     });
   },
+});
+
+const SECTION_BEGIN = "<!-- BEGIN swamp managed section - DO NOT EDIT -->";
+const SECTION_END = "<!-- END swamp managed section -->";
+const USER_NOTES = "\n## My notes\n\nKeep this.\n";
+
+function countOf(content: string, needle: string): number {
+  return content.split(needle).length - 1;
+}
+
+Deno.test("RepoService.upgrade replaces a current managed section whole when its END marker was deleted", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const fresh = await Deno.readTextFile(claudeMdPath);
+    await Deno.writeTextFile(
+      claudeMdPath,
+      fresh.replace(SECTION_END + "\n", "") + USER_NOTES,
+    );
+
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    assertEquals(await Deno.readTextFile(claudeMdPath), fresh + USER_NOTES);
+  });
+});
+
+Deno.test("RepoService.upgrade replaces a managed section with the older last line whole when its END marker was deleted", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const fresh = await Deno.readTextFile(claudeMdPath);
+    const currentLastLine = "Every `swamp model …` spelling remains supported.";
+    assertStringIncludes(fresh, currentLastLine);
+    const olderBlock = fresh
+      .replace(
+        currentLastLine,
+        "The older `swamp model method run` spelling remains supported.",
+      )
+      .replace("# Swamp\n", "# Project\n")
+      .replace(SECTION_END + "\n", "");
+    await Deno.writeTextFile(claudeMdPath, olderBlock + USER_NOTES);
+
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    assertEquals(await Deno.readTextFile(claudeMdPath), fresh + USER_NOTES);
+  });
+});
+
+Deno.test("RepoService.upgrade keeps exactly one AGENTS.md import when a CLAUDE.md section that imported it lost its END marker", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const withImport = await Deno.readTextFile(claudeMdPath);
+    assertStringIncludes(withImport, "\n@AGENTS.md\n" + SECTION_END);
+    await Deno.writeTextFile(
+      claudeMdPath,
+      withImport.replace(SECTION_END + "\n", "") + USER_NOTES,
+    );
+
+    await testService("0.3.0", tempDir).upgrade(repoPath);
+
+    const content = await Deno.readTextFile(claudeMdPath);
+    assertEquals(countOf(content, SECTION_BEGIN), 1);
+    assertEquals(countOf(content, SECTION_END), 1);
+    assertEquals(countOf(content, "\n# Swamp\n"), 1);
+    assertEquals(countOf(content, "spelling remains supported."), 1);
+    assertEquals(countOf(content, "@AGENTS.md"), 1);
+    assert(content.endsWith(USER_NOTES));
+    assertEquals(
+      await Deno.readTextFile(join(tempDir, "AGENTS.md")),
+      USER_AGENTS_MD,
+    );
+  });
+});
+
+Deno.test("RepoService.init ends the managed section with the line the legacy migration treats as its end", async () => {
+  await withTempDir(async (tempDir) => {
+    await testService("0.1.0", tempDir).init(RepoPath.create(tempDir), {
+      tools: ["codex"],
+    });
+    const content = await Deno.readTextFile(join(tempDir, "AGENTS.md"));
+    const body = content.substring(
+      content.indexOf(SECTION_BEGIN) + SECTION_BEGIN.length,
+      content.indexOf(SECTION_END),
+    );
+    const lastLine = body.trimEnd().split("\n").at(-1) ?? "";
+    assert(
+      lastLine.endsWith("spelling remains supported."),
+      `migrateLegacyInstructions end marker no longer matches the template's last line: ${lastLine}`,
+    );
+  });
 });

@@ -1280,7 +1280,7 @@ export class RepoService {
     newSection: string,
   ): string {
     const startPattern =
-      /# Project\n\nThis repository is managed with \[swamp\]/;
+      /# (?:Project|Swamp)\n\nThis repository is managed with \[swamp\]/;
     const startMatch = startPattern.exec(content);
 
     if (!startMatch) {
@@ -1288,7 +1288,9 @@ export class RepoService {
       return newSection + "\n" + separator + content;
     }
 
+    // first marker must end the template's last line, or its tail is left behind
     const endMarkers = [
+      "spelling remains supported.\n",
       "scopes to a subtree.\n",
       "Use `swamp --help` to see available commands.\n",
     ];
@@ -1365,7 +1367,7 @@ onboarding tutorial.
 
 Otherwise, read \`${skillsDir}/swamp/SKILL.md\` to work with swamp behaviors.`;
 
-    return `# Project
+    return `# Swamp
 
 This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 
