@@ -42,8 +42,14 @@ export interface OtlpExportQueueOptions<T> extends ExportQueueLimits {
 }
 
 interface Pending<T> {
+  readonly seq: number;
   readonly items: readonly T[];
   readonly done: (ok: boolean) => void;
+}
+
+interface FlushWaiter {
+  readonly through: number;
+  readonly resolve: () => void;
 }
 
 /**
@@ -60,6 +66,9 @@ export class OtlpExportQueue<T> {
   #sending: Promise<void> | undefined;
   #controller: AbortController | undefined;
   #idle: (() => void)[] = [];
+  #flushes: FlushWaiter[] = [];
+  #enqueued = 0;
+  #settled = 0;
   #closed = false;
 
   constructor(options: OtlpExportQueueOptions<T>) {
@@ -75,22 +84,25 @@ export class OtlpExportQueue<T> {
       finish(done, false);
       return;
     }
+    this.#report(items.length, "attempted");
     if (this.#queued + items.length > this.#maxQueue) {
       this.#report(items.length, "dropped");
       finish(done, false);
       return;
     }
-    this.#queue.push({ items, done });
+    this.#queue.push({ seq: ++this.#enqueued, items, done });
     this.#queued += items.length;
     this.#pump();
   }
 
-  /** waits until everything queued is sent, or the drain bound passes */
-  async forceFlush(): Promise<void> {
-    await this.#drain();
+  /** unbounded, unlike shutdown: each send still gives up at its timeout */
+  forceFlush(): Promise<void> {
+    const through = this.#enqueued;
+    if (this.#settled >= through) return Promise.resolve();
+    return new Promise((resolve) => this.#flushes.push({ through, resolve }));
   }
 
-  /** drains within the bound, then aborts the send and fails what is left */
+  /** drains within the bound, then fails what is queued and aborts the send */
   async shutdown(): Promise<void> {
     this.#closed = true;
     if (await this.#drain()) return;
@@ -100,6 +112,7 @@ export class OtlpExportQueue<T> {
       this.#report(pending.items.length, "dropped");
       finish(pending.done, false);
     }
+    this.#markSettled(left);
     this.#controller?.abort();
     await this.#sending;
   }
@@ -124,12 +137,12 @@ export class OtlpExportQueue<T> {
     this.#queued -= count;
     const controller = new AbortController();
     this.#controller = controller;
-    this.#report(count, "attempted");
     this.#sending = this.#sendBatch(batch, controller).then((ok) => {
       this.#sending = undefined;
       this.#controller = undefined;
       this.#report(count, ok ? "acknowledged" : "failed");
       for (const pending of batch) finish(pending.done, ok);
+      this.#markSettled(batch);
       this.#pump();
     });
   }
@@ -155,7 +168,11 @@ export class OtlpExportQueue<T> {
   /** true when the queue went idle within the drain bound */
   async #drain(): Promise<boolean> {
     if (!this.#sending && this.#queue.length === 0) return true;
-    const idle = new Promise<void>((resolve) => this.#idle.push(resolve));
+    let wake!: () => void;
+    const idle = new Promise<void>((resolve) => {
+      wake = resolve;
+      this.#idle.push(resolve);
+    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const bound = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, this.#drainMs);
@@ -167,7 +184,17 @@ export class OtlpExportQueue<T> {
       ]);
     } finally {
       clearTimeout(timer);
+      this.#idle = this.#idle.filter((resolve) => resolve !== wake);
     }
+  }
+
+  #markSettled(pendings: readonly Pending<T>[]): void {
+    for (const pending of pendings) {
+      this.#settled = Math.max(this.#settled, pending.seq);
+    }
+    const ready = this.#flushes.filter((w) => w.through <= this.#settled);
+    this.#flushes = this.#flushes.filter((w) => w.through > this.#settled);
+    for (const waiter of ready) waiter.resolve();
   }
 
   #report(count: number, outcome: ExportOutcome): void {
@@ -191,7 +218,7 @@ export function exitDeadline(now: () => number = Date.now): number {
   return now() + EXIT_DRAIN_MS;
 }
 
-/** resolves when work settles or the deadline passes, whichever is first */
+/** a rejection counts as settled: exit must never fail on telemetry */
 export async function untilDeadline(
   work: Promise<unknown>,
   deadline: number,

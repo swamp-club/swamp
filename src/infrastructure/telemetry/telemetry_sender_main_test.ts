@@ -19,7 +19,11 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { TelemetryService } from "../../domain/telemetry/telemetry_service.ts";
+import {
+  type TelemetryIdentity,
+  TelemetryService,
+} from "../../domain/telemetry/telemetry_service.ts";
+import { withMockedEnv } from "../persistence/path_test_helpers.ts";
 import { JsonTelemetryRepository } from "../persistence/json_telemetry_repository.ts";
 import { JsonTelemetryFlushRecordRepository } from "../persistence/json_telemetry_flush_record_repository.ts";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
@@ -27,6 +31,7 @@ import { runTelemetrySenderMain } from "./telemetry_sender_main.ts";
 import {
   claimSenderLock,
   SENDER_LOCK_FILE,
+  SENDER_MAX_LIFETIME_MS,
   senderArgs,
 } from "./telemetry_sender_process.ts";
 
@@ -43,7 +48,11 @@ async function withIngest(
   }, () => fn(INGEST, received));
 }
 
-async function spoolEntry(dir: string, endpoint: string): Promise<void> {
+async function spoolEntry(
+  dir: string,
+  endpoint: string,
+  identity?: TelemetryIdentity,
+): Promise<void> {
   await new TelemetryService(
     new JsonTelemetryRepository(dir, dir),
     "1.0.0",
@@ -52,6 +61,8 @@ async function spoolEntry(dir: string, endpoint: string): Promise<void> {
     undefined,
     undefined,
     endpoint,
+    undefined,
+    identity,
   ).recordSuccess(
     { command: "version", args: [], optionKeys: [], globalOptions: [] },
     new Date(),
@@ -246,4 +257,128 @@ Deno.test("runTelemetrySenderMain: a lingering sender that loses its lock stops 
       });
     },
   );
+});
+
+interface SentEvent {
+  readonly insert_id: string;
+  readonly distinct_id: string;
+  readonly properties: { readonly $repo_id?: string };
+}
+
+/** every event the ingest received, with the api key of its request */
+async function withRecordingIngest(
+  fn: (
+    url: string,
+    sent: { event: SentEvent; apiKey: string | null }[],
+  ) => Promise<void>,
+): Promise<void> {
+  const sent: { event: SentEvent; apiKey: string | null }[] = [];
+  await withMockedFetch(async (req) => {
+    const body = await req.json() as SentEvent | { events: SentEvent[] };
+    const events = "events" in body ? body.events : [body];
+    for (const event of events) {
+      sent.push({ event, apiKey: req.headers.get("x-api-key") });
+    }
+    return new Response(null, { status: 202 });
+  }, () => fn(INGEST, sent));
+}
+
+function senderFor(token: string, url: string): string[] {
+  return senderArgs(token, {
+    endpoint: url,
+    userAgent: "swamp-cli/test",
+    keepFlushed: false,
+  });
+}
+
+Deno.test("runTelemetrySenderMain: a repo-B command spooled during a repo-A sender's linger is sent as repo B", async () => {
+  await withRecordingIngest(async (url, sent) => {
+    await withSpool(url, 0, async (dir) => {
+      await spoolEntry(dir, url, { repoId: "repo-a", distinctId: "user-1" });
+      const token = await claimSenderLock(join(dir, SENDER_LOCK_FILE));
+      assert(token !== undefined);
+      const lingering = lingerDeps(dir, async (sleeps) => {
+        if (sleeps === 3) {
+          await spoolEntry(dir, url, {
+            repoId: "repo-b",
+            distinctId: "user-1",
+          });
+        }
+      });
+
+      await withMockedEnv(
+        { SWAMP_TELEMETRY_SENDER_REPO_ID: "repo-a" },
+        () => runTelemetrySenderMain(senderFor(token, url), lingering),
+      );
+
+      assertEquals(
+        sent.map((s) => s.event.properties.$repo_id),
+        ["repo-a", "repo-b"],
+      );
+    });
+  });
+});
+
+Deno.test("runTelemetrySenderMain: an entry recorded before a login switch keeps its own distinct id", async () => {
+  await withRecordingIngest(async (url, sent) => {
+    await withSpool(url, 0, async (dir) => {
+      await spoolEntry(dir, url, { repoId: "repo-a", distinctId: "user-old" });
+      await spoolEntry(dir, url);
+      const token = await claimSenderLock(join(dir, SENDER_LOCK_FILE));
+      assert(token !== undefined);
+
+      await runTelemetrySenderMain(senderFor(token, url), {
+        ...deps(dir),
+        userId: () => Promise.resolve("user-new"),
+      });
+
+      const ids = sent.map((s) => s.event.distinct_id).sort();
+      assertEquals(ids, ["user-new", "user-old"]);
+    });
+  });
+});
+
+Deno.test("runTelemetrySenderMain: a lingering sender reads the auth token again before each send, and sends without one once logged out", async () => {
+  await withRecordingIngest(async (url, sent) => {
+    await withSpool(url, 1, async (dir) => {
+      const token = await claimSenderLock(join(dir, SENDER_LOCK_FILE));
+      assert(token !== undefined);
+      let apiKey: string | undefined = "key-old";
+      const lingering = {
+        ...lingerDeps(dir, async (sleeps) => {
+          if (sleeps === 2) {
+            apiKey = "key-new";
+            await spoolEntry(dir, url);
+          }
+          if (sleeps === 4) {
+            apiKey = undefined;
+            await spoolEntry(dir, url);
+          }
+        }),
+        authToken: () => Promise.resolve(apiKey),
+      };
+
+      await runTelemetrySenderMain(senderFor(token, url), lingering);
+
+      assertEquals(sent.map((s) => s.apiKey), ["key-old", "key-new", null]);
+    });
+  });
+});
+
+Deno.test("runTelemetrySenderMain: under steady activity the sender exits at its lifetime cap", async () => {
+  await withRecordingIngest(async (url, sent) => {
+    await withSpool(url, 1, async (dir) => {
+      const lock = join(dir, SENDER_LOCK_FILE);
+      const token = await claimSenderLock(lock);
+      assert(token !== undefined);
+      const lingering = lingerDeps(dir, () => spoolEntry(dir, url));
+
+      await runTelemetrySenderMain(senderFor(token, url), lingering);
+
+      assertEquals(lingering.sleeps(), SENDER_MAX_LIFETIME_MS / 1_000);
+      // the first entry, then one spooled before each poll
+      assertEquals(sent.length, 1 + SENDER_MAX_LIFETIME_MS / 1_000);
+      assert(await claimSenderLock(lock) !== undefined);
+    });
+  });
 });

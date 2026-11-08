@@ -478,3 +478,46 @@ Deno.test("HttpTelemetrySender.sendBatch does not send the spool endpoint stamp"
 
   await server.shutdown();
 });
+
+Deno.test("HttpTelemetrySender.sendBatch sends each entry's own repo and distinct id, and the sender's for older entries", async () => {
+  let capturedBody: string | undefined;
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    async (req: Request) => {
+      capturedBody = await req.text();
+      return new Response(JSON.stringify({ accepted: 2 }), { status: 202 });
+    },
+  );
+  try {
+    const sender = new HttpTelemetrySender(
+      `http://localhost:${server.addr.port}`,
+    );
+    const legacy = createTestEntry("legacy", new Date("2024-03-10T10:00:00Z"));
+    const stamped = TelemetryEntry.fromData({
+      ...createTestEntry("stamped", new Date("2024-03-10T10:00:00Z"))
+        .toData(),
+      repoId: "repo-b",
+      distinctId: "user-b",
+    });
+
+    const result = await sender.sendBatch(
+      [legacy, stamped],
+      "sender-user",
+      "repo-a",
+    );
+
+    assertEquals(result.ok, true);
+    const events = JSON.parse(capturedBody!).events as {
+      distinct_id: string;
+      properties: Record<string, unknown>;
+    }[];
+    assertEquals(events[0].distinct_id, "sender-user");
+    assertEquals(events[0].properties.$repo_id, "repo-a");
+    assertEquals(events[1].distinct_id, "user-b");
+    assertEquals(events[1].properties.$repo_id, "repo-b");
+    assertEquals("repoId" in events[1].properties, false);
+    assertEquals("distinctId" in events[1].properties, false);
+  } finally {
+    await server.shutdown();
+  }
+});

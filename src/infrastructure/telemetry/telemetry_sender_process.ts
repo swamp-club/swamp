@@ -32,6 +32,8 @@ export const SENDER_MAX_BATCHES = 400;
 /** a burst of commands shares one sender: it waits this long for more entries */
 export const SENDER_LINGER_MS = 30_000;
 export const SENDER_POLL_MS = 1_000;
+/** steady activity keeps resetting the linger, so a sender's life is capped */
+export const SENDER_MAX_LIFETIME_MS = 300_000;
 // the repo id may come from an evaluated expression, so it stays off argv
 export const SENDER_REPO_ID_ENV = "SWAMP_TELEMETRY_SENDER_REPO_ID";
 
@@ -285,6 +287,9 @@ export async function drainTelemetrySpool(
 export interface LingerOptions extends DrainOptions {
   readonly lingerMs?: number;
   readonly pollMs?: number;
+  readonly maxLifetimeMs?: number;
+  /** read before each drain, so a login or logout during the linger applies */
+  readonly readAuthToken?: () => Promise<string | undefined>;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -300,12 +305,27 @@ export async function drainAndLinger(options: LingerOptions): Promise<void> {
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const lingerMs = options.lingerMs ?? SENDER_LINGER_MS;
   const pollMs = options.pollMs ?? SENDER_POLL_MS;
-  if (!(await drainTelemetrySpool({ ...options, skipIds })).ok) return;
+  const maxLifetimeMs = options.maxLifetimeMs ?? SENDER_MAX_LIFETIME_MS;
+  const drain = async () => {
+    const { authToken: _startToken, ...rest } = options;
+    const authToken = options.readAuthToken
+      ? await options.readAuthToken()
+      : options.authToken;
+    return await drainTelemetrySpool({
+      ...rest,
+      ...(authToken !== undefined ? { authToken } : {}),
+      skipIds,
+    });
+  };
+  const startedAt = now();
+  if (!(await drain()).ok) return;
   let idleSince = now();
-  while (now() - idleSince < lingerMs) {
+  while (
+    now() - idleSince < lingerMs && now() - startedAt < maxLifetimeMs
+  ) {
     await sleep(pollMs);
     if (!await options.heartbeat()) return;
-    const outcome = await drainTelemetrySpool({ ...options, skipIds });
+    const outcome = await drain();
     if (!outcome.ok) return;
     if (outcome.sent > 0) idleSince = now();
   }

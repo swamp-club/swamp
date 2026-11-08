@@ -1971,6 +1971,7 @@ async function initTelemetryService(
       undefined,
       telemetryEndpoint,
       new JsonTelemetryFlushRecordRepository(globalTelemetryDir()),
+      { repoId, distinctId: userId ?? repoId },
     );
 
     return {

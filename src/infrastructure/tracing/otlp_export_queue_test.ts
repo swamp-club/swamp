@@ -137,6 +137,7 @@ Deno.test("OtlpExportQueue: past maxQueue items are dropped, fail at once and ar
 
   assertEquals(dropped, false);
   assertEquals(seen.dropped, 2);
+  assertEquals(seen.attempted, 8);
   state.release();
   await settle();
   state.release();
@@ -245,4 +246,40 @@ Deno.test("untilDeadline: resolves when the work settles, even by rejecting", as
     Promise.reject(new Error("shutdown")),
     Date.now() + 60_000,
   );
+});
+
+Deno.test("OtlpExportQueue: forceFlush waits past the drain bound for what was queued before it", async () => {
+  const { state, send } = gatedSend();
+  const queue = new OtlpExportQueue<number>({
+    send,
+    timeoutMs: 60_000,
+    drainMs: 0,
+  });
+  queue.enqueue([1], () => {});
+  queue.enqueue([2], () => {});
+  let flushed = false;
+  const flush = queue.forceFlush().then(() => flushed = true);
+  queue.enqueue([3], () => {});
+
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assertEquals(flushed, false);
+  state.release();
+  await settle();
+  assertEquals(flushed, false);
+  state.release();
+  await flush;
+  assertEquals(state.sends, [[1], [2, 3]]);
+  await queue.shutdown();
+});
+
+Deno.test("OtlpExportQueue: forceFlush resolves at once when nothing is queued", async () => {
+  const queue = new OtlpExportQueue<number>({
+    send: () => Promise.resolve(),
+    timeoutMs: 60_000,
+  });
+  await queue.forceFlush();
+  queue.enqueue([1], () => {});
+  await queue.forceFlush();
+  await queue.forceFlush();
+  await queue.shutdown();
 });

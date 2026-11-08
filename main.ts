@@ -103,12 +103,14 @@ if (import.meta.main) {
     renderError(error, outputMode, commandSurfaceFromArgs(Deno.args), context);
     errorExitCode = exitCodeForError(error, context);
   } finally {
-    // Logs drain before spans so the last records are not cut by Deno.exit;
-    // one shared deadline means a silent collector delays exit once in total.
+    // The signals drain together against one deadline, so a silent collector
+    // delays exit once in total and no signal spends another's share.
     const deadline = exitDeadline();
-    await shutdownLogs(deadline);
-    await shutdownTracing(deadline);
-    await shutdownExecutionMetrics(deadline);
+    await Promise.all([
+      shutdownLogs(deadline),
+      shutdownTracing(deadline),
+      shutdownExecutionMetrics(deadline),
+    ]);
   }
 
   // Explicit exit so fire-and-forget promises (background update check,
