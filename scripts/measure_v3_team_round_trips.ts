@@ -185,7 +185,7 @@ interface StorageEvent {
   readonly kind: StorageKind;
 }
 
-/** the object a GCS JSON API request creates, rewrites or deletes */
+// a multipart upload names its object in the body, not the query
 function mutatedObject(req: Request, body: Uint8Array | undefined): string | undefined {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -206,7 +206,6 @@ function mutatedObject(req: Request, body: Uint8Array | undefined): string | und
   return undefined;
 }
 
-/** GCS's per-object mutation limit, answered as GCS answers it */
 function objectRateLimiter(intervalMs: number) {
   const last = new Map<string, number>();
   const refused: { readonly at: number; readonly object: string }[] = [];
@@ -1229,10 +1228,6 @@ async function measureStartup(
   return samples;
 }
 
-/**
- * every member writes back to back for the duration, as a busy team does; a
- * write that fails, and each object the proxy refused meanwhile, is reported
- */
 async function sustainedWrites(
   label: string,
   binary: string,

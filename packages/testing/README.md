@@ -310,7 +310,8 @@ mutation rate limit shows an object rewritten that often.
   by default GCS's HTTP 429 `rateLimitExceeded` (`name` `GcsOperationError`),
   and with `provider: "s3"` an HTTP 503 `SlowDown` (`S3OperationError`). Both
   carry `httpStatusCode` and `code`.
-- A refused write changes nothing.
+- A refused write changes nothing. A `touch` of several chunks keeps the touches
+  made before the refused chunk, as a bucket's per-object writes do.
 - `mutations()` lists every write attempted, as `{ key, at, refused }`.
 
 Not modelled: namespace prefixes, lazy hydration, `previewPush`, Windows

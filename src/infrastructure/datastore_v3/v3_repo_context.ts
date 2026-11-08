@@ -2004,7 +2004,7 @@ async function waitForHeadPacer(
 ): Promise<number> {
   const wait = pacer?.waitMs(Date.now()) ?? 0;
   // Too little time left to wait: try now, and let the write retry take a 429.
-  if (wait <= 0 || wait >= deadlineMs) return 0;
+  if (wait <= 0 || deadlineMs - wait < MIN_QUEUED_SYNC_MS) return 0;
   try {
     await abortableSleep(wait, signal);
   } catch (error) {
