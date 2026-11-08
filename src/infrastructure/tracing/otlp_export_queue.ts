@@ -112,9 +112,10 @@ export class OtlpExportQueue<T> {
       this.#report(pending.items.length, "dropped");
       finish(pending.done, false);
     }
-    this.#markSettled(left);
     this.#controller?.abort();
     await this.#sending;
+    // only now: the aborted batch holds lower sequence numbers than left
+    this.#markSettled(left);
   }
 
   #pump(): void {

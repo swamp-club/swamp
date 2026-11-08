@@ -204,7 +204,6 @@ Deno.test("runTelemetrySenderMain: entries later commands spool while the sender
         assert(token !== undefined);
         const lingering = lingerDeps(dir, async (sleeps) => {
           if (sleeps === 5 || sleeps === 20) await spoolEntry(dir, url);
-          // A command ending now finds the lock held and starts no sender.
           if (sleeps === 5) {
             assertEquals(await claimSenderLock(lock), undefined);
           }
@@ -220,7 +219,6 @@ Deno.test("runTelemetrySenderMain: entries later commands spool while the sender
         );
 
         assertEquals(new Set(sentIds(received)).size, 5);
-        // idle for the full linger after the last entry, then it exits
         assertEquals(lingering.sleeps(), 20 + 30);
         assert(await claimSenderLock(lock) !== undefined);
       });

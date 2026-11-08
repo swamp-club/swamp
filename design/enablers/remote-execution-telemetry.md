@@ -173,7 +173,7 @@ In-flight gauges include operations
 that have never emitted a completed span. Traces need not be enabled for metrics.
 
 `swamp.export.spans` distinguishes attempted, collector-acknowledged,
-not-fully-acknowledged and dropped spans. Every span ended is attempted. The
+not-fully-acknowledged and dropped spans. Every span ended before shutdown is attempted. The
 exporter keeps one request in flight. Spans past its 2,048-span queue, or still
 queued when the one-second exit drain gives up, are dropped rather than left to
 block or fail the command. HTTP failure and OTLP partial rejection are not

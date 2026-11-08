@@ -106,7 +106,6 @@ Deno.test("shutdownExecutionMetrics: stops waiting at the exit deadline while a 
           await shutdownExecutionMetrics(Date.now() + 200);
 
           assertEquals(held.requests, 1);
-          // the exporter's own 5 s timeout never had to give up on it
           assertEquals(held.abandoned, false);
           assertEquals(held.answered, false);
           release();

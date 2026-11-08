@@ -101,16 +101,16 @@ export const HARD_RETENTION_DAYS = 7;
  */
 const QUARANTINE_RETENTION_DAYS = 30;
 
-/**
- * invocationContext is captured once as it does not change within an
- * invocation; invocationId is pre-allocated so child entries can use it as
- * parentInvocationId before the parent is recorded
- */
 export interface TelemetryIdentity {
   readonly repoId?: string;
   readonly distinctId?: string;
 }
 
+/**
+ * invocationContext is captured once as it does not change within an
+ * invocation; invocationId is pre-allocated so child entries can use it as
+ * parentInvocationId before the parent is recorded
+ */
 export class TelemetryService {
   readonly invocationId: TelemetryId;
 

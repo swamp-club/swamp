@@ -283,3 +283,25 @@ Deno.test("OtlpExportQueue: forceFlush resolves at once when nothing is queued",
   await queue.forceFlush();
   await queue.shutdown();
 });
+
+Deno.test("OtlpExportQueue: a shutdown that gives up releases a waiting forceFlush only after the in-flight send settles", async () => {
+  const signals: AbortSignal[] = [];
+  const queue = new OtlpExportQueue<number>({
+    send: silentSend(signals),
+    timeoutMs: 60_000,
+    drainMs: 0,
+  });
+  const order: string[] = [];
+  queue.enqueue([1], () => order.push("in-flight item settled"));
+  const flush = queue.forceFlush().then(() => order.push("flush resolved"));
+  queue.enqueue([2], () => order.push("queued item failed"));
+
+  await queue.shutdown();
+  await flush;
+
+  assertEquals(order, [
+    "queued item failed",
+    "in-flight item settled",
+    "flush resolved",
+  ]);
+});
