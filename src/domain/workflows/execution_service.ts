@@ -135,6 +135,20 @@ import {
   type ResumeReset,
 } from "./resume_reset.ts";
 import { evaluatedJobMismatch, pairExpressionJobs } from "./job_pairing.ts";
+import {
+  fanOutJobFailed,
+  laneFailed,
+  laneStepName,
+  laneStepOf,
+  laneWorkerScope,
+  perWorkerBehaviorName,
+  planLaneSteps,
+  refusedPlanMessage,
+  refuseSharedLaneInstances,
+} from "./fan_out_lanes.ts";
+import { getWorkerPoolReader } from "../remote/worker_pool.ts";
+import { planFanOut } from "../remote/scheduler.ts";
+import { planBatches } from "../remote/rollout.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
   FROM_JOB_WITHOUT_FROM,
@@ -342,7 +356,11 @@ import {
   type FailedExpressions,
 } from "../expressions/unresolved_expression_guard.ts";
 import { errorPaths, UserError } from "../errors.ts";
-import { refuseFanOutJobs } from "./fan_out_job.ts";
+import {
+  FAN_OUT_NEEDS_SERVE,
+  refuseFanOutResume,
+  refuseFanOutRun,
+} from "./fan_out_job.ts";
 import {
   isForeignExpression,
   storedTextRefusal,
@@ -364,8 +382,11 @@ import {
   StepOutputResolver,
 } from "./step_output_resolver.ts";
 import {
+  merge,
   mergeGated,
   mergeWithConcurrency,
+  type SharedGate,
+  sharedGate,
 } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
@@ -837,6 +858,8 @@ export function mergeDataOutputOverrides(
 }
 
 export interface StepExecutionContext {
+  /** set for a fan-out lane's step: where it runs and whose instance it uses */
+  lane?: FanOutLaneContext;
   workflowId: WorkflowId;
   workflowRunId: string;
   workflowName: string;
@@ -1717,6 +1740,14 @@ export class DefaultStepExecutor implements StepExecutor {
         affinityKey: ctx.affinityKey,
       };
     }
+    // replaces any placement: a lane never moves off its planned worker
+    if (ctx.lane) {
+      resolvedPlacement = {
+        target: ctx.lane.worker,
+        queueTimeoutMs: resolvedPlacement?.queueTimeoutMs,
+        lane: { worker: ctx.lane.worker },
+      };
+    }
 
     // Resolve selectors only: inputs and arguments keep their existing
     // evaluation/persistence paths. The authored set excludes substituted data.
@@ -1881,7 +1912,18 @@ export class DefaultStepExecutor implements StepExecutor {
         inlined.provenance,
         inlinedSanitized.provenance,
       );
-      const { modelType: typeArg, modelName, methodName } = task;
+      const { modelType: typeArg, methodName } = task;
+      // per worker, so each host has its own locks and data
+      const laneAuthoredTask = (ctx.authoredStep ?? ctx.step)?.task.data;
+      const modelName = ctx.lane
+        ? perWorkerBehaviorName(
+          task.modelName,
+          ctx.lane.worker,
+          laneAuthoredTask?.type === "model_method"
+            ? laneAuthoredTask.modelName
+            : undefined,
+        )
+        : task.modelName;
       task = { ...task, ...inlined.data };
       authoredForDirect = inlined.authored;
       for (const field of ["inputs", "globalArgs"] as const) {
@@ -3091,7 +3133,15 @@ import {
   type RecoveryAssessment,
 } from "./recovery_assessment.ts";
 
+export interface FanOutLaneContext {
+  readonly worker: string;
+}
+
 interface StepOptions {
+  /** a fan-out lane's step: pinned to the worker, reading only its lane's steps */
+  lane?: FanOutLaneContext & {
+    readonly stepOf: (authored: string) => string;
+  };
   /**
    * Expressions written in the workflow source. Threaded to every pass that
    * runs after CEL substitution so data content spliced in by evaluation is
@@ -3512,7 +3562,7 @@ export class WorkflowExecutionService {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
         workflow = found;
-        refuseFanOutJobs(found);
+        refuseFanOutRun(found, getWorkerPoolReader() !== null);
         // Refused before anything runs: a wait opened where its records
         // cannot be shared would accept a signal nothing ever applies.
         if (holdsSignalWait(found)) await this.openSignalWaits(found.name);
@@ -3590,7 +3640,7 @@ export class WorkflowExecutionService {
             provenance: lastEvaluated.provenance,
           }, sensitiveValues);
           workflow = restored.workflow;
-          refuseFanOutJobs(workflow);
+          refuseFanOutRun(workflow, getWorkerPoolReader() !== null);
           // the cached steps run, not the source's, so their reserved tags are
           // refused before any of them runs too
           const cachedReservedTag = await reservedWorkflowRunTag(
@@ -4559,8 +4609,8 @@ export class WorkflowExecutionService {
     runId: string,
     options?: Parameters<WorkflowExecutionService["resume"]>[2],
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    // an edit may have added fanOut after the run began
-    refuseFanOutJobs(workflow);
+    // an edit may have added fanOut after the run began, or dropped it
+    refuseFanOutResume(workflow, located);
     // A resume can reach a wait for the first time. The store is opened
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.
@@ -5139,6 +5189,19 @@ export class WorkflowExecutionService {
       }
       yield { kind: "job_started", jobId: jobName };
 
+      if (job.fanOutPolicy !== undefined) {
+        yield* this.runFanOutJob(
+          jobSpan,
+          workflow,
+          run,
+          job,
+          jobRun,
+          expressionContext,
+          options,
+        );
+        return;
+      }
+
       // Expand forEach steps if we have expression context.
       // Runs in all modes including --last-evaluated: forEach expansion
       // is a structural transformation, not expression evaluation.
@@ -5586,6 +5649,298 @@ export class WorkflowExecutionService {
     }
   }
 
+  /**
+   * plans against serve's pool, records the plan and lanes, then runs each
+   * lane's step DAG on its own; a lane never waits on another lane's level
+   */
+  private async *runFanOutJob(
+    jobSpan: Span,
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    jobRun: JobRun,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    const reader = getWorkerPoolReader();
+    if (reader === null) {
+      throw new UserError(
+        `Workflow '${workflow.name}' has fan-out job '${job.name}': ${FAN_OUT_NEEDS_SERVE}.`,
+      );
+    }
+    const policy = job.fanOutPolicy!;
+    const fields = mergePlacementFields(
+      workflow.placementFields,
+      job.placementFields,
+    );
+    const selector = { labels: fields?.labels, platform: fields?.platform };
+    const pool = await reader.readPool();
+    const plan = planFanOut(selector, policy, pool);
+
+    let refusal: string | undefined;
+    let laneSteps: ReadonlyMap<string, { worker: string; authored: string }> =
+      new Map();
+    let lanes: string[] = [];
+    if (plan.kind === "refused") {
+      refusal = refusedPlanMessage(
+        job.name,
+        selector,
+        plan.live,
+        plan.minWorkers,
+      );
+    } else {
+      const batches = planBatches(plan.members, undefined);
+      lanes = batches.flat();
+      try {
+        laneSteps = planLaneSteps(
+          job.name,
+          job.steps.map((step) => step.name),
+          lanes,
+        );
+        refuseSharedLaneInstances(
+          job.name,
+          job.steps.flatMap((step) =>
+            step.task.data.type === "model_method" &&
+              step.task.data.modelName !== undefined
+              ? [step.task.data.modelName]
+              : []
+          ),
+          lanes,
+        );
+      } catch (error) {
+        refusal = error instanceof Error ? error.message : String(error);
+      }
+      if (refusal === undefined) {
+        jobRun.recordFanOutPlan(plan, batches);
+        jobRun.expandLanes([...laneSteps.keys()]);
+        // the plan is durable before any lane start can be journalled
+        await this.saveRun(workflow.id, run);
+      }
+    }
+
+    // nothing is sent: the authored steps carry the reason, as a stranded
+    // step does
+    if (refusal !== undefined) {
+      for (const stepRun of jobRun.steps) {
+        if (stepRun.status !== "pending") continue;
+        stepRun.fail(refusal);
+        yield {
+          kind: "step_failed",
+          jobId: job.name,
+          stepId: stepRun.stepName,
+          runId: run.id,
+          error: refusal,
+        };
+      }
+      jobRun.fail();
+      jobSpan.setAttribute("job.status", jobRun.status);
+      jobSpan.setStatus({ code: SpanStatusCode.ERROR, message: refusal });
+      yield { kind: "job_completed", jobId: job.name, status: jobRun.status };
+      return;
+    }
+    if (plan.kind !== "planned") return;
+
+    const poolByName = new Map(pool.map((worker) => [worker.name, worker]));
+    const globalLimit = readGlobalConcurrencyLimit();
+    // one host ceiling for every lane's steps, as one forEach level shares it
+    const hostSlots = globalLimit && globalLimit > 0
+      ? sharedGate(globalLimit)
+      : undefined;
+    const laneStreams = lanes.map((worker) =>
+      this.runFanOutLane(
+        workflow,
+        run,
+        job,
+        jobRun,
+        {
+          worker,
+          stepOf: (authored) => laneStepName(authored, worker),
+        },
+        laneWorkerScope(poolByName.get(worker)!),
+        expressionContext,
+        options,
+        hostSlots,
+      )
+    );
+    const laneLimit = resolveEffectiveConcurrency(
+      job.concurrency ?? workflow.concurrency,
+      globalLimit,
+    );
+    for await (
+      const event of mergeWithConcurrency(
+        laneStreams,
+        laneLimit,
+        options.signal,
+        { finishStartedOnAbort: true },
+      )
+    ) {
+      yield event;
+    }
+
+    // steps the abort left running are failed, as runJobInSpan does; a lane
+    // still queued at the abort never started, so it is settled and sends nothing
+    if (options.signal?.aborted) {
+      failAbandonedSteps(jobRun);
+      const levels = this.sortService.sort(
+        job.steps.map((step) => ({
+          name: step.name,
+          weight: step.weight,
+          dependencies: step.getDependencyNames(),
+        })),
+      ).levels;
+      for (const worker of lanes) {
+        const stepOf = (authored: string) => laneStepName(authored, worker);
+        const view = jobRun.laneView(stepOf);
+        for (const name of levels.flat()) {
+          const stepRun = jobRun.getStep(stepOf(name));
+          if (stepRun?.status !== "pending") continue;
+          settleUnstartedStep(job.getStep(name), stepRun, jobRun, view);
+        }
+      }
+    }
+    const laneRuns = lanes.map((worker) =>
+      job.steps.map((step) => jobRun.getStep(laneStepName(step.name, worker))!)
+    );
+    const failedLanes =
+      laneRuns.filter((steps) =>
+        laneFailed(steps.map((stepRun) => ({
+          status: stepRun.status,
+          allowedFailure: stepRun.allowedFailure,
+        })))
+      ).length;
+    const undecided = laneRuns.some((steps) =>
+      steps.some((stepRun) =>
+        stepRun.status === "pending" || stepRun.status === "unknown"
+      )
+    );
+    if (fanOutJobFailed(plan.members, failedLanes)) {
+      jobRun.fail();
+      jobSpan.setStatus({ code: SpanStatusCode.ERROR, message: "Job failed" });
+    } else if (undecided) {
+      if (jobRun.status === "running") jobRun.markUnknown();
+      jobSpan.setAttribute("job.status", jobRun.status);
+      jobSpan.setStatus({ code: SpanStatusCode.OK });
+      return;
+    } else {
+      jobRun.succeed();
+      jobSpan.setStatus({ code: SpanStatusCode.OK });
+    }
+    jobSpan.setAttribute("job.status", jobRun.status);
+    yield { kind: "job_completed", jobId: job.name, status: jobRun.status };
+  }
+
+  /**
+   * one lane: the job's steps level by level, on the lane's worker, with its
+   * own steps map so a lane never reads another lane's outputs
+   */
+  private async *runFanOutLane(
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    jobRun: JobRun,
+    lane: NonNullable<StepOptions["lane"]>,
+    scope: ReturnType<typeof laneWorkerScope>,
+    expressionContext: ExpressionContext | undefined,
+    options: StepOptions,
+    hostSlots: SharedGate | undefined,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    const laneOptions: StepOptions = { ...options, lane };
+    // copies, not the run's maps: a lane's outputs end with the lane
+    const laneContext: ExpressionContext | undefined = expressionContext && {
+      ...expressionContext,
+      steps: { ...expressionContext.steps },
+      model: { ...expressionContext.model },
+    };
+    const binding: ForEachBinding = { name: "worker", value: scope };
+    const view = jobRun.laneView(lane.stepOf);
+    const levels = this.sortService.sort(
+      job.steps.map((step) => ({
+        name: step.name,
+        weight: step.weight,
+        dependencies: step.getDependencyNames(),
+      })),
+    ).levels;
+    const pending = (authored: string) =>
+      jobRun.getStep(lane.stepOf(authored))?.status === "pending";
+    const settle = (names: readonly string[]) => {
+      for (const name of names) {
+        if (!pending(name)) continue;
+        settleUnstartedStep(
+          job.getStep(name),
+          jobRun.getStep(lane.stepOf(name))!,
+          jobRun,
+          view,
+        );
+      }
+    };
+    const stepStream = (authored: string, stepOptions: StepOptions) => {
+      const stream = this.runStep(
+        workflow,
+        run,
+        job,
+        jobRun,
+        lane.stepOf(authored),
+        job.getStep(authored),
+        binding,
+        laneContext,
+        stepOptions,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      );
+      return hostSlots === undefined
+        ? stream
+        : hostSlots.run(stream, stepOptions.signal);
+    };
+
+    let cleanupOptions: StepOptions | undefined;
+    for (const level of levels) {
+      if (options.signal?.aborted) {
+        // as a plain job: after the abort only cleanup steps run, under the
+        // cleanup grace signal; the rest are settled
+        const runnable = level.filter((name) =>
+          pending(name) && runsAfterFailure(job.getStep(name)!, job, view)
+        );
+        settle(level.filter((name) => !runnable.includes(name)));
+        if (runnable.length === 0) continue;
+        cleanupOptions ??= {
+          ...laneOptions,
+          signal: cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS),
+          cleanupStepLevel: true,
+        };
+        for await (
+          const event of merge(
+            runnable.map((name) => stepStream(name, cleanupOptions!)),
+            cleanupOptions.signal,
+          )
+        ) {
+          yield event;
+        }
+        settle(runnable);
+        continue;
+      }
+      for await (
+        const event of merge(
+          level.map((name) => stepStream(name, laneOptions)),
+          options.signal,
+        )
+      ) {
+        yield event;
+      }
+      if (options.signal?.aborted) {
+        // only this lane's: other lanes' steps may still be finishing
+        for (const name of level) {
+          const stepRun = jobRun.getStep(lane.stepOf(name));
+          if (stepRun?.status === "running") {
+            stepRun.failStoppedByAbort(CANCELLED_STEP_ERROR);
+          }
+        }
+        settle(level);
+      }
+    }
+  }
+
   private async *runStep(
     workflow: Workflow,
     run: WorkflowRun,
@@ -5688,12 +6043,13 @@ export class WorkflowExecutionService {
       }
       // resume() already resolved completed steps into the context; only
       // read the datastore when this step is missing or its status moved.
+      const finishedKey = options.lane ? step.name : stepName;
       if (
         expressionContext?.steps &&
-        expressionContext.steps[stepName]?.status !== stepRun.status
+        expressionContext.steps[finishedKey]?.status !== stepRun.status
       ) {
         const resolved = await this.createStepOutputResolver().resolve(stepRun);
-        expressionContext.steps[stepName] = attachStepOutputSources(
+        expressionContext.steps[finishedKey] = attachStepOutputSources(
           { status: stepRun.status, outputs: resolved.outputs },
           resolved.sources,
         );
@@ -5719,7 +6075,10 @@ export class WorkflowExecutionService {
 
     // Check if step's trigger condition is met. A forEach iteration checks its
     // template's dependsOn, so every iteration is gated as a plain step is.
-    if (!reenterWait && !shouldStepRun(step, jobRun)) {
+    const conditionView = options.lane
+      ? jobRun.laneView(options.lane.stepOf)
+      : jobRun;
+    if (!reenterWait && !shouldStepRun(step, conditionView)) {
       if (options.cleanupStepLevel) {
         stepRun.skipUnstarted({ kind: "dependency" });
       } else {
@@ -6488,7 +6847,7 @@ export class WorkflowExecutionService {
           stepProvenance: options.stepProvenance,
           authoredExpressions: options.authoredExpressions,
           authoredStep: options.authoredWorkflow?.getJob(job.name)?.getStep(
-            forEachTemplate ?? stepName,
+            options.lane ? step.name : forEachTemplate ?? stepName,
           ),
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
@@ -6520,12 +6879,13 @@ export class WorkflowExecutionService {
             (options.stepProvenance ?? StepProvenanceOverlay.authored())
               .forStep(step).raw,
           ),
-          affinityKey: resolveAffinityKey(
+          affinityKey: options.lane ? undefined : resolveAffinityKey(
             workflow.affinity,
             job.affinity,
             run.id,
             job.name,
           ),
+          lane: options.lane && { worker: options.lane.worker },
           declaredWrites: step.writes ?? job.writes ?? workflow.writes,
         };
         return this.executeMethod(step, ctx, options);
@@ -6703,10 +7063,12 @@ export class WorkflowExecutionService {
         (stepRun.status === "succeeded" || stepRun.status === "failed" ||
           stepRun.status === "skipped" || stepRun.status === "unknown")
       ) {
-        stepExprContext.steps[stepName] = attachStepOutputSources(
-          { status: stepRun.status, outputs: liveOutputs?.outputs },
-          liveOutputs?.sources,
-        );
+        // a lane reads its own steps by their authored names
+        stepExprContext.steps[options.lane ? step.name : stepName] =
+          attachStepOutputSources(
+            { status: stepRun.status, outputs: liveOutputs?.outputs },
+            liveOutputs?.sources,
+          );
       }
       stepSpan.end();
     }
@@ -7771,7 +8133,7 @@ export class WorkflowExecutionService {
     // The resume below refuses while a nested run is unfinished; checked
     // first so a refused recover leaves the run as it was.
     await this.checkNestedWaitsSettled(run);
-    refuseFanOutJobs(workflow);
+    refuseFanOutResume(workflow, run);
 
     await this.runRepo.withdrawSettledStepStarts?.(
       workflow.id,
@@ -8150,8 +8512,12 @@ export class WorkflowExecutionService {
             : undefined,
         });
       } else {
-        const wfStep = workflow.jobs
-          .find((j) => j.name === jobName)?.getStep(stepName);
+        const wfJob = workflow.jobs.find((j) => j.name === jobName);
+        const wfStep = wfJob?.getStep(stepName) ??
+          wfJob?.getStep(
+            laneStepOf(stepName, run.getJob(jobName)?.fanOutPlan?.lanes)
+              ?.authored ?? "",
+          );
         const taskType = wfStep?.task.data.type ?? "unknown";
         stepExecutions.push({
           jobName,

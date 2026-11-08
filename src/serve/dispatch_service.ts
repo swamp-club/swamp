@@ -53,6 +53,7 @@ import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   describePlacement,
   hasPlacement,
+  laneDispatchVerdict,
   type ScheduleDecision,
   scheduleStep,
   type StepPlacement,
@@ -449,7 +450,19 @@ export class DispatchService {
           );
         }
       };
-      assertPinHeld();
+      // a lane is never sent to its worker once it may not take it
+      const lane = request.placement.lane;
+      const assertPlaceable = () => {
+        assertPinHeld();
+        if (!lane) return;
+        const verdict = laneDispatchVerdict(
+          this.#gateway!.worker(lane.worker),
+        );
+        if (verdict.kind === "ineligible") {
+          throw new WorkerIneligibleError(lane.worker, verdict.reason);
+        }
+      };
+      assertPlaceable();
 
       if (effectivePlacement.target) {
         const pool = this.#poolSnapshot();
@@ -491,7 +504,7 @@ export class DispatchService {
                 request.signal,
                 deadline,
                 emitQueued,
-                assertPinHeld,
+                assertPlaceable,
               ),
           )
           : effectivePlacement.target!;
@@ -571,7 +584,7 @@ export class DispatchService {
             : null;
           if (refusal !== null) {
             attemptWorker = undefined;
-            assertPinHeld();
+            assertPlaceable();
             if (
               refusal === "not_in_pool" || refusal === "disconnected" ||
               refusal === "draining" || refusal === "version_changed"
@@ -1388,6 +1401,21 @@ export class AffinityPlacementMismatchError extends Error {
     this.workerName = workerName;
     this.affinityKey = affinityKey;
     this.unmet = unmet;
+  }
+}
+
+export class WorkerIneligibleError extends Error {
+  readonly code = "worker_ineligible";
+  readonly workerName: string;
+  readonly reason: "unverified" | "draining";
+
+  constructor(workerName: string, reason: "unverified" | "draining") {
+    super(
+      `Worker '${workerName}' is ${reason} and can no longer take its fan-out lane (worker_ineligible); the lane is not sent`,
+    );
+    this.name = "WorkerIneligibleError";
+    this.workerName = workerName;
+    this.reason = reason;
   }
 }
 

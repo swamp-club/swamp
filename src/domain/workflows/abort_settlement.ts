@@ -26,6 +26,7 @@ import {
   CANCELLED_STEP_ERROR,
   type JobRun,
   type StepRun,
+  type StepStatusView,
   type WorkflowRun,
 } from "./workflow_run.ts";
 import {
@@ -60,7 +61,7 @@ export function shouldJobRun(job: Job, run: WorkflowRun): boolean {
   return true;
 }
 
-export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
+export function shouldStepRun(step: Step, jobRun: StepStatusView): boolean {
   if (step.dependsOn.length === 0) {
     return true;
   }
@@ -82,7 +83,7 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
 export function runsAfterFailure(
   step: Step,
   job: Job,
-  jobRun: JobRun,
+  jobRun: StepStatusView,
 ): boolean {
   const known = new Map<string, boolean>();
   const isCleanup = (candidate: Step): boolean => {
@@ -170,8 +171,9 @@ export function settleUnstartedStep(
   step: Step | undefined,
   stepRun: StepRun,
   jobRun: JobRun,
+  view: StepStatusView = jobRun,
 ): void {
-  if (step && !shouldStepRun(step, jobRun)) {
+  if (step && !shouldStepRun(step, view)) {
     stepRun.skipUnstarted({ kind: "dependency" });
   } else if (!step?.guard) {
     jobRun.cancelPendingSteps([stepRun.stepName]);

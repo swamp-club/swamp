@@ -891,3 +891,33 @@ Deno.test("resolveResumableRun: byId bare resume resolves the workflow whose id 
   assertEquals(result.workflowId, target.id);
   assertEquals(result.run.id, targetRun.id);
 });
+
+function withFanOutPlan(run: WorkflowRun): WorkflowRun {
+  run.jobs[0].recordFanOutPlan({
+    kind: "planned",
+    members: [{ worker: "w-a", instanceUuid: "u-a", disposition: "dispatch" }],
+    plannedLanes: 1,
+    maxFailures: null,
+  }, [["w-a"]]);
+  return run;
+}
+
+Deno.test("resolveResumableRun: a run that holds a fan-out plan is refused with the deferred-resume message on every path, before retry planning", async () => {
+  const wf = createWorkflow("fleet");
+  const failed = withFanOutPlan(createFailedRun(wf));
+  const suspended = withFanOutPlan(createSuspendedRun(wf));
+  const cases: [WorkflowRun, string | undefined, { fromStep?: string }][] = [
+    [failed, failed.id, {}],
+    [failed, failed.id, FROM],
+    [failed, undefined, FROM],
+    [suspended, undefined, {}],
+  ];
+  for (const [run, runId, options] of cases) {
+    const { workflowRepo, runRepo } = stubRepos(wf, [run]);
+    await assertRejects(
+      () => resolveResumableRun(workflowRepo, runRepo, "fleet", runId, options),
+      UserError,
+      "resuming a run with a fan-out job arrives in the next release",
+    );
+  }
+});

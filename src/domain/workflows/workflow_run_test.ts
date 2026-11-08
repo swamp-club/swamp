@@ -3842,10 +3842,7 @@ function plannedFanOut() {
 
 Deno.test("JobRun.recordFanOutPlan: records members with their batch and one lane per laned member in batch order", () => {
   const job = JobRun.pending("patch", ["apply", "verify"]);
-  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]], [
-    "apply",
-    "verify",
-  ]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]]);
   const plan = job.fanOutPlan!;
   assertEquals(plan.plannedLanes, 2);
   assertEquals(plan.maxFailures, 0);
@@ -3872,31 +3869,23 @@ Deno.test("JobRun.recordFanOutPlan: records members with their batch and one lan
     },
   ]);
   assertEquals(
-    plan.lanes.map((lane) => [
-      lane.name,
-      lane.worker,
-      lane.instanceUuid,
-      lane.steps.map((step) => [step.stepName, step.status]),
-    ]),
+    plan.lanes.map((lane) => [lane.name, lane.worker, lane.instanceUuid]),
     [
-      ["patch[host-a]", "host-a", "uuid-a", [["apply", "pending"], [
-        "verify",
-        "pending",
-      ]]],
-      ["patch[host-b]", "host-b", "uuid-b", [["apply", "pending"], [
-        "verify",
-        "pending",
-      ]]],
+      ["patch[host-a]", "host-a", "uuid-a"],
+      ["patch[host-b]", "host-b", "uuid-b"],
     ],
+  );
+  assertEquals(
+    job.toData().fanOutPlan?.lanes.map((lane) => lane.steps),
+    [[], []],
   );
 });
 
 Deno.test("JobRun.recordFanOutPlan: a second plan is refused", () => {
   const job = JobRun.pending("patch", ["apply"]);
-  job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]], ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]]);
   assertThrows(
-    () =>
-      job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]], ["apply"]),
+    () => job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]]),
     Error,
     "already holds a fan-out plan",
   );
@@ -3913,7 +3902,7 @@ Deno.test("JobRun.recordFanOutPlan: a worker listed twice, among members or acro
       JobRun.pending("patch", ["apply"]).recordFanOutPlan(duplicated, [[
         "host-a",
         "host-b",
-      ]], ["apply"]),
+      ]]),
     Error,
     "lists 'host-a' more than once",
   );
@@ -3922,7 +3911,7 @@ Deno.test("JobRun.recordFanOutPlan: a worker listed twice, among members or acro
       JobRun.pending("patch", ["apply"]).recordFanOutPlan(plannedFanOut(), [
         ["host-a"],
         ["host-a", "host-b"],
-      ], ["apply"]),
+      ]),
     Error,
     "lists 'host-a' in more than one batch",
   );
@@ -3931,7 +3920,7 @@ Deno.test("JobRun.recordFanOutPlan: a worker listed twice, among members or acro
 Deno.test("JobRun.recordFanOutPlan: a laned member missing from every batch is refused", () => {
   const job = JobRun.pending("patch", ["apply"]);
   assertThrows(
-    () => job.recordFanOutPlan(plannedFanOut(), [["host-a"]], ["apply"]),
+    () => job.recordFanOutPlan(plannedFanOut(), [["host-a"]]),
     Error,
     "has lane 'host-b' in no batch",
   );
@@ -3940,14 +3929,14 @@ Deno.test("JobRun.recordFanOutPlan: a laned member missing from every batch is r
 
 Deno.test("JobRun: a recorded fan-out plan round-trips through toData and fromData", () => {
   const job = JobRun.pending("patch", ["apply"]);
-  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]], ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]]);
   const data = job.toData();
   const again = JobRun.fromData(JSON.parse(JSON.stringify(data)));
   assertEquals(
     JSON.parse(JSON.stringify(again.toData())),
     JSON.parse(JSON.stringify(data)),
   );
-  assertEquals(again.fanOutPlan?.lanes[1].steps[0].stepName, "apply");
+  assertEquals(again.fanOutPlan?.lanes[1].worker, "host-b");
 });
 
 Deno.test("JobRun: a job run recorded before fan-out plans loads and saves without the key", () => {
@@ -4010,4 +3999,59 @@ Deno.test("WorkflowRun: an unfamiliar client value still loads, so a record neve
     client: "future-kind:thing",
   };
   assertEquals(WorkflowRun.fromData(data).client, "future-kind:thing");
+});
+
+Deno.test("JobRun.expandLanes: replaces the authored step records with lane records that carry no forEach template", () => {
+  const job = JobRun.pending("patch", ["apply", "verify"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]]);
+  job.expandLanes(["apply[host-a]", "verify[host-a]", "apply[host-b]"]);
+  assertEquals(
+    job.steps.map((step) => [step.stepName, step.status, step.forEachTemplate]),
+    [
+      ["apply[host-a]", "pending", undefined],
+      ["verify[host-a]", "pending", undefined],
+      ["apply[host-b]", "pending", undefined],
+    ],
+  );
+  assertEquals(job.getStatus("apply"), undefined);
+});
+
+Deno.test("JobRun.expandLanes: refused without a plan, or once a step has left pending", () => {
+  assertThrows(
+    () => JobRun.pending("patch", ["apply"]).expandLanes(["apply[host-a]"]),
+    Error,
+    "has no fan-out plan",
+  );
+  const job = JobRun.pending("patch", ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]]);
+  job.getStep("apply")!.start();
+  assertThrows(
+    () => job.expandLanes(["apply[host-a]"]),
+    Error,
+    "step 'apply' is already running",
+  );
+});
+
+Deno.test("JobRun.laneView: a lane reads its own steps' status and guard skips, never another lane's", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]]);
+  job.expandLanes(["apply[host-a]", "apply[host-b]"]);
+  job.getStep("apply[host-a]")!.start();
+  job.getStep("apply[host-a]")!.succeed();
+  job.getStep("apply[host-b]")!.skip({ kind: "guarded" });
+  const a = job.laneView((step) => `${step}[host-a]`);
+  const b = job.laneView((step) => `${step}[host-b]`);
+  assertEquals(a.getStatus("apply"), "succeeded");
+  assertEquals(a.skippedByGuard("apply"), false);
+  assertEquals(b.getStatus("apply"), "skipped");
+  assertEquals(b.skippedByGuard("apply"), true);
+  assertEquals(a.getStatus("verify"), undefined);
+});
+
+Deno.test("JobRun: a stored lane record holding step records is refused", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a", "host-b"]]);
+  const data = JSON.parse(JSON.stringify(job.toData()));
+  data.fanOutPlan.lanes[0].steps = [{ stepName: "apply", status: "succeeded" }];
+  assertThrows(() => JobRun.fromData(data));
 });

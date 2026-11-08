@@ -39,3 +39,14 @@ export interface PoolWorker {
 export interface WorkerPoolReader {
   readPool(): Promise<PoolWorker[]>;
 }
+
+// module-level so a nested run, which gets a fresh execution service, still reaches serve's pool
+let activeReader: WorkerPoolReader | null = null;
+
+export function setWorkerPoolReader(reader: WorkerPoolReader | null): void {
+  activeReader = reader;
+}
+
+export function getWorkerPoolReader(): WorkerPoolReader | null {
+  return activeReader;
+}

@@ -29,6 +29,7 @@ import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
 import { entryTemplateOf, fromJobFor } from "./failed_step_retry.ts";
+import { refuseFanOutResume } from "./fan_out_job.ts";
 import { assertNestedWaitsSettled } from "./nested_run_link.ts";
 import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import {
@@ -228,6 +229,7 @@ export async function resolveResumableRun(
         ownerIsDead: options.ownerIsDead,
       },
     );
+    refuseFanOutResume(resolved.workflow, resolved.run);
     checkSuspendedRunResume(resolved.workflow, resolved.run);
     await assertNestedWaitsSettled(
       { runRepo, workflowRepo, signalWaits: options.signalWaits },
@@ -266,13 +268,17 @@ export async function resolveResumableRun(
           `--from requires a failed run, but run ${runId} has status "${run.status}"`,
         );
       }
+      // before retry planning, whose refusal would name a lane step instead
+      refuseFanOutResume(workflow, run);
       planFailedRunResume(workflow, run, {
         step: options.fromStep,
         job: options.fromJob,
       });
     } else if (run.status === "failed") {
+      refuseFanOutResume(workflow, run);
       planFailedRunResume(workflow, run);
     } else if (run.status === "suspended") {
+      refuseFanOutResume(workflow, run);
       checkSuspendedRunResume(workflow, run);
       await assertNestedWaitsSettled(
         { runRepo, workflowRepo, signalWaits: options.signalWaits },
@@ -308,6 +314,7 @@ export async function resolveResumableRun(
     );
   }
 
+  refuseFanOutResume(workflow, failedRuns[0]);
   planFailedRunResume(
     workflow,
     failedRuns[0],

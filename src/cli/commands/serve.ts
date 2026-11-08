@@ -272,6 +272,8 @@ import {
   setRemoteOnlyMode,
   setRemoteStepDispatcher,
 } from "../../domain/remote/remote_dispatch.ts";
+import { setWorkerPoolReader } from "../../domain/remote/worker_pool.ts";
+import { createServeWorkerPoolReader } from "../../serve/worker_pool_reader.ts";
 import {
   isDeniedEnvVar,
   parseDispatchEnvAllow,
@@ -3753,6 +3755,12 @@ export const serveCommand = new Command()
     });
     dispatchService.bindGateway(workerGateway);
     setRemoteStepDispatcher(dispatchService);
+    setWorkerPoolReader(createServeWorkerPoolReader({
+      gateway: workerGateway,
+      query: (predicate, options) =>
+        repoContext.dataQueryService.query(predicate, options),
+      namespace: repoContext.unifiedDataRepo.namespace,
+    }));
     if (merged.remoteOnly) {
       setRemoteOnlyMode(true);
       logger.info(
@@ -8438,6 +8446,7 @@ export const serveCommand = new Command()
         }, "floor");
       }
       rejectionGuard.dispose();
+      setWorkerPoolReader(null);
       setRemoteStepDispatcher(null);
       setTokenRefusalNodeState(undefined);
       setRemoteOnlyMode(false);

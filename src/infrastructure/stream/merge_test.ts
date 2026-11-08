@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { merge, mergeGated, mergeWithConcurrency } from "./merge.ts";
+import {
+  merge,
+  mergeGated,
+  mergeWithConcurrency,
+  sharedGate,
+} from "./merge.ts";
 
 async function* fromArray<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) {
@@ -647,4 +652,50 @@ Deno.test("mergeGated: a gate a stream names twice is taken once", async () => {
     new Map([["a", 1]]),
   ));
   assertEquals(items.sort(), [1, 2]);
+});
+
+Deno.test("sharedGate: streams under different merges share one limit", async () => {
+  const gate = sharedGate(1);
+  let active = 0;
+  let peak = 0;
+  async function* tracked(label: string): AsyncGenerator<string> {
+    active++;
+    peak = Math.max(peak, active);
+    await Promise.resolve();
+    yield label;
+    active--;
+  }
+  const first = collect(
+    merge([gate.run(tracked("a1")), gate.run(tracked("a2"))]),
+  );
+  const second = collect(
+    merge([gate.run(tracked("b1")), gate.run(tracked("b2"))]),
+  );
+  const items = [...await first, ...await second];
+  assertEquals(items.sort(), ["a1", "a2", "b1", "b2"]);
+  assertEquals(peak, 1);
+});
+
+Deno.test("sharedGate: a stream aborted while waiting for a slot ends without starting", async () => {
+  const gate = sharedGate(1);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => release = resolve);
+  async function* holder(): AsyncGenerator<string> {
+    yield "held";
+    await held;
+  }
+  let started = false;
+  async function* waiter(): AsyncGenerator<string> {
+    started = true;
+    yield "never";
+  }
+  const first = gate.run(holder())[Symbol.asyncIterator]();
+  assertEquals((await first.next()).value, "held");
+  const controller = new AbortController();
+  const waiting = collect(gate.run(waiter(), controller.signal));
+  controller.abort();
+  assertEquals(await waiting, []);
+  assertEquals(started, false);
+  release();
+  await first.next();
 });

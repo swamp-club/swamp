@@ -26,7 +26,11 @@ import { WorkflowRun } from "../workflows/workflow_run.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 import { createWorkflowId } from "../workflows/workflow_id.ts";
 import type { OutputRepository } from "../models/repositories.ts";
-import type { WorkflowRunRepository } from "../workflows/repositories.ts";
+import type {
+  WorkflowRepository,
+  WorkflowRunRepository,
+} from "../workflows/repositories.ts";
+import { Workflow } from "../workflows/workflow.ts";
 import type { DataRepositoryReader } from "./summary_types.ts";
 import { Data } from "../data/data.ts";
 
@@ -601,4 +605,74 @@ Deno.test("summarise - default (no limit) preserves all runs in details", async 
 
   assertEquals(result.methodExecutions[0].methods[0].runs.length, 50);
   assertEquals(result.methodExecutions[0].methods[0].truncated, undefined);
+});
+
+Deno.test("summarise - a fan-out lane step names its authored step's behavior on that lane's worker", async () => {
+  const workflow = Workflow.fromData(
+    {
+      id: crypto.randomUUID(),
+      name: "fleet",
+      jobs: [{
+        name: "patch",
+        fanOut: "all",
+        labels: { role: "web" },
+        steps: [{
+          name: "apply",
+          task: {
+            type: "model_method",
+            modelType: "command/shell",
+            modelName: "host-patch",
+            methodName: "execute",
+          },
+        }],
+      }],
+    } as Parameters<typeof Workflow.fromData>[0],
+  );
+  const run = WorkflowRun.fromData({
+    id: crypto.randomUUID(),
+    workflowId: workflow.id,
+    workflowName: "fleet",
+    status: "succeeded" as const,
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    jobs: [{
+      jobName: "patch",
+      status: "succeeded" as const,
+      steps: [{ stepName: "apply[w-a]", status: "succeeded" as const }],
+      fanOutPlan: {
+        members: [{
+          worker: "w-a",
+          instanceUuid: "u-a",
+          disposition: "dispatch" as const,
+          batch: 0,
+        }],
+        plannedLanes: 1,
+        maxFailures: null,
+        batches: [["w-a"]],
+        lanes: [{
+          name: "patch[w-a]",
+          worker: "w-a",
+          instanceUuid: "u-a",
+          steps: [],
+        }],
+      },
+    }],
+    tags: {},
+  });
+  const service = new SummaryService(
+    createMockOutputRepo([]),
+    createMockWorkflowRunRepo([{ run, workflowId: workflow.id }]),
+    createMockDataRepo([]),
+    undefined,
+    {
+      findAll: () => Promise.resolve([workflow]),
+    } as unknown as WorkflowRepository,
+  );
+
+  const result = await service.summarise(new Date(0));
+
+  assertEquals(
+    result.workflows[0].runs[0].steps[0].modelName,
+    "host-patch-w-a",
+  );
 });

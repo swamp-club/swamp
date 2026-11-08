@@ -25,6 +25,10 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../workflows/repositories.ts";
+import {
+  laneStepOf,
+  perWorkerBehaviorName,
+} from "../workflows/fan_out_lanes.ts";
 import type {
   ActivitySummary,
   DataModelGroup,
@@ -248,7 +252,8 @@ export class SummaryService {
           steps.push({
             jobName: job.jobName,
             stepName: step.stepName,
-            modelName: stepModels.get(step.stepName),
+            modelName: stepModels.get(step.stepName) ??
+              laneModelName(stepModels, step.stepName, job.fanOutPlan?.lanes),
             // A wait for a signal is shown as `waiting` however it is stored.
             status: step.isSignalWait ? "waiting" : step.status,
             durationMs,
@@ -321,4 +326,17 @@ export class SummaryService {
       byModelType,
     };
   }
+}
+
+function laneModelName(
+  stepModels: ReadonlyMap<string, string>,
+  stepName: string,
+  lanes: readonly { readonly worker: string }[] | undefined,
+): string | undefined {
+  const lane = laneStepOf(stepName, lanes);
+  if (lane === undefined) return undefined;
+  const authored = stepModels.get(lane.authored);
+  return authored === undefined
+    ? undefined
+    : perWorkerBehaviorName(authored, lane.worker);
 }

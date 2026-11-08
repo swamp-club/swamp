@@ -43,6 +43,30 @@ export interface StepPlacement {
    * pinned worker disconnects
    */
   affinityKey?: string;
+  /** set only by the fan-out lane engine; the lane's step never moves off this worker */
+  lane?: FanOutLanePin;
+}
+
+// the worker name: its token binds it to one machine, so a restarted process
+// (a new instance UUID) is still the planned member
+export interface FanOutLanePin {
+  readonly worker: string;
+}
+
+export type LaneDispatchVerdict =
+  | { kind: "dispatch" }
+  | { kind: "wait" }
+  | { kind: "ineligible"; reason: "unverified" | "draining" };
+
+/** a lane never queues behind a worker that may not take it */
+export function laneDispatchVerdict(
+  worker: Pick<SchedulableWorker, "status" | "connected"> | null,
+): LaneDispatchVerdict {
+  if (worker === null) return { kind: "wait" };
+  if (worker.status === "unverified" || worker.status === "draining") {
+    return { kind: "ineligible", reason: worker.status };
+  }
+  return worker.connected ? { kind: "dispatch" } : { kind: "wait" };
 }
 
 export interface SchedulableWorker {

@@ -44,6 +44,8 @@ import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { setRemoteStepDispatcher } from "../src/domain/remote/remote_dispatch.ts";
+import { setWorkerPoolReader } from "../src/domain/remote/worker_pool.ts";
+import { createServeWorkerPoolReader } from "../src/serve/worker_pool_reader.ts";
 import type { StepPlacement } from "../src/domain/remote/scheduler.ts";
 import { RpcChannel } from "../src/domain/remote/rpc_channel.ts";
 import {
@@ -113,7 +115,7 @@ export interface FleetWorkerOptions {
 /** A worker connected to the fleet's serve, in this process. */
 export class FleetWorker {
   readonly name: string;
-  readonly instanceUuid = crypto.randomUUID();
+  #instanceUuid = crypto.randomUUID();
   readonly received: ReceivedDispatch[] = [];
   behavior: DispatchBehavior = { kind: "succeed" };
   #fleet: Fleet;
@@ -162,6 +164,16 @@ export class FleetWorker {
     for (const resume of this.#held.splice(0, count)) resume();
   }
 
+  get instanceUuid(): string {
+    return this.#instanceUuid;
+  }
+
+  /** A restarted worker process: same machine and token, new instance UUID. */
+  async restart(): Promise<void> {
+    this.#instanceUuid = crypto.randomUUID();
+    await this.connect();
+  }
+
   /** Opens a control socket and enrolls (a reconnect after the first time). */
   async connect(): Promise<void> {
     const channel: RpcChannel = new RpcChannel({
@@ -181,7 +193,7 @@ export class FleetWorker {
       RemoteMethod.enroll,
       {
         token: this.#token,
-        instanceUuid: this.instanceUuid,
+        instanceUuid: this.#instanceUuid,
         machineId: `machine-${this.name}`,
         protocolVersion: REMOTE_PROTOCOL_VERSION,
         swampVersion: "test",
@@ -404,6 +416,12 @@ export class Fleet implements AsyncDisposable {
         },
       });
       setRemoteStepDispatcher(dispatchService);
+      setWorkerPoolReader(createServeWorkerPoolReader({
+        gateway,
+        query: (predicate, options) =>
+          repoContext.dataQueryService.query(predicate, options),
+        namespace: repoContext.unifiedDataRepo.namespace,
+      }));
       return new Fleet(
         dir,
         repo,
@@ -414,6 +432,7 @@ export class Fleet implements AsyncDisposable {
         unverified,
       );
     } catch (error) {
+      setWorkerPoolReader(null);
       setRemoteStepDispatcher(null);
       gateway?.dispose();
       await server?.shutdown();
@@ -505,15 +524,18 @@ export class Fleet implements AsyncDisposable {
   }
 
   /** Runs a saved workflow through serve's run entry; returns the finished run. */
-  async runWorkflow(name: string): Promise<WorkflowRunView> {
+  async runWorkflow(
+    name: string,
+    options: { signal?: AbortSignal; lastEvaluated?: boolean } = {},
+  ): Promise<WorkflowRunView> {
     let run: WorkflowRunView | undefined;
     let error: unknown;
     await executeWorkflowWithLocks(
       this.repoDir,
       this.repoContext,
       this.#repo.datastoreConfig,
-      { workflowIdOrName: name },
-      new AbortController().signal,
+      { workflowIdOrName: name, lastEvaluated: options.lastEvaluated },
+      options.signal ?? new AbortController().signal,
       (event: WorkflowRunEvent) => {
         if (event.kind === "completed") run = event.run;
         if (event.kind === "error") error = event.error;
@@ -629,6 +651,7 @@ export class Fleet implements AsyncDisposable {
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
+    setWorkerPoolReader(null);
     setRemoteStepDispatcher(null);
     try {
       // Stop new dispatches first, then let any held one finish.

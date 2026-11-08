@@ -23,6 +23,7 @@ import {
   describePlacement,
   eligibleWorkers,
   hasPlacement,
+  laneDispatchVerdict,
   planFanOut,
   type SchedulableWorker,
   scheduleStep,
@@ -755,4 +756,30 @@ Deno.test("planFanOut: throws when the pool repeats a worker name", () => {
     Error,
     "more than once",
   );
+});
+
+Deno.test("laneDispatchVerdict: a connected idle or busy worker takes its lane, whatever its instance UUID", () => {
+  for (const status of ["idle", "busy"] as const) {
+    assertEquals(laneDispatchVerdict({ status, connected: true }), {
+      kind: "dispatch",
+    });
+  }
+});
+
+Deno.test("laneDispatchVerdict: a worker absent from the pool or disconnected makes the lane wait", () => {
+  assertEquals(laneDispatchVerdict(null), { kind: "wait" });
+  assertEquals(laneDispatchVerdict({ status: "idle", connected: false }), {
+    kind: "wait",
+  });
+});
+
+Deno.test("laneDispatchVerdict: an unverified or draining worker is ineligible, connected or not", () => {
+  for (const status of ["unverified", "draining"] as const) {
+    for (const connected of [true, false]) {
+      assertEquals(laneDispatchVerdict({ status, connected }), {
+        kind: "ineligible",
+        reason: status,
+      });
+    }
+  }
 });
