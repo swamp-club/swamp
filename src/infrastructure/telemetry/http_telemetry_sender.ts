@@ -39,15 +39,23 @@ export class HttpTelemetrySender implements TelemetrySender {
     // insert_id is the ingest idempotency key, so a re-POST is deduplicated
     // rather than counted twice; endpoint is local spool routing, not event
     // data
+    // the entry's own repo and distinct id win: the sender may be draining
+    // entries other commands recorded
     const events = entries.map((entry) => {
-      const { endpoint: _endpoint, ...data } = entry.toData();
+      const {
+        endpoint: _endpoint,
+        repoId: entryRepoId,
+        distinctId: entryDistinctId,
+        ...data
+      } = entry.toData();
+      const sentRepoId = entryRepoId ?? repoId;
       return {
         event: "cli_invocation",
-        distinct_id: distinctId,
+        distinct_id: entryDistinctId ?? distinctId,
         insert_id: entry.id,
         properties: {
           ...data,
-          ...(repoId ? { $repo_id: repoId } : {}),
+          ...(sentRepoId ? { $repo_id: sentRepoId } : {}),
         },
       };
     });

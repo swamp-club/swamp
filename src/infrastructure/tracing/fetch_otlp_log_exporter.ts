@@ -24,6 +24,10 @@ import type {
 import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
 import { JsonLogsSerializer } from "@opentelemetry/otlp-transformer";
+import {
+  type ExportQueueLimits,
+  OtlpExportQueue,
+} from "./otlp_export_queue.ts";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -31,6 +35,7 @@ export interface FetchOtlpLogExporterConfig {
   url: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
+  limits?: ExportQueueLimits;
 }
 
 /**
@@ -40,9 +45,7 @@ export interface FetchOtlpLogExporterConfig {
 export class FetchOtlpLogExporter implements LogRecordExporter {
   readonly #url: string;
   readonly #headers: Record<string, string>;
-  readonly #timeoutMs: number;
-  readonly #inFlight = new Set<Promise<void>>();
-  #shutdown = false;
+  readonly #queue: OtlpExportQueue<ReadableLogRecord>;
 
   constructor(config: FetchOtlpLogExporterConfig) {
     this.#url = config.url;
@@ -50,61 +53,54 @@ export class FetchOtlpLogExporter implements LogRecordExporter {
       "content-type": "application/json",
       ...config.headers,
     };
-    this.#timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#queue = new OtlpExportQueue<ReadableLogRecord>({
+      ...config.limits,
+      timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      send: (logs, signal) => this.#send(logs, signal),
+    });
   }
 
   export(
     logs: ReadableLogRecord[],
     resultCallback: (result: ExportResult) => void,
   ): void {
-    if (this.#shutdown) {
-      resultCallback({ code: ExportResultCode.FAILED });
-      return;
-    }
-
-    const pending = this.#send(logs).then(
-      () => resultCallback({ code: ExportResultCode.SUCCESS }),
-      () => resultCallback({ code: ExportResultCode.FAILED }),
-    );
-    const tracked = pending.finally(() => {
-      this.#inFlight.delete(tracked);
+    this.#queue.enqueue(logs, (ok) => {
+      resultCallback({
+        code: ok ? ExportResultCode.SUCCESS : ExportResultCode.FAILED,
+      });
     });
-    this.#inFlight.add(tracked);
   }
 
   forceFlush(): Promise<void> {
-    return Promise.all([...this.#inFlight]).then(() => {});
+    return this.#queue.forceFlush();
   }
 
-  async shutdown(): Promise<void> {
-    this.#shutdown = true;
-    // drain in-flight sends here: LoggerProvider.forceFlush does not reach the
-    // processor's exporter, only shutdown does
-    await this.forceFlush();
+  /**
+   * drains queued sends within the exit bound here: LoggerProvider.forceFlush
+   * does not reach the processor's exporter, only shutdown does
+   */
+  shutdown(): Promise<void> {
+    return this.#queue.shutdown();
   }
 
-  async #send(logs: ReadableLogRecord[]): Promise<void> {
-    const body = JsonLogsSerializer.serializeRequest(logs);
+  async #send(
+    logs: readonly ReadableLogRecord[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const body = JsonLogsSerializer.serializeRequest([...logs]);
     if (!body) return;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+    const response = await fetch(this.#url, {
+      method: "POST",
+      headers: this.#headers,
+      body: body.buffer as ArrayBuffer,
+      signal,
+    });
 
-    try {
-      const response = await fetch(this.#url, {
-        method: "POST",
-        headers: this.#headers,
-        body: body.buffer as ArrayBuffer,
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        await response.arrayBuffer();
-      } else {
-        await response.body?.cancel();
-      }
-    } finally {
-      clearTimeout(timer);
+    if (!response.ok) {
+      await response.arrayBuffer();
+    } else {
+      await response.body?.cancel();
     }
   }
 }

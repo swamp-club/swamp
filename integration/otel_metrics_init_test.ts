@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { waitFor, withMockedFetch } from "@swamp-club/swamp-testing";
 import { metrics } from "@opentelemetry/api";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { observeExecution } from "../src/domain/remote/observability.ts";
@@ -70,5 +71,48 @@ Deno.test("initExecutionMetrics: installs once, exports configured metrics at sh
   } finally {
     await shutdownExecutionMetrics();
     await server.shutdown();
+  }
+});
+
+Deno.test("shutdownExecutionMetrics: stops waiting at the exit deadline while a silent collector holds the final export", async () => {
+  const held = { requests: 0, abandoned: false, answered: false };
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => release = resolve);
+  try {
+    await withMockedFetch(
+      (request) =>
+        new Promise<Response>((resolve, reject) => {
+          held.requests++;
+          request.signal.addEventListener("abort", () => {
+            held.abandoned = true;
+            reject(request.signal.reason);
+          });
+          gate.then(() => {
+            held.answered = true;
+            resolve(Response.json({}));
+          });
+        }),
+      () =>
+        withMockedEnv({
+          OTEL_METRICS_EXPORTER: "otlp",
+          OTEL_TRACES_EXPORTER: "none",
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.test",
+          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: undefined,
+          OTEL_EXPORTER_OTLP_METRICS_HEADERS: undefined,
+        }, async () => {
+          await initExecutionMetrics();
+          observeExecution("query.execute").end("ok");
+
+          await shutdownExecutionMetrics(Date.now() + 200);
+
+          assertEquals(held.requests, 1);
+          assertEquals(held.abandoned, false);
+          assertEquals(held.answered, false);
+          release();
+          await waitFor(() => held.answered, "the held export to be answered");
+        }),
+    );
+  } finally {
+    release();
   }
 });

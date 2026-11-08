@@ -33,14 +33,10 @@ import { getOutputModeFromArgs } from "./src/cli/context.ts";
 import {
   initTracing,
   runWithParentTrace,
-  shutdownLogs,
-  shutdownTracing,
+  shutdownObservability,
 } from "./src/infrastructure/tracing/mod.ts";
 import { VERSION } from "./src/cli/commands/version.ts";
-import {
-  initExecutionMetrics,
-  shutdownExecutionMetrics,
-} from "./src/infrastructure/tracing/otel_metrics_init.ts";
+import { initExecutionMetrics } from "./src/infrastructure/tracing/otel_metrics_init.ts";
 import { commandSurfaceFromArgs } from "./src/cli/command_surface_args.ts";
 import { extractCommandInfo } from "./src/cli/telemetry_integration.ts";
 import { commandLanded } from "./src/infrastructure/datastore_v3/command_landed.ts";
@@ -102,12 +98,7 @@ if (import.meta.main) {
     renderError(error, outputMode, commandSurfaceFromArgs(Deno.args), context);
     errorExitCode = exitCodeForError(error, context);
   } finally {
-    // Drain the OTLP logs signal before spans — shutdownLogs() awaits the
-    // exporter's in-flight sends so the last log records aren't cut by
-    // Deno.exit. Both are no-ops when their signal was never initialized.
-    await shutdownLogs();
-    await shutdownTracing();
-    await shutdownExecutionMetrics();
+    await shutdownObservability();
   }
 
   // Explicit exit so fire-and-forget promises (background update check,

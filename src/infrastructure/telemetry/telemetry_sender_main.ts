@@ -27,7 +27,7 @@ import { globalTelemetryDir } from "../persistence/paths.ts";
 import { UserIdentityRepository } from "../persistence/user_identity_repository.ts";
 import { HttpTelemetrySender } from "./http_telemetry_sender.ts";
 import {
-  drainTelemetrySpool,
+  drainAndLinger,
   heartbeatSenderLock,
   parseSenderArgs,
   releaseSenderLock,
@@ -40,6 +40,11 @@ export interface SenderMainDeps {
   readonly userId?: () => Promise<string | null>;
   readonly authToken?: () => Promise<string | undefined>;
   readonly requestTimeoutMs?: number;
+  readonly lingerMs?: number;
+  readonly pollMs?: number;
+  readonly maxLifetimeMs?: number;
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 async function loadAuthToken(): Promise<string | undefined> {
@@ -76,8 +81,7 @@ export async function runTelemetrySenderMain(
     // distinct_id is required by the ingest; without one entries stay spooled
     const distinctId = userId ?? options.repoId;
     if (distinctId !== undefined) {
-      const authToken = await (deps.authToken ?? loadAuthToken)();
-      await drainTelemetrySpool({
+      await drainAndLinger({
         service,
         sender: (deps.sender ??
           ((endpoint, userAgent) =>
@@ -87,12 +91,19 @@ export async function runTelemetrySenderMain(
           ),
         distinctId,
         ...(options.repoId !== undefined ? { repoId: options.repoId } : {}),
-        ...(authToken !== undefined ? { authToken } : {}),
+        readAuthToken: deps.authToken ?? loadAuthToken,
         keepFlushed: options.keepFlushed,
         heartbeat: () => heartbeatSenderLock(lockPath, options.token),
         ...(deps.requestTimeoutMs !== undefined
           ? { requestTimeoutMs: deps.requestTimeoutMs }
           : {}),
+        ...(deps.lingerMs !== undefined ? { lingerMs: deps.lingerMs } : {}),
+        ...(deps.pollMs !== undefined ? { pollMs: deps.pollMs } : {}),
+        ...(deps.maxLifetimeMs !== undefined
+          ? { maxLifetimeMs: deps.maxLifetimeMs }
+          : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+        ...(deps.sleep !== undefined ? { sleep: deps.sleep } : {}),
       });
     }
     await service.cleanupOldTelemetry();

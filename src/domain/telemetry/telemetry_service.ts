@@ -101,6 +101,11 @@ export const HARD_RETENTION_DAYS = 7;
  */
 const QUARANTINE_RETENTION_DAYS = 30;
 
+export interface TelemetryIdentity {
+  readonly repoId?: string;
+  readonly distinctId?: string;
+}
+
 /**
  * invocationContext is captured once as it does not change within an
  * invocation; invocationId is pre-allocated so child entries can use it as
@@ -130,6 +135,8 @@ export class TelemetryService {
      */
     private readonly endpoint?: string,
     private readonly flushRecords?: TelemetryFlushRecordRepository,
+    /** stamped on each entry so a later sender reports it as recorded */
+    private readonly identity?: TelemetryIdentity,
   ) {
     this.invocationId = invocationId ?? generateTelemetryId();
   }
@@ -160,6 +167,8 @@ export class TelemetryService {
       triggerSource ?? this.triggerSource,
       initiatedBy,
       this.endpoint,
+      undefined,
+      this.identity,
     );
   }
 
@@ -180,6 +189,7 @@ export class TelemetryService {
       triggerSource: this.triggerSource,
       initiatedBy: this.initiatedBy,
       endpoint: this.endpoint,
+      ...this.identity,
     });
 
     await this.repository.save(entry);
@@ -209,6 +219,7 @@ export class TelemetryService {
       triggerSource: this.triggerSource,
       initiatedBy: this.initiatedBy,
       endpoint: this.endpoint,
+      ...this.identity,
     });
 
     await this.repository.save(entry);
@@ -245,6 +256,7 @@ export class TelemetryService {
       triggerSource: this.triggerSource,
       initiatedBy: this.initiatedBy,
       endpoint: this.endpoint,
+      ...this.identity,
     });
 
     await this.repository.save(entry);

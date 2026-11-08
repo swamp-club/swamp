@@ -47,6 +47,7 @@ export {
   withSpan,
 } from "./tracer.ts";
 export { extractTraceContext, injectTraceContext } from "./propagation.ts";
+export { shutdownObservability } from "./otel_shutdown.ts";
 export { adoptAuthenticatedParent } from "./adopted_parent.ts";
 
 export {

@@ -18,10 +18,18 @@ something a primitive depends on, move it to `enablers/` and give it an
   and exits without waiting (swamp-club#4457). The awaited send cost a
   command up to its 2 s timeout. The sender drains the spool in batches with
   a timeout per request, records the flush result, cleans the spool, and
-  exits once the spool is empty, a send fails or another sender took the
-  lock; a lock not touched for 60 s was left by a dead sender and is taken
-  over. The repo id reaches the sender through its environment, never argv,
-  since it may be an evaluated value. On Windows a command still sends the
+  then keeps the lock for 30 s, draining entries later commands spool, so a
+  burst of commands starts one sender rather than one full swamp process
+  each. It exits once that linger passes with nothing new, five minutes after
+  it started, when a send fails or when another sender took the lock; a lock
+  not touched for 60 s was left by a dead sender and is taken over. Each
+  entry records the repo id and distinct id of the command that spooled it,
+  and the sender sends those, so a sender draining other commands' entries
+  never reports them as its own; entries from before that stamp fall back to
+  the sender's. It reads the auth token again before each send, so a login or
+  logout during the linger applies. The sender's own repo id reaches it
+  through its environment, never argv, since it may be an evaluated value. On
+  Windows a command still sends the
   spool itself at its end, awaited as before: detached processes there are
   untested, and switching Windows over needs the live check run on a Windows
   host (`sendTelemetryAtCommandEnd` in `src/cli/telemetry_end_of_command.ts`).

@@ -1136,3 +1136,40 @@ Deno.test("TelemetryService.flushEntry writes no record for an entry of another 
 
   assertEquals(records.writes, 0);
 });
+
+Deno.test("TelemetryService stamps its repo and distinct id on every record path and on forks", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(
+    repo,
+    "1.0.0",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "https://collector.example",
+    undefined,
+    { repoId: "repo-a", distinctId: "user-1" },
+  );
+  const now = new Date();
+
+  await service.recordSuccess(ENDPOINT_TEST_INVOCATION, now);
+  await service.recordError(ENDPOINT_TEST_INVOCATION, now, new Error("boom"));
+  await service.recordChildInvocation(
+    ENDPOINT_TEST_INVOCATION,
+    now,
+    now,
+    null,
+    service.invocationId,
+    { workflowName: "wf", runId: "run", jobName: "job", stepName: "step" },
+  );
+  await service.forkForRun("webhook").recordSuccess(
+    ENDPOINT_TEST_INVOCATION,
+    now,
+  );
+
+  assertEquals(repo.savedEntries.length, 4);
+  for (const entry of repo.savedEntries) {
+    assertEquals(entry.repoId, "repo-a");
+    assertEquals(entry.distinctId, "user-1");
+  }
+});

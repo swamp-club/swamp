@@ -67,6 +67,8 @@ export interface CreateTelemetryEntryProps {
   initiatedBy?: string;
   /** the entry is only ever flushed to this endpoint */
   endpoint?: string;
+  repoId?: string;
+  distinctId?: string;
 }
 
 /**
@@ -90,6 +92,9 @@ export interface TelemetryEntryData {
   initiatedBy?: string;
   /** the entry is only ever flushed to this endpoint */
   endpoint?: string;
+  /** who ran it, recorded with the entry; absent on older spooled entries */
+  repoId?: string;
+  distinctId?: string;
 }
 
 export class TelemetryEntry {
@@ -109,6 +114,8 @@ export class TelemetryEntry {
     readonly triggerSource?: WorkflowTriggerSource,
     readonly initiatedBy?: string,
     readonly endpoint?: string,
+    readonly repoId?: string,
+    readonly distinctId?: string,
   ) {}
 
   static create(props: CreateTelemetryEntryProps): TelemetryEntry {
@@ -137,6 +144,8 @@ export class TelemetryEntry {
       props.triggerSource,
       props.initiatedBy,
       props.endpoint,
+      props.repoId,
+      props.distinctId,
     );
   }
 
@@ -165,6 +174,8 @@ export class TelemetryEntry {
         : undefined,
       data.initiatedBy,
       typeof data.endpoint === "string" ? data.endpoint : undefined,
+      typeof data.repoId === "string" ? data.repoId : undefined,
+      typeof data.distinctId === "string" ? data.distinctId : undefined,
     );
   }
 
@@ -202,6 +213,12 @@ export class TelemetryEntry {
     }
     if (this.endpoint) {
       data.endpoint = this.endpoint;
+    }
+    if (this.repoId) {
+      data.repoId = this.repoId;
+    }
+    if (this.distinctId) {
+      data.distinctId = this.distinctId;
     }
     return data;
   }

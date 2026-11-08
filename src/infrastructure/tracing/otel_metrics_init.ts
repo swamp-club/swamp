@@ -19,6 +19,7 @@
 
 import { metrics } from "@opentelemetry/api";
 import { parseOtlpHeaders, resolveOtlpEndpoint } from "./otel_config.ts";
+import { exitDeadline, untilDeadline } from "./otlp_export_queue.ts";
 
 export const EXECUTION_BUCKETS_SECONDS = [
   0.0001,
@@ -89,10 +90,10 @@ export async function initExecutionMetrics(): Promise<void> {
   installExecutionObserver();
 }
 
-export async function shutdownExecutionMetrics(): Promise<void> {
-  try {
-    await provider?.shutdown();
-  } catch { /* Observations cannot fail a run. */ }
+export async function shutdownExecutionMetrics(
+  deadline: number = exitDeadline(),
+): Promise<void> {
+  if (provider) await untilDeadline(provider.shutdown(), deadline);
   provider = undefined;
   metrics.disable();
   const { uninstallExecutionObserver } = await import(

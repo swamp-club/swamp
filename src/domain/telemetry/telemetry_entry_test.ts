@@ -614,3 +614,36 @@ Deno.test("TelemetryEntry.isFlushableTo: only its own endpoint, or any when unst
   const legacy = TelemetryEntry.create(base);
   assertEquals(legacy.isFlushableTo("https://b.example"), true);
 });
+
+Deno.test("TelemetryEntry: repoId and distinctId round-trip and stay absent on legacy entries", () => {
+  const props = {
+    invocation: {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success" as const, exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+
+  const stamped = TelemetryEntry.create({
+    ...props,
+    repoId: "repo-b",
+    distinctId: "user-1",
+  });
+  const restored = TelemetryEntry.fromData(stamped.toData());
+  assertEquals(restored.repoId, "repo-b");
+  assertEquals(restored.distinctId, "user-1");
+
+  const legacy = TelemetryEntry.create(props);
+  assertEquals("repoId" in legacy.toData(), false);
+  assertEquals("distinctId" in legacy.toData(), false);
+  const decoded = TelemetryEntry.fromData(legacy.toData());
+  assertEquals(decoded.repoId, undefined);
+  assertEquals(decoded.distinctId, undefined);
+});

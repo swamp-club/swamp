@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { exitDeadline, untilDeadline } from "./otlp_export_queue.ts";
 import type { Context } from "@opentelemetry/api";
 import { parseOtlpHeaders, resolveOtlpEndpoint } from "./otel_config.ts";
 
@@ -124,17 +125,15 @@ export async function initTracing(
   return undefined;
 }
 
-export async function shutdownTracing(): Promise<void> {
+export async function shutdownTracing(
+  deadline: number = exitDeadline(),
+): Promise<void> {
   const { setExecutionObserver } = await import(
     "../../domain/remote/observability.ts"
   );
   setExecutionObserver(undefined);
   if (providerRef) {
-    try {
-      await providerRef.shutdown();
-    } catch {
-      // Silently swallow shutdown errors — tracing should never block the CLI.
-    }
+    await untilDeadline(providerRef.shutdown(), deadline);
     providerRef = undefined;
 
     const contextApi = await import("@opentelemetry/api");
