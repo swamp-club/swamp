@@ -53,9 +53,23 @@ export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active
 export function localOwnerLiveness(): OwnerLiveness {
   return { hostname: hostname(), isDead: isProcessGone };
 }
+
+/**
+ * on Linux an identity without a pid namespace is only a hostname, which
+ * sibling containers share, so it vouches for nothing
+ */
+export function namespacedHostIdentity(
+  identity: string,
+  os: typeof Deno.build.os,
+): string | null {
+  return os === "linux" && !identity.includes("#") ? null : identity;
+}
+
 /** a row naming another host was not registered by its owner, so says nothing */
 function ownHostIdentity(rowHostname: string): string | null {
-  return rowHostname === hostname() ? processHostIdentity() : null;
+  return rowHostname === hostname()
+    ? namespacedHostIdentity(processHostIdentity(), Deno.build.os)
+    : null;
 }
 const RETENTION_DAYS = 7;
 /** backstop retention for an interrupted row that no path ever settles */

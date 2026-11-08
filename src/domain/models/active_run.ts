@@ -123,10 +123,7 @@ export class ActiveRun {
       : this.hostname === hostname;
   }
 
-  /**
-   * Whether this row's owner ran in the given pid namespace on this host, so
-   * its pid can be checked here whichever serve instance owned it.
-   */
+  /** its pid can be checked here whichever serve instance owned it */
   sharesProcessHost(hostIdentity: string): boolean {
     return this.hostIdentity !== null && this.hostIdentity === hostIdentity;
   }

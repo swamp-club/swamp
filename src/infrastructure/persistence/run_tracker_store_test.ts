@@ -23,7 +23,11 @@ import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { processHostIdentity } from "../runtime/process.ts";
-import { type PendingRunEntry, RunTrackerStore } from "./run_tracker_store.ts";
+import {
+  namespacedHostIdentity,
+  type PendingRunEntry,
+  RunTrackerStore,
+} from "./run_tracker_store.ts";
 import { isSensitiveHeader } from "../../serve/webhook.ts";
 
 function makeTempDb(): Disposable & { path: string } {
@@ -892,7 +896,7 @@ Deno.test("RunTrackerStore: register and reactivate record the owner's host iden
     store.register(deadWorkflowRow("stamped-1", "instance-A"));
     assertEquals(
       store.findById("stamped-1")?.hostIdentity,
-      processHostIdentity(),
+      namespacedHostIdentity(processHostIdentity(), Deno.build.os),
     );
 
     store.complete("stamped-1", "interrupted");
@@ -900,7 +904,7 @@ Deno.test("RunTrackerStore: register and reactivate record the owner's host iden
     store.reactivate("stamped-1", Deno.pid, hostname(), "instance-B");
     assertEquals(
       store.findById("stamped-1")?.hostIdentity,
-      processHostIdentity(),
+      namespacedHostIdentity(processHostIdentity(), Deno.build.os),
     );
   } finally {
     store.close();
@@ -1608,4 +1612,14 @@ Deno.test("RunTrackerStore: schema v5 migration adds definition_id to a v4 datab
   } finally {
     store.close();
   }
+});
+
+Deno.test("namespacedHostIdentity: refuses a Linux identity that names no pid namespace", () => {
+  assertEquals(
+    namespacedHostIdentity("host#pid:[4026531836]", "linux"),
+    "host#pid:[4026531836]",
+  );
+  assertEquals(namespacedHostIdentity("host", "linux"), null);
+  assertEquals(namespacedHostIdentity("host", "darwin"), "host");
+  assertEquals(namespacedHostIdentity("host", "windows"), "host");
 });

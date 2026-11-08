@@ -17,8 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a serve killed with -9 and started again gets a new instance id; its boot
-// must still settle the run it left running, but not a live peer serve's run
+// a restarted serve has a new instance id, so its own killed row looks foreign
 
 import { join } from "@std/path";
 import { assertEquals } from "@std/assert";
