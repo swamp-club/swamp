@@ -22,6 +22,7 @@ import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { FetchOtlpLogExporter } from "./fetch_otlp_log_exporter.ts";
 
 function makeLogRecord(body: string): ReadableLogRecord {
@@ -205,4 +206,35 @@ Deno.test("FetchOtlpLogExporter: shutdown() drains an in-flight send before reso
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+Deno.test("FetchOtlpLogExporter: a collector that never answers gets one request at a time however many records are logged", async () => {
+  const seen = { open: 0, maxOpen: 0 };
+  await withMockedFetch((request) => {
+    seen.open++;
+    seen.maxOpen = Math.max(seen.maxOpen, seen.open);
+    return new Promise<Response>((_resolve, reject) => {
+      request.signal.addEventListener("abort", () => {
+        seen.open--;
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      });
+    });
+  }, async () => {
+    const exporter = new FetchOtlpLogExporter({
+      url: "https://example.com/v1/logs",
+      timeoutMs: 200,
+    });
+    const results: ExportResult[] = [];
+    for (let i = 0; i < 200; i++) {
+      exporter.export(
+        [makeLogRecord(`line ${i}`)],
+        (result) => results.push(result),
+      );
+    }
+
+    await exporter.shutdown();
+
+    assertEquals(seen.maxOpen, 1);
+    assertEquals(results.length, 200);
+  });
 });

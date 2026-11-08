@@ -31,6 +31,7 @@ import {
 import { flushDatastoreSync } from "./src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getOutputModeFromArgs } from "./src/cli/context.ts";
 import {
+  exitDeadline,
   initTracing,
   runWithParentTrace,
   shutdownLogs,
@@ -102,12 +103,12 @@ if (import.meta.main) {
     renderError(error, outputMode, commandSurfaceFromArgs(Deno.args), context);
     errorExitCode = exitCodeForError(error, context);
   } finally {
-    // Drain the OTLP logs signal before spans — shutdownLogs() awaits the
-    // exporter's in-flight sends so the last log records aren't cut by
-    // Deno.exit. Both are no-ops when their signal was never initialized.
-    await shutdownLogs();
-    await shutdownTracing();
-    await shutdownExecutionMetrics();
+    // Logs drain before spans so the last records are not cut by Deno.exit;
+    // one shared deadline means a silent collector delays exit once in total.
+    const deadline = exitDeadline();
+    await shutdownLogs(deadline);
+    await shutdownTracing(deadline);
+    await shutdownExecutionMetrics(deadline);
   }
 
   // Explicit exit so fire-and-forget promises (background update check,

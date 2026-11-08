@@ -22,13 +22,26 @@ import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
 import { JsonTraceSerializer } from "@opentelemetry/otlp-transformer";
 import { metrics } from "@opentelemetry/api";
+import {
+  type ExportOutcome,
+  type ExportQueueLimits,
+  OtlpExportQueue,
+} from "./otlp_export_queue.ts";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+const ACCOUNTED_OUTCOME: Record<ExportOutcome, string> = {
+  attempted: "attempted",
+  acknowledged: "collector_acknowledged",
+  failed: "not_fully_acknowledged",
+  dropped: "dropped",
+};
 
 export interface FetchOtlpExporterConfig {
   url: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
+  limits?: ExportQueueLimits;
 }
 
 /**
@@ -38,9 +51,7 @@ export interface FetchOtlpExporterConfig {
 export class FetchOtlpExporter implements SpanExporter {
   readonly #url: string;
   readonly #headers: Record<string, string>;
-  readonly #timeoutMs: number;
-  readonly #inFlight = new Set<Promise<void>>();
-  #shutdown = false;
+  readonly #queue: OtlpExportQueue<ReadableSpan>;
 
   constructor(config: FetchOtlpExporterConfig) {
     this.#url = config.url;
@@ -48,81 +59,65 @@ export class FetchOtlpExporter implements SpanExporter {
       "content-type": "application/json",
       ...config.headers,
     };
-    this.#timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#queue = new OtlpExportQueue<ReadableSpan>({
+      ...config.limits,
+      timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      send: (spans, signal) => this.#send(spans, signal),
+      onOutcome: (count, outcome) => {
+        metrics.getMeter("swamp.execution", "1").createCounter(
+          "swamp.export.spans",
+          { unit: "{span}" },
+        ).add(count, { outcome: ACCOUNTED_OUTCOME[outcome] });
+      },
+    });
   }
 
   export(
     spans: ReadableSpan[],
     resultCallback: (result: ExportResult) => void,
   ): void {
-    if (this.#shutdown) {
-      resultCallback({ code: ExportResultCode.FAILED });
-      return;
-    }
-
-    const accounting = metrics.getMeter("swamp.execution", "1").createCounter(
-      "swamp.export.spans",
-      { unit: "{span}" },
-    );
-    accounting.add(spans.length, { outcome: "attempted" });
-    const pending = this.#send(spans).then(
-      () => {
-        accounting.add(spans.length, { outcome: "collector_acknowledged" });
-        resultCallback({ code: ExportResultCode.SUCCESS });
-      },
-      () => {
-        accounting.add(spans.length, { outcome: "not_fully_acknowledged" });
-        resultCallback({ code: ExportResultCode.FAILED });
-      },
-    );
-    // track the in-flight send so forceFlush and shutdown can drain it; the
-    // callback may throw, which tracing must never surface
-    const tracked = pending.catch(() => {}).finally(() => {
-      this.#inFlight.delete(tracked);
+    this.#queue.enqueue(spans, (ok) => {
+      resultCallback({
+        code: ok ? ExportResultCode.SUCCESS : ExportResultCode.FAILED,
+      });
     });
-    this.#inFlight.add(tracked);
   }
 
   /**
-   * drains in-flight sends: SimpleSpanProcessor does not track its exports, so
-   * without this Deno.exit cuts the last span mid-send
+   * drains queued sends within the exit bound: SimpleSpanProcessor does not
+   * track its exports, so without this Deno.exit cuts the last span mid-send
    */
-  async shutdown(): Promise<void> {
-    this.#shutdown = true;
-    await this.forceFlush();
+  shutdown(): Promise<void> {
+    return this.#queue.shutdown();
   }
 
   forceFlush(): Promise<void> {
-    return Promise.all([...this.#inFlight]).then(() => {});
+    return this.#queue.forceFlush();
   }
 
-  async #send(spans: ReadableSpan[]): Promise<void> {
-    const body = JsonTraceSerializer.serializeRequest(spans);
+  async #send(
+    spans: readonly ReadableSpan[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const body = JsonTraceSerializer.serializeRequest([...spans]);
     if (!body) return;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
+    const response = await fetch(this.#url, {
+      method: "POST",
+      headers: this.#headers,
+      body: body.buffer as ArrayBuffer,
+      signal,
+    });
 
-    try {
-      const response = await fetch(this.#url, {
-        method: "POST",
-        headers: this.#headers,
-        body: body.buffer as ArrayBuffer,
-        signal: controller.signal,
-      });
-
-      const text = await response.text();
-      if (!response.ok) throw new Error("Trace collector rejected export");
-      if (text) {
-        const reply = JSON.parse(text) as {
-          partialSuccess?: { rejectedSpans?: string | number };
-        };
-        if (Number(reply.partialSuccess?.rejectedSpans ?? 0) > 0) {
-          throw new Error("Trace collector partially rejected export");
-        }
+    const text = await response.text();
+    if (!response.ok) throw new Error("Trace collector rejected export");
+    if (text) {
+      const reply = JSON.parse(text) as {
+        partialSuccess?: { rejectedSpans?: string | number };
+      };
+      if (Number(reply.partialSuccess?.rejectedSpans ?? 0) > 0) {
+        throw new Error("Trace collector partially rejected export");
       }
-    } finally {
-      clearTimeout(timer);
     }
   }
 }

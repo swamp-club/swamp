@@ -29,6 +29,9 @@ export const SENDER_LOCK_FILE = "sender.lock";
 export const SENDER_LOCK_STALE_MS = 60_000;
 export const SENDER_REQUEST_TIMEOUT_MS = 10_000;
 export const SENDER_MAX_BATCHES = 400;
+/** a burst of commands shares one sender: it waits this long for more entries */
+export const SENDER_LINGER_MS = 30_000;
+export const SENDER_POLL_MS = 1_000;
 // the repo id may come from an evaluated expression, so it stays off argv
 export const SENDER_REPO_ID_ENV = "SWAMP_TELEMETRY_SENDER_REPO_ID";
 
@@ -244,13 +247,15 @@ export interface DrainOptions {
   readonly heartbeat: () => Promise<boolean>;
   readonly requestTimeoutMs?: number;
   readonly maxBatches?: number;
+  /** sent but not marked; carried across drains so none is sent twice */
+  readonly skipIds?: Set<string>;
 }
 
 /** sends the spool batch by batch until it is empty or a send fails */
 export async function drainTelemetrySpool(
   options: DrainOptions,
 ): Promise<{ readonly sent: number; readonly ok: boolean }> {
-  const skipIds = new Set<string>();
+  const skipIds = options.skipIds ?? new Set<string>();
   let sent = 0;
   const maxBatches = options.maxBatches ?? SENDER_MAX_BATCHES;
   for (let batch = 0; batch < maxBatches; batch++) {
@@ -275,4 +280,33 @@ export async function drainTelemetrySpool(
     sent += outcome.sentCount;
   }
   return { sent, ok: true };
+}
+
+export interface LingerOptions extends DrainOptions {
+  readonly lingerMs?: number;
+  readonly pollMs?: number;
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * drains the spool, then keeps the lock and drains what later commands spool
+ * until a linger passes with nothing new, a send fails or the lock is lost
+ */
+export async function drainAndLinger(options: LingerOptions): Promise<void> {
+  const skipIds = options.skipIds ?? new Set<string>();
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const lingerMs = options.lingerMs ?? SENDER_LINGER_MS;
+  const pollMs = options.pollMs ?? SENDER_POLL_MS;
+  if (!(await drainTelemetrySpool({ ...options, skipIds })).ok) return;
+  let idleSince = now();
+  while (now() - idleSince < lingerMs) {
+    await sleep(pollMs);
+    if (!await options.heartbeat()) return;
+    const outcome = await drainTelemetrySpool({ ...options, skipIds });
+    if (!outcome.ok) return;
+    if (outcome.sent > 0) idleSince = now();
+  }
 }

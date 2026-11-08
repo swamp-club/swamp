@@ -43,6 +43,21 @@ async function withIngest(
   }, () => fn(INGEST, received));
 }
 
+async function spoolEntry(dir: string, endpoint: string): Promise<void> {
+  await new TelemetryService(
+    new JsonTelemetryRepository(dir, dir),
+    "1.0.0",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    endpoint,
+  ).recordSuccess(
+    { command: "version", args: [], optionKeys: [], globalOptions: [] },
+    new Date(),
+  );
+}
+
 async function withSpool(
   endpoint: string,
   count: number,
@@ -50,20 +65,7 @@ async function withSpool(
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-telemetry-main-" });
   try {
-    for (let i = 0; i < count; i++) {
-      await new TelemetryService(
-        new JsonTelemetryRepository(dir, dir),
-        "1.0.0",
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        endpoint,
-      ).recordSuccess(
-        { command: "version", args: [], optionKeys: [], globalOptions: [] },
-        new Date(),
-      );
-    }
+    for (let i = 0; i < count; i++) await spoolEntry(dir, endpoint);
     await fn(dir);
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
@@ -74,7 +76,28 @@ const deps = (dir: string) => ({
   telemetryDir: dir,
   userId: () => Promise.resolve("user-1"),
   authToken: () => Promise.resolve(undefined),
+  lingerMs: 0,
 });
+
+/** a clock that only moves when the sender sleeps; each sleep runs onSleep */
+function lingerDeps(
+  dir: string,
+  onSleep: (sleeps: number) => Promise<void>,
+) {
+  let clock = 0;
+  let sleeps = 0;
+  return {
+    ...deps(dir),
+    lingerMs: 30_000,
+    pollMs: 1_000,
+    now: () => clock,
+    sleep: async (ms: number) => {
+      clock += ms;
+      await onSleep(++sleeps);
+    },
+    sleeps: () => sleeps,
+  };
+}
 
 interface Event {
   readonly insert_id: string;
@@ -155,6 +178,71 @@ Deno.test("runTelemetrySenderMain: an ingest that never answers is given up on p
           .read();
         assertEquals(record?.lastAttemptOk, false);
         assert(await claimSenderLock(lock) !== undefined);
+      });
+    },
+  );
+});
+
+Deno.test("runTelemetrySenderMain: entries later commands spool while the sender lingers reach the ingest through the same sender", async () => {
+  await withIngest(
+    () => Promise.resolve(new Response(null, { status: 202 })),
+    async (url, received) => {
+      await withSpool(url, 3, async (dir) => {
+        const lock = join(dir, SENDER_LOCK_FILE);
+        const token = await claimSenderLock(lock);
+        assert(token !== undefined);
+        const lingering = lingerDeps(dir, async (sleeps) => {
+          if (sleeps === 5 || sleeps === 20) await spoolEntry(dir, url);
+          // A command ending now finds the lock held and starts no sender.
+          if (sleeps === 5) {
+            assertEquals(await claimSenderLock(lock), undefined);
+          }
+        });
+
+        await runTelemetrySenderMain(
+          senderArgs(token, {
+            endpoint: url,
+            userAgent: "swamp-cli/test",
+            keepFlushed: false,
+          }),
+          lingering,
+        );
+
+        assertEquals(new Set(sentIds(received)).size, 5);
+        // idle for the full linger after the last entry, then it exits
+        assertEquals(lingering.sleeps(), 20 + 30);
+        assert(await claimSenderLock(lock) !== undefined);
+      });
+    },
+  );
+});
+
+Deno.test("runTelemetrySenderMain: a lingering sender that loses its lock stops sending", async () => {
+  await withIngest(
+    () => Promise.resolve(new Response(null, { status: 202 })),
+    async (url, received) => {
+      await withSpool(url, 2, async (dir) => {
+        const lock = join(dir, SENDER_LOCK_FILE);
+        const token = await claimSenderLock(lock);
+        assert(token !== undefined);
+        const lingering = lingerDeps(dir, async (sleeps) => {
+          if (sleeps !== 3) return;
+          await Deno.writeTextFile(lock, "another-sender");
+          await spoolEntry(dir, url);
+        });
+
+        await runTelemetrySenderMain(
+          senderArgs(token, {
+            endpoint: url,
+            userAgent: "swamp-cli/test",
+            keepFlushed: false,
+          }),
+          lingering,
+        );
+
+        assertEquals(new Set(sentIds(received)).size, 2);
+        assertEquals(lingering.sleeps(), 3);
+        assertEquals(await Deno.readTextFile(lock), "another-sender");
       });
     },
   );

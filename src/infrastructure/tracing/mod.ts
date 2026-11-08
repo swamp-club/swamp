@@ -47,6 +47,7 @@ export {
   withSpan,
 } from "./tracer.ts";
 export { extractTraceContext, injectTraceContext } from "./propagation.ts";
+export { exitDeadline } from "./otlp_export_queue.ts";
 export { adoptAuthenticatedParent } from "./adopted_parent.ts";
 
 export {

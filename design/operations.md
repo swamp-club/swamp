@@ -18,8 +18,11 @@ something a primitive depends on, move it to `enablers/` and give it an
   and exits without waiting (swamp-club#4457). The awaited send cost a
   command up to its 2 s timeout. The sender drains the spool in batches with
   a timeout per request, records the flush result, cleans the spool, and
-  exits once the spool is empty, a send fails or another sender took the
-  lock; a lock not touched for 60 s was left by a dead sender and is taken
+  then keeps the lock for 30 s, draining entries later commands spool, so a
+  burst of commands starts one sender rather than one full swamp process
+  each. It exits once that linger passes with nothing new, a send fails or
+  another sender took the lock; a lock not touched for 60 s was left by a
+  dead sender and is taken
   over. The repo id reaches the sender through its environment, never argv,
   since it may be an evaluated value. On Windows a command still sends the
   spool itself at its end, awaited as before: detached processes there are

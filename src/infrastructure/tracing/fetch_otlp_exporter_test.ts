@@ -20,7 +20,12 @@
 import { assertEquals } from "@std/assert";
 import { ExportResultCode } from "@opentelemetry/core";
 import type { ExportResult } from "@opentelemetry/core";
-import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
+import {
+  BasicTracerProvider,
+  type ReadableSpan,
+  SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { FetchOtlpExporter } from "./fetch_otlp_exporter.ts";
 
 function makeSpan(name: string): ReadableSpan {
@@ -236,4 +241,84 @@ Deno.test("FetchOtlpExporter: shutdown waits for an in-flight send", async () =>
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+/** a collector that accepts each request and never answers */
+function silentCollector(
+  seen: { calls: number; open: number; maxOpen: number },
+) {
+  return (request: Request): Promise<Response> => {
+    seen.calls++;
+    seen.open++;
+    seen.maxOpen = Math.max(seen.maxOpen, seen.open);
+    return new Promise<Response>((_resolve, reject) => {
+      request.signal.addEventListener("abort", () => {
+        seen.open--;
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      });
+    });
+  };
+}
+
+Deno.test("FetchOtlpExporter: a collector that never answers gets one request at a time however many spans end", async () => {
+  const seen = { calls: 0, open: 0, maxOpen: 0 };
+  await withMockedFetch(silentCollector(seen), async () => {
+    const exporter = new FetchOtlpExporter({
+      url: "https://example.com/v1/traces",
+      timeoutMs: 200,
+    });
+    const results: ExportResult[] = [];
+    for (let i = 0; i < 200; i++) {
+      exporter.export(
+        [makeSpan(`step-${i}`)],
+        (result) => results.push(result),
+      );
+    }
+
+    await exporter.shutdown();
+
+    assertEquals(seen.maxOpen, 1);
+    assertEquals(results.length, 200);
+    assertEquals(
+      results.every((result) => result.code === ExportResultCode.FAILED),
+      true,
+    );
+  });
+});
+
+Deno.test("FetchOtlpExporter: spans dropped against a silent collector print nothing", async () => {
+  const seen = { calls: 0, open: 0, maxOpen: 0 };
+  const printed: unknown[] = [];
+  const original = {
+    error: console.error,
+    warn: console.warn,
+    log: console.log,
+    debug: console.debug,
+  };
+  console.error =
+    console.warn =
+    console.log =
+    console.debug =
+      (
+        ...args: unknown[]
+      ) => printed.push(args);
+  try {
+    await withMockedFetch(silentCollector(seen), async () => {
+      const exporter = new FetchOtlpExporter({
+        url: "https://example.com/v1/traces",
+        timeoutMs: 200,
+      });
+      const provider = new BasicTracerProvider({
+        spanProcessors: [new SimpleSpanProcessor(exporter)],
+      });
+      const tracer = provider.getTracer("test");
+      for (let i = 0; i < 3_000; i++) tracer.startSpan(`step-${i}`).end();
+      await provider.shutdown();
+    });
+  } finally {
+    Object.assign(console, original);
+  }
+
+  assertEquals(printed, []);
+  assertEquals(seen.maxOpen, 1);
 });
