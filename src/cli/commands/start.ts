@@ -380,14 +380,10 @@ export async function runStart(
         url,
         await tryOpenBrowser(url, openBrowserEnabled),
         fixed !== null,
+        fixed === null ? [] : (serving?.trustedHosts.entries ?? []).map(
+          (host) => dashboardUrl(`https://${host}`, token, fixed.name),
+        ),
       );
-      if (fixed !== null && serving !== undefined) {
-        renderer.trustedHostUrls(
-          serving.trustedHosts.entries.map((host) =>
-            dashboardUrl(`https://${host}`, token, fixed.name)
-          ),
-        );
-      }
       const end = await Promise.race([server.ended, interruptedPromise]);
       try {
         if (end === "interrupted" || end.kind === "paused") {
@@ -397,7 +393,11 @@ export async function runStart(
         }
       } catch (error) {
         // After a hangup the terminal is gone and the line has no reader.
-        if ((error as { code?: string }).code !== "EIO") throw error;
+        if (
+          !(error instanceof Error && "code" in error && error.code === "EIO")
+        ) {
+          throw error;
+        }
       }
     } finally {
       shutdownHandle.dispose();

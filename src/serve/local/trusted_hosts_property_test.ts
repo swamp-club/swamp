@@ -41,8 +41,6 @@ Deno.test("TrustedHosts: an entry accepts its own name on every port and no othe
         assertEquals(trusted.acceptsHost(name), true);
         assertEquals(trusted.acceptsHost(`${name}:${requestPort}`), true);
         assertEquals(trusted.acceptsHost(name.toUpperCase()), true);
-        // A name that only looks like it (a suffix, a prefix, a trailing dot)
-        // is never let through.
         assertEquals(trusted.acceptsHost(`${name}.`), false);
         assertEquals(trusted.acceptsHost(`x${name}`), false);
         assertEquals(trusted.acceptsHost(`${name}.${other}`), false);

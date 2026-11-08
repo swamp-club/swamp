@@ -59,8 +59,8 @@ export class TrustedHosts {
   }
 
   /**
-   * a TLS-terminating proxy makes the page's origin https://<Host>; it counts
-   * only for a trusted Host, never for the loopback one
+   * the exact http or https origin of a trusted Host (a TLS-terminating proxy
+   * serves the page on https); never for the loopback one
    */
   acceptsOrigin(origin: string, hostHeader: string | null): boolean {
     if (hostHeader === null || !this.acceptsHost(hostHeader)) return false;

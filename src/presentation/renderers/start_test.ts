@@ -23,6 +23,7 @@ import {
   createStartRenderer,
   formatCreated,
   pageReadyLine,
+  stopHint,
   taskDetail,
 } from "./start.ts";
 
@@ -87,26 +88,47 @@ function captureStdout(run: () => void): string[] {
   return out;
 }
 
-Deno.test("trustedHostUrls: lists the page through each trusted host, and says nothing when there are none", () => {
+Deno.test("pageReady: proxy URLs come before the stop hint, which stays the last line", () => {
   const renderer = createStartRenderer("log");
+  const url = "http://127.0.0.1:1/dashboard/w/r#token=t";
   assertEquals(
     captureStdout(() =>
-      renderer.trustedHostUrls([
+      renderer.pageReady(url, false, true, [
         "https://a.example/dashboard/w/r#token=t",
         "https://b.example/dashboard/w/r#token=t",
       ])
     ),
     [
-      "Through your proxy, open:",
+      "",
+      pageReadyLine(false, true),
+      `  ${url}`,
+      "Through your proxy (it must serve HTTPS), open:",
       "  https://a.example/dashboard/w/r#token=t",
       "  https://b.example/dashboard/w/r#token=t",
+      "Press Ctrl-C to stop it. Closing this terminal leaves it running.",
     ],
   );
-  assertEquals(captureStdout(() => renderer.trustedHostUrls([])), []);
+  assertEquals(captureStdout(() => renderer.pageReady(url, false, true)), [
+    "",
+    pageReadyLine(false, true),
+    `  ${url}`,
+    "Press Ctrl-C to stop it. Closing this terminal leaves it running.",
+  ]);
   assertEquals(
     captureStdout(() =>
-      createStartRenderer("json").trustedHostUrls(["https://a.example/"])
+      createStartRenderer("json").pageReady(url, false, true, ["https://a/"])
     ),
     [],
+  );
+});
+
+Deno.test("stopHint: swamp start says its terminal keeps the page; swamp dashboard says closing it leaves it running", () => {
+  assertEquals(
+    stopHint(false),
+    "This terminal keeps the page running. Press Ctrl-C to stop it.",
+  );
+  assertEquals(
+    stopHint(true),
+    "Press Ctrl-C to stop it. Closing this terminal leaves it running.",
   );
 });
