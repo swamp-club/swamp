@@ -115,7 +115,7 @@ jobs:
               TEST_TMP="/tmp/swamp-verify-build-${{ run.id }}-tmp"
               rm -rf "$TEST_TMP"
               mkdir "$TEST_TMP"
-              TMPDIR="$TEST_TMP" deno task test --no-check
+              TMPDIR="$TEST_TMP" deno task test-shards --no-check
               LEFT="$(ls -A "$TEST_TMP")"
               if [ -n "$LEFT" ]; then
                 echo "Tests left these temp entries behind in $TEST_TMP; remove each when its test ends:" >&2

@@ -79,6 +79,29 @@ deno task check-binary-size swamp
 deno task check-binary-size x86_64-apple-darwin=dist/swamp-darwin-x86_64
 ```
 
+# Test shards
+
+`scripts/test_shards.ts` runs the whole suite as several `deno test` processes,
+with the `test` task's flags, and reports one combined result. `verify-build`
+uses it. Test files that run in one process contend on process-wide locks, so
+smaller processes finish sooner and use less CPU. It runs one shard per 8 cores,
+up to 4, and gives each shard its own temp directory. A run fails when any shard
+fails or leaves temp entries behind. With one shard, and on Windows, it runs
+plain `deno test`.
+
+Shards are balanced by `scripts/test_shard_weights.json`, the recorded test
+seconds of each file over 3 s. A file it does not list counts as fast. Stale
+weights only make the balance worse; every test file still runs. Refresh them
+when a shard keeps finishing well after the others:
+
+```sh
+deno task test-shards                        # the whole suite
+deno task test-shards --no-check --shards 2  # extra flags go to deno test
+deno task test-shards --record-weights       # rewrite the weights from this run
+```
+
+To run one file, use `deno run test <file>`.
+
 # License Compliance
 
 Swamp generates a [CycloneDX](https://cyclonedx.org/) Software Bill of Materials
