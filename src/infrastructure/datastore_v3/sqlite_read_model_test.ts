@@ -898,6 +898,119 @@ Deno.test("SqliteReadModel.recover: its span names what asked for it, the path i
   });
 });
 
+function renameRows(env: Env): unknown[][] {
+  const db = new DatabaseSync(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    { readOnly: true },
+  );
+  try {
+    return (db.prepare(
+      "SELECT namespace, type_normalized, model_id, data_name, renamed_to FROM catalog_renames ORDER BY 1, 2, 3, 4",
+    ).all() as Record<string, unknown>[]).map((row) => Object.values(row));
+  } finally {
+    db.close();
+  }
+}
+
+/** targeted rows after recovery against what a full rebuild leaves */
+async function targetedMatchesFullRebuild(
+  env: Env,
+  since: number,
+  clock: () => Date,
+): Promise<{ targeted: unknown[][]; full: unknown[][]; path: unknown }> {
+  const readModel = env.open({ clock, pageSize: 5 });
+  try {
+    let path: unknown;
+    await withCapturedSpans(async (spans) => {
+      await readModel.recover("", {
+        since,
+        admits: () => true,
+        signal: signal(),
+        targeted: true,
+      });
+      path = findSpan(spans, "swamp.datastore.v3.readmodel.recover")
+        .attributes["swamp.datastore.v3.readmodel.recover.path"];
+    });
+    const targeted = [...env.catalogRows(), ...renameRows(env)];
+    await readModel.recover("", {
+      since,
+      admits: () => true,
+      signal: signal(),
+    });
+    return {
+      targeted,
+      full: [...env.catalogRows(), ...renameRows(env)],
+      path,
+    };
+  } finally {
+    await readModel.close();
+  }
+}
+
+Deno.test("SqliteReadModel.recover: a targeted recovery removes a killed streaming write's pending catalog row, which has no file (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const store = new CatalogStore(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      store.upsert({
+        ...catalogRow(
+          "",
+          MODEL_TYPE.normalized,
+          MODEL_ID,
+          DataMetadataSchema.parse(metadata("streaming", 1)),
+        ),
+        is_pending: 1,
+        pending_pid: 999_999,
+        pending_host: "gone",
+      });
+    } finally {
+      store.close();
+    }
+    const { targeted, full, path } = await targetedMatchesFullRebuild(
+      env,
+      since,
+      clock,
+    );
+    assertEquals(path, "targeted");
+    assertEquals(targeted, full);
+    assertEquals(targeted.length, RECOVERY_COMMITS);
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a targeted recovery undoes an uncommitted rename's forward and marker (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const marker = env.contentPath("", "r7", 2);
+    await writeLocal(marker, "renamed");
+    await touchAfter(marker, since);
+    const store = new CatalogStore(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      store.remove("", MODEL_TYPE.normalized, MODEL_ID, "r7");
+      store.recordRename({
+        namespace: "",
+        type_normalized: MODEL_TYPE.normalized,
+        model_id: MODEL_ID,
+        data_name: "r7",
+        renamed_to: "r7-new",
+      });
+    } finally {
+      store.close();
+    }
+    const { targeted, full, path } = await targetedMatchesFullRebuild(
+      env,
+      since,
+      clock,
+    );
+    assertEquals(path, "targeted");
+    assertEquals(targeted, full);
+    assertEquals(await readOrAbsent(marker), undefined);
+  });
+});
+
 Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories leave out are never written or catalogued (swamp-club#3691)", async () => {
   await withEnv(async (env) => {
     await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);

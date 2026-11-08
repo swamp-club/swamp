@@ -18,7 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
+import { join } from "@std/path";
+import {
+  SERVE_UPSTREAM_STATE_FILE,
+  ServeUpstreamState,
+} from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
+import { V3_LOCAL_COPIES_DIR } from "../src/infrastructure/datastore_v3/v3_datastore_binding.ts";
+import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import {
@@ -101,6 +113,54 @@ Deno.test({
       assert(
         other.includes("view_change"),
         `another principal rebuilds the view: ${other.join(",")}`,
+      );
+    });
+  },
+});
+
+async function copyIdOf(repoDir: string): Promise<string> {
+  const copies = swampPath(repoDir, V3_LOCAL_COPIES_DIR);
+  for await (const entry of Deno.readDir(copies)) {
+    if (!entry.isDirectory || !entry.name.startsWith("serve-")) continue;
+    const state = ServeUpstreamState.open(
+      join(copies, entry.name, SERVE_UPSTREAM_STATE_FILE),
+    );
+    try {
+      return state.copyId();
+    } finally {
+      state.close();
+    }
+  }
+  throw new Error(`no serve copy under ${copies}`);
+}
+
+Deno.test({
+  name:
+    "serve upstream: serve names no principal for a revoked token, and rotating to one resets the copy instead of keeping it (swamp-club#4512)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve();
+      const reply = await fetch(
+        `${serve.origin}/api/v1/datastore/_default/changes?cursor=0&limit=1`,
+        { headers: { authorization: "Bearer revoked-token" } },
+      );
+      await reply.body?.cancel();
+      assertEquals(reply.status, 401);
+      assertEquals(reply.headers.get("x-swamp-datastore-principal"), null);
+
+      const alice = await scratch.client("a");
+      await saveAs(scratch, serve, alice, "alice-token", "first");
+      await saveAs(scratch, serve, alice, "alice-token", "second");
+      const before = await copyIdOf(alice.repoDir);
+      await assertRejects(() =>
+        saveAs(scratch, serve, alice, "revoked-token", "revoked")
+      );
+      assertNotEquals(
+        await copyIdOf(alice.repoDir),
+        before,
+        "the copy was reset for the revoked token",
       );
     });
   },

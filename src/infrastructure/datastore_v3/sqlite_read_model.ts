@@ -654,7 +654,25 @@ export class SqliteReadModel implements ReadModel {
       }
     }
     const names = touchedDataNames([...owned, ...unowned.map((u) => u.key)]);
-    if (names === undefined) return undefined;
+    // a streaming write's pending row can have no file to find
+    const pending = this.#catalog.pendingNames?.();
+    if (names === undefined || pending === undefined) return undefined;
+    for (const row of pending) {
+      if (row.namespace !== namespace) continue;
+      if (
+        touchedDataNames([`data/${row.type}/${row.id}/${row.name}/latest`]) ===
+          undefined
+      ) {
+        return undefined;
+      }
+      if (
+        !names.some((n) =>
+          n.type === row.type && n.id === row.id && n.name === row.name
+        )
+      ) {
+        names.push({ type: row.type, id: row.id, name: row.name });
+      }
+    }
     const files = this.#state.expectedFiles(
       owned.map((key) => ({ namespace, record_key: key })),
     );

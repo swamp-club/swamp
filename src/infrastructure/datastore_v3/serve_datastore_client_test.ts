@@ -1448,6 +1448,25 @@ Deno.test("ServeDatastoreClient.initiatorMode: read from serve's replies that ca
   assertEquals(client.initiatorMode(), { kind: "not-checked" });
 });
 
+Deno.test("ServeDatastoreClient.initiatorMode: a 401 or 403 reply never names the principal, even with serve's log and principal headers (swamp-club#4512)", async () => {
+  for (const status of [401, 403]) {
+    const { client } = clientWith(() =>
+      Response.json({ code: "refused", message: "no" }, {
+        status,
+        headers: {
+          "x-swamp-datastore-log": "log-a",
+          "x-swamp-datastore-features": "run-initiator",
+          "x-swamp-datastore-principal": encodeURIComponent("user:caller"),
+        },
+      })
+    );
+    await assertRejects(() =>
+      client.partitionCommits(modelPartition(), 0, signal(), 10)
+    );
+    assertEquals(client.initiatorMode(), undefined, String(status));
+  }
+});
+
 Deno.test("ServeDatastoreClient.acquireLock: a held reply's holder is read, and the budget is sent from the first ask", async () => {
   const holder = {
     principal: "user:boss",

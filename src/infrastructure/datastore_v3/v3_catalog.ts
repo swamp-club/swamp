@@ -38,6 +38,13 @@ import {
   type CatalogWriter,
 } from "../persistence/catalog_store.ts";
 
+export interface PendingCatalogName {
+  readonly namespace: string;
+  readonly type: string;
+  readonly id: string;
+  readonly name: string;
+}
+
 export interface ReadModelCatalog {
   generation(): number;
   /**
@@ -53,6 +60,11 @@ export interface ReadModelCatalog {
    * mark and the rows of data the datastore keeps local
    */
   clear(admits: (key: string) => boolean): number;
+  /**
+   * the data names with a pending row: a streaming write registers one before
+   * any file reaches disk, so a killed writer can leave a row with no file
+   */
+  pendingNames?(): PendingCatalogName[] | undefined;
   apply(
     namespace: string,
     partition: PartitionKey,
@@ -105,6 +117,27 @@ export class V3Catalog implements ReadModelCatalog {
 
   clear(admits: (key: string) => boolean): number {
     return this.#store.clearRows((row) => admits(catalogRowRecordKey(row)));
+  }
+
+  pendingNames(): PendingCatalogName[] {
+    const names = new Map<string, PendingCatalogName>();
+    for (const row of this.#store.iterateFiltered("is_pending = 1", [])) {
+      names.set(
+        JSON.stringify([
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+        ]),
+        {
+          namespace: row.namespace,
+          type: row.type_normalized,
+          id: row.model_id,
+          name: row.data_name,
+        },
+      );
+    }
+    return [...names.values()];
   }
 
   apply(
@@ -232,6 +265,10 @@ export class ProjectedCatalog implements ReadModelCatalog {
 
   clear(admits: (key: string) => boolean): number {
     return this.#inner.clear(admits);
+  }
+
+  pendingNames(): PendingCatalogName[] | undefined {
+    return this.#inner.pendingNames?.();
   }
 
   apply(
