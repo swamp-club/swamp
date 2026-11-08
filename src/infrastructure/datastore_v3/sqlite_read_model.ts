@@ -27,12 +27,9 @@ import { getLogger } from "@logtape/logtape";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
 import {
-  type CatalogAction,
   type CatalogProjection,
-  isRenameMarker,
   projectCatalog,
 } from "../../domain/datastore_v3/catalog_projection.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
 import {
   ChunkIntegrityError,
   ChunkMissingError,
@@ -62,10 +59,7 @@ import {
   NetReplayPlanner,
 } from "../../domain/datastore_v3/materialisation.ts";
 import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
-import {
-  PartitionKey,
-  partitionOf,
-} from "../../domain/datastore_v3/partition_key.ts";
+import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
   type CatchUpResult,
   CheckoutCopyAtRiskError,
@@ -534,11 +528,6 @@ export class SqliteReadModel implements ReadModel {
       readonly admits: (key: string) => boolean;
       readonly signal: AbortSignal;
       readonly droppedDirs?: readonly string[];
-      /**
-       * checks only what the interrupted command could have touched, from the
-       * committed cursor; the full rebuild remains its fallback
-       */
-      readonly targeted?: boolean;
       readonly entry?: RecoveryEntry;
     },
   ): Promise<string[]> {
@@ -563,20 +552,6 @@ export class SqliteReadModel implements ReadModel {
               ? "resumed"
               : "full",
           });
-          if (
-            options.targeted === true && rebuild === undefined &&
-            !this.#replaying
-          ) {
-            const removed = await this.#recoverTargeted(namespace, options);
-            if (removed !== undefined) {
-              span.setAttributes({
-                "swamp.datastore.v3.readmodel.recover.path": "targeted",
-              });
-              return removed;
-            }
-            logger
-              .info`The interrupted command's files cannot be checked one by one; applying every commit again`;
-          }
           if (!resuming) {
             // Every namespace's rows are judged by this checkout's filter: the
             // replay below rebuilds every namespace, and a checkout writes one.
@@ -588,6 +563,8 @@ export class SqliteReadModel implements ReadModel {
               options.since,
             );
           }
+          // a resumed rebuild replays as the run it continues did
+          if (resuming) this.#replaying = true;
           await this.#retryAtRiskCopies(options.signal);
           this.#recovering = true;
           try {
@@ -604,159 +581,6 @@ export class SqliteReadModel implements ReadModel {
         }),
       options.signal,
     );
-  }
-
-  /**
-   * undefined when only the full rebuild can recover: a file the walk cannot
-   * date, one dated later than now, or one the state cannot restore
-   */
-  async #recoverTargeted(
-    namespace: string,
-    options: {
-      readonly since: number;
-      readonly admits: (key: string) => boolean;
-      readonly signal: AbortSignal;
-    },
-  ): Promise<string[] | undefined> {
-    const now = this.#clock().getTime();
-    if (options.since <= 0 || options.since > now) return undefined;
-    const { signal } = options;
-    await this.#retryAtRiskCopies(signal);
-    this.#recovering = true;
-    try {
-      await this.#catchUpFeed(signal);
-    } finally {
-      this.#recovering = false;
-    }
-    const owned: string[] = [];
-    const unowned: { key: string; path: string }[] = [];
-    let undatable = false;
-    await this.#forEachMaterialisedFile(
-      namespace,
-      options.admits,
-      signal,
-      async (key, path, spellings) => {
-        const modified = (await Deno.lstat(path)).mtime?.getTime();
-        if (modified === undefined || modified > now) {
-          undatable = true;
-          return false;
-        }
-        if (modified < options.since) return true;
-        const ownedSpelling = spellings.find((spelling) =>
-          this.#state.fileOwnership(namespace, spelling)?.present === true
-        );
-        if (ownedSpelling !== undefined) {
-          owned.push(ownedSpelling);
-        } else {
-          unowned.push({ key, path });
-        }
-        return true;
-      },
-    );
-    if (undatable) return undefined;
-    // A file the command removed leaves no mtime to find, so each one the
-    // state owns is looked for.
-    const root = this.#cacheRoot(namespace);
-    const listed = new Set(owned);
-    for (const key of this.#state.presentKeys(namespace)) {
-      signal.throwIfAborted();
-      if (listed.has(key) || this.#unprojected(namespace, key)) continue;
-      if (!options.admits(key)) continue;
-      try {
-        await Deno.lstat(join(root, ...key.split("/")));
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
-        owned.push(key);
-      }
-    }
-    const names = touchedDataNames([...owned, ...unowned.map((u) => u.key)]);
-    // a streaming write's pending row can have no file to find
-    const pending = this.#catalog.pendingNames?.();
-    if (names === undefined || pending === undefined) return undefined;
-    for (const row of pending) {
-      if (row.namespace !== namespace) continue;
-      if (
-        touchedDataNames([`data/${row.type}/${row.id}/${row.name}/latest`]) ===
-          undefined
-      ) {
-        return undefined;
-      }
-      if (
-        !names.some((n) =>
-          n.type === row.type && n.id === row.id && n.name === row.name
-        )
-      ) {
-        names.push({ type: row.type, id: row.id, name: row.name });
-      }
-    }
-    // first: it reads only the state, and a stop after any removal below then
-    // leaves no row for a file the next recovery can no longer find
-    this.#reprojectNames(namespace, names);
-    const files = this.#state.expectedFiles(
-      owned.map((key) => ({ namespace, record_key: key })),
-    );
-    if (!await this.#restoreFiles(files, { syncMatching: false }, signal)) {
-      return undefined;
-    }
-    const removed: string[] = [];
-    const batch = new DurableWriteBatch();
-    try {
-      for (const { key, path } of unowned) {
-        signal.throwIfAborted();
-        await this.#removeRecord(
-          namespace,
-          key,
-          path,
-          batch,
-          signal,
-          NO_COMMIT,
-        );
-        removed.push(key);
-      }
-      await batch.barrier();
-    } finally {
-      batch.discard();
-    }
-    return removed;
-  }
-
-  /** each name's rows and forward, as a replay of its live versions leaves them */
-  #reprojectNames(
-    namespace: string,
-    names: readonly { type: string; id: string; name: string }[],
-  ): void {
-    if (names.length === 0) return;
-    this.#catalog.beginBatch();
-    try {
-      for (const { type, id, name } of names) {
-        const partition = partitionOf({
-          kind: "model",
-          type: ModelType.create(type),
-          id,
-        });
-        const actions: CatalogAction[] = [
-          { kind: "remove-name", name },
-          { kind: "end-forward", name },
-        ];
-        const versions = this.#state
-          .liveVersions(namespace, partition.toString(), name)
-          .toSorted((a, b) => a.version - b.version);
-        for (const { metadata } of versions) {
-          if (isRenameMarker(metadata)) {
-            actions.push(
-              { kind: "remove-name", name },
-              { kind: "forward", name, to: metadata.renamedTo as string },
-            );
-          } else {
-            actions.push({ kind: "upsert-version", metadata });
-          }
-        }
-        this.#catalog.apply(namespace, partition, actions);
-      }
-      this.#catalog.commitBatch();
-    } finally {
-      this.#catalog.rollbackBatch();
-    }
   }
 
   /** a recovery is never a net replay, since it replays over files already there */
@@ -1571,35 +1395,15 @@ export class SqliteReadModel implements ReadModel {
     commits: Map<number, Commit | undefined>,
   ): Promise<{ readonly inline: string } | undefined> {
     if (!commits.has(file.mark)) {
-      let page: readonly CommitChange[] | undefined;
-      try {
-        page = await this.#commitStore.changesSince(file.mark - 1, 1);
-      } catch (error) {
-        if (!(error instanceof CommitsCompactedError)) throw error;
-      }
+      const page = await this.#commitStore.changesSince(file.mark - 1, 1);
       commits.set(
         file.mark,
-        page?.[0]?.cursor === file.mark ? page[0].commit : undefined,
+        page[0]?.cursor === file.mark ? page[0].commit : undefined,
       );
     }
     const commit = commits.get(file.mark);
-    if (commit === undefined) {
-      // a file loaded from the compacted base names a mark the feed no
-      // longer holds: the base keeps its content
-      const record = await this.#commitStore.baseRecord?.(
-        file.namespace,
-        file.owner,
-        file.record_key,
-      );
-      if (record === undefined || !("inline" in record.content)) {
-        return undefined;
-      }
-      return record.sha256 === file.sha256
-        ? { inline: record.content.inline }
-        : undefined;
-    }
     if (
-      commit.namespace !== file.namespace ||
+      commit === undefined || commit.namespace !== file.namespace ||
       commit.partition.toString() !== file.owner
     ) {
       return undefined;
@@ -4029,35 +3833,4 @@ function closedError(): Error {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * the data names under each key, as the catalog keys them; undefined when a
- * data key names no model the catalog can hold, which only a replay sorts out
- */
-export function touchedDataNames(
-  keys: readonly string[],
-): { type: string; id: string; name: string }[] | undefined {
-  const names = new Map<string, { type: string; id: string; name: string }>();
-  for (const key of keys) {
-    const segments = key.split("/");
-    if (segments[0] !== "data") continue;
-    const last = segments[segments.length - 1];
-    const nameAt = last === "latest"
-      ? segments.length - 2
-      : /^\d+$/.test(segments[segments.length - 2] ?? "")
-      ? segments.length - 3
-      : -1;
-    if (nameAt < 3) return undefined;
-    const id = segments[nameAt - 1];
-    const type = segments.slice(1, nameAt - 1).join("/");
-    const name = segments[nameAt];
-    try {
-      partitionOf({ kind: "model", type: ModelType.create(type), id });
-    } catch {
-      return undefined;
-    }
-    names.set(`${type}\0${id}\0${name}`, { type, id, name });
-  }
-  return [...names.values()];
 }

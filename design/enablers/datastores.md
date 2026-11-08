@@ -5802,31 +5802,14 @@ leave every checkout with the same records.
   lock, so a writer that starts then waits for the replay, and a stalled
   writer the recovery takes over is fenced before any file is touched.
 
-  **Targeted recovery** (swamp-club#4512). A recovery from a readable marker
-  first tries to check only what the writer could have touched, since state
-  and catalog commit together per page and the cursor is consistent. Under
-  the read model's lock it catches up from the committed cursor, then:
-  - each file in the materialised directories modified at or after the
-    marker's start is checked against the live record that owns it and
-    rewritten where it differs (inline content from the commit at its mark,
-    or from the compacted base once that commit is folded), and removed when
-    no commit owns it;
-  - each file the state owns is looked for, since a removal leaves no
-    mtime, and put back if missing;
-  - the catalog rows of every data name those files belong to are
-    re-projected from the state's live versions (the writer's repositories
-    write catalog rows at save time, before any commit), and so are those of
-    every name with a pending row: a streaming write registers its row
-    before any file reaches disk, the one repository catalog write that
-    comes with no file to find.
-  It falls back to the full rebuild below when the marker is unreadable (its
-  start is only the file's mtime), a file has no mtime or one later than
-  now, a data key names no model, a file cannot be restored from the state,
-  or a full rebuild was already in progress. On a member checkout the full
-  rebuild reloads the compacted base (80,503 files and 150 s of catalog work
-  on the dogfood checkout), which the targeted path never does.
+  Every recovery is a full rebuild. A targeted recovery, checking only what
+  the writer could have touched, was withdrawn (swamp-club#4512): a name's
+  catalog rows are a function of its whole committed op history (a
+  `data.gc` expiry drops rows its live versions still hold), so they cannot
+  be re-projected from the read model's state; an exact version must replay
+  each touched partition's history.
 
-  **Full rebuild.** Under the read model's lock, recovery deletes the
+  Under the read model's lock, recovery deletes the
   catalog rows of the data commits carry, keeping the rows of data the
   datastore's `directories` or `exclude` keep local, which no replay could
   rebuild, and keeping the catalog marked populated, so no reader backfills

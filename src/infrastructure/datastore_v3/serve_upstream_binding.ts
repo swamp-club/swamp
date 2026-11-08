@@ -374,8 +374,7 @@ export function probeVouches(seen: {
   if (seen.mode?.kind !== "checked" || seen.mode.principal !== seen.cached) {
     return false;
   }
-  return seen.built === undefined || seen.access === undefined ||
-    seen.access === seen.built;
+  return seen.built === undefined || seen.access === seen.built;
 }
 
 /**

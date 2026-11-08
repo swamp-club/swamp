@@ -32,7 +32,9 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { readWriterMarkerFile } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { withCapturedSpans } from "../src/infrastructure/tracing/span_test_helpers.ts";
 import {
   commandStopSignal,
   registerShutdownHandler,
@@ -42,7 +44,9 @@ import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { createSyncGate } from "../src/serve/sync_gate.ts";
 import {
+  dataOf,
   endCommand,
+  json,
   MEMBER,
   serveEnv,
   withClientEnv,
@@ -190,6 +194,34 @@ Deno.test({
             .flatMap((entry) => entry.keys)
             .filter((key) => key.includes("/record/"));
           assert(landed.length > 0, "the write reached serve");
+          // a stopped command tears down: it leaves no interrupted writer, so
+          // the next command recovers nothing
+          assertEquals(await readWriterMarkerFile(alice.repoDir), {
+            kind: "absent",
+          });
+          // the next command is another process, with no stop
+          resetCommandStopForTesting();
+          await withCapturedSpans(async (spans) => {
+            await writeCommand(
+              scratch,
+              alice,
+              serveEnv(serve, "alice-token"),
+              (repos) =>
+                repos.unifiedDataRepo.save(
+                  type,
+                  writer.id,
+                  dataOf("after", crypto.randomUUID()),
+                  json({ after: true }),
+                ),
+            );
+            assertEquals(
+              spans.filter((span) =>
+                span.name === "swamp.datastore.v3.readmodel.recover"
+              ).length,
+              0,
+              "the next command did not recover",
+            );
+          });
         } finally {
           shutdown.dispose();
           modelRegistry.invalidateType(type);

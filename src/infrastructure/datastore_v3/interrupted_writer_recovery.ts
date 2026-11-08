@@ -339,10 +339,7 @@ async function recover(
   );
   let removed: string[];
   try {
-    // an unreadable marker's start is only its file's mtime, too loose to
-    // bound what the writer touched
     removed = await handle.recoverInterruptedWriter(since, signal, {
-      targeted: file.kind === "marker",
       entry: "interrupted_writer",
     });
     await restoreQueuedStepStarts(handle, repoDir);

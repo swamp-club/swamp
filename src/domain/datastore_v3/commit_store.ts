@@ -341,16 +341,6 @@ export interface CommitStore {
   ): Promise<readonly string[]>;
 
   /**
-   * One compacted base record; undefined when the base holds none for the
-   * key. Optional: a store without it makes a caller fall back to a replay.
-   */
-  baseRecord?(
-    namespace: string,
-    partition: string,
-    recordKey: string,
-  ): Promise<BaseRecord | undefined>;
-
-  /**
    * The history a compaction may fold under `retention`, the newest commits
    * and recent ones kept (swamp-club#3258).
    */

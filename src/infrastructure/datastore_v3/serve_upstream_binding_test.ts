@@ -135,7 +135,7 @@ Deno.test("probeVouches: only serve naming the cached principal, with the access
   const cases: [Parameters<typeof probeVouches>[0], boolean][] = [
     [{ cached: "user:p", mode: checked, built: "a", access: "a" }, true],
     [{ cached: "user:p", mode: checked, built: undefined, access: "a" }, true],
-    [{ cached: "user:p", mode: checked, built: "a", access: undefined }, true],
+    [{ cached: "user:p", mode: checked, built: "a", access: undefined }, false],
     [{ cached: "user:p", mode: checked, built: "a", access: "b" }, false],
     [{ cached: "user:q", mode: checked, built: "a", access: "a" }, false],
     [{

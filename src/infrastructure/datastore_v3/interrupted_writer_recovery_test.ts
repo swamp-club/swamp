@@ -269,31 +269,6 @@ Deno.test("recoverInterruptedWriter: a writer recovers an unreadable marker from
   });
 });
 
-Deno.test("recoverInterruptedWriter: a readable marker asks for a targeted recovery, an unreadable one for the full rebuild (swamp-club#4512)", async () => {
-  await withTempDir(async (dir) => {
-    const asked: (boolean | undefined)[] = [];
-    const handle = {
-      datastorePath: dir,
-      recoverInterruptedWriter: (
-        _since: number,
-        _signal?: AbortSignal,
-        options?: { readonly targeted?: boolean },
-      ) => {
-        asked.push(options?.targeted);
-        return Promise.resolve([]);
-      },
-    } as unknown as V3Datastore;
-    await writeRaw(
-      dir,
-      JSON.stringify({ hostname: "gone-host", pid: 1, since: 1_000 }),
-    );
-    await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true });
-    await writeRaw(dir, "");
-    await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true });
-    assertEquals(asked, [true, false]);
-  });
-});
-
 Deno.test("recoverInterruptedWriter: a marker file that changed by the time the lease is taken is left to its new writer (swamp-club#3617)", async () => {
   const since = recoverySince(Date.parse("2026-10-19T10:00:00Z"));
   const marker = (fields: Record<string, unknown>) =>

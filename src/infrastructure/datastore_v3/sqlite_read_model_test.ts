@@ -30,6 +30,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import { type Op, tombstoneOp } from "../../domain/datastore_v3/op.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   blobPut,
   dataKey,
@@ -60,7 +61,6 @@ import {
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
-  touchedDataNames,
 } from "./sqlite_read_model.ts";
 import type { SpellingFolding } from "./spelling_folding.ts";
 import { catalogRow, V3Catalog } from "./v3_catalog.ts";
@@ -591,61 +591,6 @@ async function touchAfter(path: string, since: number): Promise<void> {
   await Deno.utime(path, at, at);
 }
 
-Deno.test("SqliteReadModel.recover: a targeted recovery after a long history applies nothing again, restores what the writer changed or removed, removes what it added, and leaves the catalog as a full rebuild does (swamp-club#4512)", async () => {
-  await withEnv(async (env) => {
-    const { since, clock, counts, store } = await interruptedCheckout(env);
-    const tampered = env.contentPath("", "r3", 1);
-    await Deno.writeTextFile(tampered, "uncommitted");
-    await touchAfter(tampered, since);
-    await Deno.remove(env.contentPath("", "r30", 1));
-    const ghost = env.contentPath("", "ghost", 1);
-    await writeLocal(ghost, "uncommitted");
-    await touchAfter(ghost, since);
-    const stateDir = readModelStateDir(env.repoDir);
-    const catalog = new CatalogStore(join(stateDir, CATALOG_V3_FILE));
-    try {
-      catalog.upsertNewVersion(
-        catalogRow(
-          "",
-          MODEL_TYPE.normalized,
-          MODEL_ID,
-          DataMetadataSchema.parse(metadata("ghost", 1)),
-        ),
-      );
-    } finally {
-      catalog.close();
-    }
-
-    const readModel = env.open({ commitStore: store, clock, pageSize: 5 });
-    let targetedRows: unknown[][];
-    try {
-      const removed = await readModel.recover("", {
-        since,
-        admits: () => true,
-        signal: signal(),
-        targeted: true,
-      });
-      assertEquals(removed, [dataKey("ghost", 1).toString()]);
-      assertEquals(counts.compactedReads, 0, "the base was not loaded again");
-      assert(counts.firstCursor[0] > 0, "it caught up from the cursor");
-      assertEquals(await readOrAbsent(tampered), "r3@1");
-      assertEquals(await readOrAbsent(env.contentPath("", "r30", 1)), "r30@1");
-      assertEquals(await readOrAbsent(ghost), undefined);
-      targetedRows = env.catalogRows();
-
-      await readModel.recover("", {
-        since,
-        admits: () => true,
-        signal: signal(),
-      });
-    } finally {
-      await readModel.close();
-    }
-    assertEquals(targetedRows, env.catalogRows());
-    assertEquals(targetedRows.length, RECOVERY_COMMITS);
-  });
-});
-
 Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from its cursor, and ends as an uninterrupted one does (swamp-club#4512)", async () => {
   await withEnv(async (env) => {
     const { since, clock } = await interruptedCheckout(env);
@@ -699,7 +644,6 @@ Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from
         since,
         admits: () => true,
         signal: signal(),
-        targeted: true,
         entry: "interrupted_writer",
       });
     } finally {
@@ -714,116 +658,6 @@ Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from
       );
     }
   });
-});
-
-Deno.test("SqliteReadModel.recover: a targeted recovery stopped part way leaves the marker's work to the next one, which carries on from the cursor (swamp-club#4512)", async () => {
-  await withEnv(async (env) => {
-    const { since, clock } = await interruptedCheckout(env);
-    for (let i = RECOVERY_COMMITS + 1; i <= RECOVERY_COMMITS + 12; i++) {
-      await env.append(i, "", [
-        await savePut(`r${i}`, 1),
-        versionOp(`r${i}`, 1),
-      ]);
-    }
-    const tampered = env.contentPath("", "r3", 1);
-    await Deno.writeTextFile(tampered, "uncommitted");
-    await touchAfter(tampered, since);
-    const stop = new AbortController();
-    let pages = 0;
-    const stopping = new Proxy(env.store, {
-      get(target, property) {
-        if (property === "changesSince") {
-          return (cursor: number, limit: number) => {
-            if (++pages === 2) stop.abort();
-            return target.changesSince(cursor, limit);
-          };
-        }
-        const value = Reflect.get(target, property, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    let readModel = env.open({ commitStore: stopping, clock, pageSize: 5 });
-    try {
-      await assertRejects(() =>
-        readModel.recover("", {
-          since,
-          admits: () => true,
-          signal: stop.signal,
-          targeted: true,
-          entry: "interrupted_writer",
-        })
-      );
-    } finally {
-      await readModel.close();
-    }
-    const { counts, store } = (() => {
-      const counts = { firstCursor: [] as number[] };
-      let open = false;
-      const store = new Proxy(env.store, {
-        get(target, property) {
-          if (property === "changesSince") {
-            return (cursor: number, limit: number) => {
-              if (!open) {
-                open = true;
-                counts.firstCursor.push(cursor);
-              }
-              return target.changesSince(cursor, limit);
-            };
-          }
-          const value = Reflect.get(target, property, target);
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      });
-      return { counts, store };
-    })();
-    readModel = env.open({ commitStore: store, clock, pageSize: 5 });
-    try {
-      await readModel.recover("", {
-        since,
-        admits: () => true,
-        signal: signal(),
-        targeted: true,
-        entry: "interrupted_writer",
-      });
-    } finally {
-      await readModel.close();
-    }
-    assert(
-      counts.firstCursor[0] > RECOVERY_COMMITS,
-      `resumed at ${counts.firstCursor[0]}`,
-    );
-    assertEquals(await readOrAbsent(tampered), "r3@1");
-    assertEquals(
-      await readOrAbsent(env.contentPath("", `r${RECOVERY_COMMITS + 12}`, 1)),
-      `r${RECOVERY_COMMITS + 12}@1`,
-    );
-  });
-});
-
-Deno.test("touchedDataNames: names each data key's model and name, skips keys outside data, and gives up on a data key it cannot place (swamp-club#4512)", () => {
-  const id = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
-  assertEquals(
-    touchedDataNames([
-      `data/@swamp/aws/ec2/${id}/out/3/raw`,
-      `data/@swamp/aws/ec2/${id}/out/3/metadata.yaml`,
-      `data/command/shell/${id}/log/latest`,
-      "definitions/x.yaml",
-    ]),
-    [
-      { type: "@swamp/aws/ec2", id, name: "out" },
-      { type: "command/shell", id, name: "log" },
-    ],
-  );
-  for (
-    const key of [
-      `data/command/shell/${id}/log/notes.txt`,
-      `data/command/shell/${id}/log/3/raw/extra`,
-      "data/command/shell/not-a-uuid/log/1/raw",
-      `data/${id}/log/1/raw`,
-    ]
-  ) {
-    assertEquals(touchedDataNames([key]), undefined, key);
-  }
 });
 
 Deno.test("SqliteReadModel.recover: a recovery whose signal is already aborted changes nothing (swamp-club#4512)", async () => {
@@ -856,13 +690,11 @@ Deno.test("SqliteReadModel.recover: its span names what asked for it, the path i
       {
         boot: "boot-1",
         entry: "interrupted_writer",
-        targeted: true,
-        path: "targeted",
+        path: "full",
       },
       {
         boot: undefined,
         entry: "view_change",
-        targeted: false,
         path: "full",
       },
     ] as const;
@@ -878,7 +710,6 @@ Deno.test("SqliteReadModel.recover: its span names what asked for it, the path i
             since,
             admits: () => true,
             signal: signal(),
-            targeted: c.targeted,
             entry: c.entry,
           });
           const span = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
@@ -926,12 +757,14 @@ async function targetedMatchesFullRebuild(
   try {
     let path: unknown;
     await withCapturedSpans(async (spans) => {
-      await readModel.recover("", {
+      // the follow-up's option; extra keys pass through a variable
+      const targeted = {
         since,
         admits: () => true,
         signal: signal(),
         targeted: true,
-      });
+      };
+      await readModel.recover("", targeted);
       path = findSpan(spans, "swamp.datastore.v3.readmodel.recover")
         .attributes["swamp.datastore.v3.readmodel.recover.path"];
     });
@@ -950,70 +783,6 @@ async function targetedMatchesFullRebuild(
     await readModel.close();
   }
 }
-
-Deno.test("SqliteReadModel.recover: a targeted recovery removes a killed streaming write's pending catalog row, which has no file (swamp-club#4512)", async () => {
-  await withEnv(async (env) => {
-    const { since, clock } = await interruptedCheckout(env);
-    const store = new CatalogStore(
-      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
-    );
-    try {
-      store.upsert({
-        ...catalogRow(
-          "",
-          MODEL_TYPE.normalized,
-          MODEL_ID,
-          DataMetadataSchema.parse(metadata("streaming", 1)),
-        ),
-        is_pending: 1,
-        pending_pid: 999_999,
-        pending_host: "gone",
-      });
-    } finally {
-      store.close();
-    }
-    const { targeted, full, path } = await targetedMatchesFullRebuild(
-      env,
-      since,
-      clock,
-    );
-    assertEquals(path, "targeted");
-    assertEquals(targeted, full);
-    assertEquals(targeted.length, RECOVERY_COMMITS);
-  });
-});
-
-Deno.test("SqliteReadModel.recover: a targeted recovery undoes an uncommitted rename's forward and marker (swamp-club#4512)", async () => {
-  await withEnv(async (env) => {
-    const { since, clock } = await interruptedCheckout(env);
-    const marker = env.contentPath("", "r7", 2);
-    await writeLocal(marker, "renamed");
-    await touchAfter(marker, since);
-    const store = new CatalogStore(
-      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
-    );
-    try {
-      store.remove("", MODEL_TYPE.normalized, MODEL_ID, "r7");
-      store.recordRename({
-        namespace: "",
-        type_normalized: MODEL_TYPE.normalized,
-        model_id: MODEL_ID,
-        data_name: "r7",
-        renamed_to: "r7-new",
-      });
-    } finally {
-      store.close();
-    }
-    const { targeted, full, path } = await targetedMatchesFullRebuild(
-      env,
-      since,
-      clock,
-    );
-    assertEquals(path, "targeted");
-    assertEquals(targeted, full);
-    assertEquals(await readOrAbsent(marker), undefined);
-  });
-});
 
 Deno.test("SqliteReadModel.recover: a stopped rebuild is resumed only by an interrupted writer's recovery; a view change or a restore after it clears again (swamp-club#4512)", async () => {
   for (const next of ["view_change", "rebuilt"] as const) {
@@ -1087,7 +856,7 @@ Deno.test("SqliteReadModel.recover: a stopped rebuild is resumed only by an inte
   }
 });
 
-Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resumed or checked one by one by an interrupted writer's recovery (swamp-club#4512)", async () => {
+Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resumed by an interrupted writer's recovery (swamp-club#4512)", async () => {
   await withEnv(async (env) => {
     const { since, clock } = await interruptedCheckout(env);
     const stop = new AbortController();
@@ -1124,7 +893,6 @@ Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resum
           since,
           admits: () => true,
           signal: signal(),
-          targeted: true,
           entry: "interrupted_writer",
         });
         assertEquals(
@@ -1140,88 +908,40 @@ Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resum
   });
 });
 
-Deno.test("SqliteReadModel.recover: a targeted recovery stopped after removing an uncommitted file leaves no catalog row for it (swamp-club#4512)", async () => {
-  await withEnv(async (env) => {
-    const { since, clock } = await interruptedCheckout(env);
-    const ghosts = ["ghost-a", "ghost-b"].map((name) =>
-      env.contentPath("", name, 1)
-    );
-    const store = new CatalogStore(
-      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
-    );
-    try {
-      for (const [i, path] of ghosts.entries()) {
-        await writeLocal(path, "uncommitted");
-        await touchAfter(path, since);
-        store.upsertNewVersion(
-          catalogRow(
-            "",
-            MODEL_TYPE.normalized,
-            MODEL_ID,
-            DataMetadataSchema.parse(metadata(["ghost-a", "ghost-b"][i], 1)),
+Deno.test({
+  name:
+    "SqliteReadModel.recover: a targeted recovery leaves a name a committed expiry removed as a full rebuild does (swamp-club#4512 follow-up: targeted recovery, the gate for its exact per-partition re-projection)",
+  ignore: true,
+  fn: async () => {
+    await withEnv(async (env) => {
+      const { since, clock } = await interruptedCheckout(env);
+      await env.append(RECOVERY_COMMITS + 1, "", [
+        tombstoneOp({
+          intent: modelIntent({ kind: "data.gc", name: "r5" }),
+          key: RecordKey.create(
+            `data/${MODEL_TYPE.normalized}/${MODEL_ID}/r5/latest`,
           ),
-        );
+        }),
+      ]);
+      const readModel = env.open({ clock, pageSize: 5 });
+      try {
+        await readModel.catchUp(signal());
+      } finally {
+        await readModel.close();
       }
-    } finally {
-      store.close();
-    }
-    const stop = new AbortController();
-    const stopping = stop.signal;
-    const check = stopping.throwIfAborted.bind(stopping);
-    stopping.throwIfAborted = () => {
-      if (ghosts.some((path) => !existsSync(path))) {
-        stop.abort(new DOMException("stopped", "AbortError"));
-      }
-      check();
-    };
-    let readModel = env.open({ clock, pageSize: 5 });
-    try {
-      await assertRejects(() =>
-        readModel.recover("", {
-          since,
-          admits: () => true,
-          signal: stopping,
-          targeted: true,
-          entry: "interrupted_writer",
-        })
-      );
-    } finally {
-      await readModel.close();
-    }
-    assert(
-      ghosts.some((path) => existsSync(path)) &&
-        ghosts.some((path) => !existsSync(path)),
-      "stopped between the two removals",
-    );
-    readModel = env.open({ clock, pageSize: 5 });
-    try {
-      await readModel.recover("", {
+      const uncommitted = env.contentPath("", "r5", 2);
+      await writeLocal(uncommitted, "uncommitted");
+      await touchAfter(uncommitted, since);
+      const { targeted, full, path } = await targetedMatchesFullRebuild(
+        env,
         since,
-        admits: () => true,
-        signal: signal(),
-        targeted: true,
-        entry: "interrupted_writer",
-      });
-    } finally {
-      await readModel.close();
-    }
-    const rows = env.catalogRows();
-    assertEquals(rows.length, RECOVERY_COMMITS);
-    assert(
-      !rows.some((row) => String(row[1]).startsWith("ghost")),
-      JSON.stringify(rows.filter((row) => String(row[1]).startsWith("ghost"))),
-    );
-  });
+        clock,
+      );
+      assertEquals(path, "targeted");
+      assertEquals(targeted, full);
+    });
+  },
 });
-
-function existsSync(path: string): boolean {
-  try {
-    Deno.lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories leave out are never written or catalogued (swamp-club#3691)", async () => {
   await withEnv(async (env) => {

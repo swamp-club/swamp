@@ -556,13 +556,6 @@ export class ReadModelState {
     );
   }
 
-  presentKeys(namespace: string): string[] {
-    this.#requireOpen();
-    return (this.#db.prepare(
-      "SELECT record_key FROM materialised_keys WHERE namespace = ? AND present = 1 ORDER BY record_key",
-    ).all(namespace) as { record_key: string }[]).map((row) => row.record_key);
-  }
-
   filterInputs(): string | undefined {
     this.#requireOpen();
     const row = this.#db.prepare(
@@ -1206,29 +1199,6 @@ export class ReadModelState {
 
   unsyncedFiles(): UnsyncedFile[] {
     return this.#snapshot(() => this.#expectedFilesOf("unsynced_keys"));
-  }
-
-  /** what each key's file should hold, judged as unsyncedFiles judges them */
-  expectedFiles(
-    keys: readonly {
-      readonly namespace: string;
-      readonly record_key: string;
-    }[],
-  ): UnsyncedFile[] {
-    return this.#snapshot(() => {
-      this.#db.exec(
-        "CREATE TEMP TABLE IF NOT EXISTS checked_keys (namespace TEXT NOT NULL, record_key TEXT NOT NULL, PRIMARY KEY (namespace, record_key)) WITHOUT ROWID; DELETE FROM checked_keys;",
-      );
-      try {
-        const insert = this.#db.prepare(
-          "INSERT OR IGNORE INTO checked_keys (namespace, record_key) VALUES (?, ?)",
-        );
-        for (const key of keys) insert.run(key.namespace, key.record_key);
-        return this.#expectedFilesOf("temp.checked_keys");
-      } finally {
-        this.#db.exec("DELETE FROM checked_keys;");
-      }
-    });
   }
 
   #expectedFilesOf(table: string): UnsyncedFile[] {
