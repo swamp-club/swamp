@@ -579,8 +579,16 @@ for (
           ),
         Error,
       );
-      assertStringIncludes(error.message, "code conformance review covers");
-      assertStringIncludes(error.message, "verification_failed");
+      assertStringIncludes(
+        error.message,
+        review?.commit
+          ? "code conformance review covers"
+          : "No code conformance review of a verified commit",
+      );
+      assertStringIncludes(
+        error.message,
+        review?.commit ? "'verification_failed'" : "'code_conformance_review'",
+      );
     } finally {
       await restore();
     }

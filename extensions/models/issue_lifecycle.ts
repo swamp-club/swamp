@@ -130,6 +130,29 @@ async function readJson<T>(
   return JSON.parse(new TextDecoder().decode(content)) as T;
 }
 
+// The one definition of "the commit under verification has passed", shared by the method and the gate.
+function verifiedCommit(
+  state: StateData | null | undefined,
+  result: VerificationResultData | null | undefined,
+): { commit: string } | { refusal: string } {
+  if (!result || !result.allPassed) {
+    return {
+      refusal: "No passing verification result. Record " +
+        "'verification_passed' for the verified commit, or " +
+        "'verification_failed' to return to implementing.",
+    };
+  }
+  if (state?.commit && result.commit !== state.commit) {
+    return {
+      refusal: `The passing verification result is for ${result.commit}, ` +
+        `but verify started on ${state.commit}. Record ` +
+        `'verification_passed' for ${state.commit}, or ` +
+        "'verification_failed' to return to implementing.",
+    };
+  }
+  return { commit: result.commit };
+}
+
 export function buildNotifyMessage(
   author: string,
   prData: PullRequestData | null,
@@ -1178,34 +1201,27 @@ export const model = {
         }
 
         if (state?.phase === "verifying" || state?.phase === "pr_failed") {
-          const result = await read<VerificationResultData>(
-            "verificationResult-main",
+          const verified = verifiedCommit(
+            state,
+            await read<VerificationResultData>("verificationResult-main"),
           );
-          if (!result || !result.allPassed) {
+          if ("refusal" in verified) {
             return {
               pass: false,
               errors: [
                 state.phase === "verifying"
-                  ? "No passing verification result. Record 'verification_passed' for the verified commit, or 'verification_failed' to return to implementing."
+                  ? verified.refusal
                   : `No passing verification result. ${rereview}`,
               ],
             };
           }
-          if (state.commit && result.commit !== state.commit) {
-            return {
-              pass: false,
-              errors: [
-                `The passing verification result is for ${result.commit}, but verify started on ${state.commit}. Record 'verification_passed' for ${state.commit}, or 'verification_failed' to return to implementing.`,
-              ],
-            };
-          }
-          if (review.commit !== result.commit) {
+          if (review.commit !== verified.commit) {
             return {
               pass: false,
               errors: [
                 `Code conformance review covers ${
                   review.commit ?? "no verified commit"
-                }, but verification passed for ${result.commit}. ${rereview}`,
+                }, but verification passed for ${verified.commit}. ${rereview}`,
               ],
             };
           }
@@ -2207,29 +2223,16 @@ export const model = {
           throw new Error("No plan exists. Run 'plan' first.");
         }
 
-        const result = await context.readResource!(
-          "verificationResult-main",
-        ) as VerificationResultData | null;
-        if (!result || !result.allPassed) {
-          throw new Error(
-            "No passing verification result. Record 'verification_passed' " +
-              "before 'code_conformance_review', or 'verification_failed' " +
-              "to return to implementing.",
-          );
+        const verified = verifiedCommit(
+          await context.readResource!("state-main") as StateData | null,
+          await context.readResource!(
+            "verificationResult-main",
+          ) as VerificationResultData | null,
+        );
+        if ("refusal" in verified) {
+          throw new Error(verified.refusal);
         }
-        const state = await context.readResource!("state-main") as
-          | StateData
-          | null;
-        // A pass left over from an earlier verify must not stand in for the commit under verification.
-        if (state?.commit && result.commit !== state.commit) {
-          throw new Error(
-            `The passing verification result is for ${result.commit}, but ` +
-              `verify started on ${state.commit}. Record ` +
-              `'verification_passed' for ${state.commit}, or ` +
-              "'verification_failed' to return to implementing.",
-          );
-        }
-        const commit = result.commit;
+        const commit = verified.commit;
 
         handles.push(
           await context.writeResource(
@@ -2986,12 +2989,17 @@ export const model = {
         const review = await context.readResource?.(
           "codeConformanceReview-main",
         ) as CodeConformanceReviewData | null | undefined;
-        if (attestation.subject.commit !== review?.commit) {
+        if (!review?.commit) {
+          throw new Error(
+            "No code conformance review of a verified commit exists. Run " +
+              "'code_conformance_review' before 'post_attestation'.",
+          );
+        }
+        if (attestation.subject.commit !== review.commit) {
           throw new Error(
             `The attestation is for ${attestation.subject.commit}, but the ` +
-              `code conformance review covers ${
-                review?.commit ?? "no verified commit"
-              }. Build the attestation for the reviewed commit, or record ` +
+              `code conformance review covers ${review.commit}. Build the ` +
+              "attestation for the reviewed commit, or record " +
               "'verification_failed' to verify new code.",
           );
         }

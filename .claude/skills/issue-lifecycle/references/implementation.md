@@ -89,19 +89,22 @@ records the PR on the swamp-club issue (and on every linked issue), and posts a
 there is no new status for `pr_open`; the PR link is additional evidence
 attached to the in-progress state.
 
-`link_pr` is **idempotent** — call it again with a new URL if:
+`link_pr` is **idempotent** — call it again with a new URL for the same verified
+commit if:
 
-- CI fails and you force-push a different PR
 - The first PR is closed and a replacement is opened
 - You recorded the wrong URL the first time
+
+A fix that changes code (including a force-push or rebase) is a new commit: it
+goes through `implement`, verification and conformance again — see 4c.
 
 Each call overwrites `pullRequest-main` with the latest URL and refreshes
 `linkedAt`. A new `pr_linked` entry is posted on every call.
 
-Calling `link_pr` is **encouraged but not enforced** — `complete` still accepts
-`implementing` as a valid source phase for backwards compatibility with legacy
-records. Prefer the `implementing → link_pr → complete` flow for all new work so
-the lifecycle record carries the PR link.
+`complete` from `verifying` closes a lifecycle without a PR, once the verified
+commit has a fully justified conformance review. Prefer
+`verifying → post_attestation → link_pr` for all new work so the lifecycle
+record carries the PR link.
 
 ## 4b. Watch the PR
 
