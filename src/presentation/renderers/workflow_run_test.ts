@@ -167,6 +167,93 @@ Deno.test("ConsoleWorkflowRunRenderer: succeeded run shows Starting, pipe output
   assertStringIncludes(output, "Completed");
 });
 
+const FAN_OUT_EVENTS: WorkflowRunEvent[] = [
+  {
+    kind: "job_fanout_planned",
+    jobId: "extract",
+    selector: { labels: { role: "web" } },
+    offline: "wait",
+    minWorkers: 1,
+    plannedLanes: 2,
+    members: [
+      { worker: "w-a", disposition: "dispatch" },
+      { worker: "w-b", disposition: "waiting", reason: "disconnected" },
+      { worker: "w-c", disposition: "excluded", reason: "draining" },
+    ],
+    resumed: { rerun: ["w-b"], kept: ["w-a"] },
+  },
+  {
+    kind: "job_fanout_waiting",
+    jobId: "extract",
+    worker: "w-b",
+    queueTimeoutSeconds: 600,
+  },
+  {
+    kind: "job_fanout_summary",
+    jobId: "extract",
+    matching: 3,
+    lanesSucceeded: 1,
+    lanesFailed: 1,
+    excluded: [{ worker: "w-c", disposition: "excluded", reason: "draining" }],
+    skipped: [],
+    failedAtPlan: [],
+  },
+];
+
+function withFanOutEvents(events: WorkflowRunEvent[]): WorkflowRunEvent[] {
+  const at = events.findIndex((e) => e.kind === "job_completed");
+  return [...events.slice(0, at), ...FAN_OUT_EVENTS, ...events.slice(at)];
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: a fan-out job shows its plan, the lanes a resume re-runs and keeps, a waiting worker and the summary in its column", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream(withFanOutEvents(simpleEvents(makeRunView("succeeded")))),
+      renderer.handlers(),
+    );
+  });
+  const fanOut = lines.filter((line) => /fan-out|w-a|w-b|w-c|resume/.test(line))
+    .map((line) => line.replace(/^.*?│ /, ""));
+  assertEquals(fanOut, [
+    "fan-out - role=web - offline wait - 2 lanes",
+    "  w-a dispatch",
+    "  w-b waiting (disconnected)",
+    "  w-c excluded (draining)",
+    "resume - re-run: w-b - kept: w-a",
+    "w-b waiting for its worker to connect (queue timeout 600s)",
+    "fan-out - 3 matching - 1 succeeded, 1 failed - 1 excluded (w-c: draining) - 0 skipped",
+  ]);
+});
+
+Deno.test("JsonWorkflowRunRenderer: fan-out events go to stderr as one record each, and stdout keeps one document", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    await consumeStream(
+      toStream(withFanOutEvents(simpleEvents(makeRunView("succeeded")))),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+  assertEquals(stdout.length, 1);
+  assertEquals(
+    stderr.map((line) => JSON.parse(line)),
+    FAN_OUT_EVENTS.map(({ kind, ...fields }) => ({ event: kind, ...fields })),
+  );
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: data name portability warning shows as a warning line", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",

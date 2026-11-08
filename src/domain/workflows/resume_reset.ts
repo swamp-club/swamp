@@ -26,6 +26,14 @@ import {
   workflowJobOf,
 } from "./job_pairing.ts";
 import type { Job } from "./job.ts";
+import { fanOutPlanMissing } from "./fan_out_job.ts";
+import {
+  laneRecords,
+  laneStepOf,
+  laneSucceeded,
+  sameFanOutSelector,
+} from "./fan_out_lanes.ts";
+import { mergePlacementFields } from "./placement.ts";
 import type { Workflow } from "./workflow.ts";
 import {
   type JobRun,
@@ -35,13 +43,17 @@ import {
   type WorkflowRun,
 } from "./workflow_run.ts";
 
-type ResetBranch = "name" | "template" | "prefix" | "settled";
+type ResetBranch = "name" | "template" | "prefix" | "lane" | "settled";
 
 interface SelectedRecord {
   readonly jobName: string;
   readonly stepName: string;
   readonly forEachTemplate: string | undefined;
   readonly branch: ResetBranch;
+}
+
+function authoredOf(jobRun: JobRun, stepName: string): string {
+  return laneStepOf(stepName, jobRun.fanOutPlan?.lanes)?.authored ?? stepName;
 }
 
 export interface ResumeReset {
@@ -263,11 +275,26 @@ function sharedStepRead(
   return undefined;
 }
 
+/**
+ * a lane that succeeded in a job the resume enters is kept; a downstream
+ * fan-out job re-runs every lane, as a downstream plain job re-runs every step
+ */
+function keptLanes(jobRun: JobRun): ReadonlySet<string> {
+  const lanes = jobRun.fanOutPlan?.lanes;
+  if (lanes === undefined) return new Set();
+  const kept = new Set<string>();
+  for (const [worker, records] of laneRecords(jobRun.steps, lanes)) {
+    if (laneSucceeded(records)) kept.add(worker);
+  }
+  return kept;
+}
+
 function selectResetRecords(
   workflow: Workflow,
   run: WorkflowRun,
   pairs: ReadonlyMap<string, string> | undefined,
   templateKeysToReset: ReadonlySet<string>,
+  entryJobs: ReadonlySet<string>,
 ): SelectedRecord[] {
   // a forEach template entry was replaced by expanded entries, so prefix
   // matching applies only to steps the definition declares with forEach
@@ -275,7 +302,25 @@ function selectResetRecords(
   for (const jobRun of run.jobs) {
     const job = workflowJobOf(workflow, jobRun, pairs);
     if (!job) continue;
+    const kept = entryJobs.has(job.name) ? keptLanes(jobRun) : new Set();
     for (const stepRun of jobRun.steps) {
+      const lane = laneStepOf(stepRun.stepName, jobRun.fanOutPlan?.lanes);
+      if (lane !== undefined) {
+        if (
+          !kept.has(lane.worker) &&
+          templateKeysToReset.has(
+            stepRunKey({ jobName: job.name, stepName: lane.authored }),
+          )
+        ) {
+          selected.push({
+            jobName: jobRun.jobName,
+            stepName: stepRun.stepName,
+            forEachTemplate: undefined,
+            branch: "lane",
+          });
+        }
+        continue;
+      }
       const branch = matchRecord(job, stepRun);
       if (branch === undefined) continue;
       selected.push({
@@ -321,12 +366,19 @@ export function computeStepsToReset(
   from: ResumeFrom,
 ): StepRunRef[] {
   const pairs = pairExpressionJobs(workflow, run);
-  const keys = templatesToReset(workflow, [resolveFrom(workflow, from)]);
+  const entry = resolveFrom(workflow, from);
+  const keys = templatesToReset(workflow, [entry]);
   const unpaired = unpairedExpressionJob(workflow, pairs, keys);
   if (unpaired !== undefined) {
     throw new UserError(`${unpaired} Start a new run.`);
   }
-  const stepsToReset = selectResetRecords(workflow, run, pairs, keys)
+  const stepsToReset = selectResetRecords(
+    workflow,
+    run,
+    pairs,
+    keys,
+    new Set([entry.jobName]),
+  )
     .map(({ jobName, stepName }) => ({ jobName, stepName }));
   if (stepsToReset.length === 0) {
     throw zeroStepsError(from.step);
@@ -354,7 +406,9 @@ function movedEntry(
 ): string | undefined {
   const name = entry.stepName;
   const holds = (jobRun: JobRun) =>
-    jobRun.steps.some((s) => s.stepName === name || s.forEachTemplate === name);
+    jobRun.steps.some((s) =>
+      authoredOf(jobRun, s.stepName) === name || s.forEachTemplate === name
+    );
   const ownName = evaluated(entry.jobName)
     ? pairs?.get(entry.jobName)
     : entry.jobName;
@@ -403,6 +457,10 @@ function missingStep(
     for (const step of job.steps) {
       if (step.forEach || evaluated(step.name)) continue;
       if (jobRun.getStep(step.name)) continue;
+      if (
+        jobRun.fanOutPlan !== undefined &&
+        jobRun.steps.some((s) => authoredOf(jobRun, s.stepName) === step.name)
+      ) continue;
       const storedIn = run.jobs.find((j) =>
         j.getStep(step.name) &&
         !workflow.getJob(j.jobName)?.getStep(step.name)
@@ -422,7 +480,9 @@ function recordsStep(
 ): boolean {
   if (!jobRun) return false;
   if (
-    jobRun.steps.some((s) => s.stepName === name || s.forEachTemplate === name)
+    jobRun.steps.some((s) =>
+      authoredOf(jobRun, s.stepName) === name || s.forEachTemplate === name
+    )
   ) {
     return true;
   }
@@ -446,7 +506,7 @@ function movedUnfinishedStep(
     for (const record of jobRun.steps) {
       if (finishedRecord(record)) continue;
       const template = record.forEachTemplate;
-      const name = template ?? record.stepName;
+      const name = template ?? authoredOf(jobRun, record.stepName);
       const own = ownJob?.getStep(name);
       if (own && (template === undefined || own.forEach !== undefined)) {
         continue;
@@ -480,6 +540,58 @@ function removedUnfinishedJob(
     : undefined;
 }
 
+/**
+ * a fan-out job never re-plans, so a resume refuses a run whose plan is gone or
+ * whose workflow no longer selects the same workers
+ */
+function fanOutStructure(
+  workflow: Workflow,
+  run: WorkflowRun,
+): string | undefined {
+  for (const jobRun of run.jobs) {
+    const job = workflow.getJob(jobRun.jobName);
+    if (job === undefined) continue;
+    const plan = jobRun.fanOutPlan;
+    if (plan !== undefined && job.fanOut === undefined) {
+      return `Job "${job.name}" ran as a fan-out job, and the workflow no longer sets fanOut on it.`;
+    }
+    if (plan === undefined) {
+      if (fanOutPlanMissing(job, jobRun)) {
+        return `Job "${job.name}" has fanOut but started without a fan-out plan: fanOut was added after the run began, or an older swamp dropped the plan when it saved the run. A fan-out job is never re-planned.`;
+      }
+      continue;
+    }
+    const recorded = jobRun.fanOutSnapshot?.selector;
+    if (recorded === undefined) {
+      return `Job "${job.name}" was planned by a swamp that did not record its worker selector, so an edited selector cannot be ruled out.`;
+    }
+    const fields = mergePlacementFields(
+      workflow.placementFields,
+      job.placementFields,
+    );
+    if (
+      !sameFanOutSelector(recorded, {
+        labels: fields?.labels,
+        platform: fields?.platform,
+      })
+    ) {
+      return `Fan-out job "${job.name}" selects different workers than when the run began: its labels or platform changed.`;
+    }
+  }
+  return undefined;
+}
+
+// recover checks before it resets anything, so a refused recover leaves the record as it was
+export function refuseFanOutRecover(
+  workflow: Workflow,
+  run: WorkflowRun,
+): void {
+  const problem = fanOutStructure(workflow, run);
+  if (problem !== undefined) {
+    throw new UserError(`${problem} Start a new run.`);
+  }
+}
+
 export function suspendedWayOut(
   workflow: Workflow,
   run: WorkflowRun,
@@ -497,6 +609,10 @@ export function planFailedRunResume(
   const history = `See 'swamp workflow history logs ${run.id}'.`;
   const refuse = (problem: string) =>
     new UserError(`${problem} Start a new run. ${history}`);
+
+  // first: without a plan a lane record reads as a step the workflow lacks
+  const fanOut = fanOutStructure(workflow, run);
+  if (fanOut !== undefined) throw refuse(fanOut);
 
   const pairs = pairExpressionJobs(workflow, run);
   const entries = from !== undefined
@@ -516,7 +632,13 @@ export function planFailedRunResume(
   const keys = templatesToReset(workflow, entries);
   const unpaired = unpairedExpressionJob(workflow, pairs, keys);
   if (unpaired !== undefined) throw refuse(unpaired);
-  const selected = selectResetRecords(workflow, run, pairs, keys);
+  const selected = selectResetRecords(
+    workflow,
+    run,
+    pairs,
+    keys,
+    new Set(entries.map((entry) => entry.jobName)),
+  );
   if (selected.length === 0) {
     throw from !== undefined
       ? zeroStepsError(from.step)
@@ -550,11 +672,12 @@ export function planFailedRunResume(
   const rerun = new Set(keys);
   for (const record of selected) {
     if (record.branch !== "settled") continue;
-    const job = workflowJobOf(workflow, run.getJob(record.jobName)!, pairs);
+    const jobRun = run.getJob(record.jobName)!;
+    const job = workflowJobOf(workflow, jobRun, pairs);
     const template = record.forEachTemplate !== undefined &&
         job?.getStep(record.forEachTemplate)
       ? record.forEachTemplate
-      : record.stepName;
+      : authoredOf(jobRun, record.stepName);
     if (job?.getStep(template)) {
       rerun.add(stepRunKey({ jobName: job.name, stepName: template }));
     }
@@ -567,7 +690,8 @@ export function planFailedRunResume(
   const tracked: StepRunRef[] = [];
   for (const record of selected) {
     if (record.branch === "prefix") continue;
-    const ownJob = workflowJobOf(workflow, run.getJob(record.jobName)!, pairs);
+    const jobRun = run.getJob(record.jobName)!;
+    const ownJob = workflowJobOf(workflow, jobRun, pairs);
     if (!ownJob && hasEvaluatedJob) continue;
     const ownStep = (name: string) => ownJob?.getStep(name);
     const fromTemplate = record.forEachTemplate !== undefined &&
@@ -575,7 +699,11 @@ export function planFailedRunResume(
     if (record.branch === "settled") {
       // a settled record whose job lacks it by name or template is reset but
       // not tracked, as a suspended-run resume leaves it
-      if (!ownStep(record.stepName) && !fromTemplate) continue;
+      if (!ownStep(authoredOf(jobRun, record.stepName)) && !fromTemplate) {
+        continue;
+      }
+    } else if (record.branch === "lane") {
+      // selected through its authored step, which the workflow holds
     } else if (record.branch === "name") {
       if (!ownStep(record.stepName) && !fromTemplate) {
         throw refuse(
@@ -605,7 +733,8 @@ export function checkSuspendedRunResume(
   workflow: Workflow,
   run: WorkflowRun,
 ): void {
-  const problem = missingJob(workflow, run) ??
+  const problem = fanOutStructure(workflow, run) ??
+    missingJob(workflow, run) ??
     movedUnfinishedStep(workflow, run) ??
     removedUnfinishedJob(workflow, run) ??
     missingStep(

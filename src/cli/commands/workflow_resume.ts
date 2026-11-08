@@ -156,7 +156,7 @@ export const workflowResumeCommand = withRemoteOptions(
     )
     .option(
       "--from <step:string>",
-      "Select the retry step in a failed run. Without --from, resume --run retries all failed steps.",
+      "Select the retry step in a failed run. Without --from, resume --run retries all failed steps. In a fan-out job, only lanes that did not succeed re-run; start a new run to re-run a passed lane.",
     )
     .option(
       "--job <job:string>",

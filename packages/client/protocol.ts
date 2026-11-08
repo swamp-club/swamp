@@ -28,6 +28,8 @@
 // ── Inbound (client → server) ────────────────────────────────────────────
 
 export interface WorkflowRunPayload {
+  /** kinds newer than old clients, sent only when listed */
+  eventKinds?: string[];
   workflowIdOrName: string;
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
@@ -490,6 +492,8 @@ export interface WorkflowCancelPayload {
 }
 
 export interface WorkflowResumePayload {
+  /** kinds newer than old clients, sent only when listed */
+  eventKinds?: string[];
   workflowIdOrName: string;
   runId?: string;
   from?: string;

@@ -90,6 +90,9 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       job_started: () => {},
       job_completed: () => {},
       job_skipped: () => {},
+      job_fanout_planned: () => {},
+      job_fanout_waiting: () => {},
+      job_fanout_summary: () => {},
       step_started: (e) => {
         this.stepStartTimes.set(`${e.jobId}:${e.stepId}`, Date.now());
       },

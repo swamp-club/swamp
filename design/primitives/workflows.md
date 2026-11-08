@@ -3141,19 +3141,16 @@ again on the cached workflow a `--last-evaluated` run swaps in:
 
 - `refuseFanOutRun` refuses a run with no registered pool (a local run):
   "fanOut needs the worker pool of swamp serve; run it with --server".
-- It also refuses, for this release, a workflow that holds a fan-out job and
-  any step that can suspend (`manual_approval`, `wait_for_signal` or a nested
-  `workflow` step) in any job: resuming a fan-out run is not available yet, so
-  a suspended run could never finish.
 - It also refuses, for this release, a fan-out job that sets `rollout`:
   batches and the failure budget are not acted on yet, and running every lane
   at once would silently drop the canary the author asked for.
-- `refuseFanOutResume` refuses `workflow resume`, `workflow recover` and the
-  CLI's recover command with "resuming a run with a fan-out job arrives in the
-  next release". It refuses when the workflow has a fan-out job or when the
-  run record holds a fan-out plan, so an edit that removes `fanOut` cannot
-  reopen the run as a plain job. The CLI's recover checks before it touches
-  the record.
+- `resume` and `recover` run the same check before they touch the record, so a
+  resume without serve is refused before a fan-out job it has yet to reach
+  would plan.
+
+A fan-out workflow may hold `manual_approval`, `wait_for_signal` and nested
+`workflow` steps in other jobs; validation still refuses them inside the
+fan-out job itself.
 
 `fanOut` takes the short form `all` or an object parsed by
 `FanOutPolicySchema` (`src/domain/remote/fan_out.ts`): `offline`
@@ -3188,7 +3185,11 @@ path and `workflow validate` report them:
 - `workflow`, `manual_approval` and `wait_for_signal` steps.
 
 **Stored plan.** A job run may hold a `fanOutPlan` section, which
-`JobRun.recordFanOutPlan` writes once. A resume never re-plans:
+`JobRun.recordFanOutPlan` writes once, and beside it a `fanOutSnapshot`: the
+selector as authored (labels and platform merged from the definition, not the
+evaluated run) and each lane worker's `self.worker` scope at plan time. The
+snapshot sits outside the plan, so the run-record judge's freeze of the plan is
+unchanged. A resume never re-plans:
 
 ```yaml
 fanOutPlan:
@@ -3250,13 +3251,58 @@ collide (step and worker names may both hold brackets).
   since the pool reader is module-level and reaches the child's execution
   service. A `workflow` step inside a fan-out job stays refused.
 
-A binary from before this change reads an unknown job-run key and drops it on
-its next save, so a run that an older
-swamp resumes, cancels or approves loses its plan. `fanOutPlanMissing(job,
-jobRun)` reports a started fan-out job run that holds no plan, so a resume can
-refuse it rather than re-plan. An older swamp reading a workflow file with
-`fanOut` refuses the key as unknown, rather than running the job as a plain
-job.
+**Resume, retry and recover.** A resumed fan-out job runs on its stored plan:
+`runFanOutJob` skips planning, takes its lanes from the plan's batches and its
+members from the plan, and never adds a worker that enrolled since.
+
+- Retry and `--from` map a lane record `step[worker]` to its authored step
+  through the plan's lanes (`selectRetryTemplates`, `planFailedRunResume`). In
+  the job they enter, a lane whose every step finished without an unallowed
+  failure keeps its state and outputs and is never dispatched again
+  (`laneSucceeded`); `--from` resets the step and its lane-local dependents
+  only in the other lanes. To re-run a passed lane, start a new run. A
+  downstream fan-out job that already ran is reset across every lane on its
+  stored plan, as a downstream plain job re-runs every step.
+- A lane binds `self.worker` from the live pool, or from the snapshot when its
+  worker has left the pool. Dispatch still pins it by worker name, so a
+  restarted process with a new instance UUID is the planned member, and an
+  absent or disconnected worker waits up to the queue timeout. Under `offline:
+  skip` or `offline: fail`, a resumed lane whose worker is not connected fails
+  at once and sends nothing (`resumedLaneVerdict`); a planned lane is never
+  silently skipped.
+- Recover keeps the interrupt rules unchanged: they touch only pending steps,
+  so a finished lane keeps its result and an in-flight lane is unknown until
+  recovery resets it.
+- The structure checks (`planFailedRunResume`, `checkSuspendedRunResume`, and
+  `refuseFanOutRecover` before recover touches the record) refuse, leaving the
+  record unchanged: a job whose run holds a plan but whose workflow dropped
+  `fanOut`; a fan-out job that started without a plan (`fanOutPlanMissing`:
+  `fanOut` was added after it started, or an older swamp dropped the plan when
+  it saved the run); a selector that differs from the snapshot; and a plan with
+  no snapshot selector, from the release that shipped lanes, since an edited
+  selector cannot be ruled out.
+- A retry of a fan-out job that failed because a member was not connected at
+  plan time (`offline: fail`) is refused: that member has no lane and a retry
+  never adds one.
+
+**Output.** `runFanOutJob` emits `job_fanout_planned` once the plan is recorded
+and again on every resume (selector, offline policy, `minWorkers`,
+`plannedLanes`, every member's worker name with its disposition and reason, and
+on a resume the lanes re-run and kept), a `job_fanout_waiting` per waiting
+member or resumed lane whose worker is not connected (with the job's queue
+timeout, or serve's through `WorkerPoolReader.queueTimeoutMs`), and
+`job_fanout_summary` before `job_completed`. Instance UUIDs stay in the record.
+The log renderer prints them in the job's column; JSON mode writes one stderr
+record each. Serve sends these kinds only to a subscriber that lists them in
+`eventKinds` on `workflow.run`, `workflow.resume` or `run.attach`
+(`withheldEventKinds`, applied per subscriber as events leave the shared
+buffer), since a released client has no handler for them; the CLI lists them.
+
+A binary from before fan-out lanes reads an unknown job-run key and drops it on
+its next save, so a run that an older swamp resumes, cancels or approves loses
+its plan and snapshot; the resume refusals above catch it. An older swamp
+reading a workflow file with `fanOut` refuses the key as unknown, rather than
+running the job as a plain job.
 
 ## Steps
 

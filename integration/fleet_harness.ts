@@ -60,7 +60,14 @@ import {
   workerDefinitionName,
   type WorkerStatus,
 } from "../src/domain/models/worker/worker_model.ts";
-import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import {
+  type WorkflowRun,
+  WorkflowRun as WorkflowRunClass,
+  type WorkflowRunData,
+} from "../src/domain/workflows/workflow_run.ts";
+import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
+import type { WorkflowExecutionEvent } from "../src/domain/workflows/execution_events.ts";
+import { resolveResumableRun } from "../src/domain/workflows/suspended_run_resolver.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import type { WorkflowRunView } from "../src/libswamp/workflows/workflow_run_view.ts";
@@ -90,7 +97,8 @@ import { BASELINE_VAULT, initRepo } from "./remote_secrets_baseline_harness.ts";
 /** How a worker answers the dispatches it receives. */
 export type DispatchBehavior =
   | { kind: "succeed" }
-  | { kind: "fail"; error: string }
+  /** with `steps`, fails only dispatches of those step names */
+  | { kind: "fail"; error: string; steps?: readonly string[] }
   /** Waits until the test calls `release()` on the worker, then succeeds. */
   | { kind: "hold" };
 
@@ -255,7 +263,11 @@ export class FleetWorker {
       if (behavior.kind === "hold") {
         await new Promise<void>((resume) => this.#held.push(resume));
       }
-      if (behavior.kind === "fail") {
+      if (
+        behavior.kind === "fail" &&
+        (behavior.steps === undefined ||
+          behavior.steps.includes(step?.stepName ?? ""))
+      ) {
         return {
           status: "error",
           error: behavior.error,
@@ -282,6 +294,8 @@ export interface FleetOptions {
 export interface RetryOptions {
   fromStep?: string;
   fromJob?: string;
+  /** collects the run's events, for checks on what a client is sent */
+  events?: WorkflowExecutionEvent[];
 }
 
 /**
@@ -523,7 +537,7 @@ export class Fleet implements AsyncDisposable {
     return workflow;
   }
 
-  /** Runs a saved workflow through serve's run entry; returns the finished run. */
+  /** Runs a saved workflow through serve's run entry; returns it finished or suspended. */
   async runWorkflow(
     name: string,
     options: { signal?: AbortSignal; lastEvaluated?: boolean } = {},
@@ -537,7 +551,9 @@ export class Fleet implements AsyncDisposable {
       { workflowIdOrName: name, lastEvaluated: options.lastEvaluated },
       options.signal ?? new AbortController().signal,
       (event: WorkflowRunEvent) => {
-        if (event.kind === "completed") run = event.run;
+        if (event.kind === "completed" || event.kind === "suspended") {
+          run = event.run;
+        }
         if (event.kind === "error") error = event.error;
       },
       this.#repo.syncService,
@@ -555,14 +571,73 @@ export class Fleet implements AsyncDisposable {
   }
 
   /**
-   * Retries a run as serve's resume launcher does: a failed run with no
-   * `fromStep` is a plain retry; `fromStep` re-enters at that step.
+   * Retries a run as serve's resume launcher does: the pre-flight resolver
+   * first, then the execution service. A failed run with no `fromStep` is a
+   * plain retry; `fromStep` re-enters at that step.
    */
   async retryRun(
     workflowName: string,
     runId: string,
     options: RetryOptions = {},
   ): Promise<WorkflowRun> {
+    await resolveResumableRun(
+      this.repoContext.workflowRepo,
+      this.repoContext.workflowRunRepo,
+      workflowName,
+      runId,
+      { fromStep: options.fromStep, fromJob: options.fromJob },
+    );
+    const service = await this.#executionService();
+    return await this.#finish(
+      runId,
+      service.resume(workflowName, runId, {
+        inputs: {},
+        fromStep: options.fromStep,
+        fromJob: options.fromJob,
+      }),
+      options.events,
+    );
+  }
+
+  /** Recovers an interrupted run and resumes it, as the execution service does. */
+  async recoverRun(
+    workflowName: string,
+    runId: string,
+    options: { events?: WorkflowExecutionEvent[] } = {},
+  ): Promise<WorkflowRun> {
+    const service = await this.#executionService();
+    return await this.#finish(
+      runId,
+      service.recover(workflowName, { runId, acknowledgeUnknown: true }),
+      options.events,
+    );
+  }
+
+  /** The stored run record, as data. */
+  async runRecord(
+    workflow: Workflow,
+    runId: string,
+  ): Promise<WorkflowRunData> {
+    const run = await this.repoContext.workflowRunRepo.findById(
+      workflow.id,
+      createWorkflowRunId(runId),
+    );
+    if (!run) throw new Error(`no run ${runId}`);
+    return run.toData();
+  }
+
+  /** Saves a run record given as data, as another swamp would have written it. */
+  async saveRunRecord(
+    workflow: Workflow,
+    data: WorkflowRunData,
+  ): Promise<void> {
+    await this.repoContext.workflowRunRepo.save(
+      workflow.id,
+      WorkflowRunClass.fromData(data),
+    );
+  }
+
+  async #executionService() {
     const stepLockHook = createStepLockHook(
       this.repoDir,
       this.repoContext,
@@ -578,23 +653,25 @@ export class Fleet implements AsyncDisposable {
       undefined,
       { runCheckpointer: new WorkflowRunCheckpointer(this.repoContext) },
     );
-    const service = deps.createExecutionService(
+    return deps.createExecutionService(
       this.repoContext.workflowRepo,
       this.repoContext.workflowRunRepo,
       this.repoDir,
       this.repoContext.catalogStore,
     );
+  }
+
+  async #finish(
+    runId: string,
+    stream: AsyncIterable<WorkflowExecutionEvent>,
+    events?: WorkflowExecutionEvent[],
+  ): Promise<WorkflowRun> {
     let finished: WorkflowRun | undefined;
-    for await (
-      const event of service.resume(workflowName, runId, {
-        inputs: {},
-        fromStep: options.fromStep,
-        fromJob: options.fromJob,
-      })
-    ) {
+    for await (const event of stream) {
+      events?.push(event);
       if (event.kind === "completed") finished = event.run;
     }
-    if (!finished) throw new Error(`retry of run ${runId} did not complete`);
+    if (!finished) throw new Error(`resume of run ${runId} did not complete`);
     return finished;
   }
 

@@ -40,6 +40,8 @@ export async function consumeStream<E extends StreamEvent>(
 ): Promise<void> {
   for await (const event of stream) {
     const handler = handlers[event.kind as E["kind"]];
+    // a newer serve may send a kind this client has no handler for
+    if (handler === undefined) continue;
     // deno-lint-ignore no-explicit-any
     await handler(event as any);
   }

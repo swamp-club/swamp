@@ -28,7 +28,7 @@ import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { refuseFanOutResume } from "../../domain/workflows/fan_out_job.ts";
+import { refuseFanOutRecover } from "../../domain/workflows/resume_reset.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import {
   assessRecoveryForRun,
@@ -219,7 +219,7 @@ export const workflowRecoverCommand = new Command()
           throw new UserError(assessment.reason!);
         }
         // before the record is touched, so a refused recover leaves it as it was
-        refuseFanOutResume(workflow, run);
+        refuseFanOutRecover(workflow, run);
 
         if (!assessment.canAutoRecover && !options.acknowledgeUnknown) {
           throw new UserError(

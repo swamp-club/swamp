@@ -260,7 +260,10 @@ import {
   createServerTokenGcRepos,
 } from "../../serve/server_token_gc_deps.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
-import { DispatchService } from "../../serve/dispatch_service.ts";
+import {
+  DEFAULT_QUEUE_TIMEOUT_MS,
+  DispatchService,
+} from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
 import { BundleRegistry } from "../../serve/bundle_registry.ts";
 import {
@@ -3760,6 +3763,7 @@ export const serveCommand = new Command()
       query: (predicate, options) =>
         repoContext.dataQueryService.query(predicate, options),
       namespace: repoContext.unifiedDataRepo.namespace,
+      queueTimeoutMs: queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
     }));
     if (merged.remoteOnly) {
       setRemoteOnlyMode(true);

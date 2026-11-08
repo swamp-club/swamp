@@ -856,6 +856,7 @@ export async function handleWorkflowRun(
     controller,
     0,
     runStreamFor(ctx, socket, principal, completedRun, controller.signal),
+    payload.eventKinds,
   );
 }
 
@@ -3029,6 +3030,7 @@ export async function handleWorkflowResume(
       launched.completedRun,
       controller.signal,
     ),
+    payload.eventKinds,
   );
 }
 

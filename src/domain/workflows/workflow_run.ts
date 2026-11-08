@@ -207,6 +207,24 @@ export const FanOutPlanRecordSchema = z.object({
 
 export type FanOutPlanRecordData = z.infer<typeof FanOutPlanRecordSchema>;
 
+// outside the plan, so the frozen plan and older readers of it are unchanged
+const FanOutSnapshotSchema = z.object({
+  // the selector as authored, so a resume can tell an edited one
+  selector: z.object({
+    labels: z.record(z.string(), z.string()).optional(),
+    platform: z.string().optional(),
+  }).optional(),
+  // self.worker at plan time, for a lane whose worker has left the pool
+  workers: z.array(z.object({
+    name: z.string().min(1),
+    labels: z.record(z.string(), z.string()),
+    platform: z.string(),
+    arch: z.string(),
+  })),
+});
+
+export type FanOutSnapshot = z.infer<typeof FanOutSnapshotSchema>;
+
 export interface FanOutLaneRun {
   readonly name: string;
   readonly worker: string;
@@ -248,6 +266,7 @@ export const JobRunSchema = z.object({
   completedAt: z.string().datetime().optional(),
   steps: z.array(StepRunSchema),
   fanOutPlan: FanOutPlanRecordSchema.optional(),
+  fanOutSnapshot: FanOutSnapshotSchema.optional(),
 });
 
 export type JobRunData = z.infer<typeof JobRunSchema>;
@@ -819,6 +838,7 @@ export class JobRun implements TriggerEvaluationContext {
     private _completedAt: Date | undefined,
     private _steps: StepRun[],
     private _fanOutPlan: FanOutPlanRecord | undefined = undefined,
+    private _fanOutSnapshot: FanOutSnapshot | undefined = undefined,
   ) {}
 
   static pending(jobName: string, stepNames: string[]): JobRun {
@@ -847,6 +867,7 @@ export class JobRun implements TriggerEvaluationContext {
           instanceUuid: lane.instanceUuid,
         })),
       },
+      validated.fanOutSnapshot,
     );
   }
 
@@ -854,9 +875,14 @@ export class JobRun implements TriggerEvaluationContext {
     return this._fanOutPlan;
   }
 
+  get fanOutSnapshot(): FanOutSnapshot | undefined {
+    return this._fanOutSnapshot;
+  }
+
   recordFanOutPlan(
     plan: Extract<FanOutPlan, { kind: "planned" }>,
     batches: readonly (readonly string[])[],
+    snapshot?: FanOutSnapshot,
   ): void {
     if (this._fanOutPlan !== undefined) {
       throw new Error(`Job '${this.jobName}' already holds a fan-out plan`);
@@ -914,6 +940,9 @@ export class JobRun implements TriggerEvaluationContext {
         }];
       }),
     };
+    if (snapshot !== undefined) {
+      this._fanOutSnapshot = FanOutSnapshotSchema.parse(snapshot);
+    }
   }
 
   get status(): RunStatus {
@@ -1192,6 +1221,9 @@ export class JobRun implements TriggerEvaluationContext {
           steps: [],
         })),
       };
+    }
+    if (this._fanOutSnapshot !== undefined) {
+      data.fanOutSnapshot = structuredClone(this._fanOutSnapshot);
     }
     return data;
   }

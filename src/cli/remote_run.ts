@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { FAN_OUT_EVENT_KINDS } from "../domain/workflows/execution_events.ts";
 import type { Command } from "@cliffy/command";
 import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
@@ -458,12 +459,15 @@ export function runWorkflowOverServer(
   if (options.detach) {
     return untilRunStarted(streamServerRun(options, {
       type: "workflow.run",
-      payload: options.payload,
+      payload: { ...options.payload, eventKinds: [...FAN_OUT_EVENT_KINDS] },
     }));
   }
   return streamServerRun(options, {
     type: "workflow.run",
-    payload: withForwardedLocks(options.payload),
+    payload: {
+      ...withForwardedLocks(options.payload),
+      eventKinds: [...FAN_OUT_EVENT_KINDS],
+    },
   });
 }
 
@@ -494,7 +498,10 @@ export function resumeWorkflowOverServer(
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   return streamServerRun(options, {
     type: "workflow.resume",
-    payload: withForwardedLocks(options.payload),
+    payload: {
+      ...withForwardedLocks(options.payload),
+      eventKinds: [...FAN_OUT_EVENT_KINDS],
+    },
   });
 }
 
@@ -1743,7 +1750,7 @@ async function* streamServerRun(
   let elsewhereRetries = 0;
   let currentRequest: OutboundRequest | {
     type: "run.attach";
-    payload: { runId: string; afterSeq: number };
+    payload: { runId: string; afterSeq: number; eventKinds: string[] };
   } = request;
   const logger = getReconnectLogger();
   // why the server closed the last connection, so a reconnect that fails can
@@ -1830,7 +1837,11 @@ async function* streamServerRun(
       await delay(ELSEWHERE_RETRY_DELAY_MS, options.signal);
       currentRequest = {
         type: "run.attach",
-        payload: { runId: state.runId!, afterSeq: state.lastSeq },
+        payload: {
+          runId: state.runId!,
+          afterSeq: state.lastSeq,
+          eventKinds: [...FAN_OUT_EVENT_KINDS],
+        },
       };
       continue;
     }
@@ -1850,7 +1861,11 @@ async function* streamServerRun(
     await delay(1_000 * reconnectRetries, options.signal);
     currentRequest = {
       type: "run.attach",
-      payload: { runId: state.runId!, afterSeq: state.lastSeq },
+      payload: {
+        runId: state.runId!,
+        afterSeq: state.lastSeq,
+        eventKinds: [...FAN_OUT_EVENT_KINDS],
+      },
     };
   }
 }

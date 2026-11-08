@@ -648,7 +648,7 @@ Deno.test("workflowRecoverCommand: leaves a running run whose owner is alive", a
   });
 });
 
-Deno.test("workflowRecoverCommand: an interrupted run that holds a fan-out plan is refused before its record is touched", async () => {
+Deno.test("workflowRecoverCommand: an interrupted fan-out run that recorded no worker selector is refused before its record is touched", async () => {
   await withTempDir(async (dir) => {
     const repoContext = await initRepo(dir);
     const workflow = Workflow.fromData(
@@ -730,7 +730,7 @@ Deno.test("workflowRecoverCommand: an interrupted run that holds a fan-out plan 
           dir,
         ]),
       UserError,
-      "resuming a run with a fan-out job arrives in the next release",
+      'Job "main" was planned by a swamp that did not record its worker selector',
     );
 
     assertEquals(await stored(), before);

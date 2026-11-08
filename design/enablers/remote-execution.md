@@ -1669,6 +1669,13 @@ live snapshot:
   had not written is re-dispatched, to the same target only, and one that had
   written fails.
 
+**Resuming a lane.** A resume reuses the stored plan and the same pin. Under
+`offline: wait`, a lane whose worker is disconnected or absent waits as above,
+and the run reports `job_fanout_waiting` with the job's queue timeout, or
+serve's (`WorkerPoolReader.queueTimeoutMs`). Under `offline: skip` or `fail`,
+`resumedLaneVerdict` fails such a lane before anything is sent. A lane whose
+worker left the pool binds `self.worker` from the scope the plan recorded.
+
 **Run-record integrity.** Lane steps are ordinary steps of the job, so the
 v3 run-record judge (`judgeRunRecord` in
 `src/domain/datastore_v3/content_bindings.ts`) checks their outputs and data

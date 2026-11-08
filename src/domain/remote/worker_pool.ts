@@ -38,6 +38,8 @@ export interface PoolWorker {
 // unique names; a worker whose token expired, was revoked, re-minted or deleted is absent
 export interface WorkerPoolReader {
   readPool(): Promise<PoolWorker[]>;
+  /** serve's default wait for a worker, in ms; 0 waits without end */
+  readonly queueTimeoutMs?: number;
 }
 
 // module-level so a nested run, which gets a fresh execution service, still reaches serve's pool

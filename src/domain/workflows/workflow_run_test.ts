@@ -1560,6 +1560,66 @@ Deno.test("WorkflowRun.interruptOrphaned: leaves pending steps alone when a step
   assertEquals(run.unknownSteps(), ["step1"]);
 });
 
+function fanOutRun(): WorkflowRun {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const job = run.jobs[0];
+  job.start();
+  job.recordFanOutPlan({
+    kind: "planned",
+    members: ["w-a", "w-b", "w-c"].map((worker) => ({
+      worker,
+      instanceUuid: `u-${worker}`,
+      disposition: "dispatch" as const,
+    })),
+    plannedLanes: 3,
+    maxFailures: null,
+  }, [["w-a", "w-b", "w-c"]]);
+  job.expandLanes(
+    ["w-a", "w-b", "w-c"].flatMap((w) => [`step1[${w}]`, `step2[${w}]`]),
+  );
+  for (const name of ["step1[w-a]", "step2[w-a]"]) {
+    job.getStep(name)!.start();
+    job.getStep(name)!.succeed();
+  }
+  return run;
+}
+
+Deno.test("WorkflowRun.interruptOrphaned: in a fan-out job a finished lane keeps its result, an in-flight lane is unknown and an unstarted lane stays pending", () => {
+  const run = fanOutRun();
+  run.jobs[0].getStep("step1[w-b]")!.start();
+
+  run.interruptOrphaned("server_crash", []);
+
+  const status = (name: string) => run.jobs[0].getStep(name)!.status;
+  assertEquals(
+    ["step1[w-a]", "step2[w-a]"].map(status),
+    ["succeeded", "succeeded"],
+  );
+  assertEquals(status("step1[w-b]"), "unknown");
+  assertEquals(["step2[w-b]", "step1[w-c]", "step2[w-c]"].map(status), [
+    "pending",
+    "pending",
+    "pending",
+  ]);
+});
+
+Deno.test("WorkflowRun.interruptOrphaned: in a fan-out job with no step recorded running, every pending lane step is unknown as in a plain job, and a finished lane keeps its result", () => {
+  const run = fanOutRun();
+
+  run.interruptOrphaned("server_crash", []);
+
+  const status = (name: string) => run.jobs[0].getStep(name)!.status;
+  assertEquals(
+    ["step1[w-a]", "step2[w-a]"].map(status),
+    ["succeeded", "succeeded"],
+  );
+  assertEquals(
+    ["step1[w-b]", "step2[w-b]", "step1[w-c]", "step2[w-c]"].map(status),
+    ["unknown", "unknown", "unknown", "unknown"],
+  );
+});
+
 Deno.test("WorkflowRun.interruptOrphaned: no-ops on a run that is not running", () => {
   const run = WorkflowRun.create(createTestWorkflow());
   run.start();
@@ -3937,6 +3997,24 @@ Deno.test("JobRun: a recorded fan-out plan round-trips through toData and fromDa
     JSON.parse(JSON.stringify(data)),
   );
   assertEquals(again.fanOutPlan?.lanes[1].worker, "host-b");
+});
+
+Deno.test("JobRun: a fan-out snapshot recorded with the plan round-trips beside it, outside the plan", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]], {
+    selector: { labels: { fleet: "web" } },
+    workers: [{
+      name: "host-a",
+      labels: { fleet: "web" },
+      platform: "linux",
+      arch: "x86_64",
+    }],
+  });
+  const data = JSON.parse(JSON.stringify(job.toData()));
+  assertEquals("selector" in data.fanOutPlan, false);
+  const again = JobRun.fromData(data);
+  assertEquals(again.fanOutSnapshot?.selector, { labels: { fleet: "web" } });
+  assertEquals(JSON.parse(JSON.stringify(again.toData())), data);
 });
 
 Deno.test("JobRun: a job run recorded before fan-out plans loads and saves without the key", () => {

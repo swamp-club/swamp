@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { FAN_OUT_EVENT_KINDS } from "../../domain/workflows/execution_events.ts";
 import {
   integrationOfClient,
   isIntegrationClient,
@@ -2676,13 +2677,27 @@ export function clearRequestErrored(
  * with transform, deliveries are chained so events, the terminal and the detach
  * keep their order
  */
+/**
+ * a client handles every kind it is sent, so kinds newer than the client go
+ * only to one that asked; the buffer keeps them for every other subscriber
+ */
+export function withheldEventKinds(
+  eventKinds: readonly string[] | undefined,
+): ReadonlySet<string> {
+  const asked = new Set(eventKinds ?? []);
+  return new Set(FAN_OUT_EVENT_KINDS.filter((kind) => !asked.has(kind)));
+}
+
 export function createSocketSubscriber(
   socket: WebSocket,
   requestId: string,
   onDetachCallback?: () => void,
   transform?: (event: SerializedEvent) => Promise<SerializedEvent>,
+  eventKinds?: readonly string[],
 ): import("../run_event_buffer.ts").RunEventSubscriber {
+  const withheld = withheldEventKinds(eventKinds);
   const sendEvent = (seq: number, event: SerializedEvent) => {
+    if (withheld.has(event.kind)) return;
     send(socket, { type: "event", id: requestId, event: { ...event, seq } });
   };
   const sendTerminal = (
@@ -2739,10 +2754,17 @@ export function subscribeUntilDetach(
   controller: AbortController,
   afterSeq = 0,
   transform?: (event: SerializedEvent) => Promise<SerializedEvent>,
+  eventKinds?: readonly string[],
 ): Promise<void> {
   return new Promise<void>((resolve) => {
     const unsub = buffer.subscribe(
-      createSocketSubscriber(socket, requestId, resolve, transform),
+      createSocketSubscriber(
+        socket,
+        requestId,
+        resolve,
+        transform,
+        eventKinds,
+      ),
       afterSeq,
     );
     controller.signal.addEventListener("abort", () => {

@@ -131,6 +131,15 @@ export type WorkflowRunEvent =
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
+  | Extract<
+    WorkflowExecutionEvent,
+    {
+      kind:
+        | "job_fanout_planned"
+        | "job_fanout_waiting"
+        | "job_fanout_summary";
+    }
+  >
   | {
     kind: "step_started";
     jobId: string;
@@ -995,6 +1004,9 @@ export function mapWorkflowExecutionEvent(
     case "job_started":
     case "job_completed":
     case "job_skipped":
+    case "job_fanout_planned":
+    case "job_fanout_waiting":
+    case "job_fanout_summary":
     case "step_started":
     case "step_skipped":
     case "approval_requested":
