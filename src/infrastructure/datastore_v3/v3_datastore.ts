@@ -1291,8 +1291,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           signal?: AbortSignal,
           catchUpOptions?: { readonly mayGoOffline?: boolean },
         ) {
+          // a write under way lands after a stop: it never follows commandStopSignal
           await catchUpFromServe(
-            catchUpSignal(signal),
+            signal ?? lifetime.signal,
             "write",
             catchUpOptions?.mayGoOffline === true,
           );
