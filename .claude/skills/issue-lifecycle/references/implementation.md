@@ -56,8 +56,9 @@ review of the verified commit is fully justified.
 **PREREQUISITE: The verification attestation MUST be posted to swamp-club before
 opening a PR.** If you have not yet posted the attestation via
 `POST /api/v1/admin/attestations`, STOP — go back to
-[verification.md](verification.md) step 5 and complete the attestation flow
-first. Do NOT skip this step. Do NOT open a PR without a posted attestation.
+[verification.md](verification.md) (the `post_attestation` step under "All steps
+passed") and complete the attestation flow first. Do NOT skip this step. Do NOT
+open a PR without a posted attestation.
 
 **DO NOT amend, rebase, or modify the verified commit after the attestation has
 been posted.** The attestation is bound to the commit SHA — amending (even just

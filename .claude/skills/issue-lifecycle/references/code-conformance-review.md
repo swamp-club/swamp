@@ -138,5 +138,6 @@ Keep iterating until all deviations are justified. Only then can
 
 ## Next Phase
 
-All deviations justified. Return to [verification.md](verification.md) step 4:
-present the checklist, post the attestation, then open the PR.
+All deviations justified. Return to [verification.md](verification.md) — the
+checklist step under "All steps passed": present the checklist, post the
+attestation, then open the PR.

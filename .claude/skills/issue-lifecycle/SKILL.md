@@ -370,8 +370,9 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    The phase is `results[0].phase`.
 2. If the phase is `implementing`, the merged commit still needs its gates:
    `verify`, `verification_passed`, then `code_conformance_review` (and
-   `justify_deviations`). Then `link_pr` and `watch_pr` (step 3), or `complete`
-   from `verifying`.
+   `justify_deviations`). `verification_passed` needs the verification workflows
+   to actually run against that merged commit. Then `link_pr` and `watch_pr`
+   (step 3), or `complete` from `verifying`.
 3. If the phase is `pr_open`, run `watch_pr` with the summary inputs — it sees
    the merge, ships the issue, and walks `notify` and `summarize` to `done`:
    ```

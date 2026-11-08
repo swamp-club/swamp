@@ -27,8 +27,10 @@ implementing ──[verify]──> verifying
 verifying ──[verification_failed]──> implementing  (fix, or change code)
 verifying ──[verification_passed]──> verifying
 verifying ──[code_conformance_review, justify_deviations]──> verifying
-verifying ──[post_attestation, link_pr]──> pr_open
-verifying ──[complete]──> done
+verifying ──[link_pr]──> pr_open  (after post_attestation, which keeps verifying)
+verifying ──[complete]──> notify
+pr_failed ──[implement]──> implementing  (any code change)
+pr_failed ──[link_pr]──> pr_open  (same verified commit, new PR)
 pr_open ──[watch_pr]──> done  (merged: pr_merged, notify, summarize)
 pr_open ──[watch_pr]──> pr_failed  (conflict, failed check, changes requested)
 ```

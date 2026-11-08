@@ -99,9 +99,9 @@ failed" below.
    [code-conformance-review.md](code-conformance-review.md) and record the
    review, then justify every deviation. The review records deviations; it never
    changes code. If you decide to change code rather than justify a deviation,
-   that is a new commit: record `verification_failed` and go back to step 1.
-   `post_attestation` and `link_pr` refuse until the verified commit has a fully
-   justified review.
+   that is a new commit: record `verification_failed` and return to "1. Start
+   Verification" to `verify` the new commit. `post_attestation` and `link_pr`
+   refuse until the verified commit has a fully justified review.
 
 4. **Present the full verification checklist to the user and wait for their
    confirmation to proceed.** The checklist must show every step from both the
@@ -152,7 +152,8 @@ failed" below.
 
 6. **Only after `post_attestation` succeeds**, proceed to open a PR — read the
    "Create a PR" section in [implementation.md](implementation.md). If you
-   skipped step 5, implementation.md will send you back here.
+   skipped the `post_attestation` step, implementation.md will send you back
+   here.
 
 ### Any step failed
 
@@ -179,15 +180,18 @@ The `link_pr` method requires a passing verification result. If you skip
 verification and try to link a PR directly, it will be missing the
 `verificationResult` data that the lifecycle checks for.
 
-**Two hard gates before a PR opens:**
+**Three hard gates before a PR opens:**
 
 1. **Verification passes** — `gate.allPassed` is true
-2. **Attestation posted** — the attestation JSON has been successfully stored in
-   swamp-club via `POST /api/v1/admin/attestations`
+2. **Conformance review justified** — the verified commit has a code conformance
+   review with every deviation justified; `post_attestation` and `link_pr`
+   refuse without it
+3. **Attestation posted** — the attestation JSON for the reviewed commit has
+   been successfully stored in swamp-club via `POST /api/v1/admin/attestations`
 
-If either gate fails, do NOT open a PR. The CI `validate-attestation` job reads
-the attestation from swamp-club and validates commit match, config integrity,
-and freshness. A missing attestation will be flagged.
+If any gate fails, do NOT open a PR. The CI `validate-attestation` job reads the
+attestation from swamp-club and validates commit match, config integrity, and
+freshness. A missing attestation will be flagged.
 
 The loop is: implement → verify → fix → re-verify → verification_passed →
 conformance review → justify deviations → present checklist → user confirms →
