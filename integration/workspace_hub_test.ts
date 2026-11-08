@@ -25,6 +25,7 @@ import {
   type HubChild,
   type WorkspaceHub,
 } from "../src/serve/local/workspace_hub.ts";
+import { TrustedHosts } from "../src/serve/local/trusted_hosts.ts";
 
 type FakeChild = HubChild & {
   stopped: () => boolean;
@@ -152,6 +153,7 @@ async function withHub(
     switchable?: boolean;
     idleMs?: number;
     actions?: ActionRunner;
+    trustedHosts?: TrustedHosts;
   } = {},
 ): Promise<void> {
   const spawned: string[] = [];
@@ -184,6 +186,9 @@ async function withHub(
       : { switchable: options.switchable }),
     ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
     ...(options.actions === undefined ? {} : { actions: options.actions }),
+    ...(options.trustedHosts === undefined
+      ? {}
+      : { trustedHosts: options.trustedHosts }),
   });
   const front = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen: () => {} },
@@ -1007,5 +1012,73 @@ Deno.test("workspaceHub: a body fetch already decoded is forwarded without its c
     });
     assertEquals(res.headers.get("content-encoding"), null);
     assertEquals(await res.text(), "plain text\n");
+  });
+});
+
+/** the status of a socket upgrade sent with exactly this Host and Origin */
+async function upgradeStatus(
+  base: string,
+  host: string,
+  origin: string,
+): Promise<number> {
+  const [hostname, port] = base.split(":");
+  const conn = await Deno.connect({ hostname, port: Number(port) });
+  try {
+    const request = [
+      "GET /w/alpha/ HTTP/1.1",
+      `Host: ${host}`,
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Version: 13",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      `Sec-WebSocket-Protocol: bearer.${TOKEN}`,
+      `Origin: ${origin}`,
+      "",
+      "",
+    ].join("\r\n");
+    await conn.write(new TextEncoder().encode(request));
+    const buf = new Uint8Array(1024);
+    const n = await conn.read(buf);
+    const text = new TextDecoder().decode(buf.subarray(0, n ?? 0));
+    return Number(/^HTTP\/1\.1 (\d{3})/.exec(text)?.[1] ?? 0);
+  } finally {
+    conn.close();
+  }
+}
+
+Deno.test("workspaceHub: a trusted Host's https origin may open a socket; an https origin on any other Host may not", async () => {
+  await withHub(async ({ base, spawned }) => {
+    assertEquals(
+      await upgradeStatus(base, "proxy.example", "https://proxy.example"),
+      101,
+    );
+    assertEquals(
+      await upgradeStatus(
+        base,
+        "Proxy.Example:8443",
+        "https://proxy.example:8443",
+      ),
+      101,
+    );
+    assertEquals(
+      await upgradeStatus(base, "proxy.example", "https://evil.example"),
+      403,
+    );
+    assertEquals(
+      await upgradeStatus(base, "proxy.example", "https://proxy.example:9999"),
+      403,
+    );
+    assertEquals(await upgradeStatus(base, base, `https://${base}`), 403);
+    assertEquals(spawned, ["/repos/alpha"]);
+  }, { trustedHosts: TrustedHosts.parse("proxy.example") });
+});
+
+Deno.test("workspaceHub: with no trusted hosts, an https origin is refused even when it matches the Host", async () => {
+  await withHub(async ({ base, spawned }) => {
+    assertEquals(
+      await upgradeStatus(base, "proxy.example", "https://proxy.example"),
+      403,
+    );
+    assertEquals(spawned, []);
   });
 });

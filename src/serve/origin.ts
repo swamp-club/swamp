@@ -23,7 +23,7 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
  * an entry that is not exactly hostname or hostname:port (path, user info,
  * unbracketed IPv6, non-ASCII) returns null and keeps its literal comparison
  */
-function parseTrustedHost(
+export function parseTrustedHost(
   entry: string,
 ): { hostname: string; port?: string } | null {
   let url: URL;
@@ -103,6 +103,31 @@ function validateOrigin(
   return { allowed: true };
 }
 
+// The Host check guards against DNS rebinding, which turns on the hostname
+// alone, so an entry's port does not narrow it.
+function trustedHostNames(trustedHosts: readonly string[]): string[] {
+  return trustedHosts.map((host) =>
+    parseTrustedHost(host)?.hostname.replace(/^\[|\]$/g, "") ??
+      host.toLowerCase()
+  );
+}
+
+/**
+ * whether a Host header names a trusted host entry, loopback names aside; a
+ * header that is not exactly host or host:port (an empty port, say) is not
+ */
+export function hostIsTrusted(
+  hostHeader: string | null,
+  trustedHosts: readonly string[],
+): boolean {
+  if (hostHeader === null || trustedHosts.length === 0) return false;
+  const parsed = parseTrustedHost(hostHeader);
+  return parsed !== null &&
+    trustedHostNames(trustedHosts).includes(
+      parsed.hostname.replace(/^\[|\]$/g, ""),
+    );
+}
+
 function validateHost(
   hostHeader: string | null,
   bindHost: string,
@@ -121,12 +146,7 @@ function validateHost(
   const trusted = new Set([
     ...LOOPBACK_HOSTS,
     bindHost.toLowerCase(),
-    // The Host check guards against DNS rebinding, which turns on the
-    // hostname alone, so an entry's port does not narrow it.
-    ...(trustedHosts?.map((host) =>
-      parseTrustedHost(host)?.hostname.replace(/^\[|\]$/g, "") ??
-        host.toLowerCase()
-    ) ?? []),
+    ...trustedHostNames(trustedHosts ?? []),
   ]);
   if (!trusted.has(hostName)) {
     return { allowed: false, reason: `untrusted host: ${hostHeader}` };

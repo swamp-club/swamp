@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { formatCreated, pageReadyLine, taskDetail } from "./start.ts";
+import { stripAnsiCode } from "@std/fmt/colors";
+import {
+  createStartRenderer,
+  formatCreated,
+  pageReadyLine,
+  taskDetail,
+} from "./start.ts";
 
 Deno.test("formatCreated: the local date and time a task was created", () => {
   // Built from local fields, so the test holds in any time zone.
@@ -66,5 +72,41 @@ Deno.test("pageReadyLine: swamp start names itself; swamp dashboard names the re
   assertEquals(
     pageReadyLine(false, true),
     "Open this page in your browser to continue:",
+  );
+});
+
+function captureStdout(run: () => void): string[] {
+  const out: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => out.push(stripAnsiCode(msg));
+  try {
+    run();
+  } finally {
+    console.log = originalLog;
+  }
+  return out;
+}
+
+Deno.test("trustedHostUrls: lists the page through each trusted host, and says nothing when there are none", () => {
+  const renderer = createStartRenderer("log");
+  assertEquals(
+    captureStdout(() =>
+      renderer.trustedHostUrls([
+        "https://a.example/dashboard/w/r#token=t",
+        "https://b.example/dashboard/w/r#token=t",
+      ])
+    ),
+    [
+      "Through your proxy, open:",
+      "  https://a.example/dashboard/w/r#token=t",
+      "  https://b.example/dashboard/w/r#token=t",
+    ],
+  );
+  assertEquals(captureStdout(() => renderer.trustedHostUrls([])), []);
+  assertEquals(
+    captureStdout(() =>
+      createStartRenderer("json").trustedHostUrls(["https://a.example/"])
+    ),
+    [],
   );
 });

@@ -52,6 +52,7 @@ import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
 import { validateWebSocketOrigin } from "../origin.ts";
 import { serveDashboardRoute } from "../dashboard_assets.ts";
 import type { WorkspaceHub } from "../local/workspace_hub.ts";
+import { TrustedHosts } from "../local/trusted_hosts.ts";
 import { START_PING_TOKEN_HEADER } from "../../infrastructure/process/start_instance_probe.ts";
 
 export interface StartServerTimeouts {
@@ -101,6 +102,14 @@ export interface StartServerOptions {
    * never add, create or open a swamp start workspace
    */
   readonly startPage?: boolean;
+  /** 0 takes any free port */
+  readonly port?: number;
+  readonly trustedHosts?: TrustedHosts;
+  /**
+   * swamp dashboard turns it off: a long-running page server does not stop
+   * itself when no tab is open
+   */
+  readonly idleStop?: boolean;
 }
 
 export interface StartServerHandle {
@@ -282,10 +291,30 @@ interface SignInFlow {
   done?: Promise<void>;
 }
 
+function listen(
+  port: number,
+  handler: Deno.ServeHandler<Deno.NetAddr>,
+): Deno.HttpServer<Deno.NetAddr> {
+  try {
+    return Deno.serve(
+      { hostname: "127.0.0.1", port, onListen: () => {} },
+      handler,
+    );
+  } catch (error) {
+    if (port !== 0 && error instanceof Deno.errors.AddrInUse) {
+      throw new UserError(
+        `Port ${port} on 127.0.0.1 is already in use. Pick another --port, or leave it out to use any free port.`,
+        "port_in_use",
+      );
+    }
+    throw error;
+  }
+}
+
 /**
- * binds 127.0.0.1 on an ephemeral port, rejects any Host other than its own
- * (DNS rebinding), checks the Origin of the upgrade, and requires the one-time
- * token as a `bearer.` subprotocol
+ * binds 127.0.0.1 (on an ephemeral port unless given one), rejects any Host
+ * other than its own or a trusted one (DNS rebinding), checks the Origin of
+ * the upgrade, and requires the one-time token as a `bearer.` subprotocol
  */
 export function startStartServer(
   options: StartServerOptions,
@@ -294,6 +323,8 @@ export function startStartServer(
   const claims = options.claims ?? NO_CLAIMS;
   const startPage = options.startPage ?? true;
   const timeouts = options.timeouts ?? DEFAULT_START_SERVER_TIMEOUTS;
+  const trustedHosts = options.trustedHosts ?? TrustedHosts.NONE;
+  const idleStop = options.idleStop ?? true;
   // The workspace being served, and the name it was opened under (an
   // imported folder's name can differ from its registered one).
   let bound: { readonly path: string; readonly name: string } | null = null;
@@ -340,7 +371,7 @@ export function startStartServer(
   };
   const reevaluate = () => {
     clearTimeout(timer);
-    if (finished) return;
+    if (finished || !idleStop) return;
     if (opened.size === 0) {
       // A copy-command launch opened no window, so it ends as a plain stop.
       timer = launchedName !== undefined
@@ -1003,15 +1034,14 @@ export function startStartServer(
   }
 
   let port = 0;
-  const server = Deno.serve(
-    {
-      hostname: "127.0.0.1",
-      port: 0,
-      onListen: () => {},
-    },
+  const server = listen(
+    options.port ?? 0,
     async (req) => {
       const host = req.headers.get("host");
-      if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
+      if (
+        host !== `127.0.0.1:${port}` && host !== `localhost:${port}` &&
+        !trustedHosts.acceptsHost(host)
+      ) {
         return new Response("Misdirected request", { status: 421 });
       }
       const url = new URL(req.url);

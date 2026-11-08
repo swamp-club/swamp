@@ -49,7 +49,8 @@ import {
 } from "../../serve/local/local_dashboard_server.ts";
 import { STALE_TTL_MS } from "../../domain/models/active_run.ts";
 import { HUB_TOKEN_ENV } from "../../serve/local/hub_token.ts";
-import { runStart } from "./start.ts";
+import { hubStopSignals, runStart } from "./start.ts";
+import { TrustedHosts } from "../../serve/local/trusted_hosts.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -120,6 +121,21 @@ async function runChild(options: AnyOptions): Promise<void> {
         STALE_TTL_MS,
       ),
   });
+  let interrupted!: () => void;
+  const interrupt = new Promise<void>((resolve) => interrupted = resolve);
+  // A hangup reaches the child too when its terminal closes; like the hub it
+  // keeps serving, listening before it prints the port the hub waits for.
+  const handle = registerShutdownHandler({
+    handler: () => interrupted(),
+    includePosixSignals: Deno.build.os === "windows",
+  });
+  const posixSignals: Array<[Deno.Signal, () => void]> = hubStopSignals(
+    Deno.build.os,
+    true,
+  ).map(([signal, code]) => [signal, code === null ? () => {} : interrupted]);
+  for (const [signal, listener] of posixSignals) {
+    Deno.addSignalListener(signal, listener);
+  }
   await Deno.stdout.write(
     new TextEncoder().encode(JSON.stringify({ port: server.port }) + "\n"),
   );
@@ -145,17 +161,31 @@ async function runChild(options: AnyOptions): Promise<void> {
   const stdinClosed = (async () => {
     for await (const _ of Deno.stdin.readable) { /* nothing to read */ }
   })().catch(() => {});
-  let interrupted!: () => void;
-  const interrupt = new Promise<void>((resolve) => interrupted = resolve);
-  const handle = registerShutdownHandler({ handler: () => interrupted() });
   try {
     await Promise.race([stdinClosed, interrupt]);
   } finally {
     handle.dispose();
+    for (const [signal, listener] of posixSignals) {
+      try {
+        Deno.removeSignalListener(signal, listener);
+      } catch {
+        // Already removed.
+      }
+    }
     runIndexWarmup.stop();
     await server.shutdown();
     await runIndexWarmup.finished();
   }
+}
+
+export function parsePort(port: number | undefined): number {
+  if (port === undefined) return 0;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new UserError(
+      `--port must be a whole number from 1 to 65535, got ${port}.`,
+    );
+  }
+  return port;
 }
 
 export const dashboardCommand = new Command()
@@ -169,6 +199,14 @@ export const dashboardCommand = new Command()
     default: Deno.env.get("SWAMP_REPO_DIR"),
   })
   .option("--no-browser", "Print the URL instead of opening a browser")
+  .option(
+    "--port <port:number>",
+    "Port for the page on 127.0.0.1, e.g. for a reverse proxy to forward to (default: any free port)",
+  )
+  .option(
+    "--trusted-hosts <hosts:string>",
+    "Comma-separated host names, or host:port, that a reverse proxy on this machine sends as Host; requests for them are served instead of refused. The page token is still required",
+  )
   .option("--child", "Serve one repo for the local hub", { hidden: true })
   .action(async function (options: AnyOptions) {
     if (options.child) {
@@ -181,5 +219,8 @@ export const dashboardCommand = new Command()
         "swamp dashboard opens a page in your browser and has no JSON output. Remove --json to open it.",
       );
     }
-    await runStart(options, ["dashboard"], resolveRepoDir(options.repoDir));
+    await runStart(options, ["dashboard"], resolveRepoDir(options.repoDir), {
+      port: parsePort(options.port),
+      trustedHosts: TrustedHosts.parse(options.trustedHosts),
+    });
   });

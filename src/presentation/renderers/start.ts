@@ -33,6 +33,8 @@ export interface StartRenderer {
   prepareHandlers(): EventHandlers<StartPrepareEvent>;
   workspaceOpened(path: string, created: boolean): void;
   pageReady(url: string, opened: boolean, dashboard?: boolean): void;
+  /** the dashboard page through each --trusted-hosts name; nothing when none */
+  trustedHostUrls(urls: readonly string[]): void;
   launchedEnd(displayName: string): void;
   paused(dashboard?: boolean): void;
   /**
@@ -82,6 +84,12 @@ class LogStartRenderer implements StartRenderer {
     writeOutput(
       dim("This terminal keeps the page running. Press Ctrl-C to stop it."),
     );
+  }
+
+  trustedHostUrls(urls: readonly string[]): void {
+    if (urls.length === 0) return;
+    writeOutput("Through your proxy, open:");
+    for (const url of urls) writeOutput(`  ${cyan(url)}`);
   }
 
   launchedEnd(displayName: string): void {
@@ -213,6 +221,7 @@ class JsonStartRenderer implements StartRenderer {
   }
   workspaceOpened(): void {}
   pageReady(): void {}
+  trustedHostUrls(): void {}
   launchedEnd(): void {}
   paused(): void {}
   inspection(data: StartInspection): void {
