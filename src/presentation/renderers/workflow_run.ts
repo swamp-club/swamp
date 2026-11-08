@@ -396,6 +396,25 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.pipe.line(this.getJobDisplayName(e.jobId), fanOutSummaryText(e)),
         );
       },
+      job_fanout_batch_started: (e) => {
+        if (!this.pipe) return;
+        this.flushPendingJobStart(e.jobId);
+        writeOutput(
+          this.pipe.line(
+            this.getJobDisplayName(e.jobId),
+            `batch ${e.batch + 1}/${e.batches} ${dim("-")} ${
+              e.lanes.join(", ")
+            }`,
+          ),
+        );
+      },
+      job_fanout_halted: (e) => {
+        if (!this.pipe) return;
+        this.flushPendingJobStart(e.jobId);
+        writeOutput(
+          this.pipe.line(this.getJobDisplayName(e.jobId), fanOutHaltText(e)),
+        );
+      },
       step_started: (e) => {
         if (!this.pipe) return;
         this.stepStartTimes.set(this.stepKey(e.jobId, e.stepId), Date.now());
@@ -1288,6 +1307,12 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       job_fanout_summary: (e) => {
         unguardedConsole.error(fanOutRecord(e));
       },
+      job_fanout_batch_started: (e) => {
+        unguardedConsole.error(fanOutRecord(e));
+      },
+      job_fanout_halted: (e) => {
+        unguardedConsole.error(fanOutRecord(e));
+      },
       step_started: () => {},
       step_completed: () => {},
       step_skipped: (e) => {
@@ -1571,11 +1596,28 @@ function fanOutPlanLines(e: FanOutPlanned): string[] {
       }`
     ),
   ];
+  if (e.batches !== undefined) {
+    lines.push(
+      `rollout ${dim("-")} batches: ${
+        e.batches.map((batch) => `[${batch.join(", ")}]`).join(" ")
+      } ${dim("-")} ${
+        e.maxFailures === null || e.maxFailures === undefined
+          ? "no failure budget"
+          : `halts past ${e.maxFailures} failed lane${
+            e.maxFailures === 1 ? "" : "s"
+          }`
+      }`,
+    );
+  }
   if (e.resumed !== undefined) {
     lines.push(
       `resume ${dim("-")} re-run: ${
         e.resumed.rerun.join(", ") || dim("none")
-      } ${dim("-")} kept: ${e.resumed.kept.join(", ") || dim("none")}`,
+      } ${dim("-")} kept: ${e.resumed.kept.join(", ") || dim("none")}${
+        e.resumed.held !== undefined && e.resumed.held.length > 0
+          ? ` ${dim("-")} held before: ${e.resumed.held.join(", ")}`
+          : ""
+      }`,
     );
   }
   return lines;
@@ -1586,7 +1628,12 @@ function fanOutRecord(
   e: Extract<
     WorkflowRunEvent,
     {
-      kind: "job_fanout_planned" | "job_fanout_waiting" | "job_fanout_summary";
+      kind:
+        | "job_fanout_planned"
+        | "job_fanout_waiting"
+        | "job_fanout_summary"
+        | "job_fanout_batch_started"
+        | "job_fanout_halted";
     }
   >,
 ): string {
@@ -1619,5 +1666,21 @@ function fanOutSummaryText(
     ...(e.failedAtPlan.length > 0
       ? [red(listed("failed at plan", e.failedAtPlan))]
       : []),
+    ...(e.held !== undefined && e.held.length > 0
+      ? [yellow(`${e.held.length} held (${e.held.join(", ")})`)]
+      : []),
+    ...(e.budget !== undefined
+      ? [`budget ${e.budget.used}/${e.budget.allowed} failed lanes`]
+      : []),
   ].join(dim(" - "));
+}
+
+function fanOutHaltText(
+  e: Extract<WorkflowRunEvent, { kind: "job_fanout_halted" }>,
+): string {
+  return red(
+    `rollout halted ${dim("-")} ${e.failed.length} failed (${
+      e.failed.join(", ")
+    }), past a budget of ${e.maxFailures}`,
+  ) + ` ${dim("-")} held: ${e.held.join(", ")}`;
 }

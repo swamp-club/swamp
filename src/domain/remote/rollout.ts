@@ -83,6 +83,24 @@ export function planBatches(
   return batches;
 }
 
+/**
+ * a resumed attempt's batches: the lanes the last halt failed run first, then
+ * the rest in the frozen plan's batches; lanes not re-run are left out
+ */
+export function resumeRollout(
+  batches: readonly (readonly string[])[],
+  rerun: ReadonlySet<string>,
+  failedFirst: ReadonlySet<string>,
+): string[][] {
+  const first = batches.flat().filter((lane) =>
+    rerun.has(lane) && failedFirst.has(lane)
+  );
+  const rest = batches.map((batch) =>
+    batch.filter((lane) => rerun.has(lane) && !failedFirst.has(lane))
+  ).filter((batch) => batch.length > 0);
+  return first.length > 0 ? [first, ...rest] : rest;
+}
+
 // the only place the budget is decided; consult it before every lane start, not per batch
 export function nextBatch(
   progress: RolloutProgress,

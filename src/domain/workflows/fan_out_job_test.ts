@@ -345,18 +345,16 @@ Deno.test("refuseFanOutRun: a plain workflow passes with or without a pool, and 
   refuseFanOutRun(runWorkflow([{ name: "patch", fanOut: "all" }]), true);
 });
 
-Deno.test("refuseFanOutRun: a fan-out job that sets rollout is refused until rollouts act on it", () => {
+Deno.test("refuseFanOutRun: a fan-out job that sets rollout runs with a pool and is refused without one", () => {
+  const workflow = runWorkflow([{
+    name: "patch",
+    fanOut: "all",
+    rollout: { batches: [1, "100%"], maxFailures: 0 },
+  }]);
+  refuseFanOutRun(workflow, true);
   assertThrows(
-    () =>
-      refuseFanOutRun(
-        runWorkflow([{
-          name: "patch",
-          fanOut: "all",
-          rollout: { batches: [1, "100%"], maxFailures: 0 },
-        }]),
-        true,
-      ),
+    () => refuseFanOutRun(workflow, false),
     UserError,
-    "Fan-out job 'patch' in workflow 'fleet' sets rollout",
+    "fanOut needs the worker pool of swamp serve",
   );
 });

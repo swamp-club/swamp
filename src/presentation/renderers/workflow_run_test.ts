@@ -228,6 +228,97 @@ Deno.test("ConsoleWorkflowRunRenderer: a fan-out job shows its plan, the lanes a
   ]);
 });
 
+const ROLLOUT_EVENTS: WorkflowRunEvent[] = [
+  {
+    kind: "job_fanout_planned",
+    jobId: "extract",
+    selector: { labels: { role: "web" } },
+    offline: "wait",
+    minWorkers: 1,
+    plannedLanes: 3,
+    members: [
+      { worker: "w-a", disposition: "dispatch" },
+      { worker: "w-b", disposition: "dispatch" },
+      { worker: "w-c", disposition: "dispatch" },
+    ],
+    batches: [["w-a"], ["w-b", "w-c"]],
+    maxFailures: 0,
+    resumed: { rerun: ["w-a", "w-b", "w-c"], kept: [], held: ["w-b", "w-c"] },
+  },
+  {
+    kind: "job_fanout_batch_started",
+    jobId: "extract",
+    batch: 0,
+    batches: 2,
+    lanes: ["w-a"],
+  },
+  {
+    kind: "job_fanout_halted",
+    jobId: "extract",
+    failed: ["w-a"],
+    maxFailures: 0,
+    held: ["w-b", "w-c"],
+  },
+  {
+    kind: "job_fanout_summary",
+    jobId: "extract",
+    matching: 3,
+    lanesSucceeded: 0,
+    lanesFailed: 1,
+    excluded: [],
+    skipped: [],
+    failedAtPlan: [],
+    held: ["w-b", "w-c"],
+    budget: { used: 1, allowed: 0 },
+  },
+];
+
+Deno.test("ConsoleWorkflowRunRenderer: a rollout shows its batches and budget, each batch as it starts, the halt and the held lanes", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const at = events.findIndex((e) => e.kind === "job_completed");
+  events.splice(at, 0, ...ROLLOUT_EVENTS);
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const rollout = lines.filter((line) =>
+    /rollout|batch |resume|fan-out - 3/.test(line)
+  ).map((line) => line.replace(/^.*?│ /, ""));
+  assertEquals(rollout, [
+    "rollout - batches: [w-a] [w-b, w-c] - halts past 0 failed lanes",
+    "resume - re-run: w-a, w-b, w-c - kept: none - held before: w-b, w-c",
+    "batch 1/2 - w-a",
+    "rollout halted - 1 failed (w-a), past a budget of 0 - held: w-b, w-c",
+    "fan-out - 3 matching - 0 succeeded, 1 failed - 0 excluded - 0 skipped - 2 held (w-b, w-c) - budget 1/0 failed lanes",
+  ]);
+});
+
+Deno.test("JsonWorkflowRunRenderer: rollout events go to stderr as one record each", async () => {
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = () => {};
+  console.error = (msg: string) => stderr.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const events = simpleEvents(makeRunView("succeeded"));
+    const at = events.findIndex((e) => e.kind === "job_completed");
+    events.splice(at, 0, ...ROLLOUT_EVENTS);
+    await consumeStream(toStream(events), renderer.handlers());
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+  assertEquals(
+    stderr.map((line) => JSON.parse(line)),
+    ROLLOUT_EVENTS.map(({ kind, ...fields }) => ({ event: kind, ...fields })),
+  );
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: a waiting worker names serve's queue timeout when the domain cannot read it, and no timeout for 0", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",

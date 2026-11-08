@@ -1144,6 +1144,54 @@ Deno.test("createSocketSubscriber: fan-out events go only to a subscriber that l
   ]);
 });
 
+Deno.test("createSocketSubscriber: a client that lists only the earlier fan-out kinds gets no rollout events, and the kinds it lists keep their new fields", () => {
+  const phaseTwo = recordingSocket();
+  const frames: Record<string, unknown>[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string) => {
+      const frame = JSON.parse(data);
+      if (frame.type === "event") frames.push(frame.event);
+    },
+  } as unknown as WebSocket;
+  const kinds = [
+    "job_fanout_planned",
+    "job_fanout_waiting",
+    "job_fanout_summary",
+  ];
+  const subscribers = [
+    createSocketSubscriber(
+      phaseTwo.socket,
+      "req-1",
+      undefined,
+      undefined,
+      kinds,
+    ),
+    createSocketSubscriber(socket, "req-2", undefined, undefined, kinds),
+  ];
+  const events = [
+    { kind: "job_fanout_planned", batches: [["w-a"], ["w-b"]], maxFailures: 0 },
+    { kind: "job_fanout_batch_started", batch: 0, batches: 2, lanes: ["w-a"] },
+    {
+      kind: "job_fanout_halted",
+      failed: ["w-a"],
+      maxFailures: 0,
+      held: ["w-b"],
+    },
+    {
+      kind: "job_fanout_summary",
+      held: ["w-b"],
+      budget: { used: 1, allowed: 0 },
+    },
+  ];
+  events.forEach((event, i) => {
+    for (const subscriber of subscribers) subscriber.onEvent(i + 1, event);
+  });
+
+  assertEquals(phaseTwo.kinds, ["job_fanout_planned", "job_fanout_summary"]);
+  assertEquals(frames[1].held, ["w-b"]);
+});
+
 Deno.test("subscribeUntilDetach: a redacting subscriber gets every event in order without links it may not read, and leaves the buffer intact", async () => {
   const ctx = makeSearchCtx([readGrant("child", "child-wf")]);
   const buffer = new RunEventBuffer(16);

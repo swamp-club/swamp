@@ -225,6 +225,16 @@ const FanOutSnapshotSchema = z.object({
 
 export type FanOutSnapshot = z.infer<typeof FanOutSnapshotSchema>;
 
+// a rollout stopped by its failure budget; batch indexes the frozen plan's batches
+const FanOutHaltSchema = z.object({
+  batch: z.number().int().nonnegative(),
+  maxFailures: z.number().int().nonnegative(),
+  failed: z.array(z.string().min(1)),
+  held: z.array(z.string().min(1)).min(1),
+});
+
+export type FanOutHalt = z.infer<typeof FanOutHaltSchema>;
+
 export interface FanOutLaneRun {
   readonly name: string;
   readonly worker: string;
@@ -267,6 +277,8 @@ export const JobRunSchema = z.object({
   steps: z.array(StepRunSchema),
   fanOutPlan: FanOutPlanRecordSchema.optional(),
   fanOutSnapshot: FanOutSnapshotSchema.optional(),
+  // one per halted attempt, appended as the job ends and never changed
+  fanOutHalts: z.array(FanOutHaltSchema).optional(),
 });
 
 export type JobRunData = z.infer<typeof JobRunSchema>;
@@ -839,6 +851,7 @@ export class JobRun implements TriggerEvaluationContext {
     private _steps: StepRun[],
     private _fanOutPlan: FanOutPlanRecord | undefined = undefined,
     private _fanOutSnapshot: FanOutSnapshot | undefined = undefined,
+    private _fanOutHalts: FanOutHalt[] = [],
   ) {}
 
   static pending(jobName: string, stepNames: string[]): JobRun {
@@ -868,7 +881,40 @@ export class JobRun implements TriggerEvaluationContext {
         })),
       },
       validated.fanOutSnapshot,
+      validated.fanOutHalts ?? [],
     );
+  }
+
+  get fanOutHalts(): readonly FanOutHalt[] {
+    return this._fanOutHalts;
+  }
+
+  /**
+   * holds the lanes that never started, records the halt and fails the job in
+   * one call, so no save between them can persist half a halt
+   */
+  haltFanOut(halt: FanOutHalt, heldSteps: readonly string[]): void {
+    if (this._fanOutPlan === undefined) {
+      throw new Error(`Job '${this.jobName}' has no fan-out plan to halt`);
+    }
+    const valid = FanOutHaltSchema.parse(halt);
+    for (const name of heldSteps) {
+      const step = this.getStep(name);
+      if (step?.status !== "pending") {
+        throw new Error(
+          `Job '${this.jobName}' cannot hold step '${name}': it is ${
+            step?.status ?? "missing"
+          }`,
+        );
+      }
+    }
+    // job_skipped: a new skip reason would make older binaries refuse the
+    // record; settledByAbort makes a resume reopen the lane
+    for (const name of heldSteps) {
+      this.getStep(name)!.skipUnstarted({ kind: "job_skipped" });
+    }
+    this._fanOutHalts.push(structuredClone(valid));
+    this.fail();
   }
 
   get fanOutPlan(): FanOutPlanRecord | undefined {
@@ -1224,6 +1270,9 @@ export class JobRun implements TriggerEvaluationContext {
     }
     if (this._fanOutSnapshot !== undefined) {
       data.fanOutSnapshot = structuredClone(this._fanOutSnapshot);
+    }
+    if (this._fanOutHalts.length > 0) {
+      data.fanOutHalts = structuredClone(this._fanOutHalts);
     }
     return data;
   }

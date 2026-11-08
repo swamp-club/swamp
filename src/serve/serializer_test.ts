@@ -405,6 +405,8 @@ const WORKFLOW_RUN_EVENT_KINDS: Record<WorkflowRunEvent["kind"], boolean> = {
   job_fanout_planned: true,
   job_fanout_waiting: true,
   job_fanout_summary: true,
+  job_fanout_batch_started: true,
+  job_fanout_halted: true,
   step_started: true,
   step_completed: true,
   step_skipped: true,
