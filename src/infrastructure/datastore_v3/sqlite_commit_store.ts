@@ -1901,6 +1901,20 @@ export class SqliteCommitStore implements CommitStore {
     return Promise.resolve(keys);
   }
 
+  baseRecord(
+    namespace: string,
+    partition: string,
+    recordKey: string,
+  ): Promise<BaseRecord | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    const row = this.#db.prepare(
+      "SELECT sha256, inline, blob, access FROM base_records WHERE namespace = ? AND partition = ? AND record_key = ?",
+    ).get(namespace, partition, recordKey) as
+      | Record<string, unknown>
+      | undefined;
+    return Promise.resolve(row === undefined ? undefined : baseRecordOf(row));
+  }
+
   baseRecordKeysNaming(
     namespace: string,
     partition: PartitionKey,

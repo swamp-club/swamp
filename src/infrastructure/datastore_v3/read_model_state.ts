@@ -527,6 +527,30 @@ export class ReadModelState {
     });
   }
 
+  /**
+   * set once a recovery has cleared the catalog and reset the state, until its
+   * replay and sweep finish, so a recovery stopped part way resumes from the
+   * cursor rather than clearing again
+   */
+  markRebuildStarted(): void {
+    this.#upsertMeta.run("recovery_rebuild", 1);
+  }
+
+  rebuildInProgress(): boolean {
+    return this.#meta("recovery_rebuild") === 1;
+  }
+
+  clearRebuild(): void {
+    this.#db.exec("DELETE FROM meta WHERE key = 'recovery_rebuild';");
+  }
+
+  presentKeys(namespace: string): string[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT record_key FROM materialised_keys WHERE namespace = ? AND present = 1 ORDER BY record_key",
+    ).all(namespace) as { record_key: string }[]).map((row) => row.record_key);
+  }
+
   filterInputs(): string | undefined {
     this.#requireOpen();
     const row = this.#db.prepare(
@@ -1180,11 +1204,37 @@ export class ReadModelState {
   }
 
   unsyncedFiles(): UnsyncedFile[] {
+    return this.#snapshot(() => this.#expectedFilesOf("unsynced_keys"));
+  }
+
+  /** what each key's file should hold, judged as unsyncedFiles judges them */
+  expectedFiles(
+    keys: readonly {
+      readonly namespace: string;
+      readonly record_key: string;
+    }[],
+  ): UnsyncedFile[] {
     return this.#snapshot(() => {
-      const rows = this.#db.prepare(`
+      this.#db.exec(
+        "CREATE TEMP TABLE IF NOT EXISTS checked_keys (namespace TEXT NOT NULL, record_key TEXT NOT NULL, PRIMARY KEY (namespace, record_key)) WITHOUT ROWID; DELETE FROM checked_keys;",
+      );
+      try {
+        const insert = this.#db.prepare(
+          "INSERT OR IGNORE INTO checked_keys (namespace, record_key) VALUES (?, ?)",
+        );
+        for (const key of keys) insert.run(key.namespace, key.record_key);
+        return this.#expectedFilesOf("temp.checked_keys");
+      } finally {
+        this.#db.exec("DELETE FROM checked_keys;");
+      }
+    });
+  }
+
+  #expectedFilesOf(table: string): UnsyncedFile[] {
+    const rows = this.#db.prepare(`
         SELECT u.namespace, u.record_key, m.present, m.owner, m.mark,
           r.sha256, r.blob, r.access, x.record_key AS unreadable
-        FROM unsynced_keys u
+        FROM ${table} u
         LEFT JOIN materialised_keys m
           ON m.namespace = u.namespace AND m.record_key = u.record_key
         LEFT JOIN live_records r
@@ -1194,37 +1244,36 @@ export class ReadModelState {
           ON x.namespace = u.namespace AND x.record_key = u.record_key
         ORDER BY u.namespace, u.record_key
       `).all() as unknown as {
-        namespace: string;
-        record_key: string;
-        present: number | null;
-        owner: string | null;
-        mark: number | null;
-        sha256: string | null;
-        blob: string | null;
-        access: string | null;
-        unreadable: string | null;
-      }[];
-      return rows.map((row): UnsyncedFile => {
-        const { namespace, record_key } = row;
-        if (row.present !== 1 || row.unreadable !== null) {
-          return { namespace, record_key, expect: "absent" };
-        }
-        if (row.sha256 === null) {
-          return { namespace, record_key, expect: "unknown" };
-        }
-        return {
-          namespace,
-          record_key,
-          expect: "present",
-          sha256: row.sha256,
-          owner: row.owner!,
-          mark: row.mark!,
-          ...(row.blob === null
-            ? {}
-            : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
-          ...accessOf(row.access),
-        };
-      });
+      namespace: string;
+      record_key: string;
+      present: number | null;
+      owner: string | null;
+      mark: number | null;
+      sha256: string | null;
+      blob: string | null;
+      access: string | null;
+      unreadable: string | null;
+    }[];
+    return rows.map((row): UnsyncedFile => {
+      const { namespace, record_key } = row;
+      if (row.present !== 1 || row.unreadable !== null) {
+        return { namespace, record_key, expect: "absent" };
+      }
+      if (row.sha256 === null) {
+        return { namespace, record_key, expect: "unknown" };
+      }
+      return {
+        namespace,
+        record_key,
+        expect: "present",
+        sha256: row.sha256,
+        owner: row.owner!,
+        mark: row.mark!,
+        ...(row.blob === null
+          ? {}
+          : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
+        ...accessOf(row.access),
+      };
     });
   }
 

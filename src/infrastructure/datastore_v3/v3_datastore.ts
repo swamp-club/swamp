@@ -596,10 +596,14 @@ export interface V3Datastore {
    */
   raiseWriterFence(fence: number): Promise<void>;
   writerFence(): number | undefined;
-  /** run only while this process holds the writer lock */
+  /**
+   * run only while this process holds the writer lock; targeted checks only
+   * what a writer that started at since could have touched
+   */
   recoverInterruptedWriter(
     since: number,
     signal?: AbortSignal,
+    options?: { readonly targeted?: boolean },
   ): Promise<string[]>;
   droppedWork():
     | { readonly since: number; readonly openUnits: number }
@@ -1342,11 +1346,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     writerFence() {
       return commitStore.writerFence();
     },
-    recoverInterruptedWriter(since, signal) {
+    recoverInterruptedWriter(since, signal, recoverOptions) {
       return readModel.recover(namespace, {
         since,
         admits,
-        signal: signal ?? lifetime.signal,
+        signal: catchUpSignal(signal),
+        targeted: recoverOptions?.targeted === true,
       });
     },
     droppedWork() {
@@ -1362,7 +1367,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       const recovery = readModel.recover(namespace, {
         since: recoverySince(since),
         admits,
-        signal: signal ?? lifetime.signal,
+        signal: catchUpSignal(signal),
         droppedDirs: [...units.droppedDirs.get(namespace) ?? []],
       });
       units.recovering = recovery;

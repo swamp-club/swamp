@@ -5096,6 +5096,12 @@ production compacted until the opt-in wired it into the writer
      release.
    - **The base is read in pages,** each with the point it was read at. A
      load that sees the point move starts again.
+   - **A base overtaken by a compaction** (another process installed a newer
+     one in the shared commit store meanwhile) is loaded again, but only as a
+     diff: files whose owner and mark already match are kept, and only the
+     catalog names whose versions differ are reapplied, so repeated loads
+     under steady writes converge. Each restart is logged with the old and
+     new base position (swamp-club#4512).
    - **A load that fails part-way** has first recorded the keys and names it
      was about to touch (`load_touched_keys`, `load_touched_names`), so the
      next attempt, even against a newer base, reconciles what the failed one
@@ -5743,9 +5749,11 @@ leave every checkout with the same records.
   interrupted: the run finishes and commits as usual. A CLI run command's
   signal also aborts its read-model catch-ups (`commandStopSignal`,
   swamp-club#4512). They stop at the next commit and keep what they applied,
-  so the next command carries on from the cursor. Commits being sent and
-  crash recovery keep the datastore's own signal. Serve and workers never
-  abort a catch-up this way.
+  so the next command carries on from the cursor; a recovery stops the same
+  way and the next command resumes it. Commits being sent, the catch-up of a
+  write under way and a publish's catch-up keep the datastore's own signal,
+  so a stopped run's work still lands. Serve and workers never abort a
+  catch-up this way.
 - *No teardown.* A SIGKILL, a crash, or a second signal (which exits at once
   with 130, `registerShutdownHandler`'s `forceExitOnRepeat`) ends the process
   with units that never commit, so the checkout keeps files and catalog rows
@@ -5791,7 +5799,30 @@ leave every checkout with the same records.
   and skips recovery when a live process holds it, whatever its TTL, or
   when the lease still keeps writers out; while it recovers it holds the
   lock, so a writer that starts then waits for the replay, and a stalled
-  writer the recovery takes over is fenced before any file is touched. Under the read model's lock, recovery deletes the
+  writer the recovery takes over is fenced before any file is touched.
+
+  **Targeted recovery** (swamp-club#4512). A recovery from a readable marker
+  first tries to check only what the writer could have touched, since state
+  and catalog commit together per page and the cursor is consistent. Under
+  the read model's lock it catches up from the committed cursor, then:
+  - each file in the materialised directories modified at or after the
+    marker's start is checked against the live record that owns it and
+    rewritten where it differs (inline content from the commit at its mark,
+    or from the compacted base once that commit is folded), and removed when
+    no commit owns it;
+  - each file the state owns is looked for, since a removal leaves no
+    mtime, and put back if missing;
+  - the catalog rows of every data name those files belong to are
+    re-projected from the state's live versions (the writer's repositories
+    write catalog rows at save time, before any commit).
+  It falls back to the full rebuild below when the marker is unreadable (its
+  start is only the file's mtime), a file has no mtime or one later than
+  now, a data key names no model, a file cannot be restored from the state,
+  or a full rebuild was already in progress. On a member checkout the full
+  rebuild reloads the compacted base (80,503 files and 150 s of catalog work
+  on the dogfood checkout), which the targeted path never does.
+
+  **Full rebuild.** Under the read model's lock, recovery deletes the
   catalog rows of the data commits carry, keeping the rows of data the
   datastore's `directories` or `exclude` keep local, which no replay could
   rebuild, and keeping the catalog marked populated, so no reader backfills
@@ -5805,6 +5836,9 @@ leave every checkout with the same records.
   stores again from the file any committed chunk it alone still holds whole,
   verifying right-size parts on filesystem storage), then removes each file in the materialised
   directories that no commit owns and that changed since the marker's start.
+  It records that a rebuild is in progress once it has cleared and reset,
+  so a rebuild a signal stopped resumes from its cursor on the next command
+  instead of clearing again; the marker stays until a recovery finishes.
   It says on stderr, in log mode and silenced by `-q`, that it is
   recovering work an interrupted command left in this checkout, so the
   seconds it takes on a populated checkout never look like a hang
