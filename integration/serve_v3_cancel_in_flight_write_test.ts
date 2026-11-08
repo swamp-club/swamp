@@ -23,6 +23,7 @@ import { z } from "zod";
 import {
   acquireModelLocks,
   acquirePublishLocksOrDefer,
+  createWorkflowRunLock,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -202,14 +203,23 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve upstream: once a command is told to stop, a publish still takes its lock and catches up, while a new model lock does not (swamp-club#4512)",
+    "serve upstream: once a command is told to stop, a publish and a run claim still take their locks and catch up, while a new model lock does not (swamp-club#4512)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     resetCommandStopForTesting();
     try {
       await withScratch(async (scratch) => {
-        const serve = await scratch.serve();
+        const serve = await scratch.serve({
+          grants: [
+            ...MEMBER,
+            {
+              actions: ["read", "write", "run"],
+              kind: "workflow",
+              pattern: "*",
+            },
+          ],
+        });
         const alice = await scratch.client("a");
         const type = serve.modelType;
         const model = {
@@ -261,6 +271,13 @@ Deno.test({
                 );
                 assertExists(publish, "the publish was not deferred");
                 await publish.release();
+                // a stopped resume puts its suspended run back under this claim
+                const claim = await createWorkflowRunLock(
+                  ctx.datastoreConfig,
+                  crypto.randomUUID(),
+                );
+                await claim.acquire();
+                await claim.release();
               } finally {
                 await endCommand();
               }

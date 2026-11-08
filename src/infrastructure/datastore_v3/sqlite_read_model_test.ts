@@ -670,6 +670,7 @@ Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from
           since,
           admits: () => true,
           signal: stop.signal,
+          entry: "interrupted_writer",
         })
       );
     } finally {
@@ -699,6 +700,7 @@ Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from
         admits: () => true,
         signal: signal(),
         targeted: true,
+        entry: "interrupted_writer",
       });
     } finally {
       await readModel.close();
@@ -748,6 +750,7 @@ Deno.test("SqliteReadModel.recover: a targeted recovery stopped part way leaves 
           admits: () => true,
           signal: stop.signal,
           targeted: true,
+          entry: "interrupted_writer",
         })
       );
     } finally {
@@ -780,6 +783,7 @@ Deno.test("SqliteReadModel.recover: a targeted recovery stopped part way leaves 
         admits: () => true,
         signal: signal(),
         targeted: true,
+        entry: "interrupted_writer",
       });
     } finally {
       await readModel.close();
@@ -1008,6 +1012,131 @@ Deno.test("SqliteReadModel.recover: a targeted recovery undoes an uncommitted re
     assertEquals(path, "targeted");
     assertEquals(targeted, full);
     assertEquals(await readOrAbsent(marker), undefined);
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a stopped rebuild is resumed only by an interrupted writer's recovery; a view change or a restore after it clears again (swamp-club#4512)", async () => {
+  for (const next of ["view_change", "rebuilt"] as const) {
+    await withEnv(async (env) => {
+      const { since, clock } = await interruptedCheckout(env);
+      const stop = new AbortController();
+      let pages = 0;
+      const stopping = new Proxy(env.store, {
+        get(target, property) {
+          if (property === "changesSince") {
+            return (cursor: number, limit: number) => {
+              if (++pages === 3) stop.abort();
+              return target.changesSince(cursor, limit);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      let readModel = env.open({ commitStore: stopping, clock, pageSize: 5 });
+      try {
+        await assertRejects(() =>
+          readModel.recover("", {
+            since,
+            admits: () => true,
+            signal: stop.signal,
+            entry: "interrupted_writer",
+          })
+        );
+      } finally {
+        await readModel.close();
+      }
+      const cleared: number[] = [];
+      const inner = V3Catalog.open(
+        join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+      );
+      const catalog = new Proxy(inner, {
+        get(target, property) {
+          if (property === "clear") {
+            return (admits: (key: string) => boolean) => {
+              cleared.push(1);
+              return target.clear(admits);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      readModel = env.open({ catalog, clock, pageSize: 5 });
+      try {
+        await withCapturedSpans(async (spans) => {
+          await readModel.recover("", {
+            since: 0,
+            admits: () => true,
+            signal: signal(),
+            entry: next,
+          });
+          assertEquals(
+            findSpan(spans, "swamp.datastore.v3.readmodel.recover")
+              .attributes["swamp.datastore.v3.readmodel.recover.path"],
+            "full",
+            next,
+          );
+        });
+      } finally {
+        await readModel.close();
+      }
+      assertEquals(cleared, [1], `${next} cleared again`);
+      assertEquals(env.catalogRows().length, RECOVERY_COMMITS);
+    });
+  }
+});
+
+Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resumed or checked one by one by an interrupted writer's recovery (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const stop = new AbortController();
+    let pages = 0;
+    const stopping = new Proxy(env.store, {
+      get(target, property) {
+        if (property === "changesSince") {
+          return (cursor: number, limit: number) => {
+            if (++pages === 3) stop.abort();
+            return target.changesSince(cursor, limit);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let readModel = env.open({ commitStore: stopping, clock, pageSize: 5 });
+    try {
+      await assertRejects(() =>
+        readModel.recover("", {
+          since: 0,
+          admits: () => true,
+          signal: stop.signal,
+          entry: "view_change",
+        })
+      );
+    } finally {
+      await readModel.close();
+    }
+    readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.recover("", {
+          since,
+          admits: () => true,
+          signal: signal(),
+          targeted: true,
+          entry: "interrupted_writer",
+        });
+        assertEquals(
+          findSpan(spans, "swamp.datastore.v3.readmodel.recover")
+            .attributes["swamp.datastore.v3.readmodel.recover.path"],
+          "full",
+        );
+      });
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(env.catalogRows().length, RECOVERY_COMMITS);
   });
 });
 

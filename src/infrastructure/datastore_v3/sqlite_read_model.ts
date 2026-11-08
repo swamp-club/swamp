@@ -547,7 +547,14 @@ export class SqliteReadModel implements ReadModel {
         this.#counted("swamp.datastore.v3.readmodel.recover", async (span) => {
           // before anything is cleared, so a stopped recovery leaves the state
           options.signal.throwIfAborted();
-          const resuming = this.#state.rebuildInProgress();
+          const rebuild = this.#state.rebuildInProgress();
+          const resuming = rebuild?.resumable === true &&
+            options.entry === "interrupted_writer";
+          // the earlier start, so the sweep still reaches what the first
+          // interrupted writer left
+          const since = resuming
+            ? Math.min(rebuild!.since, options.since)
+            : options.since;
           span.setAttributes({
             "swamp.datastore.v3.readmodel.recover.entry": options.entry ??
               "unknown",
@@ -556,7 +563,10 @@ export class SqliteReadModel implements ReadModel {
               ? "resumed"
               : "full",
           });
-          if (options.targeted === true && !resuming && !this.#replaying) {
+          if (
+            options.targeted === true && rebuild === undefined &&
+            !this.#replaying
+          ) {
             const removed = await this.#recoverTargeted(namespace, options);
             if (removed !== undefined) {
               span.setAttributes({
@@ -573,7 +583,10 @@ export class SqliteReadModel implements ReadModel {
             const generation = this.#catalog.clear(options.admits);
             this.#reset(generation);
             this.#catalog.markPopulated(generation);
-            this.#state.markRebuildStarted();
+            this.#state.markRebuildStarted(
+              options.entry === "interrupted_writer",
+              options.since,
+            );
           }
           await this.#retryAtRiskCopies(options.signal);
           this.#recovering = true;
@@ -582,7 +595,10 @@ export class SqliteReadModel implements ReadModel {
           } finally {
             this.#recovering = false;
           }
-          const removed = await this.#sweepUnowned(namespace, options);
+          const removed = await this.#sweepUnowned(namespace, {
+            ...options,
+            since,
+          });
           this.#state.clearRebuild();
           return removed;
         }),

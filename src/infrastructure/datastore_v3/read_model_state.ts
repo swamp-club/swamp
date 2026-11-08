@@ -528,20 +528,32 @@ export class ReadModelState {
   }
 
   /**
-   * set once a recovery has cleared the catalog and reset the state, until its
-   * replay and sweep finish, so a recovery stopped part way resumes from the
-   * cursor rather than clearing again
+   * set once a recovery has cleared and reset, until its replay and sweep end;
+   * only an interrupted writer's rebuild resumes, since any other was for a
+   * view or log the next recovery may no longer have
    */
-  markRebuildStarted(): void {
-    this.#upsertMeta.run("recovery_rebuild", 1);
+  markRebuildStarted(resumable: boolean, since: number): void {
+    this.#transaction(() => {
+      this.#upsertMeta.run("recovery_rebuild", resumable ? 1 : 2);
+      this.#upsertMeta.run("recovery_rebuild_since", since);
+    });
   }
 
-  rebuildInProgress(): boolean {
-    return this.#meta("recovery_rebuild") === 1;
+  rebuildInProgress():
+    | { readonly resumable: boolean; readonly since: number }
+    | undefined {
+    const flag = this.#meta("recovery_rebuild");
+    if (flag === undefined) return undefined;
+    return {
+      resumable: flag === 1,
+      since: this.#meta("recovery_rebuild_since") ?? 0,
+    };
   }
 
   clearRebuild(): void {
-    this.#db.exec("DELETE FROM meta WHERE key = 'recovery_rebuild';");
+    this.#db.exec(
+      "DELETE FROM meta WHERE key IN ('recovery_rebuild', 'recovery_rebuild_since');",
+    );
   }
 
   presentKeys(namespace: string): string[] {

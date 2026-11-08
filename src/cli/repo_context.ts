@@ -1932,11 +1932,13 @@ export async function createWorkflowRunLock(
   const config = lockingConfigOf(datastoreConfig);
   const lockKey = workflowRunLockKey(config.namespace, runId);
   const maxWaitMs = resolveLockTimeoutMs();
+  // a stopped resume still puts its suspended run back under this claim
   const atServe = serveLockOf(
     config,
     workflowRunLockKey(undefined, runId),
     lockKey,
     maxWaitMs,
+    { ignoresStop: true },
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
