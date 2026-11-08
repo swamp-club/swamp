@@ -1367,7 +1367,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       const recovery = readModel.recover(namespace, {
         since: recoverySince(since),
         admits,
-        signal: catchUpSignal(signal),
+        // runs at teardown, after a stop has fired; its dropped directories
+        // live only in this process, so it must finish
+        signal: signal ?? lifetime.signal,
         droppedDirs: [...units.droppedDirs.get(namespace) ?? []],
       });
       units.recovering = recovery;

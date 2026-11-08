@@ -1070,23 +1070,12 @@ export class ReadModelState {
     });
   }
 
-  /**
-   * the names whose staged versions differ from the state's: catalog rows and
-   * forwards project from versions, so a base reloaded after a compaction
-   * reapplies only what changed; after a reset the state holds none, so all
-   */
   loadCatalogNames(): LoadName[] {
     this.#requireOpen();
     return this.#db.prepare(
-      "SELECT namespace, partition, name FROM (" +
-        "SELECT namespace, partition, name, version, metadata FROM data_versions " +
-        "EXCEPT SELECT namespace, partition, name, version, metadata FROM load_versions) " +
-        "UNION SELECT namespace, partition, name FROM (" +
-        "SELECT namespace, partition, name, version, metadata FROM load_versions " +
-        "EXCEPT SELECT namespace, partition, name, version, metadata FROM data_versions) " +
-        "UNION SELECT namespace, partition, name FROM (" +
-        "SELECT namespace, partition, name FROM load_catalog " +
-        "EXCEPT SELECT namespace, partition, name FROM data_versions) " +
+      "SELECT namespace, partition, name FROM data_versions " +
+        "UNION SELECT namespace, partition, name FROM load_versions " +
+        "UNION SELECT namespace, partition, name FROM load_catalog " +
         "UNION SELECT namespace, partition, name FROM load_forwards " +
         "UNION SELECT namespace, partition, name FROM load_touched_names " +
         "ORDER BY 1, 2, 3",

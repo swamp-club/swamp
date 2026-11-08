@@ -537,6 +537,8 @@ export class SqliteReadModel implements ReadModel {
     return this.#exclusive(
       () =>
         this.#counted("swamp.datastore.v3.readmodel.recover", async () => {
+          // before anything is cleared, so a stopped recovery leaves the state
+          options.signal.throwIfAborted();
           const resuming = this.#state.rebuildInProgress();
           if (options.targeted === true && !resuming && !this.#replaying) {
             const removed = await this.#recoverTargeted(namespace, options);
@@ -851,7 +853,7 @@ export class SqliteReadModel implements ReadModel {
         this.#netBase = false;
         if (loadedBase !== undefined) {
           logger
-            .info`The commit log was compacted past the base this catch-up just loaded (position ${loadedBase}, now ${error.point}); loading the newer base, applying only what changed`;
+            .info`The commit log was compacted past the base this catch-up just loaded (position ${loadedBase}, now ${error.point}); loading the newer base, keeping the files that already match it`;
         }
         await this.#loadBase(signal, net);
         loadedBase = this.#state.cursor();
@@ -1539,7 +1541,7 @@ export class SqliteReadModel implements ReadModel {
         : undefined;
     }
     if (
-      commit === undefined || commit.namespace !== file.namespace ||
+      commit.namespace !== file.namespace ||
       commit.partition.toString() !== file.owner
     ) {
       return undefined;
@@ -3975,7 +3977,7 @@ function errorMessage(error: unknown): string {
  * the data names under each key, as the catalog keys them; undefined when a
  * data key names no model the catalog can hold, which only a replay sorts out
  */
-function touchedDataNames(
+export function touchedDataNames(
   keys: readonly string[],
 ): { type: string; id: string; name: string }[] | undefined {
   const names = new Map<string, { type: string; id: string; name: string }>();

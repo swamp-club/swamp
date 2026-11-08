@@ -165,16 +165,6 @@ Deno.test({
                   },
                   controller.signal,
                   (event: WorkflowRunEvent) => {
-                    console.log(
-                      "EVT",
-                      event.kind,
-                      JSON.stringify(
-                        (event as { error?: unknown }).error ??
-                          (event as { run?: { status?: string } }).run
-                            ?.status ??
-                          "",
-                      ).slice(0, 300),
-                    );
                     if (event.kind === "cancelled") outcome = event.run.status;
                   },
                   ctx.syncService,

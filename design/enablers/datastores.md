@@ -5097,11 +5097,12 @@ production compacted until the opt-in wired it into the writer
    - **The base is read in pages,** each with the point it was read at. A
      load that sees the point move starts again.
    - **A base overtaken by a compaction** (another process installed a newer
-     one in the shared commit store meanwhile) is loaded again, but only as a
-     diff: files whose owner and mark already match are kept, and only the
-     catalog names whose versions differ are reapplied, so repeated loads
-     under steady writes converge. Each restart is logged with the old and
-     new base position (swamp-club#4512).
+     one in the shared commit store meanwhile) is loaded again. Files whose
+     owner and mark already match are kept; the catalog is reapplied for
+     every name, since the base's catalog rows are not a projection of its
+     versions alone (a `data.gc` expiry keeps rows the versions do not
+     show). Each restart is logged with the old and new base position
+     (swamp-club#4512).
    - **A load that fails part-way** has first recorded the keys and names it
      was about to touch (`load_touched_keys`, `load_touched_names`), so the
      next attempt, even against a newer base, reconciles what the failed one

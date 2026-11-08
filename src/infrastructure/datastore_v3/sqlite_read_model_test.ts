@@ -60,6 +60,7 @@ import {
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
+  touchedDataNames,
 } from "./sqlite_read_model.ts";
 import type { SpellingFolding } from "./spelling_folding.ts";
 import { catalogRow, V3Catalog } from "./v3_catalog.ts";
@@ -434,7 +435,7 @@ Deno.test("SqliteReadModel: a catch-up waiting for another command's read-model 
   });
 });
 
-Deno.test("SqliteReadModel: a base overtaken by a compaction just after it loaded reapplies only the names that changed, and says so (swamp-club#4512)", async () => {
+Deno.test("SqliteReadModel: a base overtaken by a compaction just after it loaded is loaded again, keeps the files that already match, and says so (swamp-club#4512)", async () => {
   await withEnv(async (env) => {
     for (let i = 1; i <= 5; i++) {
       await env.append(i, "", [
@@ -514,8 +515,7 @@ Deno.test("SqliteReadModel: a base overtaken by a compaction just after it loade
     try {
       await readModel.catchUp(signal());
       assert(compactedAgain, "the compaction overtook the load");
-      assertEquals(applied.get("r1"), 1, "an unchanged name is applied once");
-      assertEquals(applied.get("r6"), 1);
+      assert((applied.get("r6") ?? 0) >= 1, "the new base's name is applied");
       assertEquals(await readOrAbsent(env.contentPath("", "r6", 1)), "r6@1");
       assert(
         messages.some((m) => m.includes("compacted past the base")),
@@ -793,6 +793,55 @@ Deno.test("SqliteReadModel.recover: a targeted recovery stopped part way leaves 
       await readOrAbsent(env.contentPath("", `r${RECOVERY_COMMITS + 12}`, 1)),
       `r${RECOVERY_COMMITS + 12}@1`,
     );
+  });
+});
+
+Deno.test("touchedDataNames: names each data key's model and name, skips keys outside data, and gives up on a data key it cannot place (swamp-club#4512)", () => {
+  const id = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+  assertEquals(
+    touchedDataNames([
+      `data/@swamp/aws/ec2/${id}/out/3/raw`,
+      `data/@swamp/aws/ec2/${id}/out/3/metadata.yaml`,
+      `data/command/shell/${id}/log/latest`,
+      "definitions/x.yaml",
+    ]),
+    [
+      { type: "@swamp/aws/ec2", id, name: "out" },
+      { type: "command/shell", id, name: "log" },
+    ],
+  );
+  for (
+    const key of [
+      `data/command/shell/${id}/log/notes.txt`,
+      `data/command/shell/${id}/log/3/raw/extra`,
+      "data/command/shell/not-a-uuid/log/1/raw",
+      `data/${id}/log/1/raw`,
+    ]
+  ) {
+    assertEquals(touchedDataNames([key]), undefined, key);
+  }
+});
+
+Deno.test("SqliteReadModel.recover: a recovery whose signal is already aborted changes nothing (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const rows = env.catalogRows();
+    const stop = new AbortController();
+    stop.abort();
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await assertRejects(() =>
+        readModel.recover("", {
+          since,
+          admits: () => true,
+          signal: stop.signal,
+        })
+      );
+      assertEquals(env.catalogRows(), rows);
+      assertEquals((await readModel.catchUp(signal())).applied, 0);
+    } finally {
+      await readModel.close();
+    }
   });
 });
 
