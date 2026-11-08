@@ -343,6 +343,57 @@ export interface InMemoryRemoteOptions {
    * `repairUnpushedFiles` needs to upload. Default true.
    */
   conditionalCreate?: boolean;
+  /**
+   * Refuses a write to an object written less than `intervalMs` before, as
+   * GCS refuses more than about one mutation a second per object. Applies to
+   * control-plane writes and chunk puts and touches; a refused write changes
+   * nothing. Default off.
+   */
+  mutationRateLimit?: InMemoryMutationRateLimit;
+}
+
+/** See {@link InMemoryRemoteOptions.mutationRateLimit}. */
+export interface InMemoryMutationRateLimit {
+  /** The least time between two writes of one object. */
+  intervalMs: number;
+  /**
+   * The provider whose refusal to mimic: `"gcs"` answers HTTP 429
+   * `rateLimitExceeded`, `"s3"` HTTP 503 `SlowDown`. Default `"gcs"`.
+   */
+  provider?: "gcs" | "s3";
+  /** The clock. Default `Date.now`. */
+  now?: () => number;
+}
+
+/** One object write seen while a mutation rate limit is set. */
+export interface InMemoryMutationRecord {
+  /** The object's key, as a bucket would key it. */
+  key: string;
+  /** When it was attempted, by the limit's clock. */
+  at: number;
+  /** Whether the limit refused it. */
+  refused: boolean;
+}
+
+/**
+ * Shaped like the GCS and S3 extensions' operation errors, which carry the
+ * HTTP status as `httpStatusCode` and the provider's reason as `code`.
+ */
+export class InMemoryRateLimitError extends Error {
+  readonly httpStatusCode: number;
+  readonly code: string;
+
+  constructor(provider: "gcs" | "s3", key: string) {
+    const gcs = provider === "gcs";
+    super(
+      gcs
+        ? `GCS putObject failed HTTP 429 rateLimitExceeded — The object ${key} exceeded the rate limit for object mutation operations`
+        : `S3 putObject failed HTTP 503 SlowDown — Please reduce your request rate. (${key})`,
+    );
+    this.name = gcs ? "GcsOperationError" : "S3OperationError";
+    this.httpStatusCode = gcs ? 429 : 503;
+    this.code = gcs ? "rateLimitExceeded" : "SlowDown";
+  }
 }
 
 /** A remote operation a failure can be injected into. */
@@ -475,6 +526,11 @@ export interface InMemoryRemote {
   controlPlaneRecords(): ReadonlyMap<string, Uint8Array>;
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
+  /**
+   * Every object write attempted while `mutationRateLimit` is set, in order,
+   * refused ones included. Empty without the limit.
+   */
+  mutations(): readonly InMemoryMutationRecord[];
   /**
    * A provider's writable datastore-wide store: every key is
    * `_control/<key>` whatever namespace any service has bound, and it binds
@@ -867,7 +923,24 @@ export function createInMemoryRemote(
   const controlRecords = new Map<string, Uint8Array>();
   const controlKey = (namespace: string | undefined, key: string) =>
     namespace ? `${namespace}/_control/${key}` : `_control/${key}`;
-  const chunkStorage = options?.storage ? createChunkStorage() : undefined;
+  const rateLimit = options?.mutationRateLimit;
+  const lastMutation = new Map<string, number>();
+  const mutationLog: InMemoryMutationRecord[] = [];
+  // Throws before the write, so a refused write leaves the object as it was.
+  const mutate = (objectKey: string): void => {
+    if (rateLimit === undefined) return;
+    const at = (rateLimit.now ?? Date.now)();
+    const last = lastMutation.get(objectKey);
+    if (last !== undefined && at - last < rateLimit.intervalMs) {
+      mutationLog.push({ key: objectKey, at, refused: true });
+      throw new InMemoryRateLimitError(rateLimit.provider ?? "gcs", objectKey);
+    }
+    lastMutation.set(objectKey, at);
+    mutationLog.push({ key: objectKey, at, refused: false });
+  };
+  const chunkStorage = options?.storage
+    ? createChunkStorage(mutate)
+    : undefined;
   const replicaTarget = options?.replicaTarget;
   // Objects under `_litestream/`, keyed as a bucket would key them.
   const replicaObjects = options?.replicaPaths
@@ -1757,6 +1830,7 @@ export function createInMemoryRemote(
           try {
             reach();
             const fullKey = controlKey(namespace, key);
+            mutate(fullKey);
             controlRecords.set(fullKey, data.slice());
             written(fullKey);
             return Promise.resolve();
@@ -1769,6 +1843,7 @@ export function createInMemoryRemote(
             reach();
             const fullKey = controlKey(namespace, key);
             if (controlRecords.has(fullKey)) return Promise.resolve(false);
+            mutate(fullKey);
             controlRecords.set(fullKey, data.slice());
             written(fullKey);
             return Promise.resolve(true);
@@ -1780,6 +1855,7 @@ export function createInMemoryRemote(
           try {
             reach();
             const fullKey = controlKey(namespace, key);
+            mutate(fullKey);
             controlRecords.delete(fullKey);
             record({
               instance,
@@ -1848,6 +1924,7 @@ export function createInMemoryRemote(
         try {
           reach();
           const fullKey = controlKey(undefined, key);
+          mutate(fullKey);
           controlRecords.set(fullKey, data.slice());
           record({
             instance,
@@ -1865,6 +1942,7 @@ export function createInMemoryRemote(
           reach();
           const fullKey = controlKey(undefined, key);
           if (controlRecords.has(fullKey)) return Promise.resolve(false);
+          mutate(fullKey);
           controlRecords.set(fullKey, data.slice());
           record({
             instance,
@@ -1881,6 +1959,7 @@ export function createInMemoryRemote(
         try {
           reach();
           const fullKey = controlKey(undefined, key);
+          mutate(fullKey);
           controlRecords.delete(fullKey);
           record({
             instance,
@@ -1976,6 +2055,7 @@ export function createInMemoryRemote(
     },
     controlPlaneRecords: () =>
       new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
+    mutations: () => mutationLog.map((entry) => ({ ...entry })),
     ...(controlPlane ? { datastoreControlPlaneStore } : {}),
     ...(chunkStorage
       ? {
@@ -2062,7 +2142,7 @@ const REPLICA_PAGE_SIZE = 2;
  * The `storage/1` model behind {@link InMemoryRemoteOptions.storage}:
  * chunks keyed `<namespace>/<sha256>`, each with its `lastModified`.
  */
-function createChunkStorage():
+function createChunkStorage(mutate: (objectKey: string) => void):
   & Required<Pick<InMemoryRemote, "storage" | "setChunkLastModified">>
   & {
     /** Whether a chunk is stored at its bucket key. */
@@ -2070,6 +2150,8 @@ function createChunkStorage():
   } {
   const chunks = new Map<string, { bytes: Uint8Array; lastModified: Date }>();
   const key = (namespace: string, sha256: string) => `${namespace}/${sha256}`;
+  const objectKey = (namespace: string, sha256: string) =>
+    `_blobs/${namespace}/sha256/${sha256.slice(0, 2)}/${sha256}`;
   // Runs `fn` as a promise, so a throw (an aborted signal) rejects.
   const settle = <T>(fn: () => T): Promise<T> =>
     new Promise((resolve) => resolve(fn()));
@@ -2084,6 +2166,7 @@ function createChunkStorage():
     put: (namespace, sha256, bytes, signal) =>
       settle(() => {
         signal.throwIfAborted();
+        mutate(objectKey(namespace, sha256));
         chunks.set(key(namespace, sha256), {
           bytes: bytes.slice(),
           lastModified: new Date(),
@@ -2100,8 +2183,12 @@ function createChunkStorage():
         const missing = new Set<string>();
         for (const sha256 of hashes) {
           const chunk = chunks.get(key(namespace, sha256));
-          if (chunk === undefined) missing.add(sha256);
-          else chunk.lastModified = new Date();
+          if (chunk === undefined) {
+            missing.add(sha256);
+          } else {
+            mutate(objectKey(namespace, sha256));
+            chunk.lastModified = new Date();
+          }
         }
         return missing;
       }),

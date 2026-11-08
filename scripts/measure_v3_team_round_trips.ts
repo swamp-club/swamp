@@ -39,6 +39,8 @@ interface Options {
   readonly startupRounds: number;
   readonly telemetryLatencyMs: number;
   readonly v2Hydration: readonly ("full" | "lazy")[];
+  readonly objectRateLimitMs: number;
+  readonly sustainedWritesMs: number;
 }
 
 const GCS_EXTENSION = "@swamp/gcs-datastore";
@@ -55,7 +57,8 @@ function usage(): never {
   [--work-dir dir] [--fake-gcs-image image] [--keep] [--setup-only] \\
   [--large-history 20] [--large-kib 64] [--idle-ms 70000] [--cold-rounds 2] \\
   [--clone-rounds 2] [--startup-rounds 6] [--telemetry-latency-ms 300] \\
-  [--v2-hydration full,lazy]`,
+  [--v2-hydration full,lazy] [--object-rate-limit-ms 1000] \\
+  [--sustained-writes-ms 60000]`,
   );
   Deno.exit(2);
 }
@@ -78,6 +81,8 @@ function parseOptions(): Options {
       "clone-rounds",
       "startup-rounds",
       "telemetry-latency-ms",
+      "object-rate-limit-ms",
+      "sustained-writes-ms",
       "v2-hydration",
     ],
     boolean: ["keep", "setup-only"],
@@ -98,6 +103,8 @@ function parseOptions(): Options {
       "startup-rounds": "6",
       "telemetry-latency-ms": "300",
       "v2-hydration": "",
+      "object-rate-limit-ms": "0",
+      "sustained-writes-ms": "0",
     },
   });
   const binaries: Record<string, string> = {};
@@ -134,6 +141,8 @@ function parseOptions(): Options {
     startupRounds: Number(args["startup-rounds"]),
     telemetryLatencyMs: Number(args["telemetry-latency-ms"]),
     v2Hydration,
+    objectRateLimitMs: Number(args["object-rate-limit-ms"]),
+    sustainedWritesMs: Number(args["sustained-writes-ms"]),
   };
 }
 
@@ -176,6 +185,63 @@ interface StorageEvent {
   readonly kind: StorageKind;
 }
 
+// a multipart upload names its object in the body, not the query
+function mutatedObject(req: Request, body: Uint8Array | undefined): string | undefined {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  const target = /\/(?:rewriteTo|copyTo)\/b\/[^/]+\/o\/([^/]+)$/.exec(path);
+  if (req.method === "POST" && target !== null) {
+    return decodeURIComponent(target[1]);
+  }
+  if (req.method === "POST" && path.startsWith("/upload/")) {
+    const named = url.searchParams.get("name");
+    if (named !== null) return named;
+    const text = new TextDecoder().decode(body?.slice(0, 4096));
+    return /"name"\s*:\s*"([^"]+)"/.exec(text)?.[1];
+  }
+  const object = /\/storage\/v1\/b\/[^/]+\/o\/([^/]+)$/.exec(path);
+  if ((req.method === "DELETE" || req.method === "PATCH") && object !== null) {
+    return decodeURIComponent(object[1]);
+  }
+  return undefined;
+}
+
+function objectRateLimiter(intervalMs: number) {
+  const last = new Map<string, number>();
+  const refused: { readonly at: number; readonly object: string }[] = [];
+  // off during setup: the extension's write probe rewrites one object at once
+  let enforcing = false;
+  return {
+    refused,
+    enforce(on: boolean): void {
+      enforcing = on;
+    },
+    refuse(req: Request, body: Uint8Array | undefined): Response | undefined {
+      if (intervalMs <= 0 || !enforcing) return undefined;
+      const object = mutatedObject(req, body);
+      if (object === undefined) return undefined;
+      const now = Date.now();
+      const previous = last.get(object);
+      if (previous !== undefined && now - previous < intervalMs) {
+        refused.push({ at: now, object });
+        const message =
+          `The object ${BUCKET}/${object} exceeded the rate limit for object mutation operations (create, update, and delete).`;
+        return Response.json({
+          error: {
+            code: 429,
+            message,
+            errors: [{ message, domain: "usageLimits", reason: "rateLimitExceeded" }],
+          },
+        }, { status: 429 });
+      }
+      last.set(object, now);
+      return undefined;
+    },
+  };
+}
+
+type ObjectRateLimiter = ReturnType<typeof objectRateLimiter>;
+
 const DROPPED_RESPONSE_HEADERS = [
   "content-encoding",
   "content-length",
@@ -189,6 +255,7 @@ function startStorageProxy(
   latencyMs: number,
   handshakeRtts: number,
   events: StorageEvent[],
+  limiter: ObjectRateLimiter,
 ): Deno.HttpServer {
   const connections = new Set<string>();
   const upstreamHost = new URL(upstream).host;
@@ -207,6 +274,8 @@ function startStorageProxy(
         : new Uint8Array(await req.arrayBuffer());
       await delay(latencyMs * (1 + handshake));
       events.push({ at: Date.now(), kind: storageKind(req) });
+      const refusal = limiter.refuse(req, body);
+      if (refusal !== undefined) return refusal;
       const url = new URL(req.url);
       const upstreamResponse = await fetch(
         upstream + url.pathname + url.search,
@@ -1159,6 +1228,50 @@ async function measureStartup(
   return samples;
 }
 
+async function sustainedWrites(
+  label: string,
+  binary: string,
+  lane: Lane,
+  options: Options,
+  env: Env,
+  limiter: ObjectRateLimiter,
+) {
+  const fromRefusal = limiter.refused.length;
+  limiter.enforce(true);
+  const until = Date.now() + options.sustainedWritesMs;
+  const failures: { member: string; error: string }[] = [];
+  let writes = 0;
+  await Promise.all(lane.members.map(async (member) => {
+    while (Date.now() < until) {
+      const result = await memberRun(binary, env, member, [...COMMANDS.write]);
+      writes++;
+      if (result.code !== 0) {
+        failures.push({
+          member: member.name,
+          error: (result.stderr || result.stdout).slice(-600),
+        });
+      }
+    }
+  }));
+  limiter.enforce(false);
+  const refused = limiter.refused.slice(fromRefusal);
+  const byObject: Record<string, number> = {};
+  for (const { object } of refused) {
+    const kind = object.replace(/[0-9a-f]{16,}|\d{6,}/g, "*");
+    byObject[kind] = (byObject[kind] ?? 0) + 1;
+  }
+  return {
+    label,
+    writes,
+    failed: failures.length,
+    failedOn429: failures.filter((f) => /429|rateLimitExceeded/.test(f.error))
+      .length,
+    refusedByProxy: refused.length,
+    refusedObjects: byObject,
+    sampleFailure: failures[0],
+  };
+}
+
 async function seedHistory(
   binary: string,
   lane: Lane,
@@ -1390,12 +1503,14 @@ async function main(): Promise<void> {
     ],
     stdout: "null",
   }).output();
+  const limiter = objectRateLimiter(options.objectRateLimitMs);
   const proxy = startStorageProxy(
     proxyPort,
     `http://127.0.0.1:${gcsPort}`,
     options.latencyMs,
     options.handshakeRtts,
     events,
+    limiter,
   );
   const sink = startOtlpSink(otlpPort, spans);
   const env: Env = {
@@ -1443,6 +1558,16 @@ async function main(): Promise<void> {
       await seedMember(binary, env, lane.members[0], options.largeKib);
       console.error(`seeding ${options.history} commits`);
       await seedHistory(binary, lane, options, env);
+    }
+    if (options.sustainedWritesMs > 0) {
+      for (const [label, binary, lane] of lanes) {
+        console.error(`sustained writes on ${label}`);
+        console.log(JSON.stringify(
+          await sustainedWrites(label, binary, lane, options, env, limiter),
+        ));
+      }
+      for (const [, , lane] of lanes) await lane.stop();
+      return;
     }
     // Interleaved blocks, so drift on the host lands on every binary alike.
     for (let block = 0; block < 2; block++) {

@@ -1060,7 +1060,8 @@ control plane, beside the lease, at `_control/lineage/<fence>/`:
   lineage, before its sidecar uploads: the fence, holder, replica root and
   time;
 - `head-<writer fence>.json`, rewritten by that writer after each sync
-  Litestream confirmed: the TXID and swamp's **high-water mark**, the commit
+  Litestream confirmed (on a bucket that has refused it, at most once per
+  1.2 s; see **Pacing the head** under Phase 4D3): the TXID and swamp's **high-water mark**, the commit
   store's last cursor and the commit at it. Each writer has its own key and a
   read takes the highest writer's, so a head never goes backwards: two
   processes in one checkout share and continue one lineage, and the first,
@@ -1542,6 +1543,59 @@ probe and the closing sync.
 - A failed sync rejects only the requests it covered. A sync that publishes no
   head, from the bare-sync fallback or with no sidecar held (released for a
   replacement, or closed), confirms nothing.
+
+**Pacing the head** (swamp-club#4522). A lineage head is one object per
+writer fence, and GCS refuses (HTTP 429) more than about one mutation a second
+of one object. Back-to-back syncs rewrote it at whatever rate they finished, so
+a team committing faster than once a second had member writes fail.
+`HeadPublishPacer` (`src/domain/datastore_v3/head_publish_pacer.ts`) paces
+the head writes of a bucket datastore, but only once the bucket has pushed back:
+
+- Until a head write is refused, every head goes out at once. A member's
+  back-to-back commits, such as the steps of one workflow run, never wait. An
+  always-on pacer tripled a two-step workflow's commit bound on the 100 ms lane
+  (K2b p50 5.5 s to 17 s), and run 4 saw no 429 from one member's commits.
+- A head write the bucket refuses with a rate limit (a GCS 429 or an S3
+  `SlowDown`) is retried by the bucket write retry. The refusal reaches the
+  pacer through the sync's write scope (`withBucketWriteScope`), and the pacer
+  then paces that head for 30 s after the last refusal.
+- While pacing, `syncAndPublishNow` waits out the rest of the 1.2 s interval
+  before it reads the high-water mark. The head it then publishes covers every
+  commit that landed during the wait, and the group commit resolves the
+  requests that arrived meanwhile from that head. So a busy team's confirms
+  wait up to 1.2 s for one head instead of each starting its own.
+- The interval is above the limit because GCS measures it when a request
+  arrives: writes sent exactly a second apart can land closer if one is slow.
+- Every caller of `syncAndPublish` is paced (the probe, owner claim and
+  release, the closing sync), and the wait counts against its own deadline. A
+  wait that would leave the sync under 500 ms is skipped, and the publish is
+  tried at once with the retry taking any refusal.
+- Every head write attempt counts, a refused or failed one included.
+- A filesystem replica is not paced.
+
+**Bucket write retry** (swamp-club#4522). Every write through a bucket
+datastore's control plane and chunk storage passes through
+`retryingControlPlane` / `retryingStorage`
+(`src/infrastructure/datastore_v3/bucket_write_retry.ts`). They are applied
+where `bindV3BucketDatastore` builds them, so the lineage registry, writer
+lease, lease records, quarantine and serve stores all inherit them.
+
+- They retry 429 and 503 with jittered backoff for up to 5 s, which is under
+  the writer lease heartbeat interval. Inside a sync, they stop at the
+  confirm's deadline instead (`withBucketWriteDeadline`).
+- Each retry is logged at info with a code (`bucket_write_rate_limited` or
+  `bucket_write_unavailable`), the object and the attempt.
+- A write that still fails is logged as a warning and throws the provider's
+  error unchanged, so the member sees the same coded error as before.
+- A `putIfAbsent` answered with a 503 may have landed. Its later false, or its
+  final failure, reads the key back and counts these exact bytes as the
+  caller's own create, as the GCS extension's own retry does. Without that, a
+  writer lease whose create landed would strand its fence until the TTL.
+- Reads are not retried.
+- S3 takes the same path: its throttle is a 503 `SlowDown`.
+- Chunk touch also rewrites one object (the GCS extension rewrites the chunk
+  onto itself). It is left as it is, because touch is also the presence
+  check: the retry covers its refusals.
 
 **Failure** follows the CLI:
 
@@ -2151,6 +2205,15 @@ macOS.
   sidecar has stopped, or before the sidecar has opened it, the next sidecar
   uploads a full snapshot. Sync, close the stores, then stop the sidecar.
 - **GCS `apiEndpoint`** has no Litestream equivalent.
+- **Per-object mutation limits** (swamp-club#4522). GCS allows about one
+  mutation a second per object; S3 throttles with a 503 `SlowDown`.
+  - Any object swamp rewrites at commit rate fails a busy team's writes. The
+    lineage head is paced, and every bucket write retries 429 and 503.
+  - The in-memory test bucket refuses a second write to one object inside a
+    second when its `mutationRateLimit` is set
+    (`packages/testing/in_memory_remote.ts`), so the next such object fails in
+    a test rather than on a real bucket.
+  - Litestream's own uploads use unique keys and are outside swamp's reach.
 
 ## Changes to the Phase 4, 5 and 7 plans
 

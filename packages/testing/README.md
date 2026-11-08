@@ -300,6 +300,20 @@ chunk storage shared by every handle. Backdate a chunk with
 `setChunkLastModified(ns, sha256, date)`. Chunks are kept apart from files and
 the control plane, are not logged as ops, and ignore `offline` and `failNext`.
 
+With `mutationRateLimit: { intervalMs, provider?, now? }`, a write to an object
+written less than `intervalMs` before is refused. This applies to control-plane
+`put`, `putIfAbsent` (when it would create) and `delete`, and to chunk `put` and
+`touch`. GCS refuses more than about one write a second per object, so a
+mutation rate limit shows an object rewritten that often.
+
+- The refusal is an `InMemoryRateLimitError` shaped like the extensions' errors:
+  by default GCS's HTTP 429 `rateLimitExceeded` (`name` `GcsOperationError`),
+  and with `provider: "s3"` an HTTP 503 `SlowDown` (`S3OperationError`). Both
+  carry `httpStatusCode` and `code`.
+- A refused write changes nothing. A `touch` of several chunks keeps the touches
+  made before the refused chunk, as a bucket's per-object writes do.
+- `mutations()` lists every write attempted, as `{ key, at, refused }`.
+
 Not modelled: namespace prefixes, lazy hydration, `previewPush`, Windows
 drive-letter joins, the gap between `preparePush` deleting objects and
 `commitPush` publishing the index, and the extensions' cached or fallback index

@@ -29,6 +29,7 @@ import {
 import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
 import { isAtomicControlPlaneStore } from "../persistence/control_plane_signal_wait_store.ts";
 import { datastoreWriterLeaseStore } from "./datastore_writer_lease_store.ts";
+import { retryingControlPlane } from "./bucket_write_retry.ts";
 
 const TTL = 30_000;
 const START = Date.parse("2026-10-13T12:00:00.000Z");
@@ -107,6 +108,15 @@ const STORES: [string, OpenStore][] = [
     const store = datastoreWriterLeaseStore({
       datastoreWideLease: true,
       datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore!(),
+    }, "@test/remote");
+    return Promise.resolve({ store, close: () => Promise.resolve() });
+  }],
+  ["datastore-wide store behind the bucket write retry", () => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    const store = datastoreWriterLeaseStore({
+      datastoreWideLease: true,
+      datastoreControlPlaneStore: () =>
+        retryingControlPlane(remote.datastoreControlPlaneStore!()),
     }, "@test/remote");
     return Promise.resolve({ store, close: () => Promise.resolve() });
   }],
@@ -429,3 +439,43 @@ for (const [storeName, open] of STORES) {
     });
   }
 }
+
+Deno.test("WriterLease behind the bucket write retry: a fence create that landed but answered 503 is held, not left stranded (swamp-club#4522)", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  const inner = remote.datastoreControlPlaneStore!();
+  let refused = false;
+  const store = retryingControlPlane({
+    get: inner.get.bind(inner),
+    list: inner.list.bind(inner),
+    put: inner.put.bind(inner),
+    delete: inner.delete.bind(inner),
+    async putIfAbsent(key, data) {
+      const created = await inner.putIfAbsent(key, data);
+      if (!refused && key.startsWith("writer/")) {
+        refused = true;
+        throw Object.assign(
+          new Error("GCS putObject failed HTTP 503 backendError"),
+          { httpStatusCode: 503 },
+        );
+      }
+      return created;
+    },
+  }, { sleep: () => Promise.resolve() });
+  const clock = new Clock();
+  const { writer } = writers(
+    datastoreWriterLeaseStore({
+      datastoreWideLease: true,
+      datastoreControlPlaneStore: () => store,
+    }, "@test/remote"),
+    clock,
+  );
+  const hold = await writer().lease.acquire({ maxWaitMs: 0 });
+  assertEquals(refused, true);
+  assertEquals(hold.fence, 1);
+  assertEquals(await hold.renew(), "held");
+  await assertRejects(
+    () => writer().lease.acquire({ maxWaitMs: 0 }),
+    WriterLeaseBusyError,
+  );
+  await hold.release();
+});

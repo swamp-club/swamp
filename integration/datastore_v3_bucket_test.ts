@@ -28,8 +28,10 @@ import { dirname, join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   createInMemoryRemote,
+  type InMemoryMutationRateLimit,
   type InMemoryRemote,
 } from "../packages/testing/in_memory_remote.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withSpan } from "../src/infrastructure/tracing/tracer.ts";
 import {
@@ -94,6 +96,7 @@ import {
 } from "../src/infrastructure/datastore_v3/v3_datastore_binding.ts";
 import {
   closeV3Datastores,
+  confirmV3Replicated,
   holdV3Writer,
   v3DatastoreConfigOf,
   v3DatastoreFor,
@@ -156,6 +159,7 @@ function createBucket(
     readonly replicaPaths?: boolean;
     readonly namespaces?: () => string[];
     readonly replicaTarget?: V3ReplicaTarget;
+    readonly mutationRateLimit?: InMemoryMutationRateLimit;
   } = {},
 ): Bucket & { dispose(): void } {
   const remote = createInMemoryRemote({
@@ -164,6 +168,9 @@ function createBucket(
     replicaTarget: options.replicaTarget ??
       { type: "s3", bucket: "team-bucket", prefix: "" },
     replicaPaths: options.replicaPaths ?? true,
+    ...(options.mutationRateLimit !== undefined
+      ? { mutationRateLimit: options.mutationRateLimit }
+      : {}),
   });
   const type = registerTestDatastoreType(remote, {
     datastoreWideLease: true,
@@ -1291,6 +1298,163 @@ Deno.test({
         );
       });
     });
+  },
+});
+
+const HEAD_KEY = /^_control\/lineage\/\d{12}\/head-\d{12}\.json$/;
+
+// setup and teardown writes land hours apart, so only enforced writes are limited
+function phasedClock() {
+  let phase: "setup" | "enforce" | "after" = "setup";
+  let past = -1e15;
+  let future = 1e15;
+  return {
+    enforce: () => phase = "enforce",
+    stop: () => phase = "after",
+    now: () =>
+      phase === "enforce"
+        ? Date.now()
+        : phase === "setup"
+        ? (past += 7_200_000)
+        : (future += 7_200_000),
+  };
+}
+
+async function sustainedWrites(
+  provider: "gcs" | "s3",
+  durationMs: number,
+): Promise<void> {
+  const clock = phasedClock();
+  await withRoot(async (root, bucket) => {
+    const repoDir = join(root, "repo");
+    await initRepo(repoDir);
+    assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+    const follower = join(root, "follower");
+    await cloneRepo(repoDir, follower);
+    await withSidecar(root, async () => {
+      await writeIn(repoDir, 1);
+      await requireInitializedRepo({ repoDir, outputMode: "json" });
+      const location = await v3DatastoreConfigOf(
+        repoDir,
+        (await resolveDatastoreForRepo(repoDir)).datastoreConfig,
+      );
+      await holdV3Writer(location, repoDir, { retakeLost: true });
+      clock.enforce();
+      const confirmed: number[] = [];
+      const failed: string[] = [];
+      const until = Date.now() + durationMs;
+      await Promise.all([0, 1, 2].map(async () => {
+        while (Date.now() < until) {
+          await commitThrough(repoDir, location, 1);
+          try {
+            await confirmV3Replicated(location.path);
+            confirmed.push(1);
+          } catch (error) {
+            failed.push(String(error));
+          }
+        }
+      }));
+      assertEquals(failed, []);
+      assert(confirmed.length > 3, `only ${confirmed.length} confirms`);
+      await closeV3Datastores();
+      const heads = bucket.remote.mutations().filter((m) =>
+        HEAD_KEY.test(m.key)
+      );
+      assert(heads.length > 1, "the head was published more than once");
+      // the refusals that switch pacing on are retried; none follow them
+      const refused = heads.filter((m) => m.refused);
+      const late = refused.filter((m) => m.at - refused[0].at > 3_000);
+      assertEquals(late, [], `${refused.length} refused head writes`);
+      clock.stop();
+      assertEquals(await restoredCommits(follower), 1 + confirmed.length);
+    });
+  }, { mutationRateLimit: { intervalMs: 1_000, provider, now: clock.now } });
+}
+
+const SUSTAINED_WRITE_MS = Number(
+  Deno.env.get("SWAMP_TEST_SUSTAINED_WRITE_MS") ?? 6_000,
+);
+
+Deno.test({
+  name:
+    "v3 bucket: sustained concurrent writes stay inside GCS's per-object mutation rate, and every confirm succeeds (swamp-club#4522)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await sustainedWrites("gcs", SUSTAINED_WRITE_MS);
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: sustained concurrent writes stay inside S3's per-object request rate, and every confirm succeeds (swamp-club#4522)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await sustainedWrites("s3", SUSTAINED_WRITE_MS);
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: a head the bucket keeps refusing fails the confirm with the replication error it always gave, and the refusals are logged (swamp-club#4522)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    const clock = phasedClock();
+    const captured: LogRecord[] = [];
+    await withRoot(async (root, bucket) => {
+      const repoDir = join(root, "repo");
+      await initRepo(repoDir);
+      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+      await withSidecar(root, async () => {
+        await writeIn(repoDir, 1);
+        await requireInitializedRepo({ repoDir, outputMode: "json" });
+        const location = await v3DatastoreConfigOf(
+          repoDir,
+          (await resolveDatastoreForRepo(repoDir)).datastoreConfig,
+        );
+        await holdV3Writer(location, repoDir, { retakeLost: true });
+        clock.enforce();
+        await commitThrough(repoDir, location, 1);
+        await confirmV3Replicated(location.path);
+        await configure({
+          sinks: { capture: (record: LogRecord) => captured.push(record) },
+          loggers: [
+            {
+              category: ["datastore", "v3", "bucket"],
+              lowestLevel: "info",
+              sinks: ["capture"],
+            },
+            { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+          ],
+          reset: true,
+        });
+        try {
+          await commitThrough(repoDir, location, 1);
+          const error = await assertRejects(
+            () => confirmV3Replicated(location.path),
+            V3ReplicationError,
+          );
+          assertStringIncludes(
+            error.message,
+            "the replicated state could not be published",
+          );
+          assertStringIncludes(error.message, "HTTP 429 rateLimitExceeded");
+        } finally {
+          await reset();
+          await initializeLogging({});
+        }
+        clock.stop();
+      });
+    }, { mutationRateLimit: { intervalMs: 3_600_000, now: clock.now } });
+    const lines = captured.map((r) => [
+      r.level,
+      r.message.map((p) => String(p)).join(""),
+    ]);
+    const retries = lines.filter(([level]) => level === "info");
+    const failures = lines.filter(([level]) => level === "warning");
+    assert(retries.length > 0, "no retry was logged");
+    assertEquals(failures.length, 1);
+    assertStringIncludes(failures[0][1], "bucket_write_rate_limited");
+    assertStringIncludes(failures[0][1], "head-");
   },
 });
 

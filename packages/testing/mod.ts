@@ -227,6 +227,7 @@ export {
   EXTENSION_2026_10_01_SEMANTICS,
   EXTENSION_2026_10_20_SEMANTICS,
   EXTENSION_SEMANTICS,
+  InMemoryRateLimitError,
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 
@@ -234,6 +235,8 @@ export type {
   ConnectOptions,
   FailNextOptions,
   InMemoryControlPlaneRead,
+  InMemoryMutationRateLimit,
+  InMemoryMutationRecord,
   InMemoryPushManifest,
   InMemoryRemote,
   InMemoryRemoteFailure,
