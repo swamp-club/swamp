@@ -673,6 +673,7 @@ export class SqliteReadModel implements ReadModel {
 
   async #catchUpFeedRun(signal: AbortSignal): Promise<CatchUpResult> {
     let applied = 0;
+    let loadedBase: number | undefined;
     for (;;) {
       signal.throwIfAborted();
       let page;
@@ -693,7 +694,12 @@ export class SqliteReadModel implements ReadModel {
         this.#net = undefined;
         const net = this.#netBase && this.#state.cursor() === 0;
         this.#netBase = false;
+        if (loadedBase !== undefined) {
+          logger
+            .info`The commit log was compacted past the base this catch-up just loaded (position ${loadedBase}, now ${error.point}); loading the newer base, applying only what changed`;
+        }
         await this.#loadBase(signal, net);
+        loadedBase = this.#state.cursor();
         continue;
       }
       applied += await this.#applyPage(page, true, signal);
@@ -2041,6 +2047,8 @@ export class SqliteReadModel implements ReadModel {
           this.#pageSize,
         );
         if (point !== undefined && page.point !== point) {
+          logger
+            .info`The commit log was compacted while its base was staged (position ${point}, now ${page.point}); staging the newer base`;
           staged = false;
           break;
         }

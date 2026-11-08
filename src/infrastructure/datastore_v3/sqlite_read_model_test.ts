@@ -62,7 +62,7 @@ import {
   type SqliteReadModelOptions,
 } from "./sqlite_read_model.ts";
 import type { SpellingFolding } from "./spelling_folding.ts";
-import { catalogRow } from "./v3_catalog.ts";
+import { catalogRow, V3Catalog } from "./v3_catalog.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 
 interface Env {
@@ -430,6 +430,100 @@ Deno.test("SqliteReadModel: a catch-up waiting for another command's read-model 
     } finally {
       held.close();
       await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: a base overtaken by a compaction just after it loaded reapplies only the names that changed, and says so (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    for (let i = 1; i <= 5; i++) {
+      await env.append(i, "", [
+        await savePut(`r${i}`, 1),
+        versionOp(`r${i}`, 1),
+      ]);
+    }
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    let compactedAgain = false;
+    const store = new Proxy(env.store, {
+      get(target, property) {
+        if (property === "changesSince") {
+          return async (cursor: number, limit: number) => {
+            if (!compactedAgain && cursor > 0) {
+              compactedAgain = true;
+              await target.append(
+                modelCommit(6, [await savePut("r6", 1), versionOp("r6", 1)]),
+              );
+              await target.compactHistory(Number.MAX_SAFE_INTEGER);
+            }
+            return await target.changesSince(cursor, limit);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const applied = new Map<string, number>();
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    const catalog = new Proxy(inner, {
+      get(target, property) {
+        if (property === "apply") {
+          return (
+            namespace: string,
+            partition: unknown,
+            actions: readonly { name?: string }[],
+          ) => {
+            for (const name of new Set(actions.map((a) => a.name))) {
+              if (name !== undefined) {
+                applied.set(name, (applied.get(name) ?? 0) + 1);
+              }
+            }
+            return (target.apply as (...args: unknown[]) => void)(
+              namespace,
+              partition,
+              actions,
+            );
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const readModel = env.open({
+      commitStore: store,
+      catalog,
+      netReplay: false,
+    });
+    const messages: string[] = [];
+    await configure({
+      sinks: {
+        capture: (record: LogRecord) =>
+          messages.push(record.message.map(String).join("")),
+      },
+      loggers: [
+        {
+          category: ["swamp", "datastore", "read-model"],
+          lowestLevel: "info",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      await readModel.catchUp(signal());
+      assert(compactedAgain, "the compaction overtook the load");
+      assertEquals(applied.get("r1"), 1, "an unchanged name is applied once");
+      assertEquals(applied.get("r6"), 1);
+      assertEquals(await readOrAbsent(env.contentPath("", "r6", 1)), "r6@1");
+      assert(
+        messages.some((m) => m.includes("compacted past the base")),
+        messages.join("\n"),
+      );
+    } finally {
+      await readModel.close();
+      await reset();
     }
   });
 });
