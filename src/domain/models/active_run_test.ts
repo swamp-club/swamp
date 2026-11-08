@@ -348,3 +348,24 @@ Deno.test("ActiveRun.createWorkflowRun: carries no definitionId", () => {
   assertEquals(run.definitionId, null);
   assertEquals(run.toData().definitionId, null);
 });
+
+Deno.test("ActiveRun.sharesProcessHost: matches only a recorded equal host identity", () => {
+  const data = {
+    id: "run-1",
+    runKind: "workflow" as const,
+    modelType: null,
+    methodName: null,
+    workflowName: "wf",
+    pid: 1,
+    hostname: "host-a",
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    status: "running" as const,
+  };
+  const stamped = ActiveRun.fromData({ ...data, hostIdentity: "host-a#ns:1" });
+
+  assertEquals(stamped.sharesProcessHost("host-a#ns:1"), true);
+  assertEquals(stamped.sharesProcessHost("host-a#ns:2"), false);
+  assertEquals(ActiveRun.fromData(data).sharesProcessHost("host-a"), false);
+  assertEquals(stamped.toData().hostIdentity, undefined);
+});

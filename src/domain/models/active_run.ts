@@ -54,6 +54,8 @@ export interface ActiveRunData {
   readonly settled?: boolean;
   /** read from the tracker only; never written by toData */
   readonly cancelReason?: string | null;
+  /** read from the tracker only; stamped from the process that registers the row */
+  readonly hostIdentity?: string | null;
 }
 
 export class ActiveRun {
@@ -73,6 +75,7 @@ export class ActiveRun {
   readonly instanceId: string | undefined;
   readonly settled: boolean;
   readonly cancelReason: string | null;
+  readonly hostIdentity: string | null;
 
   private constructor(data: ActiveRunData) {
     this.id = data.id;
@@ -90,6 +93,7 @@ export class ActiveRun {
     this.instanceId = data.instanceId;
     this.settled = data.settled ?? false;
     this.cancelReason = data.cancelReason ?? null;
+    this.hostIdentity = data.hostIdentity ?? null;
   }
 
   get status(): ActiveRunStatus {
@@ -117,6 +121,14 @@ export class ActiveRun {
     return instanceId && this.instanceId
       ? this.instanceId === instanceId
       : this.hostname === hostname;
+  }
+
+  /**
+   * Whether this row's owner ran in the given pid namespace on this host, so
+   * its pid can be checked here whichever serve instance owned it.
+   */
+  sharesProcessHost(hostIdentity: string): boolean {
+    return this.hostIdentity !== null && this.hostIdentity === hostIdentity;
   }
 
   static createModelMethodRun(opts: {
