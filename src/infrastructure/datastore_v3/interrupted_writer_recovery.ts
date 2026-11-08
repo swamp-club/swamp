@@ -343,6 +343,7 @@ async function recover(
     // bound what the writer touched
     removed = await handle.recoverInterruptedWriter(since, signal, {
       targeted: file.kind === "marker",
+      entry: "interrupted_writer",
     });
     await restoreQueuedStepStarts(handle, repoDir);
   } finally {

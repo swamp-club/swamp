@@ -184,6 +184,7 @@ import {
 import {
   NOT_RELEASED,
   READ_MODEL_STATE_FILE,
+  type RecoveryEntry,
   SqliteReadModel,
 } from "./sqlite_read_model.ts";
 import { ReadModelState } from "./read_model_state.ts";
@@ -583,6 +584,8 @@ export interface V3Datastore {
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   readonly offlineFlushPort?: OfflineFlushPort;
   readonly serveCopyId?: string;
+  /** the principal serve last said this checkout's token acts as */
+  readonly servePrincipal?: string;
   /**
    * nothing while the read model is complete; otherwise waits up to lockWaitMs
    * for the catch-up in progress, then catches up itself if still incomplete,
@@ -603,7 +606,10 @@ export interface V3Datastore {
   recoverInterruptedWriter(
     since: number,
     signal?: AbortSignal,
-    options?: { readonly targeted?: boolean },
+    options?: {
+      readonly targeted?: boolean;
+      readonly entry?: RecoveryEntry;
+    },
   ): Promise<string[]>;
   droppedWork():
     | { readonly since: number; readonly openUnits: number }
@@ -1284,6 +1290,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ...(serveState !== undefined
       ? {
         serveCopyId: serveState.copyId(),
+        ...(serveState.checkedPrincipal() !== undefined
+          ? { servePrincipal: serveState.checkedPrincipal() }
+          : {}),
         serveFeedCursor: () => serveState.feedCursor(),
         sentToServe: (txnId: string) => forwarded.has(txnId),
       }
@@ -1352,6 +1361,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         admits,
         signal: catchUpSignal(signal),
         targeted: recoverOptions?.targeted === true,
+        ...(recoverOptions?.entry !== undefined
+          ? { entry: recoverOptions.entry }
+          : {}),
       });
     },
     droppedWork() {
@@ -1370,6 +1382,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         // runs at teardown, after a stop has fired; its dropped directories
         // live only in this process, so it must finish
         signal: signal ?? lifetime.signal,
+        entry: "dropped_work",
         droppedDirs: [...units.droppedDirs.get(namespace) ?? []],
       });
       units.recovering = recovery;

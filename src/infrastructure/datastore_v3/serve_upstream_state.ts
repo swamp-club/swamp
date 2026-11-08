@@ -469,6 +469,23 @@ export class ServeUpstreamState {
     return this.caller()!;
   }
 
+  /**
+   * the copy keeps its records for a new token of the same principal; a reset
+   * under way is left to finish
+   */
+  restampCaller(fingerprint: string): void {
+    this.#assertOpen();
+    this.#db.prepare(
+      "UPDATE caller SET fingerprint = ? WHERE id = 1 AND resetting = 0",
+    ).run(fingerprint);
+  }
+
+  /** the principal serve last said this checkout's token acts as */
+  checkedPrincipal(): string | undefined {
+    const mode = this.initiator();
+    return mode?.kind === "checked" ? mode.principal : undefined;
+  }
+
   access(): ServeCopyAccess {
     this.#assertOpen();
     const row = this.#db.prepare(

@@ -69,6 +69,8 @@ import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
 
 export const TOKENS: Record<string, string> = {
   "alice-token": "user:caller",
+  // a rotated token of the same principal
+  "alice-rotated-token": "user:caller",
   "bob-token": "user:bob",
   // neither an admin nor any test change's author
   "carol-token": "user:carol",

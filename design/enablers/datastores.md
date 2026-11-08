@@ -7294,7 +7294,12 @@ the root, whatever the datastore's type (`setV3BucketLockRoot`). It holds:
 each caller may read, so a copy is one caller's view. `serve_upstream.db`
 records a fingerprint of the token the copy was built with (its SHA-256, never
 the token). Binding with another token resets the copy before anything
-catches up from it (`resetCopyForCaller`), under the root's writer lease,
+catches up from it (`resetCopyForCaller`), unless serve says the new token
+acts as the principal the copy last heard from serve (swamp-club#4512): one
+datastore request with the new token reads serve's principal header, even
+on a refused page, and a match restamps the fingerprint and keeps the copy;
+no principal cached, no header, or no answer resets as before. The reset
+runs under the root's writer lease,
 which every writer of the checkout holds for its whole command; a read-only
 command takes it too, waiting up to the lock timeout and otherwise failing as
 writer-busy:
@@ -7423,8 +7428,11 @@ caught up from another, a projection shows records the new view does not
 hold, and its cursor is the other log's, so the new log's commits may never
 apply. So the checkout records the view its projection was built from in
 `checkout_view.json` in its read-model state directory: a serve root, the
-copy's id and the token fingerprint, or the solo datastore's path and
-namespace. The copy's id is random, made with the copy's `serve_upstream.db`
+copy's id, the token fingerprint and, once serve has named it, the
+principal; or the solo datastore's path and namespace. Two serve views with
+a principal each compare principals, so a rotated token of the same
+principal is the same view; otherwise they compare fingerprints. A current
+view recorded without a principal is rewritten with it. The copy's id is random, made with the copy's `serve_upstream.db`
 (swamp-club#4049), so a copy moved aside and started afresh at the same root
 is another view; every reset takes a new one (swamp-club#4089), so a reset for
 a change of access, which keeps the token, is another view too. A view
@@ -7439,7 +7447,10 @@ view differs or a rebuild did not finish (`alignCheckoutView`):
    datastore's outbox is landed by any writer of that datastore, so it does
    not hold the switch.
 2. The record is marked rebuilding.
-3. `recoverInterruptedWriter(0)` on the new view's handle clears the catalog,
+3. `recoverInterruptedWriter(0)` on the new view's handle (its recover span
+   says `entry: view_change`, as the others say `rebuilt`,
+   `interrupted_writer` or `dropped_work`, with `path` and `boot_named`)
+   clears the catalog,
    resets the read model's state, replays the new log and removes every
    projected file no commit owns; the run indexes are removed.
 4. The new view is recorded.

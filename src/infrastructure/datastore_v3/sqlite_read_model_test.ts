@@ -845,6 +845,59 @@ Deno.test("SqliteReadModel.recover: a recovery whose signal is already aborted c
   });
 });
 
+Deno.test("SqliteReadModel.recover: its span names what asked for it, the path it took and whether the boot was named (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const cases = [
+      {
+        boot: "boot-1",
+        entry: "interrupted_writer",
+        targeted: true,
+        path: "targeted",
+      },
+      {
+        boot: undefined,
+        entry: "view_change",
+        targeted: false,
+        path: "full",
+      },
+    ] as const;
+    for (const c of cases) {
+      const readModel = env.open({
+        clock,
+        pageSize: 5,
+        bootIdentity: () => Promise.resolve(c.boot),
+      });
+      try {
+        await withCapturedSpans(async (spans) => {
+          await readModel.recover("", {
+            since,
+            admits: () => true,
+            signal: signal(),
+            targeted: c.targeted,
+            entry: c.entry,
+          });
+          const span = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
+          assertEquals(
+            span.attributes["swamp.datastore.v3.readmodel.recover.entry"],
+            c.entry,
+          );
+          assertEquals(
+            span.attributes["swamp.datastore.v3.readmodel.recover.path"],
+            c.path,
+          );
+          assertEquals(
+            span.attributes["swamp.datastore.v3.readmodel.boot_named"],
+            c.boot !== undefined,
+          );
+        });
+      } finally {
+        await readModel.close();
+      }
+    }
+  });
+});
+
 Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories leave out are never written or catalogued (swamp-club#3691)", async () => {
   await withEnv(async (env) => {
     await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);

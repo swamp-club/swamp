@@ -601,7 +601,9 @@ async function ensureV3CopyCurrentNow(
           : await tryAcquireV3WriterLock(config.path, { fenceStore: rebuilt });
         if (mode === "write" || release !== undefined) {
           try {
-            await rebuilt.recoverInterruptedWriter(0);
+            await rebuilt.recoverInterruptedWriter(0, undefined, {
+              entry: "rebuilt",
+            });
           } catch (error) {
             if (release !== undefined) {
               await releaseAfterFailure(release, error);
@@ -1427,7 +1429,12 @@ export async function v3RepositoryFactoryConfig(
   await alignCheckoutView(
     repoDir,
     handle,
-    checkoutViewOf(config.path, config.namespace ?? "", handle.serveCopyId),
+    checkoutViewOf(
+      config.path,
+      config.namespace ?? "",
+      handle.serveCopyId,
+      handle.servePrincipal,
+    ),
     { holdsWriterLock: writer },
   );
   // in a checkout another process writes its files are already newest, so

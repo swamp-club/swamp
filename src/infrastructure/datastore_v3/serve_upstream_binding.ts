@@ -38,7 +38,10 @@ import {
   serveCallerFingerprint,
   ServeCopyHoldsUnlandedCommitsError,
 } from "./checkout_view.ts";
-import { serveDatastoreClientFor } from "./serve_datastore_client.ts";
+import {
+  serveDatastoreClientFor,
+  serveRequestTimeoutMs,
+} from "./serve_datastore_client.ts";
 import {
   registerServeUpstream,
   serveUpstreamAt,
@@ -113,7 +116,7 @@ export async function bindV3ServeUpstream(
   setV3BucketLockRoot(config, root);
   // Before any catch-up or read: the copy must be this caller's view of
   // serve. The projection follows when the context opens.
-  await resetCopyForCaller(repoDir, root, target);
+  await resetCopyForCaller(repoDir, root, target, namespace);
   await renewCheckoutLeases(root);
   return {
     path: root,
@@ -208,6 +211,7 @@ async function resetCopyForCaller(
   repoDir: string,
   root: string,
   target: ServeUpstreamTarget,
+  namespace: string,
 ): Promise<void> {
   const fingerprint = serveCallerFingerprint(target.token);
   const statePath = join(root, SERVE_UPSTREAM_STATE_FILE);
@@ -218,6 +222,10 @@ async function resetCopyForCaller(
     Date.now(),
   );
   if (due === "current") return;
+  // a rotated token of the principal the copy was built for reads what it
+  // read: only serve's answer for the new token counts, never the old cache
+  const samePrincipal = due === "caller" &&
+    await tokenActsAsCachedPrincipal(statePath, target, namespace);
   let release: () => Promise<void>;
   try {
     // A copy built for another caller is never read: wait for the lease.
@@ -239,6 +247,15 @@ async function resetCopyForCaller(
       // Looked at again under the lease: another process may have reset
       // the copy for this caller meanwhile.
       const caller = state.caller();
+      if (
+        samePrincipal && caller !== undefined && !caller.resetting &&
+        caller.fingerprint !== fingerprint
+      ) {
+        state.restampCaller(fingerprint);
+        logger
+          .debug`The serve token changed but acts as the same principal, so this checkout's copy is kept`;
+        return;
+      }
       let accessResetAt: number | undefined;
       if (
         caller !== undefined && !caller.resetting &&
@@ -280,6 +297,42 @@ async function resetCopyForCaller(
   } finally {
     await release();
   }
+}
+
+/** false whenever serve cannot be asked, so the copy is reset as before */
+async function tokenActsAsCachedPrincipal(
+  statePath: string,
+  target: ServeUpstreamTarget,
+  namespace: string,
+): Promise<boolean> {
+  let cached: string | undefined;
+  let cursor: number;
+  const state = ServeUpstreamState.open(statePath);
+  try {
+    if (state.caller()?.resetting === true) return false;
+    cached = state.checkedPrincipal();
+    cursor = state.feedCursor();
+  } finally {
+    state.close();
+  }
+  if (cached === undefined) return false;
+  const client = serveDatastoreClientFor(target, namespace);
+  try {
+    await client.changes(
+      cursor,
+      AbortSignal.timeout(serveRequestTimeoutMs()),
+      1,
+    );
+  } catch (error) {
+    // a refused page (a compacted cursor) still carries serve's principal
+    // header; only an answer with none rebuilds
+    logger
+      .debug`Serve answered the principal check with an error: ${error}`;
+  } finally {
+    client.close();
+  }
+  const mode = client.initiatorMode();
+  return mode?.kind === "checked" && mode.principal === cached;
 }
 
 /**

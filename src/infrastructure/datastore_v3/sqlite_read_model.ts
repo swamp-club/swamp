@@ -283,6 +283,13 @@ interface ChangeSource {
 
 const NO_COMMIT: ChangeSource = { partition: "", seq: 0 };
 
+/** what asked for a recovery, recorded on its span */
+export type RecoveryEntry =
+  | "view_change"
+  | "rebuilt"
+  | "interrupted_writer"
+  | "dropped_work";
+
 export class SqliteReadModel implements ReadModel {
   readonly #commitStore: CommitStore;
   readonly #chunkStore: ChunkStore;
@@ -444,12 +451,12 @@ export class SqliteReadModel implements ReadModel {
     return this.#stats === undefined ? fn() : this.#stats.timeSync(phase, fn);
   }
 
-  #counted<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  #counted<T>(name: string, fn: (span: Span) => Promise<T>): Promise<T> {
     return withSpan(name, {}, async (span) => {
       const stats = new CatchUpStats();
       this.#stats = stats;
       try {
-        return await fn();
+        return await fn(span);
       } finally {
         this.#stats = undefined;
         span.setAttributes(stats.attributes());
@@ -532,17 +539,31 @@ export class SqliteReadModel implements ReadModel {
        * committed cursor; the full rebuild remains its fallback
        */
       readonly targeted?: boolean;
+      readonly entry?: RecoveryEntry;
     },
   ): Promise<string[]> {
     return this.#exclusive(
       () =>
-        this.#counted("swamp.datastore.v3.readmodel.recover", async () => {
+        this.#counted("swamp.datastore.v3.readmodel.recover", async (span) => {
           // before anything is cleared, so a stopped recovery leaves the state
           options.signal.throwIfAborted();
           const resuming = this.#state.rebuildInProgress();
+          span.setAttributes({
+            "swamp.datastore.v3.readmodel.recover.entry": options.entry ??
+              "unknown",
+            "swamp.datastore.v3.readmodel.boot_named": this.#boot !== undefined,
+            "swamp.datastore.v3.readmodel.recover.path": resuming
+              ? "resumed"
+              : "full",
+          });
           if (options.targeted === true && !resuming && !this.#replaying) {
             const removed = await this.#recoverTargeted(namespace, options);
-            if (removed !== undefined) return removed;
+            if (removed !== undefined) {
+              span.setAttributes({
+                "swamp.datastore.v3.readmodel.recover.path": "targeted",
+              });
+              return removed;
+            }
             logger
               .info`The interrupted command's files cannot be checked one by one; applying every commit again`;
           }
