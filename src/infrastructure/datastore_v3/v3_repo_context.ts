@@ -150,6 +150,7 @@ import {
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { withSpan } from "../tracing/tracer.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
@@ -1118,6 +1119,8 @@ async function recoverAndMark(
     // cut off from the storage, the recovery is retried by the next command;
     // the hold gives the failure its code
     if (!(error instanceof UserError) && isNetworkFailure(error)) throw error;
+    // a stopped command: the marker stays, so the next command resumes
+    if (commandStopSignal().aborted) throw error;
     const markerPath = writerMarkerPath(repoDir);
     const recoveryError = markErrorPaths(
       new UserError(

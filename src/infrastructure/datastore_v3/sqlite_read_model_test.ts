@@ -1140,6 +1140,89 @@ Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resum
   });
 });
 
+Deno.test("SqliteReadModel.recover: a targeted recovery stopped after removing an uncommitted file leaves no catalog row for it (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const ghosts = ["ghost-a", "ghost-b"].map((name) =>
+      env.contentPath("", name, 1)
+    );
+    const store = new CatalogStore(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      for (const [i, path] of ghosts.entries()) {
+        await writeLocal(path, "uncommitted");
+        await touchAfter(path, since);
+        store.upsertNewVersion(
+          catalogRow(
+            "",
+            MODEL_TYPE.normalized,
+            MODEL_ID,
+            DataMetadataSchema.parse(metadata(["ghost-a", "ghost-b"][i], 1)),
+          ),
+        );
+      }
+    } finally {
+      store.close();
+    }
+    const stop = new AbortController();
+    const stopping = stop.signal;
+    const check = stopping.throwIfAborted.bind(stopping);
+    stopping.throwIfAborted = () => {
+      if (ghosts.some((path) => !existsSync(path))) {
+        stop.abort(new DOMException("stopped", "AbortError"));
+      }
+      check();
+    };
+    let readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await assertRejects(() =>
+        readModel.recover("", {
+          since,
+          admits: () => true,
+          signal: stopping,
+          targeted: true,
+          entry: "interrupted_writer",
+        })
+      );
+    } finally {
+      await readModel.close();
+    }
+    assert(
+      ghosts.some((path) => existsSync(path)) &&
+        ghosts.some((path) => !existsSync(path)),
+      "stopped between the two removals",
+    );
+    readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await readModel.recover("", {
+        since,
+        admits: () => true,
+        signal: signal(),
+        targeted: true,
+        entry: "interrupted_writer",
+      });
+    } finally {
+      await readModel.close();
+    }
+    const rows = env.catalogRows();
+    assertEquals(rows.length, RECOVERY_COMMITS);
+    assert(
+      !rows.some((row) => String(row[1]).startsWith("ghost")),
+      JSON.stringify(rows.filter((row) => String(row[1]).startsWith("ghost"))),
+    );
+  });
+});
+
+function existsSync(path: string): boolean {
+  try {
+    Deno.lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories leave out are never written or catalogued (swamp-club#3691)", async () => {
   await withEnv(async (env) => {
     await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);

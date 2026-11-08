@@ -689,6 +689,9 @@ export class SqliteReadModel implements ReadModel {
         names.push({ type: row.type, id: row.id, name: row.name });
       }
     }
+    // first: it reads only the state, and a stop after any removal below then
+    // leaves no row for a file the next recovery can no longer find
+    this.#reprojectNames(namespace, names);
     const files = this.#state.expectedFiles(
       owned.map((key) => ({ namespace, record_key: key })),
     );
@@ -699,6 +702,7 @@ export class SqliteReadModel implements ReadModel {
     const batch = new DurableWriteBatch();
     try {
       for (const { key, path } of unowned) {
+        signal.throwIfAborted();
         await this.#removeRecord(
           namespace,
           key,
@@ -713,7 +717,6 @@ export class SqliteReadModel implements ReadModel {
     } finally {
       batch.discard();
     }
-    this.#reprojectNames(namespace, names);
     return removed;
   }
 
