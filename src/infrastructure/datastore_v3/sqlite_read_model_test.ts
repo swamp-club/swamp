@@ -753,7 +753,7 @@ Deno.test("SqliteReadModel.recover: a targeted recovery stopped part way leaves 
     } finally {
       await readModel.close();
     }
-    const { counts, store } = await (async () => {
+    const { counts, store } = (() => {
       const counts = { firstCursor: [] as number[] };
       let open = false;
       const store = new Proxy(env.store, {
