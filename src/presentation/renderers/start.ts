@@ -32,7 +32,13 @@ import { UserError } from "../../domain/errors.ts";
 export interface StartRenderer {
   prepareHandlers(): EventHandlers<StartPrepareEvent>;
   workspaceOpened(path: string, created: boolean): void;
-  pageReady(url: string, opened: boolean, dashboard?: boolean): void;
+  /** proxyUrls: the dashboard page through each --trusted-hosts name */
+  pageReady(
+    url: string,
+    opened: boolean,
+    dashboard?: boolean,
+    proxyUrls?: readonly string[],
+  ): void;
   launchedEnd(displayName: string): void;
   paused(dashboard?: boolean): void;
   /**
@@ -76,12 +82,19 @@ class LogStartRenderer implements StartRenderer {
     };
   }
 
-  pageReady(url: string, opened: boolean, dashboard = false): void {
+  pageReady(
+    url: string,
+    opened: boolean,
+    dashboard = false,
+    proxyUrls: readonly string[] = [],
+  ): void {
     writeOutput("");
     this.urlLine(url, opened, dashboard);
-    writeOutput(
-      dim("This terminal keeps the page running. Press Ctrl-C to stop it."),
-    );
+    if (proxyUrls.length > 0) {
+      writeOutput("Through your proxy (it must serve HTTPS), open:");
+      for (const proxyUrl of proxyUrls) writeOutput(`  ${cyan(proxyUrl)}`);
+    }
+    writeOutput(dim(stopHint(dashboard)));
   }
 
   launchedEnd(displayName: string): void {
@@ -176,6 +189,13 @@ class LogStartRenderer implements StartRenderer {
     writeOutput(pageReadyLine(opened, dashboard, bold));
     writeOutput(`  ${cyan(url)}`);
   }
+}
+
+/** the last line once the page can be opened */
+export function stopHint(dashboard: boolean): string {
+  return dashboard
+    ? "Press Ctrl-C to stop it. Closing this terminal leaves it running."
+    : "This terminal keeps the page running. Press Ctrl-C to stop it.";
 }
 
 export function formatCreated(iso: string): string {

@@ -36,6 +36,8 @@ import type {
 } from "../src/libswamp/start/start.ts";
 import type { HarnessLaunchSpec } from "../src/domain/start/harness.ts";
 import type { WorkspaceHub } from "../src/serve/local/workspace_hub.ts";
+import { TrustedHosts } from "../src/serve/local/trusted_hosts.ts";
+import { UserError } from "../src/domain/errors.ts";
 import { StartSessionFileRepository } from "../src/infrastructure/persistence/start_session_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../src/infrastructure/persistence/workspace_registry_file_repository.ts";
 import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -46,6 +48,7 @@ import {
 import {
   type StartServerEnd,
   type StartServerHandle,
+  type StartServerOptions,
   type StartServerTimeouts,
   startStartServer,
   type StartWorkspaceClaims,
@@ -203,39 +206,44 @@ async function withStartServer(
   timeouts: StartServerTimeouts = LONG,
   hub?: WorkspaceHub,
   startPage?: boolean,
+  serving: Pick<StartServerOptions, "port" | "trustedHosts" | "idleStop"> = {},
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-start-server-" });
-  const dist = join(dir, "dist");
-  const dataDir = join(dir, "data");
-  await Deno.mkdir(join(dist, "assets"), { recursive: true });
-  await Deno.mkdir(dataDir);
-  await Deno.writeTextFile(join(dist, "index.html"), "<html>start</html>");
-  await Deno.writeTextFile(join(dist, "assets", "app.js"), "export {};");
-  const fakes = makeFakes(dataDir);
-  const claims = makeClaims();
-  const opened: Array<{ path: string; created: boolean }> = [];
-  const handle = startStartServer({
-    ctx: createLibSwampContext(),
-    deps: fakes.deps,
-    token: TOKEN,
-    distDir: dist,
-    claims: claims.claims,
-    onWorkspaceOpened: (path, created) => opened.push({ path, created }),
-    timeouts,
-    hub,
-    startPage,
-  });
-  let stopped = false;
-  const shutdown = async () => {
-    if (stopped) return;
-    stopped = true;
-    await handle.shutdown();
-  };
   try {
-    await fn({ handle, fakes, claims, dataDir, dist, opened, shutdown });
+    const dist = join(dir, "dist");
+    const dataDir = join(dir, "data");
+    await Deno.mkdir(join(dist, "assets"), { recursive: true });
+    await Deno.mkdir(dataDir);
+    await Deno.writeTextFile(join(dist, "index.html"), "<html>start</html>");
+    await Deno.writeTextFile(join(dist, "assets", "app.js"), "export {};");
+    const fakes = makeFakes(dataDir);
+    const claims = makeClaims();
+    const opened: Array<{ path: string; created: boolean }> = [];
+    const handle = startStartServer({
+      ctx: createLibSwampContext(),
+      deps: fakes.deps,
+      token: TOKEN,
+      distDir: dist,
+      claims: claims.claims,
+      onWorkspaceOpened: (path, created) => opened.push({ path, created }),
+      timeouts,
+      hub,
+      startPage,
+      ...serving,
+    });
+    let stopped = false;
+    const shutdown = async () => {
+      if (stopped) return;
+      stopped = true;
+      await handle.shutdown();
+    };
+    try {
+      await fn({ handle, fakes, claims, dataDir, dist, opened, shutdown });
+    } finally {
+      fakes.releaseOpen();
+      await shutdown();
+    }
   } finally {
-    fakes.releaseOpen();
-    await shutdown();
     if (Deno.build.os === "windows") {
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
@@ -1759,4 +1767,84 @@ Deno.test("startStartServer: start.folder.pick asks where to create when picking
       await c.close();
     }
   });
+});
+
+Deno.test("startStartServer: with idleStop off, no page open never ends it, while the same idle timeout ends a server with it on", async () => {
+  const idle = { ...LONG, beforeLaunchIdleMs: 1 };
+  await withStartServer(
+    async (off) => {
+      await withStartServer(async (on) => {
+        // Both timers would be due by the time the later one fires.
+        assertEquals(await on.handle.ended, { kind: "paused" });
+        assertEquals(await settlesWithin(off.handle.ended, 0), false);
+      }, idle);
+      const tab = new WebSocket(`ws://127.0.0.1:${off.handle.port}/w/x/`);
+      await new Promise((resolve) => tab.onopen = resolve);
+      tab.close();
+      await new Promise((resolve) => tab.onclose = resolve);
+      assertEquals(await settlesWithin(off.handle.ended, 20), false);
+    },
+    idle,
+    dashboardTabHub(),
+    false,
+    { idleStop: false },
+  );
+});
+
+Deno.test("startStartServer: listens on the port it is given, and a port in use is a UserError naming it", async () => {
+  const taken = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (taken.addr as Deno.NetAddr).port;
+  try {
+    const error = await assertRejects(
+      () =>
+        withStartServer(() => Promise.resolve(), LONG, undefined, false, {
+          port,
+        }),
+      UserError,
+    );
+    assertStringIncludes(error.message, `Port ${port}`);
+  } finally {
+    taken.close();
+  }
+  await withStartServer(
+    async ({ handle }) => {
+      assertEquals(handle.port, port);
+      assertEquals(
+        await rawStatus(port, [
+          "GET /dashboard/w/x/ HTTP/1.1",
+          `Host: 127.0.0.1:${port}`,
+        ]),
+        200,
+      );
+    },
+    LONG,
+    undefined,
+    false,
+    { port },
+  );
+});
+
+Deno.test("startStartServer: serves a trusted Host on any port and in any case, and still answers every other Host with 421", async () => {
+  await withStartServer(
+    async ({ handle }) => {
+      const status = (host: string) =>
+        rawStatus(handle.port, [
+          "GET /dashboard/w/x/ HTTP/1.1",
+          `Host: ${host}`,
+        ]);
+      assertEquals(await status("proxy.example"), 200);
+      assertEquals(await status("PROXY.example:8443"), 200);
+      assertEquals(await status(`127.0.0.1:${handle.port}`), 200);
+      assertEquals(await status("evil.example"), 421);
+      assertEquals(await status("proxy.example."), 421);
+      assertEquals(await status("proxy.example.evil.example"), 421);
+      assertEquals(await status("proxy.example:"), 421);
+    },
+    LONG,
+    undefined,
+    false,
+    {
+      trustedHosts: TrustedHosts.parse("proxy.example"),
+    },
+  );
 });

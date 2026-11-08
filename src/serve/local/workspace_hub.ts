@@ -31,6 +31,7 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
 import { HUB_TOKEN_ENV, HUB_TOKEN_HEADER } from "./hub_token.ts";
+import { TrustedHosts } from "./trusted_hosts.ts";
 import {
   actionCommand,
   actionErrorCode,
@@ -80,6 +81,7 @@ export interface WorkspaceHubDeps {
   listWorkspaces(): Promise<HubWorkspace[]>;
   spawnChild(repoDir: string): Promise<HubChild>;
   switchable?: boolean;
+  trustedHosts?: TrustedHosts;
   idleMs?: number;
   actions?: ActionRunner;
 }
@@ -137,6 +139,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     work.finally(() => pending.delete(work)).catch(() => {});
   };
   const idleMs = deps.idleMs ?? DEFAULT_CHILD_IDLE_MS;
+  const trustedHosts = deps.trustedHosts ?? TrustedHosts.NONE;
   const hubSignal = new AbortController();
   let stopping = false;
 
@@ -499,9 +502,14 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
       if (isUpgrade) {
         // The dashboard has no login, so only this server's own pages may
         // open it: an exact origin, port included, not any localhost page.
-        // The start server has already checked Host is its own authority.
+        // The start server has already checked Host is its own authority
+        // or a trusted one.
         const origin = req.headers.get("origin");
-        if (origin !== null && origin !== `http://${req.headers.get("host")}`) {
+        const host = req.headers.get("host");
+        if (
+          origin !== null && origin !== `http://${host}` &&
+          !trustedHosts.acceptsOrigin(origin, host)
+        ) {
           return new Response("Forbidden origin", { status: 403 });
         }
       }
@@ -770,6 +778,9 @@ export const SWAMP_CLI_ACTIONS: ActionRunner = {
       stderr: "piped",
       env: actionEnv(),
       clearEnv: true,
+      // Its own process group, so a hangup of the dashboard's terminal does
+      // not stop it; the hub's abort still does.
+      detached: true,
       ...(signal ? { signal } : {}),
     }).output();
     const decoder = new TextDecoder();

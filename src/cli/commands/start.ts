@@ -59,6 +59,7 @@ import {
   spawnDashboardChild,
 } from "../../serve/local/workspace_hub.ts";
 import { resolveFixedRepo } from "../../serve/local/fixed_repo.ts";
+import { TrustedHosts } from "../../serve/local/trusted_hosts.ts";
 import {
   DASHBOARD_DIST_DIR,
   dashboardBundleExists,
@@ -127,10 +128,34 @@ function pageUrl(port: number, token: string): string {
  * never sent to the server in the URL; the page keeps it and offers it on
  * every request.
  */
-function dashboardUrl(port: number, token: string, workspace: string): string {
-  return `http://127.0.0.1:${port}/dashboard/w/${
+export function dashboardUrl(
+  origin: string,
+  token: string,
+  workspace: string,
+): string {
+  return `${origin}/dashboard/w/${
     encodeURIComponent(workspace)
   }#token=${token}`;
+}
+
+/**
+ * The POSIX signals the hub handles besides SIGINT, with the exit code each
+ * stops it with; null ignores the signal, so a long-running dashboard
+ * outlives the terminal that started it.
+ */
+export function hubStopSignals(
+  os: typeof Deno.build.os,
+  ignoreHangup: boolean,
+): Array<[Deno.Signal, number | null]> {
+  if (os === "windows") return [];
+  return [["SIGTERM", 143], ["SIGHUP", ignoreHangup ? null : 129]];
+}
+
+/** How `swamp dashboard` serves its page; `swamp start` takes the defaults. */
+export interface DashboardServing {
+  /** 0 takes any free port */
+  readonly port: number;
+  readonly trustedHosts: TrustedHosts;
 }
 
 async function tryOpenBrowser(url: string, enabled: boolean): Promise<boolean> {
@@ -210,6 +235,7 @@ export async function runStart(
   options: AnyOptions,
   commandPath: string[],
   landingRepoDir?: string,
+  serving?: DashboardServing,
 ): Promise<void> {
   const cliCtx = createContext(options as GlobalOptions, commandPath);
   if (cliCtx.outputMode === "json" && options.path !== undefined) {
@@ -266,6 +292,9 @@ export async function runStart(
     // `swamp dashboard` serves no start page, so its token can't change
     // the swamp start workspaces.
     startPage: fixed === null,
+    idleStop: fixed === null,
+    port: serving?.port ?? 0,
+    trustedHosts: serving?.trustedHosts ?? TrustedHosts.NONE,
     hub: createWorkspaceHub({
       token,
       resolveWorkspace: async (name) => {
@@ -285,6 +314,7 @@ export async function runStart(
         }))
           .workspaces.map(({ name, path }) => ({ name, path })),
       switchable: fixed === null,
+      trustedHosts: serving?.trustedHosts ?? TrustedHosts.NONE,
       spawnChild: spawnDashboardChild,
     }),
     claims: createWorkspaceClaims(() => ({ port, token })),
@@ -316,15 +346,6 @@ export async function runStart(
       }
     }
 
-    const url = fixed === null
-      ? pageUrl(server.port, token)
-      : dashboardUrl(server.port, token, fixed.name);
-    renderer.pageReady(
-      url,
-      await tryOpenBrowser(url, openBrowserEnabled),
-      fixed !== null,
-    );
-
     let signalExitCode: number | undefined;
     let onInterrupt!: () => void;
     const interruptedPromise = new Promise<"interrupted">((resolve) => {
@@ -335,24 +356,48 @@ export async function runStart(
       onInterrupt();
     };
     // SIGINT through the shared handler (Windows too); SIGTERM and SIGHUP
-    // here, so each gets its own exit code.
+    // here, so each gets its own exit code or, for SIGHUP, is ignored.
     const shutdownHandle = registerShutdownHandler({
       handler: stopWith(130),
       includePosixSignals: false,
     });
-    const posixSignals: Array<[Deno.Signal, () => void]> =
-      Deno.build.os === "windows"
-        ? []
-        : [["SIGTERM", stopWith(143)], ["SIGHUP", stopWith(129)]];
+    const posixSignals: Array<[Deno.Signal, () => void]> = hubStopSignals(
+      Deno.build.os,
+      fixed !== null,
+    ).map((
+      [signal, code],
+    ) => [signal, code === null ? () => {} : stopWith(code)]);
     for (const [signal, listener] of posixSignals) {
       Deno.addSignalListener(signal, listener);
     }
     try {
+      // Listening before the URL shows: a terminal closed the moment it
+      // appears must not reach a dashboard with no SIGHUP listener yet.
+      const url = fixed === null
+        ? pageUrl(server.port, token)
+        : dashboardUrl(`http://127.0.0.1:${server.port}`, token, fixed.name);
+      renderer.pageReady(
+        url,
+        await tryOpenBrowser(url, openBrowserEnabled),
+        fixed !== null,
+        fixed === null ? [] : (serving?.trustedHosts.entries ?? []).map(
+          (host) => dashboardUrl(`https://${host}`, token, fixed.name),
+        ),
+      );
       const end = await Promise.race([server.ended, interruptedPromise]);
-      if (end === "interrupted" || end.kind === "paused") {
-        renderer.paused(fixed !== null);
-      } else {
-        renderer.launchedEnd(end.displayName);
+      try {
+        if (end === "interrupted" || end.kind === "paused") {
+          renderer.paused(fixed !== null);
+        } else {
+          renderer.launchedEnd(end.displayName);
+        }
+      } catch (error) {
+        // After a hangup the terminal is gone and the line has no reader.
+        if (
+          !(error instanceof Error && "code" in error && error.code === "EIO")
+        ) {
+          throw error;
+        }
       }
     } finally {
       shutdownHandle.dispose();

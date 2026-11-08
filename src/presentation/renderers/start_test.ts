@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { formatCreated, pageReadyLine, taskDetail } from "./start.ts";
+import { stripAnsiCode } from "@std/fmt/colors";
+import {
+  createStartRenderer,
+  formatCreated,
+  pageReadyLine,
+  stopHint,
+  taskDetail,
+} from "./start.ts";
 
 Deno.test("formatCreated: the local date and time a task was created", () => {
   // Built from local fields, so the test holds in any time zone.
@@ -66,5 +73,62 @@ Deno.test("pageReadyLine: swamp start names itself; swamp dashboard names the re
   assertEquals(
     pageReadyLine(false, true),
     "Open this page in your browser to continue:",
+  );
+});
+
+function captureStdout(run: () => void): string[] {
+  const out: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => out.push(stripAnsiCode(msg));
+  try {
+    run();
+  } finally {
+    console.log = originalLog;
+  }
+  return out;
+}
+
+Deno.test("pageReady: proxy URLs come before the stop hint, which stays the last line", () => {
+  const renderer = createStartRenderer("log");
+  const url = "http://127.0.0.1:1/dashboard/w/r#token=t";
+  assertEquals(
+    captureStdout(() =>
+      renderer.pageReady(url, false, true, [
+        "https://a.example/dashboard/w/r#token=t",
+        "https://b.example/dashboard/w/r#token=t",
+      ])
+    ),
+    [
+      "",
+      pageReadyLine(false, true),
+      `  ${url}`,
+      "Through your proxy (it must serve HTTPS), open:",
+      "  https://a.example/dashboard/w/r#token=t",
+      "  https://b.example/dashboard/w/r#token=t",
+      "Press Ctrl-C to stop it. Closing this terminal leaves it running.",
+    ],
+  );
+  assertEquals(captureStdout(() => renderer.pageReady(url, false, true)), [
+    "",
+    pageReadyLine(false, true),
+    `  ${url}`,
+    "Press Ctrl-C to stop it. Closing this terminal leaves it running.",
+  ]);
+  assertEquals(
+    captureStdout(() =>
+      createStartRenderer("json").pageReady(url, false, true, ["https://a/"])
+    ),
+    [],
+  );
+});
+
+Deno.test("stopHint: swamp start says its terminal keeps the page; swamp dashboard says closing it leaves it running", () => {
+  assertEquals(
+    stopHint(false),
+    "This terminal keeps the page running. Press Ctrl-C to stop it.",
+  );
+  assertEquals(
+    stopHint(true),
+    "Press Ctrl-C to stop it. Closing this terminal leaves it running.",
   );
 });

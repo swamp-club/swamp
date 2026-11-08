@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-10-23 @ 268af553
+last-verified: 2026-11-08 @ 4be2fa59
 ---
 
 # Local dashboard
@@ -17,7 +17,9 @@ reached two ways:
   dashboard and only it: no picker, no start-page link, and nothing is added to
   `workspaces.json`. A registered folder keeps its workspace name in the URL,
   anything else uses its folder name. It prints no sign-in line: the auth gate
-  has passed before it runs and its page has no login.
+  has passed before it runs and its page has no login. `--port` fixes the
+  hub's port and `--trusted-hosts` lets a reverse proxy on this machine reach
+  it (see Security); `swamp start` has neither.
 - **`--json` is a deliberate exception** to "every command supports log and
   json": `swamp dashboard --json` is refused (`UserError`, exit 1) because the
   command's only result is a page in a browser. `swamp start --json` keeps its
@@ -120,8 +122,12 @@ the hub.
 ## Lifetime
 
 - The hub is `swamp start`'s server: a dashboard tab counts as an open page, so
-  the server stays up while one is open and follows the start server's usual end
-  conditions once none are.
+  under `swamp start` the server stays up while one is open and follows the
+  start server's usual end conditions once none are. Under `swamp dashboard` it
+  is a long-running server: it never stops itself for want of a tab
+  (`idleStop: false`), and it and its children ignore SIGHUP, so it outlives the
+  terminal or session that started it. SIGINT (130) and SIGTERM (143) still
+  stop it; `swamp start` still stops on SIGHUP with 129 (`hubStopSignals`).
 - A child starts on its workspace's first request. With no dashboard socket and
   no HTTP request (the health stream) open it stops after 10 minutes
   (`DEFAULT_CHILD_IDLE_MS`), unless its `/local/busy` says a run it started is
@@ -135,7 +141,9 @@ the hub.
 - The hub stops before the start server does, ends every stream it forwards
   (the health SSE) and stops any action command still running, so neither a
   tab left open nor a stuck action holds a shutdown up. A detached resume is
-  never waited for.
+  never waited for. Approve, reject and cancel run in their own process group
+  too, so a terminal hangup never reaches them; the hub's abort on shutdown
+  still stops them.
 
 ## Live runs
 
@@ -212,13 +220,26 @@ re-read once.
 
 ## Security
 
-- The hub binds `127.0.0.1` on an ephemeral port and answers any other `Host`
-  with 421 (DNS rebinding).
+- The hub binds `127.0.0.1`, on an ephemeral port unless `--port` names one,
+  and answers any other `Host` with 421 (DNS rebinding). It never binds another
+  address, so only something on this machine can reach it.
+- `swamp dashboard --trusted-hosts a,b:8443` (comma-separated, as `swamp serve`
+  takes it) also serves those Host names, for a reverse proxy on this machine
+  that forwards the client's Host (tailscale serve, caddy); nginx sends its
+  upstream address by default and needs only `--port`. As in serve, an entry's
+  port does not narrow the Host check. `TrustedHosts`
+  (`src/serve/local/trusted_hosts.ts`) refuses an entry that is not exactly
+  host or host:port (a scheme, path, user info or wildcard) at startup, and a
+  Host header that is not exactly host or host:port (an empty port, a trailing
+  dot) is not trusted. The page token is still required on every route, and the
+  printed proxy URLs assume the proxy serves HTTPS; through a plain-http proxy
+  the token crosses the network in the clear.
 - There is no login, but every workspace route needs the hub's one-time token,
   which only the page `swamp start` or `swamp dashboard` opened holds: another
   process on the machine that finds the port gets 401. A dashboard WebSocket
   must also come from the hub's exact origin (`http://<host>`, port included)
-  when it names one.
+  when it names one; for a trusted Host its `https://<host>` origin also
+  counts, since a TLS-terminating proxy serves the page there.
 - The child runs serve's handlers with no auth, so the hub is its gate: only
   the dashboard's reads reach it, and actions run as CLI commands.
 - A child takes requests only with the hub's per-child token (header or
@@ -239,6 +260,7 @@ re-read once.
 | Actions | `src/serve/local/local_actions.ts` |
 | SPA | `packages/dashboard/src/client/workspace_path.ts`, `client/workspace_list.ts`, `components/WorkspaceSwitcher.tsx`, `views/ServeOnlyStates.tsx` |
 | Fixed repo | `src/serve/local/fixed_repo.ts` (`resolveFixedRepo`) |
+| Trusted hosts | `src/serve/local/trusted_hosts.ts` (`TrustedHosts`), on serve's parser in `src/serve/origin.ts` |
 | Tests | `integration/workspace_hub_test.ts`, `integration/local_dashboard_server_test.ts`, `integration/start_server_test.ts` (dashboard tab lifetime), unit tests beside each file |
 
 ## Not yet
