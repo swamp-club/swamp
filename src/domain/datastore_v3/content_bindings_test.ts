@@ -842,9 +842,20 @@ const FAN_OUT_PLAN = {
   }],
 };
 
+const FAN_OUT_SNAPSHOT = {
+  selector: { labels: { role: "web" }, platform: "linux" },
+  workers: [{
+    name: "w-a",
+    labels: { role: "web" },
+    platform: "linux",
+    arch: "x86_64",
+  }],
+};
+
 function fanOutRun(
   steps: StepRunData[],
   plan?: typeof FAN_OUT_PLAN,
+  snapshot?: unknown,
 ): WorkflowRunData {
   return run([], {
     jobs: [{
@@ -852,6 +863,7 @@ function fanOutRun(
       status: "running",
       steps,
       ...(plan ? { fanOutPlan: plan } : {}),
+      ...(snapshot ? { fanOutSnapshot: snapshot } : {}),
     }],
   } as Partial<WorkflowRunData>);
 }
@@ -919,5 +931,82 @@ Deno.test("judgeRunRecord: a fan-out plan whose lanes hold steps of their own is
       fanOutRun([step("apply[w-a]")], withLaneSteps),
     ).refusal ?? "",
     "holds lane steps",
+  );
+});
+
+Deno.test("judgeRunRecord: a fan-out snapshot written with its plan is accepted, and the lanes then progress", () => {
+  const planned = fanOutRun(
+    [step("apply[w-a]")],
+    FAN_OUT_PLAN,
+    FAN_OUT_SNAPSHOT,
+  );
+  assertEquals(judge(fanOutRun([step("apply")]), planned).refusal, undefined);
+  assertEquals(
+    judge(
+      planned,
+      fanOutRun(
+        [step("apply[w-a]", { status: "succeeded" })],
+        FAN_OUT_PLAN,
+        FAN_OUT_SNAPSHOT,
+      ),
+    ).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a recorded fan-out snapshot cannot change its selector or a worker scope, or be dropped", () => {
+  const planned = fanOutRun(
+    [step("apply[w-a]")],
+    FAN_OUT_PLAN,
+    FAN_OUT_SNAPSHOT,
+  );
+  const changed = [
+    { ...FAN_OUT_SNAPSHOT, selector: { labels: { role: "db" } } },
+    {
+      ...FAN_OUT_SNAPSHOT,
+      workers: [{ ...FAN_OUT_SNAPSHOT.workers[0], arch: "arm64" }],
+    },
+    undefined,
+  ];
+  for (const snapshot of changed) {
+    assertStringIncludes(
+      judge(planned, fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN, snapshot))
+        .refusal ?? "",
+      "changes the fan-out snapshot of job 'patch'",
+    );
+  }
+});
+
+Deno.test("judgeRunRecord: a fan-out snapshot added after its plan, or without a plan, is refused", () => {
+  assertStringIncludes(
+    judge(
+      fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN),
+      fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN, FAN_OUT_SNAPSHOT),
+    ).refusal ?? "",
+    "changes the fan-out snapshot of job 'patch'",
+  );
+  assertStringIncludes(
+    judge(
+      fanOutRun([step("apply")]),
+      fanOutRun([step("apply")], undefined, FAN_OUT_SNAPSHOT),
+    ).refusal ?? "",
+    "adds a fan-out snapshot to job 'patch' without a fan-out plan",
+  );
+  assertStringIncludes(
+    judge(undefined, fanOutRun([step("apply")], undefined, FAN_OUT_SNAPSHOT))
+      .refusal ?? "",
+    "adds a fan-out snapshot to job 'patch' without a fan-out plan",
+  );
+});
+
+Deno.test("judgeRunRecord: a plan recorded without a snapshot, saved again unchanged, is accepted", () => {
+  const planned = fanOutRun([step("apply[w-a]")], FAN_OUT_PLAN);
+  assertEquals(judge(planned, planned).refusal, undefined);
+  assertEquals(
+    judge(
+      planned,
+      fanOutRun([step("apply[w-a]", { status: "succeeded" })], FAN_OUT_PLAN),
+    ).refusal,
+    undefined,
   );
 });

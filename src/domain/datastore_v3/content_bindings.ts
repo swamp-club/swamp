@@ -460,8 +460,9 @@ function added<T>(
 }
 
 /**
- * a plan is written once, while its job's steps are all still pending, and
- * never changed or dropped; lane records carry no steps of their own
+ * a plan and its snapshot are written once, together, while the job's steps
+ * are all still pending, and never changed or dropped; lane records carry no
+ * steps of their own
  */
 function fanOutPlanRefusal(
   before: WorkflowRunData | undefined,
@@ -476,7 +477,14 @@ function fanOutPlanRefusal(
       if (!same(prior.fanOutPlan, plan)) {
         return `it changes the fan-out plan of job '${job.jobName}'`;
       }
+      // a plan written without a snapshot keeps having none
+      if (!same(prior.fanOutSnapshot, job.fanOutSnapshot)) {
+        return `it changes the fan-out snapshot of job '${job.jobName}'`;
+      }
       continue;
+    }
+    if (job.fanOutSnapshot !== undefined && plan === undefined) {
+      return `it adds a fan-out snapshot to job '${job.jobName}' without a fan-out plan`;
     }
     if (plan === undefined) continue;
     if (prior === undefined) {

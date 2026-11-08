@@ -211,6 +211,7 @@ const forgeryChoice = fc.record({
     "set-output",
     "report-status",
     "take-over",
+    "forge-snapshot",
   ),
   pick: fc.nat(),
   field: fc.nat(),
@@ -330,6 +331,24 @@ function forge(record: WorkflowRunData, c: ForgeryChoice): WorkflowRunData {
       return edit((s) => ({ ...s, status: c.status }));
     case "take-over":
       return { ...record, instanceId: "some-team-node" };
+    case "forge-snapshot":
+      return {
+        ...record,
+        jobs: record.jobs.map((j) =>
+          j.jobName !== job ? j : {
+            ...j,
+            fanOutSnapshot: {
+              selector: { labels: { role: `forged-${c.field}` } },
+              workers: [{
+                name: "w-forged",
+                labels: {},
+                platform: "linux",
+                arch: "x86_64",
+              }],
+            },
+          }
+        ),
+      };
   }
   throw new Error("unknown forgery");
 }
@@ -362,6 +381,15 @@ function violation(
     !isCanonicalRunLogFile(after.logFile, WORKFLOW, RUN)
   ) {
     return "log file is not the run's own";
+  }
+  for (const job of after.jobs) {
+    const was = before.jobs.find((j) => j.jobName === job.jobName);
+    if (
+      JSON.stringify(was?.fanOutSnapshot) !==
+        JSON.stringify(job.fanOutSnapshot)
+    ) {
+      return `fan-out snapshot of job ${job.jobName} written by a record`;
+    }
   }
   const prior = stepsOf(before);
   const next = stepsOf(after);
@@ -534,7 +562,7 @@ Deno.test("judgeRunRecord (model): no forged record that lands breaks what serve
     "landed:",
     coverage.landed,
   );
-  assert(Object.keys(coverage.forged).length === 14, "a forgery was not tried");
+  assert(Object.keys(coverage.forged).length === 15, "a forgery was not tried");
   assert(coverage.refused > 0 && coverage.landed > 0);
 });
 
