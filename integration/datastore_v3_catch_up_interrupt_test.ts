@@ -41,7 +41,6 @@ await initializeLogging({});
 const PAGE = 10;
 const TOTAL = 30;
 
-/** aborts once the feed is asked for its second page, so exactly one page lands */
 function abortingOnSecondPage(
   store: CommitStore,
   stop: AbortController,

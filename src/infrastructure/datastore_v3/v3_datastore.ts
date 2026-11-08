@@ -946,7 +946,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     serveSink !== undefined && serveCatchUp !== undefined
       ? {
         catchUpPartition: async (ns, partition) => {
-          await serveCatchUp.catchUpPartition(ns, partition, catchUpSignal());
+          await serveCatchUp.catchUpPartition(ns, partition, lifetime.signal);
         },
         partitionState: (ns, partition) =>
           commitStore.partitionState(ns, partition),

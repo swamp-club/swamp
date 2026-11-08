@@ -411,6 +411,29 @@ Deno.test("SqliteReadModel: a catch-up that waits for another command's read-mod
   });
 });
 
+Deno.test("SqliteReadModel: a catch-up waiting for another command's read-model lock stops when its signal aborts (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const stateDir = readModelStateDir(env.repoDir);
+    await Deno.mkdir(stateDir, { recursive: true });
+    const held = await Deno.open(join(stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    await held.lock(true);
+    const readModel = env.open();
+    try {
+      const stop = new AbortController();
+      const waiting = readModel.catchUp(stop.signal);
+      stop.abort(new DOMException("stopped", "AbortError"));
+      await assertRejects(() => waiting, DOMException);
+    } finally {
+      held.close();
+      await readModel.close();
+    }
+  });
+});
+
 Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories leave out are never written or catalogued (swamp-club#3691)", async () => {
   await withEnv(async (env) => {
     await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);

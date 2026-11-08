@@ -1033,7 +1033,15 @@ export class SqliteReadModel implements ReadModel {
           if (!await lock.tryLock(true)) {
             logger
               .info`Waiting for another swamp command to finish updating this checkout's read model`;
-            await lock.lock(true);
+            // polled when there is a signal, since a blocking lock cannot be aborted
+            if (signal === undefined) {
+              await lock.lock(true);
+            } else {
+              while (!await lock.tryLock(true)) {
+                signal.throwIfAborted();
+                await new Promise((done) => setTimeout(done, 50));
+              }
+            }
           }
         } else {
           const until = Date.now() + lockWaitMs;
