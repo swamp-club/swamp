@@ -244,6 +244,8 @@ export interface WebhookEntry {
   workflow: string;
   /** Signature verification scheme, on servers that report it. */
   scheme?: string;
+  /** Where the route is defined, on servers that report it. */
+  source?: "config" | "flag";
 }
 
 /**

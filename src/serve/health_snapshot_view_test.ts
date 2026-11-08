@@ -110,12 +110,14 @@ function snapshot(): HealthSnapshot {
         route: "/hooks/nightly",
         workflow: "nightly",
         scheme: "hmac",
+        source: "config",
         ...IDLE_WEBHOOK,
       },
       {
         route: "/hooks/secret",
         workflow: "secret-flow",
         scheme: "hmac",
+        source: "config",
         ...IDLE_WEBHOOK,
       },
     ],
@@ -264,6 +266,7 @@ Deno.test("healthSnapshotFor: webhook queue data goes with its webhook", async (
     route: "/hooks/nightly",
     workflow: "nightly",
     scheme: "hmac",
+    source: "config",
     active: 3,
     queued: 2,
     oldestQueuedAt: "2026-01-01T00:00:00.000Z",
@@ -302,6 +305,7 @@ Deno.test("healthSnapshotFor: an entry naming a workflow by id is decided on its
       route: "/hooks/by-id",
       workflow: "wf-2",
       scheme: "hmac",
+      source: "config" as const,
       ...IDLE_WEBHOOK,
     }],
   };
@@ -324,6 +328,7 @@ Deno.test("healthSnapshotFor: an entry that cannot be resolved is hidden", async
       route: "/hooks/ghost",
       workflow: "ghost",
       scheme: "hmac",
+      source: "config" as const,
       ...IDLE_WEBHOOK,
     }],
   };

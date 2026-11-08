@@ -286,6 +286,31 @@ export function WebhookDetail(
                     </span>
                   )}
               </dd>
+              {entry.source && (
+                <>
+                  <dt>Defined in</dt>
+                  <dd>
+                    {entry.source === "flag"
+                      ? (
+                        <>
+                          <span className="mono">--webhook</span> flag
+                          <span className="trig-sub">
+                            Fixed until serve restarts.
+                          </span>
+                        </>
+                      )
+                      : (
+                        <>
+                          Serve config
+                          <span className="trig-sub">
+                            Changes apply with{" "}
+                            <span className="mono">swamp serve reload</span>.
+                          </span>
+                        </>
+                      )}
+                  </dd>
+                </>
+              )}
               {sharedWith.length > 0 && (
                 <>
                   <dt>Also started by</dt>

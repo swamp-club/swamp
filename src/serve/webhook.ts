@@ -42,6 +42,7 @@ import {
   type WorkflowRunView,
 } from "../libswamp/workflows/workflow_run_view.ts";
 import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
+import type { WebhookRouteSource } from "./webhook_reload.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import {
   isExtensionWebhookScheme,
@@ -400,6 +401,7 @@ export type WebhookEvent =
     kind: "webhook_queued";
     route: string;
     workflowName: string;
+    runId: string;
   }
   | {
     kind: "webhook_started";
@@ -413,6 +415,8 @@ export type WebhookEvent =
     kind: "webhook_denied";
     route: string;
     workflowName: string;
+    /** the id the sender was told; no run was created under it */
+    runId?: string;
     reason: string;
     sourceIp?: string;
     replayed: boolean;
@@ -433,6 +437,8 @@ export type WebhookEvent =
 export type WebhookEventHandler = (event: WebhookEvent) => void;
 
 export interface WebhookServiceDeps {
+  /** where every route came from; defaults to the serve config */
+  routeSource?: WebhookRouteSource;
   /**
    * false on a follower in team mode, which answers a verified delivery with a
    * retryable 503 so the sender retries to the leader or once one leads.
@@ -520,6 +526,8 @@ export interface WebhookRunRequest {
   readonly route: string;
   readonly sourceIp?: string;
   readonly replayed: boolean;
+  /** the id the sender was told */
+  readonly runId?: string;
 }
 
 export interface WebhookRunAuthorization {
@@ -540,6 +548,8 @@ export type WebhookRunAuthorizer = (
 
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_QUEUE_DEPTH = 100;
+/** Names the run a queued delivery will start, on every queued response. */
+export const RUN_ID_HEADER = "X-Swamp-Run-Id";
 /**
  * Retry-After for deliveries rejected while serve shuts down. Short, so the
  * sender's retry lands on the replacement instance rather than waiting out
@@ -551,6 +561,7 @@ export interface WebhookEndpointInfo {
   readonly route: string;
   readonly workflowIdOrName: string;
   readonly scheme: string;
+  readonly source: WebhookRouteSource;
 }
 
 /**
@@ -651,10 +662,12 @@ export class WebhookService {
   }
 
   listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {
+    const source = this.deps.routeSource ?? "config";
     return this.endpoints.map((e) => ({
       route: e.route,
       workflowIdOrName: e.workflowIdOrName,
       scheme: e.verifier.scheme,
+      source,
     }));
   }
 
@@ -944,15 +957,17 @@ export class WebhookService {
       kind: "webhook_queued",
       route: endpoint.route,
       workflowName: endpoint.workflowIdOrName,
+      runId: receiptId,
     });
 
     this.processQueue();
 
-    if (httpResponse) return httpResponse;
-    return Response.json({
+    const response = httpResponse ?? Response.json({
       status: "queued",
       workflow: endpoint.workflowIdOrName,
     });
+    response.headers.set(RUN_ID_HEADER, receiptId);
+    return response;
   }
 
   private resolveHandler(
@@ -1199,6 +1214,7 @@ export class WebhookService {
       route,
       sourceIp,
       replayed,
+      ...(entry.receiptId !== undefined ? { runId: entry.receiptId } : {}),
     });
     if (!authorization.allowed) {
       observation.attributes({
@@ -1210,6 +1226,7 @@ export class WebhookService {
         kind: "webhook_denied",
         route,
         workflowName: entry.workflowIdOrName,
+        ...(entry.receiptId !== undefined ? { runId: entry.receiptId } : {}),
         reason,
         sourceIp,
         replayed,
@@ -1256,6 +1273,7 @@ export class WebhookService {
           tracestate,
           instanceId: this.deps.instanceId,
           initiatedBy: this.deps.initiatedBy,
+          ...(entry.receiptId !== undefined ? { runId: entry.receiptId } : {}),
         },
         controller.signal,
         (event) => {

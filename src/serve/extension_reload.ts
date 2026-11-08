@@ -24,6 +24,7 @@ import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import type { WebhookUpdater } from "./webhook_reload.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { resolveMountedSourceDirs } from "../infrastructure/persistence/swamp_sources_repository.ts";
@@ -68,10 +69,7 @@ import {
 } from "../infrastructure/persistence/paths.ts";
 import { resolveModelsDir } from "../cli/resolve_models_dir.ts";
 import type { ServeReloadResponse } from "./protocol.ts";
-import {
-  readServeConfigFile,
-  type WebhookConfigEntry,
-} from "./serve_config.ts";
+import { readServeConfigFile } from "./serve_config.ts";
 import type { TriggerOverride } from "../libswamp/workflows/scheduled_execution.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
@@ -771,9 +769,7 @@ export interface ServeReloadOptions {
   ) => Promise<number>;
   workflowReloader?: () => Promise<number>;
   extensionDiscoverer?: () => Promise<number>;
-  webhookUpdater?: (
-    configs: readonly WebhookConfigEntry[],
-  ) => Promise<number>;
+  webhookUpdater?: WebhookUpdater;
   configPath?: string;
 }
 
@@ -861,6 +857,7 @@ async function runServeReload(
   let triggerOverridesChanged = 0;
   let workflowsReloaded = 0;
   let webhooksReloaded = 0;
+  const warnings: string[] = [];
   let localRefreshFailed = false;
 
   try {
@@ -952,9 +949,11 @@ async function runServeReload(
 
     if (options?.webhookUpdater && !configReadFailed) {
       try {
-        webhooksReloaded = await options.webhookUpdater(
+        const webhookResult = await options.webhookUpdater(
           config?.webhooks ?? [],
         );
+        webhooksReloaded = webhookResult.changed;
+        warnings.push(...webhookResult.warnings);
       } catch (err) {
         errors.push(
           "Failed to reload webhook config: " +
@@ -970,6 +969,7 @@ async function runServeReload(
       triggerOverridesChanged,
       workflowsReloaded,
       webhooksReloaded,
+      ...(warnings.length > 0 ? { warnings } : {}),
       errors,
     };
   } catch (err) {

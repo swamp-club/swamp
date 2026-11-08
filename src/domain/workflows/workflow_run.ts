@@ -1407,8 +1407,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
     initiatedBy?: string,
     triggerSource?: string,
     client?: string,
+    id: string = crypto.randomUUID(),
   ): WorkflowRun {
-    const id = crypto.randomUUID();
     const jobs = workflow.jobs.map((job) =>
       JobRun.pending(
         job.name,

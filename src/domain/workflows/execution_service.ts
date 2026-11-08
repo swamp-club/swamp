@@ -424,6 +424,8 @@ import {
 } from "../vaults/run_vault_access.ts";
 
 const SCOPED_REFERENCE = /\b(inputs|self|run|steps)\b/;
+const RUN_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function inlineUnscopedDeferred<T>(
   data: T,
@@ -3445,6 +3447,8 @@ export class WorkflowExecutionService {
       initiatedBy?: string;
       client?: string;
       startKey?: RunStartKeyData;
+      /** an id the caller handed out before the run existed */
+      runId?: string;
       instanceId?: string;
       triggerSource?: string;
       references?: Record<string, string>;
@@ -3784,6 +3788,7 @@ export class WorkflowExecutionService {
           options?.initiatedBy,
           options?.triggerSource,
           options?.client,
+          await this.assignableRunId(workflow.id, options?.runId),
         );
         if (options?.startKey) run.recordStartKey(options.startKey);
         this.startedRunIds.add(run.id);
@@ -4239,6 +4244,31 @@ export class WorkflowExecutionService {
       inFlightMethodRuns.dispose();
       runSpan.end();
     }
+  }
+
+  /**
+   * The caller's id when it is a UUID no run of this workflow already has;
+   * otherwise undefined, so the run gets a fresh one.
+   */
+  private async assignableRunId(
+    workflowId: WorkflowId,
+    requested: string | undefined,
+  ): Promise<string | undefined> {
+    if (requested === undefined) return undefined;
+    const logger = getSwampLogger(["workflow", "run"]);
+    if (!RUN_ID_PATTERN.test(requested)) {
+      logger.warn`Ignoring assigned run id ${requested}: not a UUID`;
+      return undefined;
+    }
+    const existing = await this.runRepo.findById(
+      workflowId,
+      createWorkflowRunId(requested),
+    );
+    if (existing) {
+      logger.warn`Run ${requested} already exists; starting under a new id`;
+      return undefined;
+    }
+    return requested;
   }
 
   async execute(

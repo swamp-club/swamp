@@ -41,6 +41,7 @@ import {
   parseWebhookFlag,
   resolveExtensionWebhookEndpoints,
   resolveSecret,
+  RUN_ID_HEADER,
   type WebhookEndpoint,
   type WebhookEvent,
   WebhookService,
@@ -1132,7 +1133,7 @@ Deno.test("updateEndpoints: clears all endpoints when given empty list", async (
 });
 
 type ExecutorCall = {
-  input: { workflowIdOrName: string; initiatedBy?: string };
+  input: { workflowIdOrName: string; initiatedBy?: string; runId?: string };
   options: { triggerSource?: string; initiatedBy?: string };
 };
 
@@ -2117,4 +2118,151 @@ Deno.test("buildWebhookPayload: the team's peer token on a forwarded delivery ne
   );
   assertEquals(payload.headers["x-swamp-team-peer"], undefined);
   assertEquals(payload.headers["x-github-event"], "push");
+});
+
+Deno.test("WebhookService: the queued response names the run the delivery starts", async () => {
+  const { service, calls, events } = await triggerService();
+  const response = await service.handleRequest(
+    await signedDelivery("{}"),
+    "203.0.113.9",
+  );
+  assertEquals(response?.status, 200);
+  const runId = response!.headers.get(RUN_ID_HEADER);
+  assertEquals(typeof runId, "string");
+  await waitFor(() => calls.length === 1, "run executed");
+  await service.stop();
+
+  assertEquals(calls[0].input.runId, runId);
+  const queued = events.find((e) => e.kind === "webhook_queued");
+  assertEquals(queued?.kind === "webhook_queued" && queued.runId, runId);
+});
+
+Deno.test("WebhookService: each delivery gets its own run id", async () => {
+  const { service, calls } = await triggerService();
+  const first = await service.handleRequest(await signedDelivery("{}"));
+  const second = await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(() => calls.length === 2, "both runs executed");
+  await service.stop();
+
+  const ids = [first, second].map((r) => r!.headers.get(RUN_ID_HEADER)!);
+  assertEquals(new Set(ids).size, 2);
+  assertEquals(new Set(calls.map((c) => c.input.runId)), new Set(ids));
+});
+
+Deno.test("WebhookService: the pending run is stored under the run id the sender was told", async () => {
+  const pending: { id: string }[] = [];
+  const { service, calls } = await triggerService({
+    runTracker: {
+      enqueuePendingRun: (entry: { id: string }) => pending.push(entry),
+      deletePendingRun: () => {},
+    } as unknown as RunTrackerStore,
+  });
+  const response = await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(() => calls.length === 1, "run executed");
+  await service.stop();
+
+  assertEquals(pending.map((p) => p.id), [
+    response!.headers.get(RUN_ID_HEADER)!,
+  ]);
+});
+
+Deno.test("WebhookService: a replayed delivery runs under its pending id", async () => {
+  const { service, calls } = await triggerService();
+  service.enqueueForReplay({
+    pendingRunId: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    workflowIdOrName: "deploy",
+    route: "/hooks/gh",
+    payload: buildWebhookPayload(new Uint8Array(), new Headers(), "/hooks/gh"),
+  });
+  await waitFor(() => calls.length === 1, "replayed run executed");
+  await service.stop();
+
+  assertEquals(calls[0].input.runId, "7c9e6679-7425-40de-944b-e07fc1f90ae7");
+});
+
+Deno.test("WebhookService: a refused run reports the id the sender was told", async () => {
+  const requests: { runId?: string }[] = [];
+  const { service, events } = await triggerService({
+    authorizeRun: (request) => {
+      requests.push({ runId: request.runId });
+      return Promise.resolve({
+        allowed: false,
+        workflowIdOrName: request.workflowIdOrName,
+        reason: "denied",
+      });
+    },
+  });
+  const response = await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_denied"),
+    "webhook_denied event",
+  );
+  await service.stop();
+
+  const runId = response!.headers.get(RUN_ID_HEADER);
+  assertEquals(requests, [{ runId: runId! }]);
+  const denied = events.find((e) => e.kind === "webhook_denied");
+  assertEquals(denied?.kind === "webhook_denied" && denied.runId, runId);
+});
+
+Deno.test("WebhookService: an extension response that also queues a run carries the run id", async () => {
+  const scheme = registerExtension({
+    respond: () => ({ status: 202, body: "accepted", enqueue: true }),
+  });
+  const calls: ExecutorCall[] = [];
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as unknown as RepositoryContext,
+    datastoreConfig: {} as unknown as DatastoreConfig,
+    endpoints: [{
+      route: "/hooks/ext",
+      workflowIdOrName: "wf",
+      secret: "s3cret",
+      verifier: { scheme, config: {} },
+    }],
+    executeWorkflow: recordingExecutor(calls),
+  });
+  const response = await service.handleRequest(extensionRequest("s3cret"));
+  await waitFor(() => calls.length === 1, "run executed");
+  await service.stop();
+
+  assertEquals(response?.status, 202);
+  assertEquals(await response!.text(), "accepted");
+  assertEquals(response!.headers.get(RUN_ID_HEADER), calls[0].input.runId);
+});
+
+Deno.test("WebhookService: an extension response that queues nothing carries no run id", async () => {
+  const scheme = registerExtension({
+    respond: () => ({ status: 200, body: "ok", enqueue: false }),
+  });
+  const { service } = extensionService(scheme);
+  const response = await service.handleRequest(extensionRequest("s3cret"));
+  await service.stop();
+
+  assertEquals(response?.status, 200);
+  assertEquals(response!.headers.get(RUN_ID_HEADER), null);
+});
+
+Deno.test("WebhookService: a service built with no routes passes POSTs through until a reload adds one", async () => {
+  const { service, calls } = await triggerService({ endpoints: [] });
+
+  assertEquals(await service.handleRequest(await signedDelivery("{}")), null);
+
+  service.updateEndpoints([await parseWebhookFlag("/hooks/gh:deploy:secret")]);
+  const response = await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(() => calls.length === 1, "run executed");
+  await service.stop();
+
+  assertEquals(response?.status, 200);
+});
+
+Deno.test("WebhookService.listEndpoints: reports where the routes came from", async () => {
+  const fromConfig = (await triggerService()).service;
+  const fromFlags = (await triggerService({ routeSource: "flag" })).service;
+
+  assertEquals(fromConfig.listEndpoints().map((e) => e.source), ["config"]);
+  assertEquals(fromFlags.listEndpoints().map((e) => e.source), ["flag"]);
+  await fromConfig.stop();
+  await fromFlags.stop();
 });

@@ -289,7 +289,11 @@ export function createWebhookRunAuthorizer(
         WEBHOOK_PRINCIPAL,
         authorization,
         request.sourceIp ?? "unknown",
-        { route: request.route, replayed: request.replayed || undefined },
+        {
+          route: request.route,
+          run: request.runId,
+          replayed: request.replayed || undefined,
+        },
       );
     }
     return authorization;

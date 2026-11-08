@@ -82,6 +82,8 @@ export interface WebhookEntry {
   workflow: string;
   /** Signature verification scheme, when serve reports it. */
   scheme?: string;
+  /** Where the route is defined, when serve reports it. */
+  source?: "config" | "flag";
   /** Unset on servers that predate webhook queue reporting (swamp-club#3665). */
   active?: number;
   queued?: number;

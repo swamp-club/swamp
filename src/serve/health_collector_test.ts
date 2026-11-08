@@ -247,6 +247,7 @@ Deno.test("HealthCollector: includes webhook endpoints with their queue state", 
     route: "/hooks/github",
     workflow: "deploy",
     scheme: "github",
+    source: "config",
     active: 2,
     queued: 1,
     oldestQueuedAt: "2026-10-21T00:00:00.000Z",
@@ -518,4 +519,27 @@ Deno.test("HealthCollector: leaves retention out when its provider fails", async
   })).collect();
   assertEquals(snapshot.retention, undefined);
   assertEquals(snapshot.ready, true);
+});
+
+Deno.test("HealthCollector: reports a flag route's source", async () => {
+  const deps = makeDeps({
+    webhookProvider: {
+      listEndpoints: () => [{
+        route: "/hooks/github",
+        workflowIdOrName: "deploy",
+        scheme: "github",
+        source: "flag",
+      }],
+      queueStatus: () => ({
+        active: 0,
+        queued: 0,
+        oldestQueuedAt: null,
+        lastQueueDelayMs: null,
+      }),
+    },
+  });
+
+  const snapshot = await new HealthCollector(deps).collect();
+
+  assertEquals(snapshot.webhooks.map((w) => w.source), ["flag"]);
 });

@@ -22,6 +22,7 @@ import { assertStringIncludes } from "@std/assert";
 import { createServeReloadRenderer } from "./serve_reload.ts";
 import type { ServeReloadResponse } from "../../serve/protocol.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { configure, reset } from "@logtape/logtape";
 
 await initializeLogging({});
 
@@ -86,4 +87,57 @@ Deno.test("serveReloadRenderer json: includes triggerOverridesChanged in output"
   const output = captureRender("json", result);
   const parsed = JSON.parse(output.join(""));
   assertEquals(parsed.triggerOverridesChanged, 3);
+});
+
+async function captureLog(result: ServeReloadResponse): Promise<string[]> {
+  const messages: string[] = [];
+  await configure({
+    reset: true,
+    sinks: {
+      kept: (record) => {
+        messages.push(record.message.map((part) => String(part)).join(""));
+      },
+    },
+    loggers: [
+      { category: ["serve"], sinks: ["kept"], lowestLevel: "info" },
+      { category: ["logtape", "meta"], sinks: [], lowestLevel: "fatal" },
+    ],
+  });
+  try {
+    createServeReloadRenderer("log").render(result);
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return messages;
+}
+
+Deno.test("serveReloadRenderer log: reports webhook route changes and warnings", async () => {
+  const messages = await captureLog({
+    success: true,
+    reloadedCount: 0,
+    webhooksReloaded: 2,
+    warnings: ["Ignored the webhooks list"],
+    errors: [],
+  });
+  assertEquals(
+    messages.some((m) => m.includes("Applied 2 webhook route change(s)")),
+    true,
+  );
+  assertEquals(
+    messages.some((m) => m.includes("Ignored the webhooks list")),
+    true,
+  );
+});
+
+Deno.test("serveReloadRenderer json: includes warnings", () => {
+  const output = captureRender("json", {
+    success: true,
+    reloadedCount: 0,
+    warnings: ["Ignored the webhooks list"],
+    errors: [],
+  });
+  assertEquals(JSON.parse(output.join("")).warnings, [
+    "Ignored the webhooks list",
+  ]);
 });

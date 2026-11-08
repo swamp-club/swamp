@@ -178,6 +178,7 @@ Deno.test("health endpoint auth: a valid token without grants reads health with 
           route: "/hooks/n",
           workflow: "nightly",
           scheme: "hmac",
+          source: "config",
           active: 0,
           queued: 0,
           oldestQueuedAt: null,
