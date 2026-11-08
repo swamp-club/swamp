@@ -22,7 +22,12 @@ import { join } from "@std/path";
 import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { ActiveRun } from "../../domain/models/active_run.ts";
-import { type PendingRunEntry, RunTrackerStore } from "./run_tracker_store.ts";
+import { processHostIdentity } from "../runtime/process.ts";
+import {
+  namespacedHostIdentity,
+  type PendingRunEntry,
+  RunTrackerStore,
+} from "./run_tracker_store.ts";
 import { isSensitiveHeader } from "../../serve/webhook.ts";
 
 function makeTempDb(): Disposable & { path: string } {
@@ -777,29 +782,164 @@ Deno.test("RunTrackerStore: reapStaleRuns falls back to hostname when no instanc
   }
 });
 
-Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId skips rows from different instance on same hostname", () => {
+function deadWorkflowRow(id: string, instanceId: string): ActiveRun {
+  return ActiveRun.fromData({
+    id,
+    runKind: "workflow",
+    modelType: null,
+    methodName: null,
+    workflowName: "test-workflow",
+    pid: 2147483647,
+    hostname: hostname(),
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    status: "running",
+    instanceId,
+  });
+}
+
+function setHostIdentity(
+  dbPath: string,
+  id: string,
+  identity: string | null,
+): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare("UPDATE active_runs SET host_identity = ? WHERE id = ?").run(
+      identity,
+      id,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+for (
+  const [label, identity] of [
+    ["another pid namespace on the same hostname", `${hostname()}#pid:[1]`],
+    ["no recorded host identity", null],
+  ] as const
+) {
+  Deno.test(`RunTrackerStore: reapDeadProcessRuns with instanceId skips another instance's row from ${label}`, () => {
+    using tempDb = makeTempDb();
+    const store = new RunTrackerStore(tempDb.path);
+    try {
+      store.register(deadWorkflowRow("container-1", "instance-A"));
+      setHostIdentity(tempDb.path, "container-1", identity);
+
+      const reaped = store.reapDeadProcessRuns("instance-B");
+
+      assertEquals(reaped.length, 0);
+      assertEquals(store.findById("container-1")?.status, "running");
+    } finally {
+      store.close();
+    }
+  });
+}
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId reaps a dead row of an earlier instance in this pid namespace", () => {
   using tempDb = makeTempDb();
   const store = new RunTrackerStore(tempDb.path);
   try {
-    const run = ActiveRun.fromData({
-      id: "container-1",
-      runKind: "workflow",
-      modelType: null,
-      methodName: null,
-      workflowName: "test-workflow",
-      pid: 2147483647,
-      hostname: hostname(),
-      startedAt: new Date().toISOString(),
-      heartbeatAt: new Date().toISOString(),
-      status: "running",
-      instanceId: "instance-A",
-    });
-    store.register(run);
+    store.register(deadWorkflowRow("restarted-1", "instance-A"));
 
     const reaped = store.reapDeadProcessRuns("instance-B");
 
-    assertEquals(reaped.length, 0);
-    assertEquals(store.findById("container-1")?.status, "running");
+    assertEquals(reaped.map((r) => r.id), ["restarted-1"]);
+    assertEquals(store.findById("restarted-1")?.status, "interrupted");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapDeadProcessRuns with instanceId keeps a live row of another instance in this pid namespace", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
+  try {
+    const live = ActiveRun.fromData({
+      ...deadWorkflowRow("peer-1", "instance-A").toData(),
+      pid: Deno.pid,
+    });
+    store.register(live);
+
+    assertEquals(store.reapDeadProcessRuns("instance-B"), []);
+    assertEquals(store.findById("peer-1")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: reapStaleRuns still reaps a stale row of another instance in this pid namespace on age alone", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
+  try {
+    const old = new Date(Date.now() - 120_000).toISOString();
+    store.register(ActiveRun.fromData({
+      ...deadWorkflowRow("stale-peer-1", "instance-A").toData(),
+      pid: Deno.pid,
+      startedAt: old,
+      heartbeatAt: old,
+    }));
+
+    const reaped = store.reapStaleRuns(90_000, "instance-B");
+
+    assertEquals(reaped.map((r) => r.id), ["stale-peer-1"]);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: register and reactivate record the owner's host identity", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
+  try {
+    store.register(deadWorkflowRow("stamped-1", "instance-A"));
+    assertEquals(
+      store.findById("stamped-1")?.hostIdentity,
+      namespacedHostIdentity(processHostIdentity(), Deno.build.os),
+    );
+
+    store.complete("stamped-1", "interrupted");
+    setHostIdentity(tempDb.path, "stamped-1", null);
+    store.reactivate("stamped-1", Deno.pid, hostname(), "instance-B");
+    assertEquals(
+      store.findById("stamped-1")?.hostIdentity,
+      namespacedHostIdentity(processHostIdentity(), Deno.build.os),
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: v7 migration reads an existing row as having no host identity", () => {
+  using tempDb = makeTempDb();
+  const path = tempDb.path;
+  const db = new DatabaseSync(path);
+  db.exec(
+    `CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO run_tracker_meta VALUES ('schema_version', '6');
+    CREATE TABLE active_runs (id TEXT PRIMARY KEY, run_kind TEXT NOT NULL,
+      model_type TEXT, method_name TEXT, workflow_name TEXT,
+      pid INTEGER NOT NULL, hostname TEXT NOT NULL, started_at TEXT NOT NULL,
+      heartbeat_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running',
+      completed_at TEXT, cancel_reason TEXT, initiated_by TEXT,
+      instance_id TEXT, definition_id TEXT);
+    INSERT INTO active_runs (id, run_kind, workflow_name, pid, hostname,
+      started_at, heartbeat_at, status, instance_id)
+      VALUES ('legacy-1', 'workflow', 'wf', 2147483647, '${hostname()}',
+      '${new Date().toISOString()}', '${new Date().toISOString()}',
+      'running', 'instance-A');`,
+  );
+  db.close();
+  const store = new RunTrackerStore(path);
+  try {
+    assertEquals(store.findById("legacy-1")?.hostIdentity, null);
+    assertEquals(store.reapDeadProcessRuns("instance-B"), []);
+    store.register(deadWorkflowRow("new-1", "instance-A"));
+    assertEquals(
+      store.reapDeadProcessRuns("instance-B").map((r) => r.id),
+      ["new-1"],
+    );
   } finally {
     store.close();
   }
@@ -1472,4 +1612,14 @@ Deno.test("RunTrackerStore: schema v5 migration adds definition_id to a v4 datab
   } finally {
     store.close();
   }
+});
+
+Deno.test("namespacedHostIdentity: refuses a Linux identity that names no pid namespace", () => {
+  assertEquals(
+    namespacedHostIdentity("host#pid:[4026531836]", "linux"),
+    "host#pid:[4026531836]",
+  );
+  assertEquals(namespacedHostIdentity("host", "linux"), null);
+  assertEquals(namespacedHostIdentity("host", "darwin"), "host");
+  assertEquals(namespacedHostIdentity("host", "windows"), "host");
 });

@@ -45,7 +45,8 @@ CREATE TABLE active_runs (
   completed_at  TEXT,
   cancel_reason TEXT,
   initiated_by  TEXT,
-  instance_id   TEXT                  -- owning serve instance (HA)
+  instance_id   TEXT,                 -- owning serve instance (HA)
+  host_identity TEXT                  -- owner's hostname + pid namespace; NULL before schema v7
 );
 CREATE INDEX idx_active_runs_status    ON active_runs(status);
 CREATE INDEX idx_active_runs_heartbeat ON active_runs(heartbeat_at);
@@ -133,6 +134,15 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    `swamp run doctor` also counts a running row as stale as soon as its owner
    is a dead process on this host (`findDeadProcessRuns`), without waiting
    for the TTL, and with `--fix` reaps it through `reapDeadProcessRuns`.
+   That dead-process check also takes a row of another serve instance when
+   the row's `host_identity` (hostname plus pid namespace, stamped by the
+   owning process at register and resume) equals this process's: serve's
+   instance id is new each start, so without it a serve restarted after
+   `kill -9` would trust its own killed row as still running until the TTL
+   passed. On Linux a row is stamped only when the pid namespace can be
+   read, since a bare hostname is shared by sibling containers. A row from
+   another pid namespace or with no host identity keeps the instance-id
+   rule, and the TTL reap is unchanged.
 7. **Dead owner**: a process killed without running its cleanup (a second
    Ctrl-C calls `Deno.exit(130)`) leaves its row `running` and its workflow
    run record `running` under its pid. Local `swamp run doctor --fix` and

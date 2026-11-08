@@ -39,7 +39,7 @@ import {
 } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { OwnerLiveness } from "../../domain/workflows/orphaned_run_reaper.ts";
-import { isProcessGone } from "../runtime/process.ts";
+import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
 
 import { join } from "@std/path";
 
@@ -53,10 +53,28 @@ export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active
 export function localOwnerLiveness(): OwnerLiveness {
   return { hostname: hostname(), isDead: isProcessGone };
 }
+
+/**
+ * on Linux an identity without a pid namespace is only a hostname, which
+ * sibling containers share, so it vouches for nothing
+ */
+export function namespacedHostIdentity(
+  identity: string,
+  os: typeof Deno.build.os,
+): string | null {
+  return os === "linux" && !identity.includes("#") ? null : identity;
+}
+
+/** a row naming another host was not registered by its owner, so says nothing */
+function ownHostIdentity(rowHostname: string): string | null {
+  return rowHostname === hostname()
+    ? namespacedHostIdentity(processHostIdentity(), Deno.build.os)
+    : null;
+}
 const RETENTION_DAYS = 7;
 /** backstop retention for an interrupted row that no path ever settles */
 const UNSETTLED_RETENTION_DAYS = 90;
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 export interface PendingRunEntry {
   id: string;
@@ -98,6 +116,7 @@ interface ActiveRunRow {
   cancel_reason: string | null;
   initiated_by: string | null;
   instance_id: string | null;
+  host_identity: string | null;
 }
 
 export class RunTrackerStore implements RunTrackerRepository {
@@ -267,6 +286,14 @@ export class RunTrackerStore implements RunTrackerRepository {
         this.db.exec("ALTER TABLE pending_runs ADD COLUMN receipt_trace TEXT");
       }
     }
+
+    if (currentVersion < 7) {
+      const columns = this.db.prepare("PRAGMA table_info(active_runs)")
+        .all() as unknown as { name: string }[];
+      if (columns.length && !columns.some((c) => c.name === "host_identity")) {
+        this.db.exec("ALTER TABLE active_runs ADD COLUMN host_identity TEXT");
+      }
+    }
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -289,7 +316,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         cancel_reason TEXT,
         initiated_by  TEXT,
         instance_id   TEXT,
-        definition_id TEXT
+        definition_id TEXT,
+        host_identity TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_active_runs_status
@@ -337,8 +365,8 @@ export class RunTrackerStore implements RunTrackerRepository {
       INSERT INTO active_runs
         (id, run_kind, model_type, method_name, workflow_name,
          pid, hostname, started_at, heartbeat_at, status, initiated_by, instance_id,
-         definition_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         definition_id, host_identity)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.id,
       data.runKind,
@@ -353,6 +381,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       data.initiatedBy ?? null,
       data.instanceId ?? null,
       data.definitionId ?? null,
+      ownHostIdentity(data.hostname),
     );
   }
 
@@ -414,9 +443,16 @@ export class RunTrackerStore implements RunTrackerRepository {
     const result = this.db.prepare(`
       UPDATE active_runs
       SET status = 'running', pid = ?, hostname = ?, instance_id = ?,
-          heartbeat_at = ?, completed_at = NULL
+          host_identity = ?, heartbeat_at = ?, completed_at = NULL
       WHERE id = ? AND status IN ('suspended', 'failed', 'interrupted')
-    `).run(pid, hostname, instanceId ?? null, now, runId);
+    `).run(
+      pid,
+      hostname,
+      instanceId ?? null,
+      ownHostIdentity(hostname),
+      now,
+      runId,
+    );
     return Number(result.changes) > 0;
   }
 
@@ -481,8 +517,12 @@ export class RunTrackerStore implements RunTrackerRepository {
 
   findDeadProcessRuns(instanceId?: string): ActiveRun[] {
     const currentHostname = hostname();
+    const hostIdentity = processHostIdentity();
+    // serve's instance id is new each start, so its own earlier rows are
+    // judged by pid namespace; reapStaleRuns keeps the instance-id rule
     return this.findAllRunning().filter((run) =>
-      run.isLocalTo(currentHostname, instanceId) &&
+      (run.isLocalTo(currentHostname, instanceId) ||
+        run.sharesProcessHost(hostIdentity)) &&
       run.pid !== Deno.pid &&
       isProcessGone(run.pid)
     );
@@ -601,6 +641,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       instanceId: row.instance_id ?? undefined,
       settled: row.status === "interrupted" && row.cancel_reason !== null,
       cancelReason: row.cancel_reason,
+      hostIdentity: row.host_identity,
     };
   }
 }
