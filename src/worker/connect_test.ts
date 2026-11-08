@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
@@ -25,13 +30,18 @@ import {
   runWorker,
   type WorkerStatusEvent,
 } from "./connect.ts";
-import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import {
+  ChannelClosedError,
+  RpcChannel,
+  RpcError,
+} from "../domain/remote/rpc_channel.ts";
 import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
   type EnrollParams,
   GATE_PASS_UNAVAILABLE,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  WorkerMethod,
 } from "../domain/remote/protocol.ts";
 
 class FakeSocket {
@@ -818,4 +828,114 @@ Deno.test("runWorker: a reconnect while admission is pending shares the check", 
   release();
   await done;
   assertEquals(admitCalls, 1);
+});
+
+// The orchestrator lists a worker as idle before its enroll reply arrives, so
+// a dispatch can reach the worker first. Empty params fail at parsing, which
+// shows whether the dispatch got past admission.
+function earlyDispatchSocket(
+  onAnswer: (outcome: unknown) => void,
+  enroll: () => Promise<unknown>,
+): FakeSocket {
+  return new FakeSocket((channel) => {
+    channel.register(RemoteMethod.enroll, () => {
+      channel.call(WorkerMethod.dispatch, {}).then(onAnswer, onAnswer);
+      return enroll();
+    });
+  });
+}
+
+function codeOf(outcome: unknown): string | undefined {
+  return outcome instanceof RpcError ? outcome.code : undefined;
+}
+
+Deno.test("runWorker: a dispatch sent before the enroll reply waits for enrollment instead of failing as an unknown method", async () => {
+  const order: string[] = [];
+  let outcome: unknown;
+  let answered = false;
+  let socket: FakeSocket | null = null;
+
+  const done = runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    reconnect: false,
+    onStatus: (event) => {
+      if (event.kind === "enrolled") order.push("enrolled");
+    },
+    createSocket: () => {
+      socket = earlyDispatchSocket((result) => {
+        outcome = result;
+        answered = true;
+        order.push("dispatch answered");
+      }, () => Promise.resolve(enrollResult("ci")));
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  await waitFor(() => answered, "early dispatch answered");
+  socket!.drop();
+  await done;
+  assertEquals(codeOf(outcome), "handler_failed");
+  assertEquals(order, ["enrolled", "dispatch answered"]);
+});
+
+Deno.test("runWorker: a dispatch sent before a refused enroll reply is never run", async () => {
+  let outcome: unknown;
+  let answered = false;
+
+  await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        createSocket: () =>
+          earlyDispatchSocket((result) => {
+            outcome = result;
+            answered = true;
+          }, () =>
+            Promise.reject(
+              new RpcError({
+                code: "token_revoked",
+                message: "Enrollment token 'ci' has been revoked",
+              }),
+            )) as unknown as WebSocket,
+      }),
+    Error,
+    "revoked",
+  );
+
+  await waitFor(() => answered, "early dispatch answered");
+  // the worker drops the connection as it stops, so serve gets no step result
+  assertInstanceOf(outcome, ChannelClosedError);
+});
+
+Deno.test("runWorker: a dispatch sent before the enroll reply is never run when the gate refuses the worker", async () => {
+  let outcome: unknown;
+  let answered = false;
+  const blocked = new AuthGateBlockedError(
+    { kind: "no_credential" },
+    "not vouched for",
+  );
+
+  await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        admitGatePass: () => Promise.reject(blocked),
+        createSocket: () =>
+          earlyDispatchSocket((result) => {
+            outcome = result;
+            answered = true;
+          }, () => Promise.resolve(enrollResult("ci"))) as unknown as WebSocket,
+      }),
+    AuthGateBlockedError,
+  );
+
+  await waitFor(() => answered, "early dispatch answered");
+  // the worker drops the connection as it stops, so serve gets no step result
+  assertInstanceOf(outcome, ChannelClosedError);
 });

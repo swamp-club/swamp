@@ -482,6 +482,30 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
     };
 
     socket.onopen = () => {
+      // the orchestrator can dispatch before its enroll reply arrives, so the
+      // handler exists from the start and holds each dispatch until enrollment
+      // is complete; a failed enrollment refuses them
+      const ready = Promise.withResolvers<void>();
+      ready.promise.catch(() => {});
+      const handle = registerDispatchHandler({
+        lifecycleTrace,
+        channel,
+        sessionCredential: () => session.credential,
+        dataPlaneUrl: args.dataPlaneUrl,
+        cacheDirPath: args.cacheDirPath,
+        caCerts: options.caCerts,
+        capacity: args.concurrency,
+        runnerCommand: options.runnerCommand,
+        admitted: ready.promise,
+        onDispatch: (event) => {
+          if (event.kind === "dispatch_started") {
+            args.onDispatchStarted();
+          } else if (event.kind === "dispatch_finished") {
+            args.onDispatchFinished();
+          }
+          options.onStatus?.(event);
+        },
+      });
       observeExecutionWork(
         "enrollment.request",
         {},
@@ -502,9 +526,8 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       ).then((result) => {
         session.credential = result.sessionCredential;
         session.expiresAtMs = result.sessionExpiresAtMs;
-        // the handler is registered before admission so an early dispatch waits
-        // for it; until admitted, a reconnect asks for a pass again and a
-        // refusal stops the worker (fails closed)
+        // until admitted, a reconnect asks for a pass again and a refusal
+        // stops the worker (fails closed)
         const admitGatePass = options.admitGatePass;
         const admitted = gate.admitted || !admitGatePass
           ? Promise.resolve()
@@ -514,29 +537,13 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
             gate.pending = undefined;
             throw error;
           });
-        const handle = registerDispatchHandler({
-          lifecycleTrace,
-          channel,
-          sessionCredential: () => session.credential,
-          dataPlaneUrl: args.dataPlaneUrl,
-          cacheDirPath: args.cacheDirPath,
-          caCerts: options.caCerts,
-          capacity: args.concurrency,
-          runnerCommand: options.runnerCommand,
-          admitted,
-          onDispatch: (event) => {
-            if (event.kind === "dispatch_started") {
-              args.onDispatchStarted();
-            } else if (event.kind === "dispatch_finished") {
-              args.onDispatchFinished();
-            }
-            options.onStatus?.(event);
-          },
-        });
         return admitted.then(() => {
           // The socket closed while admission was pending: the reconnect
           // loop owns what happens next.
-          if (settled) return;
+          if (settled) {
+            ready.reject(new Error("connection closed during enrollment"));
+            return;
+          }
           enrolled = true;
           args.onDispatchHandlerRegistered(
             handle,
@@ -550,8 +557,10 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
             workerId: result.workerId,
             reconnect: false,
           });
+          ready.resolve();
         });
       }).catch(async (error: unknown) => {
+        ready.reject(error);
         // never rejects: everything is caught and ends in finish(); an
         // orchestrator with no pass refuses before redeeming the token, which
         // admission turns into the gate's block
