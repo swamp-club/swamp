@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { createInMemoryControlPlaneStore } from "@swamp-club/swamp-testing";
 import { FileSystemControlPlaneStore } from "./fs_control_plane_store.ts";
 import { ControlPlaneScheduleStateRepository } from "./control_plane_schedule_state_repository.ts";
 import type { ScheduleState } from "../../domain/workflows/schedule_state.ts";
@@ -239,21 +240,19 @@ Deno.test("ControlPlaneScheduleStateRepository: a list that never settles reject
 });
 
 Deno.test("ControlPlaneScheduleStateRepository: list skips a record whose read times out and keeps the rest", async () => {
-  await withStore(async (store) => {
-    const good = state();
-    const hungId = crypto.randomUUID();
-    const repo = new ControlPlaneScheduleStateRepository({
-      put: (key, data) => store.put(key, data),
-      get: (key) =>
-        key.endsWith(hungId) ? new Promise(() => {}) : store.get(key),
-      delete: (key) => store.delete(key),
-      list: (prefix) => store.list(prefix),
-    }, { timeoutMs: 20 });
-    await repo.save(good);
-    await repo.save(state({ workflowId: hungId }));
+  // Settles before any deadline timer, so the bound governs only the hung read.
+  const store = createInMemoryControlPlaneStore();
+  const good = state();
+  const hungId = crypto.randomUUID();
+  const repo = new ControlPlaneScheduleStateRepository({
+    ...store,
+    get: (key, options) =>
+      key.endsWith(hungId) ? new Promise(() => {}) : store.get(key, options),
+  }, { timeoutMs: 20 });
+  await repo.save(good);
+  await repo.save(state({ workflowId: hungId }));
 
-    assertEquals(await repo.list(), [good]);
-  });
+  assertEquals(await repo.list(), [good]);
 });
 
 Deno.test("ControlPlaneScheduleStateRepository: an aborted caller signal ends the listing", async () => {

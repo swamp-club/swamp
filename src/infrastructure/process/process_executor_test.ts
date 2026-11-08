@@ -1119,6 +1119,8 @@ Deno.test({
         args: ["-c", "sleep 30"],
         signal: controller.signal,
         terminateProcessTree: true,
+        // Past the SIGKILL deadline a killed member can still show on Linux.
+        killGraceMs: 30_000,
         attachJob: (pid) => {
           childPid = pid;
           return {
