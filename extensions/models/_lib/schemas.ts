@@ -101,8 +101,8 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   implement: ["approved", "pr_failed"],
   adversarial_review: ["plan_generated"],
   resolve_findings: ["plan_generated", "approved"],
-  code_conformance_review: ["implementing", "pr_failed"],
-  justify_deviations: ["implementing", "pr_failed"],
+  code_conformance_review: ["verifying"],
+  justify_deviations: ["verifying", "pr_failed"],
   verify: ["implementing"],
   verification_passed: ["verifying"],
   verification_failed: ["verifying"],
@@ -111,7 +111,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   pr_merged: ["pr_open"],
   pr_failed: ["pr_open"],
   watch_pr: ["pr_open"],
-  complete: ["implementing", "pr_open", "releasing"],
+  complete: ["verifying", "pr_open", "releasing"],
   notify: ["notify"],
   skip_notify: ["notify"],
   summarize: ["summarizing"],
@@ -136,6 +136,9 @@ export const StateSchema = z.object({
   phase: Phase,
   issueNumber: z.number(),
   updatedAt: z.string(),
+  commit: z.string().optional().describe(
+    "Commit under verification, set by verify while the phase is verifying",
+  ),
 });
 
 export type StateData = z.infer<typeof StateSchema>;
@@ -269,6 +272,9 @@ export const CodeConformanceReviewSchema = z.object({
   ),
   steps: z.array(StepVerificationSchema).describe(
     "Per-step verification of plan conformance, plus entries for unplanned changes",
+  ),
+  commit: z.string().optional().describe(
+    "The verified commit this review covers; absent on reviews recorded before verification",
   ),
   reviewedAt: z.string(),
 });

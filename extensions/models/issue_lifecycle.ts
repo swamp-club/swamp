@@ -49,6 +49,7 @@ import {
   StepVerificationSchema,
   SummarySchema,
   TRANSITIONS,
+  type VerificationResultData,
   VerificationResultSchema,
 } from "./_lib/schemas.ts";
 import {
@@ -110,6 +111,46 @@ async function readState(
   );
   if (!content) return null;
   return JSON.parse(new TextDecoder().decode(content)) as StateData;
+}
+
+async function readJson<T>(
+  dataRepository: {
+    getContent: (
+      type: string,
+      modelId: string,
+      dataName: string,
+    ) => Promise<Uint8Array | null>;
+  },
+  modelType: string,
+  modelId: string,
+  dataName: string,
+): Promise<T | null> {
+  const content = await dataRepository.getContent(modelType, modelId, dataName);
+  if (!content) return null;
+  return JSON.parse(new TextDecoder().decode(content)) as T;
+}
+
+// The one definition of "the commit under verification has passed", shared by the method and the gate.
+function verifiedCommit(
+  state: StateData | null | undefined,
+  result: VerificationResultData | null | undefined,
+): { commit: string } | { refusal: string } {
+  if (!result || !result.allPassed) {
+    return {
+      refusal: "No passing verification result. Record " +
+        "'verification_passed' for the verified commit, or " +
+        "'verification_failed' to return to implementing.",
+    };
+  }
+  if (state?.commit && result.commit !== state.commit) {
+    return {
+      refusal: `The passing verification result is for ${result.commit}, ` +
+        `but verify started on ${state.commit}. Record ` +
+        `'verification_passed' for ${state.commit}, or ` +
+        "'verification_failed' to return to implementing.",
+    };
+  }
+  return { commit: result.commit };
 }
 
 export function buildNotifyMessage(
@@ -569,7 +610,7 @@ export function createWatchPrMethod(deps: WatchPrDeps) {
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.11.04.1",
+  version: "2026.11.08.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -815,6 +856,22 @@ export const model = {
         "New method: watch_pr (from pr_open) reads the linked PR through gh " +
         "until it merges or fails, then runs pr_merged, notify and " +
         "summarize, or pr_failed, itself. New resource: prWatch. No " +
+        "globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.11.08.1",
+      description:
+        "The code conformance review is the last gate before the PR. It " +
+        "runs in verifying, after verification_passed, and records the " +
+        "verified commit; code-conformance-clear gates post_attestation, " +
+        "link_pr and complete on a justified review of that commit, and " +
+        "post_attestation refuses an attestation for any other commit. " +
+        "verify records the commit on state and verification_passed " +
+        "refuses a different one. The conformance-review-required check on " +
+        "verify is removed. complete runs from verifying, pr_open and " +
+        "releasing; fast_forward no longer writes a conformance review. " +
+        "New optional commit fields on state and codeConformanceReview. No " +
         "globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
@@ -1080,9 +1137,11 @@ export const model = {
 
     "code-conformance-clear": {
       description:
-        "Ensures all code-vs-plan deviations are justified before a PR can be linked",
+        "Ensures the verified commit has a fully justified code conformance " +
+        "review before an attestation is posted, a PR is linked or the " +
+        "lifecycle completes",
       labels: ["policy"],
-      appliesTo: ["link_pr", "complete"],
+      appliesTo: ["post_attestation", "link_pr", "complete"],
       execute: async (context: {
         dataRepository: {
           getContent: (
@@ -1094,42 +1153,78 @@ export const model = {
         modelType: string;
         modelId: string;
       }) => {
-        const planContent = await context.dataRepository.getContent(
+        const read = <T>(name: string) =>
+          readJson<T>(
+            context.dataRepository,
+            context.modelType,
+            context.modelId,
+            name,
+          );
+        const state = await readState(
+          context.dataRepository,
           context.modelType,
           context.modelId,
-          "plan-main",
         );
-        if (!planContent) {
+        // pr_open and releasing crossed this gate at link_pr; releasing allows only complete, so refusing there strands it.
+        if (state?.phase === "pr_open" || state?.phase === "releasing") {
+          return { pass: true };
+        }
+        // Every refusal names a method the current phase allows, or the lifecycle deadlocks.
+        const rereview = state?.phase === "verifying"
+          ? "Run 'code_conformance_review'."
+          : state?.phase === "pr_failed"
+          ? "Run 'implement', then 'verify', 'verification_passed' and 'code_conformance_review' for the new commit."
+          : "Run 'verify', then 'verification_passed' and 'code_conformance_review' for the verified commit.";
+
+        const plan = await read<PlanData>("plan-main");
+        if (!plan) {
           return { pass: false, errors: ["No plan exists."] };
         }
-        const plan = JSON.parse(
-          new TextDecoder().decode(planContent),
-        ) as PlanData;
 
-        const reviewContent = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
+        const review = await read<CodeConformanceReviewData>(
           "codeConformanceReview-main",
         );
-        if (!reviewContent) {
+        if (!review) {
           return {
             pass: false,
-            errors: [
-              "No code conformance review exists. Run 'code_conformance_review' before linking a PR.",
-            ],
+            errors: [`No code conformance review exists. ${rereview}`],
           };
         }
-        const review = JSON.parse(
-          new TextDecoder().decode(reviewContent),
-        ) as CodeConformanceReviewData;
 
         if (review.planVersion !== plan.version) {
           return {
             pass: false,
             errors: [
-              `Code conformance review is for plan v${review.planVersion} but current plan is v${plan.version}. Re-run 'code_conformance_review'.`,
+              `Code conformance review is for plan v${review.planVersion} but current plan is v${plan.version}. ${rereview}`,
             ],
           };
+        }
+
+        if (state?.phase === "verifying" || state?.phase === "pr_failed") {
+          const verified = verifiedCommit(
+            state,
+            await read<VerificationResultData>("verificationResult-main"),
+          );
+          if ("refusal" in verified) {
+            return {
+              pass: false,
+              errors: [
+                state.phase === "verifying"
+                  ? verified.refusal
+                  : `No passing verification result. ${rereview}`,
+              ],
+            };
+          }
+          if (review.commit !== verified.commit) {
+            return {
+              pass: false,
+              errors: [
+                `Code conformance review covers ${
+                  review.commit ?? "no verified commit"
+                }, but verification passed for ${verified.commit}. ${rereview}`,
+              ],
+            };
+          }
         }
 
         const unjustified = review.steps.filter(
@@ -1266,42 +1361,6 @@ export const model = {
           };
         }
 
-        return { pass: true };
-      },
-    },
-
-    "conformance-review-required": {
-      description:
-        "Ensures a code conformance review exists before verification can start, " +
-        "preventing a deadlock where verify moves to verifying but link_pr " +
-        "demands a conformance review that can no longer be created",
-      labels: ["policy"],
-      appliesTo: ["verify"],
-      execute: async (context: {
-        dataRepository: {
-          getContent: (
-            type: string,
-            modelId: string,
-            dataName: string,
-          ) => Promise<Uint8Array | null>;
-        };
-        modelType: string;
-        modelId: string;
-      }) => {
-        const content = await context.dataRepository.getContent(
-          context.modelType,
-          context.modelId,
-          "codeConformanceReview-main",
-        );
-        if (!content) {
-          return {
-            pass: false,
-            errors: [
-              "No code conformance review exists. Run 'code_conformance_review' before 'verify' — " +
-              "once in the verifying phase, the conformance review can no longer be created.",
-            ],
-          };
-        }
         return { pass: true };
       },
     },
@@ -2114,7 +2173,8 @@ export const model = {
     code_conformance_review: {
       rollbackOnFailure: true,
       description:
-        "Record an adversarial comparison of implemented code against the approved plan. " +
+        "Record an adversarial comparison of the verified code against the approved plan. " +
+        "Runs in verifying after verification_passed and covers the verified commit. " +
         "Each plan step is verified as implemented, deviated, partially implemented, or missing. " +
         "Unplanned changes are recorded as 'added' steps. Deviations are expected — " +
         "they just need a justification explaining why the code differs.",
@@ -2163,12 +2223,24 @@ export const model = {
           throw new Error("No plan exists. Run 'plan' first.");
         }
 
+        const verified = verifiedCommit(
+          await context.readResource!("state-main") as StateData | null,
+          await context.readResource!(
+            "verificationResult-main",
+          ) as VerificationResultData | null,
+        );
+        if ("refusal" in verified) {
+          throw new Error(verified.refusal);
+        }
+        const commit = verified.commit;
+
         handles.push(
           await context.writeResource(
             "codeConformanceReview",
             "codeConformanceReview-main",
             {
               planVersion: plan.version,
+              commit,
               steps: args.steps,
               reviewedAt: new Date().toISOString(),
             },
@@ -2184,8 +2256,9 @@ export const model = {
         ).length;
 
         context.logger.info(
-          "Code conformance review for plan v{planVersion}: {implemented} implemented, {deviated} deviated ({unjustified} unjustified)",
+          "Code conformance review of {commit} for plan v{planVersion}: {implemented} implemented, {deviated} deviated ({unjustified} unjustified)",
           {
+            commit,
             planVersion: plan.version,
             implemented,
             deviated,
@@ -2201,9 +2274,10 @@ export const model = {
           step: "code_conformance_review",
           targetStatus: "in_progress",
           summary:
-            `Code conformance review (plan v${plan.version}): ${implemented} implemented, ${deviated} deviated (${unjustified} unjustified)`,
+            `Code conformance review of ${commit} (plan v${plan.version}): ${implemented} implemented, ${deviated} deviated (${unjustified} unjustified)`,
           emoji: "\u{1F50D}",
           payload: {
+            commit,
             planVersion: plan.version,
             steps: args.steps,
             implemented,
@@ -2282,6 +2356,7 @@ export const model = {
             "codeConformanceReview-main",
             {
               planVersion: current.planVersion,
+              commit: current.commit,
               steps: updatedSteps,
               reviewedAt: new Date().toISOString(),
             },
@@ -2457,9 +2532,10 @@ export const model = {
       rollbackOnFailure: true,
       description:
         "Fast-forward lifecycle for ad-hoc work. Atomically writes " +
-        "classification, plan, adversarial review, and code conformance " +
-        "review, then transitions to implementing. Used when a tracking " +
-        "issue was created retroactively for work already done.",
+        "classification, plan and adversarial review, then transitions to " +
+        "implementing. The code conformance review runs after verification, " +
+        "as for any other issue. Used when a tracking issue was created " +
+        "retroactively for work already done.",
       arguments: z.object({
         summary: z.string().describe(
           "Brief description of the work done",
@@ -2536,22 +2612,6 @@ export const model = {
             {
               planVersion: 1,
               findings: [],
-              reviewedAt: now,
-            },
-          ),
-        );
-
-        handles.push(
-          await context.writeResource(
-            "codeConformanceReview",
-            "codeConformanceReview-main",
-            {
-              planVersion: 1,
-              steps: args.steps.map((s) => ({
-                order: s.order,
-                status: "implemented",
-                description: s.description,
-              })),
               reviewedAt: now,
             },
           ),
@@ -2647,6 +2707,7 @@ export const model = {
         const stateHandle = await context.writeResource("state", "state-main", {
           phase: "verifying",
           issueNumber,
+          commit: args.commit,
           updatedAt: new Date().toISOString(),
         });
 
@@ -2723,6 +2784,18 @@ export const model = {
         const { issueNumber } = context.globalArgs;
         const now = new Date().toISOString();
 
+        const state = await context.readResource?.("state-main") as
+          | StateData
+          | null
+          | undefined;
+        if (state?.commit && state.commit !== args.commit) {
+          throw new Error(
+            `verify started on ${state.commit}, not ${args.commit}. Record ` +
+              `'verification_failed' for ${state.commit}, then 'verify' ` +
+              "the new commit.",
+          );
+        }
+
         const succeeded = args.steps.filter((s) => s.status === "succeeded")
           .length;
         const skipped = args.steps.filter((s) => s.status === "skipped").length;
@@ -2748,6 +2821,7 @@ export const model = {
         const stateHandle = await context.writeResource("state", "state-main", {
           phase: "verifying",
           issueNumber,
+          commit: args.commit,
           updatedAt: now,
         });
 
@@ -2855,7 +2929,8 @@ export const model = {
     post_attestation: {
       description:
         "Post the verification attestation to swamp-club. Must be called " +
-        "after verification passes and the user confirms the checklist, " +
+        "after verification passes, the code conformance review of the " +
+        "verified commit is justified, and the user confirms the checklist, " +
         "before opening a PR. The PR must not open without a stored " +
         "attestation — this is a hard gate.",
       arguments: z.object({
@@ -2910,6 +2985,24 @@ export const model = {
           );
         }
         const attestation = validated.data;
+
+        const review = await context.readResource?.(
+          "codeConformanceReview-main",
+        ) as CodeConformanceReviewData | null | undefined;
+        if (!review?.commit) {
+          throw new Error(
+            "No code conformance review of a verified commit exists. Run " +
+              "'code_conformance_review' before 'post_attestation'.",
+          );
+        }
+        if (attestation.subject.commit !== review.commit) {
+          throw new Error(
+            `The attestation is for ${attestation.subject.commit}, but the ` +
+              `code conformance review covers ${review.commit}. Build the ` +
+              "attestation for the reviewed commit, or record " +
+              "'verification_failed' to verify new code.",
+          );
+        }
 
         const sc = await createSwampClubClient(
           context.globalArgs,

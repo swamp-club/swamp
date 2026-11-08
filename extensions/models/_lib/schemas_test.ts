@@ -53,10 +53,13 @@ Deno.test("TRANSITIONS: link_pr accepts verifying, pr_open, and pr_failed", () =
   ]);
 });
 
-Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", () => {
-  // Accepting all three keeps backwards compatibility while allowing
-  // the new releasing phase to be closed out directly.
-  assertEquals(TRANSITIONS.complete, ["implementing", "pr_open", "releasing"]);
+Deno.test("TRANSITIONS: complete accepts verifying, pr_open, and releasing", () => {
+  assertEquals(TRANSITIONS.complete, ["verifying", "pr_open", "releasing"]);
+});
+
+Deno.test("TRANSITIONS: the conformance review is recorded only after verification", () => {
+  assertEquals(TRANSITIONS.code_conformance_review, ["verifying"]);
+  assertEquals(TRANSITIONS.justify_deviations, ["verifying", "pr_failed"]);
 });
 
 Deno.test("TRANSITIONS: there is no ship — pr_merged ships and releasing closes out with complete", () => {

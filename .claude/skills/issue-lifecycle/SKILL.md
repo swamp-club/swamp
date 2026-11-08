@@ -125,8 +125,10 @@ attestation to flow through.
 
 6. **Proceed with normal verification.** Read
    [references/verification.md](references/verification.md) and continue from
-   its step 2 (Run Verification) through verification_passed → post_attestation
-   → link_pr. Step 1 there is the `verify` call just made — do not repeat it.
+   its step 2 (Run Verification) through verification_passed → code conformance
+   review → post_attestation → link_pr. Step 1 there is the `verify` call just
+   made — do not repeat it. `fast_forward` writes no conformance review; it is
+   recorded after verification passes, as for any other issue.
 
 7. **Drive the lifecycle to `done`.** `link_pr` only reaches `pr_open` — it is
    not the end of the flow, and stopping there leaves the issue parked. Run
@@ -227,24 +229,27 @@ running the review first. Covers: challenging the plan across repo-specific
 dimensions, verifying against the codebase, recording findings, presenting to
 the human, and the iteration loop until approval.
 
-### Phase 4: Implementation & Code Conformance Review
+### Phase 4: Implementation
 
 Read [references/implementation.md](references/implementation.md) after plan
 approval. Covers: signalling implementation start and doing the work.
 
-After the code is written, read
-[references/code-conformance-review.md](references/code-conformance-review.md)
-**before verification.** This adversarially compares the implemented code
-against the approved plan. Deviations are expected — they just need a documented
-justification.
-
 ### Phase 4a: Verification Loop
 
-Read [references/verification.md](references/verification.md) **after code
-conformance review is complete.** This runs the same checks as CI (lint, test,
-compile, agent reviews) as host workflows before the PR opens. The agent
-iterates — fixing failures and re-verifying — until all steps pass. Only then
-can a PR be created.
+Read [references/verification.md](references/verification.md) after the code is
+written. This runs the same checks as CI (lint, test, compile, agent reviews) as
+host workflows before the PR opens. The agent iterates — fixing failures and
+re-verifying — until all steps pass.
+
+### Phase 4b: Code Conformance Review
+
+Read
+[references/code-conformance-review.md](references/code-conformance-review.md)
+**after `verification_passed`.** This is the last gate before the PR: it
+compares the verified commit against the approved plan and records every
+deviation, each with a justification. It never changes code. `post_attestation`,
+`link_pr` and `complete` refuse until the verified commit has a fully justified
+review.
 
 ### Phase 5: Contributor Notification
 
@@ -336,20 +341,20 @@ Read `results[0].phase` from the response. **Do NOT call `start` to resume** —
 
 Use this table to determine what to do next:
 
-| Phase            | Action                                                                                             |
-| ---------------- | -------------------------------------------------------------------------------------------------- |
-| `triaging`       | Read [references/triage.md](references/triage.md); duplicate of a shipped issue → `mark_duplicate` |
-| `classified`     | Read [references/planning.md](references/planning.md)                                              |
-| `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)                          |
-| `approved`       | Read [references/implementation.md](references/implementation.md); plan needs changes → `iterate`  |
-| `implementing`   | Run code conformance review, then verify                                                           |
-| `verifying`      | Read [references/verification.md](references/verification.md)                                      |
-| `pr_open`        | Run `watch_pr` — it closes out a merge and records a failure itself (implementation.md 4b)         |
-| `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)                               |
-| `releasing`      | Legacy phase from before merging shipped — run `complete`                                          |
-| `notify`         | Run `notify` — it thanks external authors and skips team members by itself                         |
-| `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet                             |
-| `done`           | Nothing to do — lifecycle is complete                                                              |
+| Phase            | Action                                                                                                    |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| `triaging`       | Read [references/triage.md](references/triage.md); duplicate of a shipped issue → `mark_duplicate`        |
+| `classified`     | Read [references/planning.md](references/planning.md)                                                     |
+| `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)                                 |
+| `approved`       | Read [references/implementation.md](references/implementation.md); plan needs changes → `iterate`         |
+| `implementing`   | Verify — read [references/verification.md](references/verification.md)                                    |
+| `verifying`      | Finish verification; after `verification_passed`, run the code conformance review                         |
+| `pr_open`        | Run `watch_pr` — it closes out a merge and records a failure itself (implementation.md 4b)                |
+| `pr_failed`      | Any code change goes through `implement`, verify and conformance; `link_pr` only re-links the same commit |
+| `releasing`      | Legacy phase from before merging shipped — run `complete`                                                 |
+| `notify`         | Run `notify` — it thanks external authors and skips team members by itself                                |
+| `summarizing`    | Call `summarize` — needs originalProblem, deliveredOutcome, outcomeMet                                    |
+| `done`           | Nothing to do — lifecycle is complete                                                                     |
 
 The canonical phase list lives in the `TRANSITIONS` constant in
 `extensions/models/_lib/schemas.ts`.
@@ -363,10 +368,11 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    swamp data query 'modelName == "issue-<N>" && name == "state-main"' --select content --json
    ```
    The phase is `results[0].phase`.
-2. If the phase is `implementing`, link the PR first:
-   ```
-   swamp behavior run @swamp/issue-lifecycle link_pr issue-<N> --input url=<PR URL>
-   ```
+2. If the phase is `implementing`, the merged commit still needs its gates:
+   `verify`, `verification_passed`, then `code_conformance_review` (and
+   `justify_deviations`). `verification_passed` needs the verification workflows
+   to actually run against that merged commit. Then `link_pr` and `watch_pr`
+   (step 3), or `complete` from `verifying`.
 3. If the phase is `pr_open`, run `watch_pr` with the summary inputs — it sees
    the merge, ships the issue, and walks `notify` and `summarize` to `done`:
    ```
@@ -384,9 +390,9 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    swamp behavior run @swamp/issue-lifecycle summarize issue-<N> \
      --input originalProblem="<problem>" --input deliveredOutcome="<outcome>" --input outcomeMet=true
    ```
-7. For quick close-out, `complete` still works from `implementing`, `pr_open`,
-   or `releasing` (transitions to `notify`, then `notify`/`skip_notify`, then
-   `summarize`).
+7. For quick close-out, `complete` works from `verifying` (once the verified
+   commit has a justified conformance review), `pr_open`, or `releasing`
+   (transitions to `notify`, then `notify`/`skip_notify`, then `summarize`).
 
 ## Key Rules
 

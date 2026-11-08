@@ -1,12 +1,17 @@
 # Code Conformance Review
 
-Read this after the implementation is complete and before creating a PR. The
-code conformance review compares what was actually built against the approved
-plan. Deviations are expected — implementations always discover things the plan
-didn't anticipate. The value is in documenting **why** the code differs.
+Read this after `verification_passed`, before the checklist and the attestation.
+The code conformance review compares the verified commit against the approved
+plan. It records deviations; it never changes code. Deviations are expected —
+implementations always discover things the plan didn't anticipate. The value is
+in documenting **why** the code differs.
 
-**This review is mandatory.** Both `link_pr` and `complete` will fail if no
-conformance review exists or if any deviations lack justifications.
+**This review is mandatory and runs only in `verifying`.** It needs a passing
+verification result for the commit `verify` started on, and records that commit.
+`post_attestation`, `link_pr` and `complete` refuse until the verified commit
+has a review with every deviation justified. If you decide to change code
+instead of justifying a deviation, record `verification_failed`, fix, and verify
+and review the new commit.
 
 ## Step 1: Retrieve the Approved Plan
 
@@ -20,7 +25,7 @@ review must reference it.
 
 ## Step 2: Review the Code Changes
 
-Diff the branch against main to see all changes:
+The verified commit is `HEAD`. Diff it against main to see all changes:
 
 ```
 git fetch origin main
@@ -110,7 +115,7 @@ If there are unjustified deviations, say:
 If all deviations are justified, say:
 
 > "Code conformance review complete — all deviations from the plan are
-> justified. Ready to create a PR when you are."
+> justified. Here is the verification checklist."
 
 ## Step 7: Justify Remaining Deviations
 
@@ -128,10 +133,11 @@ swamp behavior run @swamp/issue-lifecycle justify_deviations issue-<N> \
   --input-file /tmp/justifications-issue-<N>.yaml
 ```
 
-Keep iterating until all deviations are justified. Only then can `link_pr`
-proceed.
+Keep iterating until all deviations are justified. Only then can
+`post_attestation` and `link_pr` proceed.
 
 ## Next Phase
 
-All deviations justified. Read [implementation.md](implementation.md) step 4
-onward to create and link the PR.
+All deviations justified. Return to [verification.md](verification.md) — the
+checklist step under "All steps passed": present the checklist, post the
+attestation, then open the PR.

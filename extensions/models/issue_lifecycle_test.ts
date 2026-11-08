@@ -19,7 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { buildNotifyMessage, model } from "./issue_lifecycle.ts";
-import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
+import { PR_COOLDOWN_MS, TRANSITIONS } from "./_lib/schemas.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -368,8 +368,8 @@ Deno.test("model: exposes the new post_attestation method definition", () => {
   );
 });
 
-Deno.test("model: version is 2026.11.04.1", () => {
-  assertEquals(model.version, "2026.11.04.1");
+Deno.test("model: version is 2026.11.08.1", () => {
+  assertEquals(model.version, "2026.11.08.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -524,7 +524,16 @@ Deno.test("post_attestation: rejects input that is not JSON", async () => {
 });
 
 Deno.test("post_attestation: a valid document gets as far as needing swamp-club", async () => {
-  const { context, restore } = await buildTestContext(42);
+  const { context, restore } = await buildTestContext(42, {
+    resources: {
+      "codeConformanceReview-main": {
+        planVersion: 1,
+        commit: "a".repeat(40),
+        steps: [],
+        reviewedAt: "t",
+      },
+    },
+  });
   try {
     const error = await assertRejects(
       () =>
@@ -544,6 +553,47 @@ Deno.test("post_attestation: a valid document gets as far as needing swamp-club"
     await restore();
   }
 });
+
+for (
+  const [label, review] of [
+    ["a review of another commit", {
+      planVersion: 1,
+      commit: "b".repeat(40),
+      steps: [],
+      reviewedAt: "t",
+    }],
+    ["a review with no commit", { planVersion: 1, steps: [], reviewedAt: "t" }],
+    ["no review", undefined],
+  ] as const
+) {
+  Deno.test(`post_attestation: refuses an attestation when there is ${label} of its commit`, async () => {
+    const { context, restore } = await buildTestContext(42, {
+      resources: review ? { "codeConformanceReview-main": { ...review } } : {},
+    });
+    try {
+      const error = await assertRejects(
+        () =>
+          model.methods.post_attestation.execute(
+            { attestation: JSON.stringify(validAttestation()) },
+            context,
+          ),
+        Error,
+      );
+      assertStringIncludes(
+        error.message,
+        review?.commit
+          ? "code conformance review covers"
+          : "No code conformance review of a verified commit",
+      );
+      assertStringIncludes(
+        error.message,
+        review?.commit ? "'verification_failed'" : "'code_conformance_review'",
+      );
+    } finally {
+      await restore();
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // pr_merged
@@ -1453,9 +1503,29 @@ Deno.test("notify: force thanks a team member without consulting the roster", as
 // code_conformance_review
 // ---------------------------------------------------------------------------
 
-Deno.test("code_conformance_review: writes codeConformanceReview-main with plan version and steps", async () => {
+const PASSED = {
+  workflowRunId: "run",
+  commit: "c1",
+  branch: "b",
+  allPassed: true,
+  stepsCompleted: 1,
+  stepsTotal: 1,
+  stepsSkipped: 0,
+  stepsFailed: 0,
+  steps: [],
+  verifiedAt: "t",
+};
+
+Deno.test("code_conformance_review: writes codeConformanceReview-main with plan version, verified commit and steps", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
+      "state-main": {
+        phase: "verifying",
+        issueNumber: 42,
+        commit: "c1",
+        updatedAt: "t",
+      },
+      "verificationResult-main": { ...PASSED },
       "plan-main": {
         version: 3,
         summary: "Fix the bug",
@@ -1494,9 +1564,80 @@ Deno.test("code_conformance_review: writes codeConformanceReview-main with plan 
     assertEquals(reviewWrite !== undefined, true);
     assertEquals(reviewWrite!.instanceName, "codeConformanceReview-main");
     assertEquals(reviewWrite!.data.planVersion, 3);
+    assertEquals(reviewWrite!.data.commit, "c1");
     assertEquals(
       (reviewWrite!.data.steps as unknown[]).length,
       2,
+    );
+  } finally {
+    await restore();
+  }
+});
+
+for (
+  const [label, resources, expected] of [
+    ["no verification result", {}, "No passing verification result"],
+    [
+      "a failing verification result",
+      { "verificationResult-main": { ...PASSED, allPassed: false } },
+      "No passing verification result",
+    ],
+    [
+      "a pass for a commit other than the one under verification",
+      {
+        "verificationResult-main": { ...PASSED, commit: "c0" },
+        "state-main": {
+          phase: "verifying",
+          issueNumber: 42,
+          commit: "c1",
+          updatedAt: "t",
+        },
+      },
+      "verify started on c1",
+    ],
+  ] as const
+) {
+  Deno.test(`code_conformance_review: refuses ${label} and names verification_failed`, async () => {
+    const { context, writes, restore } = await buildTestContext(42, {
+      resources: {
+        "plan-main": { version: 1 },
+        ...structuredClone(resources) as Record<
+          string,
+          Record<string, unknown>
+        >,
+      },
+    });
+    try {
+      const error = await assertRejects(
+        () =>
+          model.methods.code_conformance_review.execute(
+            { steps: [] },
+            context,
+          ),
+        Error,
+      );
+      assertStringIncludes(error.message, expected);
+      assertStringIncludes(error.message, "verification_failed");
+      assertEquals(writes.length, 0);
+    } finally {
+      await restore();
+    }
+  });
+}
+
+Deno.test("code_conformance_review: a legacy verifying state with no commit reviews the passing result", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: {
+      "plan-main": { version: 1 },
+      "state-main": { phase: "verifying", issueNumber: 42, updatedAt: "t" },
+      "verificationResult-main": { ...PASSED },
+    },
+  });
+  try {
+    await model.methods.code_conformance_review.execute({ steps: [] }, context);
+    assertEquals(
+      writes.find((w) => w.specName === "codeConformanceReview")!.data.commit,
+      "c1",
     );
   } finally {
     await restore();
@@ -1529,6 +1670,7 @@ Deno.test("justify_deviations: adds justification to unjustified steps", async (
     resources: {
       "codeConformanceReview-main": {
         planVersion: 1,
+        commit: "c1",
         steps: [
           {
             order: 1,
@@ -1568,6 +1710,7 @@ Deno.test("justify_deviations: adds justification to unjustified steps", async (
     }[];
     const step2 = steps.find((s) => s.order === 2);
     assertEquals(step2!.justification, "Deferred to follow-up issue #100");
+    assertEquals(reviewWrite!.data.commit, "c1");
   } finally {
     await restore();
   }
@@ -1779,79 +1922,200 @@ Deno.test("model: exposes code-conformance-clear check definition", () => {
 });
 
 // ---------------------------------------------------------------------------
-// conformance-review-required (verify pre-flight)
+// code-conformance-clear: commit binding
 // ---------------------------------------------------------------------------
 
-Deno.test("conformance-review-required: rejects when no conformance review exists", async () => {
-  const checkContext = {
-    methodName: "verify",
+function conformanceCheckContext(
+  data: Record<string, unknown>,
+): Parameters<
+  typeof model.checks["code-conformance-clear"]["execute"]
+>[0] {
+  return {
     dataRepository: {
-      getContent: (
-        _type: string,
-        _modelId: string,
-        _dataName: string,
-      ) => {
-        return Promise.resolve(null);
-      },
+      getContent: (_type: string, _modelId: string, dataName: string) =>
+        Promise.resolve(
+          dataName in data
+            ? new TextEncoder().encode(JSON.stringify(data[dataName]))
+            : null,
+        ),
     },
     modelType: "@swamp/issue-lifecycle",
     modelId: "issue-42",
   };
+}
 
-  const result = await model.checks["conformance-review-required"].execute(
-    checkContext,
-  );
-  assertEquals(result.pass, false);
-  assertStringIncludes(
-    result.errors![0],
-    "No code conformance review exists",
-  );
-  assertStringIncludes(
-    result.errors![0],
-    "code_conformance_review",
-  );
+const reviewOf = (commit?: string) => ({
+  planVersion: 1,
+  ...(commit ? { commit } : {}),
+  steps: [{ order: 1, status: "implemented", description: "Done" }],
+  reviewedAt: "t",
 });
 
-Deno.test("conformance-review-required: passes when conformance review exists", async () => {
-  const checkContext = {
-    methodName: "verify",
-    dataRepository: {
-      getContent: (
-        _type: string,
-        _modelId: string,
-        dataName: string,
-      ) => {
-        if (dataName === "codeConformanceReview-main") {
-          return Promise.resolve(
-            new TextEncoder().encode(
-              JSON.stringify({
-                planVersion: 1,
-                steps: [
-                  { order: 1, status: "implemented", description: "Done" },
-                ],
-              }),
-            ),
-          );
-        }
-        return Promise.resolve(null);
-      },
-    },
-    modelType: "@swamp/issue-lifecycle",
-    modelId: "issue-42",
-  };
+const inPhase = (phase: string) => ({
+  phase,
+  issueNumber: 42,
+  updatedAt: "t",
+});
 
-  const result = await model.checks["conformance-review-required"].execute(
-    checkContext,
+Deno.test("code-conformance-clear: gates post_attestation, link_pr and complete", () => {
+  assertEquals(model.checks["code-conformance-clear"].appliesTo, [
+    "post_attestation",
+    "link_pr",
+    "complete",
+  ]);
+});
+
+Deno.test("model: no check gates verify, so implementing can always reach verifying", () => {
+  for (const [name, check] of Object.entries(model.checks)) {
+    const appliesTo = (check as { appliesTo?: string[] }).appliesTo;
+    assertEquals(appliesTo?.includes("verify") ?? false, false, name);
+  }
+});
+
+for (
+  const [label, phase, data, expected, exit] of [
+    [
+      "a review of another commit in verifying",
+      "verifying",
+      {
+        "verificationResult-main": { allPassed: true, commit: "c2" },
+        "codeConformanceReview-main": reviewOf("c1"),
+      },
+      "covers c1, but verification passed for c2",
+      "code_conformance_review",
+    ],
+    [
+      "a legacy review with no commit in verifying",
+      "verifying",
+      {
+        "verificationResult-main": { allPassed: true, commit: "c2" },
+        "codeConformanceReview-main": reviewOf(),
+      },
+      "covers no verified commit",
+      "code_conformance_review",
+    ],
+    [
+      "a failing verification result in verifying",
+      "verifying",
+      {
+        "verificationResult-main": { allPassed: false, commit: "c1" },
+        "codeConformanceReview-main": reviewOf("c1"),
+      },
+      "No passing verification result",
+      "verification_failed",
+    ],
+    [
+      "no conformance review in verifying",
+      "verifying",
+      { "verificationResult-main": { allPassed: true, commit: "c1" } },
+      "No code conformance review exists",
+      "code_conformance_review",
+    ],
+    [
+      "a legacy review with no commit in pr_failed",
+      "pr_failed",
+      {
+        "verificationResult-main": { allPassed: true, commit: "c1" },
+        "codeConformanceReview-main": reviewOf(),
+      },
+      "covers no verified commit",
+      "implement",
+    ],
+  ] as const
+) {
+  Deno.test(`code-conformance-clear: refuses ${label} and names an exit the phase allows`, async () => {
+    const result = await model.checks["code-conformance-clear"].execute(
+      conformanceCheckContext({
+        "plan-main": { version: 1 },
+        "state-main": inPhase(phase),
+        ...data,
+      }),
+    );
+    assertEquals(result.pass, false);
+    assertStringIncludes(result.errors![0], expected);
+    assertStringIncludes(result.errors![0], `'${exit}'`);
+    assertEquals(TRANSITIONS[exit].includes(phase), true);
+  });
+}
+
+Deno.test("code-conformance-clear: passes a justified review of the verified commit in verifying", async () => {
+  const result = await model.checks["code-conformance-clear"].execute(
+    conformanceCheckContext({
+      "plan-main": { version: 1 },
+      "state-main": inPhase("verifying"),
+      "verificationResult-main": { allPassed: true, commit: "c1" },
+      "codeConformanceReview-main": reviewOf("c1"),
+    }),
   );
   assertEquals(result.pass, true);
 });
 
-Deno.test("model: exposes conformance-review-required check definition", () => {
-  assertEquals("conformance-review-required" in model.checks, true);
-  assertEquals(
-    model.checks["conformance-review-required"].appliesTo,
-    ["verify"],
-  );
+for (const phase of ["pr_open", "releasing"]) {
+  Deno.test(`code-conformance-clear: a legacy review with no commit still completes from ${phase}`, async () => {
+    const result = await model.checks["code-conformance-clear"].execute(
+      conformanceCheckContext({
+        "plan-main": { version: 1 },
+        "state-main": inPhase(phase),
+        "codeConformanceReview-main": reviewOf(),
+      }),
+    );
+    assertEquals(result.pass, true);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// verify / verification_passed: the commit under verification
+// ---------------------------------------------------------------------------
+
+Deno.test("verify: records the commit under verification on state", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.verify.execute({ commit: "c1", branch: "b" }, context);
+    const state = writes.find((w) => w.specName === "state")!.data;
+    assertEquals(state.phase, "verifying");
+    assertEquals(state.commit, "c1");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("verification_passed: refuses a commit other than the one verify started on", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: { "state-main": { ...inPhase("verifying"), commit: "c1" } },
+  });
+  try {
+    const error = await assertRejects(
+      () =>
+        model.methods.verification_passed.execute(
+          { workflowRunId: "r", commit: "c2", branch: "b", steps: [] },
+          context,
+        ),
+      Error,
+    );
+    assertStringIncludes(error.message, "verify started on c1, not c2");
+    assertStringIncludes(error.message, "'verification_failed'");
+    assertEquals(writes.length, 0);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("verification_passed: keeps the verified commit on state", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: { "state-main": { ...inPhase("verifying"), commit: "c1" } },
+  });
+  try {
+    await model.methods.verification_passed.execute(
+      { workflowRunId: "r", commit: "c1", branch: "b", steps: [] },
+      context,
+    );
+    assertEquals(
+      writes.find((w) => w.specName === "state")!.data.commit,
+      "c1",
+    );
+  } finally {
+    await restore();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -2041,7 +2305,7 @@ Deno.test("model: exposes summarize method definition", () => {
 // fast_forward
 // ---------------------------------------------------------------------------
 
-Deno.test("fast_forward: writes classification, plan, adversarialReview, codeConformanceReview, and state", async () => {
+Deno.test("fast_forward: writes classification, plan, adversarialReview and state, and no conformance review", async () => {
   const { context, writes, restore } = await buildTestContext(99);
   try {
     await model.methods.fast_forward.execute(
@@ -2090,17 +2354,10 @@ Deno.test("fast_forward: writes classification, plan, adversarialReview, codeCon
       0,
     );
 
-    const conformanceWrite = writes.find((w) =>
-      w.specName === "codeConformanceReview"
+    assertEquals(
+      writes.some((w) => w.specName === "codeConformanceReview"),
+      false,
     );
-    assertEquals(conformanceWrite !== undefined, true);
-    assertEquals(conformanceWrite!.data.planVersion, 1);
-    const conformanceSteps = conformanceWrite!.data.steps as Array<
-      Record<string, unknown>
-    >;
-    assertEquals(conformanceSteps.length, 2);
-    assertEquals(conformanceSteps[0].status, "implemented");
-    assertEquals(conformanceSteps[1].status, "implemented");
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
@@ -2502,4 +2759,295 @@ Deno.test("start: the assignment entry is recorded best-effort", async () => {
     "recordLifecycleBestEffort",
     "the assigned entry reports on a best-effort action and must not raise",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Governance walk: no phase before a PR is left without a way forward
+// ---------------------------------------------------------------------------
+
+type Walk = Awaited<ReturnType<typeof buildTestContext>> & {
+  phase: () => Promise<string>;
+  gate: (method: string) => Promise<string[]>;
+  run: (method: string, args: Record<string, unknown>) => Promise<string[]>;
+};
+
+/** Runs the real phase guard, every check scoped to a method, and the method itself over one store. */
+async function walk(
+  resources: Record<string, Record<string, unknown>>,
+): Promise<Walk> {
+  const built = await buildTestContext(42, { resources });
+  const { context } = built;
+  const dataRepository = {
+    getContent: async (_type: string, _modelId: string, name: string) => {
+      const value = await context.readResource!(name);
+      return value ? new TextEncoder().encode(JSON.stringify(value)) : null;
+    },
+  };
+  const phase = async () =>
+    ((await context.readResource!("state-main")) as { phase: string }).phase;
+  const assertExitNamed = async (errors: string[]) => {
+    const current = await phase();
+    for (const error of errors) {
+      const named = [...error.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+      assertEquals(
+        named.some((m) => TRANSITIONS[m]?.includes(current as never)),
+        true,
+        `refusal in ${current} names no method that phase allows: ${error}`,
+      );
+    }
+  };
+  const gate = async (method: string) => {
+    const errors: string[] = [];
+    for (const check of Object.values(model.checks)) {
+      const appliesTo = (check as { appliesTo?: string[] }).appliesTo;
+      if (appliesTo && !appliesTo.includes(method)) continue;
+      const result = await (check.execute as (c: unknown) => Promise<{
+        pass: boolean;
+        errors?: string[];
+      }>)({
+        methodName: method,
+        dataRepository,
+        modelType: "@swamp/issue-lifecycle",
+        modelId: "issue-42",
+      });
+      if (!result.pass) errors.push(...(result.errors ?? []));
+    }
+    // The phase guard reports allowed phases, not methods; every other refusal must name its exit.
+    await assertExitNamed(
+      errors.filter((e) => !e.includes("cannot run in phase")),
+    );
+    return errors;
+  };
+  const run = async (method: string, args: Record<string, unknown>) => {
+    const refused = await gate(method);
+    if (refused.length > 0) return refused;
+    try {
+      await (model.methods as Record<
+        string,
+        { execute: (a: unknown, c: unknown) => Promise<unknown> }
+      >)[method].execute(args, context);
+      return [];
+    } catch (err) {
+      const message = (err as Error).message;
+      await assertExitNamed([message]);
+      return [message];
+    }
+  };
+  return { ...built, phase, gate, run };
+}
+
+const PLAN = { version: 1, steps: [{ order: 1, description: "s", files: [] }] };
+const passed = (commit: string) => ({
+  workflowRunId: "r",
+  commit,
+  branch: "b",
+  steps: [],
+});
+const atPhase = (phase: string, extra: Record<string, unknown> = {}) => ({
+  phase,
+  issueNumber: 42,
+  updatedAt: "t",
+  ...extra,
+});
+
+Deno.test("governance walk: verify, pass, review, justify, then the PR gates open", async () => {
+  const w = await walk({
+    "plan-main": PLAN,
+    "state-main": atPhase("implementing"),
+  });
+  try {
+    assertEquals(await w.run("verify", { commit: "c1", branch: "b" }), []);
+    assertEquals(await w.run("verification_passed", passed("c1")), []);
+    assertEquals(
+      await w.run("code_conformance_review", {
+        steps: [{ order: 1, status: "missing", description: "not done" }],
+      }),
+      [],
+    );
+    assertStringIncludes((await w.gate("link_pr"))[0], "unjustified");
+    assertEquals(
+      await w.run("justify_deviations", {
+        justifications: [{ order: 1, justification: "deferred" }],
+      }),
+      [],
+    );
+    for (const method of ["post_attestation", "link_pr", "complete"]) {
+      assertEquals(await w.gate(method), [], method);
+    }
+  } finally {
+    await w.restore();
+  }
+});
+
+Deno.test("governance walk: a code change after review is verified and reviewed again before the PR", async () => {
+  const w = await walk({
+    "plan-main": PLAN,
+    "state-main": atPhase("implementing"),
+  });
+  try {
+    await w.run("verify", { commit: "c1", branch: "b" });
+    await w.run("verification_passed", passed("c1"));
+    await w.run("code_conformance_review", { steps: [] });
+    assertEquals(
+      await w.run("verification_failed", {
+        workflowRunId: "r",
+        commit: "c1",
+        branch: "b",
+        failureReason: "changing code instead of justifying",
+      }),
+      [],
+    );
+    assertEquals(await w.phase(), "implementing");
+    assertEquals(await w.run("verify", { commit: "c2", branch: "b" }), []);
+
+    for (const method of ["post_attestation", "link_pr", "complete"]) {
+      assertStringIncludes((await w.gate(method))[0], "verify started on c2");
+    }
+    assertStringIncludes(
+      (await w.run("code_conformance_review", { steps: [] }))[0],
+      "verify started on c2",
+    );
+    assertStringIncludes(
+      (await w.run("verification_passed", passed("c1")))[0],
+      "verify started on c2",
+    );
+
+    assertEquals(await w.run("verification_passed", passed("c2")), []);
+    assertStringIncludes((await w.gate("link_pr"))[0], "covers c1");
+    assertEquals(await w.run("code_conformance_review", { steps: [] }), []);
+    for (const method of ["post_attestation", "link_pr", "complete"]) {
+      assertEquals(await w.gate(method), [], method);
+    }
+  } finally {
+    await w.restore();
+  }
+});
+
+Deno.test("governance walk: complete from implementing is refused while verify stays open", async () => {
+  const w = await walk({
+    "plan-main": PLAN,
+    "state-main": atPhase("implementing"),
+  });
+  try {
+    assertStringIncludes((await w.gate("complete"))[0], "cannot run in phase");
+    assertEquals(await w.gate("verify"), []);
+    await w.run("verify", { commit: "c1", branch: "b" });
+    await w.run("verification_passed", passed("c1"));
+    assertStringIncludes(
+      (await w.gate("complete"))[0],
+      "No code conformance review exists",
+    );
+    await w.run("code_conformance_review", { steps: [] });
+    assertEquals(await w.run("complete", {}), []);
+    assertEquals(await w.phase(), "notify");
+  } finally {
+    await w.restore();
+  }
+});
+
+const LEGACY_REVIEW = {
+  planVersion: 1,
+  steps: [{ order: 1, status: "implemented", description: "d" }],
+  reviewedAt: "t",
+};
+
+Deno.test("governance walk: a legacy implementing lifecycle with an old review verifies and is reviewed again", async () => {
+  const w = await walk({
+    "plan-main": PLAN,
+    "state-main": atPhase("implementing"),
+    "codeConformanceReview-main": LEGACY_REVIEW,
+  });
+  try {
+    assertEquals(await w.run("verify", { commit: "c1", branch: "b" }), []);
+    assertEquals(await w.run("verification_passed", passed("c1")), []);
+    assertStringIncludes((await w.gate("link_pr"))[0], "no verified commit");
+    assertEquals(await w.run("code_conformance_review", { steps: [] }), []);
+    assertEquals(await w.gate("link_pr"), []);
+  } finally {
+    await w.restore();
+  }
+});
+
+Deno.test("governance walk: a legacy verifying lifecycle with no state commit reaches the PR", async () => {
+  const w = await walk({
+    "plan-main": PLAN,
+    "state-main": atPhase("verifying"),
+    "codeConformanceReview-main": LEGACY_REVIEW,
+    "verificationResult-main": { ...passed("c1"), allPassed: true },
+  });
+  try {
+    assertStringIncludes((await w.gate("link_pr"))[0], "no verified commit");
+    assertEquals(await w.run("code_conformance_review", { steps: [] }), []);
+    assertEquals(await w.gate("link_pr"), []);
+  } finally {
+    await w.restore();
+  }
+});
+
+Deno.test("governance walk: a legacy pr_failed lifecycle reaches link_pr through implement", async () => {
+  const w = await walk({
+    "plan-main": PLAN,
+    "state-main": atPhase("pr_failed"),
+    "codeConformanceReview-main": LEGACY_REVIEW,
+    "verificationResult-main": { ...passed("c1"), allPassed: true },
+  });
+  try {
+    assertStringIncludes((await w.gate("link_pr"))[0], "'implement'");
+    assertEquals(await w.run("implement", {}), []);
+    assertEquals(await w.run("verify", { commit: "c3", branch: "b" }), []);
+    assertEquals(await w.run("verification_passed", passed("c3")), []);
+    assertEquals(await w.run("code_conformance_review", { steps: [] }), []);
+    assertEquals(await w.gate("link_pr"), []);
+  } finally {
+    await w.restore();
+  }
+});
+
+Deno.test("governance walk: a releasing lifecycle with no conformance review is not stranded", async () => {
+  const w = await walk({
+    "plan-main": PLAN,
+    "state-main": atPhase("releasing"),
+  });
+  try {
+    assertEquals(await w.run("complete", {}), []);
+    assertEquals(await w.phase(), "notify");
+  } finally {
+    await w.restore();
+  }
+});
+
+for (const phase of ["pr_open", "releasing"]) {
+  Deno.test(`governance walk: a legacy ${phase} lifecycle still completes`, async () => {
+    const w = await walk({
+      "plan-main": PLAN,
+      "state-main": atPhase(phase),
+      "codeConformanceReview-main": LEGACY_REVIEW,
+    });
+    try {
+      assertEquals(await w.gate("complete"), []);
+    } finally {
+      await w.restore();
+    }
+  });
+}
+
+Deno.test("governance walk: every phase but done allows at least one method", () => {
+  const allowed = new Set(Object.values(TRANSITIONS).flat());
+  for (
+    const phase of [
+      "triaging",
+      "classified",
+      "plan_generated",
+      "approved",
+      "implementing",
+      "verifying",
+      "pr_open",
+      "pr_failed",
+      "releasing",
+      "notify",
+      "summarizing",
+    ]
+  ) {
+    assertEquals(allowed.has(phase as never), true, phase);
+  }
 });
