@@ -557,7 +557,7 @@ function fanOutStructure(
     }
     if (plan === undefined) {
       if (fanOutPlanMissing(job, jobRun)) {
-        return `Job "${job.name}" has fanOut but started without a fan-out plan: fanOut was added after the run began, or an older swamp dropped the plan when it saved the run. A fan-out job is never re-planned.`;
+        return `Job "${job.name}" has fanOut but its run holds no fan-out plan: the plan was refused when the run reached the job, fanOut was added after the run began, or an older swamp dropped the plan when it saved the run. A fan-out job is never re-planned.`;
       }
       continue;
     }
@@ -581,7 +581,7 @@ function fanOutStructure(
   return undefined;
 }
 
-// recover checks before it resets anything, so a refused recover leaves the record as it was
+// checked before recover resets anything, so a refusal leaves the record as it was
 export function refuseFanOutRecover(
   workflow: Workflow,
   run: WorkflowRun,

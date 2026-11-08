@@ -2673,14 +2673,7 @@ export function clearRequestErrored(
   erroredRequests.get(socket)?.delete(requestId);
 }
 
-/**
- * with transform, deliveries are chained so events, the terminal and the detach
- * keep their order
- */
-/**
- * a client handles every kind it is sent, so kinds newer than the client go
- * only to one that asked; the buffer keeps them for every other subscriber
- */
+// a client crashes on a kind newer than itself, so those go only to one that asked
 export function withheldEventKinds(
   eventKinds: readonly string[] | undefined,
 ): ReadonlySet<string> {
@@ -2688,6 +2681,10 @@ export function withheldEventKinds(
   return new Set(FAN_OUT_EVENT_KINDS.filter((kind) => !asked.has(kind)));
 }
 
+/**
+ * with transform, deliveries are chained so events, the terminal and the detach
+ * keep their order
+ */
 export function createSocketSubscriber(
   socket: WebSocket,
   requestId: string,

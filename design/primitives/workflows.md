@@ -3277,8 +3277,8 @@ members from the plan, and never adds a worker that enrolled since.
   `refuseFanOutRecover` before recover touches the record) refuse, leaving the
   record unchanged: a job whose run holds a plan but whose workflow dropped
   `fanOut`; a fan-out job that started without a plan (`fanOutPlanMissing`:
-  `fanOut` was added after it started, or an older swamp dropped the plan when
-  it saved the run); a selector that differs from the snapshot; and a plan with
+  its plan was refused when the run reached it, `fanOut` was added after it
+  started, or an older swamp dropped the plan when it saved the run); a selector that differs from the snapshot; and a plan with
   no snapshot selector, from the release that shipped lanes, since an edited
   selector cannot be ruled out.
 - A retry of a fan-out job that failed because a member was not connected at

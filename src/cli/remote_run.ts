@@ -17,10 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { FAN_OUT_EVENT_KINDS } from "../domain/workflows/execution_events.ts";
 import type { Command } from "@cliffy/command";
 import { getLogger } from "@logtape/logtape";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
+import { FAN_OUT_EVENT_KINDS } from "../domain/workflows/execution_events.ts";
 import {
   AMBIGUOUS_GATE_CODE,
   GATE_REOPENED_CODE,

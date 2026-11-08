@@ -135,7 +135,7 @@ export function selectRetryTemplates(
     );
     if (job.status === "failed" && member !== undefined) {
       throw new UserError(
-        `Fan-out job "${job.jobName}" failed because worker "${member.worker}" was not connected when the job was planned, and a retry never adds a member. Start a new run. ${history}`,
+        `Fan-out job "${job.jobName}" failed because worker "${member.worker}" was not connected when the job was planned, and a retry never adds a member. Start a new run, or add --from to retry a step in another job. ${history}`,
       );
     }
   }

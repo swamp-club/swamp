@@ -245,7 +245,7 @@ Deno.test({
     await assertRejects(
       () => fleet.retryRun("patch-all", runId),
       UserError,
-      'Job "patch" has fanOut but started without a fan-out plan',
+      'Job "patch" has fanOut but its run holds no fan-out plan',
     );
 
     assertEquals(
@@ -290,7 +290,6 @@ Deno.test({
       );
     }
 
-    // a plain job that ran, then gains fanOut
     const plainWorkflow = await fleet.saveWorkflow({
       name: "plain",
       inputs: {},
@@ -307,7 +306,7 @@ Deno.test({
     await assertRejects(
       () => fleet.retryRun("plain", plainRun.id),
       UserError,
-      'Job "patch" has fanOut but started without a fan-out plan',
+      'Job "patch" has fanOut but its run holds no fan-out plan',
     );
     assertEquals(
       JSON.stringify(await fleet.runRecord(plainWorkflow, plainRun.id)),

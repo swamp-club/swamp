@@ -25555,10 +25555,35 @@ Deno.test("resume: a fan-out job whose plan an older swamp dropped is refused, n
         assertRejects(
           () => drainResume(service, workflow.name, failed.id),
           UserError,
-          'Job "build" has fanOut but started without a fan-out plan',
+          'Job "build" has fanOut but its run holds no fan-out plan',
         ),
     );
     assertEquals(runRepo.saves, saves);
+  });
+});
+
+Deno.test("resume: a retry of a fan-out job whose plan was refused is refused, never planned after the fact", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(createRetryWorkflow(), "build");
+    const { service, executor, runRepo } = await setupRetry(tempDir, workflow);
+    const failed = await withPoolReader(
+      [],
+      () => service.execute(workflow.name),
+    );
+    assertEquals(failed.status, "failed");
+    const saves = runRepo.saves;
+
+    await withPoolReader(
+      [poolWorker("w-a")],
+      () =>
+        assertRejects(
+          () => drainResume(service, workflow.name, failed.id),
+          UserError,
+          "the plan was refused when the run reached the job",
+        ),
+    );
+    assertEquals(runRepo.saves, saves);
+    assertEquals(executor.count("build/compile[w-a]"), 0);
   });
 });
 

@@ -599,7 +599,7 @@ export class Fleet implements AsyncDisposable {
     );
   }
 
-  /** Recovers an interrupted run and resumes it, as the execution service does. */
+  /** As the execution service does: resets the unknown steps, then resumes. */
   async recoverRun(
     workflowName: string,
     runId: string,
@@ -613,7 +613,6 @@ export class Fleet implements AsyncDisposable {
     );
   }
 
-  /** The stored run record, as data. */
   async runRecord(
     workflow: Workflow,
     runId: string,

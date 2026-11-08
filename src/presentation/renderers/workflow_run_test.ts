@@ -228,6 +228,36 @@ Deno.test("ConsoleWorkflowRunRenderer: a fan-out job shows its plan, the lanes a
   ]);
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: a waiting worker names serve's queue timeout when the domain cannot read it, and no timeout for 0", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events = simpleEvents(makeRunView("succeeded"));
+  const at = events.findIndex((e) => e.kind === "job_completed");
+  events.splice(
+    at,
+    0,
+    ...[null, 0].map((seconds): WorkflowRunEvent => ({
+      kind: "job_fanout_waiting",
+      jobId: "extract",
+      worker: "w-b",
+      queueTimeoutSeconds: seconds,
+    })),
+  );
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(
+    lines.filter((line) => line.includes("w-b waiting")).map((line) =>
+      line.replace(/^.*?│ /, "")
+    ),
+    [
+      "w-b waiting for its worker to connect (serve's queue timeout)",
+      "w-b waiting for its worker to connect (no queue timeout)",
+    ],
+  );
+});
+
 Deno.test("JsonWorkflowRunRenderer: fan-out events go to stderr as one record each, and stdout keeps one document", async () => {
   const stdout: string[] = [];
   const stderr: string[] = [];

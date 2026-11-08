@@ -736,3 +736,90 @@ Deno.test("workflowRecoverCommand: an interrupted fan-out run that recorded no w
     assertEquals(await stored(), before);
   });
 });
+
+Deno.test("workflowRecoverCommand: an interrupted fan-out run with its selector recorded is recovered, and the resume command names --server", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = Workflow.fromData(
+      {
+        id: crypto.randomUUID(),
+        name: "fleet",
+        jobs: [{
+          name: "main",
+          fanOut: "all",
+          labels: { role: "web" },
+          steps: [{
+            name: "deploy",
+            task: {
+              type: "model_method",
+              modelType: "test-model",
+              modelName: "deploy",
+              methodName: "run",
+            },
+          }],
+        }],
+      } as Parameters<typeof Workflow.fromData>[0],
+    );
+    await repoContext.workflowRepo.save(workflow);
+    const startedAt = "2026-09-20T10:00:00.000Z";
+    const run = WorkflowRun.fromData({
+      id: crypto.randomUUID(),
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      status: "interrupted",
+      startedAt,
+      completedAt: startedAt,
+      jobs: [{
+        jobName: "main",
+        status: "unknown",
+        startedAt,
+        steps: [{
+          stepName: "deploy[w-a]",
+          status: "unknown",
+          startedAt,
+          error: "interrupted: server_crash",
+        }],
+        fanOutPlan: {
+          members: [{
+            worker: "w-a",
+            instanceUuid: "u-a",
+            disposition: "dispatch",
+            batch: 0,
+          }],
+          plannedLanes: 1,
+          maxFailures: null,
+          batches: [["w-a"]],
+          lanes: [{
+            name: "main[w-a]",
+            worker: "w-a",
+            instanceUuid: "u-a",
+            steps: [],
+          }],
+        },
+        fanOutSnapshot: { selector: { labels: { role: "web" } }, workers: [] },
+      }],
+      tags: { interrupt_reason: "server_crash" },
+    });
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    const logs = await recover([
+      "fleet",
+      "--acknowledge-unknown",
+      "--json",
+      "--repo-dir",
+      dir,
+    ]);
+
+    assertEquals(
+      JSON.parse(logs.join("\n")).resumeCommand,
+      `swamp workflow resume fleet --run ${run.id} --server <url>`,
+    );
+    const reloaded = await repoContext.workflowRunRepo.findById(
+      workflow.id,
+      createWorkflowRunId(run.id),
+    );
+    assertEquals(
+      reloaded?.getJob("main")?.getStep("deploy[w-a]")?.status,
+      "pending",
+    );
+  });
+});
