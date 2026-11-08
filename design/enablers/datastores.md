@@ -4165,8 +4165,13 @@ page cache, pass, and stop watching them. So the identity is
 `/proc/sys/kernel/random/boot_id` on Linux and the `kern.bootsessionuuid`
 sysctl on macOS, read once per process. Where neither is available
 (Windows), or it cannot be read, the catch-up syncs its files at each
-page's barrier instead and lists nothing; a list left by an earlier boot is
-then not trusted, and every commit is applied again, synced.
+page's barrier instead and lists nothing. A list left by an earlier boot is
+then checked as after a reboot, and each listed file that matches is synced
+with its directory before the list is cleared: whether the boot ended is
+unknown, so a match read from the page cache is made durable rather than
+trusted (swamp-club#4512). Until then every commit was applied again, synced,
+which on a member with a long history rewrote gigabytes. A write-back error
+from before that sync is not reported to it, the gap described below.
 
 The released binary is compiled with granular `--allow-*` flags, and Deno
 refuses any read under `/proc` without `--allow-all`, however narrow the read
@@ -4175,7 +4180,10 @@ synced every file, about 5,000 fsyncs for a 1,000-item first clone, while
 tests and source runs under `-A` read the id fine. When Deno refuses the read,
 the id is now read by running `/bin/cat` (or `/usr/bin/cat`), as macOS runs
 `sysctl`, with a 2 s timeout; only a UUID is accepted, and any failure names
-no boot, so the catch-up syncs as before. The boot is read once per process.
+no boot, so the catch-up syncs as before. A named boot is read once per
+process; a failed read (a spawn refused with EMFILE, or `cat` slower than 2 s
+on a busy disk) is tried again at most once a minute, so one bad moment does
+not make a whole command sync. Windows and other systems are not retried.
 `integration/datastore_v3_boot_identity_grant_test.ts` reads it on Linux
 under the grant `scripts/compile.ts` names, so a change to that grant is
 tested too.
@@ -5732,7 +5740,12 @@ leave every checkout with the same records.
   so its unit commits the record and the outputs written before the abort
   before teardown releases the writer lock. Serve's model cancel and its
   shutdown drain abort the same way. A method that ignores its signal is not
-  interrupted: the run finishes and commits as usual.
+  interrupted: the run finishes and commits as usual. A CLI run command's
+  signal also aborts its read-model catch-ups (`commandStopSignal`,
+  swamp-club#4512). They stop at the next commit and keep what they applied,
+  so the next command carries on from the cursor. Commits being sent and
+  crash recovery keep the datastore's own signal. Serve and workers never
+  abort a catch-up this way.
 - *No teardown.* A SIGKILL, a crash, or a second signal (which exits at once
   with 130, `registerShutdownHandler`'s `forceExitOnRepeat`) ends the process
   with units that never commit, so the checkout keeps files and catalog rows

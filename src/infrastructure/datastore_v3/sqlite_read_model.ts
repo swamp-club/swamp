@@ -1030,7 +1030,11 @@ export class SqliteReadModel implements ReadModel {
       });
       try {
         if (lockWaitMs === undefined) {
-          await lock.lock(true);
+          if (!await lock.tryLock(true)) {
+            logger
+              .info`Waiting for another swamp command to finish updating this checkout's read model`;
+            await lock.lock(true);
+          }
         } else {
           const until = Date.now() + lockWaitMs;
           while (!await lock.tryLock(true)) {
@@ -1176,13 +1180,12 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<void> {
     const written = this.#state.unsyncedBoot();
     if (written === undefined || written === this.#boot) return;
-    if (this.#boot === undefined) {
-      // Whether the boot ended is unknown, so the files cannot be trusted
-      // and a check proves nothing: apply every commit again, synced.
+    // Whether the boot ended is unknown, so a file that matches may be held
+    // only by the page cache: it is synced, never trusted as on disk.
+    const unnamed = this.#boot === undefined;
+    if (unnamed) {
       logger
-        .warn`The current boot cannot be named, so files written unsynced in an earlier one are rewritten`;
-      this.#reset(generation);
-      return;
+        .warn`The current boot cannot be named, so files written unsynced in an earlier one are checked and synced`;
     }
     const batch = new DurableWriteBatch();
     const commits = new Map<number, Commit | undefined>();
@@ -1230,6 +1233,10 @@ export class SqliteReadModel implements ReadModel {
               false,
             ))
         ) {
+          if (unnamed) {
+            if (file.expect === "present") await this.#syncFile(path);
+            batch.touch(dirname(path));
+          }
           continue;
         }
         logger

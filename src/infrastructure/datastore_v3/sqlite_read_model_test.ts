@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
@@ -55,6 +56,7 @@ import {
 } from "./sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
+  READ_MODEL_LOCK_FILE,
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
@@ -276,6 +278,135 @@ Deno.test("SqliteReadModel: the reboot check skips a listed key the checkout's d
       assertEquals(await readOrAbsent(local), "local");
     } finally {
       await readModel.close();
+    }
+  });
+});
+
+async function listUnsyncedUnderBoot1(
+  env: Env,
+  count: number,
+): Promise<string[]> {
+  const paths: string[] = [];
+  for (let i = 1; i <= count; i++) {
+    await env.append(i, "", [await savePut(`r${i}`, 1), versionOp(`r${i}`, 1)]);
+    paths.push(env.contentPath("", `r${i}`, 1));
+  }
+  const readModel = env.open({ bootIdentity: () => Promise.resolve("boot-1") });
+  try {
+    assertEquals((await readModel.catchUp(signal())).applied, count);
+  } finally {
+    await readModel.close();
+  }
+  return paths;
+}
+
+Deno.test("SqliteReadModel: where the boot cannot be named, the files an earlier boot listed are checked and synced, not replayed (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const paths = await listUnsyncedUnderBoot1(env, 40);
+    await Deno.writeTextFile(paths[6], "torn");
+    const synced: string[] = [];
+    const unnamed = () =>
+      env.open({
+        bootIdentity: () => Promise.resolve(undefined),
+        syncFile: (path) => {
+          synced.push(path);
+          return Promise.resolve();
+        },
+      });
+    let readModel = unnamed();
+    try {
+      assertEquals(
+        (await readModel.catchUp(signal())).applied,
+        0,
+        "no commit is applied again",
+      );
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(
+      await readOrAbsent(paths[6]),
+      "r7@1",
+      "a torn file is rewritten",
+    );
+    assertEquals(
+      synced.toSorted(),
+      paths.filter((_, i) => i !== 6).toSorted(),
+      "every file that matched is synced",
+    );
+
+    synced.length = 0;
+    readModel = unnamed();
+    try {
+      assertEquals((await readModel.catchUp(signal())).applied, 0);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(synced, [], "the list was cleared");
+  });
+});
+
+Deno.test("SqliteReadModel: where the boot cannot be named and a listed file cannot be synced, every commit is applied again (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    await listUnsyncedUnderBoot1(env, 5);
+    let refused = false;
+    const readModel = env.open({
+      bootIdentity: () => Promise.resolve(undefined),
+      syncFile: () => {
+        if (refused) return Promise.resolve();
+        refused = true;
+        return Promise.reject(new Error("sync refused"));
+      },
+    });
+    try {
+      assertEquals((await readModel.catchUp(signal())).applied, 5);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: a catch-up that waits for another command's read-model lock says so, then catches up (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const stateDir = readModelStateDir(env.repoDir);
+    await Deno.mkdir(stateDir, { recursive: true });
+    const held = await Deno.open(join(stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    await held.lock(true);
+    const messages: string[] = [];
+    await configure({
+      sinks: {
+        capture: (record: LogRecord) =>
+          messages.push(record.message.map(String).join("")),
+      },
+      loggers: [
+        {
+          category: ["swamp", "datastore", "read-model"],
+          lowestLevel: "info",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    const readModel = env.open();
+    let released = false;
+    try {
+      const catchingUp = readModel.catchUp(signal());
+      await waitFor(
+        () => messages.some((m) => m.includes("Waiting for another swamp")),
+        "the wait to be reported",
+      );
+      held.close();
+      released = true;
+      assertEquals((await catchingUp).applied, 1);
+    } finally {
+      if (!released) held.close();
+      await readModel.close();
+      await reset();
     }
   });
 });

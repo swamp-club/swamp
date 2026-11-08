@@ -173,6 +173,7 @@ import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { registerOwnCommitWriter } from "./commit_outbox_recovery.ts";
 import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { recordLastChange } from "./record_last_change.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { reconcileRefusedRuns } from "./refused_run_records.ts";
@@ -858,6 +859,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // appends behind each other; it refuses commits once the writer lease is lost
   // and keeps each in the outbox until landed
   const lifetime = new AbortController();
+  // A command told to stop leaves a catch-up at its next commit; a commit
+  // already being sent keeps lifetime.signal alone.
+  const catchUpSignal = (signal?: AbortSignal): AbortSignal =>
+    AbortSignal.any([signal ?? lifetime.signal, commandStopSignal()]);
   if (serveClient !== undefined && serveState !== undefined) {
     serveClient.checkLog(
       serveLogCheck(serveState, serveClient.baseUrl, dirname(commitsDbPath)),
@@ -941,7 +946,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     serveSink !== undefined && serveCatchUp !== undefined
       ? {
         catchUpPartition: async (ns, partition) => {
-          await serveCatchUp.catchUpPartition(ns, partition, lifetime.signal);
+          await serveCatchUp.catchUpPartition(ns, partition, catchUpSignal());
         },
         partitionState: (ns, partition) =>
           commitStore.partitionState(ns, partition),
@@ -1267,17 +1272,17 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       }
       : {}),
     async catchUp(signal) {
-      await catchUpFromServe(signal ?? lifetime.signal, "read");
+      await catchUpFromServe(catchUpSignal(signal), "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUp(signal ?? lifetime.signal)
+        readModel.catchUp(catchUpSignal(signal))
       );
     },
     async replayEveryCommit(signal) {
       // Before any await: a restore does not run again once its copy state is written.
       readModel.markReplayPending();
-      await catchUpFromServe(signal ?? lifetime.signal, "read");
+      await catchUpFromServe(catchUpSignal(signal), "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUp(signal ?? lifetime.signal)
+        readModel.catchUp(catchUpSignal(signal))
       );
     },
     ...(serveCatchUp !== undefined
@@ -1287,22 +1292,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           catchUpOptions?: { readonly mayGoOffline?: boolean },
         ) {
           await catchUpFromServe(
-            signal ?? lifetime.signal,
+            catchUpSignal(signal),
             "write",
             catchUpOptions?.mayGoOffline === true,
           );
         },
         async catchUpReadModel(signal?: AbortSignal) {
           await unreachableAsCatchUpError(() =>
-            readModel.catchUp(signal ?? lifetime.signal)
+            readModel.catchUp(catchUpSignal(signal))
           );
         },
       }
       : {}),
     async catchUpUnlessComplete(lockWaitMs, writerPid) {
-      await catchUpFromServe(lifetime.signal, "read");
+      await catchUpFromServe(catchUpSignal(), "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUpUnlessComplete(lifetime.signal, lockWaitMs, writerPid)
+        readModel.catchUpUnlessComplete(catchUpSignal(), lockWaitMs, writerPid)
       );
     },
     async raiseWriterFence(fence) {

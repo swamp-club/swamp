@@ -1230,7 +1230,7 @@ Deno.test("read model: within one boot the unsynced files are trusted and not ch
   });
 });
 
-Deno.test("read model: without a boot identity the catch-up syncs and lists nothing, and an earlier boot's list is rewritten (swamp-club#3337)", async () => {
+Deno.test("read model: without a boot identity the catch-up syncs and lists nothing, and an earlier boot's list is checked and synced without a replay (swamp-club#3337, swamp-club#4512)", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {
     await appendScenario(env);
@@ -1247,7 +1247,7 @@ Deno.test("read model: without a boot identity the catch-up syncs and lists noth
     boot = undefined;
     const unnamed = open();
     try {
-      assertEquals(await unnamed.catchUp(signal()), { applied: 5, cursor: 5 });
+      assertEquals(await unnamed.catchUp(signal()), { applied: 0, cursor: 5 });
     } finally {
       await unnamed.close();
     }

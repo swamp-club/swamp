@@ -36,24 +36,52 @@ const BOOT_ID_PATTERN =
 
 const logger = getSwampLogger(["datastore", "v3", "boot-identity"]);
 
-let read: Promise<string | undefined> | undefined;
+export const BOOT_IDENTITY_RETRY_MS = 60_000;
 
 /**
- * read once per process, since a process never outlives its boot; a boot that
- * cannot be named is not looked for again
+ * a named boot is kept for the process, which never outlives it; a failed read
+ * is retried at most once per retryMs, since a spawn can fail only for a while
+ * (EMFILE, a slow disk) and a cached failure makes a whole command sync
  */
-export function currentBootIdentity(): Promise<string | undefined> {
-  // A failed read is cached on purpose: retrying would run `cat` or
-  // `sysctl` again at every exclusive section of a long-running serve.
-  read ??= readBootIdentity(Deno.build.os).then((identity) => {
-    if (identity === undefined && Deno.build.os !== "windows") {
-      logger
-        .debug`The boot cannot be named, so the read model syncs the files it writes`;
+export function bootIdentityReader(
+  read: () => Promise<string | undefined>,
+  options: {
+    readonly retries: boolean;
+    readonly retryMs?: number;
+    readonly now?: () => number;
+  },
+): () => Promise<string | undefined> {
+  const retryMs = options.retryMs ?? BOOT_IDENTITY_RETRY_MS;
+  const now = options.now ?? Date.now;
+  let current: Promise<string | undefined> | undefined;
+  let failedAt: number | undefined;
+  return () => {
+    if (current !== undefined) return current;
+    if (
+      failedAt !== undefined && (!options.retries || now() - failedAt < retryMs)
+    ) {
+      return Promise.resolve(undefined);
     }
-    return identity;
-  });
-  return read;
+    const attempt = read().catch(() => undefined).then((identity) => {
+      if (identity === undefined) {
+        failedAt = now();
+        current = undefined;
+        if (options.retries) {
+          logger
+            .debug`The boot cannot be named, so the read model syncs the files it writes`;
+        }
+      }
+      return identity;
+    });
+    current = attempt;
+    return attempt;
+  };
 }
+
+export const currentBootIdentity: () => Promise<string | undefined> =
+  bootIdentityReader(() => readBootIdentity(Deno.build.os), {
+    retries: Deno.build.os === "linux" || Deno.build.os === "darwin",
+  });
 
 /**
  * a read the permissions refuse goes through cat, and its output counts only if

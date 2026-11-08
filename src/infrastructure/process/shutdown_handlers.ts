@@ -56,6 +56,22 @@ export interface ShutdownHandlerOptions {
    * data-write wait; the caller bounds it
    */
   beforeForceExit?: () => Promise<void>;
+  /**
+   * the first signal also aborts commandStopSignal, which read-model catch-ups
+   * follow; only a one-shot CLI command opts in, never serve or a worker
+   */
+  stopsCatchUps?: boolean;
+}
+
+let commandStop = new AbortController();
+
+/** aborted once, never reset in a process: a command that was told to stop stays stopped */
+export function commandStopSignal(): AbortSignal {
+  return commandStop.signal;
+}
+
+export function resetCommandStopForTesting(): void {
+  commandStop = new AbortController();
 }
 
 export interface ShutdownHandlerHandle {
@@ -89,12 +105,13 @@ export function registerShutdownHandler(
     forceExitOnRepeat = false,
     dataWrites,
     beforeForceExit,
+    stopsCatchUps = false,
   } = options;
 
   const registered: Deno.Signal[] = [];
 
   let fired = 0;
-  const wrappedHandler = forceExitOnRepeat
+  const signalled = forceExitOnRepeat
     ? () => {
       fired++;
       if (fired === 1) {
@@ -122,6 +139,14 @@ export function registerShutdownHandler(
       finish().then(() => exit(130), () => exit(130));
     }
     : handler;
+  const wrappedHandler = stopsCatchUps
+    ? () => {
+      commandStop.abort(
+        new DOMException("The command was told to stop", "AbortError"),
+      );
+      return signalled();
+    }
+    : signalled;
 
   Deno.addSignalListener("SIGINT", wrappedHandler);
   registered.push("SIGINT");

@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { registerShutdownHandler } from "./shutdown_handlers.ts";
+import {
+  commandStopSignal,
+  registerShutdownHandler,
+  resetCommandStopForTesting,
+} from "./shutdown_handlers.ts";
 
 Deno.test({
   name:
@@ -430,5 +434,43 @@ Deno.test("registerShutdownHandler: a second signal releases through beforeForce
     assertEquals(order, ["release", "exit 130"]);
   } finally {
     handle.dispose();
+  }
+});
+
+Deno.test("registerShutdownHandler: only a registration that stops catch-ups aborts the command stop signal, and dispose never clears it (swamp-club#4512)", () => {
+  resetCommandStopForTesting();
+  try {
+    const plain = fakeStopRequests();
+    const plainHandle = registerShutdownHandler({ handler: () => {} }, {
+      os: "windows",
+      listenForStopRequests: plain.listenForStopRequests,
+    });
+    plain.handlers[0]();
+    plainHandle.dispose();
+    assertEquals(commandStopSignal().aborted, false, "serve-style handlers");
+
+    const command = fakeStopRequests();
+    let calls = 0;
+    const handle = registerShutdownHandler({
+      handler: () => {
+        calls++;
+      },
+      forceExitOnRepeat: true,
+      stopsCatchUps: true,
+    }, {
+      os: "windows",
+      listenForStopRequests: command.listenForStopRequests,
+      exit: () => {},
+    });
+    command.handlers[0]();
+    handle.dispose();
+    assertEquals(calls, 1, "the command's own handler still runs");
+    assertEquals(commandStopSignal().aborted, true);
+    assertEquals(
+      (commandStopSignal().reason as DOMException).name,
+      "AbortError",
+    );
+  } finally {
+    resetCommandStopForTesting();
   }
 });

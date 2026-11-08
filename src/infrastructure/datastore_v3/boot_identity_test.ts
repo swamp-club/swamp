@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
-import { readBootIdentity } from "./boot_identity.ts";
+import { bootIdentityReader, readBootIdentity } from "./boot_identity.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-boot-identity-" });
@@ -183,4 +183,49 @@ Deno.test("readBootIdentity: a readable or missing Linux boot id runs nothing (s
     assertEquals(result, [`boot-id:${BOOT_ID}`, undefined]);
     assertEquals(calls, []);
   });
+});
+
+Deno.test("bootIdentityReader: a failed read is retried once the interval has passed, never before (swamp-club#4512)", async () => {
+  const answers: (string | undefined)[] = [undefined, "boot-id:1"];
+  let reads = 0;
+  let clock = 0;
+  const current = bootIdentityReader(
+    () => Promise.resolve(answers[reads++]),
+    { retries: true, retryMs: 60_000, now: () => clock },
+  );
+  assertEquals(await current(), undefined);
+  clock = 59_999;
+  assertEquals(await current(), undefined);
+  assertEquals(reads, 1, "no read inside the interval");
+  clock = 60_000;
+  assertEquals(await current(), "boot-id:1");
+  clock = 10_000_000;
+  assertEquals(await current(), "boot-id:1");
+  assertEquals(reads, 2, "a named boot is kept");
+});
+
+Deno.test("bootIdentityReader: concurrent callers share one read, and a throwing read names no boot (swamp-club#4512)", async () => {
+  let reads = 0;
+  const current = bootIdentityReader(() => {
+    reads++;
+    return Promise.reject(new Error("spawn failed"));
+  }, { retries: true, now: () => 0 });
+  assertEquals(await Promise.all([current(), current()]), [
+    undefined,
+    undefined,
+  ]);
+  assertEquals(reads, 1);
+});
+
+Deno.test("bootIdentityReader: where no boot can ever be named, a failure is kept for the process (swamp-club#4512)", async () => {
+  let reads = 0;
+  let clock = 0;
+  const current = bootIdentityReader(() => {
+    reads++;
+    return Promise.resolve(undefined);
+  }, { retries: false, retryMs: 1, now: () => clock });
+  await current();
+  clock = 1_000_000;
+  assertEquals(await current(), undefined);
+  assertEquals(reads, 1);
 });
