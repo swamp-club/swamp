@@ -367,6 +367,35 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.pipe.skippedLine(this.getJobDisplayName(e.jobId)),
         );
       },
+      job_fanout_planned: (e) => {
+        if (!this.pipe) return;
+        this.flushPendingJobStart(e.jobId);
+        const name = this.getJobDisplayName(e.jobId);
+        for (const text of fanOutPlanLines(e)) {
+          writeOutput(this.pipe.line(name, text));
+        }
+      },
+      job_fanout_waiting: (e) => {
+        if (!this.pipe) return;
+        this.flushPendingJobStart(e.jobId);
+        writeOutput(
+          this.pipe.line(
+            this.getJobDisplayName(e.jobId),
+            dim(
+              `${e.worker} waiting for its worker to connect (${
+                queueTimeoutText(e.queueTimeoutSeconds)
+              })`,
+            ),
+          ),
+        );
+      },
+      job_fanout_summary: (e) => {
+        if (!this.pipe) return;
+        this.flushPendingJobStart(e.jobId);
+        writeOutput(
+          this.pipe.line(this.getJobDisplayName(e.jobId), fanOutSummaryText(e)),
+        );
+      },
       step_started: (e) => {
         if (!this.pipe) return;
         this.stepStartTimes.set(this.stepKey(e.jobId, e.stepId), Date.now());
@@ -1250,6 +1279,15 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       job_started: () => {},
       job_completed: () => {},
       job_skipped: () => {},
+      job_fanout_planned: (e) => {
+        unguardedConsole.error(fanOutRecord(e));
+      },
+      job_fanout_waiting: (e) => {
+        unguardedConsole.error(fanOutRecord(e));
+      },
+      job_fanout_summary: (e) => {
+        unguardedConsole.error(fanOutRecord(e));
+      },
       step_started: () => {},
       step_completed: () => {},
       step_skipped: (e) => {
@@ -1505,4 +1543,81 @@ export function renderWorkflowRunAccepted(
     dim(`  Logs:   swamp workflow history logs ${runId}${commandTarget}`),
     dim(`  Cancel: swamp workflow cancel --run ${runId}${commandTarget}`),
   ].join("\n"));
+}
+
+type FanOutPlanned = Extract<WorkflowRunEvent, { kind: "job_fanout_planned" }>;
+type FanOutMemberView = FanOutPlanned["members"][number];
+
+function memberText(member: FanOutMemberView): string {
+  return member.reason !== undefined
+    ? `${member.worker}: ${member.reason}`
+    : member.worker;
+}
+
+function fanOutPlanLines(e: FanOutPlanned): string[] {
+  const selector = [
+    ...Object.entries(e.selector.labels ?? {}).map(([k, v]) => `${k}=${v}`),
+    ...(e.selector.platform !== undefined
+      ? [`platform=${e.selector.platform}`]
+      : []),
+  ].join(", ");
+  const lines = [
+    `fan-out ${dim("-")} ${selector} ${dim("-")} offline ${dim(e.offline)} ${
+      dim("-")
+    } ${e.plannedLanes} lane${e.plannedLanes === 1 ? "" : "s"}`,
+    ...e.members.map((member) =>
+      `  ${member.worker} ${dim(member.disposition)}${
+        member.reason !== undefined ? dim(` (${member.reason})`) : ""
+      }`
+    ),
+  ];
+  if (e.resumed !== undefined) {
+    lines.push(
+      `resume ${dim("-")} re-run: ${
+        e.resumed.rerun.join(", ") || dim("none")
+      } ${dim("-")} kept: ${e.resumed.kept.join(", ") || dim("none")}`,
+    );
+  }
+  return lines;
+}
+
+// one single-line record on stderr, as superseded_runs; stdout keeps one document
+function fanOutRecord(
+  e: Extract<
+    WorkflowRunEvent,
+    {
+      kind: "job_fanout_planned" | "job_fanout_waiting" | "job_fanout_summary";
+    }
+  >,
+): string {
+  const { kind, ...fields } = e;
+  return JSON.stringify({ event: kind, ...fields });
+}
+
+function queueTimeoutText(seconds: number | null): string {
+  if (seconds === null) return "serve's queue timeout";
+  if (seconds === 0) return "no queue timeout";
+  return `queue timeout ${seconds}s`;
+}
+
+function fanOutSummaryText(
+  e: Extract<WorkflowRunEvent, { kind: "job_fanout_summary" }>,
+): string {
+  const listed = (label: string, members: FanOutMemberView[]) =>
+    members.length === 0
+      ? `0 ${label}`
+      : `${members.length} ${label} (${members.map(memberText).join(", ")})`;
+  return `fan-out ${dim("-")} ` + [
+    `${e.matching} matching`,
+    e.lanesFailed > 0
+      ? `${green(String(e.lanesSucceeded))} succeeded, ${
+        red(String(e.lanesFailed))
+      } failed`
+      : `${green(String(e.lanesSucceeded))} succeeded`,
+    listed("excluded", e.excluded),
+    listed("skipped", e.skipped),
+    ...(e.failedAtPlan.length > 0
+      ? [red(listed("failed at plan", e.failedAtPlan))]
+      : []),
+  ].join(dim(" - "));
 }

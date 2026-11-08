@@ -19,15 +19,21 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  fanOutEventMember,
   fanOutJobFailed,
+  fanOutSnapshot,
   laneFailed,
+  laneRecords,
   laneStepName,
   laneStepOf,
+  laneSucceeded,
   laneWorkerScope,
   perWorkerBehaviorName,
   planLaneSteps,
   refusedPlanMessage,
   refuseSharedLaneInstances,
+  resumedLaneVerdict,
+  sameFanOutSelector,
 } from "./fan_out_lanes.ts";
 
 Deno.test("planLaneSteps: names one step per authored step and worker, mapped back to both", () => {
@@ -164,5 +170,148 @@ Deno.test("refuseSharedLaneInstances: one behavior shared by a lane's steps, nam
     "patch",
     ["host-${{ self.worker.name }}", "host-${{ inputs.x }}"],
     ["a", "b"],
+  );
+});
+
+Deno.test("laneSucceeded: a lane is kept only when every step finished without an unallowed failure or an abort", () => {
+  const step = (
+    status: string,
+    allowedFailure = false,
+    settledByAbort = false,
+  ) => ({
+    status,
+    allowedFailure,
+    settledByAbort,
+  });
+  assertEquals(laneSucceeded([step("succeeded"), step("skipped")]), true);
+  assertEquals(laneSucceeded([step("succeeded"), step("failed", true)]), true);
+  assertEquals(laneSucceeded([step("succeeded"), step("failed")]), false);
+  assertEquals(laneSucceeded([step("succeeded"), step("pending")]), false);
+  assertEquals(laneSucceeded([step("unknown")]), false);
+  assertEquals(laneSucceeded([step("skipped", false, true)]), false);
+});
+
+Deno.test("laneRecords: groups a job's lane records by worker in plan order and leaves out other records", () => {
+  const records = [
+    { stepName: "verify[w-b]" },
+    { stepName: "apply[w-a]" },
+    { stepName: "apply[w-b]" },
+    { stepName: "plain" },
+  ];
+  assertEquals(
+    [...laneRecords(records, [{ worker: "w-a" }, { worker: "w-b" }])],
+    [
+      ["w-a", [{ stepName: "apply[w-a]" }]],
+      ["w-b", [{ stepName: "verify[w-b]" }, { stepName: "apply[w-b]" }]],
+    ],
+  );
+});
+
+Deno.test("resumedLaneVerdict: a connected worker runs; a gone one waits only under wait, and a lane with no scope to bind fails", () => {
+  const connected = { connected: true };
+  const disconnected = { connected: false };
+  for (const offline of ["wait", "skip", "fail"] as const) {
+    assertEquals(
+      resumedLaneVerdict("patch", "w-a", offline, connected, true).kind,
+      "run",
+    );
+  }
+  assertEquals(
+    resumedLaneVerdict("patch", "w-a", "wait", disconnected, true).kind,
+    "run",
+  );
+  assertEquals(
+    resumedLaneVerdict("patch", "w-a", "wait", undefined, true).kind,
+    "run",
+  );
+  assertEquals(
+    resumedLaneVerdict("patch", "w-a", "skip", disconnected, true),
+    {
+      kind: "fail",
+      error:
+        "Worker 'w-a' of fan-out job 'patch' is not connected, and the job's offline policy is skip; nothing was sent.",
+    },
+  );
+  assertEquals(
+    resumedLaneVerdict("patch", "w-a", "fail", undefined, true).kind,
+    "fail",
+  );
+  assertEquals(
+    resumedLaneVerdict("patch", "w-a", "wait", undefined, false),
+    {
+      kind: "fail",
+      error:
+        "Worker 'w-a' of fan-out job 'patch' has left the pool, and this run did not record its labels; start a new run.",
+    },
+  );
+});
+
+Deno.test("sameFanOutSelector: label order does not matter; a changed, added or removed label or platform does", () => {
+  assertEquals(
+    sameFanOutSelector(
+      { labels: { a: "1", b: "2" }, platform: "linux" },
+      { labels: { b: "2", a: "1" }, platform: "linux" },
+    ),
+    true,
+  );
+  assertEquals(sameFanOutSelector({ labels: {} }, {}), true);
+  assertEquals(
+    sameFanOutSelector({ labels: { a: "1" } }, { labels: { a: "2" } }),
+    false,
+  );
+  assertEquals(
+    sameFanOutSelector({ labels: { a: "1" } }, { labels: { a: "1", b: "2" } }),
+    false,
+  );
+  assertEquals(
+    sameFanOutSelector({ labels: { a: "1" } }, {
+      labels: { a: "1" },
+      platform: "linux",
+    }),
+    false,
+  );
+});
+
+Deno.test("fanOutSnapshot: records the authored selector and each lane worker's scope, and no selector without the authored job", () => {
+  const pool = new Map([["w-a", {
+    name: "w-a",
+    instanceUuid: "u-a",
+    labels: { fleet: "web" },
+    platform: "linux",
+    arch: "x86_64",
+    status: "idle" as const,
+    connected: true,
+  }]]);
+  const authored = {
+    placementFields: { labels: { fleet: "web" } },
+    getJob: (name: string) =>
+      name === "patch" ? { placementFields: { platform: "linux" } } : undefined,
+  };
+  assertEquals(fanOutSnapshot(authored, "patch", ["w-a", "w-gone"], pool), {
+    selector: { labels: { fleet: "web" }, platform: "linux" },
+    workers: [{
+      name: "w-a",
+      labels: { fleet: "web" },
+      platform: "linux",
+      arch: "x86_64",
+    }],
+  });
+  assertEquals(
+    fanOutSnapshot(undefined, "patch", ["w-a"], pool).selector,
+    undefined,
+  );
+});
+
+Deno.test("fanOutEventMember: carries the worker name, disposition and reason, never the instance UUID", () => {
+  assertEquals(
+    fanOutEventMember(
+      {
+        worker: "w-a",
+        instanceUuid: "u-a",
+        disposition: "waiting",
+        reason: "disconnected",
+      } as Parameters<typeof fanOutEventMember>[0],
+    ),
+    { worker: "w-a", disposition: "waiting", reason: "disconnected" },
   );
 });

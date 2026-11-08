@@ -271,6 +271,9 @@ const SignalIdempotencyKeySchema = z.string()
   .refine(isIdempotencyKey, `must be ${IDEMPOTENCY_KEY_FORM}`)
   .optional();
 
+// unknown kinds are ignored, so a newer client never trips an older serve
+const EventKindsSchema = z.array(z.string().max(64)).max(32).optional();
+
 const WorkflowRunRequestSchema = z.object({
   type: z.literal("workflow.run"),
   id: z.string().min(1).max(256),
@@ -294,6 +297,7 @@ const WorkflowRunRequestSchema = z.object({
     idempotencyKey: SignalIdempotencyKeySchema,
     lockHolderTokens: z.string().max(MAX_FORWARDED_LOCK_TOKENS_LENGTH)
       .optional(),
+    eventKinds: EventKindsSchema,
   }),
 });
 
@@ -1007,6 +1011,7 @@ const WorkflowResumeRequestSchema = z.object({
     tracestate: z.string().optional(),
     lockHolderTokens: z.string().max(MAX_FORWARDED_LOCK_TOKENS_LENGTH)
       .optional(),
+    eventKinds: EventKindsSchema,
   }),
 });
 
@@ -1252,6 +1257,7 @@ const RunAttachRequestSchema = z.object({
   payload: z.object({
     runId: z.string().min(1).max(256),
     afterSeq: z.number().int().nonnegative().optional(),
+    eventKinds: EventKindsSchema,
   }),
 });
 
@@ -4604,7 +4610,7 @@ async function handleRunAttach(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  payload: { runId: string; afterSeq?: number },
+  payload: { runId: string; afterSeq?: number; eventKinds?: string[] },
   controller: AbortController,
   principal: import("../domain/access/principal.ts").Principal | null,
 ): Promise<void> {
@@ -4725,6 +4731,7 @@ async function handleRunAttach(
       run.completedRun ?? {},
       controller.signal,
     ),
+    payload.eventKinds,
   );
 }
 

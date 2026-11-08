@@ -180,7 +180,7 @@ Deno.test("workflowResumeCommand has --from option", async () => {
   assertEquals(fromOpt !== undefined, true);
   assertEquals(
     fromOpt!.description,
-    "Select the retry step in a failed run. Without --from, resume --run retries all failed steps.",
+    "Select the retry step in a failed run. Without --from, resume --run retries all failed steps. In a fan-out job, only lanes that did not succeed re-run; start a new run to re-run a passed lane.",
   );
 });
 

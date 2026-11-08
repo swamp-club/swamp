@@ -19,6 +19,7 @@
 
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
+import { laneStepOf } from "./fan_out_lanes.ts";
 import { pairExpressionJobs, workflowJobOf } from "./job_pairing.ts";
 import type { Workflow } from "./workflow.ts";
 import {
@@ -109,7 +110,9 @@ export function selectRetryTemplates(
             workflow,
             run,
             job.jobName,
-            step.forEachTemplate ?? step.stepName,
+            step.forEachTemplate ??
+              laneStepOf(step.stepName, job.fanOutPlan?.lanes)?.authored ??
+              step.stepName,
           )
         } to run it.`
         : "";
@@ -121,6 +124,18 @@ export function selectRetryTemplates(
     if (!TERMINAL_STATUSES.has(job.status)) {
       throw new UserError(
         `Job "${job.jobName}" is ${job.status}; retry needs every job finished. ${history}`,
+      );
+    }
+  }
+
+  // that member has no lane, so a retry could only fail the job again
+  for (const job of run.jobs) {
+    const member = job.fanOutPlan?.members.find((m) =>
+      m.disposition === "failed"
+    );
+    if (job.status === "failed" && member !== undefined) {
+      throw new UserError(
+        `Fan-out job "${job.jobName}" failed because worker "${member.worker}" was not connected when the job was planned, and a retry never adds a member. Start a new run, or add --from to retry a step in another job. ${history}`,
       );
     }
   }
@@ -142,8 +157,10 @@ export function selectRetryTemplates(
   const pairs = pairExpressionJobs(workflow, run);
   const entries = new Map<string, StepRunRef>();
   for (const step of failed) {
-    const template = entryTemplateOf(step);
-    const job = workflowJobOf(workflow, run.getJob(step.jobName)!, pairs);
+    const jobRun = run.getJob(step.jobName)!;
+    const template = laneStepOf(step.stepName, jobRun.fanOutPlan?.lanes)
+      ?.authored ?? entryTemplateOf(step);
+    const job = workflowJobOf(workflow, jobRun, pairs);
     if (job?.getStep(template)) {
       const entry = { jobName: job.name, stepName: template };
       entries.set(stepRunKey(entry), entry);

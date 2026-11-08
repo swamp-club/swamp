@@ -355,3 +355,20 @@ Deno.test("createServeWorkerPoolReader: lists worker records in this namespace o
     'modelType == "swamp/worker" && name == "state-main" && ns == "team-a"',
   ]);
 });
+
+Deno.test("ServeWorkerPoolReader: carries serve's queue timeout, and none when serve gave none", () => {
+  assertEquals(reader({ queueTimeoutMs: 600_000 }).queueTimeoutMs, 600_000);
+  assertEquals(reader({}).queueTimeoutMs, undefined);
+  assertEquals(
+    createServeWorkerPoolReader({
+      gateway: {
+        workers: () => [],
+        readTokenRecords: () => Promise.resolve(new Map()),
+      },
+      query: () => Promise.resolve([]),
+      namespace: "team-a",
+      queueTimeoutMs: 0,
+    }).queueTimeoutMs,
+    0,
+  );
+});

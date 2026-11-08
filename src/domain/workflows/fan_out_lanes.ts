@@ -20,7 +20,8 @@
 import type { FanOutMember, FanOutSelector } from "../remote/fan_out.ts";
 import { describePlacement } from "../remote/scheduler.ts";
 import type { PoolWorker } from "../remote/worker_pool.ts";
-import { fanOutLaneName } from "./workflow_run.ts";
+import { mergePlacementFields, type PlacementFields } from "./placement.ts";
+import { fanOutLaneName, type FanOutSnapshot } from "./workflow_run.ts";
 
 export interface LaneStep {
   readonly worker: string;
@@ -131,6 +132,61 @@ export function laneWorkerScope(worker: PoolWorker): LaneWorkerScope {
   };
 }
 
+/**
+ * the selector comes from the authored workflow, since the run's evaluated
+ * one holds resolved label values that a resume cannot compare
+ */
+export function fanOutSnapshot(
+  authored: {
+    readonly placementFields: PlacementFields;
+    getJob(
+      name: string,
+    ): { readonly placementFields: PlacementFields } | undefined;
+  } | undefined,
+  jobName: string,
+  lanes: readonly string[],
+  pool: ReadonlyMap<string, PoolWorker>,
+): FanOutSnapshot {
+  const job = authored?.getJob(jobName);
+  const fields = job &&
+    mergePlacementFields(authored!.placementFields, job.placementFields);
+  return {
+    ...(job !== undefined
+      ? {
+        selector: {
+          ...(fields?.labels !== undefined ? { labels: fields.labels } : {}),
+          ...(fields?.platform !== undefined
+            ? { platform: fields.platform }
+            : {}),
+        },
+      }
+      : {}),
+    workers: lanes.flatMap((name) => {
+      const worker = pool.get(name);
+      return worker === undefined ? [] : [laneWorkerScope(worker)];
+    }),
+  };
+}
+
+// the instance UUID stays in the run record, out of what clients are sent
+export function fanOutEventMember(
+  member: Pick<FanOutMember, "worker" | "disposition" | "reason">,
+): Pick<FanOutMember, "worker" | "disposition" | "reason"> {
+  return {
+    worker: member.worker,
+    disposition: member.disposition,
+    ...(member.reason !== undefined ? { reason: member.reason } : {}),
+  };
+}
+
+export function membersOf(
+  members: readonly Pick<FanOutMember, "worker" | "disposition" | "reason">[],
+  disposition: FanOutMember["disposition"],
+): Pick<FanOutMember, "worker" | "disposition" | "reason">[] {
+  return members.filter((member) => member.disposition === disposition)
+    .map(fanOutEventMember);
+}
+
 export function laneFailed(
   steps: readonly {
     readonly status: string;
@@ -138,6 +194,78 @@ export function laneFailed(
   }[],
 ): boolean {
   return steps.some((step) => step.status === "failed" && !step.allowedFailure);
+}
+
+// a resume keeps such a lane: its state and outputs stand, nothing is sent
+export function laneSucceeded(
+  steps: readonly {
+    readonly status: string;
+    readonly allowedFailure: boolean;
+    readonly settledByAbort?: boolean;
+  }[],
+): boolean {
+  return steps.every((step) =>
+    !step.settledByAbort &&
+    (step.status === "succeeded" || step.status === "skipped" ||
+      (step.status === "failed" && step.allowedFailure))
+  );
+}
+
+export function laneRecords<S extends { readonly stepName: string }>(
+  steps: readonly S[],
+  lanes: readonly { readonly worker: string }[],
+): Map<string, S[]> {
+  const byWorker = new Map<string, S[]>(
+    lanes.map((lane) => [lane.worker, []]),
+  );
+  for (const step of steps) {
+    const lane = laneStepOf(step.stepName, lanes);
+    if (lane !== undefined) byWorker.get(lane.worker)!.push(step);
+  }
+  return byWorker;
+}
+
+export type ResumedLaneVerdict =
+  | { kind: "run" }
+  | { kind: "fail"; error: string };
+
+/**
+ * a resumed lane whose worker is not connected follows the job's offline
+ * policy; skip fails it too, since a planned lane is never silently dropped
+ */
+export function resumedLaneVerdict(
+  jobName: string,
+  worker: string,
+  offline: "wait" | "skip" | "fail",
+  live: Pick<PoolWorker, "connected"> | undefined,
+  hasScope: boolean,
+): ResumedLaneVerdict {
+  if (live === undefined && !hasScope) {
+    return {
+      kind: "fail",
+      error:
+        `Worker '${worker}' of fan-out job '${jobName}' has left the pool, and this run did not record its labels; start a new run.`,
+    };
+  }
+  if (live?.connected === true || offline === "wait") return { kind: "run" };
+  return {
+    kind: "fail",
+    error:
+      `Worker '${worker}' of fan-out job '${jobName}' is not connected, and the job's offline policy is ${offline}; nothing was sent.`,
+  };
+}
+
+export function sameFanOutSelector(
+  a: FanOutSelector | undefined,
+  b: FanOutSelector | undefined,
+): boolean {
+  const labels = (s: FanOutSelector | undefined) =>
+    JSON.stringify(
+      Object.entries(s?.labels ?? {}).sort(([x], [y]) =>
+        x < y ? -1 : x > y ? 1 : 0
+      ),
+    );
+  return labels(a) === labels(b) && a?.platform === b?.platform;
 }
 
 // skipped and excluded members never ran, so only a plan-time failure counts

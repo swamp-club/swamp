@@ -34,6 +34,25 @@ export interface WorkflowJobInfo {
   dependsOn: string[];
 }
 
+export interface FanOutEventSelector {
+  labels?: Record<string, string>;
+  platform?: string;
+}
+
+// a worker's name only: its instance UUID stays in the run record
+export interface FanOutEventMember {
+  worker: string;
+  disposition: "dispatch" | "waiting" | "skipped" | "failed" | "excluded";
+  reason?: "disconnected" | "unverified" | "draining";
+}
+
+/** older remote CLIs have no handler for these, so serve sends them on request */
+export const FAN_OUT_EVENT_KINDS = [
+  "job_fanout_planned",
+  "job_fanout_waiting",
+  "job_fanout_summary",
+] as const;
+
 export type WorkflowExecutionEvent =
   | {
     kind: "started";
@@ -50,6 +69,34 @@ export type WorkflowExecutionEvent =
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
+  | {
+    kind: "job_fanout_planned";
+    jobId: string;
+    selector: FanOutEventSelector;
+    offline: "wait" | "skip" | "fail";
+    minWorkers: number;
+    plannedLanes: number;
+    members: FanOutEventMember[];
+    /** set on a resume: the lanes that run again and those whose result stands */
+    resumed?: { rerun: string[]; kept: string[] };
+  }
+  | {
+    kind: "job_fanout_waiting";
+    jobId: string;
+    worker: string;
+    /** null when serve's default applies and the domain cannot read it */
+    queueTimeoutSeconds: number | null;
+  }
+  | {
+    kind: "job_fanout_summary";
+    jobId: string;
+    matching: number;
+    lanesSucceeded: number;
+    lanesFailed: number;
+    excluded: FanOutEventMember[];
+    skipped: FanOutEventMember[];
+    failedAtPlan: FanOutEventMember[];
+  }
   | {
     kind: "step_started";
     jobId: string;

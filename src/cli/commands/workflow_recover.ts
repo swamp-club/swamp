@@ -28,7 +28,7 @@ import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import { refuseFanOutResume } from "../../domain/workflows/fan_out_job.ts";
+import { refuseFanOutRecover } from "../../domain/workflows/resume_reset.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import {
   assessRecoveryForRun,
@@ -219,7 +219,7 @@ export const workflowRecoverCommand = new Command()
           throw new UserError(assessment.reason!);
         }
         // before the record is touched, so a refused recover leaves it as it was
-        refuseFanOutResume(workflow, run);
+        refuseFanOutRecover(workflow, run);
 
         if (!assessment.canAutoRecover && !options.acknowledgeUnknown) {
           throw new UserError(
@@ -236,14 +236,20 @@ export const workflowRecoverCommand = new Command()
         );
         run.resetUnknownStepsForRecovery();
         await repoContext.workflowRunRepo.save(workflow.id, run);
+        // a fan-out job plans and dispatches only through serve
+        const resumeCommand =
+          `swamp workflow resume ${workflowIdOrName} --run ${run.id}${
+            workflow.jobs.some((job) => job.fanOut !== undefined)
+              ? " --server <url>"
+              : ""
+          }`;
 
         if (cliCtx.outputMode === "json") {
           writeOutput(JSON.stringify(
             {
               recovered: true,
               runId: run.id,
-              resumeCommand:
-                `swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
+              resumeCommand,
             },
             null,
             2,
@@ -253,7 +259,7 @@ export const workflowRecoverCommand = new Command()
             `Recovered run ${run.id} — unknown steps reset to pending.`,
           );
           writeOutput(
-            `Resume with: swamp workflow resume ${workflowIdOrName} --run ${run.id}`,
+            `Resume with: ${resumeCommand}`,
           );
         }
       });

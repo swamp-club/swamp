@@ -143,32 +143,16 @@ export function fanOutPlanMissing(
 export const FAN_OUT_NEEDS_SERVE =
   "fanOut needs the worker pool of swamp serve; run it with --server";
 
-export const FAN_OUT_RESUME_DEFERRED =
-  "resuming a run with a fan-out job arrives in the next release";
-
 interface FanOutRunWorkflow {
   readonly name: string;
   readonly jobs: readonly {
     readonly name: string;
     readonly fanOut?: unknown;
     readonly fanOutPolicy?: { readonly rollout?: unknown };
-    readonly steps: readonly {
-      readonly name: string;
-      readonly task: { readonly data: { readonly type: string } };
-    }[];
   }[];
 }
 
-const SUSPENDING_STEP_KINDS: ReadonlySet<string> = new Set([
-  "manual_approval",
-  "wait_for_signal",
-  "workflow",
-]);
-
-/**
- * refused before anything runs: without serve there is no pool to plan from,
- * and a run that could suspend would wait on a resume that is refused
- */
+// refused before anything runs: without serve there is no pool to plan from
 export function refuseFanOutRun(
   workflow: FanOutRunWorkflow,
   poolAvailable: boolean,
@@ -190,30 +174,4 @@ export function refuseFanOutRun(
       `Fan-out job '${rolloutJob.name}' in workflow '${workflow.name}' sets rollout, and rollout batches and failure budgets arrive in a later release. Remove rollout to run every lane at once.`,
     );
   }
-  for (const job of workflow.jobs) {
-    const step = job.steps.find((candidate) =>
-      SUSPENDING_STEP_KINDS.has(candidate.task.data.type)
-    );
-    if (step === undefined) continue;
-    throw new UserError(
-      `Workflow '${workflow.name}' has fan-out job '${fanOutJob.name}' and step '${step.name}' in job '${job.name}', which can suspend the run; ${FAN_OUT_RESUME_DEFERRED}, so a suspended run could never finish. Run the fan-out job in a workflow without approvals, signal waits or nested workflows.`,
-    );
-  }
-}
-
-// the stored plan counts too: an edit that drops fanOut must not reopen the run
-export function refuseFanOutResume(
-  workflow: FanOutRunWorkflow,
-  run: { readonly jobs: readonly { readonly fanOutPlan?: unknown }[] },
-): void {
-  const fanOutJob = workflow.jobs.find((job) => job.fanOut !== undefined);
-  const planned = run.jobs.some((job) => job.fanOutPlan !== undefined);
-  if (fanOutJob === undefined && !planned) return;
-  throw new UserError(
-    `Workflow '${workflow.name}' ${
-      fanOutJob !== undefined
-        ? `has fan-out job '${fanOutJob.name}'`
-        : "ran a fan-out job in this run"
-    }: ${FAN_OUT_RESUME_DEFERRED}. Start a new run instead.`,
-  );
 }

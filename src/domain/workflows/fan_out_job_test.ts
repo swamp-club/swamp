@@ -22,7 +22,6 @@ import { UserError } from "../errors.ts";
 import {
   fanOutJobRefusals,
   fanOutPlanMissing,
-  refuseFanOutResume,
   refuseFanOutRun,
 } from "./fan_out_job.ts";
 import { Workflow, type WorkflowInput } from "./workflow.ts";
@@ -326,19 +325,14 @@ Deno.test("refuseFanOutRun: without a worker pool a workflow with a fan-out job 
   );
 });
 
-Deno.test("refuseFanOutRun: a fan-out workflow holding a step that can suspend is refused even with a pool", () => {
+Deno.test("refuseFanOutRun: a fan-out workflow holding a step that can suspend in another job runs with a pool", () => {
   for (const kind of ["manual_approval", "wait_for_signal", "workflow"]) {
-    assertThrows(
-      () =>
-        refuseFanOutRun(
-          runWorkflow([
-            { name: "patch", fanOut: "all" },
-            { name: "gate", steps: [["hold", kind]] },
-          ]),
-          true,
-        ),
-      UserError,
-      "step 'hold' in job 'gate', which can suspend the run",
+    refuseFanOutRun(
+      runWorkflow([
+        { name: "gate", steps: [["hold", kind]] },
+        { name: "patch", fanOut: "all" },
+      ]),
+      true,
     );
   }
 });
@@ -349,26 +343,6 @@ Deno.test("refuseFanOutRun: a plain workflow passes with or without a pool, and 
     false,
   );
   refuseFanOutRun(runWorkflow([{ name: "patch", fanOut: "all" }]), true);
-});
-
-Deno.test("refuseFanOutResume: refused when the workflow has a fan-out job or the run holds a plan", () => {
-  assertThrows(
-    () =>
-      refuseFanOutResume(runWorkflow([{ name: "patch", fanOut: "all" }]), {
-        jobs: [{}],
-      }),
-    UserError,
-    "has fan-out job 'patch': resuming a run with a fan-out job arrives in the next release",
-  );
-  assertThrows(
-    () =>
-      refuseFanOutResume(runWorkflow([{ name: "patch" }]), {
-        jobs: [{ fanOutPlan: {} }],
-      }),
-    UserError,
-    "ran a fan-out job in this run",
-  );
-  refuseFanOutResume(runWorkflow([{ name: "patch" }]), { jobs: [{}] });
 });
 
 Deno.test("refuseFanOutRun: a fan-out job that sets rollout is refused until rollouts act on it", () => {

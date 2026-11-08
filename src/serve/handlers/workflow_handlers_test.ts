@@ -1085,6 +1085,65 @@ Deno.test("createSocketSubscriber: without a transform a failed send throws to t
   assertThrows(() => subscriber.onTerminal({ kind: "done" }), Error);
 });
 
+function recordingSocket(): { socket: WebSocket; kinds: string[] } {
+  const kinds: string[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string) => {
+      const frame = JSON.parse(data);
+      if (frame.type === "event") kinds.push(frame.event.kind);
+    },
+  } as unknown as WebSocket;
+  return { socket, kinds };
+}
+
+Deno.test("createSocketSubscriber: fan-out events go only to a subscriber that listed them, and every other kind goes to all", () => {
+  const events = [
+    "started",
+    "job_started",
+    "job_fanout_planned",
+    "job_fanout_waiting",
+    "step_failed",
+    "job_fanout_summary",
+    "job_completed",
+  ];
+  const old = recordingSocket();
+  const current = recordingSocket();
+  const partial = recordingSocket();
+  const subscribers = [
+    createSocketSubscriber(old.socket, "req-1"),
+    createSocketSubscriber(current.socket, "req-2", undefined, undefined, [
+      "job_fanout_planned",
+      "job_fanout_waiting",
+      "job_fanout_summary",
+      "a_kind_from_a_newer_client",
+    ]),
+    createSocketSubscriber(partial.socket, "req-3", undefined, undefined, [
+      "job_fanout_summary",
+    ]),
+  ];
+  events.forEach((kind, i) => {
+    for (const subscriber of subscribers) {
+      subscriber.onEvent(i + 1, { kind });
+    }
+  });
+
+  assertEquals(old.kinds, [
+    "started",
+    "job_started",
+    "step_failed",
+    "job_completed",
+  ]);
+  assertEquals(current.kinds, events);
+  assertEquals(partial.kinds, [
+    "started",
+    "job_started",
+    "step_failed",
+    "job_fanout_summary",
+    "job_completed",
+  ]);
+});
+
 Deno.test("subscribeUntilDetach: a redacting subscriber gets every event in order without links it may not read, and leaves the buffer intact", async () => {
   const ctx = makeSearchCtx([readGrant("child", "child-wf")]);
   const buffer = new RunEventBuffer(16);

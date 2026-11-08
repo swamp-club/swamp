@@ -132,19 +132,25 @@ import {
 import {
   checkSuspendedRunResume,
   planFailedRunResume,
+  refuseFanOutRecover,
   type ResumeReset,
 } from "./resume_reset.ts";
 import { evaluatedJobMismatch, pairExpressionJobs } from "./job_pairing.ts";
 import {
+  fanOutEventMember,
   fanOutJobFailed,
+  fanOutSnapshot,
   laneFailed,
   laneStepName,
   laneStepOf,
+  laneSucceeded,
   laneWorkerScope,
+  membersOf,
   perWorkerBehaviorName,
   planLaneSteps,
   refusedPlanMessage,
   refuseSharedLaneInstances,
+  resumedLaneVerdict,
 } from "./fan_out_lanes.ts";
 import { getWorkerPoolReader } from "../remote/worker_pool.ts";
 import { planFanOut } from "../remote/scheduler.ts";
@@ -356,11 +362,7 @@ import {
   type FailedExpressions,
 } from "../expressions/unresolved_expression_guard.ts";
 import { errorPaths, UserError } from "../errors.ts";
-import {
-  FAN_OUT_NEEDS_SERVE,
-  refuseFanOutResume,
-  refuseFanOutRun,
-} from "./fan_out_job.ts";
+import { FAN_OUT_NEEDS_SERVE, refuseFanOutRun } from "./fan_out_job.ts";
 import {
   isForeignExpression,
   storedTextRefusal,
@@ -4609,8 +4611,8 @@ export class WorkflowExecutionService {
     runId: string,
     options?: Parameters<WorkflowExecutionService["resume"]>[2],
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    // an edit may have added fanOut after the run began, or dropped it
-    refuseFanOutResume(workflow, located);
+    // a fan-out job the run has yet to reach plans on resume, so it needs a pool
+    refuseFanOutRun(workflow, getWorkerPoolReader() !== null);
     // A resume can reach a wait for the first time. The store is opened
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.
@@ -5675,20 +5677,25 @@ export class WorkflowExecutionService {
     );
     const selector = { labels: fields?.labels, platform: fields?.platform };
     const pool = await reader.readPool();
-    const plan = planFanOut(selector, policy, pool);
+    const poolByName = new Map(pool.map((worker) => [worker.name, worker]));
+    // a resume never re-plans: the stored plan names the lanes and members
+    const stored = jobRun.fanOutPlan;
+    const plan = stored === undefined
+      ? planFanOut(selector, policy, pool)
+      : undefined;
 
     let refusal: string | undefined;
     let laneSteps: ReadonlyMap<string, { worker: string; authored: string }> =
       new Map();
-    let lanes: string[] = [];
-    if (plan.kind === "refused") {
+    let lanes: string[] = stored?.batches.flat() ?? [];
+    if (plan?.kind === "refused") {
       refusal = refusedPlanMessage(
         job.name,
         selector,
         plan.live,
         plan.minWorkers,
       );
-    } else {
+    } else if (plan !== undefined) {
       const batches = planBatches(plan.members, undefined);
       lanes = batches.flat();
       try {
@@ -5711,7 +5718,11 @@ export class WorkflowExecutionService {
         refusal = error instanceof Error ? error.message : String(error);
       }
       if (refusal === undefined) {
-        jobRun.recordFanOutPlan(plan, batches);
+        jobRun.recordFanOutPlan(
+          plan,
+          batches,
+          fanOutSnapshot(options.authoredWorkflow, job.name, lanes, poolByName),
+        );
         jobRun.expandLanes([...laneSteps.keys()]);
         // the plan is durable before any lane start can be journalled
         await this.saveRun(workflow.id, run);
@@ -5738,30 +5749,116 @@ export class WorkflowExecutionService {
       yield { kind: "job_completed", jobId: job.name, status: jobRun.status };
       return;
     }
-    if (plan.kind !== "planned") return;
+    const members = plan?.kind === "planned" ? plan.members : stored?.members;
+    if (members === undefined) return;
 
-    const poolByName = new Map(pool.map((worker) => [worker.name, worker]));
+    const laneRerun = (worker: string) =>
+      job.steps.some((step) =>
+        jobRun.getStep(laneStepName(step.name, worker))?.status === "pending"
+      );
+    const rerun = lanes.filter(laneRerun);
+    yield {
+      kind: "job_fanout_planned",
+      jobId: job.name,
+      selector: {
+        ...(selector.labels !== undefined ? { labels: selector.labels } : {}),
+        ...(selector.platform !== undefined
+          ? { platform: selector.platform }
+          : {}),
+      },
+      offline: policy.offline,
+      minWorkers: policy.minWorkers,
+      plannedLanes: stored?.plannedLanes ??
+        (plan?.kind === "planned" ? plan.plannedLanes : lanes.length),
+      members: members.map(fanOutEventMember),
+      ...(stored !== undefined
+        ? {
+          resumed: {
+            rerun,
+            kept: lanes.filter((worker) => !rerun.includes(worker)),
+          },
+        }
+        : {}),
+    };
+    const queueTimeoutSeconds = fields?.queueTimeout ??
+      (reader.queueTimeoutMs !== undefined
+        ? reader.queueTimeoutMs / 1000
+        : null);
+    const storedScopes = new Map(
+      (jobRun.fanOutSnapshot?.workers ?? []).map((
+        scope,
+      ) => [scope.name, scope]),
+    );
+    // a lane with no scope to bind fails instead of waiting
+    const waiting = stored === undefined
+      ? members.filter((member) => member.disposition === "waiting")
+        .map((member) => member.worker)
+      : rerun.filter((worker) =>
+        poolByName.get(worker)?.connected !== true &&
+        policy.offline === "wait" &&
+        (poolByName.has(worker) || storedScopes.has(worker))
+      );
+    for (const worker of waiting) {
+      yield {
+        kind: "job_fanout_waiting",
+        jobId: job.name,
+        worker,
+        queueTimeoutSeconds,
+      };
+    }
     const globalLimit = readGlobalConcurrencyLimit();
     // one host ceiling for every lane's steps, as one forEach level shares it
     const hostSlots = globalLimit && globalLimit > 0
       ? sharedGate(globalLimit)
       : undefined;
-    const laneStreams = lanes.map((worker) =>
-      this.runFanOutLane(
-        workflow,
-        run,
-        job,
-        jobRun,
-        {
+    const laneStreams: AsyncIterable<WorkflowExecutionEvent>[] = [];
+    for (const worker of lanes) {
+      const stepOf = (authored: string) => laneStepName(authored, worker);
+      const live = poolByName.get(worker);
+      const scope = live !== undefined
+        ? laneWorkerScope(live)
+        : storedScopes.get(worker);
+      const verdict = stored === undefined
+        ? { kind: "run" as const }
+        : resumedLaneVerdict(
+          job.name,
           worker,
-          stepOf: (authored) => laneStepName(authored, worker),
-        },
-        laneWorkerScope(poolByName.get(worker)!),
-        expressionContext,
-        options,
-        hostSlots,
-      )
-    );
+          policy.offline,
+          live,
+          scope !== undefined,
+        );
+      if (verdict.kind === "fail" || scope === undefined) {
+        const error = verdict.kind === "fail"
+          ? verdict.error
+          : `Worker '${worker}' of fan-out job '${job.name}' is not in the pool.`;
+        for (const step of job.steps) {
+          const stepRun = jobRun.getStep(stepOf(step.name));
+          if (stepRun?.status !== "pending") continue;
+          stepRun.fail(error);
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stepRun.stepName,
+            runId: run.id,
+            error,
+          };
+        }
+        continue;
+      }
+      laneStreams.push(
+        this.runFanOutLane(
+          workflow,
+          run,
+          job,
+          jobRun,
+          { worker, stepOf },
+          scope,
+          expressionContext,
+          options,
+          hostSlots,
+        ),
+      );
+    }
     const laneLimit = resolveEffectiveConcurrency(
       job.concurrency ?? workflow.concurrency,
       globalLimit,
@@ -5813,7 +5910,24 @@ export class WorkflowExecutionService {
         stepRun.status === "pending" || stepRun.status === "unknown"
       )
     );
-    if (fanOutJobFailed(plan.members, failedLanes)) {
+    const summary: WorkflowExecutionEvent = {
+      kind: "job_fanout_summary",
+      jobId: job.name,
+      matching: members.length,
+      lanesSucceeded:
+        laneRuns.filter((steps) =>
+          laneSucceeded(steps.map((stepRun) => ({
+            status: stepRun.status,
+            allowedFailure: stepRun.allowedFailure,
+            settledByAbort: stepRun.settledByAbort,
+          })))
+        ).length,
+      lanesFailed: failedLanes,
+      excluded: membersOf(members, "excluded"),
+      skipped: membersOf(members, "skipped"),
+      failedAtPlan: membersOf(members, "failed"),
+    };
+    if (fanOutJobFailed(members, failedLanes)) {
       jobRun.fail();
       jobSpan.setStatus({ code: SpanStatusCode.ERROR, message: "Job failed" });
     } else if (undecided) {
@@ -5826,6 +5940,7 @@ export class WorkflowExecutionService {
       jobSpan.setStatus({ code: SpanStatusCode.OK });
     }
     jobSpan.setAttribute("job.status", jobRun.status);
+    yield summary;
     yield { kind: "job_completed", jobId: job.name, status: jobRun.status };
   }
 
@@ -8133,7 +8248,8 @@ export class WorkflowExecutionService {
     // The resume below refuses while a nested run is unfinished; checked
     // first so a refused recover leaves the run as it was.
     await this.checkNestedWaitsSettled(run);
-    refuseFanOutResume(workflow, run);
+    refuseFanOutRecover(workflow, run);
+    refuseFanOutRun(workflow, getWorkerPoolReader() !== null);
 
     await this.runRepo.withdrawSettledStepStarts?.(
       workflow.id,

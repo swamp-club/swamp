@@ -61,6 +61,29 @@ Deno.test("consumeStream dispatches to correct handler per event", async () => {
   assertEquals(received, ["started:test", "completed:42"]);
 });
 
+Deno.test("consumeStream skips a kind it has no handler for, as a newer serve may send one", async () => {
+  const received: string[] = [];
+  await consumeStream<TestEvent>(
+    makeStream([
+      { kind: "started", name: "test" },
+      { kind: "from_a_newer_serve" } as unknown as TestEvent,
+      { kind: "completed", value: 42 },
+    ]),
+    {
+      started: (e) => {
+        received.push(`started:${e.name}`);
+      },
+      completed: (e) => {
+        received.push(`completed:${e.value}`);
+      },
+      error: () => {
+        received.push("error");
+      },
+    },
+  );
+  assertEquals(received, ["started:test", "completed:42"]);
+});
+
 Deno.test("consumeStream awaits async handlers", async () => {
   const order: number[] = [];
   await consumeStream<TestEvent>(

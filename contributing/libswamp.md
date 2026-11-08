@@ -142,15 +142,19 @@ type AuthWhoamiEvent =
 is optional so one CLI can talk to several server versions.
 
 `WorkflowRunEvent` (`src/libswamp/workflows/run.ts`) is the largest union —
-27 kinds at the time of writing:
+30 kinds at the time of writing:
 
 `validating_inputs`, `evaluating_workflow`, `started`, `superseded_runs`,
-`job_started`, `job_completed`, `job_skipped`, `step_started`,
+`job_started`, `job_completed`, `job_skipped`, `job_fanout_planned`,
+`job_fanout_waiting`, `job_fanout_summary`, `step_started`,
 `step_completed`, `step_skipped`, `step_queued`, `step_failed`,
 `step_target_disconnected`, `approval_requested`, `model_resolved`,
 `env_var_warning`, `method_executing`, `method_output`, `method_event`,
 `assert_result`, `report_started`, `report_completed`, `report_failed`,
 `completed`, `cancelled`, `suspended`, `error`.
+
+Serve sends the three `job_fanout_*` kinds only to a client that lists them in
+`eventKinds`, since a released client has no handler for them.
 
 Read the file for each variant's payload; this document deliberately does not
 copy the union because it changes often and every adapter is

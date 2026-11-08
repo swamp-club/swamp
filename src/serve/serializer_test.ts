@@ -392,7 +392,8 @@ Deno.test("serializeEvent: a wait's key and a key's holder round-trip in kinds a
 
 // every workflow run event kind, checked against the union: true for a kind
 // sent to clients, false for one kept local; a released client crashes on an
-// unknown kind, so new kinds start false
+// unknown kind, so new kinds start false or go only to clients that ask
+// (withheldEventKinds)
 const WORKFLOW_RUN_EVENT_KINDS: Record<WorkflowRunEvent["kind"], boolean> = {
   validating_inputs: true,
   superseded_runs: true,
@@ -401,6 +402,9 @@ const WORKFLOW_RUN_EVENT_KINDS: Record<WorkflowRunEvent["kind"], boolean> = {
   job_started: true,
   job_completed: true,
   job_skipped: true,
+  job_fanout_planned: true,
+  job_fanout_waiting: true,
+  job_fanout_summary: true,
   step_started: true,
   step_completed: true,
   step_skipped: true,

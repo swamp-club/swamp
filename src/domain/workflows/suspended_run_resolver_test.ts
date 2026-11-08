@@ -902,7 +902,7 @@ function withFanOutPlan(run: WorkflowRun): WorkflowRun {
   return run;
 }
 
-Deno.test("resolveResumableRun: a run that holds a fan-out plan is refused with the deferred-resume message on every path, before retry planning", async () => {
+Deno.test("resolveResumableRun: a run that holds a fan-out plan for a job the workflow no longer fans out is refused on every path, before retry planning", async () => {
   const wf = createWorkflow("fleet");
   const failed = withFanOutPlan(createFailedRun(wf));
   const suspended = withFanOutPlan(createSuspendedRun(wf));
@@ -917,7 +917,7 @@ Deno.test("resolveResumableRun: a run that holds a fan-out plan is refused with 
     await assertRejects(
       () => resolveResumableRun(workflowRepo, runRepo, "fleet", runId, options),
       UserError,
-      "resuming a run with a fan-out job arrives in the next release",
+      'Job "j" ran as a fan-out job, and the workflow no longer sets fanOut on it.',
     );
   }
 });
