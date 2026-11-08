@@ -882,10 +882,7 @@ Deno.test({
 async function withSidecar(
   root: string,
   fn: () => Promise<void>,
-  options: {
-    readonly providerReplica?: boolean;
-    readonly requestSyncDeadlineMs?: number;
-  } = {},
+  options: { readonly providerReplica?: boolean } = {},
 ): Promise<void> {
   const started = new Set<number>();
   setV3ReplicationForTesting({
@@ -899,12 +896,7 @@ async function withSidecar(
     },
     privateRoot: join(root, "priv"),
     timings: TEST_TIMINGS,
-  }, {
-    syncDeadlineMs: 10_000,
-    ...(options.requestSyncDeadlineMs !== undefined
-      ? { requestSyncDeadlineMs: options.requestSyncDeadlineMs }
-      : {}),
-  });
+  }, { syncDeadlineMs: 10_000 });
   try {
     await withMockedEnv(
       {
@@ -1369,7 +1361,10 @@ async function sustainedWrites(
         HEAD_KEY.test(m.key)
       );
       assert(heads.length > 1, "the head was published more than once");
-      assertEquals(heads.filter((m) => m.refused), []);
+      // the refusals that switch pacing on are retried; none follow them
+      const refused = heads.filter((m) => m.refused);
+      const late = refused.filter((m) => m.at - refused[0].at > 3_000);
+      assertEquals(late, [], `${refused.length} refused head writes`);
       clock.stop();
       assertEquals(await restoredCommits(follower), 1 + confirmed.length);
     });
@@ -1460,38 +1455,6 @@ Deno.test({
     assertEquals(failures.length, 1);
     assertStringIncludes(failures[0][1], "bucket_write_rate_limited");
     assertStringIncludes(failures[0][1], "head-");
-  },
-});
-
-Deno.test({
-  name:
-    "v3 bucket: a confirm with less time left than the head pacing wait publishes at once rather than refusing (swamp-club#4522)",
-  ignore: SIDECAR_TESTS_IGNORED,
-  async fn() {
-    await withRoot(async (root, bucket) => {
-      const repoDir = join(root, "repo");
-      await initRepo(repoDir);
-      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
-      await withSidecar(root, async () => {
-        await writeIn(repoDir, 1);
-        await requireInitializedRepo({ repoDir, outputMode: "json" });
-        const location = await v3DatastoreConfigOf(
-          repoDir,
-          (await resolveDatastoreForRepo(repoDir)).datastoreConfig,
-        );
-        await holdV3Writer(location, repoDir, { retakeLost: true });
-        for (let i = 0; i < 3; i++) {
-          await commitThrough(repoDir, location, 1);
-          await confirmV3Replicated(location.path);
-        }
-        const heads = bucket.remote.ops().filter((op) =>
-          op.op === "controlPlane" &&
-          op.paths.some((path) => HEAD_KEY.test(path))
-        );
-        assert(heads.length >= 3, `${heads.length} head writes`);
-        await closeV3Datastores();
-      }, { requestSyncDeadlineMs: 600 });
-    });
   },
 });
 

@@ -20,22 +20,52 @@
 // GCS counts its one write a second per object on arrival, so leave a margin
 export const HEAD_PUBLISH_INTERVAL_MS = 1_200;
 
+/** how long after its last refusal a head stays paced */
+export const HEAD_PACING_COOL_DOWN_MS = 30_000;
+
+/**
+ * a head is published at once until the bucket refuses one of its writes;
+ * pacing then holds until a cool-down passes with no refusal, so a member's
+ * back-to-back commits pay nothing on a bucket that never pushes back
+ */
 export class HeadPublishPacer {
   readonly #intervalMs: number;
+  readonly #coolDownMs: number;
   #lastAttemptAt: number | undefined;
+  #lastRefusedAt: number | undefined;
 
-  constructor(intervalMs: number = HEAD_PUBLISH_INTERVAL_MS) {
+  constructor(
+    intervalMs: number = HEAD_PUBLISH_INTERVAL_MS,
+    coolDownMs: number = HEAD_PACING_COOL_DOWN_MS,
+  ) {
     this.#intervalMs = intervalMs;
+    this.#coolDownMs = coolDownMs;
+  }
+
+  pacing(now: number): boolean {
+    return this.#lastRefusedAt !== undefined &&
+      now - this.#lastRefusedAt < this.#coolDownMs;
   }
 
   waitMs(now: number): number {
-    if (this.#lastAttemptAt === undefined) return 0;
+    if (!this.pacing(now) || this.#lastAttemptAt === undefined) return 0;
     return Math.max(0, this.#lastAttemptAt + this.#intervalMs - now);
   }
 
+  /**
+   * the wait to take before a sync with deadlineMs left; 0 when waiting would
+   * leave it less than minSyncMs, and the write retry takes the refusal instead
+   */
+  waitWithin(now: number, deadlineMs: number, minSyncMs: number): number {
+    const wait = this.waitMs(now);
+    return deadlineMs - wait < minSyncMs ? 0 : wait;
+  }
+
   attempted(at: number): void {
-    this.#lastAttemptAt = this.#lastAttemptAt === undefined
-      ? at
-      : Math.max(this.#lastAttemptAt, at);
+    this.#lastAttemptAt = Math.max(this.#lastAttemptAt ?? at, at);
+  }
+
+  rateLimited(at: number): void {
+    this.#lastRefusedAt = Math.max(this.#lastRefusedAt ?? at, at);
   }
 }

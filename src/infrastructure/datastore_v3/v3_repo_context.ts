@@ -150,7 +150,10 @@ import {
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import { HeadPublishPacer } from "../../domain/datastore_v3/head_publish_pacer.ts";
 import { abortableSleep } from "../http/rate_limit.ts";
-import { withBucketWriteDeadline } from "./bucket_write_retry.ts";
+import {
+  type BucketWriteRefusal,
+  withBucketWriteScope,
+} from "./bucket_write_retry.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
@@ -1983,6 +1986,8 @@ const headPacers = new Map<
   { readonly head: string; readonly pacer: HeadPublishPacer }
 >();
 
+const HEAD_OBJECT = /\/head-\d+\.json$/;
+
 function headPacerFor(
   datastore: string,
   lineageFence: number,
@@ -2002,9 +2007,9 @@ async function waitForHeadPacer(
   deadlineMs: number,
   signal: AbortSignal | undefined,
 ): Promise<number> {
-  const wait = pacer?.waitMs(Date.now()) ?? 0;
-  // Too little time left to wait: try now, and let the write retry take a 429.
-  if (wait <= 0 || deadlineMs - wait < MIN_QUEUED_SYNC_MS) return 0;
+  const wait = pacer?.waitWithin(Date.now(), deadlineMs, MIN_QUEUED_SYNC_MS) ??
+    0;
+  if (wait <= 0) return 0;
   try {
     await abortableSleep(wait, signal);
   } catch (error) {
@@ -2101,7 +2106,15 @@ async function syncAndPublishNow(
       }
     },
   };
-  await withBucketWriteDeadline(Date.now() + left, async () => {
+  const scope = {
+    deadlineAt: Date.now() + left,
+    onRefused: (refusal: BucketWriteRefusal, object: string) => {
+      if (refusal === "rate_limited" && HEAD_OBJECT.test(object)) {
+        pacer?.rateLimited(Date.now());
+      }
+    },
+  };
+  await withBucketWriteScope(scope, async () => {
     if (via === "replica") {
       await use.confirmFromReplica(
         peekHighWaterCursor,

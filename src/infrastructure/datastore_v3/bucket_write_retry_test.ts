@@ -30,7 +30,7 @@ import {
   type BucketWriteRetryDeps,
   retryingControlPlane,
   retryingStorage,
-  withBucketWriteDeadline,
+  withBucketWriteScope,
 } from "./bucket_write_retry.ts";
 
 function fakeClock() {
@@ -193,10 +193,34 @@ Deno.test("retryingControlPlane: an enclosing deadline cuts the retries short", 
     ),
     deps,
   );
-  await withBucketWriteDeadline(300, async () => {
+  await withBucketWriteScope({ deadlineAt: 300 }, async () => {
     await assertRejects(() => store.put("k", encode("a")));
   });
   assertEquals(clock.now <= 300, true);
+});
+
+Deno.test("retryingControlPlane: each refusal is reported to the enclosing scopes, the earlier deadline winning", async () => {
+  const { clock, deps } = fakeClock();
+  const store = retryingControlPlane(
+    flaky(memoryStore(), 2, () => new InMemoryRateLimitError("gcs", "k")),
+    deps,
+  );
+  const outer: string[] = [];
+  const inner: string[] = [];
+  await withBucketWriteScope({
+    deadlineAt: 60_000,
+    onRefused: (refusal, object) => outer.push(`${refusal}:${object}`),
+  }, () =>
+    withBucketWriteScope({
+      deadlineAt: 100_000,
+      onRefused: (refusal) => inner.push(refusal),
+    }, () => store.put("lineage/head.json", encode("a"))));
+  assertEquals(outer, [
+    "rate_limited:lineage/head.json",
+    "rate_limited:lineage/head.json",
+  ]);
+  assertEquals(inner, ["rate_limited", "rate_limited"]);
+  assertEquals(clock.now < 60_000, true);
 });
 
 Deno.test("retryingControlPlane: an error that is not a rate limit or 503 is not retried", async () => {

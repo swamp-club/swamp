@@ -81,21 +81,28 @@ export function bucketWriteRefusal(
   return undefined;
 }
 
-const deadlines = new AsyncLocalStorage<number>();
+export interface BucketWriteScope {
+  /** epoch ms; retries stop here if it comes before their own budget ends */
+  readonly deadlineAt: number;
+  readonly onRefused?: (refusal: BucketWriteRefusal, object: string) => void;
+}
 
-/**
- * bucket writes made inside fn stop retrying at deadlineAt (epoch ms), if that
- * comes before their own budget runs out
- */
-export function withBucketWriteDeadline<T>(
-  deadlineAt: number,
+const scopes = new AsyncLocalStorage<BucketWriteScope>();
+
+export function withBucketWriteScope<T>(
+  scope: BucketWriteScope,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const outer = deadlines.getStore();
-  return deadlines.run(
-    outer === undefined ? deadlineAt : Math.min(outer, deadlineAt),
-    fn,
-  );
+  const outer = scopes.getStore();
+  if (outer === undefined) return scopes.run(scope, fn);
+  const onRefused = (refusal: BucketWriteRefusal, object: string) => {
+    outer.onRefused?.(refusal, object);
+    scope.onRefused?.(refusal, object);
+  };
+  return scopes.run({
+    deadlineAt: Math.min(outer.deadlineAt, scope.deadlineAt),
+    onRefused,
+  }, fn);
 }
 
 export interface BucketWriteRetryDeps {
@@ -125,10 +132,10 @@ async function retrying<T>(
 ): Promise<T> {
   const startedAt = deps.now();
   const budgetEnd = startedAt + deps.budgetMs;
-  const deadline = deadlines.getStore();
-  const end = deadline === undefined
+  const scope = scopes.getStore();
+  const end = scope === undefined
     ? budgetEnd
-    : Math.min(budgetEnd, deadline);
+    : Math.min(budgetEnd, scope.deadlineAt);
   for (let attempt = 1;; attempt++) {
     try {
       const result = await write(attempt);
@@ -146,6 +153,7 @@ async function retrying<T>(
       );
       const backoff = ceiling / 2 + deps.random() * (ceiling / 2);
       const code = BUCKET_WRITE_CODES[refusal];
+      scope?.onRefused?.(refusal, object);
       if (signal?.aborted === true || deps.now() + backoff > end) {
         logger
           .warn`Bucket write to ${object} failed (${code}) after ${attempt} attempt(s): ${error}`;

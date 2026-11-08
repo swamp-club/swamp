@@ -1060,8 +1060,8 @@ control plane, beside the lease, at `_control/lineage/<fence>/`:
   lineage, before its sidecar uploads: the fence, holder, replica root and
   time;
 - `head-<writer fence>.json`, rewritten by that writer after each sync
-  Litestream confirmed (on a bucket, at most once per 1.2 s; see **Pacing
-  the head** under Phase 4D3): the TXID and swamp's **high-water mark**, the commit
+  Litestream confirmed (on a bucket that has refused it, at most once per
+  1.2 s; see **Pacing the head** under Phase 4D3): the TXID and swamp's **high-water mark**, the commit
   store's last cursor and the commit at it. Each writer has its own key and a
   read takes the highest writer's, so a head never goes backwards: two
   processes in one checkout share and continue one lineage, and the first,
@@ -1548,20 +1548,28 @@ probe and the closing sync.
 writer fence, and GCS refuses (HTTP 429) more than about one mutation a second
 of one object. Back-to-back syncs rewrote it at whatever rate they finished, so
 a team committing faster than once a second had member writes fail.
-`HeadPublishPacer` (`src/domain/datastore_v3/head_publish_pacer.ts`) spaces
-the head writes of a bucket datastore 1.2 s apart:
+`HeadPublishPacer` (`src/domain/datastore_v3/head_publish_pacer.ts`) paces
+the head writes of a bucket datastore, but only once the bucket has pushed back:
 
-- A head nobody wrote in the last 1.2 s goes out at once, so a quiet team
-  pays nothing.
-- Otherwise `syncAndPublishNow` waits out the rest of the interval before it
-  reads the high-water mark. The head it then publishes covers every commit
-  that landed during the wait, and the group commit resolves the requests that
-  arrived meanwhile from that head. So a busy team's confirms wait up to
-  1.2 s for one head instead of each starting its own.
+- Until a head write is refused, every head goes out at once. A member's
+  back-to-back commits, such as the steps of one workflow run, never wait. An
+  always-on pacer tripled a two-step workflow's commit bound on the 100 ms lane
+  (K2b p50 5.5 s to 17 s), and run 4 saw no 429 from one member's commits.
+- A head write the bucket refuses with a rate limit (a GCS 429 or an S3
+  `SlowDown`) is retried by the bucket write retry. The refusal reaches the
+  pacer through the sync's write scope (`withBucketWriteScope`), and the pacer
+  then paces that head for 30 s after the last refusal.
+- While pacing, `syncAndPublishNow` waits out the rest of the 1.2 s interval
+  before it reads the high-water mark. The head it then publishes covers every
+  commit that landed during the wait, and the group commit resolves the
+  requests that arrived meanwhile from that head. So a busy team's confirms
+  wait up to 1.2 s for one head instead of each starting its own.
 - The interval is above the limit because GCS measures it when a request
   arrives: writes sent exactly a second apart can land closer if one is slow.
 - Every caller of `syncAndPublish` is paced (the probe, owner claim and
-  release, the closing sync), and the wait counts against its own deadline.
+  release, the closing sync), and the wait counts against its own deadline. A
+  wait that would leave the sync under 500 ms is skipped, and the publish is
+  tried at once with the retry taking any refusal.
 - Every head write attempt counts, a refused or failed one included.
 - A filesystem replica is not paced.
 
