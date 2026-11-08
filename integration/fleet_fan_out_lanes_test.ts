@@ -23,6 +23,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
+import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -103,11 +104,11 @@ async function autoDefinitions(fleet: Fleet): Promise<string[]> {
   const names: string[] = [];
   const walk = async (dir: string) => {
     for await (const entry of Deno.readDir(dir)) {
-      if (entry.isDirectory) await walk(`${dir}/${entry.name}`);
+      if (entry.isDirectory) await walk(join(dir, entry.name));
       else if (entry.name.startsWith("host-patch")) names.push(entry.name);
     }
   };
-  await walk(`${fleet.repoDir}/.swamp/auto-definitions`);
+  await walk(join(fleet.repoDir, ".swamp", "auto-definitions"));
   return names.sort();
 }
 

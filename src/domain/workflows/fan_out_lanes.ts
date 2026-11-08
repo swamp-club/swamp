@@ -68,7 +68,7 @@ export function planLaneSteps(
   return steps;
 }
 
-/** a plan refuses colliding lane names, so at most one lane matches */
+/** worker names hold no brackets (the token mint refuses them), so at most one lane matches */
 export function laneStepOf(
   stepName: string,
   lanes: readonly { readonly worker: string }[] | undefined,
