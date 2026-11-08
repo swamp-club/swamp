@@ -882,7 +882,10 @@ Deno.test({
 async function withSidecar(
   root: string,
   fn: () => Promise<void>,
-  options: { readonly providerReplica?: boolean } = {},
+  options: {
+    readonly providerReplica?: boolean;
+    readonly requestSyncDeadlineMs?: number;
+  } = {},
 ): Promise<void> {
   const started = new Set<number>();
   setV3ReplicationForTesting({
@@ -896,7 +899,12 @@ async function withSidecar(
     },
     privateRoot: join(root, "priv"),
     timings: TEST_TIMINGS,
-  }, { syncDeadlineMs: 10_000 });
+  }, {
+    syncDeadlineMs: 10_000,
+    ...(options.requestSyncDeadlineMs !== undefined
+      ? { requestSyncDeadlineMs: options.requestSyncDeadlineMs }
+      : {}),
+  });
   try {
     await withMockedEnv(
       {
@@ -1303,10 +1311,7 @@ Deno.test({
 
 const HEAD_KEY = /^_control\/lineage\/\d{12}\/head-\d{12}\.json$/;
 
-/**
- * a rate-limit clock that only bites while enforcing: setup writes land far in
- * the past and later writes far in the future, each two hours apart
- */
+// setup and teardown writes land hours apart, so only enforced writes are limited
 function phasedClock() {
   let phase: "setup" | "enforce" | "after" = "setup";
   let past = -1e15;
@@ -1323,11 +1328,6 @@ function phasedClock() {
   };
 }
 
-/**
- * three requests commit and confirm back to back, as serve's datastore API
- * does for concurrent team members, against a bucket that refuses a second
- * write to one object inside a second
- */
 async function sustainedWrites(
   provider: "gcs" | "s3",
   durationMs: number,
@@ -1370,7 +1370,6 @@ async function sustainedWrites(
       );
       assert(heads.length > 1, "the head was published more than once");
       assertEquals(heads.filter((m) => m.refused), []);
-      // the last head covers every acknowledged commit
       clock.stop();
       assertEquals(await restoredCommits(follower), 1 + confirmed.length);
     });
@@ -1461,6 +1460,38 @@ Deno.test({
     assertEquals(failures.length, 1);
     assertStringIncludes(failures[0][1], "bucket_write_rate_limited");
     assertStringIncludes(failures[0][1], "head-");
+  },
+});
+
+Deno.test({
+  name:
+    "v3 bucket: a confirm with less time left than the head pacing wait publishes at once rather than refusing (swamp-club#4522)",
+  ignore: SIDECAR_TESTS_IGNORED,
+  async fn() {
+    await withRoot(async (root, bucket) => {
+      const repoDir = join(root, "repo");
+      await initRepo(repoDir);
+      assertEquals(errorOf(await setupBucket(repoDir, bucket)), undefined);
+      await withSidecar(root, async () => {
+        await writeIn(repoDir, 1);
+        await requireInitializedRepo({ repoDir, outputMode: "json" });
+        const location = await v3DatastoreConfigOf(
+          repoDir,
+          (await resolveDatastoreForRepo(repoDir)).datastoreConfig,
+        );
+        await holdV3Writer(location, repoDir, { retakeLost: true });
+        for (let i = 0; i < 3; i++) {
+          await commitThrough(repoDir, location, 1);
+          await confirmV3Replicated(location.path);
+        }
+        const heads = bucket.remote.ops().filter((op) =>
+          op.op === "controlPlane" &&
+          op.paths.some((path) => HEAD_KEY.test(path))
+        );
+        assert(heads.length >= 3, `${heads.length} head writes`);
+        await closeV3Datastores();
+      }, { requestSyncDeadlineMs: 600 });
+    });
   },
 });
 

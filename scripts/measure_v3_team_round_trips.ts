@@ -210,8 +210,7 @@ function mutatedObject(req: Request, body: Uint8Array | undefined): string | und
 function objectRateLimiter(intervalMs: number) {
   const last = new Map<string, number>();
   const refused: { readonly at: number; readonly object: string }[] = [];
-  // off during setup: the extension's conditional-write probe writes one
-  // object twice in a row
+  // off during setup: the extension's write probe rewrites one object at once
   let enforcing = false;
   return {
     refused,

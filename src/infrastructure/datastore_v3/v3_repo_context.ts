@@ -1977,8 +1977,7 @@ const MIN_QUEUED_SYNC_MS = 500;
 
 const publishing = new Map<string, Promise<unknown>>();
 
-// A bucket refuses rewriting one object faster than about once a second, and
-// a lineage head is one object per lineage and writer fence.
+// a lineage head is one bucket object per lineage and writer fence
 const headPacers = new Map<
   string,
   { readonly head: string; readonly pacer: HeadPublishPacer }
@@ -2004,14 +2003,8 @@ async function waitForHeadPacer(
   signal: AbortSignal | undefined,
 ): Promise<number> {
   const wait = pacer?.waitMs(Date.now()) ?? 0;
-  if (wait <= 0) return 0;
-  if (wait >= deadlineMs) {
-    throw new V3ReplicationError(
-      `the sync did not finish within ${
-        Math.round(deadlineMs / 1000)
-      }s: the last head was published too recently to publish another`,
-    );
-  }
+  // Too little time left to wait: try now, and let the write retry take a 429.
+  if (wait <= 0 || wait >= deadlineMs) return 0;
   try {
     await abortableSleep(wait, signal);
   } catch (error) {
@@ -2084,7 +2077,6 @@ async function syncAndPublishNow(
     return undefined;
   }
   const pacer = headPacerFor(datastore, use.lineageFence, writerFence);
-  // Commits landing during the wait are covered by the mark taken below.
   const left = deadlineMs -
     await waitForHeadPacer(pacer, deadlineMs, signal);
   // taken before the sync: what the sync covers. A serve that lost its lease
@@ -2096,12 +2088,17 @@ async function syncAndPublishNow(
     ...(signal === undefined ? {} : { signal }),
     beforeLeaseCheck: async (txid: string) => {
       pacer?.attempted(Date.now());
-      first = await publishV3Head(copy, {
-        lineageFence: use.lineageFence,
-        writerFence,
-        txid,
-        mark,
-      });
+      try {
+        first = await publishV3Head(copy, {
+          lineageFence: use.lineageFence,
+          writerFence,
+          txid,
+          mark,
+        });
+      } finally {
+        // its retries wrote the head too
+        pacer?.attempted(Date.now());
+      }
     },
   };
   await withBucketWriteDeadline(Date.now() + left, async () => {

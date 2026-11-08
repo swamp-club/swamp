@@ -93,7 +93,6 @@ function flaky(
     },
     async putIfAbsent(key: string, data: Uint8Array) {
       if (wrapped.calls++ < times) {
-        // The create lands, but its answer is lost.
         if (options.landFirst === true && wrapped.calls === 1) {
           await store.putIfAbsent(key, data);
         }

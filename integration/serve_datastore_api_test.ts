@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -2377,6 +2378,7 @@ Deno.test({
       assertStringIncludes(warnings[0], "HTTP 429 rateLimitExceeded");
     } finally {
       await reset();
+      await initializeLogging({});
     }
   },
 });

@@ -144,7 +144,6 @@ async function retrying<T>(
         MAX_BACKOFF_MS,
         FIRST_BACKOFF_MS * 2 ** (attempt - 1),
       );
-      // Equal jitter: never a near-zero wait, so a hot object gets air.
       const backoff = ceiling / 2 + deps.random() * (ceiling / 2);
       const code = BUCKET_WRITE_CODES[refusal];
       if (signal?.aborted === true || deps.now() + backoff > end) {
@@ -225,14 +224,15 @@ export function retryingControlPlane(
           }
         });
       } catch (error) {
-        if (ambiguous && await holds(key, data)) return true;
+        if (ambiguous && await holds(key, data).catch(() => false)) {
+          return true;
+        }
         throw error;
       }
     },
   });
 }
 
-/** chunk puts, deletes and touches retry like control-plane writes */
 export function retryingStorage(
   storage: DatastoreStorage,
   deps: Partial<BucketWriteRetryDeps> = {},
