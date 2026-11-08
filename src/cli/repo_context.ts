@@ -1765,7 +1765,11 @@ function serveLockOf(
     lockKey: serveKey,
     displayKey,
     maxWaitMs,
-    onAcquired: () => catchUpV3HandlesAt(root),
+    onAcquired: () =>
+      catchUpV3HandlesAt(
+        root,
+        options?.ignoresStop === true ? { ignoresStop: true } : undefined,
+      ),
     // registered while held, so the checkout's commits to the partition name
     // the lease
     root,
@@ -1845,6 +1849,8 @@ export interface ServeLockHoldOptions {
    * lock must stop. Never called for a local lock.
    */
   readonly onLost?: (error: Error) => void;
+  /** the catch-up once held ignores the command's stop, as a publish must land */
+  readonly ignoresStop?: boolean;
 }
 
 /**
@@ -1926,11 +1932,13 @@ export async function createWorkflowRunLock(
   const config = lockingConfigOf(datastoreConfig);
   const lockKey = workflowRunLockKey(config.namespace, runId);
   const maxWaitMs = resolveLockTimeoutMs();
+  // a stopped resume still puts its suspended run back under this claim
   const atServe = serveLockOf(
     config,
     workflowRunLockKey(undefined, runId),
     lockKey,
     maxWaitMs,
+    { ignoresStop: true },
   );
   if (atServe !== undefined) return atServe;
   if (isCustomDatastoreConfig(config)) {
@@ -2774,6 +2782,8 @@ export interface AcquireModelLocksOptions {
    */
   pull?: boolean;
   failIfBusy?: boolean;
+  /** a cancelled run still publishes what it produced */
+  ignoresStop?: boolean;
   /** stops every lock wait; nothing taken so far stays held */
   signal?: AbortSignal;
 }
@@ -3489,6 +3499,7 @@ export async function acquirePublishLocksOrDefer(
         // The pull replaces each version another clone also wrote with its
         // copy; the push reports those as a conflict and publishes the rest.
         failIfBusy: true,
+        ignoresStop: true,
       },
     );
     if (locks.synced) catalogStore?.invalidate();
@@ -3642,6 +3653,7 @@ export async function acquireModelLocks(
           () =>
             createModelLock(config, modelType, modelId, {
               onLost: (error) => leaseLost.abort(error),
+              ...(options?.ignoresStop === true ? { ignoresStop: true } : {}),
             }),
         );
       // unique coordinator key so parallel steps on the same model do not

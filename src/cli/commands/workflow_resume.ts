@@ -244,6 +244,7 @@ export const workflowResumeCommand = withRemoteOptions(
       const shutdown = registerShutdownHandler({
         handler: () => abort.abort(),
         forceExitOnRepeat: true,
+        stopsCatchUps: true,
       });
 
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
@@ -610,6 +611,7 @@ export const workflowResumeCommand = withRemoteOptions(
     const shutdownHandle = registerShutdownHandler({
       handler: () => abort.abort(),
       forceExitOnRepeat: true,
+      stopsCatchUps: true,
       dataWrites: processDataWrites,
       beforeForceExit: releaseRegisteredLocks,
     });

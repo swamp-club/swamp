@@ -20,6 +20,8 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { serveCallerFingerprint } from "./checkout_view.ts";
 import {
+  keepsProbedCopy,
+  probeVouches,
   registerCheckoutLeases,
   serveUpstreamLocalRoot,
 } from "./serve_upstream_binding.ts";
@@ -126,4 +128,52 @@ Deno.test("registerCheckoutLeases: a renewed lease is confirmed, one not renewed
   } finally {
     resetServeLeasesForTesting();
   }
+});
+
+Deno.test("probeVouches: only serve naming the cached principal, with the access the copy was built under when both are known (swamp-club#4512)", () => {
+  const checked = { kind: "checked", principal: "user:p" } as const;
+  const cases: [Parameters<typeof probeVouches>[0], boolean][] = [
+    [{ cached: "user:p", mode: checked, built: "a", access: "a" }, true],
+    [{ cached: "user:p", mode: checked, built: undefined, access: "a" }, true],
+    [{ cached: "user:p", mode: checked, built: "a", access: undefined }, false],
+    [{ cached: "user:p", mode: checked, built: "a", access: "b" }, false],
+    [{ cached: "user:q", mode: checked, built: "a", access: "a" }, false],
+    [{
+      cached: "user:p",
+      mode: { kind: "not-checked" },
+      built: "a",
+      access: "a",
+    }, false],
+    [{ cached: "user:p", mode: undefined, built: "a", access: "a" }, false],
+  ];
+  for (const [seen, expected] of cases) {
+    assertEquals(probeVouches(seen), expected, JSON.stringify(seen));
+  }
+});
+
+Deno.test("keepsProbedCopy: never a copy another caller reset, or whose principal changed, while the lease was awaited (swamp-club#4512)", () => {
+  const probe = { principal: "user:p", fingerprint: "fp-old" };
+  const caller = { fingerprint: "fp-old", resetting: false };
+  assertEquals(keepsProbedCopy(probe, caller, "user:p"), true);
+  assertEquals(keepsProbedCopy(undefined, caller, "user:p"), false);
+  assertEquals(
+    keepsProbedCopy(probe, { fingerprint: "fp-q", resetting: false }, "user:q"),
+    false,
+    "reset for principal Q meanwhile",
+  );
+  assertEquals(
+    keepsProbedCopy(probe, { fingerprint: "fp-q", resetting: false }, "user:p"),
+    false,
+    "another fingerprint, even of the same principal",
+  );
+  assertEquals(keepsProbedCopy(probe, caller, undefined), false);
+  assertEquals(
+    keepsProbedCopy(
+      probe,
+      { fingerprint: "fp-old", resetting: true },
+      "user:p",
+    ),
+    false,
+  );
+  assertEquals(keepsProbedCopy(probe, undefined, "user:p"), false);
 });

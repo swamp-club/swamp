@@ -593,6 +593,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           const shutdownHandle = registerShutdownHandler({
             handler: () => abort.abort(),
             forceExitOnRepeat: true,
+            stopsCatchUps: true,
             dataWrites: processDataWrites,
             beforeForceExit: releaseRegisteredLocks,
           });
@@ -1166,6 +1167,7 @@ async function runMethodViaServer(
   const shutdown = registerShutdownHandler({
     handler: () => abort.abort(),
     forceExitOnRepeat: true,
+    stopsCatchUps: true,
   });
 
   const inputSets: Record<string, unknown>[] = stdinItems

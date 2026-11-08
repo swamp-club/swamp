@@ -277,6 +277,13 @@ interface ChangeSource {
 
 const NO_COMMIT: ChangeSource = { partition: "", seq: 0 };
 
+/** what asked for a recovery, recorded on its span */
+export type RecoveryEntry =
+  | "view_change"
+  | "rebuilt"
+  | "interrupted_writer"
+  | "dropped_work";
+
 export class SqliteReadModel implements ReadModel {
   readonly #commitStore: CommitStore;
   readonly #chunkStore: ChunkStore;
@@ -438,12 +445,12 @@ export class SqliteReadModel implements ReadModel {
     return this.#stats === undefined ? fn() : this.#stats.timeSync(phase, fn);
   }
 
-  #counted<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  #counted<T>(name: string, fn: (span: Span) => Promise<T>): Promise<T> {
     return withSpan(name, {}, async (span) => {
       const stats = new CatchUpStats();
       this.#stats = stats;
       try {
-        return await fn();
+        return await fn(span);
       } finally {
         this.#stats = undefined;
         span.setAttributes(stats.attributes());
@@ -521,16 +528,43 @@ export class SqliteReadModel implements ReadModel {
       readonly admits: (key: string) => boolean;
       readonly signal: AbortSignal;
       readonly droppedDirs?: readonly string[];
+      readonly entry?: RecoveryEntry;
     },
   ): Promise<string[]> {
     return this.#exclusive(
       () =>
-        this.#counted("swamp.datastore.v3.readmodel.recover", async () => {
-          // Every namespace's rows are judged by this checkout's filter: the
-          // replay below rebuilds every namespace, and a checkout writes one.
-          const generation = this.#catalog.clear(options.admits);
-          this.#reset(generation);
-          this.#catalog.markPopulated(generation);
+        this.#counted("swamp.datastore.v3.readmodel.recover", async (span) => {
+          // before anything is cleared, so a stopped recovery leaves the state
+          options.signal.throwIfAborted();
+          const rebuild = this.#state.rebuildInProgress();
+          const resuming = rebuild?.resumable === true &&
+            options.entry === "interrupted_writer";
+          // the earlier start, so the sweep still reaches what the first
+          // interrupted writer left
+          const since = resuming
+            ? Math.min(rebuild!.since, options.since)
+            : options.since;
+          span.setAttributes({
+            "swamp.datastore.v3.readmodel.recover.entry": options.entry ??
+              "unknown",
+            "swamp.datastore.v3.readmodel.boot_named": this.#boot !== undefined,
+            "swamp.datastore.v3.readmodel.recover.path": resuming
+              ? "resumed"
+              : "full",
+          });
+          if (!resuming) {
+            // Every namespace's rows are judged by this checkout's filter: the
+            // replay below rebuilds every namespace, and a checkout writes one.
+            const generation = this.#catalog.clear(options.admits);
+            this.#reset(generation);
+            this.#catalog.markPopulated(generation);
+            this.#state.markRebuildStarted(
+              options.entry === "interrupted_writer",
+              options.since,
+            );
+          }
+          // a resumed rebuild replays as the run it continues did
+          if (resuming) this.#replaying = true;
           await this.#retryAtRiskCopies(options.signal);
           this.#recovering = true;
           try {
@@ -538,7 +572,12 @@ export class SqliteReadModel implements ReadModel {
           } finally {
             this.#recovering = false;
           }
-          return await this.#sweepUnowned(namespace, options);
+          const removed = await this.#sweepUnowned(namespace, {
+            ...options,
+            since,
+          });
+          this.#state.clearRebuild();
+          return removed;
         }),
       options.signal,
     );
@@ -673,6 +712,7 @@ export class SqliteReadModel implements ReadModel {
 
   async #catchUpFeedRun(signal: AbortSignal): Promise<CatchUpResult> {
     let applied = 0;
+    let loadedBase: number | undefined;
     for (;;) {
       signal.throwIfAborted();
       let page;
@@ -693,7 +733,12 @@ export class SqliteReadModel implements ReadModel {
         this.#net = undefined;
         const net = this.#netBase && this.#state.cursor() === 0;
         this.#netBase = false;
+        if (loadedBase !== undefined) {
+          logger
+            .info`The commit log was compacted past the base this catch-up just loaded (position ${loadedBase}, now ${error.point}); loading the newer base, keeping the files that already match it`;
+        }
         await this.#loadBase(signal, net);
+        loadedBase = this.#state.cursor();
         continue;
       }
       applied += await this.#applyPage(page, true, signal);
@@ -716,7 +761,6 @@ export class SqliteReadModel implements ReadModel {
       readonly droppedDirs?: readonly string[];
     },
   ): Promise<string[]> {
-    const root = this.#cacheRoot(namespace);
     const removed: string[] = [];
     const batch = new DurableWriteBatch();
     const droppedDirs = new Set(options.droppedDirs);
@@ -728,27 +772,80 @@ export class SqliteReadModel implements ReadModel {
       }
       return false;
     };
-    const visit = async (dir: string, segments: string[]): Promise<void> => {
+    try {
+      await this.#forEachMaterialisedFile(
+        namespace,
+        options.admits,
+        options.signal,
+        async (key, path, spellings) => {
+          if (
+            spellings.some((spelling) =>
+              this.#state.fileOwnership(namespace, spelling)?.present === true
+            )
+          ) {
+            return true;
+          }
+          const segments = key.split("/");
+          const composed = spellings[spellings.length - 1].split("/");
+          if (!inDroppedDir(segments) && !inDroppedDir(composed)) {
+            const modified = (await Deno.lstat(path)).mtime?.getTime();
+            if (modified === undefined || modified < options.since) return true;
+          }
+          await this.#removeRecord(
+            namespace,
+            key,
+            path,
+            batch,
+            options.signal,
+            NO_COMMIT,
+          );
+          removed.push(key);
+          return true;
+        },
+      );
+      await batch.barrier();
+    } finally {
+      batch.discard();
+    }
+    return removed;
+  }
+
+  /**
+   * every regular file in the materialised directories the checkout projects,
+   * by its listed key and both spellings (see recover); never the checkout's
+   * own files or a symlink; fn returns false to stop the walk
+   */
+  async #forEachMaterialisedFile(
+    namespace: string,
+    admits: (key: string) => boolean,
+    signal: AbortSignal,
+    fn: (
+      key: string,
+      path: string,
+      spellings: readonly string[],
+    ) => Promise<boolean>,
+  ): Promise<void> {
+    const root = this.#cacheRoot(namespace);
+    const visit = async (dir: string, segments: string[]): Promise<boolean> => {
       let entries: Deno.DirEntry[];
       try {
         entries = await Array.fromAsync(this.#readDir(dir));
       } catch (error) {
-        if (error instanceof Deno.errors.NotFound) return;
+        if (error instanceof Deno.errors.NotFound) return true;
         throw error;
       }
       for (const entry of entries) {
-        options.signal.throwIfAborted();
+        signal.throwIfAborted();
         // A symlink is never followed or removed: the read model writes none.
         if (entry.isSymlink) continue;
         const path = join(dir, entry.name);
         const keySegments = [...segments, entry.name];
-        // Both spellings of a listed name are judged (see recover).
         const composed = keySegments.map((segment) => segment.normalize("NFC"));
         if (isCheckoutLocalKey(keySegments) || isCheckoutLocalKey(composed)) {
           continue;
         }
         if (entry.isDirectory) {
-          await visit(path, keySegments);
+          if (!await visit(path, keySegments)) return false;
           continue;
         }
         if (!entry.isFile) continue;
@@ -756,38 +853,19 @@ export class SqliteReadModel implements ReadModel {
         const spellings = [...new Set([key, composed.join("/")])];
         if (
           spellings.some((spelling) =>
-            !options.admits(spelling) ||
-            unprojectedReason(namespace, spelling, this.#checkout) !==
-              undefined ||
-            this.#state.fileOwnership(namespace, spelling)?.present === true
+            !admits(spelling) ||
+            unprojectedReason(namespace, spelling, this.#checkout) !== undefined
           )
         ) {
           continue;
         }
-        if (!inDroppedDir(keySegments) && !inDroppedDir(composed)) {
-          const modified = (await Deno.lstat(path)).mtime?.getTime();
-          if (modified === undefined || modified < options.since) continue;
-        }
-        await this.#removeRecord(
-          namespace,
-          key,
-          path,
-          batch,
-          options.signal,
-          NO_COMMIT,
-        );
-        removed.push(key);
+        if (!await fn(key, path, spellings)) return false;
       }
+      return true;
     };
-    try {
-      for (const subdir of MATERIALISED_SUBDIRS) {
-        await visit(join(root, subdir), [subdir]);
-      }
-      await batch.barrier();
-    } finally {
-      batch.discard();
+    for (const subdir of MATERIALISED_SUBDIRS) {
+      if (!await visit(join(root, subdir), [subdir])) return;
     }
-    return removed;
   }
 
   catchUpPartition(
@@ -1030,7 +1108,19 @@ export class SqliteReadModel implements ReadModel {
       });
       try {
         if (lockWaitMs === undefined) {
-          await lock.lock(true);
+          if (!await lock.tryLock(true)) {
+            logger
+              .info`Waiting for another swamp command to finish updating this checkout's read model`;
+            // polled when there is a signal, since a blocking lock cannot be aborted
+            if (signal === undefined) {
+              await lock.lock(true);
+            } else {
+              while (!await lock.tryLock(true)) {
+                signal.throwIfAborted();
+                await new Promise((done) => setTimeout(done, 50));
+              }
+            }
+          }
         } else {
           const until = Date.now() + lockWaitMs;
           while (!await lock.tryLock(true)) {
@@ -1176,18 +1266,40 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<void> {
     const written = this.#state.unsyncedBoot();
     if (written === undefined || written === this.#boot) return;
-    if (this.#boot === undefined) {
-      // Whether the boot ended is unknown, so the files cannot be trusted
-      // and a check proves nothing: apply every commit again, synced.
+    // Whether the boot ended is unknown, so a file that matches may be held
+    // only by the page cache: it is synced, never trusted as on disk.
+    const unnamed = this.#boot === undefined;
+    if (unnamed) {
       logger
-        .warn`The current boot cannot be named, so files written unsynced in an earlier one are rewritten`;
+        .warn`The current boot cannot be named, so files written unsynced in an earlier one are checked and synced`;
+    }
+    if (
+      !await this.#restoreFiles(
+        this.#state.unsyncedFiles(),
+        { syncMatching: unnamed },
+        signal,
+      )
+    ) {
       this.#reset(generation);
       return;
     }
+    this.#state.clearUnsynced();
+  }
+
+  /**
+   * puts each file back to what the state says it holds; false where only
+   * applying every commit again can; with syncMatching a file that already
+   * matches is synced too
+   */
+  async #restoreFiles(
+    files: readonly UnsyncedFile[],
+    options: { readonly syncMatching: boolean },
+    signal: AbortSignal,
+  ): Promise<boolean> {
     const batch = new DurableWriteBatch();
     const commits = new Map<number, Commit | undefined>();
     try {
-      for (const file of this.#state.unsyncedFiles()) {
+      for (const file of files) {
         signal.throwIfAborted();
         // a key the checkout never projects is skipped, not a reason to apply
         // every commit again: older state may list one, and its file is the
@@ -1195,9 +1307,8 @@ export class SqliteReadModel implements ReadModel {
         if (this.#unprojected(file.namespace, file.record_key)) continue;
         if (file.expect === "unknown") {
           logger
-            .warn`The read model's state has no live record for ${file.record_key}, written before a restart; applying every commit again`;
-          this.#reset(generation);
-          return;
+            .warn`The read model's state has no live record for ${file.record_key}; applying every commit again`;
+          return false;
         }
         const source = file.expect === "present"
           ? { partition: file.owner, seq: 0 }
@@ -1206,13 +1317,12 @@ export class SqliteReadModel implements ReadModel {
           file.namespace,
           RecordKey.create(file.record_key),
           file.expect === "present",
-          "the check after a restart",
+          "the check of a file the read model applied",
         );
         if (path === undefined) {
           logger
-            .warn`${file.record_key} cannot be checked after a restart; applying every commit again`;
-          this.#reset(generation);
-          return;
+            .warn`${file.record_key} cannot be checked; applying every commit again`;
+          return false;
         }
         // A guarded file that matches stays, its chunks stored or a copy
         // aside; one that changed since it was checked is rewritten below.
@@ -1230,10 +1340,14 @@ export class SqliteReadModel implements ReadModel {
               false,
             ))
         ) {
+          if (options.syncMatching) {
+            if (file.expect === "present") await this.#syncFile(path);
+            batch.touch(dirname(path));
+          }
           continue;
         }
         logger
-          .info`${file.record_key} does not hold what the read model applied, after a restart since it was written; rewriting it`;
+          .info`${file.record_key} does not hold what the read model applied; rewriting it`;
         if (file.expect !== "present") {
           await this.#removeRecord(
             file.namespace,
@@ -1250,9 +1364,8 @@ export class SqliteReadModel implements ReadModel {
           : await this.#inlineAt(file, commits);
         if (stored === undefined) {
           logger
-            .warn`The content ${file.record_key} held before a restart cannot be found; applying every commit again`;
-          this.#reset(generation);
-          return;
+            .warn`The content ${file.record_key} should hold cannot be found; applying every commit again`;
+          return false;
         }
         await this.#writeContent(
           file.namespace,
@@ -1269,13 +1382,12 @@ export class SqliteReadModel implements ReadModel {
       if (signal.aborted) throw signal.reason;
       if (error instanceof CheckoutCopyAtRiskError) throw error;
       logger
-        .warn`Cannot rewrite the files written before a restart (${error}); applying every commit again`;
-      this.#reset(generation);
-      return;
+        .warn`Cannot put files back to what the read model applied (${error}); applying every commit again`;
+      return false;
     } finally {
       batch.discard();
     }
-    this.#state.clearUnsynced();
+    return true;
   }
 
   async #inlineAt(
@@ -2026,6 +2138,8 @@ export class SqliteReadModel implements ReadModel {
           this.#pageSize,
         );
         if (point !== undefined && page.point !== point) {
+          logger
+            .info`The commit log was compacted while its base was staged (position ${point}, now ${page.point}); staging the newer base`;
           staged = false;
           break;
         }

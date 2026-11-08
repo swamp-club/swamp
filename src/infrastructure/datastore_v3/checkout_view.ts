@@ -49,6 +49,11 @@ export type CheckoutView =
     /** a copy moved aside and started afresh at the same root is another view */
     readonly copy: string;
     readonly caller: string;
+    /**
+     * the principal serve said the token acts as, when known: a rotated token
+     * of the same principal keeps the view
+     */
+    readonly principal?: string;
     readonly serverUrl: string;
   }
   | {
@@ -69,6 +74,7 @@ export function checkoutViewOf(
   datastorePath: string,
   namespace: string,
   copyId: string | undefined,
+  principal?: string,
 ): CheckoutView {
   const serve = serveUpstreamAt(datastorePath);
   return serve !== undefined
@@ -77,6 +83,7 @@ export function checkoutViewOf(
       root: resolve(datastorePath),
       copy: copyId ?? "",
       caller: serveCallerFingerprint(serve.target.token),
+      ...(principal !== undefined ? { principal } : {}),
       serverUrl: serve.target.serverUrl,
     }
     : { kind: "solo", datastore: resolve(datastorePath), namespace };
@@ -84,7 +91,10 @@ export function checkoutViewOf(
 
 function sameView(a: CheckoutView, b: CheckoutView): boolean {
   if (a.kind === "serve" && b.kind === "serve") {
-    return a.root === b.root && a.copy === b.copy && a.caller === b.caller;
+    const sameCaller = a.principal !== undefined && b.principal !== undefined
+      ? a.principal === b.principal
+      : a.caller === b.caller;
+    return a.root === b.root && a.copy === b.copy && sameCaller;
   }
   if (a.kind === "solo" && b.kind === "solo") {
     return a.datastore === b.datastore && a.namespace === b.namespace;
@@ -162,7 +172,9 @@ async function readRecordedView(
     if (
       (view?.kind === "serve" && typeof view.root === "string" &&
         typeof view.copy === "string" && typeof view.caller === "string" &&
-        typeof view.serverUrl === "string") ||
+        typeof view.serverUrl === "string" &&
+        (view.principal === undefined ||
+          typeof view.principal === "string")) ||
       (view?.kind === "solo" && typeof view.datastore === "string" &&
         typeof view.namespace === "string")
     ) {
@@ -234,7 +246,18 @@ export async function alignCheckoutView(
   options: { readonly holdsWriterLock: boolean },
 ): Promise<void> {
   const quick = await readRecordedView(repoDir);
-  if (isCurrent(quick, view)) return;
+  if (isCurrent(quick, view)) {
+    // the same view, now named by its principal, so a later rotated token of
+    // that principal is the same view too
+    if (
+      typeof quick === "object" && quick.view.kind === "serve" &&
+      view.kind === "serve" && quick.view.principal === undefined &&
+      view.principal !== undefined
+    ) {
+      await writeRecordedView(repoDir, { view });
+    }
+    return;
+  }
   if (quick === "absent" && view.kind === "solo") {
     await writeRecordedView(repoDir, { view });
     return;
@@ -267,7 +290,9 @@ export async function alignCheckoutView(
       rebuilding: true,
     });
     try {
-      await handle.recoverInterruptedWriter(0);
+      await handle.recoverInterruptedWriter(0, undefined, {
+        entry: "view_change",
+      });
     } finally {
       // The replay may have rewritten run records before any failure.
       await removeStaleRunIndexes(repoDir);

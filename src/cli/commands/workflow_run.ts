@@ -698,6 +698,7 @@ export const workflowRunCommand = new Command()
             shutdownHandle = registerShutdownHandler({
               handler: () => abort.abort(),
               forceExitOnRepeat: true,
+              stopsCatchUps: true,
               dataWrites: processDataWrites,
               beforeForceExit: releaseRegisteredLocks,
             });
@@ -928,6 +929,7 @@ async function runWorkflowViaServer(
   const shutdown = registerShutdownHandler({
     handler: () => abort.abort(),
     forceExitOnRepeat: true,
+    stopsCatchUps: true,
   });
 
   const inputSets: Record<string, unknown>[] = stdinItems

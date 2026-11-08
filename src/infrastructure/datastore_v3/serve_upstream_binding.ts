@@ -29,7 +29,10 @@ import {
   type DatastoreConfig,
   resolveLockTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
-import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
+import type {
+  ServeInitiatorMode,
+  ServeUpstreamTarget,
+} from "../../domain/datastore_v3/serve_upstream.ts";
 import { setV3BucketLockRoot } from "../persistence/datastore_lock_target.ts";
 import { swampPath } from "../persistence/paths.ts";
 import { getSwampLogger } from "../logging/logger.ts";
@@ -38,7 +41,10 @@ import {
   serveCallerFingerprint,
   ServeCopyHoldsUnlandedCommitsError,
 } from "./checkout_view.ts";
-import { serveDatastoreClientFor } from "./serve_datastore_client.ts";
+import {
+  serveDatastoreClientFor,
+  serveRequestTimeoutMs,
+} from "./serve_datastore_client.ts";
 import {
   registerServeUpstream,
   serveUpstreamAt,
@@ -54,6 +60,7 @@ import {
   ACCESS_RESET_COOLDOWN_MS,
   accessResetDue,
   SERVE_UPSTREAM_STATE_FILE,
+  type ServeCopyCaller,
   ServeUpstreamState,
 } from "./serve_upstream_state.ts";
 import {
@@ -113,7 +120,7 @@ export async function bindV3ServeUpstream(
   setV3BucketLockRoot(config, root);
   // Before any catch-up or read: the copy must be this caller's view of
   // serve. The projection follows when the context opens.
-  await resetCopyForCaller(repoDir, root, target);
+  await resetCopyForCaller(repoDir, root, target, namespace);
   await renewCheckoutLeases(root);
   return {
     path: root,
@@ -208,6 +215,7 @@ async function resetCopyForCaller(
   repoDir: string,
   root: string,
   target: ServeUpstreamTarget,
+  namespace: string,
 ): Promise<void> {
   const fingerprint = serveCallerFingerprint(target.token);
   const statePath = join(root, SERVE_UPSTREAM_STATE_FILE);
@@ -218,6 +226,11 @@ async function resetCopyForCaller(
     Date.now(),
   );
   if (due === "current") return;
+  // a rotated token of the principal the copy was built for reads what it
+  // read: only serve's answer for the new token counts, never the old cache
+  const samePrincipal = due === "caller"
+    ? await tokenActsAsCachedPrincipal(statePath, target, namespace)
+    : undefined;
   let release: () => Promise<void>;
   try {
     // A copy built for another caller is never read: wait for the lease.
@@ -239,6 +252,14 @@ async function resetCopyForCaller(
       // Looked at again under the lease: another process may have reset
       // the copy for this caller meanwhile.
       const caller = state.caller();
+      // only the copy the probe judged: another caller may have reset it for
+      // another principal while this one waited for the lease
+      if (keepsProbedCopy(samePrincipal, caller, state.checkedPrincipal())) {
+        state.restampCaller(fingerprint);
+        logger
+          .debug`The serve token changed but acts as the same principal, so this checkout's copy is kept`;
+        return;
+      }
       let accessResetAt: number | undefined;
       if (
         caller !== undefined && !caller.resetting &&
@@ -280,6 +301,96 @@ async function resetCopyForCaller(
   } finally {
     await release();
   }
+}
+
+/**
+ * the copy's caller fingerprint and principal when serve says the new token
+ * acts as that principal with the read access the copy was built under;
+ * undefined, so the copy is reset, whenever serve cannot say so
+ */
+async function tokenActsAsCachedPrincipal(
+  statePath: string,
+  target: ServeUpstreamTarget,
+  namespace: string,
+): Promise<
+  { readonly principal: string; readonly fingerprint: string } | undefined
+> {
+  let cached: string | undefined;
+  let built: string | undefined;
+  let fingerprint: string | undefined;
+  let cursor: number;
+  const state = ServeUpstreamState.open(statePath);
+  try {
+    const caller = state.caller();
+    if (caller === undefined || caller.resetting) return undefined;
+    fingerprint = caller.fingerprint;
+    cached = state.checkedPrincipal();
+    built = state.access().built;
+    cursor = state.feedCursor();
+  } finally {
+    state.close();
+  }
+  if (cached === undefined) return undefined;
+  const client = serveDatastoreClientFor(target, namespace);
+  let access: string | undefined;
+  client.checkAccess((seen) => {
+    access = seen;
+  });
+  try {
+    await client.changes(
+      cursor,
+      AbortSignal.timeout(serveRequestTimeoutMs()),
+      1,
+    );
+  } catch (error) {
+    // a refused page (a compacted cursor) still carries serve's principal
+    // header; only an answer with none rebuilds
+    logger
+      .debug`Serve answered the principal check with an error: ${error}`;
+  } finally {
+    client.close();
+  }
+  return probeVouches({
+      cached,
+      mode: client.initiatorMode(),
+      built,
+      access,
+    })
+    ? { principal: cached, fingerprint }
+    : undefined;
+}
+
+/**
+ * serve named the cached principal for the new token, and any read access it
+ * sent is the one the copy was built under: two tokens of one principal can
+ * read differently (another client)
+ */
+export function probeVouches(seen: {
+  readonly cached: string;
+  readonly mode: ServeInitiatorMode | undefined;
+  readonly built: string | undefined;
+  readonly access: string | undefined;
+}): boolean {
+  if (seen.mode?.kind !== "checked" || seen.mode.principal !== seen.cached) {
+    return false;
+  }
+  return seen.built === undefined || seen.access === seen.built;
+}
+
+/**
+ * under the lease, the copy is still the one the probe judged: another caller
+ * may have reset it for another principal while this one waited
+ */
+export function keepsProbedCopy(
+  probe:
+    | { readonly principal: string; readonly fingerprint: string }
+    | undefined,
+  caller: ServeCopyCaller | undefined,
+  checkedPrincipal: string | undefined,
+): boolean {
+  return probe !== undefined && caller !== undefined && !caller.resetting &&
+    caller.fingerprint === probe.fingerprint &&
+    checkedPrincipal === probe.principal;
 }
 
 /**

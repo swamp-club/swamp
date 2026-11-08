@@ -76,7 +76,7 @@ Deno.test("a restore that moves the read model clears the output summaries befor
   const finallyAt = branch.lastIndexOf("} finally {");
   assertEquals(finallyAt >= 0, true);
   for (
-    const path of ["recoverInterruptedWriter(0)", "rebuilt.replayEveryCommit()"]
+    const path of ["recoverInterruptedWriter(0,", "rebuilt.replayEveryCommit()"]
   ) {
     const at = branch.indexOf(path);
     assertEquals(at >= 0 && at < finallyAt, true, path);
@@ -88,7 +88,7 @@ Deno.test("a restore that moves the read model clears the output summaries befor
   // And before them: a process killed during the replay never reaches finally,
   // and this branch does not run again once the copy state names the restore.
   const replayAt = Math.min(
-    branch.indexOf("recoverInterruptedWriter(0)"),
+    branch.indexOf("recoverInterruptedWriter(0,"),
     branch.indexOf("rebuilt.replayEveryCommit()"),
   );
   const firstClear = branch.indexOf("removeStaleOutputSummaries(repoDir)");

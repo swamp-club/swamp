@@ -24,11 +24,13 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
 import { type Op, tombstoneOp } from "../../domain/datastore_v3/op.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   blobPut,
   dataKey,
@@ -55,12 +57,13 @@ import {
 } from "./sqlite_commit_store.ts";
 import {
   CATALOG_V3_FILE,
+  READ_MODEL_LOCK_FILE,
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
 } from "./sqlite_read_model.ts";
 import type { SpellingFolding } from "./spelling_folding.ts";
-import { catalogRow } from "./v3_catalog.ts";
+import { catalogRow, V3Catalog } from "./v3_catalog.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 
 interface Env {
@@ -278,6 +281,666 @@ Deno.test("SqliteReadModel: the reboot check skips a listed key the checkout's d
       await readModel.close();
     }
   });
+});
+
+async function listUnsyncedUnderBoot1(
+  env: Env,
+  count: number,
+): Promise<string[]> {
+  const paths: string[] = [];
+  for (let i = 1; i <= count; i++) {
+    await env.append(i, "", [await savePut(`r${i}`, 1), versionOp(`r${i}`, 1)]);
+    paths.push(env.contentPath("", `r${i}`, 1));
+  }
+  const readModel = env.open({ bootIdentity: () => Promise.resolve("boot-1") });
+  try {
+    assertEquals((await readModel.catchUp(signal())).applied, count);
+  } finally {
+    await readModel.close();
+  }
+  return paths;
+}
+
+Deno.test("SqliteReadModel: where the boot cannot be named, the files an earlier boot listed are checked and synced, not replayed (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const paths = await listUnsyncedUnderBoot1(env, 40);
+    await Deno.writeTextFile(paths[6], "torn");
+    const synced: string[] = [];
+    const unnamed = () =>
+      env.open({
+        bootIdentity: () => Promise.resolve(undefined),
+        syncFile: (path) => {
+          synced.push(path);
+          return Promise.resolve();
+        },
+      });
+    let readModel = unnamed();
+    try {
+      assertEquals(
+        (await readModel.catchUp(signal())).applied,
+        0,
+        "no commit is applied again",
+      );
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(
+      await readOrAbsent(paths[6]),
+      "r7@1",
+      "a torn file is rewritten",
+    );
+    assertEquals(
+      synced.toSorted(),
+      paths.filter((_, i) => i !== 6).toSorted(),
+      "every file that matched is synced",
+    );
+
+    synced.length = 0;
+    readModel = unnamed();
+    try {
+      assertEquals((await readModel.catchUp(signal())).applied, 0);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(synced, [], "the list was cleared");
+  });
+});
+
+Deno.test("SqliteReadModel: where the boot cannot be named and a listed file cannot be synced, every commit is applied again (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    await listUnsyncedUnderBoot1(env, 5);
+    let refused = false;
+    const readModel = env.open({
+      bootIdentity: () => Promise.resolve(undefined),
+      syncFile: () => {
+        if (refused) return Promise.resolve();
+        refused = true;
+        return Promise.reject(new Error("sync refused"));
+      },
+    });
+    try {
+      assertEquals((await readModel.catchUp(signal())).applied, 5);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: a catch-up that waits for another command's read-model lock says so, then catches up (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const stateDir = readModelStateDir(env.repoDir);
+    await Deno.mkdir(stateDir, { recursive: true });
+    const held = await Deno.open(join(stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    await held.lock(true);
+    const messages: string[] = [];
+    await configure({
+      sinks: {
+        capture: (record: LogRecord) =>
+          messages.push(record.message.map(String).join("")),
+      },
+      loggers: [
+        {
+          category: ["swamp", "datastore", "read-model"],
+          lowestLevel: "info",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    const readModel = env.open();
+    let released = false;
+    try {
+      const catchingUp = readModel.catchUp(signal());
+      await waitFor(
+        () => messages.some((m) => m.includes("Waiting for another swamp")),
+        "the wait to be reported",
+      );
+      held.close();
+      released = true;
+      assertEquals((await catchingUp).applied, 1);
+    } finally {
+      if (!released) held.close();
+      await readModel.close();
+      await reset();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: a catch-up waiting for another command's read-model lock stops when its signal aborts (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const stateDir = readModelStateDir(env.repoDir);
+    await Deno.mkdir(stateDir, { recursive: true });
+    const held = await Deno.open(join(stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    await held.lock(true);
+    const readModel = env.open();
+    try {
+      const stop = new AbortController();
+      const waiting = readModel.catchUp(stop.signal);
+      stop.abort(new DOMException("stopped", "AbortError"));
+      await assertRejects(() => waiting, DOMException);
+    } finally {
+      held.close();
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: a base overtaken by a compaction just after it loaded is loaded again, keeps the files that already match, and says so (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    for (let i = 1; i <= 5; i++) {
+      await env.append(i, "", [
+        await savePut(`r${i}`, 1),
+        versionOp(`r${i}`, 1),
+      ]);
+    }
+    await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    let compactedAgain = false;
+    const store = new Proxy(env.store, {
+      get(target, property) {
+        if (property === "changesSince") {
+          return async (cursor: number, limit: number) => {
+            if (!compactedAgain && cursor > 0) {
+              compactedAgain = true;
+              await target.append(
+                modelCommit(6, [await savePut("r6", 1), versionOp("r6", 1)]),
+              );
+              await target.compactHistory(Number.MAX_SAFE_INTEGER);
+            }
+            return await target.changesSince(cursor, limit);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const applied = new Map<string, number>();
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    const catalog = new Proxy(inner, {
+      get(target, property) {
+        if (property === "apply") {
+          return (
+            namespace: string,
+            partition: unknown,
+            actions: readonly { name?: string }[],
+          ) => {
+            for (const name of new Set(actions.map((a) => a.name))) {
+              if (name !== undefined) {
+                applied.set(name, (applied.get(name) ?? 0) + 1);
+              }
+            }
+            return (target.apply as (...args: unknown[]) => void)(
+              namespace,
+              partition,
+              actions,
+            );
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const readModel = env.open({
+      commitStore: store,
+      catalog,
+      netReplay: false,
+    });
+    const messages: string[] = [];
+    await configure({
+      sinks: {
+        capture: (record: LogRecord) =>
+          messages.push(record.message.map(String).join("")),
+      },
+      loggers: [
+        {
+          category: ["swamp", "datastore", "read-model"],
+          lowestLevel: "info",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      await readModel.catchUp(signal());
+      assert(compactedAgain, "the compaction overtook the load");
+      assert((applied.get("r6") ?? 0) >= 1, "the new base's name is applied");
+      assertEquals(await readOrAbsent(env.contentPath("", "r6", 1)), "r6@1");
+      assert(
+        messages.some((m) => m.includes("compacted past the base")),
+        messages.join("\n"),
+      );
+    } finally {
+      await readModel.close();
+      await reset();
+    }
+  });
+});
+
+const RECOVERY_COMMITS = 40;
+
+/**
+ * a checkout caught up through a compacted base and a tail, dated before the
+ * marker by the injected clock, so only what the test touches looks changed
+ */
+async function interruptedCheckout(env: Env): Promise<{
+  readonly since: number;
+  readonly clock: () => Date;
+  readonly counts: { compactedReads: number; firstCursor: number[] };
+  readonly store: SqliteCommitStore;
+}> {
+  for (let i = 1; i <= RECOVERY_COMMITS; i++) {
+    await env.append(i, "", [await savePut(`r${i}`, 1), versionOp(`r${i}`, 1)]);
+    if (i === RECOVERY_COMMITS / 2) {
+      await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    }
+  }
+  const first = env.open({ pageSize: 5 });
+  try {
+    await first.catchUp(signal());
+  } finally {
+    await first.close();
+  }
+  const since = Date.now() + 60_000;
+  const counts = { compactedReads: 0, firstCursor: [] as number[] };
+  let open = false;
+  const store = new Proxy(env.store, {
+    get(target, property) {
+      if (property === "readCompactedBase") {
+        return (...args: unknown[]) => {
+          counts.compactedReads++;
+          return (target.readCompactedBase as (...a: unknown[]) => unknown)(
+            ...args,
+          );
+        };
+      }
+      if (property === "changesSince") {
+        return (cursor: number, limit: number) => {
+          if (!open) {
+            open = true;
+            counts.firstCursor.push(cursor);
+          }
+          return target.changesSince(cursor, limit);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return {
+    since,
+    clock: () => new Date(since + 60_000),
+    counts,
+    store,
+  };
+}
+
+async function touchAfter(path: string, since: number): Promise<void> {
+  const at = new Date(since + 1_000);
+  await Deno.utime(path, at, at);
+}
+
+Deno.test("SqliteReadModel.recover: a full rebuild stopped part way resumes from its cursor, and ends as an uninterrupted one does (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const stop = new AbortController();
+    let pages = 0;
+    const stopping = new Proxy(env.store, {
+      get(target, property) {
+        if (property === "changesSince") {
+          return (cursor: number, limit: number) => {
+            if (++pages === 3) stop.abort();
+            return target.changesSince(cursor, limit);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let readModel = env.open({ commitStore: stopping, clock, pageSize: 5 });
+    try {
+      await assertRejects(() =>
+        readModel.recover("", {
+          since,
+          admits: () => true,
+          signal: stop.signal,
+          entry: "interrupted_writer",
+        })
+      );
+    } finally {
+      await readModel.close();
+    }
+
+    const cleared: number[] = [];
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    const catalog = new Proxy(inner, {
+      get(target, property) {
+        if (property === "clear") {
+          return (admits: (key: string) => boolean) => {
+            cleared.push(1);
+            return target.clear(admits);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    readModel = env.open({ catalog, clock, pageSize: 5 });
+    try {
+      await readModel.recover("", {
+        since,
+        admits: () => true,
+        signal: signal(),
+        entry: "interrupted_writer",
+      });
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(cleared, [], "the resumed rebuild did not clear again");
+    assertEquals(env.catalogRows().length, RECOVERY_COMMITS);
+    for (const i of [1, 20, RECOVERY_COMMITS]) {
+      assertEquals(
+        await readOrAbsent(env.contentPath("", `r${i}`, 1)),
+        `r${i}@1`,
+      );
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a recovery whose signal is already aborted changes nothing (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const rows = env.catalogRows();
+    const stop = new AbortController();
+    stop.abort();
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await assertRejects(() =>
+        readModel.recover("", {
+          since,
+          admits: () => true,
+          signal: stop.signal,
+        })
+      );
+      assertEquals(env.catalogRows(), rows);
+      assertEquals((await readModel.catchUp(signal())).applied, 0);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: its span names what asked for it, the path it took and whether the boot was named (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const cases = [
+      {
+        boot: "boot-1",
+        entry: "interrupted_writer",
+        path: "full",
+      },
+      {
+        boot: undefined,
+        entry: "view_change",
+        path: "full",
+      },
+    ] as const;
+    for (const c of cases) {
+      const readModel = env.open({
+        clock,
+        pageSize: 5,
+        bootIdentity: () => Promise.resolve(c.boot),
+      });
+      try {
+        await withCapturedSpans(async (spans) => {
+          await readModel.recover("", {
+            since,
+            admits: () => true,
+            signal: signal(),
+            entry: c.entry,
+          });
+          const span = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
+          assertEquals(
+            span.attributes["swamp.datastore.v3.readmodel.recover.entry"],
+            c.entry,
+          );
+          assertEquals(
+            span.attributes["swamp.datastore.v3.readmodel.recover.path"],
+            c.path,
+          );
+          assertEquals(
+            span.attributes["swamp.datastore.v3.readmodel.boot_named"],
+            c.boot !== undefined,
+          );
+        });
+      } finally {
+        await readModel.close();
+      }
+    }
+  });
+});
+
+function renameRows(env: Env): unknown[][] {
+  const db = new DatabaseSync(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    { readOnly: true },
+  );
+  try {
+    return (db.prepare(
+      "SELECT namespace, type_normalized, model_id, data_name, renamed_to FROM catalog_renames ORDER BY 1, 2, 3, 4",
+    ).all() as Record<string, unknown>[]).map((row) => Object.values(row));
+  } finally {
+    db.close();
+  }
+}
+
+/** targeted rows after recovery against what a full rebuild leaves */
+async function targetedMatchesFullRebuild(
+  env: Env,
+  since: number,
+  clock: () => Date,
+): Promise<{ targeted: unknown[][]; full: unknown[][]; path: unknown }> {
+  const readModel = env.open({ clock, pageSize: 5 });
+  try {
+    let path: unknown;
+    await withCapturedSpans(async (spans) => {
+      // the follow-up's option; extra keys pass through a variable
+      const targeted = {
+        since,
+        admits: () => true,
+        signal: signal(),
+        targeted: true,
+      };
+      await readModel.recover("", targeted);
+      path = findSpan(spans, "swamp.datastore.v3.readmodel.recover")
+        .attributes["swamp.datastore.v3.readmodel.recover.path"];
+    });
+    const targeted = [...env.catalogRows(), ...renameRows(env)];
+    await readModel.recover("", {
+      since,
+      admits: () => true,
+      signal: signal(),
+    });
+    return {
+      targeted,
+      full: [...env.catalogRows(), ...renameRows(env)],
+      path,
+    };
+  } finally {
+    await readModel.close();
+  }
+}
+
+Deno.test("SqliteReadModel.recover: a stopped rebuild is resumed only by an interrupted writer's recovery; a view change or a restore after it clears again (swamp-club#4512)", async () => {
+  for (const next of ["view_change", "rebuilt"] as const) {
+    await withEnv(async (env) => {
+      const { since, clock } = await interruptedCheckout(env);
+      const stop = new AbortController();
+      let pages = 0;
+      const stopping = new Proxy(env.store, {
+        get(target, property) {
+          if (property === "changesSince") {
+            return (cursor: number, limit: number) => {
+              if (++pages === 3) stop.abort();
+              return target.changesSince(cursor, limit);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      let readModel = env.open({ commitStore: stopping, clock, pageSize: 5 });
+      try {
+        await assertRejects(() =>
+          readModel.recover("", {
+            since,
+            admits: () => true,
+            signal: stop.signal,
+            entry: "interrupted_writer",
+          })
+        );
+      } finally {
+        await readModel.close();
+      }
+      const cleared: number[] = [];
+      const inner = V3Catalog.open(
+        join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+      );
+      const catalog = new Proxy(inner, {
+        get(target, property) {
+          if (property === "clear") {
+            return (admits: (key: string) => boolean) => {
+              cleared.push(1);
+              return target.clear(admits);
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      readModel = env.open({ catalog, clock, pageSize: 5 });
+      try {
+        await withCapturedSpans(async (spans) => {
+          await readModel.recover("", {
+            since: 0,
+            admits: () => true,
+            signal: signal(),
+            entry: next,
+          });
+          assertEquals(
+            findSpan(spans, "swamp.datastore.v3.readmodel.recover")
+              .attributes["swamp.datastore.v3.readmodel.recover.path"],
+            "full",
+            next,
+          );
+        });
+      } finally {
+        await readModel.close();
+      }
+      assertEquals(cleared, [1], `${next} cleared again`);
+      assertEquals(env.catalogRows().length, RECOVERY_COMMITS);
+    });
+  }
+});
+
+Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resumed by an interrupted writer's recovery (swamp-club#4512)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const stop = new AbortController();
+    let pages = 0;
+    const stopping = new Proxy(env.store, {
+      get(target, property) {
+        if (property === "changesSince") {
+          return (cursor: number, limit: number) => {
+            if (++pages === 3) stop.abort();
+            return target.changesSince(cursor, limit);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let readModel = env.open({ commitStore: stopping, clock, pageSize: 5 });
+    try {
+      await assertRejects(() =>
+        readModel.recover("", {
+          since: 0,
+          admits: () => true,
+          signal: stop.signal,
+          entry: "view_change",
+        })
+      );
+    } finally {
+      await readModel.close();
+    }
+    readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await withCapturedSpans(async (spans) => {
+        await readModel.recover("", {
+          since,
+          admits: () => true,
+          signal: signal(),
+          entry: "interrupted_writer",
+        });
+        assertEquals(
+          findSpan(spans, "swamp.datastore.v3.readmodel.recover")
+            .attributes["swamp.datastore.v3.readmodel.recover.path"],
+          "full",
+        );
+      });
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(env.catalogRows().length, RECOVERY_COMMITS);
+  });
+});
+
+Deno.test({
+  name:
+    "SqliteReadModel.recover: a targeted recovery leaves a name a committed expiry removed as a full rebuild does (swamp-club#4512 follow-up: targeted recovery, the gate for its exact per-partition re-projection)",
+  ignore: true,
+  fn: async () => {
+    await withEnv(async (env) => {
+      const { since, clock } = await interruptedCheckout(env);
+      await env.append(RECOVERY_COMMITS + 1, "", [
+        tombstoneOp({
+          intent: modelIntent({ kind: "data.gc", name: "r5" }),
+          key: RecordKey.create(
+            `data/${MODEL_TYPE.normalized}/${MODEL_ID}/r5/latest`,
+          ),
+        }),
+      ]);
+      const readModel = env.open({ clock, pageSize: 5 });
+      try {
+        await readModel.catchUp(signal());
+      } finally {
+        await readModel.close();
+      }
+      const uncommitted = env.contentPath("", "r5", 2);
+      await writeLocal(uncommitted, "uncommitted");
+      await touchAfter(uncommitted, since);
+      const { targeted, full, path } = await targetedMatchesFullRebuild(
+        env,
+        since,
+        clock,
+      );
+      assertEquals(path, "targeted");
+      assertEquals(targeted, full);
+    });
+  },
 });
 
 Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories leave out are never written or catalogued (swamp-club#3691)", async () => {

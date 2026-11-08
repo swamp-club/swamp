@@ -1026,7 +1026,11 @@ export class ServeDatastoreClient {
           throw error;
         }
       }
-      if (logId !== undefined) {
+      // a refused token never vouches for the principal it would act as
+      if (
+        logId !== undefined && response.status !== 401 &&
+        response.status !== 403
+      ) {
         const features = (response.headers.get(
           SERVE_DATASTORE_FEATURES_HEADER,
         ) ?? "").split(",").map((feature) => feature.trim());

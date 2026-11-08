@@ -44,6 +44,7 @@ import {
 import type { WritableDatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import { resolveCustomProvider } from "../persistence/datastore_global_lock.ts";
 import {
+  type CatchUpOptions,
   datastoreKeyFilter,
   openV3Datastore,
   v3CommitsDbPath,
@@ -149,6 +150,7 @@ import {
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { withSpan } from "../tracing/tracer.ts";
 import { unreadableContentLookup } from "./unreadable_content_lookup.ts";
 import { assertV3CheckoutJoinable } from "./v3_checkout_join.ts";
@@ -600,7 +602,9 @@ async function ensureV3CopyCurrentNow(
           : await tryAcquireV3WriterLock(config.path, { fenceStore: rebuilt });
         if (mode === "write" || release !== undefined) {
           try {
-            await rebuilt.recoverInterruptedWriter(0);
+            await rebuilt.recoverInterruptedWriter(0, undefined, {
+              entry: "rebuilt",
+            });
           } catch (error) {
             if (release !== undefined) {
               await releaseAfterFailure(release, error);
@@ -701,15 +705,19 @@ const feedWatches: ServeFeedWatch[] = [];
  * under the lock reads every version another machine wrote; holdV3Writer's
  * catch-up ran before the lock was taken
  */
-export async function catchUpV3HandlesAt(datastorePath: string): Promise<void> {
+export async function catchUpV3HandlesAt(
+  datastorePath: string,
+  options?: CatchUpOptions,
+): Promise<void> {
   const path = resolve(datastorePath);
   for (const handle of [...opened.values()]) {
     if (resolve(handle.datastorePath) !== path) continue;
     if (handle.catchUpForWrite !== undefined) {
       await handle.catchUpForWrite();
-      await (handle.catchUpReadModel?.() ?? handle.catchUp());
+      await (handle.catchUpReadModel?.(undefined, options) ??
+        handle.catchUp(undefined, options));
     } else {
-      await handle.catchUp();
+      await handle.catchUp(undefined, options);
     }
   }
 }
@@ -1111,6 +1119,8 @@ async function recoverAndMark(
     // cut off from the storage, the recovery is retried by the next command;
     // the hold gives the failure its code
     if (!(error instanceof UserError) && isNetworkFailure(error)) throw error;
+    // a stopped command: the marker stays, so the next command resumes
+    if (commandStopSignal().aborted) throw error;
     const markerPath = writerMarkerPath(repoDir);
     const recoveryError = markErrorPaths(
       new UserError(
@@ -1422,7 +1432,12 @@ export async function v3RepositoryFactoryConfig(
   await alignCheckoutView(
     repoDir,
     handle,
-    checkoutViewOf(config.path, config.namespace ?? "", handle.serveCopyId),
+    checkoutViewOf(
+      config.path,
+      config.namespace ?? "",
+      handle.serveCopyId,
+      handle.servePrincipal,
+    ),
     { holdsWriterLock: writer },
   );
   // in a checkout another process writes its files are already newest, so

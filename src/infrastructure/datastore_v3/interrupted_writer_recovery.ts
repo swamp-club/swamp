@@ -339,7 +339,9 @@ async function recover(
   );
   let removed: string[];
   try {
-    removed = await handle.recoverInterruptedWriter(since, signal);
+    removed = await handle.recoverInterruptedWriter(since, signal, {
+      entry: "interrupted_writer",
+    });
     await restoreQueuedStepStarts(handle, repoDir);
   } finally {
     // The replay may have rewritten run records before any failure.

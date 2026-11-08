@@ -4165,8 +4165,13 @@ page cache, pass, and stop watching them. So the identity is
 `/proc/sys/kernel/random/boot_id` on Linux and the `kern.bootsessionuuid`
 sysctl on macOS, read once per process. Where neither is available
 (Windows), or it cannot be read, the catch-up syncs its files at each
-page's barrier instead and lists nothing; a list left by an earlier boot is
-then not trusted, and every commit is applied again, synced.
+page's barrier instead and lists nothing. A list left by an earlier boot is
+then checked as after a reboot, and each listed file that matches is synced
+with its directory before the list is cleared: whether the boot ended is
+unknown, so a match read from the page cache is made durable rather than
+trusted (swamp-club#4512). Until then every commit was applied again, synced,
+which on a member with a long history rewrote gigabytes. A write-back error
+from before that sync is not reported to it, the gap described below.
 
 The released binary is compiled with granular `--allow-*` flags, and Deno
 refuses any read under `/proc` without `--allow-all`, however narrow the read
@@ -4175,7 +4180,10 @@ synced every file, about 5,000 fsyncs for a 1,000-item first clone, while
 tests and source runs under `-A` read the id fine. When Deno refuses the read,
 the id is now read by running `/bin/cat` (or `/usr/bin/cat`), as macOS runs
 `sysctl`, with a 2 s timeout; only a UUID is accepted, and any failure names
-no boot, so the catch-up syncs as before. The boot is read once per process.
+no boot, so the catch-up syncs as before. A named boot is read once per
+process; a failed read (a spawn refused with EMFILE, or `cat` slower than 2 s
+on a busy disk) is tried again at most once a minute, so one bad moment does
+not make a whole command sync. Windows and other systems are not retried.
 `integration/datastore_v3_boot_identity_grant_test.ts` reads it on Linux
 under the grant `scripts/compile.ts` names, so a change to that grant is
 tested too.
@@ -5088,6 +5096,13 @@ production compacted until the opt-in wired it into the writer
      release.
    - **The base is read in pages,** each with the point it was read at. A
      load that sees the point move starts again.
+   - **A base overtaken by a compaction** (another process installed a newer
+     one in the shared commit store meanwhile) is loaded again. Files whose
+     owner and mark already match are kept; the catalog is reapplied for
+     every name, since the base's catalog rows are not a projection of its
+     versions alone (a `data.gc` expiry keeps rows the versions do not
+     show). Each restart is logged with the old and new base position
+     (swamp-club#4512).
    - **A load that fails part-way** has first recorded the keys and names it
      was about to touch (`load_touched_keys`, `load_touched_names`), so the
      next attempt, even against a newer base, reconciles what the failed one
@@ -5732,7 +5747,14 @@ leave every checkout with the same records.
   so its unit commits the record and the outputs written before the abort
   before teardown releases the writer lock. Serve's model cancel and its
   shutdown drain abort the same way. A method that ignores its signal is not
-  interrupted: the run finishes and commits as usual.
+  interrupted: the run finishes and commits as usual. A CLI run command's
+  signal also aborts its read-model catch-ups (`commandStopSignal`,
+  swamp-club#4512). They stop at the next commit and keep what they applied,
+  so the next command carries on from the cursor; a recovery stops the same
+  way and the next command resumes it. Commits being sent, the catch-up of a
+  write under way and a publish's catch-up keep the datastore's own signal,
+  so a stopped run's work still lands. Serve and workers never abort a
+  catch-up this way.
 - *No teardown.* A SIGKILL, a crash, or a second signal (which exits at once
   with 130, `registerShutdownHandler`'s `forceExitOnRepeat`) ends the process
   with units that never commit, so the checkout keeps files and catalog rows
@@ -5778,7 +5800,16 @@ leave every checkout with the same records.
   and skips recovery when a live process holds it, whatever its TTL, or
   when the lease still keeps writers out; while it recovers it holds the
   lock, so a writer that starts then waits for the replay, and a stalled
-  writer the recovery takes over is fenced before any file is touched. Under the read model's lock, recovery deletes the
+  writer the recovery takes over is fenced before any file is touched.
+
+  Every recovery is a full rebuild. A targeted recovery, checking only what
+  the writer could have touched, was withdrawn (swamp-club#4512): a name's
+  catalog rows are a function of its whole committed op history (a
+  `data.gc` expiry drops rows its live versions still hold), so they cannot
+  be re-projected from the read model's state; an exact version must replay
+  each touched partition's history.
+
+  Under the read model's lock, recovery deletes the
   catalog rows of the data commits carry, keeping the rows of data the
   datastore's `directories` or `exclude` keep local, which no replay could
   rebuild, and keeping the catalog marked populated, so no reader backfills
@@ -5792,6 +5823,9 @@ leave every checkout with the same records.
   stores again from the file any committed chunk it alone still holds whole,
   verifying right-size parts on filesystem storage), then removes each file in the materialised
   directories that no commit owns and that changed since the marker's start.
+  It records that a rebuild is in progress once it has cleared and reset,
+  so a rebuild a signal stopped resumes from its cursor on the next command
+  instead of clearing again; the marker stays until a recovery finishes.
   It says on stderr, in log mode and silenced by `-q`, that it is
   recovering work an interrupted command left in this checkout, so the
   seconds it takes on a populated checkout never look like a hang
@@ -7246,7 +7280,13 @@ the root, whatever the datastore's type (`setV3BucketLockRoot`). It holds:
 each caller may read, so a copy is one caller's view. `serve_upstream.db`
 records a fingerprint of the token the copy was built with (its SHA-256, never
 the token). Binding with another token resets the copy before anything
-catches up from it (`resetCopyForCaller`), under the root's writer lease,
+catches up from it (`resetCopyForCaller`), unless serve says the new token
+acts as the principal the copy last heard from serve (swamp-club#4512): one
+datastore request with the new token reads serve's principal header, even
+on a refused page (never on a 401 or 403: a refused token vouches for no
+principal), and a match restamps the fingerprint and keeps the copy;
+no principal cached, no header, or no answer resets as before. The reset
+runs under the root's writer lease,
 which every writer of the checkout holds for its whole command; a read-only
 command takes it too, waiting up to the lock timeout and otherwise failing as
 writer-busy:
@@ -7375,8 +7415,11 @@ caught up from another, a projection shows records the new view does not
 hold, and its cursor is the other log's, so the new log's commits may never
 apply. So the checkout records the view its projection was built from in
 `checkout_view.json` in its read-model state directory: a serve root, the
-copy's id and the token fingerprint, or the solo datastore's path and
-namespace. The copy's id is random, made with the copy's `serve_upstream.db`
+copy's id, the token fingerprint and, once serve has named it, the
+principal; or the solo datastore's path and namespace. Two serve views with
+a principal each compare principals, so a rotated token of the same
+principal is the same view; otherwise they compare fingerprints. A current
+view recorded without a principal is rewritten with it. The copy's id is random, made with the copy's `serve_upstream.db`
 (swamp-club#4049), so a copy moved aside and started afresh at the same root
 is another view; every reset takes a new one (swamp-club#4089), so a reset for
 a change of access, which keeps the token, is another view too. A view
@@ -7391,7 +7434,10 @@ view differs or a rebuild did not finish (`alignCheckoutView`):
    datastore's outbox is landed by any writer of that datastore, so it does
    not hold the switch.
 2. The record is marked rebuilding.
-3. `recoverInterruptedWriter(0)` on the new view's handle clears the catalog,
+3. `recoverInterruptedWriter(0)` on the new view's handle (its recover span
+   says `entry: view_change`, as the others say `rebuilt`,
+   `interrupted_writer` or `dropped_work`, with `path` and `boot_named`)
+   clears the catalog,
    resets the read model's state, replays the new log and removes every
    projected file no commit owns; the run indexes are removed.
 4. The new view is recorded.

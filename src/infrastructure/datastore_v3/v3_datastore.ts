@@ -173,6 +173,7 @@ import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
 import { registerOwnCommitWriter } from "./commit_outbox_recovery.ts";
 import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { recordLastChange } from "./record_last_change.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
 import { reconcileRefusedRuns } from "./refused_run_records.ts";
@@ -183,6 +184,7 @@ import {
 import {
   NOT_RELEASED,
   READ_MODEL_STATE_FILE,
+  type RecoveryEntry,
   SqliteReadModel,
 } from "./sqlite_read_model.ts";
 import { ReadModelState } from "./read_model_state.ts";
@@ -560,7 +562,7 @@ export interface V3Datastore {
   readonly catalogStore: CatalogStore;
   readonly namespace: string;
   readonly writer: CommitWriter;
-  catchUp(signal?: AbortSignal): Promise<void>;
+  catchUp(signal?: AbortSignal, options?: CatchUpOptions): Promise<void>;
   /** a catch-up that first resets the read model to apply every commit again */
   replayEveryCommit(signal?: AbortSignal): Promise<void>;
   /**
@@ -573,12 +575,17 @@ export interface V3Datastore {
     options?: { readonly mayGoOffline?: boolean },
   ): Promise<void>;
   /** the read model alone, for a copy just caught up with catchUpForWrite */
-  catchUpReadModel?(signal?: AbortSignal): Promise<void>;
+  catchUpReadModel?(
+    signal?: AbortSignal,
+    options?: CatchUpOptions,
+  ): Promise<void>;
   serveFeedCursor?(): number;
   sentToServe?(txnId: string): boolean;
   readonly serveUpstreamStore?: ServeUpstreamCommitStore;
   readonly offlineFlushPort?: OfflineFlushPort;
   readonly serveCopyId?: string;
+  /** the principal serve last said this checkout's token acts as */
+  readonly servePrincipal?: string;
   /**
    * nothing while the read model is complete; otherwise waits up to lockWaitMs
    * for the catch-up in progress, then catches up itself if still incomplete,
@@ -596,6 +603,7 @@ export interface V3Datastore {
   recoverInterruptedWriter(
     since: number,
     signal?: AbortSignal,
+    options?: { readonly entry?: RecoveryEntry },
   ): Promise<string[]>;
   droppedWork():
     | { readonly since: number; readonly openUnits: number }
@@ -766,6 +774,11 @@ export function offlineSubjectOf(partition: PartitionKey): string {
   }
 }
 
+export interface CatchUpOptions {
+  /** for a publish of what a stopped command produced, which must still land */
+  readonly ignoresStop?: boolean;
+}
+
 export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // SQLite cannot open a database through a symlinked directory here, so the
   // stores open on canonical paths: a checkout or datastore reached through
@@ -858,6 +871,15 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // appends behind each other; it refuses commits once the writer lease is lost
   // and keeps each in the outbox until landed
   const lifetime = new AbortController();
+  // A command told to stop leaves a catch-up at its next commit; a commit
+  // already being sent keeps lifetime.signal alone.
+  const catchUpSignal = (
+    signal?: AbortSignal,
+    options?: CatchUpOptions,
+  ): AbortSignal =>
+    options?.ignoresStop === true
+      ? signal ?? lifetime.signal
+      : AbortSignal.any([signal ?? lifetime.signal, commandStopSignal()]);
   if (serveClient !== undefined && serveState !== undefined) {
     serveClient.checkLog(
       serveLogCheck(serveState, serveClient.baseUrl, dirname(commitsDbPath)),
@@ -1262,22 +1284,25 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     ...(serveState !== undefined
       ? {
         serveCopyId: serveState.copyId(),
+        ...(serveState.checkedPrincipal() !== undefined
+          ? { servePrincipal: serveState.checkedPrincipal() }
+          : {}),
         serveFeedCursor: () => serveState.feedCursor(),
         sentToServe: (txnId: string) => forwarded.has(txnId),
       }
       : {}),
-    async catchUp(signal) {
-      await catchUpFromServe(signal ?? lifetime.signal, "read");
+    async catchUp(signal, catchUpOptions) {
+      await catchUpFromServe(catchUpSignal(signal, catchUpOptions), "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUp(signal ?? lifetime.signal)
+        readModel.catchUp(catchUpSignal(signal, catchUpOptions))
       );
     },
     async replayEveryCommit(signal) {
       // Before any await: a restore does not run again once its copy state is written.
       readModel.markReplayPending();
-      await catchUpFromServe(signal ?? lifetime.signal, "read");
+      await catchUpFromServe(catchUpSignal(signal), "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUp(signal ?? lifetime.signal)
+        readModel.catchUp(catchUpSignal(signal))
       );
     },
     ...(serveCatchUp !== undefined
@@ -1286,23 +1311,27 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           signal?: AbortSignal,
           catchUpOptions?: { readonly mayGoOffline?: boolean },
         ) {
+          // a write under way lands after a stop: it never follows commandStopSignal
           await catchUpFromServe(
             signal ?? lifetime.signal,
             "write",
             catchUpOptions?.mayGoOffline === true,
           );
         },
-        async catchUpReadModel(signal?: AbortSignal) {
+        async catchUpReadModel(
+          signal?: AbortSignal,
+          catchUpOptions?: CatchUpOptions,
+        ) {
           await unreachableAsCatchUpError(() =>
-            readModel.catchUp(signal ?? lifetime.signal)
+            readModel.catchUp(catchUpSignal(signal, catchUpOptions))
           );
         },
       }
       : {}),
     async catchUpUnlessComplete(lockWaitMs, writerPid) {
-      await catchUpFromServe(lifetime.signal, "read");
+      await catchUpFromServe(catchUpSignal(), "read");
       await unreachableAsCatchUpError(() =>
-        readModel.catchUpUnlessComplete(lifetime.signal, lockWaitMs, writerPid)
+        readModel.catchUpUnlessComplete(catchUpSignal(), lockWaitMs, writerPid)
       );
     },
     async raiseWriterFence(fence) {
@@ -1320,11 +1349,17 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     writerFence() {
       return commitStore.writerFence();
     },
-    recoverInterruptedWriter(since, signal) {
+    recoverInterruptedWriter(since, signal, recoverOptions) {
       return readModel.recover(namespace, {
         since,
         admits,
-        signal: signal ?? lifetime.signal,
+        // a restore's rebuild is not run again once the copy names it
+        signal: recoverOptions?.entry === "rebuilt"
+          ? signal ?? lifetime.signal
+          : catchUpSignal(signal),
+        ...(recoverOptions?.entry !== undefined
+          ? { entry: recoverOptions.entry }
+          : {}),
       });
     },
     droppedWork() {
@@ -1340,7 +1375,10 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       const recovery = readModel.recover(namespace, {
         since: recoverySince(since),
         admits,
+        // runs at teardown, after a stop has fired; its dropped directories
+        // live only in this process, so it must finish
         signal: signal ?? lifetime.signal,
+        entry: "dropped_work",
         droppedDirs: [...units.droppedDirs.get(namespace) ?? []],
       });
       units.recovering = recovery;
