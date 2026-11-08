@@ -165,8 +165,7 @@ function planFor(workers: readonly string[]): Record<string, unknown> {
   };
 }
 
-// honest: authored steps pending, maybe a save with the job running, then the
-// plan with lane steps, then lane steps progressing one record at a time
+// every lawful record sequence, including a save of the started job before its plan
 const honestHistory = fc.record({
   steps: fc.uniqueArray(fc.constantFrom("apply", "verify", "check"), {
     minLength: 1,

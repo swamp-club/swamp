@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -742,5 +747,30 @@ Deno.test({
 
     assertEquals(run.status, "succeeded");
     assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 2 });
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out lanes: a fan-out job that sets rollout is refused before anything is sent, rather than running every lane at once",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await fleet.addWorker("w-a", { labels: WEB });
+    await fleet.addWorker("w-b", { labels: WEB });
+    await fleet.saveWorkflow({
+      name: "patch-canary",
+      inputs: {},
+      jobs: [laneJob(fleet, APPLY_VERIFY, {
+        fanOut: { rollout: { batches: [1, "100%"], maxFailures: 0 } },
+      })],
+    });
+
+    await assertRejects(
+      () => fleet.runWorkflow("patch-canary"),
+      Error,
+      "sets rollout, and rollout batches and failure budgets arrive in a later release",
+    );
+    assertEquals(fleet.dispatchCounts(), { "w-a": 0, "w-b": 0 });
   },
 });

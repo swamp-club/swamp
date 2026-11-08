@@ -3145,6 +3145,9 @@ again on the cached workflow a `--last-evaluated` run swaps in:
   any step that can suspend (`manual_approval`, `wait_for_signal` or a nested
   `workflow` step) in any job: resuming a fan-out run is not available yet, so
   a suspended run could never finish.
+- It also refuses, for this release, a fan-out job that sets `rollout`:
+  batches and the failure budget are not acted on yet, and running every lane
+  at once would silently drop the canary the author asked for.
 - `refuseFanOutResume` refuses `workflow resume`, `workflow recover` and the
   CLI's recover command with "resuming a run with a fan-out job arrives in the
   next release". It refuses when the workflow has a fan-out job or when the
@@ -3156,8 +3159,9 @@ again on the cached workflow a `--last-evaluated` run swaps in:
 `FanOutPolicySchema` (`src/domain/remote/fan_out.ts`): `offline`
 (`wait` | `skip` | `fail`, default `wait`), `minWorkers` (default 1, never 0)
 and an optional `rollout` (`batches`, `maxFailures`). `all` is stored as
-written and means the defaults. The rollout half is accepted and stored now;
-it takes effect with rollouts.
+written and means the defaults. The rollout half is accepted, validated and
+stored now, but a run of a job that sets it is refused until rollouts act on
+it.
 
 The selector is the job's placement after inheritance: `labels` and `platform`
 merged from the workflow and the job. `fanOut` itself is job-level only. It is

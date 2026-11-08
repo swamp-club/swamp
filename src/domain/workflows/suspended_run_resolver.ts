@@ -255,8 +255,6 @@ export async function resolveResumableRun(
     if (!run) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
-    // before retry planning, whose refusal would name a lane step instead
-    refuseFanOutResume(workflow, run);
     if (run.status === "running" && options.ownerIsDead?.(run)) {
       throw new UserError(
         `Run ${runId} is recorded as running, but its owning process` +
@@ -270,13 +268,17 @@ export async function resolveResumableRun(
           `--from requires a failed run, but run ${runId} has status "${run.status}"`,
         );
       }
+      // before retry planning, whose refusal would name a lane step instead
+      refuseFanOutResume(workflow, run);
       planFailedRunResume(workflow, run, {
         step: options.fromStep,
         job: options.fromJob,
       });
     } else if (run.status === "failed") {
+      refuseFanOutResume(workflow, run);
       planFailedRunResume(workflow, run);
     } else if (run.status === "suspended") {
+      refuseFanOutResume(workflow, run);
       checkSuspendedRunResume(workflow, run);
       await assertNestedWaitsSettled(
         { runRepo, workflowRepo, signalWaits: options.signalWaits },

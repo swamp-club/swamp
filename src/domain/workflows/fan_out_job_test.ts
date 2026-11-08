@@ -291,13 +291,21 @@ Deno.test("fanOutPlanMissing: a plain job run is not reported", () => {
 });
 
 function runWorkflow(
-  jobs: { name: string; fanOut?: string; steps?: [string, string][] }[],
+  jobs: {
+    name: string;
+    fanOut?: string;
+    rollout?: unknown;
+    steps?: [string, string][];
+  }[],
 ) {
   return {
     name: "fleet",
     jobs: jobs.map((job) => ({
       name: job.name,
       fanOut: job.fanOut,
+      fanOutPolicy: job.fanOut === undefined
+        ? undefined
+        : { rollout: job.rollout },
       steps: (job.steps ?? [["apply", "model_method"]]).map(([name, type]) => ({
         name,
         task: { data: { type } },
@@ -361,4 +369,20 @@ Deno.test("refuseFanOutResume: refused when the workflow has a fan-out job or th
     "ran a fan-out job in this run",
   );
   refuseFanOutResume(runWorkflow([{ name: "patch" }]), { jobs: [{}] });
+});
+
+Deno.test("refuseFanOutRun: a fan-out job that sets rollout is refused until rollouts act on it", () => {
+  assertThrows(
+    () =>
+      refuseFanOutRun(
+        runWorkflow([{
+          name: "patch",
+          fanOut: "all",
+          rollout: { batches: [1, "100%"], maxFailures: 0 },
+        }]),
+        true,
+      ),
+    UserError,
+    "Fan-out job 'patch' in workflow 'fleet' sets rollout",
+  );
 });

@@ -151,6 +151,7 @@ interface FanOutRunWorkflow {
   readonly jobs: readonly {
     readonly name: string;
     readonly fanOut?: unknown;
+    readonly fanOutPolicy?: { readonly rollout?: unknown };
     readonly steps: readonly {
       readonly name: string;
       readonly task: { readonly data: { readonly type: string } };
@@ -177,6 +178,16 @@ export function refuseFanOutRun(
   if (!poolAvailable) {
     throw new UserError(
       `Workflow '${workflow.name}' has fan-out job '${fanOutJob.name}': ${FAN_OUT_NEEDS_SERVE}.`,
+    );
+  }
+  // batches and the failure budget are not acted on yet; running every lane
+  // at once would silently drop the canary the author asked for
+  const rolloutJob = workflow.jobs.find((job) =>
+    job.fanOutPolicy?.rollout !== undefined
+  );
+  if (rolloutJob !== undefined) {
+    throw new UserError(
+      `Fan-out job '${rolloutJob.name}' in workflow '${workflow.name}' sets rollout, and rollout batches and failure budgets arrive in a later release. Remove rollout to run every lane at once.`,
     );
   }
   for (const job of workflow.jobs) {

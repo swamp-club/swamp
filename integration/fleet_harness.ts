@@ -164,17 +164,17 @@ export class FleetWorker {
     for (const resume of this.#held.splice(0, count)) resume();
   }
 
-  /** Opens a control socket and enrolls (a reconnect after the first time). */
   get instanceUuid(): string {
     return this.#instanceUuid;
   }
 
-  /** Reconnects as a restarted worker process: same machine and token, new instance UUID. */
+  /** A restarted worker process: same machine and token, new instance UUID. */
   async restart(): Promise<void> {
     this.#instanceUuid = crypto.randomUUID();
     await this.connect();
   }
 
+  /** Opens a control socket and enrolls (a reconnect after the first time). */
   async connect(): Promise<void> {
     const channel: RpcChannel = new RpcChannel({
       send: (data) => void Promise.resolve().then(() => attached.feed(data)),
