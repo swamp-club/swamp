@@ -62,7 +62,7 @@ function toPosix(path: string): string {
   return path.split(SEPARATOR).join("/");
 }
 
-/** Test files under root as Deno would find them, as sorted posix paths. */
+// finds what deno test would, from the same include and exclude
 export async function discoverTestFiles(
   root: string,
   config: TestConfig,
@@ -235,11 +235,8 @@ export function combinedExitCode(outcomes: readonly ShardOutcome[]): number {
 
 const SHARD_DIR_NAMES = "0123456789abcdefghijklmnopqrstuvwxyz";
 
-/**
- * One single-character directory per shard under base, so each shard adds two
- * characters to TMPDIR: tests' socket and tar paths have only a few to spare
- * under verify-build. Exclusive mkdir keeps concurrent runs apart.
- */
+// one-character names keep TMPDIR short for tests' socket and tar paths;
+// exclusive mkdir keeps concurrent runs apart
 export async function allocateShardDirs(
   base: string,
   count: number,

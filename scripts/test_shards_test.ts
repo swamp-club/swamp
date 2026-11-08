@@ -100,7 +100,6 @@ Deno.test("partition: every file lands in exactly one shard, the heaviest first"
   assertEquals(shards.flat().sort(), [...files].sort());
   assertEquals(shards[0][0], "big_test.ts");
   assertEquals(shards[1][0], "f1_test.ts");
-  // the shard holding the 200 s file takes no other file
   assertEquals(shards[0], ["big_test.ts"]);
   assertEquals(partition(files, weights, 4), shards);
 });
