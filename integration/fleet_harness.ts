@@ -115,7 +115,7 @@ export interface FleetWorkerOptions {
 /** A worker connected to the fleet's serve, in this process. */
 export class FleetWorker {
   readonly name: string;
-  readonly instanceUuid = crypto.randomUUID();
+  #instanceUuid = crypto.randomUUID();
   readonly received: ReceivedDispatch[] = [];
   behavior: DispatchBehavior = { kind: "succeed" };
   #fleet: Fleet;
@@ -165,6 +165,16 @@ export class FleetWorker {
   }
 
   /** Opens a control socket and enrolls (a reconnect after the first time). */
+  get instanceUuid(): string {
+    return this.#instanceUuid;
+  }
+
+  /** Reconnects as a restarted worker process: same machine and token, new instance UUID. */
+  async restart(): Promise<void> {
+    this.#instanceUuid = crypto.randomUUID();
+    await this.connect();
+  }
+
   async connect(): Promise<void> {
     const channel: RpcChannel = new RpcChannel({
       send: (data) => void Promise.resolve().then(() => attached.feed(data)),
@@ -183,7 +193,7 @@ export class FleetWorker {
       RemoteMethod.enroll,
       {
         token: this.#token,
-        instanceUuid: this.instanceUuid,
+        instanceUuid: this.#instanceUuid,
         machineId: `machine-${this.name}`,
         protocolVersion: REMOTE_PROTOCOL_VERSION,
         swampVersion: "test",

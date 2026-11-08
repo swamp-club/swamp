@@ -1745,7 +1745,7 @@ export class DefaultStepExecutor implements StepExecutor {
       resolvedPlacement = {
         target: ctx.lane.worker,
         queueTimeoutMs: resolvedPlacement?.queueTimeoutMs,
-        lane: { worker: ctx.lane.worker, instanceUuid: ctx.lane.instanceUuid },
+        lane: { worker: ctx.lane.worker },
       };
     }
 
@@ -3135,7 +3135,6 @@ import {
 
 export interface FanOutLaneContext {
   readonly worker: string;
-  readonly instanceUuid: string;
 }
 
 interface StepOptions {
@@ -5742,9 +5741,6 @@ export class WorkflowExecutionService {
     if (plan.kind !== "planned") return;
 
     const poolByName = new Map(pool.map((worker) => [worker.name, worker]));
-    const memberByName = new Map(
-      plan.members.map((member) => [member.worker, member]),
-    );
     const globalLimit = readGlobalConcurrencyLimit();
     // one host ceiling for every lane's steps, as one forEach level shares it
     const hostSlots = globalLimit && globalLimit > 0
@@ -5758,7 +5754,6 @@ export class WorkflowExecutionService {
         jobRun,
         {
           worker,
-          instanceUuid: memberByName.get(worker)!.instanceUuid,
           stepOf: (authored) => laneStepName(authored, worker),
         },
         laneWorkerScope(poolByName.get(worker)!),
@@ -6890,10 +6885,7 @@ export class WorkflowExecutionService {
             run.id,
             job.name,
           ),
-          lane: options.lane && {
-            worker: options.lane.worker,
-            instanceUuid: options.lane.instanceUuid,
-          },
+          lane: options.lane && { worker: options.lane.worker },
           declaredWrites: step.writes ?? job.writes ?? workflow.writes,
         };
         return this.executeMethod(step, ctx, options);

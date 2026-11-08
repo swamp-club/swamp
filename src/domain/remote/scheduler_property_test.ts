@@ -197,13 +197,11 @@ Deno.test("planFanOut: minWorkers refuses exactly when fewer members are dispatc
   assert(refused > 50, `only ${refused} runs were refused`);
 });
 
-Deno.test("laneDispatchVerdict: a lane is only ever sent to its planned instance, connected and neither unverified nor draining", () => {
+Deno.test("laneDispatchVerdict: a lane is only ever sent to a connected worker that is neither unverified nor draining", () => {
   fc.assert(
     fc.property(
-      fc.uuid(),
       fc.option(
         fc.record({
-          instanceUuid: fc.oneof(fc.uuid(), fc.constant("planned")),
           status: fc.constantFrom(
             "idle" as const,
             "busy" as const,
@@ -214,22 +212,23 @@ Deno.test("laneDispatchVerdict: a lane is only ever sent to its planned instance
         }),
         { nil: null },
       ),
-      (_seed, worker) => {
-        const verdict = laneDispatchVerdict(
-          { worker: "w", instanceUuid: "planned" },
-          worker,
-        );
+      (worker) => {
+        const verdict = laneDispatchVerdict(worker);
         if (verdict.kind === "dispatch") {
-          assert(worker !== null);
-          assertEquals(worker.instanceUuid, "planned");
-          assert(worker.connected);
+          assert(worker !== null && worker.connected);
           assert(worker.status === "idle" || worker.status === "busy");
         }
         if (verdict.kind === "wait") {
           assert(
             worker === null ||
-              (!worker.connected && worker.instanceUuid === "planned" &&
+              (!worker.connected &&
                 (worker.status === "idle" || worker.status === "busy")),
+          );
+        }
+        if (verdict.kind === "ineligible") {
+          assert(
+            worker !== null &&
+              (worker.status === "unverified" || worker.status === "draining"),
           );
         }
       },

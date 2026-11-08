@@ -1645,7 +1645,10 @@ the pool. With no reader registered (a local run), a fan-out run is refused
 before anything runs.
 
 **Pinning a lane.** Each lane step's placement is a fixed target, the planned
-worker, carried with the member's instance UUID as `StepPlacement.lane`. It
+worker's name, carried as `StepPlacement.lane`. The name is the member's
+identity: its token binds it to one machine, so a restarted worker process (a
+new instance UUID) is still the planned member, and a re-minted token takes
+the worker out of the pool. It
 does not use the affinity pin map: `assertPinHeld` fails a step at once when
 its pinned worker is disconnected, which would fail every `offline: wait` lane
 on its first dispatch, and an affinity group binds on its first step rather
@@ -1656,8 +1659,7 @@ moves, with nothing to release when the job ends.
 `laneDispatchVerdict` (`src/domain/remote/scheduler.ts`) reads the worker's
 live snapshot:
 
-- unverified, draining, or another instance enrolled under the planned name:
-  the step fails with `WorkerIneligibleError` (`worker_ineligible`) and nothing
+- unverified or draining: the step fails with `WorkerIneligibleError` (`worker_ineligible`) and nothing
   is sent. This holds for every lane step, not only the first, as a draining
   pinned worker already fails an affinity group today.
 - disconnected or absent: the step queues on its target until the worker

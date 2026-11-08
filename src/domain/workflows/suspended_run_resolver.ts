@@ -29,6 +29,7 @@ import { findWorkflowById, findWorkflowByIdOrName } from "./workflow_lookup.ts";
 import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
 import { entryTemplateOf, fromJobFor } from "./failed_step_retry.ts";
+import { refuseFanOutResume } from "./fan_out_job.ts";
 import { assertNestedWaitsSettled } from "./nested_run_link.ts";
 import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import {
@@ -228,6 +229,7 @@ export async function resolveResumableRun(
         ownerIsDead: options.ownerIsDead,
       },
     );
+    refuseFanOutResume(resolved.workflow, resolved.run);
     checkSuspendedRunResume(resolved.workflow, resolved.run);
     await assertNestedWaitsSettled(
       { runRepo, workflowRepo, signalWaits: options.signalWaits },
@@ -253,6 +255,8 @@ export async function resolveResumableRun(
     if (!run) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // before retry planning, whose refusal would name a lane step instead
+    refuseFanOutResume(workflow, run);
     if (run.status === "running" && options.ownerIsDead?.(run)) {
       throw new UserError(
         `Run ${runId} is recorded as running, but its owning process` +
@@ -308,6 +312,7 @@ export async function resolveResumableRun(
     );
   }
 
+  refuseFanOutResume(workflow, failedRuns[0]);
   planFailedRunResume(
     workflow,
     failedRuns[0],

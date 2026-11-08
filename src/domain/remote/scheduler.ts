@@ -47,33 +47,22 @@ export interface StepPlacement {
   lane?: FanOutLanePin;
 }
 
+// the worker name: its token binds it to one machine, so a restarted process
+// (a new instance UUID) is still the planned member
 export interface FanOutLanePin {
   readonly worker: string;
-  readonly instanceUuid: string;
 }
 
 export type LaneDispatchVerdict =
   | { kind: "dispatch" }
   | { kind: "wait" }
-  | {
-    kind: "ineligible";
-    reason: "unverified" | "draining" | "replaced";
-  };
+  | { kind: "ineligible"; reason: "unverified" | "draining" };
 
-/**
- * a lane never queues behind a worker that may not take it: unverified or
- * draining fails it, and so does another machine enrolled under the name
- */
+/** a lane never queues behind a worker that may not take it */
 export function laneDispatchVerdict(
-  lane: FanOutLanePin,
-  worker:
-    | Pick<SchedulableWorker, "instanceUuid" | "status" | "connected">
-    | null,
+  worker: Pick<SchedulableWorker, "status" | "connected"> | null,
 ): LaneDispatchVerdict {
   if (worker === null) return { kind: "wait" };
-  if (worker.instanceUuid !== lane.instanceUuid) {
-    return { kind: "ineligible", reason: "replaced" };
-  }
   if (worker.status === "unverified" || worker.status === "draining") {
     return { kind: "ineligible", reason: worker.status };
   }

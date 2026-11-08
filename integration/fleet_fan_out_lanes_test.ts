@@ -714,3 +714,33 @@ Deno.test({
     assertEquals(fleet.dispatchCounts(), { "a-b": 0, "b": 0 });
   },
 });
+
+Deno.test({
+  name:
+    "fan-out lanes: an offline member whose worker comes back as a restarted process (a new instance UUID) still runs its lane",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({ graceWindowMs: 200 });
+    const a = await fleet.addWorker("w-a", { labels: WEB });
+    const b = await fleet.addWorker("w-b", { labels: WEB });
+    await b.disconnect({ untilRemoved: true });
+    await fleet.saveWorkflow({
+      name: "patch-restart",
+      inputs: {},
+      jobs: [laneJob(fleet, APPLY_VERIFY)],
+    });
+    a.behavior = { kind: "hold" };
+
+    const running = fleet.runWorkflow("patch-restart");
+    await waitFor(() => a.heldCount === 1, "lane w-a in flight");
+    const planned = b.instanceUuid;
+    await b.restart();
+    assert(b.instanceUuid !== planned);
+    a.behavior = { kind: "succeed" };
+    a.release(true);
+    const run = await running;
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(fleet.dispatchCounts(), { "w-a": 2, "w-b": 2 });
+  },
+});

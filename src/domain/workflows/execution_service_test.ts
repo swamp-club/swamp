@@ -25316,7 +25316,7 @@ Deno.test("run: a fan-out job plans against the worker pool and runs one lane pe
       ["deploy[w-a]", "deploy[w-b]"],
     );
     assertEquals(executor.lanes.get("deploy/push[w-b]"), {
-      lane: { worker: "w-b", instanceUuid: "uuid-w-b" },
+      lane: { worker: "w-b" },
       worker: {
         name: "w-b",
         labels: { role: "web" },

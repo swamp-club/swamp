@@ -758,52 +758,28 @@ Deno.test("planFanOut: throws when the pool repeats a worker name", () => {
   );
 });
 
-Deno.test("laneDispatchVerdict: a connected idle or busy worker with the planned instance takes its lane", () => {
-  const lane = { worker: "w-a", instanceUuid: "u-a" };
+Deno.test("laneDispatchVerdict: a connected idle or busy worker takes its lane, whatever its instance UUID", () => {
   for (const status of ["idle", "busy"] as const) {
-    assertEquals(
-      laneDispatchVerdict(lane, {
-        instanceUuid: "u-a",
-        status,
-        connected: true,
-      }),
-      { kind: "dispatch" },
-    );
+    assertEquals(laneDispatchVerdict({ status, connected: true }), {
+      kind: "dispatch",
+    });
   }
 });
 
 Deno.test("laneDispatchVerdict: a worker absent from the pool or disconnected makes the lane wait", () => {
-  const lane = { worker: "w-a", instanceUuid: "u-a" };
-  assertEquals(laneDispatchVerdict(lane, null), { kind: "wait" });
-  assertEquals(
-    laneDispatchVerdict(lane, {
-      instanceUuid: "u-a",
-      status: "idle",
-      connected: false,
-    }),
-    { kind: "wait" },
-  );
+  assertEquals(laneDispatchVerdict(null), { kind: "wait" });
+  assertEquals(laneDispatchVerdict({ status: "idle", connected: false }), {
+    kind: "wait",
+  });
 });
 
 Deno.test("laneDispatchVerdict: an unverified or draining worker is ineligible, connected or not", () => {
-  const lane = { worker: "w-a", instanceUuid: "u-a" };
   for (const status of ["unverified", "draining"] as const) {
     for (const connected of [true, false]) {
-      assertEquals(
-        laneDispatchVerdict(lane, { instanceUuid: "u-a", status, connected }),
-        { kind: "ineligible", reason: status },
-      );
+      assertEquals(laneDispatchVerdict({ status, connected }), {
+        kind: "ineligible",
+        reason: status,
+      });
     }
   }
-});
-
-Deno.test("laneDispatchVerdict: another machine enrolled under the planned name is ineligible", () => {
-  assertEquals(
-    laneDispatchVerdict({ worker: "w-a", instanceUuid: "u-a" }, {
-      instanceUuid: "u-other",
-      status: "idle",
-      connected: true,
-    }),
-    { kind: "ineligible", reason: "replaced" },
-  );
 });

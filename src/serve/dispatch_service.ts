@@ -456,7 +456,6 @@ export class DispatchService {
         assertPinHeld();
         if (!lane) return;
         const verdict = laneDispatchVerdict(
-          lane,
           this.#gateway!.worker(lane.worker),
         );
         if (verdict.kind === "ineligible") {
@@ -1408,16 +1407,11 @@ export class AffinityPlacementMismatchError extends Error {
 export class WorkerIneligibleError extends Error {
   readonly code = "worker_ineligible";
   readonly workerName: string;
-  readonly reason: "unverified" | "draining" | "replaced";
+  readonly reason: "unverified" | "draining";
 
-  constructor(
-    workerName: string,
-    reason: "unverified" | "draining" | "replaced",
-  ) {
+  constructor(workerName: string, reason: "unverified" | "draining") {
     super(
-      reason === "replaced"
-        ? `Worker '${workerName}' was replaced by another machine enrolled under its name after the fan-out plan was made (worker_ineligible); the lane is not sent`
-        : `Worker '${workerName}' is ${reason} and can no longer take its fan-out lane (worker_ineligible); the lane is not sent`,
+      `Worker '${workerName}' is ${reason} and can no longer take its fan-out lane (worker_ineligible); the lane is not sent`,
     );
     this.name = "WorkerIneligibleError";
     this.workerName = workerName;
