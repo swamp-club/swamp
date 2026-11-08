@@ -127,6 +127,7 @@ interface FanJob {
   status: "pending" | "running";
   steps: { stepName: string; status: StepStatus }[];
   plan?: Record<string, unknown>;
+  snapshot?: Record<string, unknown>;
 }
 
 function fanRecord(job: FanJob | undefined): WorkflowRunData {
@@ -141,6 +142,7 @@ function fanRecord(job: FanJob | undefined): WorkflowRunData {
       status: job.status,
       steps: job.steps.map((step) => ({ ...step })),
       ...(job.plan !== undefined ? { fanOutPlan: job.plan } : {}),
+      ...(job.snapshot !== undefined ? { fanOutSnapshot: job.snapshot } : {}),
     }],
   } as unknown as WorkflowRunData;
 }
@@ -165,6 +167,18 @@ function planFor(workers: readonly string[]): Record<string, unknown> {
   };
 }
 
+function snapshotFor(workers: readonly string[]): Record<string, unknown> {
+  return {
+    selector: { labels: { role: "web" } },
+    workers: workers.map((name) => ({
+      name,
+      labels: { role: "web" },
+      platform: "linux",
+      arch: "x86_64",
+    })),
+  };
+}
+
 // every lawful record sequence, including a save of the started job before its plan
 const honestHistory = fc.record({
   steps: fc.uniqueArray(fc.constantFrom("apply", "verify", "check"), {
@@ -176,6 +190,8 @@ const honestHistory = fc.record({
     maxLength: 3,
   }),
   runningSave: fc.boolean(),
+  // false: a run planned before snapshots were recorded
+  withSnapshot: fc.boolean(),
   progress: fc.array(
     fc.tuple(
       fc.nat(),
@@ -183,7 +199,7 @@ const honestHistory = fc.record({
     ),
     { maxLength: 8 },
   ),
-}).map(({ steps, workers, runningSave, progress }) => {
+}).map(({ steps, workers, runningSave, withSnapshot, progress }) => {
   const history: FanJob[] = [{
     status: "pending",
     steps: steps.map((stepName) => ({ stepName, status: "pending" })),
@@ -198,13 +214,14 @@ const honestHistory = fc.record({
     }))
   );
   const plan = planFor(workers);
-  history.push({ status: "running", steps: laneSteps, plan });
+  const snapshot = withSnapshot ? snapshotFor(workers) : undefined;
+  history.push({ status: "running", steps: laneSteps, plan, snapshot });
   let current = laneSteps;
   for (const [index, status] of progress) {
     current = current.map((step, i) =>
       i === index % current.length ? { ...step, status } : step
     );
-    history.push({ status: "running", steps: current, plan });
+    history.push({ status: "running", steps: current, plan, snapshot });
   }
   return { history, workers };
 });
@@ -313,6 +330,71 @@ Deno.test("judgeRunRecord (property): every forged fan-out plan is refused, wher
             if (field === "lanes") altered.lanes = [];
             after = { ...next, plan: altered };
           }
+        }
+        assert(
+          judgeRunRecord({
+            workflowId: FAN_WORKFLOW,
+            runId: FAN_RUN,
+            before: before === undefined ? undefined : fanRecord(before),
+            after: fanRecord(after),
+          }).refusal !== undefined,
+          forgery,
+        );
+      },
+    ),
+    { numRuns: 2000 },
+  );
+});
+
+type SnapshotForgery =
+  | "change-selector"
+  | "change-worker"
+  | "drop-snapshot"
+  | "late-snapshot"
+  | "snapshot-without-plan";
+
+Deno.test("judgeRunRecord (property): every forged fan-out snapshot is refused, wherever it lands in the history", () => {
+  fc.assert(
+    fc.property(
+      honestHistory,
+      fc.constantFrom<SnapshotForgery>(
+        "change-selector",
+        "change-worker",
+        "drop-snapshot",
+        "late-snapshot",
+        "snapshot-without-plan",
+      ),
+      fc.nat(),
+      ({ history, workers }, forgery, at) => {
+        const planned = history.findIndex((job) => job.plan !== undefined);
+        const from = planned + (at % (history.length - planned));
+        let before: FanJob | undefined = history[from];
+        const next = history[from + 1] ?? history[from];
+        const snapshot = next.snapshot ?? snapshotFor(workers);
+        let after: FanJob;
+        if (forgery === "change-selector") {
+          fc.pre(next.snapshot !== undefined);
+          after = {
+            ...next,
+            snapshot: { ...snapshot, selector: { labels: { role: "db" } } },
+          };
+        } else if (forgery === "change-worker") {
+          fc.pre(next.snapshot !== undefined);
+          const scopes = snapshot.workers as Record<string, unknown>[];
+          const altered = scopes.map((scope, i) =>
+            i === at % scopes.length ? { ...scope, arch: "arm64" } : scope
+          );
+          after = { ...next, snapshot: { ...snapshot, workers: altered } };
+        } else if (forgery === "drop-snapshot") {
+          fc.pre(next.snapshot !== undefined);
+          after = { status: next.status, steps: next.steps, plan: next.plan };
+        } else if (forgery === "late-snapshot") {
+          fc.pre(next.snapshot === undefined);
+          after = { ...next, snapshot };
+        } else {
+          const unplanned = at % planned;
+          before = unplanned === 0 ? undefined : history[unplanned - 1];
+          after = { ...history[unplanned], snapshot };
         }
         assert(
           judgeRunRecord({

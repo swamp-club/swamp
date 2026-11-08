@@ -3188,8 +3188,11 @@ path and `workflow validate` report them:
 `JobRun.recordFanOutPlan` writes once, and beside it a `fanOutSnapshot`: the
 selector as authored (labels and platform merged from the definition, not the
 evaluated run) and each lane worker's `self.worker` scope at plan time. The
-snapshot sits outside the plan, so the run-record judge's freeze of the plan is
-unchanged. A resume never re-plans:
+snapshot sits outside the plan, so older readers of the plan are unchanged, but
+the run-record judge freezes it with the plan: it is written only in the record
+that first writes the plan, never changed or dropped after, and never held
+without a plan. A run planned before snapshots were recorded keeps having none.
+A resume never re-plans:
 
 ```yaml
 fanOutPlan:
