@@ -23,14 +23,21 @@ plan_generated ──[iterate]──> plan_generated  (feedback loop)
 plan_generated ──[approve]──> approved
 approved ──[iterate]──> plan_generated  (reopen an approved plan)
 approved ──[implement]──> implementing
-implementing ──[complete]──> done
+implementing ──[verify]──> verifying
+verifying ──[verification_failed]──> implementing  (fix, or change code)
+verifying ──[verification_passed]──> verifying
+verifying ──[code_conformance_review, justify_deviations]──> verifying
+verifying ──[post_attestation, link_pr]──> pr_open
+verifying ──[complete]──> done
 pr_open ──[watch_pr]──> done  (merged: pr_merged, notify, summarize)
 pr_open ──[watch_pr]──> pr_failed  (conflict, failed check, changes requested)
 ```
 
 Pre-flight checks enforce valid transitions. You cannot approve without a plan.
 You cannot approve with unresolved critical/high adversarial findings. You
-cannot implement without approval.
+cannot implement without approval. The code conformance review runs after
+`verification_passed` and covers the verified commit; `post_attestation`,
+`link_pr` and `complete` refuse until that commit has a fully justified review.
 
 An approved plan that turns out to be wrong goes back to planning with
 `iterate`. The plan, its version history and its feedback rounds are kept. The
@@ -141,23 +148,30 @@ swamp model output search issue-42 --json
 
 ## Methods
 
-| Method               | Description                                     | State Transition                          |
-| -------------------- | ----------------------------------------------- | ----------------------------------------- |
-| `start`              | Fetch issue from swamp-club, auto-assign to you | \* -> triaging                            |
-| `triage`             | Classify as bug/feature/security                | triaging -> classified                    |
-| `plan`               | Generate implementation plan                    | classified -> plan_generated              |
-| `review`             | Display current plan (read-only)                | no change                                 |
-| `iterate`            | Revise plan with feedback, or reopen approval   | plan_generated/approved -> plan_generated |
-| `adversarial_review` | Record adversarial review findings for the plan | no change                                 |
-| `resolve_findings`   | Mark adversarial findings as resolved           | no change                                 |
-| `approve`            | Lock the plan and transition to in_progress     | plan_generated -> approved                |
-| `implement`          | Signal implementation started                   | approved -> implementing                  |
-| `watch_pr`           | Watch the PR and drive the lifecycle on         | pr_open -> done / pr_failed / no change   |
-| `pr_merged`          | Record the merge, which ships the issue         | pr_open -> notify                         |
-| `complete`           | Mark lifecycle done                             | implementing -> done                      |
-| `link_issue`         | Carry another issue with this lifecycle         | no change                                 |
-| `unlink_issue`       | Stop carrying a linked issue                    | no change                                 |
-| `mark_duplicate`     | Ship as a duplicate of a shipped issue          | triaging/classified -> notify             |
+| Method                    | Description                                     | State Transition                          |
+| ------------------------- | ----------------------------------------------- | ----------------------------------------- |
+| `start`                   | Fetch issue from swamp-club, auto-assign to you | \* -> triaging                            |
+| `triage`                  | Classify as bug/feature/security                | triaging -> classified                    |
+| `plan`                    | Generate implementation plan                    | classified -> plan_generated              |
+| `review`                  | Display current plan (read-only)                | no change                                 |
+| `iterate`                 | Revise plan with feedback, or reopen approval   | plan_generated/approved -> plan_generated |
+| `adversarial_review`      | Record adversarial review findings for the plan | no change                                 |
+| `resolve_findings`        | Mark adversarial findings as resolved           | no change                                 |
+| `approve`                 | Lock the plan and transition to in_progress     | plan_generated -> approved                |
+| `implement`               | Signal implementation started                   | approved/pr_failed -> implementing        |
+| `verify`                  | Start verifying a commit                        | implementing -> verifying                 |
+| `verification_passed`     | Record a passing verification of that commit    | no change                                 |
+| `verification_failed`     | Record a failure and go back to fix it          | verifying -> implementing                 |
+| `code_conformance_review` | Review the verified commit against the plan     | no change                                 |
+| `justify_deviations`      | Justify deviations from the plan                | no change                                 |
+| `post_attestation`        | Post the attestation for the reviewed commit    | no change                                 |
+| `link_pr`                 | Record the PR                                   | verifying/pr_failed -> pr_open            |
+| `watch_pr`                | Watch the PR and drive the lifecycle on         | pr_open -> done / pr_failed / no change   |
+| `pr_merged`               | Record the merge, which ships the issue         | pr_open -> notify                         |
+| `complete`                | Mark lifecycle done                             | verifying/pr_open/releasing -> notify     |
+| `link_issue`              | Carry another issue with this lifecycle         | no change                                 |
+| `unlink_issue`            | Stop carrying a linked issue                    | no change                                 |
+| `mark_duplicate`          | Ship as a duplicate of a shipped issue          | triaging/classified -> notify             |
 
 ## Data stored
 

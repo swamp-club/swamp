@@ -1,8 +1,8 @@
 # Verification Flow
 
-Read this after code conformance review is complete and all deviations are
-justified. The verification loop runs the same checks as CI as host workflows
-**before** opening a PR.
+Read this after the code is written. The verification loop runs the same checks
+as CI as host workflows **before** opening a PR. The code conformance review
+comes after it, against the verified commit.
 
 Read `agent-constraints/verification-conventions.md` for repo-specific workflow
 configuration.
@@ -81,7 +81,8 @@ failed" below.
    trust chain violation. See `agent-constraints/verification-conventions.md`
    for the full schema.
 
-2. Call `verification_passed` with the attestation data:
+2. Call `verification_passed` with the attestation data. The commit must be the
+   one `verify` started on — a different commit is refused:
 
    ```
    swamp behavior run @swamp/issue-lifecycle verification_passed issue-<N> \
@@ -94,7 +95,15 @@ failed" below.
    Populate the `steps` array from the attestation output. Include every step
    with its actual status (succeeded, failed, or skipped).
 
-3. **Present the full verification checklist to the user and wait for their
+3. **Run the code conformance review of the verified commit.** Read
+   [code-conformance-review.md](code-conformance-review.md) and record the
+   review, then justify every deviation. The review records deviations; it never
+   changes code. If you decide to change code rather than justify a deviation,
+   that is a new commit: record `verification_failed` and go back to step 1.
+   `post_attestation` and `link_pr` refuse until the verified commit has a fully
+   justified review.
+
+4. **Present the full verification checklist to the user and wait for their
    confirmation to proceed.** The checklist must show every step from both the
    build and review workflows — status, model, duration, and for reviews the
    VERDICT and finding count. End it with the attestation's `affectedCommands`:
@@ -106,7 +115,7 @@ failed" below.
    user has seen the checklist and explicitly said they are ready to open the
    PR.
 
-4. **After the user confirms**, post the attestation to swamp-club using the
+5. **After the user confirms**, post the attestation to swamp-club using the
    issue-lifecycle model's `post_attestation` method. The user's confirmation is
    what triggers the attestation push. Do not post it automatically after
    verification passes — the user decides when to ship.
@@ -127,6 +136,9 @@ failed" below.
    credentials. It throws on failure — if it fails, fix the auth or connectivity
    issue and retry.
 
+   `post_attestation` refuses an attestation whose commit is not the one the
+   conformance review covers.
+
    **Do NOT proceed until `post_attestation` succeeds.** The CI
    `validate-attestation` check will fail if no attestation exists for the
    commit.
@@ -138,9 +150,9 @@ failed" below.
    mismatch. If you need to change the commit after posting, you must re-run
    verification on the new SHA and post a new attestation.
 
-5. **Only after `post_attestation` succeeds**, proceed to open a PR — read the
+6. **Only after `post_attestation` succeeds**, proceed to open a PR — read the
    "Create a PR" section in [implementation.md](implementation.md). If you
-   skipped step 4, implementation.md will send you back here.
+   skipped step 5, implementation.md will send you back here.
 
 ### Any step failed
 
@@ -177,5 +189,7 @@ If either gate fails, do NOT open a PR. The CI `validate-attestation` job reads
 the attestation from swamp-club and validates commit match, config integrity,
 and freshness. A missing attestation will be flagged.
 
-The loop is: implement → conformance review → verify → fix → re-verify → present
-checklist → user confirms → post attestation → PR.
+The loop is: implement → verify → fix → re-verify → verification_passed →
+conformance review → justify deviations → present checklist → user confirms →
+post attestation → PR. A code change at any point after `verification_passed`
+goes back through `verification_failed` and is verified and reviewed again.

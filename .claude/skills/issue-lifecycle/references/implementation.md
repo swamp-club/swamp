@@ -35,28 +35,28 @@ Report verification results to the human before creating the PR:
 - "Verified: reproduction scenario now passes" or
 - "Verification failed: <what still breaks>"
 
-## 3a. Code Conformance Review
+## 3a. Verification Loop
 
-**Before verification**, read
-[code-conformance-review.md](code-conformance-review.md) and run the code
-conformance review. This adversarially compares the implemented code against the
-approved plan. All deviations must be justified before proceeding.
+Read [verification.md](verification.md) and run the verification workflows on
+the host. These run lint, test, compile, and agent reviews — the same checks as
+CI — before a PR is opened. The agent iterates until all steps pass.
 
-## 3b. Verification Loop
+## 3b. Code Conformance Review
 
-**After code conformance review**, read [verification.md](verification.md) and
-run the verification workflows on the host. These run lint, test, compile, and
-agent reviews — the same checks as CI — before a PR is opened. The agent
-iterates until all steps pass.
+**After `verification_passed`**, read
+[code-conformance-review.md](code-conformance-review.md) and review the verified
+commit against the approved plan. All deviations must be justified before the
+attestation is posted or a PR is linked.
 
-Do NOT proceed to create a PR until verification passes.
+Do NOT proceed to create a PR until verification passes and the conformance
+review of the verified commit is fully justified.
 
 ## 4. Create a PR
 
 **PREREQUISITE: The verification attestation MUST be posted to swamp-club before
 opening a PR.** If you have not yet posted the attestation via
 `POST /api/v1/admin/attestations`, STOP — go back to
-[verification.md](verification.md) step 4 and complete the attestation flow
+[verification.md](verification.md) step 5 and complete the attestation flow
 first. Do NOT skip this step. Do NOT open a PR without a posted attestation.
 
 **DO NOT amend, rebase, or modify the verified commit after the attestation has
@@ -149,25 +149,28 @@ waits that window out itself.
 
 ## 4c. Handle PR Failure
 
-When in `pr_failed`, diagnose and fix the issue. Then either:
+When in `pr_failed`, diagnose the failure. Then either:
 
-- Push fixes and call `link_pr` again (same or new PR URL) to return to
-  `pr_open`:
-  ```
-  swamp behavior run @swamp/issue-lifecycle link_pr issue-<N> --input url=<PR URL>
-  ```
-- Call `implement` to go back to the implementing phase for major rework:
+- If the fix changes code (including a rebase), call `implement`, then verify,
+  record `verification_passed`, review and justify the new commit, post its
+  attestation, and `link_pr`. The model cannot see the PR's commit, so this is
+  the only path that keeps conformance tied to the code that ships:
   ```
   swamp behavior run @swamp/issue-lifecycle implement issue-<N>
+  ```
+- If the verified commit is unchanged (the PR was closed by mistake, or a new PR
+  carries the same commit), call `link_pr` again to return to `pr_open`:
+  ```
+  swamp behavior run @swamp/issue-lifecycle link_pr issue-<N> --input url=<PR URL>
   ```
 
 ## 5. Ship
 
 There is no separate release step — `pr_merged` ships the issue. For quick
-close-out (e.g., the PR merged and you just want to wrap up), `complete` still
-works from `implementing`, `pr_open`, or `releasing` (transitions to `notify`).
-A lifecycle left in `releasing` from before merging shipped closes out with
-`complete`.
+close-out (e.g., the PR merged and you just want to wrap up), `complete` works
+from `pr_open` or `releasing`, or from `verifying` once the verified commit has
+a fully justified conformance review (transitions to `notify`). A lifecycle left
+in `releasing` from before merging shipped closes out with `complete`.
 
 ## 6. Notify the Contributor
 
