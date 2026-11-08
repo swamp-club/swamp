@@ -5815,7 +5815,10 @@ leave every checkout with the same records.
     mtime, and put back if missing;
   - the catalog rows of every data name those files belong to are
     re-projected from the state's live versions (the writer's repositories
-    write catalog rows at save time, before any commit).
+    write catalog rows at save time, before any commit), and so are those of
+    every name with a pending row: a streaming write registers its row
+    before any file reaches disk, the one repository catalog write that
+    comes with no file to find.
   It falls back to the full rebuild below when the marker is unreadable (its
   start is only the file's mtime), a file has no mtime or one later than
   now, a data key names no model, a file cannot be restored from the state,
@@ -7297,7 +7300,8 @@ the token). Binding with another token resets the copy before anything
 catches up from it (`resetCopyForCaller`), unless serve says the new token
 acts as the principal the copy last heard from serve (swamp-club#4512): one
 datastore request with the new token reads serve's principal header, even
-on a refused page, and a match restamps the fingerprint and keeps the copy;
+on a refused page (never on a 401 or 403: a refused token vouches for no
+principal), and a match restamps the fingerprint and keeps the copy;
 no principal cached, no header, or no answer resets as before. The reset
 runs under the root's writer lease,
 which every writer of the checkout holds for its whole command; a read-only
