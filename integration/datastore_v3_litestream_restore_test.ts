@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * each machine is a worker with its own module state, host name and checkout on
- * one filesystem v3 datastore, so two checkouts behave like two machines on a
- * bucket
- */
-
 import {
   assert,
   assertEquals,
@@ -32,259 +26,27 @@ import {
 import { dirname, join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import { V3_REPLICA_ENV } from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
 import {
-  parseV3ReplicaSetting,
-  replicaRootOf,
-  V3_REPLICA_ENV,
-} from "../src/infrastructure/datastore_v3/litestream/replica_setting.ts";
-import {
-  initializeV3Datastore,
   isFreshV3Skeleton,
   v3CommitsDbPath,
 } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { hostLitestreamProcesses } from "../src/infrastructure/datastore_v3/litestream/litestream_processes.ts";
 import { lineageRegistryFor } from "../src/infrastructure/datastore_v3/litestream/v3_copy.ts";
 import { V3_RESTORE_FAILED_CODE } from "../src/infrastructure/datastore_v3/litestream/litestream_restorer.ts";
-import {
-  currentLineage,
-  newestStartedFence,
-} from "../src/domain/datastore_v3/published_lineage.ts";
 import { replicaPathFor } from "../src/domain/datastore_v3/replication_lineage.ts";
 import { V3_REPLICATION_UNCONFIRMED_CODE } from "../src/domain/datastore_v3/litestream_replication.ts";
 import { WRITER_FENCED_CODE } from "../src/domain/datastore_v3/writer_lease.ts";
 import {
-  killSidecarAtTeardown,
-  SIDECAR_TESTS_IGNORED,
-} from "./datastore_v3_litestream_helpers.ts";
-import { plantV3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
-import type {
-  MachineRequest,
-  MachineResponse,
-} from "./datastore_v3_litestream_machine_worker.ts";
-
-const ignore = SIDECAR_TESTS_IGNORED;
-
-const STALL_MS = 14_000;
-
-// deno test has no per-test timeout, so this bounds a worker that never answers
-const REQUEST_TIMEOUT_MS = 120_000;
-
-// a worker that cannot report its sidecars by then is abandoned; they idle out
-const TEARDOWN_PIDS_WAIT_MS = 5_000;
-
-interface Machine {
-  send(
-    request: MachineRequest,
-    options?: { readonly timeoutMs?: number },
-  ): Promise<unknown>;
-  crash(): Promise<void>;
-  stopSidecars(): Promise<void>;
-}
-
-interface World {
-  readonly root: string;
-  readonly datastorePath: string;
-  readonly replicaRoot: string;
-  readonly replica: string;
-  machine(
-    name: string,
-    options?: {
-      readonly namespace?: string;
-      readonly replica?: string;
-      readonly checkout?: string;
-      readonly gated?: boolean;
-      readonly captureWarnings?: boolean;
-      readonly lockTimeoutMs?: number;
-      readonly binaryMissing?: boolean;
-    },
-  ): Promise<Machine>;
-  lineages(): Promise<{ current?: number; newestStarted?: number }>;
-  registered(fence: number): Promise<boolean>;
-}
-
-class MachineError extends Error {
-  constructor(message: string, readonly code?: string) {
-    super(message);
-  }
-}
-
-async function withMachines(
-  fn: (world: World) => Promise<void>,
-  options: { readonly replica?: (root: string) => string } = {},
-): Promise<void> {
-  const root = await Deno.realPath(
-    await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-ls-d2-" }),
-  );
-  const datastorePath = join(root, "ds");
-  const replicaRoot = join(root, "replica");
-  const privateRoot = join(root, "priv");
-  const replica = options.replica?.(root) ??
-    JSON.stringify({ type: "file", path: replicaRoot });
-  await withMockedEnv(
-    { [V3_REPLICA_ENV]: replica },
-    () => initializeV3Datastore(datastorePath, "test"),
-  );
-  const workers: {
-    worker: Worker;
-    pids: () => Promise<number[]>;
-    abandon: () => void;
-  }[] = [];
-  const pids = new Set<number>();
-  const world: World = {
-    root,
-    datastorePath,
-    replicaRoot,
-    replica,
-    async machine(name, machineOptions = {}) {
-      const worker = new Worker(
-        new URL("./datastore_v3_litestream_machine_worker.ts", import.meta.url),
-        { type: "module" },
-      );
-      let queue: Promise<unknown> = Promise.resolve();
-      let alive = true;
-      // set once this worker is given up on: it is terminated, so no later
-      // request can be answered
-      let dead: Error | undefined;
-      let failPending: ((error: Error) => void) | undefined;
-      const call = (request: MachineRequest, timeoutMs: number) => {
-        if (dead !== undefined) return Promise.reject(dead);
-        const limit = timeoutMs + (request.kind === "pause" ? request.ms : 0);
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        return new Promise<unknown>((done, fail) => {
-          failPending = fail;
-          timer = setTimeout(() => {
-            dead = new Error(
-              `machine-${name}: ${request.kind} did not answer within ${limit}ms`,
-            );
-            worker.terminate();
-            fail(dead);
-          }, limit);
-          worker.onmessage = (event: MessageEvent<MachineResponse>) => {
-            const response = event.data;
-            if (response.ok) done(response.value);
-            else fail(new MachineError(response.error, response.code));
-          };
-          worker.onerror = (event) => {
-            event.preventDefault();
-            fail(new Error(event.message));
-          };
-          worker.postMessage(request);
-        }).finally(() => clearTimeout(timer));
-      };
-      const send = (
-        request: MachineRequest,
-        { timeoutMs = REQUEST_TIMEOUT_MS }: { readonly timeoutMs?: number } =
-          {},
-      ) => {
-        const next = queue.then(() => call(request, timeoutMs));
-        queue = next.catch(() => {});
-        return next;
-      };
-      const abandon = () => {
-        dead ??= new Error(`machine-${name}: abandoned at teardown`);
-        failPending?.(dead);
-      };
-      const remember = async () => {
-        if (!alive) return [];
-        const launched = await send({ kind: "pids" }) as number[];
-        for (const pid of launched) pids.add(pid);
-        return launched;
-      };
-      workers.push({ worker, pids: remember, abandon });
-      await send({
-        kind: "init",
-        hostname: `machine-${name}`,
-        replica: machineOptions.replica ?? replica,
-        privateRoot,
-        datastorePath,
-        repoDir: join(root, machineOptions.checkout ?? name),
-        lockTimeoutMs: machineOptions.lockTimeoutMs ?? 30_000,
-        ...(machineOptions.namespace !== undefined
-          ? { namespace: machineOptions.namespace }
-          : {}),
-        ...(machineOptions.gated === true ? { gated: true } : {}),
-        ...(machineOptions.captureWarnings === true
-          ? { captureWarnings: true }
-          : {}),
-        ...(machineOptions.binaryMissing === true
-          ? { binaryMissing: true }
-          : {}),
-      });
-      return {
-        send,
-        async stopSidecars() {
-          for (const pid of await remember()) {
-            hostLitestreamProcesses.signalGroup(pid, "SIGKILL");
-          }
-          const launched = await remember();
-          await waitFor(
-            () =>
-              launched.every((pid) => !hostLitestreamProcesses.isAlive(pid)),
-            "the machine's sidecars to stop",
-          );
-        },
-        async crash() {
-          await remember();
-          alive = false;
-          worker.terminate();
-        },
-      };
-    },
-    async lineages() {
-      return await withMockedEnv({ [V3_REPLICA_ENV]: replica }, async () => {
-        const root = replicaRootOf(parseV3ReplicaSetting(replica));
-        const read = await lineageRegistryFor(datastorePath).read(root);
-        return {
-          ...(currentLineage(read, root) !== undefined
-            ? { current: currentLineage(read, root)!.fence }
-            : {}),
-          ...(newestStartedFence(read, root) !== undefined
-            ? { newestStarted: newestStartedFence(read, root) }
-            : {}),
-        };
-      });
-    },
-    async registered(fence) {
-      return await withMockedEnv(
-        { [V3_REPLICA_ENV]: replica },
-        async () =>
-          typeof await lineageRegistryFor(datastorePath).started(fence) ===
-            "object",
-      );
-    },
-  };
-  try {
-    await fn(world);
-  } finally {
-    for (const { worker, pids: remember, abandon } of workers) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([
-        remember().catch(() => {}),
-        new Promise((done) => {
-          timer = setTimeout(done, TEARDOWN_PIDS_WAIT_MS);
-        }),
-      ]);
-      clearTimeout(timer);
-      abandon();
-      worker.terminate();
-    }
-    for (const pid of pids) killSidecarAtTeardown(pid);
-    await waitFor(
-      () => [...pids].every((pid) => !hostLitestreamProcesses.isAlive(pid)),
-      "every sidecar to stop",
-    );
-    await Deno.remove(root, { recursive: true }).catch(() => {});
-  }
-}
-
-interface ReadResult {
-  readonly commits: number;
-  readonly restored: unknown;
-}
-
-async function read(machine: Machine): Promise<ReadResult> {
-  return await machine.send({ kind: "read" }) as ReadResult;
-}
+  ignore,
+  type Machine,
+  MachineError,
+  read,
+  S3_ENDPOINT,
+  STALL_MS,
+  withMachines,
+  type World,
+} from "./datastore_v3_litestream_restore_helpers.ts";
 
 Deno.test({
   name:
@@ -508,48 +270,6 @@ Deno.test({
 
 Deno.test({
   name:
-    "v3 restore: a reader restored behind another machine's lease replays through its read model, logs no outside reset and leaves its catalog current (swamp-club#4387)",
-  ignore,
-  async fn() {
-    await withMachines(async (world) => {
-      const a = await world.machine("a", { captureWarnings: true });
-      await a.send({ kind: "write", commits: 2, close: true });
-      await a.send({ kind: "lease", ttlMs: 1_500 });
-      await a.send({ kind: "write", commits: 1, close: false });
-      await a.send({ kind: "catchUp" });
-      const paused = a.send({ kind: "pause", ms: STALL_MS });
-      const b = await world.machine("b");
-      await b.send({ kind: "write", commits: 1, close: true });
-      await paused;
-      await assertRejects(() => a.send({ kind: "close" }));
-      const c = await world.machine("c");
-      assertEquals((await read(c)).commits, 3);
-      const acknowledged = await c.send({ kind: "files" }) as string[];
-      await a.send({ kind: "warnings" });
-      // the takeover holds the writer lease, so the zombie's restore cannot
-      // recover under it and replays as a reader
-      await b.send({ kind: "lease", ttlMs: 60_000 });
-      assertEquals((await read(a)).commits, 3);
-      const files = await a.send({ kind: "files" }) as string[];
-      for (const file of acknowledged) {
-        assert(files.includes(file), `${file} is applied after the restore`);
-      }
-      assertEquals(files.length, 4, "the reader leaves the zombie's file");
-      assertEquals(await a.send({ kind: "readModel" }), {
-        cursor: 3,
-        populated: true,
-      });
-      const warnings = await a.send({ kind: "warnings" }) as string[];
-      assertEquals(
-        warnings.filter((w) => w.includes("outside the read model")),
-        [],
-      );
-    });
-  },
-});
-
-Deno.test({
-  name:
     "v3 restore: a writer killed before its first confirmed sync never becomes the current state",
   ignore,
   async fn() {
@@ -572,26 +292,6 @@ Deno.test({
 });
 
 Deno.test({
-  name:
-    "v3 restore: a serve write confirmed before it answers survives a crash and a takeover (swamp-club#3489)",
-  ignore,
-  async fn() {
-    await withMachines(async (world) => {
-      const a = await world.machine("a");
-      await a.send({ kind: "write", commits: 2, close: true });
-      await a.send({ kind: "lease", ttlMs: 1_500 });
-      await a.send({ kind: "write", commits: 1, close: false });
-      await a.send({ kind: "confirm" });
-      await a.crash();
-      const b = await world.machine("b");
-      await b.send({ kind: "write", commits: 1, close: true });
-      const c = await world.machine("c");
-      assertEquals((await read(c)).commits, 4, "the acknowledged commit kept");
-    });
-  },
-});
-
-Deno.test({
   name: "v3 restore: a lease taken on a stale copy never continues its lineage",
   ignore,
   async fn() {
@@ -605,94 +305,6 @@ Deno.test({
       await a.send({ kind: "write", commits: 1, close: true });
       const c = await world.machine("c");
       assertEquals((await read(c)).commits, 3);
-    });
-  },
-});
-
-Deno.test({
-  name:
-    "v3 restore: serve's retake after another checkout wrote restores into its open store",
-  ignore,
-  async fn() {
-    await withMachines(async (world) => {
-      const serve = await world.machine("serve");
-      await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
-      await serve.send({ kind: "write", commits: 1, close: false });
-      await serve.send({ kind: "upkeep", probeMs: 300 });
-      await waitFor(
-        async () => (await world.lineages()).current !== undefined,
-        "serve's head",
-      );
-      const fence = await serve.send({ kind: "fence" }) as number;
-      const paused = serve.send({ kind: "pause", ms: STALL_MS });
-      const other = await world.machine("other");
-      await other.send({ kind: "write", commits: 2, close: true });
-      await paused;
-      // serve's renewal finds the lease lost and retakes it, restoring the
-      // other lineage; a write started before the renewal noticed is refused,
-      // as its copy is behind while serve holds its sidecar
-      await waitFor(
-        async () => (await serve.send({ kind: "fence" }) as number) > fence,
-        "serve's retake",
-      );
-      await serve.send({ kind: "write", commits: 1, close: false });
-      await serve.send({ kind: "stopUpkeep" });
-      await serve.send({ kind: "close" });
-      const c = await world.machine("c");
-      assertEquals((await read(c)).commits, 4);
-    });
-  },
-});
-
-Deno.test({
-  name:
-    "v3 restore: after serve's retake nothing commits or collects chunks on its copy until the restore lands",
-  ignore,
-  async fn() {
-    await withMachines(async (world) => {
-      const serve = await world.machine("serve");
-      await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
-      await serve.send({ kind: "write", commits: 1, close: false });
-      await serve.send({ kind: "upkeep", probeMs: 300 });
-      await waitFor(
-        async () => (await world.lineages()).current !== undefined,
-        "serve's head",
-      );
-      const paused = serve.send({ kind: "pause", ms: STALL_MS });
-      const other = await world.machine("other");
-      await other.send({ kind: "write", commits: 2, close: true });
-      const lock = await Deno.open(
-        await serve.send({ kind: "restoreLock" }) as string,
-        { read: true, write: true, create: true },
-      );
-      await lock.lock(true);
-      try {
-        await paused;
-        // Once serve retook the lease, a commit is still refused: its copy
-        // is not current until the restore lands.
-        // The lost lease's refusal names the fence that took over; the
-        // retaken lease's, on a copy not yet current, names none.
-        await waitFor(async () => {
-          const refused = await serve.send({ kind: "tryCommit" });
-          return typeof refused === "string" &&
-            refused.includes("took over") && !refused.includes("(fence ") &&
-            refused.includes("still being brought up to date") &&
-            !refused.includes("Another swamp process");
-        }, "a commit refused after the retake");
-        const gc = await serve.send({ kind: "gc" }) as string | null;
-        assert(gc !== null && gc.includes("made current"), `gc: ${gc}`);
-      } finally {
-        await lock.unlock();
-        lock.close();
-      }
-      await waitFor(
-        async () => await serve.send({ kind: "tryCommit" }) === null,
-        "a commit once the restore landed",
-      );
-      await serve.send({ kind: "stopUpkeep" });
-      await serve.send({ kind: "close" });
-      const c = await world.machine("c");
-      assertEquals((await read(c)).commits, 4);
     });
   },
 });
@@ -762,8 +374,6 @@ Deno.test({
     });
   },
 });
-
-const S3_ENDPOINT = Deno.env.get("SWAMP_TEST_LITESTREAM_S3_ENDPOINT");
 
 Deno.test({
   name: "v3 restore: a fresh checkout restores from an S3 replica (opt-in)",
@@ -849,209 +459,6 @@ Deno.test({
       assertStringIncludes(deferred, "may still be restored");
       await a.send({ kind: "close" });
     });
-  },
-});
-
-Deno.test({
-  name:
-    "v3 restore: a seeding writer that fails before confirming leaves the shared commits for the next checkout's writer (swamp-club#3491)",
-  ignore,
-  async fn() {
-    await withMachines(async (world) => {
-      const before = await world.machine("before", { replica: "" });
-      await before.send({ kind: "write", commits: 3, close: true });
-      // The first writer seeds its copy and claims its lineage, then dies
-      // before its first sync is confirmed. Its short lease then expires.
-      const first = await world.machine("first", { checkout: "before" });
-      await first.send({ kind: "lease", ttlMs: 1_500 });
-      await first.send({ kind: "write", commits: 1, close: false });
-      await first.crash();
-      const claimed = await world.lineages();
-      assert(claimed.newestStarted !== undefined, "first claimed a lineage");
-      assertEquals(claimed.current, undefined);
-      const other = await world.machine("other");
-      await other.send({ kind: "write", commits: 1, close: true });
-      const fresh = await world.machine("fresh");
-      assertEquals((await read(fresh)).commits, 4);
-    });
-  },
-});
-
-async function closeGate(world: World, name: string): Promise<void> {
-  await Deno.writeTextFile(join(world.root, name), "");
-}
-
-async function gateEntered(world: World, name: string): Promise<void> {
-  await waitFor(
-    async () => {
-      try {
-        await Deno.stat(join(world.root, `${name}.entered`));
-        return true;
-      } catch (error) {
-        if (error instanceof Deno.errors.NotFound) return false;
-        throw error;
-      }
-    },
-    `${name} to be reached`,
-    { timeoutMs: 60_000 },
-  );
-}
-
-async function openGate(world: World, name: string): Promise<void> {
-  await Deno.remove(join(world.root, name));
-}
-
-async function chmodTree(dir: string, mode: number): Promise<void> {
-  for await (const entry of Deno.readDir(dir)) {
-    if (entry.isDirectory) await chmodTree(join(dir, entry.name), mode);
-  }
-  await Deno.chmod(dir, mode);
-}
-
-/**
- * the stale restore must never be marked current nor start serve's lineage;
- * keepStale keeps it restorable on a file replica, where the other writer's
- * collection would remove it
- */
-async function retakeDuringStaleRestore(
-  world: World,
-  options: { readonly keepStale: boolean },
-): Promise<void> {
-  const serve = await world.machine("serve", { gated: true });
-  await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
-  await serve.send({ kind: "write", commits: 1, close: false });
-  await serve.send({ kind: "upkeep", probeMs: 300 });
-  await waitFor(
-    async () => (await world.lineages()).current !== undefined,
-    "serve's head",
-  );
-  const first = await serve.send({ kind: "fence" }) as number;
-  await closeGate(world, "machine-serve-gate-restore");
-  const other = await world.machine("other");
-  let paused = serve.send({ kind: "pause", ms: STALL_MS });
-  await other.send({ kind: "write", commits: 2, close: true });
-  const stale = (await world.lineages()).current!;
-  let kept: string | undefined;
-  if (options.keepStale) {
-    // Its collection fails, as a best-effort removal may.
-    kept = replicaPathFor(world.replicaRoot, stale);
-    await chmodTree(kept, 0o555);
-  }
-  try {
-    await paused;
-    await waitFor(
-      async () => (await serve.send({ kind: "fence" }) as number) > first,
-      "serve's first retake",
-    );
-    const retaken = await serve.send({ kind: "fence" }) as number;
-    await gateEntered(world, "machine-serve-gate-restore");
-    paused = serve.send({ kind: "pause", ms: STALL_MS });
-    await other.send({ kind: "write", commits: 1, close: true });
-    await paused;
-    await waitFor(
-      async () => (await serve.send({ kind: "fence" }) as number) > retaken,
-      "serve's second retake",
-    );
-    assert(await world.registered(stale), "the stale lineage is kept");
-    assert((await world.lineages()).current! > stale);
-    await openGate(world, "machine-serve-gate-restore");
-    await waitFor(
-      async () => await serve.send({ kind: "tryCommit" }) === null,
-      "serve's commit on the current state",
-      { timeoutMs: 30_000 },
-    );
-    await serve.send({ kind: "stopUpkeep" });
-    await serve.send({ kind: "close" });
-  } finally {
-    if (kept !== undefined) await chmodTree(kept, 0o755);
-  }
-  const c = await world.machine("c");
-  assertEquals((await read(c)).commits, 5);
-}
-
-async function retakeDuringSidecarStart(world: World): Promise<void> {
-  const serve = await world.machine("serve", { gated: true });
-  await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
-  await serve.send({ kind: "write", commits: 1, close: false });
-  await serve.send({ kind: "upkeep", probeMs: 300 });
-  await waitFor(
-    async () => (await world.lineages()).current !== undefined,
-    "serve's head",
-  );
-  const first = await serve.send({ kind: "fence" }) as number;
-  await closeGate(world, "machine-serve-gate-sidecar");
-  for (const pid of await serve.send({ kind: "pids" }) as number[]) {
-    hostLitestreamProcesses.signalGroup(pid, "SIGKILL");
-  }
-  await gateEntered(world, "machine-serve-gate-sidecar");
-  const other = await world.machine("other");
-  const paused = serve.send({ kind: "pause", ms: STALL_MS });
-  await other.send({ kind: "write", commits: 2, close: true });
-  await paused;
-  await waitFor(
-    async () => (await serve.send({ kind: "fence" }) as number) > first,
-    "serve's retake",
-  );
-  await openGate(world, "machine-serve-gate-sidecar");
-  await waitFor(
-    async () => await serve.send({ kind: "tryCommit" }) === null,
-    "serve's commit once the replacement settled",
-    { timeoutMs: 30_000 },
-  );
-  await serve.send({ kind: "stopUpkeep" });
-  await serve.send({ kind: "close" });
-  const c = await world.machine("c");
-  assertEquals((await read(c)).commits, 4);
-}
-
-Deno.test({
-  name:
-    "v3 restore: a retake while serve's replacement restores a stale lineage keeps every acknowledged commit (swamp-club#3565)",
-  ignore,
-  async fn() {
-    await withMachines((world) =>
-      retakeDuringStaleRestore(world, { keepStale: true })
-    );
-  },
-});
-
-Deno.test({
-  name:
-    "v3 restore: a retake while serve's replacement starts its sidecar leaves serve writing (swamp-club#3565)",
-  ignore,
-  async fn() {
-    await withMachines(retakeDuringSidecarStart);
-  },
-});
-
-function s3Replica(): string {
-  return JSON.stringify({
-    type: "s3",
-    bucket: Deno.env.get("SWAMP_TEST_LITESTREAM_S3_BUCKET") ?? "swamp-test",
-    path: `ls-${crypto.randomUUID()}`,
-    endpoint: S3_ENDPOINT,
-    region: "us-east-1",
-  });
-}
-
-Deno.test({
-  name:
-    "v3 restore: on an S3 replica, a retake during a stale restore keeps every acknowledged commit (opt-in, swamp-club#3565)",
-  ignore: ignore || S3_ENDPOINT === undefined,
-  async fn() {
-    await withMachines(
-      (world) => retakeDuringStaleRestore(world, { keepStale: false }),
-      { replica: s3Replica },
-    );
-  },
-});
-
-Deno.test({
-  name:
-    "v3 restore: on an S3 replica, a retake during a sidecar start leaves serve writing (opt-in, swamp-club#3565)",
-  ignore: ignore || S3_ENDPOINT === undefined,
-  async fn() {
-    await withMachines(retakeDuringSidecarStart, { replica: s3Replica });
   },
 });
 
@@ -1272,56 +679,6 @@ Deno.test({
         warned[0],
         "Restoring the v3 datastore copy failed",
       );
-    });
-  },
-});
-
-Deno.test({
-  name:
-    "v3 restore: a stale restore that dropped an applied commit still rebuilds serve's read model (swamp-club#3565)",
-  ignore,
-  async fn() {
-    await withMachines(async (world) => {
-      const serve = await world.machine("serve", { gated: true });
-      await serve.send({ kind: "lease", ttlMs: 1_500, retake: true });
-      await serve.send({ kind: "write", commits: 1, close: false });
-      await serve.send({ kind: "confirm" });
-      await serve.send({ kind: "upkeep", probeMs: 60_000 });
-      assertEquals(await serve.send({ kind: "tryCommit" }), null);
-      await serve.send({ kind: "catchUp" });
-      assertEquals((await serve.send({ kind: "files" }) as string[]).length, 2);
-      await closeGate(world, "machine-serve-gate-restore");
-      const other = await world.machine("other");
-      const paused = serve.send({ kind: "pause", ms: STALL_MS });
-      await other.send({ kind: "write", commits: 2, close: true });
-      await paused;
-      await gateEntered(world, "machine-serve-gate-restore");
-      const retaken = await serve.send({ kind: "fence" }) as number;
-      const planted = await plantV3WriterLease(world.datastorePath, {
-        pid: Deno.ppid,
-      });
-      await planted.release();
-      await waitFor(
-        async () => (await serve.send({ kind: "fence" }) as number) > retaken,
-        "serve's second retake",
-      );
-      await openGate(world, "machine-serve-gate-restore");
-      await waitFor(
-        async () => await serve.send({ kind: "tryCommit" }) === null,
-        "serve's commit after the replacement",
-        { timeoutMs: 30_000 },
-      );
-      await waitFor(
-        () => serve.send({ kind: "confirm" }).then(() => true, () => false),
-        "serve's commit confirmed",
-      );
-      await serve.send({ kind: "catchUp" });
-      const files = await serve.send({ kind: "files" }) as string[];
-      await serve.send({ kind: "stopUpkeep" });
-      await serve.send({ kind: "close" });
-      const c = await world.machine("c");
-      assertEquals((await read(c)).commits, 4);
-      assertEquals(files, await c.send({ kind: "files" }));
     });
   },
 });
