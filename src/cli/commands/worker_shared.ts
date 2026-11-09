@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { resolve } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 
@@ -87,4 +88,11 @@ export function parseConcurrency(raw: string): number {
     );
   }
   return parsed;
+}
+
+// Bundles load through toFileUrl, which refuses relative paths; connect creates the dir, so no stat.
+export function resolveWorkerCacheDir(
+  raw: string | undefined,
+): string | undefined {
+  return raw ? resolve(raw) : undefined;
 }
