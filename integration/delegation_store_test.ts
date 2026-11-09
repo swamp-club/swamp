@@ -32,6 +32,7 @@ import {
   DelegationStore,
   DelegationWriteFailed,
 } from "../src/serve/delegation_store.ts";
+import { endLocally } from "../src/serve/delegation_link_service.ts";
 import { withServeRepo } from "./serve_request_harness.ts";
 
 await initializeLogging({});
@@ -169,5 +170,56 @@ Deno.test("DelegationStore: an end whose push fails is kept, never undone", asyn
       DelegationWriteFailed,
     );
     assertEquals((await store.read(consented.id))?.phase, "ended");
+  });
+});
+
+Deno.test("DelegationStore: a record this build can't read is refused and its lock released, so the next change does not block", async () => {
+  await withServeRepo(async (repo) => {
+    let held = 0;
+    const store = new DelegationStore({
+      repoDir: repo.repoDir,
+      repoContext: repo.repoContext,
+      lock: () => {
+        if (held > 0) {
+          return Promise.reject(new Error("lock still held"));
+        }
+        held++;
+        return Promise.resolve({
+          synced: false,
+          push: () => Promise.resolve(),
+          release: () => {
+            held--;
+            return Promise.resolve();
+          },
+        });
+      },
+      directory: { reload: () => Promise.resolve() },
+    });
+    const id = crypto.randomUUID();
+    const original = repo.repoContext.unifiedDataRepo.getContent.bind(
+      repo.repoContext.unifiedDataRepo,
+    );
+    repo.repoContext.unifiedDataRepo.getContent = (
+      type: Parameters<typeof original>[0],
+      modelId: string,
+      dataName: string,
+      version?: number,
+    ) =>
+      modelId === id
+        ? Promise.resolve(
+          new TextEncoder().encode(JSON.stringify({ id, phase: "sideways" })),
+        )
+        : original(type, modelId, dataName, version);
+    try {
+      for (let i = 0; i < 2; i++) {
+        await assertRejects(() =>
+          endLocally(store, id, "operator", Date.now())
+        );
+        assertEquals(held, 0);
+      }
+      assertEquals(await store.readOrNull(id), null);
+    } finally {
+      repo.repoContext.unifiedDataRepo.getContent = original;
+    }
   });
 });

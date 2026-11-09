@@ -82,6 +82,15 @@ export class DelegationStore {
     this.#deps = deps;
   }
 
+  /** null for a record that does not exist or that this build can't read */
+  async readOrNull(id: string): Promise<DelegationRecord | null> {
+    try {
+      return await this.read(id);
+    } catch {
+      return null;
+    }
+  }
+
   /** what the record holds now, read without a lock; null when there is none */
   async read(id: string): Promise<DelegationRecord | null> {
     const content = await this.#deps.repoContext.unifiedDataRepo.getContent(
@@ -124,12 +133,16 @@ export class DelegationStore {
   ): Promise<T> {
     const deps = this.#deps;
     const locks = await deps.lock(DELEGATION_MODEL_TYPE.normalized, id);
-    if (locks.synced) deps.repoContext.catalogStore.invalidate();
-    const current = await this.read(id);
-    const result = await change(current).catch(async (error) => {
+    let result: TransitionResult<T>;
+    let current: DelegationRecord | null;
+    try {
+      if (locks.synced) deps.repoContext.catalogStore.invalidate();
+      current = await this.read(id);
+      result = await change(current);
+    } catch (error) {
       await locks.release();
       throw error;
-    });
+    }
     if (result.write === null) {
       await locks.release();
       return result.value;
@@ -173,7 +186,7 @@ export class DelegationStore {
       try {
         // a writer that came after the failed one wins: restore only what
         // the failed write itself left
-        const now = await this.read(id);
+        const now = await this.readOrNull(id);
         if (now?.updatedAt !== written.updatedAt) {
           await locks.release();
           return;

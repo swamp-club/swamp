@@ -313,7 +313,14 @@ async function start(
       "The requested ceiling must be within the integration's ceiling",
     );
   }
-  const team = await deps.capability();
+  const team = await deps.capability().catch(() => null);
+  if (team === null) {
+    return httpFailure(
+      503,
+      "team_unknown",
+      "This serve could not read which nodes are live; retry shortly",
+    );
+  }
   if (!team.ok) {
     return httpFailure(
       409,
@@ -450,7 +457,7 @@ async function redeem(
   const guarded = await limitFailedAttempts(
     `delegation-redeem:${integrationId}|address:${sourceIp}`,
     async () => {
-      const record = await deps.store.read(pendingId);
+      const record = await deps.store.readOrNull(pendingId);
       const ok = record !== null && record.integrationId === integrationId &&
         await delegatedSecretMatches(redeemSecret, record.redeemHash);
       return { ok, record };
@@ -484,7 +491,14 @@ async function redeem(
     case "consented":
       break;
   }
-  const team = await deps.capability();
+  const team = await deps.capability().catch(() => null);
+  if (team === null) {
+    return httpFailure(
+      503,
+      "team_unknown",
+      "This serve could not read which nodes are live; retry shortly",
+    );
+  }
   if (!team.ok) {
     return httpFailure(
       409,
@@ -534,7 +548,7 @@ async function refresh(
   const guarded = await limitFailedAttempts(
     `delegation-refresh:${integrationId}|address:${sourceIp}`,
     async () => {
-      const known = await deps.store.read(id);
+      const known = await deps.store.readOrNull(id);
       return { ok: known !== null && known.integrationId === integrationId };
     },
   );
@@ -624,7 +638,7 @@ async function end(
       "token (an access or refresh token) is required",
     );
   }
-  const record = await deps.store.read(secret.delegationId);
+  const record = await deps.store.readOrNull(secret.delegationId);
   const hash = secret.kind === "access"
     ? [record?.tokens?.accessHash, record?.tokens?.previousAccessHash]
     : [record?.tokens?.refreshHash];

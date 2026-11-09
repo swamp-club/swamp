@@ -1174,14 +1174,14 @@ export async function handleAccessDelegationEnd(
   }
   try {
     const nowMs = Date.now();
-    const record = await endLocally(
+    const outcome = await endLocally(
       store,
       payload.id,
       OPERATOR_END_CAUSE,
       nowMs,
       ctx.delegationAudit,
     );
-    if (record === null) {
+    if (outcome === null) {
       sendError(
         socket,
         requestId,
@@ -1190,10 +1190,9 @@ export async function handleAccessDelegationEnd(
       );
       return;
     }
-    // endLocally stamps a record it changes with now, and returns any other as it was
     const data: DelegationEndData = {
-      delegation: delegationView(record),
-      alreadyEnded: record.updatedAt !== new Date(nowMs).toISOString(),
+      delegation: delegationView(outcome.record),
+      alreadyEnded: !outcome.changed,
     };
     send(socket, {
       type: "access.delegation.end",

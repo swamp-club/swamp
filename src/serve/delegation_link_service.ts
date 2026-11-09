@@ -436,22 +436,30 @@ export async function endLocally(
   cause: string,
   now: number,
   audit?: (event: DelegationAuditEvent) => void,
-): Promise<DelegationRecord | null> {
-  const ended = await store.transition(id, (current) => {
+): Promise<{ record: DelegationRecord; changed: boolean } | null> {
+  const ended = await store.transition<
+    { record: DelegationRecord; changed: boolean } | null
+  >(id, (current) => {
     if (current === null) {
       return Promise.resolve({ write: null, value: null });
     }
     if (current.phase === "ended" || current.phase === "refused") {
-      return Promise.resolve({ write: null, value: current });
+      return Promise.resolve({
+        write: null,
+        value: { record: current, changed: false },
+      });
     }
     const next = current.phase === "awaiting_consent" ||
         current.phase === "reporting"
       ? refuseDelegation(current, cause, now)
       : endDelegation(current, cause, now);
-    return Promise.resolve({ write: next, value: next });
+    return Promise.resolve({
+      write: next,
+      value: { record: next, changed: true },
+    });
   });
-  if (ended !== null) {
-    audit?.({ action: "ended", record: ended, outcome: cause });
+  if (ended?.changed) {
+    audit?.({ action: "ended", record: ended.record, outcome: cause });
   }
   return ended;
 }
