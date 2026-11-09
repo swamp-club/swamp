@@ -566,10 +566,6 @@ export interface WebhookEndpointInfo {
   readonly source: WebhookRouteSource;
 }
 
-/**
- * up to maxConcurrentRuns queued runs execute at once; runs of the same route
- * or workflow may overlap since per-model locks guard shared state
- */
 // Every route source reaches the table through here, including reload, which
 // reads serve.yaml without validating it.
 function assertRoutesAllowed(endpoints: readonly WebhookEndpoint[]): void {
@@ -581,6 +577,10 @@ function assertRoutesAllowed(endpoints: readonly WebhookEndpoint[]): void {
   }
 }
 
+/**
+ * up to maxConcurrentRuns queued runs execute at once; runs of the same route
+ * or workflow may overlap since per-model locks guard shared state
+ */
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private readonly maxConcurrentRuns: number;

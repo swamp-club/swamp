@@ -40,10 +40,13 @@ const RULE_FILE = "src/serve/webhook_route.ts";
 const PATH_LITERAL = /(?:[!=]==\s*|startsWith\(\s*)"(\/[^"]*)"/g;
 const ROUTE_CONSTANT =
   /const\s+([A-Z][A-Z0-9_]*(?:PATH|PREFIX|ROUTE))\s*(?::\s*\w+\s*)?=\s*"(\/[^"]*)"/g;
+// A regex anchored at the path start: its first segment, or a group of them.
+const ROUTE_PATTERN = /\/\^\\\/(?:\(([\w-]+(?:\|[\w-]+)*)\)|([\w-]+))/g;
 
-// Floors at the current counts, so a scan that stops matching fails loudly.
+// Floors, so a scan that stops matching fails loudly.
 const MIN_PATH_LITERALS = 25;
 const MIN_ROUTE_CONSTANTS = 5;
+const MIN_ROUTE_PATTERNS = 4;
 
 interface ServePath {
   readonly path: string;
@@ -53,6 +56,7 @@ interface ServePath {
 async function servePaths(): Promise<{
   literals: ServePath[];
   constants: ServePath[];
+  patterns: ServePath[];
 }> {
   const files = [SERVE_COMMAND];
   for await (const file of productionSourceFiles(SERVE_DIR)) {
@@ -64,6 +68,7 @@ async function servePaths(): Promise<{
   }
   const literals: ServePath[] = [];
   const constants: ServePath[] = [];
+  const patterns: ServePath[] = [];
   for (const file of files) {
     const source = await Deno.readTextFile(file);
     const where = repoRelative(file);
@@ -73,12 +78,17 @@ async function servePaths(): Promise<{
     for (const m of source.matchAll(ROUTE_CONSTANT)) {
       constants.push({ path: m[2], where: `${where} ${m[1]}` });
     }
+    for (const m of source.matchAll(ROUTE_PATTERN)) {
+      for (const segment of (m[1] ?? m[2]).split("|")) {
+        patterns.push({ path: `/${segment}`, where: `${where} ${m[0]}` });
+      }
+    }
   }
-  return { literals, constants };
+  return { literals, constants, patterns };
 }
 
 Deno.test("serve webhook route rules: every path serve answers is under a reserved root and outside the webhook prefix", async () => {
-  const { literals, constants } = await servePaths();
+  const { literals, constants, patterns } = await servePaths();
 
   assert(
     literals.length >= MIN_PATH_LITERALS,
@@ -93,7 +103,14 @@ Deno.test("serve webhook route rules: every path serve answers is under a reserv
       `*ROUTE string literals only`,
   );
 
-  for (const { path, where } of [...literals, ...constants]) {
+  assert(
+    patterns.length >= MIN_ROUTE_PATTERNS,
+    `found ${patterns.length} anchored route patterns in serve sources, ` +
+      `expected at least ${MIN_ROUTE_PATTERNS}; the scan sees regex ` +
+      `literals starting with ^\\/ only`,
+  );
+
+  for (const { path, where } of [...literals, ...constants, ...patterns]) {
     assert(
       isReservedServePath(path),
       `${where} answers ${path}, which is outside serve's reserved roots, so ` +

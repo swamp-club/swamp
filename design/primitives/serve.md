@@ -1438,9 +1438,10 @@ routes outside `/hooks/` such as `/deploy`. The check runs at boot, in
 reload keeps the previous routes. Serve adds HTTP routes only under its reserved
 roots and never under `/hooks/`, which is reserved for webhooks
 (`integration/serve_webhook_route_rules_test.ts`). Routes created by anyone
-other than the operator (stored routes, swamp-club#3434) must live under
-`/hooks/` in canonical form: no empty, `.` or `..` segments, and not the bare
-prefix.
+other than the operator (stored routes, planned in swamp-club#3434) are to be
+held to a stricter rule when that design lands: under `/hooks/` in canonical
+form, with no empty, `.` or `..` segments, and not the bare prefix. Nothing
+creates such routes yet.
 
 An extension handler may also `transform` the payload body and `respond` with a
 custom HTTP response, optionally without starting a run. Core keeps every
