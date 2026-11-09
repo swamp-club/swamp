@@ -578,3 +578,33 @@ Deno.test("HealthCollector: reports a file route's source and file name", async 
     [["file", "github.yaml"], ["config", undefined]],
   );
 });
+
+Deno.test("HealthCollector: reports route file status from its provider", async () => {
+  const webhookRouteFiles = {
+    directory: "/repo/webhook-routes",
+    poll: {
+      intervalMs: 30_000,
+      lastCheckedAt: "2026-11-09T00:00:30.000Z",
+      lastAppliedAt: "2026-11-09T00:00:30.000Z",
+      lastError: null,
+    },
+    lastApplied: { at: "2026-11-09T00:00:30.000Z", trigger: "poll" },
+    refused: [],
+    kept: [{
+      file: "a.yaml",
+      route: "/hooks/a",
+      reason: "last_good",
+      message: "Refused webhook route file a.yaml: bad YAML",
+    }],
+    shadowed: [],
+  };
+  const snapshot = await new HealthCollector(makeDeps({
+    webhookRouteFilesProvider: () => webhookRouteFiles,
+  })).collect();
+  assertEquals(snapshot.webhookRouteFiles, webhookRouteFiles);
+});
+
+Deno.test("HealthCollector: leaves route file status out without a provider", async () => {
+  const snapshot = await new HealthCollector(makeDeps()).collect();
+  assertEquals("webhookRouteFiles" in snapshot, false);
+});

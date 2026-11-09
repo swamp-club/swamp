@@ -19,7 +19,10 @@
 
 import type { WebhookHandler } from "../domain/webhooks/webhook_handler.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
-import { evaluateWebhookTypeTrust } from "../domain/webhooks/webhook_type_trust.ts";
+import {
+  evaluateWebhookTypeTrust,
+  untrustedWebhookSchemeMessage,
+} from "../domain/webhooks/webhook_type_trust.ts";
 
 const TIMESTAMP_TOLERANCE_SECONDS = 300;
 
@@ -251,6 +254,27 @@ export type WebhookHandlerResolution =
   | { readonly kind: "ready"; readonly handler: WebhookHandler }
   | { readonly kind: "missing" }
   | { readonly kind: "untrusted"; readonly collective: string };
+
+/** why a kept route's extension scheme could no longer serve, judged as delivery judges it */
+export function webhookSchemeKeepRefusal(
+  route: string,
+  config: VerifierConfig,
+  trustedCollectives: readonly string[],
+): string | undefined {
+  if (!("config" in config)) return undefined;
+  const info = webhookTypeRegistry.get(config.scheme);
+  if (!info) {
+    return `its scheme '${config.scheme}' is no longer installed`;
+  }
+  const trust = evaluateWebhookTypeTrust(
+    config.scheme,
+    info.origin,
+    trustedCollectives,
+  );
+  return trust.trusted
+    ? undefined
+    : untrustedWebhookSchemeMessage(route, config.scheme, trust.collective);
+}
 
 /**
  * extension handlers are looked up on every call so a SIGHUP reload takes

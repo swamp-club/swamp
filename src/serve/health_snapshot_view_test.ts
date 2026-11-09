@@ -507,3 +507,24 @@ Deno.test("healthSnapshotFor: retention is deployment detail only an admin sees"
   const view = await healthSnapshotFor(full, reader(false), RESOLVER);
   assertEquals("retention" in view, false);
 });
+
+Deno.test("healthSnapshotFor: route file status is deployment detail only an admin sees", async () => {
+  const webhookRouteFiles = {
+    directory: "/repo/webhook-routes",
+    poll: null,
+    lastApplied: null,
+    refused: [{
+      file: "a.yaml",
+      message: "Refused webhook route file a.yaml: vault 'ops' key 'gh'",
+    }],
+    kept: [],
+    shadowed: [],
+  };
+  const full = { ...snapshot(), webhookRouteFiles };
+  assertEquals(
+    (await healthSnapshotFor(full, reader(true), RESOLVER)).webhookRouteFiles,
+    webhookRouteFiles,
+  );
+  const view = await healthSnapshotFor(full, reader(false), RESOLVER);
+  assertEquals("webhookRouteFiles" in view, false);
+});

@@ -38,6 +38,7 @@ import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.t
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import {
   buildWebhookPayload,
+  diffWebhookEndpoints,
   isSensitiveHeader,
   parseWebhookFlag,
   resolveExtensionWebhookEndpoints,
@@ -49,7 +50,10 @@ import {
   WebhookService,
 } from "./webhook.ts";
 import { SecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
-import { hmacSha256Hex } from "./webhook_verifiers.ts";
+import {
+  hmacSha256Hex,
+  webhookSchemeKeepRefusal,
+} from "./webhook_verifiers.ts";
 import type { VaultSecretResolver } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -2559,4 +2563,57 @@ Deno.test("WebhookService.updateEndpoints: a route whose source alone changed co
   assertEquals(service.updateEndpoints([base]), 1);
   assertEquals(service.updateEndpoints([{ ...base, source: "config" }]), 0);
   await service.stop();
+});
+
+Deno.test("diffWebhookEndpoints: reports added, changed and removed routes without secrets", async () => {
+  const kept = await parseWebhookFlag("/hooks/same:deploy:s1");
+  const old = await parseWebhookFlag("/hooks/edit:deploy:s1");
+  const gone = await parseWebhookFlag("/hooks/gone:deploy:s1");
+  const edited = { ...old, secret: "rotated" };
+  const added = {
+    ...(await parseWebhookFlag("/hooks/new:deploy:s2")),
+    source: "file" as const,
+    file: "new.yaml",
+  };
+
+  const diff = diffWebhookEndpoints([kept, old, gone], [kept, edited, added]);
+
+  assertEquals(diff.added, [{
+    route: "/hooks/new",
+    workflow: "deploy",
+    scheme: "github",
+    source: "file",
+    file: "new.yaml",
+  }]);
+  assertEquals(diff.changed.map((c) => c.route), ["/hooks/edit"]);
+  assertEquals(diff.removed.map((c) => c.route), ["/hooks/gone"]);
+  assertEquals(JSON.stringify(diff).includes("rotated"), false);
+});
+
+Deno.test("webhookSchemeKeepRefusal: judges a kept route as delivery would", async () => {
+  const builtin = await parseWebhookFlag("/hooks/gh:deploy:secret");
+  assertEquals(
+    webhookSchemeKeepRefusal(builtin.route, builtin.verifier, []),
+    undefined,
+  );
+
+  const type = registerExtension({}, undefined, {
+    kind: "pulled",
+    extensionName: "@test/hooks",
+  });
+  const ext = extensionEndpoint(type, {});
+  assertStringIncludes(
+    webhookSchemeKeepRefusal(ext.route, ext.verifier, ["swamp"]) ?? "",
+    "swamp extension trust add test",
+  );
+  assertEquals(
+    webhookSchemeKeepRefusal(ext.route, ext.verifier, ["swamp", "test"]),
+    undefined,
+  );
+
+  const gone = extensionEndpoint("@test/uninstalled", {});
+  assertEquals(
+    webhookSchemeKeepRefusal(gone.route, gone.verifier, ["test"]),
+    "its scheme '@test/uninstalled' is no longer installed",
+  );
 });

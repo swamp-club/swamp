@@ -337,3 +337,39 @@ Deno.test("webhook route files: a YAML alias bomb is refused alone, and the relo
     }
   });
 });
+
+Deno.test("webhook route files: a reload keeps a broken file's last good route serving", async () => {
+  await withTempDir(async (dir) => {
+    const routes = join(dir, "webhook-routes");
+    await Deno.mkdir(routes);
+    const { service, updater } = harness(dir);
+    try {
+      await Deno.writeTextFile(
+        join(routes, "push.yaml"),
+        routeFile("/hooks/push"),
+      );
+      await updater([]);
+
+      await Deno.writeTextFile(join(routes, "push.yaml"), "route: [unclosed");
+      const broken = await updater([]);
+
+      assertEquals(broken.changed, 0);
+      assertEquals(broken.errors.length, 1);
+      assertStringIncludes(
+        broken.errors[0],
+        "its last good route /hooks/push keeps serving until the file loads",
+      );
+      assertEquals(await isServed(service, "/hooks/push"), true);
+
+      await Deno.writeTextFile(
+        join(routes, "push.yaml"),
+        routeFile("/hooks/push", "missing"),
+      );
+      const refused = await updater([]);
+      assertEquals(refused.changed, 0);
+      assertEquals(await isServed(service, "/hooks/push"), true);
+    } finally {
+      await service.stop();
+    }
+  });
+});

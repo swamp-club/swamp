@@ -3559,6 +3559,41 @@ Deno.test("mergeServeOptions: an empty webhook-routes-dir reads as unset", () =>
   );
 });
 
+Deno.test("mergeServeOptions: webhook-routes-poll is unset by default", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.webhookRoutesPoll, undefined);
+});
+
+Deno.test("mergeServeOptions: webhook-routes-poll resolves CLI, then env, then config", () => {
+  const config: ServeConfigFile = { "webhook-routes-poll": "1m" };
+  const env = (name: string) =>
+    name === "SWAMP_WEBHOOK_ROUTES_POLL" ? "45s" : undefined;
+
+  assertEquals(
+    mergeServeOptions(
+      config,
+      { webhookRoutesPoll: "10s" },
+      new Set(["webhook-routes-poll"]),
+      env,
+    ).webhookRoutesPoll,
+    "10s",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), env).webhookRoutesPoll,
+    "45s",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), () => undefined)
+      .webhookRoutesPoll,
+    "1m",
+  );
+});
+
 Deno.test("mergeServeOptions: webhook-routes-dir resolves CLI, then env, then config", () => {
   const config: ServeConfigFile = { "webhook-routes-dir": "from-config" };
   const env = (name: string) =>

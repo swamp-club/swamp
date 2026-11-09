@@ -28,6 +28,8 @@ import {
   mergeWebhookRoutes,
   parseRouteFiles,
   shadowedRouteFileMessage,
+  snapshotWebhookRoutesDir,
+  WebhookRoutesDirPlacementError,
   webhookRouteSourceLabel,
 } from "./webhook_route_files.ts";
 
@@ -323,6 +325,7 @@ Deno.test("parseRouteFiles: an outage keeps an unchanged file's live endpoint", 
   assertEquals(result.kept, [{
     file: "a.yaml",
     route: "/hooks/a",
+    reason: "outage",
     message:
       "Kept the live endpoint for webhook route file a.yaml (route /hooks/a), unchanged since it last loaded: backend timed out",
   }]);
@@ -659,5 +662,72 @@ Deno.test("loadWebhookRouteFiles: a large route file without aliases is not mist
 
     assertEquals(load.refused, []);
     assertEquals(load.files.map((f) => f.file), ["big-ok.yaml"]);
+  });
+});
+
+Deno.test("snapshotWebhookRoutesDir: a missing directory has a stable snapshot", async () => {
+  await withTempDir(async (dir) => {
+    const absent = join(dir, "absent");
+    assertEquals(
+      await snapshotWebhookRoutesDir(absent),
+      await snapshotWebhookRoutesDir(absent),
+    );
+  });
+});
+
+Deno.test("snapshotWebhookRoutesDir: changes when a route file is added, edited or removed", async () => {
+  await withTempDir(async (dir) => {
+    const empty = await snapshotWebhookRoutesDir(dir);
+    await Deno.writeTextFile(join(dir, "a.yaml"), VALID);
+    const added = await snapshotWebhookRoutesDir(dir);
+    assertEquals(added === empty, false);
+    assertEquals(await snapshotWebhookRoutesDir(dir), added);
+
+    await Deno.writeTextFile(
+      join(dir, "a.yaml"),
+      VALID.replace("push", "pull"),
+    );
+    const edited = await snapshotWebhookRoutesDir(dir);
+    assertEquals(edited === added, false);
+
+    await Deno.remove(join(dir, "a.yaml"));
+    assertEquals(await snapshotWebhookRoutesDir(dir), empty);
+  });
+});
+
+Deno.test("snapshotWebhookRoutesDir: ignores files the loader ignores", async () => {
+  await withTempDir(async (dir) => {
+    const empty = await snapshotWebhookRoutesDir(dir);
+    await Deno.writeTextFile(join(dir, ".hidden.yaml"), VALID);
+    await Deno.writeTextFile(join(dir, "notes.txt"), "x");
+    await Deno.mkdir(join(dir, "sub.yaml"));
+    assertEquals(await snapshotWebhookRoutesDir(dir), empty);
+  });
+});
+
+Deno.test("checkWebhookRoutesDir: a placement refusal has its own error type", async () => {
+  await withTempDir(async (dir) => {
+    const extensions = join(dir, "extensions");
+    await Deno.mkdir(join(extensions, "routes"), { recursive: true });
+    await assertRejects(
+      () => checkWebhookRoutesDir(join(extensions, "routes"), [extensions]),
+      WebhookRoutesDirPlacementError,
+    );
+  });
+});
+
+Deno.test("snapshotWebhookRoutesDir: a symlink leaving the directory counts by its target, unread", async () => {
+  if (Deno.build.os === "windows") return;
+  await withTempDir(async (dir) => {
+    const routes = join(dir, "routes");
+    await Deno.mkdir(routes);
+    const outside = join(dir, "outside.yaml");
+    await Deno.writeTextFile(outside, VALID);
+    await Deno.symlink(outside, join(routes, "a.yaml"), { type: "file" });
+
+    const before = await snapshotWebhookRoutesDir(routes);
+    await Deno.writeTextFile(outside, VALID.replace("push", "pull"));
+    assertEquals(await snapshotWebhookRoutesDir(routes), before);
+    assertStringIncludes(before, "a.yaml:outside:");
   });
 });

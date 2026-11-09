@@ -399,6 +399,21 @@ Deno.test("redactServeOptions: reports the webhook routes directory", () => {
   );
 });
 
+Deno.test("redactServeOptions: reports the webhook routes poll interval", () => {
+  const base = { port: 9090, host: "0.0.0.0", authMode: "none" };
+  assertEquals(
+    redactServeOptions(
+      { ...base, webhookRoutesPoll: "30s" } as unknown as MergedServeOptions,
+    ).webhookRoutesPoll,
+    "30s",
+  );
+  assertEquals(
+    redactServeOptions(base as unknown as MergedServeOptions)
+      .webhookRoutesPoll,
+    null,
+  );
+});
+
 Deno.test("redactServeOptions: omits TLS key file", () => {
   const opts = {
     port: 443,

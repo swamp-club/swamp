@@ -133,7 +133,7 @@ import {
 import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
 import {
   buildWebhookRouteTable,
-  createWebhookUpdater,
+  createWebhookRouteApplier,
   type WebhookRouteTableDeps,
 } from "../../serve/webhook_reload.ts";
 import {
@@ -141,8 +141,13 @@ import {
   checkWebhookRoutesDir,
   loadWebhookRouteFiles,
   shadowedRouteFileMessage,
+  snapshotWebhookRoutesDir,
+  WebhookRoutesDirPlacementError,
   webhookRouteSourceLabel,
 } from "../../serve/webhook_route_files.ts";
+import { emitWebhookRoutesApplied } from "../../serve/webhook_route_audit.ts";
+import { WebhookRoutesPoller } from "../../serve/webhook_routes_poller.ts";
+import { webhookSchemeKeepRefusal } from "../../serve/webhook_verifiers.ts";
 import { resolveWebhooksDir } from "../resolve_webhooks_dir.ts";
 import {
   cachedUnlessRejected,
@@ -1698,6 +1703,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.webhookRoutesDir) {
     args.push("--webhook-routes-dir", options.webhookRoutesDir as string);
   }
+  if (options.webhookRoutesPoll) {
+    args.push("--webhook-routes-poll", options.webhookRoutesPoll as string);
+  }
   if (options.grantReload && options.grantReload !== "manual") {
     args.push("--grant-reload", options.grantReload as string);
   }
@@ -1983,6 +1991,18 @@ export function parseDatastorePollInterval(
   return parseTimerDuration(raw, "--datastore-poll-interval");
 }
 
+export function parseWebhookRoutesPoll(
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined || raw.trim().toLowerCase() === "off") return undefined;
+  if (/^\d+ms$/i.test(raw.trim())) {
+    throw new UserError(
+      `--webhook-routes-poll must be off or whole seconds or larger units (minimum 1s, e.g. 10s, 30s, 1m); got ${raw}`,
+    );
+  }
+  return parseTimerDuration(raw, "--webhook-routes-poll");
+}
+
 export function parseContinuationSweepInterval(
   raw: string | undefined,
 ): number {
@@ -2088,6 +2108,7 @@ export interface ServeStartupSettings {
   shutdownDrainTimeoutMs: number;
   hydrationTimeoutMs: number;
   datastorePollIntervalMs?: number;
+  webhookRoutesPollMs?: number;
   continuationSweepIntervalMs: number;
   maxSignalWaitTimeoutSeconds?: number;
   tokenGcSettings: TokenGcSettings;
@@ -2164,6 +2185,8 @@ export function resolveServeStartupSettings(
   const datastorePollIntervalMs = parseDatastorePollInterval(
     merged.datastorePollInterval,
   );
+
+  const webhookRoutesPollMs = parseWebhookRoutesPoll(merged.webhookRoutesPoll);
 
   const continuationSweepIntervalMs = parseContinuationSweepInterval(
     merged.continuationSweepInterval,
@@ -2257,6 +2280,7 @@ export function resolveServeStartupSettings(
     shutdownDrainTimeoutMs,
     hydrationTimeoutMs,
     datastorePollIntervalMs,
+    ...(webhookRoutesPollMs !== undefined ? { webhookRoutesPollMs } : {}),
     continuationSweepIntervalMs,
     maxSignalWaitTimeoutSeconds,
     tokenGcSettings,
@@ -2316,6 +2340,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--webhook-routes-dir <path:string>",
     "Directory of webhook route files, one route per YAML file, loaded at startup and on 'swamp serve reload' (default: webhook-routes; a relative path resolves against the repository; env: SWAMP_WEBHOOK_ROUTES_DIR)",
+  )
+  .option(
+    "--webhook-routes-poll <duration:string>",
+    "Poll the webhook routes directory at this interval and apply changed route files without 'swamp serve reload'; a change goes live once two polls agree, one to two intervals after it lands (default: off; minimum: 1s; env: SWAMP_WEBHOOK_ROUTES_POLL)",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -3199,6 +3227,10 @@ export const serveCommand = new Command()
     "Directory of webhook route files, one route per YAML file, loaded at startup and on 'swamp serve reload' (default: webhook-routes; a relative path resolves against the repository; env: SWAMP_WEBHOOK_ROUTES_DIR)",
   )
   .option(
+    "--webhook-routes-poll <duration:string>",
+    "Poll the webhook routes directory at this interval and apply changed route files without 'swamp serve reload'; a change goes live once two polls agree, one to two intervals after it lands (default: off; minimum: 1s; env: SWAMP_WEBHOOK_ROUTES_POLL)",
+  )
+  .option(
     "--grant-reload <mode:string>",
     "Policy snapshot reload mode: manual (default) or auto",
     { default: "manual" },
@@ -3546,6 +3578,7 @@ export const serveCommand = new Command()
       shutdownDrainTimeoutMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
+      webhookRoutesPollMs,
       continuationSweepIntervalMs,
       maxSignalWaitTimeoutSeconds,
       tokenGcSettings,
@@ -7101,6 +7134,12 @@ export const serveCommand = new Command()
         );
         return await loadWebhookRouteFiles(webhookRoutesDir);
       },
+      keepRefusal: (endpoint) =>
+        webhookSchemeKeepRefusal(
+          endpoint.route,
+          endpoint.verifier,
+          trustedCollectives,
+        ),
     };
     const initialWebhookRoutes = await buildWebhookRouteTable(
       webhookRouteTableDeps,
@@ -7245,11 +7284,58 @@ export const serveCommand = new Command()
       }
     }
 
-    const webhookUpdater = createWebhookUpdater({
+    const webhookRouteApplier = createWebhookRouteApplier({
       ...webhookRouteTableDeps,
       service: webhookService,
+      initialTable: initialWebhookRoutes,
+      onApplied: (record) =>
+        emitWebhookRoutesApplied({
+          auditEmitter: connectionCtx.auditEmitter,
+          instanceId: connectionCtx.instanceId,
+        }, record),
     });
+    const webhookUpdater = webhookRouteApplier.update;
     connectionCtx.webhookUpdater = webhookUpdater;
+
+    // every node polls: a follower forwards only the routes in its own table
+    let webhookRoutesPoller: WebhookRoutesPoller | null = null;
+    if (webhookRoutesPollMs !== undefined) {
+      webhookRoutesPoller = new WebhookRoutesPoller({
+        intervalMs: webhookRoutesPollMs,
+        // the snapshot never reads a directory the loader refuses to read
+        snapshot: async () => {
+          try {
+            await checkWebhookRoutesDir(
+              webhookRoutesDir,
+              webhookRouteExtensionDirs(resolvedRepoDir, repoMarker),
+            );
+          } catch (error) {
+            if (error instanceof WebhookRoutesDirPlacementError) {
+              return "refused-placement";
+            }
+            throw error;
+          }
+          return await snapshotWebhookRoutesDir(webhookRoutesDir);
+        },
+        apply: () => webhookRouteApplier.reapplyRouteFiles({ trigger: "poll" }),
+      });
+      webhookRoutesPoller.start();
+      if (isJson) {
+        console.log(JSON.stringify({
+          kind: "webhook_routes_poll_started",
+          directory: webhookRoutesDir,
+          intervalMs: webhookRoutesPollMs,
+        }));
+      } else {
+        logger.info(
+          "Polling webhook routes directory {directory} every {interval}s",
+          {
+            directory: webhookRoutesDir,
+            interval: webhookRoutesPollMs / 1000,
+          },
+        );
+      }
+    }
     connectionCtx.trustedCollectivesUpdater = trustedCollectivesUpdater;
     connectionCtx.webhookAdmissionSnapshots = () =>
       webhookService.admissionSnapshots();
@@ -7310,6 +7396,11 @@ export const serveCommand = new Command()
       scheduleProvider: scheduledExecution,
       scheduleEnabled: enableSchedule,
       webhookProvider: webhookService,
+      webhookRouteFilesProvider: () => ({
+        directory: webhookRoutesDir,
+        poll: webhookRoutesPoller?.status() ?? null,
+        ...webhookRouteApplier.status(),
+      }),
       remoteOnly: merged.remoteOnly,
       // read at most once a minute: the watermarks may live on a remote control
       // plane
@@ -8541,6 +8632,7 @@ export const serveCommand = new Command()
             workflowReloader: connectionCtx.workflowReloader,
             extensionDiscoverer: sighupDiscoverer,
             webhookUpdater,
+            webhookContext: { trigger: "signal" },
             trustedCollectivesUpdater,
             configPath: serveConfigPath,
           };
@@ -8788,6 +8880,10 @@ export const serveCommand = new Command()
       if (configPoller) {
         const poller = configPoller;
         await stages.run("config poller", () => poller.stop());
+      }
+      if (webhookRoutesPoller) {
+        const poller = webhookRoutesPoller;
+        await stages.run("webhook routes poller", () => poller.stop());
       }
       await stages.run(
         "policy snapshot loader",

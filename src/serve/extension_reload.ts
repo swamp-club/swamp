@@ -24,7 +24,7 @@ import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
-import type { WebhookUpdater } from "./webhook_reload.ts";
+import type { WebhookApplyContext, WebhookUpdater } from "./webhook_reload.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { resolveMountedSourceDirs } from "../infrastructure/persistence/swamp_sources_repository.ts";
@@ -781,6 +781,8 @@ export interface ServeReloadOptions {
   workflowReloader?: () => Promise<number>;
   extensionDiscoverer?: () => Promise<number>;
   webhookUpdater?: WebhookUpdater;
+  /** what started this reload, for the webhook route audit */
+  webhookContext?: WebhookApplyContext;
   /** receives the refreshed trust list before the webhook routes are parsed */
   trustedCollectivesUpdater?: (collectives: readonly string[]) => void;
   configPath?: string;
@@ -968,7 +970,10 @@ async function runServeReload(
           config?.webhooks,
           options?.configPath ?? join(repoDir, SERVE_CONFIG_PATH),
         );
-        const webhookResult = await options.webhookUpdater(entries);
+        const webhookResult = await options.webhookUpdater(
+          entries,
+          options.webhookContext,
+        );
         webhooksReloaded = webhookResult.changed;
         for (const warning of webhookResult.warnings) warnings.push(warning);
         for (const error of webhookResult.errors) errors.push(error);
