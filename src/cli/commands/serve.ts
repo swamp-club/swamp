@@ -2970,6 +2970,7 @@ const checkConfigCommand = new Command()
         refusal: unnamedType.message,
         restrictionWarnings,
         ...grantReport,
+        ...webhookReport,
       }, ctx.outputMode);
       Deno.exitCode = 1;
       return;
@@ -3011,6 +3012,7 @@ const checkConfigCommand = new Command()
         wouldStart: starts,
         restrictionWarnings,
         ...grantReport,
+        ...webhookReport,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
       if (!starts || !routeFilesLoad) Deno.exitCode = 1;
@@ -3101,6 +3103,7 @@ const checkConfigCommand = new Command()
         : {}),
       restrictionWarnings,
       ...grantReport,
+      ...webhookReport,
       ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
     }, ctx.outputMode);
 
