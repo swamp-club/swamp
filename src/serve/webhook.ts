@@ -42,7 +42,6 @@ import {
   type WorkflowRunView,
 } from "../libswamp/workflows/workflow_run_view.ts";
 import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
-import type { WebhookRouteSource } from "./webhook_reload.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import {
   isExtensionWebhookScheme,
@@ -436,6 +435,9 @@ export type WebhookEvent =
 
 export type WebhookEventHandler = (event: WebhookEvent) => void;
 
+/** Where a serve's webhook routes come from; flags replace the file list. */
+export type WebhookRouteSource = "config" | "flag";
+
 export interface WebhookServiceDeps {
   /** where every route came from; defaults to the serve config */
   routeSource?: WebhookRouteSource;
@@ -548,7 +550,7 @@ export type WebhookRunAuthorizer = (
 
 const MAX_WEBHOOK_BODY_BYTES = 10 * 1024 * 1024;
 const MAX_QUEUE_DEPTH = 100;
-/** Names the run a queued delivery will start, on every queued response. */
+/** Names the run on every response that queues one. */
 export const RUN_ID_HEADER = "X-Swamp-Run-Id";
 /**
  * Retry-After for deliveries rejected while serve shuts down. Short, so the

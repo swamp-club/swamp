@@ -2602,9 +2602,12 @@ export async function handleServeReload(
         result.webhooksReloaded > 0
       ) {
         logger.info(
-          "Reloaded {count} webhook route(s) from serve.yaml (requested by {who})",
+          "Applied {count} webhook route change(s) from serve.yaml (requested by {who})",
           { count: result.webhooksReloaded, who },
         );
+      }
+      for (const warning of result.warnings ?? []) {
+        logger.warn`${warning} (requested by ${who})`;
       }
     }
 

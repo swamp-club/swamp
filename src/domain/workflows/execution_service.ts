@@ -4246,10 +4246,7 @@ export class WorkflowExecutionService {
     }
   }
 
-  /**
-   * The caller's id when it is a UUID no run of this workflow already has;
-   * otherwise undefined, so the run gets a fresh one.
-   */
+  // an unusable id falls back to a fresh one rather than failing the run
   private async assignableRunId(
     workflowId: WorkflowId,
     requested: string | undefined,
@@ -4260,10 +4257,18 @@ export class WorkflowExecutionService {
       logger.warn`Ignoring assigned run id ${requested}: not a UUID`;
       return undefined;
     }
-    const existing = await this.runRepo.findById(
-      workflowId,
-      createWorkflowRunId(requested),
-    );
+    let existing: WorkflowRun | null;
+    try {
+      existing = await this.runRepo.findById(
+        workflowId,
+        createWorkflowRunId(requested),
+      );
+    } catch (error) {
+      logger.warn`Could not check run ${requested}; starting under a new id: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      return undefined;
+    }
     if (existing) {
       logger.warn`Run ${requested} already exists; starting under a new id`;
       return undefined;

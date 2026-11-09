@@ -301,6 +301,17 @@ async function sweepStaleRecordsInRoot(
   return result;
 }
 
+/** The routes and workflows a pending webhook delivery may replay to now. */
+export function webhookReplayTargets(
+  service: Pick<import("./webhook.ts").WebhookService, "listEndpoints">,
+): { workflows: Set<string>; routes: Set<string> } {
+  const endpoints = service.listEndpoints();
+  return {
+    workflows: new Set(endpoints.map((e) => e.workflowIdOrName)),
+    routes: new Set(endpoints.map((e) => e.route)),
+  };
+}
+
 export interface ReplayPendingRunsDeps {
   runTracker:
     import("../infrastructure/persistence/run_tracker_store.ts").RunTrackerStore;

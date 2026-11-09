@@ -568,6 +568,7 @@ import {
   sweepStaleRecords,
   sweepTokenConsistency,
   teamModeRunLiveness,
+  webhookReplayTargets,
 } from "../../serve/boot_reconciliation.ts";
 import {
   type AccessDataPoller,
@@ -6850,8 +6851,8 @@ export const serveCommand = new Command()
             break;
           case "webhook_queued":
             logger.info(
-              "Webhook queued workflow {workflow}",
-              { workflow: event.workflowName },
+              "Webhook queued workflow {workflow} (run: {runId})",
+              { workflow: event.workflowName, runId: event.runId },
             );
             break;
           case "webhook_completed": {
@@ -8193,7 +8194,7 @@ export const serveCommand = new Command()
                 result.webhooksReloaded > 0
               ) {
                 logger.info(
-                  "Reloaded {count} webhook route(s) from serve.yaml",
+                  "Applied {count} webhook route change(s) from serve.yaml",
                   { count: result.webhooksReloaded },
                 );
               }
@@ -8549,24 +8550,20 @@ export const serveCommand = new Command()
       );
     }
 
-    const configuredWebhookWorkflows = new Set(
-      webhookEndpoints.map((e) => e.workflowIdOrName),
-    );
-    const configuredWebhookRoutes = new Set(
-      webhookEndpoints.map((e) => e.route),
-    );
     const allWorkflows = await repoContext.workflowRepo.findAll();
     const configuredCronWorkflows = new Set(
       allWorkflows.filter((w) => w.schedule).map((w) => w.name),
     );
     const replayPendingAtLead = async (): Promise<void> => {
+      // read at replay time: a reload may have changed the routes since boot
+      const webhookTargets = webhookReplayTargets(webhookService);
       const replayed = await replayPendingRuns({
         runTracker,
         webhookService,
         scheduledExecution: scheduledExecution ?? undefined,
         controlPlaneStore,
-        configuredWebhookWorkflows,
-        configuredWebhookRoutes,
+        configuredWebhookWorkflows: webhookTargets.workflows,
+        configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
       });
       if (replayed > 0) {

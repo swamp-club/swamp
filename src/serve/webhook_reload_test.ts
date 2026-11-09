@@ -19,12 +19,8 @@
 
 import { assertEquals } from "@std/assert";
 import type { WebhookConfigEntry } from "./serve_config.ts";
-import type { WebhookEndpoint } from "./webhook.ts";
-import {
-  createWebhookUpdater,
-  FLAG_ROUTES_WARNING,
-  type WebhookRouteSource,
-} from "./webhook_reload.ts";
+import type { WebhookEndpoint, WebhookRouteSource } from "./webhook.ts";
+import { createWebhookUpdater, FLAG_ROUTES_WARNING } from "./webhook_reload.ts";
 
 function entry(route: string): WebhookConfigEntry {
   return { route, workflow: "deploy", secret: "s3cret" };

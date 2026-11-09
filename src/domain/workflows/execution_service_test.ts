@@ -25798,13 +25798,14 @@ async function runWithAssignedId(
     runRepo: InMemoryWorkflowRunRepository,
     workflow: Workflow,
   ) => Promise<void>,
+  runRepoOverride?: InMemoryWorkflowRunRepository,
 ): Promise<{ run: WorkflowRun; runRepo: InMemoryWorkflowRunRepository }> {
   let result:
     | { run: WorkflowRun; runRepo: InMemoryWorkflowRunRepository }
     | undefined;
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
-    const runRepo = new InMemoryWorkflowRunRepository();
+    const runRepo = runRepoOverride ?? new InMemoryWorkflowRunRepository();
     const executor: StepExecutor = {
       execute: () => Promise.resolve({ executed: true }),
     };
@@ -25873,5 +25874,27 @@ Deno.test("WorkflowExecutionService.run: an assigned id another run already has 
 Deno.test("WorkflowExecutionService.run: an assigned id that is not a UUID is not used", async () => {
   const { run } = await runWithAssignedId("../../etc/passwd");
   assertNotEquals(run.id as string, "../../etc/passwd");
+  assertEquals(run.status, "succeeded");
+});
+
+Deno.test("WorkflowExecutionService.run: a store error checking an assigned id starts the run under a fresh one", async () => {
+  const assigned = crypto.randomUUID();
+  class FailingLookupRepository extends InMemoryWorkflowRunRepository {
+    override findById(
+      workflowId: WorkflowId,
+      runId: WorkflowRunId,
+    ): Promise<WorkflowRun | null> {
+      if (runId === assigned) {
+        return Promise.reject(new Error("datastore unavailable"));
+      }
+      return super.findById(workflowId, runId);
+    }
+  }
+  const { run } = await runWithAssignedId(
+    assigned,
+    undefined,
+    new FailingLookupRepository(),
+  );
+  assertNotEquals(run.id as string, assigned);
   assertEquals(run.status, "succeeded");
 });

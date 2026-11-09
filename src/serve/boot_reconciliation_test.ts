@@ -43,7 +43,9 @@ import {
   sweepTokenConsistency,
   teamModeRunLiveness,
   type TokenConsistencyDeps,
+  webhookReplayTargets,
 } from "./boot_reconciliation.ts";
+import { parseWebhookFlag, WebhookService } from "./webhook.ts";
 import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
@@ -2804,4 +2806,28 @@ Deno.test("teamModeRunLiveness: a peer the leader record names above this node's
     await leading.isPeerGone(makeHeartbeat("new-leader", { stale: false })),
     true,
   );
+});
+
+Deno.test("webhookReplayTargets: follows routes a reload added after boot", async () => {
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as never,
+    datastoreConfig: {} as never,
+    endpoints: [],
+  });
+  assertEquals(webhookReplayTargets(service), {
+    workflows: new Set(),
+    routes: new Set(),
+  });
+
+  service.updateEndpoints([
+    await parseWebhookFlag("/hooks/added:deploy:secret"),
+  ]);
+
+  assertEquals(webhookReplayTargets(service), {
+    workflows: new Set(["deploy"]),
+    routes: new Set(["/hooks/added"]),
+  });
+  await service.stop();
 });

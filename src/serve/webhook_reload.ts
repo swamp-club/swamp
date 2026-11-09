@@ -18,10 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { WebhookConfigEntry } from "./serve_config.ts";
-import type { WebhookEndpoint, WebhookService } from "./webhook.ts";
-
-/** Where a serve's webhook routes come from; flags replace the file list. */
-export type WebhookRouteSource = "config" | "flag";
+import type {
+  WebhookEndpoint,
+  WebhookRouteSource,
+  WebhookService,
+} from "./webhook.ts";
 
 export interface WebhookReloadResult {
   readonly changed: number;
@@ -45,7 +46,6 @@ export interface WebhookUpdaterDeps {
   ) => Promise<WebhookEndpoint[]>;
 }
 
-/** Applies a re-read webhooks list, or warns when flags own the routes. */
 export function createWebhookUpdater(deps: WebhookUpdaterDeps): WebhookUpdater {
   return async (configs) => {
     if (deps.source === "flag") {

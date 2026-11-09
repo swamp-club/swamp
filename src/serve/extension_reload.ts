@@ -953,7 +953,7 @@ async function runServeReload(
           config?.webhooks ?? [],
         );
         webhooksReloaded = webhookResult.changed;
-        warnings.push(...webhookResult.warnings);
+        for (const warning of webhookResult.warnings) warnings.push(warning);
       } catch (err) {
         errors.push(
           "Failed to reload webhook config: " +
