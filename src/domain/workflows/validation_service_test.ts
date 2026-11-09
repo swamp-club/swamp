@@ -3929,19 +3929,19 @@ Deno.test("validateExpressionTypes: a refused expression in forEach.in, a guard,
   assertEquals(failures.map((r) => [r.name, r.error]), [
     [
       "Task expressions in job 'main' step 'fan'",
-      "inputs.cmd holds ${{ range(1, 3) }}, which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
+      "inputs.cmd holds ${{ range(1, 3) }}, which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL has no function or overload that takes these arguments",
     ],
     [
       "Task expressions in job 'main' step 'fan'",
-      "forEach.in holds ${{ range(1, 9) }}, which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
+      "forEach.in holds ${{ range(1, 9) }}, which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL has no function or overload that takes these arguments; build the list from a literal, an input or data",
     ],
     [
       "Task expressions in job 'main' step 'fan'",
-      "guard holds range(1, 2) == [], which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
+      "guard holds range(1, 2) == [], which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL has no function or overload that takes these arguments",
     ],
     [
       "Task expressions in job 'main' step 'check'",
-      "task.expr holds range(1, 4) == [], which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
+      "task.expr holds range(1, 4) == [], which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL has no function or overload that takes these arguments",
     ],
   ]);
 });

@@ -181,6 +181,14 @@ function bareStepExpressions(
   return expressions;
 }
 
+function overloadHint(reason: string, path: string): string {
+  if (!reason.startsWith("found no matching overload")) return "";
+  return path === "forEach.in"
+    ? ". swamp's CEL has no function or overload that takes these arguments; " +
+      "build the list from a literal, an input or data"
+    : ". swamp's CEL has no function or overload that takes these arguments";
+}
+
 function expressionLocation(
   workflow: Workflow,
   path: string,
@@ -400,10 +408,7 @@ export class DefaultWorkflowValidationService
           `${location.path} holds ${
             raw ?? celExpression
           }, which a run refuses: ${reason}` +
-            (reason.startsWith("found no matching overload")
-              ? `. swamp's CEL provides no function or overload for this ` +
-                `call; build a list from a literal, an input or data`
-              : ""),
+            overloadHint(reason, location.path),
         ),
       );
     }
