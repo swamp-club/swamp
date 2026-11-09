@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { DelegationStore } from "../delegation_store.ts";
+import type { DelegationAuditRecord } from "../delegation_routes.ts";
 import { delegationOfSessionName } from "../delegated_token_auth.ts";
 import { integrationClient } from "../../domain/access/client.ts";
 import { FAN_OUT_EVENT_KINDS } from "../../domain/workflows/execution_events.ts";
@@ -352,6 +354,9 @@ export const DEFAULT_QUERY_LIMIT = 1000;
 export interface ConnectionContext {
   integrationDirectory?: IntegrationDirectory;
   delegationDirectory?: DelegationDirectory;
+  /** the leader's locked writer of delegation records, for an operator's end */
+  delegationStore?: DelegationStore;
+  delegationAudit?: (event: DelegationAuditRecord) => void;
   repoDir: string;
   repoContext: RepositoryContext;
   followerGate?: FollowerGate;

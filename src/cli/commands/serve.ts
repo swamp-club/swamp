@@ -6803,6 +6803,8 @@ export const serveCommand = new Command()
       })
       : undefined;
     const delegationAudit = createDelegationAuditor(connectionCtx);
+    connectionCtx.delegationStore = delegationStore;
+    connectionCtx.delegationAudit = delegationAudit;
     const delegationRouteDeps: DelegationRouteDeps = {
       integrations: integrationDirectory,
       directory: delegationDirectory,
