@@ -146,6 +146,7 @@ async function decide(
       collectives: [],
       groups: [],
       client: undefined,
+      delegation: undefined,
     },
     action,
     resource,

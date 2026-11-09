@@ -185,6 +185,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
             collectives: [],
             groups: [],
             client: undefined,
+            delegation: undefined,
           },
           "run",
           DEPLOY,

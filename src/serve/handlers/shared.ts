@@ -510,6 +510,7 @@ const connectionPrincipalId = new WeakMap<WebSocket, string>();
 const connectionSourceIp = new WeakMap<WebSocket, string>();
 const connectionLoginIdentity = new WeakMap<WebSocket, ActorIdentity>();
 const connectionClient = new WeakMap<WebSocket, string>();
+const connectionDelegation = new WeakMap<WebSocket, string>();
 const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
@@ -1015,6 +1016,19 @@ export function getConnectionClient(socket: WebSocket): string | undefined {
   return connectionClient.get(socket);
 }
 
+export function setConnectionDelegation(
+  socket: WebSocket,
+  delegation: string | undefined,
+): void {
+  if (delegation !== undefined) connectionDelegation.set(socket, delegation);
+}
+
+export function getConnectionDelegation(
+  socket: WebSocket,
+): string | undefined {
+  return connectionDelegation.get(socket);
+}
+
 /**
  * Binds what a credential proved to its connection. A follower forwards the
  * credential, so the leader binds the same values from its own read of it.
@@ -1029,6 +1043,7 @@ export function bindAuthenticatedConnection(
     readonly tokenCreatedAt: string;
     readonly oauthIdentity?: ActorIdentity;
     readonly client?: string;
+    readonly delegation?: string;
   },
 ): void {
   setConnectionCollectives(
@@ -1044,6 +1059,7 @@ export function bindAuthenticatedConnection(
   });
   setConnectionLoginIdentity(socket, auth.oauthIdentity);
   setConnectionClient(socket, auth.client);
+  setConnectionDelegation(socket, auth.delegation);
 }
 
 export function connectionActorIdentity(
@@ -1081,6 +1097,8 @@ export interface AccessCaller {
   readonly sourceIp: string;
   readonly loginIdentity?: ActorIdentity;
   readonly client?: string;
+  /** set with an integration client; one without it is refused */
+  readonly delegation?: string;
 }
 
 type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity" | "client">;
@@ -1096,6 +1114,7 @@ export function accessCallerOf(
     sourceIp: getConnectionSourceIp(socket),
     loginIdentity: connectionLoginIdentity.get(socket),
     client: connectionClient.get(socket),
+    delegation: connectionDelegation.get(socket),
   };
 }
 
@@ -1138,6 +1157,7 @@ function decideForCaller(
     collectives,
     groups,
     client: caller.client,
+    delegation: caller.delegation,
   };
   const decision = every
     ? service.decideAll(accessPrincipal, action, resource.kind)
@@ -1213,6 +1233,8 @@ export async function decideSubjectAccess(
     collectives: record.collectives,
     groups: record.groups,
     client: record.client,
+    // a server-token record never carries a delegation
+    delegation: undefined,
   };
   const service = loader.decisionService;
   const decision = service.decide(subjectPrincipal, action, resource);
@@ -1774,6 +1796,7 @@ export function callerResourceDecider(
     collectives: [...caller.collectives],
     groups: [...caller.groups],
     client: caller.client,
+    delegation: caller.delegation,
   };
   const adminDecision = service.decide(
     accessPrincipal,
@@ -1875,6 +1898,7 @@ export function authorizeAnyOrReject(
     collectives,
     groups,
     client: connectionClient.get(socket),
+    delegation: connectionDelegation.get(socket),
   };
 
   if (
@@ -1961,6 +1985,7 @@ function accessPrincipalOf(
     collectives: [...caller.collectives],
     groups: [...caller.groups],
     client: caller.client,
+    delegation: caller.delegation,
   };
 }
 

@@ -50,6 +50,7 @@ function makePrincipal(id: string): AccessPrincipal {
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
 }
 

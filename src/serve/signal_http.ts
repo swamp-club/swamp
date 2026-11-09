@@ -195,6 +195,7 @@ export async function handleSignalHttpRequest(
       sourceIp,
       loginIdentity: auth.oauthIdentity,
       client: auth.client,
+      delegation: auth.delegation,
     };
   }
 

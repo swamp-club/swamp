@@ -54,6 +54,7 @@ const ADAM: AccessPrincipal = {
   collectives: ["acme"],
   groups: ["idp-ops"],
   client: undefined,
+  delegation: undefined,
 };
 
 function fingerprintOf(
@@ -80,6 +81,7 @@ Deno.test("readAccessFingerprint: is pinned, so a change to how the same inputs 
         collectives: [],
         groups: [],
         client: undefined,
+        delegation: undefined,
       },
       [],
       [],
@@ -268,6 +270,7 @@ Deno.test("readAccessFingerprint: differs by client, so tokens of one person nev
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
   const direct = readAccessFingerprint(principal, [], [], []);
   assertNotEquals(

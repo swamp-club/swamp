@@ -596,11 +596,11 @@ function callerReadAccess(
 ): string | undefined {
   if (ctx.authConfig.mode === "none") return UNRESTRICTED_READ_ACCESS;
   const loader = ctx.policySnapshotLoader;
-  const { principal, collectives, groups, client } = caller.access;
+  const { principal, collectives, groups, client, delegation } = caller.access;
   if (!loader || !principal) return NO_READ_ACCESS;
   try {
     return loader.decisionService.readAccessFingerprint(
-      { principal, collectives, groups, client },
+      { principal, collectives, groups, client, delegation },
       ctx.authConfig.restrictedModelTypes,
     );
   } catch (error) {

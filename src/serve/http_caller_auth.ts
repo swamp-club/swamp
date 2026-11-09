@@ -195,6 +195,7 @@ function authenticatedCaller(
       sourceIp,
       loginIdentity: auth.oauthIdentity,
       client: auth.client,
+      delegation: auth.delegation,
     },
     principal: auth.principalId,
     token: {

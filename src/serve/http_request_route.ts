@@ -29,6 +29,7 @@ import {
   removeConnection,
   setConnectionClient,
   setConnectionCollectives,
+  setConnectionDelegation,
   setConnectionLoginIdentity,
   setConnectionSourceIp,
   setConnectionToken,
@@ -207,6 +208,7 @@ export function createCallerReplySocket(
   }
   setConnectionLoginIdentity(socket, caller.access.loginIdentity);
   setConnectionClient(socket, caller.access.client);
+  setConnectionDelegation(socket, caller.access.delegation);
 
   const activeRequests = new Map<string, AbortController>();
   // a disconnect or a revoked session aborts the request, as a closed socket's

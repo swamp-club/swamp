@@ -293,8 +293,10 @@ export const accessCheckCommand = new Command()
     try {
       const snapshot = await loader.load();
       await integrations.reload();
+      // explains the integration's own ceiling, so no delegation is named
       const service = new GrantBasedAccessDecisionService(snapshot, {
         integrations,
+        explainWithoutDelegation: true,
       });
 
       const accessPrincipal = {
@@ -302,6 +304,7 @@ export const accessCheckCommand = new Command()
         collectives,
         groups,
         client,
+        delegation: undefined,
       };
       // resolve the resource from the repo as serve does, so a grant on its
       // stored type or a condition on its tags applies.

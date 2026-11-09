@@ -25,6 +25,9 @@ import type {
 } from "./access_decision_service.ts";
 import { Ceiling } from "./ceiling.ts";
 import {
+  DELEGATION_CEILING_GRANT_ID,
+  DELEGATION_ENDED_GRANT_ID,
+  DELEGATION_REQUIRED_GRANT_ID,
   GrantBasedAccessDecisionService,
   type GrantBasedAccessDecisionServiceOptions,
   INTEGRATION_CEILING_GRANT_ID,
@@ -34,6 +37,7 @@ import {
 import type { IntegrationStanding } from "./integration_directory.ts";
 import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
+import type { DelegationRecord } from "../models/access/delegation_model.ts";
 
 function grant(
   actions: Grant["actions"],
@@ -60,6 +64,7 @@ const ALICE: AccessPrincipal = {
   collectives: [],
   groups: [],
   client: "integration:app",
+  delegation: "d",
 };
 
 const DEPLOY: AccessResource = {
@@ -85,7 +90,24 @@ function service(
 ): GrantBasedAccessDecisionService {
   return new GrantBasedAccessDecisionService(
     new PolicySnapshot(grants, [], createConditionEvaluator()),
-    { ...options, integrations: { standingOf: () => standing } },
+    {
+      // a delegation that consented to everything, so the live ceiling decides
+      delegations: {
+        standingOf: () => ({
+          kind: "standing",
+          ceiling: Ceiling.parse({
+            version: 1,
+            ceiling: [{
+              actions: ["approve", "read", "run", "signal"],
+              resource: "workflow:*",
+            }],
+          }),
+        }),
+        recordOf: () => ({ integrationId: "app" }) as DelegationRecord,
+      },
+      ...options,
+      integrations: { standingOf: () => standing },
+    },
   );
 }
 
@@ -220,7 +242,8 @@ Deno.test("decide: a direct or absent client has no ceiling", () => {
   const s = service([grant(["run"], "workflow", "*")], active(Ceiling.empty()));
   for (const client of [undefined, "direct:cli", "direct:token"]) {
     assertEquals(
-      s.decide({ ...ALICE, client }, "run", DEPLOY)?.effect,
+      s.decide({ ...ALICE, client, delegation: undefined }, "run", DEPLOY)
+        ?.effect,
       "allow",
     );
   }
@@ -287,10 +310,63 @@ Deno.test("grantUsableThroughClient: hides a grant the ceiling could never let t
   );
   assertEquals(
     s.grantUsableThroughClient(
-      { ...ALICE, client: undefined },
+      { ...ALICE, client: undefined, delegation: undefined },
       grant(["read"], "model", "*"),
       "read",
     ),
     true,
   );
+});
+
+Deno.test("decide: a request within the live ceiling but outside what the person consented to is refused", () => {
+  const s = service(
+    [grant(["run", "read"], "workflow", "*")],
+    active(ceiling(["run", "read"])),
+    {
+      delegations: {
+        standingOf: () => ({ kind: "standing", ceiling: ceiling(["read"]) }),
+        recordOf: () => ({ integrationId: "app" }) as DelegationRecord,
+      },
+    },
+  );
+  assertEquals(s.decide(ALICE, "read", DEPLOY)?.effect, "allow");
+  const refused = s.decide(ALICE, "run", DEPLOY);
+  assertEquals(refused?.grantId, DELEGATION_CEILING_GRANT_ID);
+  assertEquals(
+    s.grantUsableThroughClient(ALICE, grant(["run"], "workflow", "*"), "run"),
+    false,
+  );
+});
+
+Deno.test("decide: an integration client without a delegation is refused, unless explaining the integration's own ceiling", () => {
+  const grants = [grant(["read"], "workflow", "*")];
+  const without = { ...ALICE, delegation: undefined };
+  const refused = service(grants, active(ceiling(["read"]))).decide(
+    without,
+    "read",
+    DEPLOY,
+  );
+  assertEquals(refused?.grantId, DELEGATION_REQUIRED_GRANT_ID);
+  const explained = service(grants, active(ceiling(["read"])), {
+    explainWithoutDelegation: true,
+  }).decide(without, "read", DEPLOY);
+  assertEquals(explained?.effect, "allow");
+});
+
+Deno.test("decide: an ended delegation, or one for another integration, is refused", () => {
+  const grants = [grant(["read"], "workflow", "*")];
+  const ended = service(grants, active(ceiling(["read"])), {
+    delegations: {
+      standingOf: () => ({ kind: "ended" }),
+      recordOf: () => ({ integrationId: "app" }) as DelegationRecord,
+    },
+  }).decide(ALICE, "read", DEPLOY);
+  assertEquals(ended?.grantId, DELEGATION_ENDED_GRANT_ID);
+  const other = service(grants, active(ceiling(["read"])), {
+    delegations: {
+      standingOf: () => ({ kind: "standing", ceiling: ceiling(["read"]) }),
+      recordOf: () => ({ integrationId: "elsewhere" }) as DelegationRecord,
+    },
+  }).decide(ALICE, "read", DEPLOY);
+  assertEquals(other?.grantId, DELEGATION_ENDED_GRANT_ID);
 });

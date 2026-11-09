@@ -280,6 +280,7 @@ export async function authenticateAdmin(
       collectives: [...authResult.collectives],
       groups: [...authResult.groups],
       client: authResult.client,
+      delegation: authResult.delegation,
     },
     "admin",
     { kind: "access", name: "*", fields: {} },
@@ -324,6 +325,7 @@ export function createReadAuthorizer(
     collectives: [...principal.collectives],
     groups: [...principal.groups],
     client: principal.client,
+    delegation: principal.delegation,
   };
   const isAdmin = () => {
     const decision = loader.decisionService.decide(

@@ -386,6 +386,7 @@ const GRANTEE: AccessPrincipal = {
   collectives: [],
   groups: [],
   client: undefined,
+  delegation: undefined,
 };
 const GRANTED_RESOURCE: AccessResource = {
   kind: "model",

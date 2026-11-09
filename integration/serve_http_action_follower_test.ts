@@ -37,6 +37,7 @@ import {
   grant,
   saveGatedWorkflow,
   type ServeRepo,
+  testDelegationOf,
   withServeRepo,
 } from "./serve_request_harness.ts";
 
@@ -57,6 +58,7 @@ function authenticate(token: string): Promise<ServerTokenAuthResult> {
     tokenName: "caller",
     tokenCreatedAt: "2026-11-01T00:00:00.000Z",
     client: CLIENT,
+    delegation: testDelegationOf(CLIENT),
   } as ServerTokenAuthResult);
 }
 

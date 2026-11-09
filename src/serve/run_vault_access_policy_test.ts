@@ -86,6 +86,7 @@ function user(id = "bot", groups: string[] = []): AccessPrincipal {
     collectives: [],
     groups,
     client: undefined,
+    delegation: undefined,
   };
 }
 

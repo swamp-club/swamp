@@ -772,6 +772,7 @@ export interface CancelAuthorizationRequest {
   principal: Principal;
   loginIdentity?: ActorIdentity;
   client?: string;
+  delegation?: string;
   collectives: readonly string[];
   groups: readonly string[];
   sourceIp: string;
@@ -824,6 +825,7 @@ export function authorizeCancelRequest(
       collectives: [...request.collectives],
       groups: [...request.groups],
       client: request.client,
+      delegation: request.delegation,
     },
     "admin",
     { kind: "access", name: "*", fields: {} },
@@ -5080,6 +5082,7 @@ export const serveCommand = new Command()
         runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
         writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
         integrations: integrationDirectory,
+        delegations: delegationDirectory,
       },
       readConditionTypeLiterals,
       readConditionFindings,
@@ -7638,6 +7641,7 @@ export const serveCommand = new Command()
                   principal: cancelPrincipal,
                   loginIdentity: authResult.oauthIdentity,
                   client: authResult.client,
+                  delegation: authResult.delegation,
                   collectives: authResult.collectives,
                   groups: authResult.groups,
                   sourceIp: cancelRemoteAddr,
@@ -8022,6 +8026,7 @@ export const serveCommand = new Command()
                     sourceIp: dashboardRemoteAddr,
                     loginIdentity: result.oauthIdentity,
                     client: result.client,
+                    delegation: result.delegation,
                   },
                   crypto.randomUUID(),
                   "dashboard-session",

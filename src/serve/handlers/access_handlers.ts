@@ -110,6 +110,7 @@ import {
   type ConnectionContext,
   getConnectionClient,
   getConnectionCollectives,
+  getConnectionDelegation,
   getConnectionGroups,
   handlerLibSwampContext,
   pushChangedToRemote,
@@ -538,6 +539,7 @@ export async function handleAccessCheck(
       groups,
       // another subject is explained as direct: a request cannot name a client
       client: isSelfCheck ? getConnectionClient(socket) : undefined,
+      delegation: isSelfCheck ? getConnectionDelegation(socket) : undefined,
     };
     const decisions = service.explain(
       targetAccessPrincipal,
@@ -614,6 +616,7 @@ export async function handleAccessCanI(
       collectives,
       groups,
       client: getConnectionClient(socket),
+      delegation: getConnectionDelegation(socket),
     };
     const principalStr = principalToString(principal);
 

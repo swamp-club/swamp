@@ -308,6 +308,8 @@ export type ServerTokenAuthResult =
     oauthIdentity?: ActorIdentity;
     /** how serve issued the token; absent when the token records none */
     client?: string;
+    /** the delegation a delegated access token acts under */
+    delegation?: string;
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
