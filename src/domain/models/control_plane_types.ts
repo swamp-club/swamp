@@ -34,6 +34,7 @@ export const CONTROL_PLANE_MODEL_TYPES: readonly string[] = [
   "swamp/grant",
   "swamp/group",
   "swamp/integration",
+  "swamp/delegation",
 ];
 
 /**
@@ -65,6 +66,13 @@ const INTEGRATION_TYPE = "swamp/integration";
 /** changes without a grant reload, so its commits must never reload the policy */
 export function isIntegrationModelType(type: string): boolean {
   return normalizeModelTypeName(type) === INTEGRATION_TYPE;
+}
+
+const DELEGATION_TYPE = "swamp/delegation";
+
+/** changes on every refresh, so its commits must never reload the policy */
+export function isDelegationModelType(type: string): boolean {
+  return normalizeModelTypeName(type) === DELEGATION_TYPE;
 }
 
 export function isControlPlaneModelType(type: string): boolean {

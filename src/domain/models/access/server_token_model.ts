@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { RESERVED_TOKEN_NAMES } from "../../access/delegated_token.ts";
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
@@ -205,6 +206,11 @@ async function mint(
   // so refuse it at mint time; service principals act only in-process and never
   // hold a credential
   parseCredentialPrincipal(args.principalId);
+  if (RESERVED_TOKEN_NAMES.includes(context.definition.name)) {
+    throw new Error(
+      `'${context.definition.name}' is reserved for delegated and integration credentials, so no server token can take it`,
+    );
+  }
   if (!context.vaultService) {
     throw new Error("Minting a server token requires a vault service");
   }
