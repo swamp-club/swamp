@@ -201,6 +201,8 @@ export const CONFIG_FILES: ReadonlyArray<ConfigFile> = [
     path: "scripts/command_index.ts",
     jsonPath: ["scripts", "command-index"],
   },
+  // decides which test files verify-build runs
+  { path: "scripts/test_shards.ts", jsonPath: ["scripts", "test-shards"] },
 ];
 
 

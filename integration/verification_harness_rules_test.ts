@@ -150,7 +150,7 @@ Deno.test("verify-build: the test step is capped and skips type checking, and a 
 
   const tests = step("tests", "run-tests").task.inputs;
   assertEquals((tests.timeout ?? 0) > 0, true, "run-tests has no timeout");
-  assertStringIncludes(tests.run, "deno task test --no-check");
+  assertStringIncludes(tests.run, "deno task test-shards --no-check");
   assertEquals(
     step("static-analysis", "type-check").task.inputs.run,
     "deno task check",

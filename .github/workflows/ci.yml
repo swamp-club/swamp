@@ -61,6 +61,8 @@ jobs:
               # affectedCommands.
               - 'scripts/affected_commands.ts'
               - 'scripts/command_index.ts'
+              # Decides which test files verify-build runs.
+              - 'scripts/test_shards.ts'
               # The skill trigger evaluator: it decides whether skills still
               # route correctly. Keep in step with the CONFIG_TREES entry in
               # scripts/build_attestation.ts.
@@ -369,7 +371,7 @@ jobs:
           fi
           head_sha="${{ github.event.pull_request.head.sha }}"
           trust_changes=$(gh api "repos/${{ github.repository }}/compare/${approved_sha}...${head_sha}" \
-            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^tools/swamp-eval/"))] | length' 2>/dev/null) || trust_changes=1
+            --jq '[.files[].filename | select(test("^CLAUDE\\.md$|^AGENTS\\.md$|^verification/|^agent-constraints/|^\\.claude/skills/issue-lifecycle/references/|^scripts/check_review_verdict\\.ts$|^scripts/review_skills\\.ts$|^scripts/build_attestation\\.ts$|^scripts/affected_commands\\.ts$|^scripts/command_index\\.ts$|^scripts/test_shards\\.ts$|^tools/swamp-eval/"))] | length' 2>/dev/null) || trust_changes=1
           if [ "$trust_changes" -gt 0 ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
           else
@@ -416,6 +418,7 @@ jobs:
             - `scripts/build_attestation.ts`
             - `scripts/affected_commands.ts`
             - `scripts/command_index.ts`
+            - `scripts/test_shards.ts`
             - `tools/swamp-eval/` (every file: the skill trigger evaluator)
 
             For each changed file, read the FULL diff (not just the file — the diff
@@ -771,6 +774,7 @@ jobs:
           check_hash "build-attestation script" '.configIntegrity.scripts."build-attestation"' "scripts/build_attestation.ts"
           check_hash "affected-commands script" '.configIntegrity.scripts."affected-commands"' "scripts/affected_commands.ts"
           check_hash "command-index script" '.configIntegrity.scripts."command-index"' "scripts/command_index.ts"
+          check_hash "test-shards script" '.configIntegrity.scripts."test-shards"' "scripts/test_shards.ts"
           check_tree_hash "skill eval tool" '.configIntegrity.scripts."eval-tool"' "tools/swamp-eval"
 
           # -- 6. Steps summary table --
