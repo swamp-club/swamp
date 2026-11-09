@@ -234,7 +234,10 @@ import {
 } from "../data/in_flight_data_writes.ts";
 import { CompositeUnifiedDataRepository } from "../data/composite_data_repository.ts";
 import { CompositeDataQueryService } from "../data/composite_data_query_service.ts";
-import type { ResourceOverrides } from "../definitions/definition.ts";
+import type {
+  DefinitionId,
+  ResourceOverrides,
+} from "../definitions/definition.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import {
   fromFileHandle,
@@ -2387,13 +2390,21 @@ export class DefaultStepExecutor implements StepExecutor {
       if (this.stepLockHook) {
         // removed or replaced between its lookup and this lock: retention or a
         // delete took it, and the step must not run under a lock it lost
+        // by name first, which reads one file; by id only when that misses
         const held = await definitionRepo.findByName(
           modelType,
           originalDefinition.name,
         );
-        if (held?.id !== originalDefinition.id) {
-          throw new Error(
+        if (
+          held?.id !== originalDefinition.id &&
+          await definitionRepo.findById(
+              modelType,
+              originalDefinition.id as DefinitionId,
+            ) === null
+        ) {
+          throw new UserError(
             `Behavior ${originalDefinition.name} was renamed, or removed and created again, while this step waited for its lock: run it again`,
+            "definition_changed_under_lock",
           );
         }
       }

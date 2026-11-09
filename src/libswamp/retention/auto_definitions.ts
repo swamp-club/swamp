@@ -80,11 +80,14 @@ export interface AutoDefinitionBatchResult {
 }
 
 export interface AutoDefinitionReaper {
-  /** judges up to limit more candidates; removes the idle ones unless dryRun */
+  /**
+   * judges up to limit more candidates; removes the idle ones unless dryRun.
+   * A dry run ahead of an output gc passes its cutoff as outputsRemovedBefore
+   */
   collectBatch(
     cutoff: Date,
     limit: number,
-    options?: { dryRun?: boolean },
+    options?: { dryRun?: boolean; outputsRemovedBefore?: Date },
   ): Promise<AutoDefinitionBatchResult>;
 }
 
@@ -145,7 +148,12 @@ export function createAutoDefinitionReaper(
           continue;
         }
         const candidate = { ...read, path: file.path };
-        const ids = await outputIdsOf(outputIds, sources, read.type);
+        const ids = await outputIdsOf(
+          outputIds,
+          sources,
+          read.type,
+          options.outputsRemovedBefore,
+        );
         const facts = {
           modelType: read.type.normalized,
           modifiedAt: file.modifiedAt,
@@ -202,10 +210,14 @@ async function outputIdsOf(
   cache: Map<string, Set<string>>,
   sources: AutoDefinitionRetentionSources,
   type: ModelType,
+  startedSince?: Date,
 ): Promise<Set<string>> {
   let ids = cache.get(type.normalized);
   if (!ids) {
-    ids = await sources.outputRepo.definitionIdsWithOutputs(type);
+    ids = await sources.outputRepo.definitionIdsWithOutputs(
+      type,
+      startedSince ? { startedSince } : {},
+    );
     cache.set(type.normalized, ids);
   }
   return ids;

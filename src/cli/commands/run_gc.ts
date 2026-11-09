@@ -61,7 +61,7 @@ export const runGcCommand = withRemoteOptions(
   new Command()
     .name("gc")
     .description(
-      "Garbage-collect old workflow runs, their evaluated-workflow snapshots, and method outputs. Orphaned snapshots are removed once past retention. Running and suspended runs are never deleted regardless of age.",
+      "Garbage-collect old workflow runs, their evaluated-workflow snapshots, and method outputs. Orphaned snapshots are removed once past retention. Running and suspended runs are never deleted regardless of age. When .swamp.yaml sets garbageCollection.autoDefinitions, idle auto-definitions (no data, no outputs) older than it are removed too.",
     )
     .example("Preview what would be collected", "swamp run gc --dry-run")
     .example("Run GC with default 30-day retention", "swamp run gc --force")
@@ -79,7 +79,7 @@ export const runGcCommand = withRemoteOptions(
     .option("-f, --force", "Skip confirmation prompt (alias for --yes)")
     .option(
       "--older-than <duration:string>",
-      `Retention period. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Overrides .swamp.yaml garbageCollection; default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
+      `Retention period for runs and outputs. Units: m=minutes, h=hours, d=days, w=weeks, mo=months, y=years (e.g. 7d, 2w, 1mo). Overrides .swamp.yaml garbageCollection except autoDefinitions, which only .swamp.yaml sets; default: ${DEFAULT_WORKFLOW_RUN_RETENTION_DAYS}d`,
     ),
 ).action(async function (options: AnyOptions) {
   const cliCtx = createContext(options as GlobalOptions, ["run", "gc"]);

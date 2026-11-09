@@ -18630,6 +18630,7 @@ interface StepWriteProbe {
   outputCount(): Promise<number>;
   evaluatedCount(): Promise<number>;
   removeDefinition(): Promise<void>;
+  renameDefinition(name: string): Promise<void>;
 }
 
 async function runStepUnderLockHook(
@@ -18697,6 +18698,18 @@ async function runStepUnderLockHook(
           definition.id as DefinitionId,
           definition.name,
         ),
+      renameDefinition: async (name) => {
+        const repo = new YamlDefinitionRepository(tempDir);
+        await repo.delete(
+          modelType,
+          definition.id as DefinitionId,
+          definition.name,
+        );
+        await repo.save(
+          modelType,
+          Definition.fromData({ ...definition.toData(), name }),
+        );
+      },
     };
 
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
@@ -18802,9 +18815,30 @@ Deno.test("DefaultStepExecutor: a definition removed while the step waited for i
     error.message,
     "removed and created again, while this step waited for its lock",
   );
+  assertEquals(
+    (error as { code?: string }).code,
+    "definition_changed_under_lock",
+  );
   assertEquals(executed, false);
   assertEquals(outputs.length, 0);
   assertEquals(evaluatedCount, 0);
+});
+
+Deno.test("DefaultStepExecutor: a definition renamed under the same id while the step waited still runs", async () => {
+  let executed = false;
+  const { error } = await runStepUnderLockHook(
+    (probe) =>
+      countingLockHook(async () => {
+        await probe.renameDefinition("renamed-meanwhile");
+      }).hook,
+    "execute",
+    () => {
+      executed = true;
+      return Promise.resolve({});
+    },
+  );
+  assertEquals(error, undefined);
+  assertEquals(executed, true);
 });
 
 Deno.test("DefaultStepExecutor: takes the step lock before the step writes anything", async () => {

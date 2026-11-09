@@ -364,3 +364,29 @@ Deno.test("runRepoRetention: an auto-definition whose last output expires in the
     assertEquals(await pathExists(idle.path), false);
   });
 });
+
+Deno.test("createAutoDefinitionReaper: a dry run ahead of an output gc ignores the outputs that gc removes", async () => {
+  await withFixture(async (f) => {
+    const old = 40 * DAY_MS;
+    const idle = await saveAgedAutoDefinition(
+      f.autoRepo,
+      f.autoDir,
+      TYPE,
+      "last-ran-10d-ago",
+      old,
+    );
+    await saveAgedOutput(f.outputRepo, TYPE, 10 * DAY_MS, {
+      definitionId: idle.definition.id,
+    });
+    assertEquals(await drain(f.sources(), { dryRun: true }), []);
+    const reaper = createAutoDefinitionReaper(f.sources());
+    const batch = await reaper.collectBatch(cutoff(), 10, {
+      dryRun: true,
+      outputsRemovedBefore: new Date(Date.now() - 7 * DAY_MS),
+    });
+    assertEquals(batch.removed.map((c) => c.definition.name), [
+      "last-ran-10d-ago",
+    ]);
+    assert(await pathExists(idle.path));
+  });
+});

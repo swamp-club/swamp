@@ -372,8 +372,15 @@ Deno.test("runGc: collects auto-definitions after the outputs, only with their r
         more: false,
       });
     },
-    collectAutoDefinitions: (cutoff, dryRun) => {
+    collectAutoDefinitions: (cutoff, dryRun, outputsRemovedBefore) => {
       calls.push(`auto:${dryRun}`);
+      // a dry run deleted no outputs, so it names the ones the gc would remove
+      const outputDays = outputsRemovedBefore === undefined
+        ? undefined
+        : Math.round(
+          (Date.now() - outputsRemovedBefore.getTime()) / 86_400_000,
+        );
+      assertEquals(outputDays, dryRun ? 7 : undefined);
       const days = (Date.now() - cutoff.getTime()) / 86_400_000;
       assertEquals(Math.round(days), 60);
       return Promise.resolve([{ name: "idle", type: "command/shell" }]);
@@ -383,6 +390,7 @@ Deno.test("runGc: collects auto-definitions after the outputs, only with their r
     for await (
       const event of runGc(createMockCtx(), deps, {
         dryRun: true,
+        outputRetentionDays: 7,
         ...(autoDefinitionRetentionDays === undefined
           ? {}
           : { autoDefinitionRetentionDays }),

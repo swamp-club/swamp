@@ -333,7 +333,9 @@ garbageCollection:
   `definition_changed_under_lock` (direct runs, serve runs and workflow steps
   alike) and succeeds when run again. `swamp run gc` applies the key too;
   `--older-than` never does, so a manual gc removes no definition the
-  repository did not opt in to. `swamp doctor datastores` shows the kind's
+  repository did not opt in to. Its confirmation prompt and `--dry-run` name
+  each one, and count an auto-definition whose last output the same gc
+  removes. `swamp doctor datastores` shows the kind's
   watermark but does not scan for it: what is removable depends on what the
   pass removes first.
 - **Version numbers never go back after retention**: before retention

@@ -539,9 +539,17 @@ export class YamlOutputRepository implements OutputRepository {
     return all.filter((output) => output.definitionId === definitionId);
   }
 
-  /** from file names alone; an unmaterialised record counts as an output */
-  async definitionIdsWithOutputs(type: ModelType): Promise<Set<string>> {
+  /**
+   * from file names alone; an unmaterialised record counts as an output;
+   * startedSince leaves out outputs a gc is about to remove
+   */
+  async definitionIdsWithOutputs(
+    type: ModelType,
+    options: { startedSince?: Date } = {},
+  ): Promise<Set<string>> {
     const ids = new Set<string>();
+    const since = options.startedSince && fileStamp(options.startedSince);
+    const keeps = (stamp: string) => since === undefined || stamp >= since;
     const typeDir = this.getTypeDir(type);
     let methodDirs: Deno.DirEntry[];
     try {
@@ -561,7 +569,7 @@ export class YamlOutputRepository implements OutputRepository {
       }
       for (const file of files) {
         const name = parseOutputFileName(file.name);
-        if (name) ids.add(name.definitionId);
+        if (name && keeps(name.stamp)) ids.add(name.definitionId);
       }
     }
     for (
@@ -571,7 +579,7 @@ export class YamlOutputRepository implements OutputRepository {
       )
     ) {
       const name = parseOutputFileName(entry.path);
-      if (name) ids.add(name.definitionId);
+      if (name && keeps(name.stamp)) ids.add(name.definitionId);
     }
     return ids;
   }

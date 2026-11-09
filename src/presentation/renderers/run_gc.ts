@@ -151,6 +151,7 @@ export function renderRunGcPreview(
           preview.evaluatedSnapshotBytesReclaimable,
         totalBytesReclaimable: preview.totalBytesReclaimable,
         autoDefinitionsToDelete: preview.autoDefinitionsToDelete,
+        autoDefinitions: preview.autoDefinitions,
       },
       null,
       2,
@@ -171,7 +172,9 @@ export function renderRunGcPreview(
     }
     if (preview.autoDefinitionsToDelete > 0) {
       logger
-        .info`Run GC preview: ${preview.autoDefinitionsToDelete} idle auto-definition(s) to remove`;
+        .info`Run GC preview: ${preview.autoDefinitionsToDelete} idle auto-definition(s) to remove, with their edited arguments: ${
+        autoDefinitionList(preview.autoDefinitions)
+      }`;
     }
   }
 }
