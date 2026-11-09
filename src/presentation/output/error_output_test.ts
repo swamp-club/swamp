@@ -74,7 +74,11 @@ import {
   ReadModelCatchUpUnreachableError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { V3WriterBusyError } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
-import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
+import {
+  ServeLeaseLapsedLatch,
+  ServeLeaseLapsedRequestError,
+  ServeUnreachableError,
+} from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { ReadModelBusyError } from "../../domain/datastore_v3/read_model.ts";
 import {
   ServeFollowerBehindError,
@@ -672,6 +676,30 @@ Deno.test("exitCodeForError: returns 75 for a forced release whose kept lease re
     exitCodeForError(new UserError("kept record", "lease_record_not_removed")),
     75,
   );
+});
+
+Deno.test("exitCodeForError: a request the command's own lapsed lease stopped exits as serve unreachable does", () => {
+  const lapsed = new ServeLeaseLapsedRequestError(
+    "https://serve.example.com",
+    "maybe",
+    new ServeLeaseLapsedLatch("model aws/vpc prod"),
+    { route: "POST partitions/{partition}/commits", bodyBytes: 1024 },
+  );
+  assertEquals(lapsed.code, LEASE_LAPSED_CODE);
+  for (const commandLanded of [true, false, undefined]) {
+    const unreachable = new ServeUnreachableError(
+      "https://serve.example.com",
+      "maybe",
+      new Error("gone"),
+    );
+    assertEquals(
+      exitCodeForError(lapsed, { commandLanded }),
+      exitCodeForError(unreachable, { commandLanded }),
+      `commandLanded ${commandLanded}`,
+    );
+  }
+  assertEquals(exitCodeForError(lapsed, { commandLanded: true }), 1);
+  assertEquals(exitCodeForError(lapsed, {}), 75);
 });
 
 Deno.test("exitCodeForError: returns 75 for a copy another command is still setting up (swamp-club#4253)", () => {

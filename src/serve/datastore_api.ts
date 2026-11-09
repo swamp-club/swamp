@@ -145,7 +145,9 @@ import {
   ingestChunk,
   isSha256Hex,
   parseRange,
+  type VerifiedChunk,
 } from "../infrastructure/datastore_v3/chunk_ingest.ts";
+import { CarriedBytesBudget } from "./carried_bytes_budget.ts";
 import {
   ChunksMissingError,
   commitForwarded,
@@ -302,6 +304,27 @@ export class VouchBudget {
 }
 /** The most chunk requests one principal has in flight. */
 export const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
+
+/** The most of one request's carried chunks being stored at once. */
+export const CARRIED_PUT_CONCURRENCY = 4;
+
+/** what one principal's chunk requests held when each read one at a time */
+export const CARRIED_BYTES_IN_FLIGHT_BUDGET = 128 * 1024 * 1024;
+
+const carriedBytesBudget = new CarriedBytesBudget(
+  CARRIED_BYTES_IN_FLIGHT_BUDGET,
+);
+
+export function carriedBytesInFlightForTesting(): number {
+  return carriedBytesBudget.used;
+}
+
+// a declared size ingestChunk will refuse still waits no longer than the budget
+function budgetedBytesOf(size: number): number {
+  return Number.isSafeInteger(size) && size > 0
+    ? Math.min(size, CARRIED_BYTES_IN_FLIGHT_BUDGET)
+    : 0;
+}
 
 /**
  * A chunk read refused because whether the caller may read it could not be
@@ -1276,10 +1299,9 @@ class DatastoreApi {
       );
     }
     // The content arrives after the envelope. Room for each chunk is
-    // reserved in the upload ledger before it is read, then it is hashed
-    // and staged, so the request holds one chunk at a time and the quota
-    // counts what it has sent so far. A mismatch fails the request before
-    // anything is committed.
+    // reserved in the upload ledger before it is read, so the quota counts
+    // what it has sent so far. A mismatch fails the request before anything
+    // is committed.
     let provided: Set<string> | Response;
     try {
       provided = await this.#withChunkSlot(() =>
@@ -3398,10 +3420,10 @@ class DatastoreApi {
   }
 
   /**
-   * Reads, verifies and stages a commit's carried chunks one at a time,
-   * each reserved in the upload ledger before it is read, then makes them
-   * durable together and records them. Resolves with their hashes, or a
-   * 429 once the caller's quota or entry cap is spent.
+   * Reads and verifies a commit's carried chunks in order, storing each while
+   * the next is read, then makes them durable together and records them.
+   * Each is reserved in the upload ledger before it is read. Resolves with
+   * their hashes, or a 429 once the caller's quota or entry cap is spent.
    */
   async #ingestCarried(
     reader: FramedReader,
@@ -3412,8 +3434,12 @@ class DatastoreApi {
     const reservations: UploadReservation[] = [];
     const staged = new Map<string, UploadReservation>();
     const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
+    const failed = new AbortController();
+    const puts = AbortSignal.any([signal, failed.signal]);
+    const inFlight = new Set<Promise<void>>();
     try {
       for (const chunk of declared) {
+        failed.signal.throwIfAborted();
         // What this request reserved counts too, so requests in flight
         // together cannot pass the quota or the entry cap.
         const admission = this.#deps.ledger.reserve(
@@ -3423,17 +3449,47 @@ class DatastoreApi {
         );
         if (!admission.allowed) return uploadQuotaExceeded();
         reservations.push(admission.reservation);
-        const verified = await ingestChunk(
-          reader,
-          chunk,
-          { maxChunkBytes: this.#maxChunkBytes() },
-          signal,
-        );
-        await batch.put(verified.sha256, verified.bytes, signal);
-        if (!staged.has(verified.sha256)) {
-          staged.set(verified.sha256, admission.reservation);
+        while (inFlight.size >= CARRIED_PUT_CONCURRENCY) {
+          await Promise.race(inFlight);
         }
+        failed.signal.throwIfAborted();
+        const release = await carriedBytesBudget.acquire(
+          budgetedBytesOf(chunk.size),
+          puts,
+        );
+        let verified: VerifiedChunk;
+        try {
+          verified = await ingestChunk(
+            reader,
+            chunk,
+            { maxChunkBytes: this.#maxChunkBytes() },
+            puts,
+          );
+        } catch (error) {
+          release();
+          throw error;
+        }
+        const reservation = admission.reservation;
+        const put: Promise<void> = batch.put(
+          verified.sha256,
+          verified.bytes,
+          puts,
+        ).then(
+          () => {
+            if (!staged.has(verified.sha256)) {
+              staged.set(verified.sha256, reservation);
+            }
+          },
+          // the first failure is the reason the others see
+          (error) => failed.abort(error),
+        ).finally(() => {
+          release();
+          inFlight.delete(put);
+        });
+        inFlight.add(put);
       }
+      await Promise.all(inFlight);
+      failed.signal.throwIfAborted();
       // a batch's later commits follow this one's chunks
       if (last) await reader.assertEnd(signal);
       if (staged.size === 0) return new Set();
@@ -3450,6 +3506,8 @@ class DatastoreApi {
       }
       return new Set(staged.keys());
     } finally {
+      failed.abort(new Error("The carried chunks' request has ended"));
+      await Promise.allSettled([...inFlight]);
       for (const reservation of reservations) reservation.cancel();
       await batch.discard();
     }
@@ -3462,9 +3520,19 @@ class DatastoreApi {
     if (chunks.length === 0) return;
     const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
     try {
-      for (const chunk of chunks) {
-        await batch.put(chunk.sha256, chunk.bytes, signal);
-      }
+      let next = 0;
+      const worker = async () => {
+        while (next < chunks.length) {
+          const chunk = chunks[next++];
+          await batch.put(chunk.sha256, chunk.bytes, signal);
+        }
+      };
+      await Promise.all(
+        Array.from(
+          { length: Math.min(CARRIED_PUT_CONCURRENCY, chunks.length) },
+          worker,
+        ),
+      );
       await batch.commit(signal);
     } finally {
       await batch.discard();

@@ -75,7 +75,16 @@ export async function streamLines(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const lines: string[] = [];
-  let buffer = "";
+  // the unterminated line's pieces, joined once it ends: re-splitting a growing
+  // buffer on every read is quadratic in a long line
+  let open: string[] = [];
+  const emit = (line: string) => {
+    const kept = options.normalizeCrlf && line.endsWith("\r")
+      ? line.slice(0, -1)
+      : line;
+    lines.push(kept);
+    onLine?.(kept);
+  };
 
   const abortPromise = signal
     ? new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
@@ -98,23 +107,25 @@ export async function streamLines(
         : await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const bufferLines = buffer.split("\n");
-
-      for (let i = 0; i < bufferLines.length - 1; i++) {
-        const line = options.normalizeCrlf && bufferLines[i].endsWith("\r")
-          ? bufferLines[i].slice(0, -1)
-          : bufferLines[i];
-        lines.push(line);
-        onLine?.(line);
+      const text = decoder.decode(value, { stream: true });
+      let start = 0;
+      for (
+        let end = text.indexOf("\n");
+        end !== -1;
+        end = text.indexOf("\n", start)
+      ) {
+        open.push(text.slice(start, end));
+        emit(open.join(""));
+        open = [];
+        start = end + 1;
       }
-
-      buffer = bufferLines[bufferLines.length - 1];
+      if (start < text.length) open.push(text.slice(start));
     }
 
-    if (buffer) {
-      lines.push(buffer);
-      onLine?.(buffer);
+    const rest = open.join("");
+    if (rest) {
+      lines.push(rest);
+      onLine?.(rest);
     }
   } finally {
     try {

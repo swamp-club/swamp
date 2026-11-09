@@ -47,6 +47,7 @@ import {
   withdrawServeLeaseRelease,
 } from "./serve_lease_registry.ts";
 import {
+  ServeLeaseLapsedLatch,
   ServeUnreachableError,
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
@@ -664,7 +665,7 @@ export class ServeLock implements DistributedLock {
       if (baseUrl !== undefined) {
         latchServeUnreachable(
           baseUrl,
-          new Error(`the lease on ${this.#displayKey()} lapsed unrenewed`),
+          new ServeLeaseLapsedLatch(this.#displayKey()),
         );
       }
       this.#lapse("it could not be renewed in time");

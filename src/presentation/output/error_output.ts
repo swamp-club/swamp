@@ -44,6 +44,7 @@ import {
 } from "../../domain/datastore_v3/serve_leader.ts";
 import { V3_COPY_SETUP_RACED_CODE } from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import {
+  isLapsedServeRequest,
   V3_SERVE_UNREACHABLE_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
   V3_WRITER_BUSY_CODE,
@@ -207,6 +208,9 @@ export function exitCodeForError(
   context: ErrorPresentationContext = {},
 ): number {
   const nothingLanded = context.commandLanded === false;
+  if (isLapsedServeRequest(error)) {
+    return context.commandLanded === true ? 1 : 75;
+  }
   // refused or cancelled before writing: a retry is safe only if nothing
   // else of the command landed
   if (leaseErrorOf(error) !== undefined) return nothingLanded ? 75 : 1;

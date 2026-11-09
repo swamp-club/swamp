@@ -42,7 +42,9 @@ import {
 import { createCommitLogUnitOfWork } from "./commit_log_unit_of_work.ts";
 import type { OutboxCommitSink } from "./outbox_commit_sink.ts";
 import { ServeCatchUp } from "./serve_catch_up.ts";
+import { clearServeUnreachableLatches } from "./serve_datastore_client.ts";
 import {
+  CARRIED_SEND_ATTEMPTS,
   createServeCommitSink,
   MAX_CARRIED_CHUNKS,
   SERVE_SEQ_GAP_ATTEMPTS,
@@ -408,6 +410,59 @@ Deno.test("createServeCommitSink: chunks missing a second time are the caller's"
 
     await assertRejects(() => sink.append(commit), ServeChunksMissingError);
     assertEquals(serve.posted.length, 2);
+  });
+});
+
+Deno.test("createServeCommitSink: a commit whose carried chunks serve keeps failing is uploaded at most CARRIED_SEND_ATTEMPTS times, then fails without sending", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit } = await chunkedCommit(cache, 2);
+    serve.failsCarried = new ServeUpstreamError(
+      500,
+      "internal_error",
+      "Internal error",
+    );
+    for (let attempt = 1; attempt <= CARRIED_SEND_ATTEMPTS + 2; attempt++) {
+      const error = await assertRejects(() => sink.append(commit));
+      assert(error instanceof ServeUpstreamError, `attempt ${attempt}`);
+    }
+    assertEquals(serve.requests.postCommit, CARRIED_SEND_ATTEMPTS);
+  });
+});
+
+Deno.test("createServeCommitSink: a failure serve never answered does not count toward a commit's uploads", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit } = await chunkedCommit(cache, 2);
+    for (let i = 0; i < CARRIED_SEND_ATTEMPTS; i++) {
+      serve.postFaults.push({ kind: "never" });
+    }
+    for (let i = 0; i < CARRIED_SEND_ATTEMPTS; i++) {
+      await assertRejects(() => sink.append(commit), ServeUnreachableError);
+      clearServeUnreachableLatches();
+    }
+    assertEquals(await sink.append(commit), { kind: "appended", seq: 1 });
+  });
+});
+
+Deno.test("createServeCommitSink: a unit's checkpoints resend a failing chunk-carrying batch commit at most CARRIED_SEND_ATTEMPTS times", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    serve.takesBatches = true;
+    serve.failsCarried = new ServeUpstreamError(
+      500,
+      "internal_error",
+      "Internal error",
+    );
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, cache),
+    );
+    await uow.stageOp(blobChange("a"));
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    for (let flush = 1; flush <= CARRIED_SEND_ATTEMPTS + 3; flush++) {
+      await assertRejects(() => uow.checkpoint());
+    }
+    const carrying = serve.posted.filter((posted) => posted.chunks.length > 0);
+    assertEquals(carrying.length, CARRIED_SEND_ATTEMPTS);
+    assertEquals(serve.head(runPartition()), 0);
   });
 });
 

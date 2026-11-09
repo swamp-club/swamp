@@ -6709,6 +6709,20 @@ are stamped `@anonymous`.
 | `PUT locks/{leaseId}` | `{ttlMs?}`: renews the caller's lease, authorised again; `404 lease_not_found` once it ended |
 | `DELETE locks/{leaseId}` | Releases the caller's lease; `404 lease_not_found` when it already ended |
 
+A request's deadline is the client's flat timeout (`SWAMP_SERVE_TIMEOUT_MS`,
+30 s by default) plus its body at 256 KiB/s
+(`MIN_SERVE_UPLOAD_BYTES_PER_SECOND`), so a large commit is not cut off at
+30 s on a slow link; a request without a body keeps the flat timeout. Serve
+reads a commit's carried chunks in order and stores each while it reads the
+next, at most `CARRIED_PUT_CONCURRENCY` (4) per request. What it has read but
+not yet stored is bounded across all requests by
+`CARRIED_BYTES_IN_FLIGHT_BUDGET` (128 MiB): a read waits for room, never
+refused, and a failed store fails the request with nothing recorded in the
+upload ledger. A request stopped because the command's own lease lapsed
+unrenewed fails as `datastore_v3_lease_lapsed`
+(`ServeLeaseLapsedRequestError`, naming the request and its size), with the
+exit code serve being unreachable has.
+
 `{p}` is a canonical partition key, percent-encoded once more in the path.
 
 **Fewer round trips per write (swamp-club#4525).** A member's one-step write
@@ -7512,6 +7526,11 @@ makes each commit durable until it lands.
    the unit builds the commit again on the new head under the same txnId (up
    to `SERVE_SEQ_GAP_ATTEMPTS`).
 6. On `chunk_missing`, the named chunks are sent once more.
+   A commit whose carried chunks serve answers with a failure (other than a
+   stale seq) is uploaded at most `CARRIED_SEND_ATTEMPTS` (3) times in one
+   process, keyed by its txnId; later flushes fail it without sending, and the
+   outbox keeps it for the next command. Without this, every later flush of
+   the command uploaded it again.
 
 7. A flush's groups go as one `POST commits` when serve takes batches: in a
    round of distinct partitions in their order (run partitions last), each
