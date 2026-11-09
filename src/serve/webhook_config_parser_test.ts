@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { UserError } from "../domain/errors.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import type { WebhookConfigEntry } from "./serve_config.ts";
 import {
@@ -47,6 +48,7 @@ Deno.test("createWebhookConfigParser: resolves each entry's vault secret", async
   const parse = createWebhookConfigParser({
     openVaults: () => Promise.resolve(vaults({ "hooks:a": "secret-a" })),
     resolveType: () => Promise.resolve(false),
+    trustedCollectives: () => [],
   });
 
   const [endpoint] = await parse([entry("/hooks/a", "a")]);
@@ -60,6 +62,7 @@ Deno.test("createWebhookConfigParser: vaults that cannot be opened are an enviro
   const parse = createWebhookConfigParser({
     openVaults: () => Promise.reject(new Error("vault config unreadable")),
     resolveType: () => Promise.resolve(false),
+    trustedCollectives: () => [],
   });
 
   await assertRejects(
@@ -77,6 +80,7 @@ Deno.test("createWebhookConfigParser: opens the vaults again on every parse", as
       return Promise.resolve(vaults({ "hooks:a": "secret-a" }));
     },
     resolveType: () => Promise.resolve(false),
+    trustedCollectives: () => [],
   });
 
   await parse([entry("/hooks/a", "a")]);
@@ -89,6 +93,7 @@ Deno.test("createWebhookConfigParser: one failing entry fails the whole parse", 
   const parse = createWebhookConfigParser({
     openVaults: () => Promise.resolve(vaults({ "hooks:a": "secret-a" })),
     resolveType: () => Promise.resolve(false),
+    trustedCollectives: () => [],
   });
 
   await assertRejects(
@@ -104,6 +109,7 @@ Deno.test("createWebhookConfigParser: an extension scheme resolves through the i
     type,
     name: "Test hook",
     description: "Test webhook extension",
+    origin: { kind: "local" },
     createHandler: () => ({
       signatureHeader: "x-token",
       requiredHeaders: ["x-token"],
@@ -117,6 +123,7 @@ Deno.test("createWebhookConfigParser: an extension scheme resolves through the i
       resolved.push(t);
       return Promise.resolve(true);
     },
+    trustedCollectives: () => [],
   });
 
   const [endpoint] = await parse([{
@@ -133,6 +140,7 @@ Deno.test("createWebhookConfigParser: a scheme lookup that throws is an environm
   const parse = createWebhookConfigParser({
     openVaults: () => Promise.resolve(vaults({ "hooks:a": "secret-a" })),
     resolveType: () => Promise.reject(new Error("registry unreachable")),
+    trustedCollectives: () => [],
   });
 
   await assertRejects(
@@ -141,4 +149,34 @@ Deno.test("createWebhookConfigParser: a scheme lookup that throws is an environm
     WebhookEnvironmentError,
     "registry unreachable",
   );
+});
+
+Deno.test("createWebhookConfigParser: a pulled scheme is judged on the trust list read at parse time", async () => {
+  const type: ExtensionWebhookScheme = `@test/hook-${crypto.randomUUID()}`;
+  webhookTypeRegistry.register({
+    type,
+    name: "Test hook",
+    description: "Test webhook extension",
+    origin: { kind: "pulled", extensionName: "@test/hooks" },
+    createHandler: () => ({
+      signatureHeader: "x-token",
+      requiredHeaders: ["x-token"],
+      verify: () => true,
+    }),
+  });
+  let trusted: readonly string[] = ["swamp", "test"];
+  const parse = createWebhookConfigParser({
+    openVaults: () => Promise.resolve(vaults({ "hooks:a": "secret-a" })),
+    resolveType: () => Promise.resolve(true),
+    trustedCollectives: () => trusted,
+  });
+  const route = { ...entry("/hooks/a", "a"), scheme: type };
+
+  const [endpoint] = await parse([route]);
+  assertEquals(endpoint.verifier.scheme, type);
+
+  trusted = ["swamp"];
+  const error = await assertRejects(() => parse([route]), UserError);
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+  assertStringIncludes(error.message, "swamp extension trust add test");
 });

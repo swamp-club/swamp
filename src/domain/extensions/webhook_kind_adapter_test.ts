@@ -20,6 +20,25 @@
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import { webhookKindAdapter } from "./webhook_kind_adapter.ts";
+import type { RegistrationContext } from "./kind_adapter.ts";
+import type { DenoRuntime } from "../runtime/deno_runtime.ts";
+import { webhookTypeRegistry } from "../webhooks/webhook_type_registry.ts";
+
+function contextWith(
+  origin: RegistrationContext["origin"],
+): RegistrationContext {
+  const denoRuntime: DenoRuntime = {
+    ensureDeno: () => Promise.resolve("/usr/bin/false"),
+    getDenoEnv: () => ({}),
+  };
+  return {
+    absolutePath: "/ext/webhook.ts",
+    denoPath: "/usr/bin/false",
+    denoRuntime,
+    repoDir: null,
+    ...(origin ? { origin } : {}),
+  };
+}
 
 function validExport(overrides: Record<string, unknown> = {}) {
   return {
@@ -93,4 +112,60 @@ Deno.test("webhookKindAdapter.extractTypeFromSource: ignores a declaration insid
       'export const webhook = { type: "@real/hook" };',
   );
   assertEquals(result?.typeNormalized, "@real/hook");
+});
+
+Deno.test("webhookKindAdapter.register: stores the origin the loader decided", () => {
+  const type = `@myorg/hook-${crypto.randomUUID()}`;
+  try {
+    webhookKindAdapter.register(
+      type,
+      validExport({ type }),
+      {},
+      contextWith({ kind: "pulled", extensionName: "@myorg/hooks" }),
+    );
+    assertEquals(webhookTypeRegistry.get(type)?.origin, {
+      kind: "pulled",
+      extensionName: "@myorg/hooks",
+    });
+  } finally {
+    webhookTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("webhookKindAdapter.promoteFromLazy: stores the origin the loader decided", () => {
+  const type = `@myorg/hook-${crypto.randomUUID()}`;
+  try {
+    webhookKindAdapter.registerLazy(
+      {
+        type_normalized: type,
+        bundle_path: "/b.js",
+        source_path: "/s.ts",
+        version: "1",
+      } as Parameters<typeof webhookKindAdapter.registerLazy>[0],
+    );
+    webhookKindAdapter.promoteFromLazy(
+      type,
+      validExport({ type }),
+      {},
+      contextWith({ kind: "local" }),
+    );
+    assertEquals(webhookTypeRegistry.get(type)?.origin, { kind: "local" });
+  } finally {
+    webhookTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("webhookKindAdapter.register: leaves origin unset when the loader gave none", () => {
+  const type = `@myorg/hook-${crypto.randomUUID()}`;
+  try {
+    webhookKindAdapter.register(
+      type,
+      validExport({ type }),
+      {},
+      contextWith(undefined),
+    );
+    assertEquals(webhookTypeRegistry.get(type)?.origin, undefined);
+  } finally {
+    webhookTypeRegistry.invalidateType(type);
+  }
 });

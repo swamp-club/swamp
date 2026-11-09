@@ -38,6 +38,7 @@ import type { ExtensionTypeRow } from "../../infrastructure/persistence/extensio
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { bundleImportUrl, ExtensionLoader } from "./extension_loader.ts";
+import { webhookKindAdapter } from "./webhook_kind_adapter.ts";
 import type { KindAdapter } from "./kind_adapter.ts";
 import {
   type BundleProber,
@@ -1881,3 +1882,111 @@ Deno.test("bundleWithCache: a trusted pulled bundle records nothing (swamp-club#
   assertEquals(readerCalls, 0);
   assertEquals(recorded, undefined);
 });
+
+Deno.test("ExtensionLoader.isPulledSourcePath: judges the same file pulled through either spelling of a symlinked repo root", async () => {
+  const base = await Deno.makeTempDir({ prefix: "pulled_origin_test_" });
+  try {
+    const realRepo = join(base, "real");
+    const linkRepo = join(base, "link");
+    const pulledDir = join(realRepo, ".swamp", "pulled-extensions", "@x", "y");
+    await Deno.mkdir(pulledDir, { recursive: true });
+    await Deno.writeTextFile(join(pulledDir, "hook.ts"), "");
+    await Deno.mkdir(join(realRepo, "extensions"), { recursive: true });
+    await Deno.writeTextFile(join(realRepo, "extensions", "local.ts"), "");
+    await Deno.symlink(realRepo, linkRepo, { type: "dir" });
+    const runtime: DenoRuntime = {
+      ensureDeno: () => Promise.resolve("/usr/bin/false"),
+      getDenoEnv: () => ({}),
+    };
+    for (
+      const [repoDir, other] of [[linkRepo, realRepo], [realRepo, linkRepo]]
+    ) {
+      const loader = new ExtensionLoader(runtime, webhookKindAdapter, repoDir);
+      assertEquals(
+        loader.isPulledSourcePath(
+          join(other, ".swamp", "pulled-extensions", "@x", "y", "hook.ts"),
+        ),
+        true,
+      );
+      assertEquals(
+        loader.isPulledSourcePath(join(other, "extensions", "local.ts")),
+        false,
+      );
+    }
+  } finally {
+    await Deno.remove(base, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("ExtensionLoader.isPulledSourcePath: a repo extensions dir linked into a pulled root reads as pulled", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "pulled_origin_test_" });
+  try {
+    const pulledDir = join(repo, ".swamp", "pulled-extensions", "@x", "y");
+    await Deno.mkdir(pulledDir, { recursive: true });
+    await Deno.writeTextFile(join(pulledDir, "hook.ts"), "");
+    await Deno.mkdir(join(repo, "extensions"), { recursive: true });
+    await Deno.symlink(pulledDir, join(repo, "extensions", "webhooks"), {
+      type: "dir",
+    });
+    const loader = new ExtensionLoader(
+      {
+        ensureDeno: () => Promise.resolve("/usr/bin/false"),
+        getDenoEnv: () => ({}),
+      },
+      webhookKindAdapter,
+      repo,
+    );
+    assertEquals(
+      loader.isPulledSourcePath(
+        join(repo, "extensions", "webhooks", "hook.ts"),
+      ),
+      true,
+    );
+  } finally {
+    await Deno.remove(repo, { recursive: true }).catch(() => {});
+  }
+});
+
+for (const pulled of [true, false]) {
+  Deno.test(`load: registers the source origin for trust decisions (pulled=${pulled})`, async () => {
+    const dir = await Deno.makeTempDir({ prefix: "swamp_origin_" });
+    try {
+      const modelsDir = pulled
+        ? join(dir, ".swamp", "pulled-extensions", "@test", "ext", "models")
+        : join(dir, "extensions", "models");
+      await Deno.mkdir(modelsDir, { recursive: true });
+      const source =
+        'export const model = { type: "@test/cached", name: "cached" };\n';
+      await Deno.writeTextFile(join(modelsDir, "cached.ts"), source);
+      const bundleDir = join(
+        dir,
+        ".swamp",
+        "bundles",
+        bundleNamespace(modelsDir, dir),
+      );
+      await Deno.mkdir(bundleDir, { recursive: true });
+      await Deno.writeTextFile(join(bundleDir, "cached.js"), source);
+
+      const origins: unknown[] = [];
+      const adapter: KindAdapter = {
+        ...makeStubAdapter(new Set<string>()),
+        normalizeType: () => "@test/cached",
+        register(_type, _validated, _module, ctx) {
+          origins.push(ctx.origin);
+        },
+      };
+      const loader = new ExtensionLoader(stubDenoRuntime, adapter, dir);
+      await withMockedCommand(
+        () => ({ stdout: "", stderr: "simulated bundle failure", code: 1 }),
+        () => loader.load(modelsDir),
+      );
+      assertEquals(origins, [
+        pulled
+          ? { kind: "pulled", extensionName: "@test/ext" }
+          : { kind: "local" },
+      ]);
+    } finally {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  });
+}

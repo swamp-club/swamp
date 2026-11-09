@@ -140,6 +140,11 @@ and `config`; it takes only an `@vault=` secret and a route under `/hooks/`, and
 a missing type refuses only that file. An extension never declares a route:
 routes come only from `serve.yaml`, `--webhook` flags and route files.
 
+A pulled type also needs its collective trusted, however it was installed; local
+types (repo extension dirs, source mounts) are always trusted. Serve refuses an
+untrusted one at startup and on reload, and answers its deliveries with `500`.
+Fix: `swamp extension trust add <collective>`, then `swamp serve reload`.
+
 ## Testing
 
 ```typescript

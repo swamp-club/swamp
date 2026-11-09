@@ -1477,6 +1477,28 @@ the reload updater register routes
 (`integration/serve_webhook_route_files_rules_test.ts`), so pulling an extension
 cannot open an endpoint.
 
+**Extension scheme trust.** A route may use an extension type only when the
+type is local (from the repository's own extension directories or a source
+mount) or pulled from a trusted collective (`trustedCollectives`, see
+[Trusted Collectives](extensions.md#trusted-collectives)). For a pulled type,
+both the scheme's collective and the owning extension's collective must be
+trusted; pulling or pinning an extension confers no trust. Whether a type is
+pulled is decided on canonical, symlink-resolved paths
+(`ExtensionLoader.isPulledSourcePath`), and a type with no recorded origin is
+treated as pulled. The rule (`evaluateWebhookTypeTrust`,
+`src/domain/webhooks/webhook_type_trust.ts`) is applied to every route source,
+at startup and on reload, with an error naming the route, scheme and
+collective and the `swamp extension trust add` fix. A refused `serve.yaml` or
+`--webhook` route stops startup or fails the webhook part of a reload; a refused
+route file is refused alone like any other bad file (it is not an environment
+failure, so a reload does not keep its old endpoint). It is applied again on every delivery against
+the trust list in force, so a route whose collective leaves the list stops
+serving even while a refused reload keeps the old route set; the caller gets
+the generic `500` and nothing is queued. Every reload path refreshes the trust
+list, so a change made with `swamp extension trust` reaches a running serve on
+the next `swamp serve reload` or restart. Deliveries verified and queued before
+a trust removal still run, and boot replay does not re-verify them.
+
 An extension handler may also `transform` the payload body and `respond` with a
 custom HTTP response, optionally without starting a run. Core keeps every
 security decision: hooks run only after verification, `transform` sees only

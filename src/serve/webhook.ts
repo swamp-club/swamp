@@ -49,10 +49,15 @@ import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
 import type { WebhookConfigEntry } from "./serve_config.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import {
+  evaluateWebhookTypeTrust,
+  untrustedWebhookSchemeMessage,
+} from "../domain/webhooks/webhook_type_trust.ts";
+import {
   isExtensionWebhookScheme,
   isWebhookScheme,
   resolveWebhookHandler,
   type VerifierConfig,
+  type WebhookHandlerResolution,
 } from "./webhook_verifiers.ts";
 
 const logger = getSwampLogger(["serve", "webhook"]);
@@ -319,6 +324,7 @@ export async function parseWebhookFlag(
 export async function resolveExtensionWebhookEndpoints(
   endpoints: readonly WebhookEndpoint[],
   resolveType: (type: string) => Promise<boolean>,
+  trustedCollectives: readonly string[],
 ): Promise<WebhookEndpoint[]> {
   const resolved: WebhookEndpoint[] = [];
   for (const endpoint of endpoints) {
@@ -348,6 +354,20 @@ export async function resolveExtensionWebhookEndpoints(
         `Webhook ${endpoint.route} uses scheme '${verifier.scheme}', but no ` +
           `installed extension provides that webhook type. Pull the ` +
           `extension that ships it — find it with 'swamp extension search'.`,
+      );
+    }
+    const trust = evaluateWebhookTypeTrust(
+      verifier.scheme,
+      info.origin,
+      trustedCollectives,
+    );
+    if (!trust.trusted) {
+      throw new UserError(
+        untrustedWebhookSchemeMessage(
+          endpoint.route,
+          verifier.scheme,
+          trust.collective,
+        ),
       );
     }
     let config: Record<string, unknown> = { ...verifier.config };
@@ -527,6 +547,11 @@ export interface WebhookServiceDeps {
    * time, in arrival order.
    */
   maxConcurrentRuns?: number;
+  /**
+   * read on every delivery, so a reload that drops a collective refuses its
+   * routes at once; absent, only local extension types are trusted
+   */
+  trustedCollectives?: () => readonly string[];
   now?: () => number;
 }
 
@@ -795,14 +820,23 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    const verifier = this.resolveHandler(endpoint);
-    if (!verifier) {
+    const resolution = this.resolveHandler(endpoint);
+    if (resolution.kind === "missing") {
       return this.handlerFailure(
         endpoint,
         "Webhook handler unavailable",
         sourceIp,
       );
     }
+    if (resolution.kind === "untrusted") {
+      return this.handlerFailure(
+        endpoint,
+        `Webhook scheme ${endpoint.verifier.scheme} comes from untrusted ` +
+          `collective ${resolution.collective}`,
+        sourceIp,
+      );
+    }
+    const verifier = resolution.handler;
 
     for (const header of verifier.requiredHeaders) {
       if (!req.headers.get(header)) {
@@ -1021,15 +1055,18 @@ export class WebhookService {
 
   private resolveHandler(
     endpoint: WebhookEndpoint,
-  ): ReturnType<typeof resolveWebhookHandler> {
+  ): WebhookHandlerResolution {
     try {
-      return resolveWebhookHandler(endpoint.verifier);
+      return resolveWebhookHandler(
+        endpoint.verifier,
+        this.deps.trustedCollectives?.() ?? [],
+      );
     } catch (error) {
       logger.warn("Webhook handler creation failed on {route}: {error}", {
         route: endpoint.route,
         error: error instanceof Error ? error.message : String(error),
       });
-      return undefined;
+      return { kind: "missing" };
     }
   }
 
