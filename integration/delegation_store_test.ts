@@ -20,6 +20,7 @@
 import "../src/domain/models/models.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  endDelegation,
   issueDelegationTokens,
   recordApproval,
   recordReported,
@@ -109,5 +110,64 @@ Deno.test("DelegationStore: a write whose push fails is restored once, and a fai
     assertEquals((await store.read(consented.id))?.phase, "consented");
     assertEquals((await store.read(consented.id))?.tokens, undefined);
     assertEquals(reloads >= 2, true);
+  });
+});
+
+Deno.test("DelegationStore: an end whose push fails is kept, never undone", async () => {
+  await withServeRepo(async (repo) => {
+    let failPushes = false;
+    const store = new DelegationStore({
+      repoDir: repo.repoDir,
+      repoContext: repo.repoContext,
+      lock: () =>
+        Promise.resolve({
+          synced: false,
+          push: () =>
+            failPushes
+              ? Promise.reject(new Error("push refused"))
+              : Promise.resolve(),
+          release: () => Promise.resolve(),
+        }),
+      directory: { reload: () => Promise.resolve() },
+    });
+    const now = Date.now();
+    const consented = recordReported(
+      recordApproval(
+        startDelegation({
+          id: crypto.randomUUID(),
+          integrationId: "slack-bot",
+          external: {
+            platform: "slack",
+            teamId: "T",
+            userId: "U",
+            display: "Pat",
+            workspace: "W",
+          },
+          ceiling: Ceiling.parse({ version: 1, ceiling: [] }),
+          ceilingDigest: "sha256:x",
+          redeemHash: `sha256:${"a".repeat(64)}`,
+          requestId: "r",
+          digest: "d",
+          consentExpiresAt: new Date(now + 600_000).toISOString(),
+          pollIntervalSeconds: 5,
+        }, now),
+        { sub: "s", email: "e@x", collectives: [], groups: [] },
+        now,
+      ),
+      "link",
+      now,
+    );
+    await store.create(consented);
+    failPushes = true;
+    await assertRejects(
+      () =>
+        store.transition(consented.id, (current) =>
+          Promise.resolve({
+            write: endDelegation(current!, "operator", now),
+            value: undefined,
+          })),
+      DelegationWriteFailed,
+    );
+    assertEquals((await store.read(consented.id))?.phase, "ended");
   });
 });

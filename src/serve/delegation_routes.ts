@@ -215,7 +215,7 @@ export async function handleDelegationRequest(
       return httpFailure(
         503,
         "not_saved",
-        "The change could not be saved; nothing was issued. Retry shortly",
+        "The change was not published yet and no new token was issued; retry shortly",
       );
     }
     logger.error`Delegation ${route} failed: ${error}`;

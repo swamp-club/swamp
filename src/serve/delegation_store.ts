@@ -139,7 +139,7 @@ export class DelegationStore {
       await this.#inRoot(locks, () => this.#write(written));
       await deps.confirmReplicated?.();
     } catch (error) {
-      await this.#rollBack(id, current, error);
+      await this.#rollBack(id, current, written, error);
       throw new DelegationWriteFailed(error);
     } finally {
       await deps.directory.reload();
@@ -148,25 +148,36 @@ export class DelegationStore {
   }
 
   /**
-   * a first write has nothing to restore; any other write is put back so a
-   * later push can never publish tokens no caller received
+   * only tokens nobody received need undoing: an end or a refusal is kept, since
+   * publishing it later is safe, and a first write has nothing to restore
    */
   async #rollBack(
     id: string,
     previous: DelegationRecord | null,
+    written: DelegationRecord,
     cause: unknown,
   ): Promise<void> {
-    logger.warn("Delegation {id} write failed, restoring it: {error}", {
+    logger.warn("Delegation {id} write failed: {error}", {
       id,
       error: cause instanceof Error ? cause.message : String(cause),
     });
-    if (previous === null) return;
+    if (
+      previous === null || written.phase === "ended" ||
+      written.phase === "refused"
+    ) return;
     // one attempt that never rolls back itself, so a failing restore can't
     // restore the record it was undoing
     try {
       const deps = this.#deps;
       const locks = await deps.lock(DELEGATION_MODEL_TYPE.normalized, id);
       try {
+        // a writer that came after the failed one wins: restore only what
+        // the failed write itself left
+        const now = await this.read(id);
+        if (now?.updatedAt !== written.updatedAt) {
+          await locks.release();
+          return;
+        }
         await this.#inRoot(
           locks,
           () =>
