@@ -74,6 +74,18 @@ import type { WorkflowRunView } from "../src/libswamp/workflows/workflow_run_vie
 import { VaultService } from "../src/domain/vaults/vault_service.ts";
 import { modelMethodRun } from "../src/libswamp/models/run.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  workflowApprove,
+  type WorkflowApproveEvent,
+} from "../src/libswamp/workflows/approve.ts";
+import {
+  workflowReject,
+  type WorkflowRejectEvent,
+} from "../src/libswamp/workflows/reject.ts";
+import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
+import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
+import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
+import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import { createWorkerModelRunDeps } from "../src/libswamp/worker/run_deps.ts";
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
@@ -605,6 +617,77 @@ export class Fleet implements AsyncDisposable {
     );
   }
 
+  /** what serve's handlers act through, with auth off and the given auto-resume */
+  serveContext(autoResume: boolean): ConnectionContext {
+    return {
+      repoDir: this.repoDir,
+      repoContext: this.repoContext,
+      datastoreConfig: this.#repo.datastoreConfig,
+      datastoreResolver: this.#repo.datastoreResolver,
+      authConfig: {
+        mode: "none",
+        admins: [],
+        allowedCollectives: [],
+        allowedUsers: [],
+        oauthProvider: "",
+        groupsField: "",
+        restrictedModelTypes: [],
+        restrictedCommands: [],
+        approveRequiresExplicitGrant: false,
+        signalRequiresExplicitGrant: false,
+        tagRequiresExplicitGrant: false,
+      },
+      activeRunRegistry: new ActiveRunRegistry(),
+      serveOptions: { autoResume } as MergedServeOptions,
+    } as ConnectionContext;
+  }
+
+  /** Resumes a suspended run after a decision, as serve's auto-resume does. */
+  async resumeRun(
+    workflowName: string,
+    runId: string,
+    options: { events?: WorkflowExecutionEvent[] } = {},
+  ): Promise<WorkflowRun> {
+    const service = await this.#executionService();
+    return await this.#finish(
+      runId,
+      service.resume(workflowName, runId, { inputs: {}, suspendedOnly: true }),
+      options.events,
+    );
+  }
+
+  /** Approves or rejects a waiting gate through libswamp, as the CLI and serve do. */
+  async decideGate(
+    workflowName: string,
+    runId: string,
+    stepName: string,
+    approved: boolean,
+    reason?: string,
+  ): Promise<WorkflowApproveEvent | WorkflowRejectEvent> {
+    const ctx = createLibSwampContext();
+    const deps = {
+      workflowRepo: this.repoContext.workflowRepo,
+      runRepo: this.repoContext.workflowRunRepo,
+      runClaims: unclaimedRuns,
+    };
+    const input = {
+      workflowIdOrName: workflowName,
+      stepName,
+      runId,
+      decidedBy: "approver",
+      reason,
+    };
+    const events: (WorkflowApproveEvent | WorkflowRejectEvent)[] = [];
+    const stream = approved
+      ? workflowApprove(ctx, deps, input)
+      : workflowReject(ctx, {
+        ...deps,
+        findEvaluatedWorkflow: () => Promise.resolve(null),
+      }, input);
+    for await (const event of stream) events.push(event);
+    return events.at(-1)!;
+  }
+
   /** As the execution service does: resets the unknown steps, then resumes. */
   async recoverRun(
     workflowName: string,
@@ -674,7 +757,9 @@ export class Fleet implements AsyncDisposable {
     let finished: WorkflowRun | undefined;
     for await (const event of stream) {
       events?.push(event);
-      if (event.kind === "completed") finished = event.run;
+      if (event.kind === "completed" || event.kind === "suspended") {
+        finished = event.run;
+      }
     }
     if (!finished) throw new Error(`resume of run ${runId} did not complete`);
     return finished;

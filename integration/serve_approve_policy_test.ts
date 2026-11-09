@@ -21,6 +21,8 @@ import { join } from "@std/path";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { fanOutGatePromptLine } from "../src/domain/workflows/fan_out_gates.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
@@ -110,13 +112,62 @@ interface Harness {
   workflow: Workflow;
   runId: string;
   loader: PolicySnapshotLoader;
+  jobName: string;
+  stepName: string;
+}
+
+const FAN_OUT_GATE = "patch[approve-plan]";
+
+/**
+ * a run suspended at a fan-out job's plan gate, saved as runFanOutJob leaves
+ * it; serve decides it through the same handlers as any gate
+ */
+async function saveFanOutGateRun(
+  repoContext: Awaited<
+    ReturnType<typeof requireInitializedRepoUnlocked>
+  >["repoContext"],
+): Promise<{ workflow: Workflow; runId: string }> {
+  const workflow = Workflow.fromData(
+    {
+      id: crypto.randomUUID(),
+      name: `approve-policy-fanout-${crypto.randomUUID()}`,
+      jobs: [{
+        name: "patch",
+        fanOut: { rollout: { batches: ["100%"], approve: ["plan"] } },
+        labels: { fleet: "web" },
+        steps: [{
+          name: "apply",
+          task: { type: "assert", expr: "true", message: "unreachable" },
+        }],
+      }],
+    } as Parameters<typeof Workflow.fromData>[0],
+  );
+  await repoContext.workflowRepo.save(workflow);
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("patch")!;
+  job.start();
+  job.recordFanOutPlan({
+    kind: "planned",
+    members: [{ worker: "w-1", instanceUuid: "u-1", disposition: "dispatch" }],
+    plannedLanes: 1,
+    maxFailures: null,
+  }, [["w-1"]]);
+  job.expandLanes(["apply[w-1]"], [FAN_OUT_GATE]);
+  const gate = job.getStep(FAN_OUT_GATE)!;
+  gate.start();
+  gate.waitForApproval(fanOutGatePromptLine("patch", "plan"));
+  run.suspend();
+  await repoContext.workflowRunRepo.save(createWorkflowId(workflow.id), run);
+  return { workflow, runId: run.id };
 }
 
 async function suspendAtGate(
   repoDir: string,
   approveRequiresExplicitGrant: boolean,
+  fanOut = false,
 ): Promise<Harness> {
-  const workflow = gatedWorkflow(`approve-policy-${crypto.randomUUID()}`);
+  let workflow = gatedWorkflow(`approve-policy-${crypto.randomUUID()}`);
   await new YamlWorkflowRepository(repoDir).save(workflow);
   const {
     repoDir: resolved,
@@ -156,19 +207,23 @@ async function suspendAtGate(
   await loader.load();
 
   let runId: string | undefined;
-  await executeWorkflowWithLocks(
-    resolved,
-    repoContext,
-    datastoreConfig,
-    { workflowIdOrName: workflow.name, inputs: {} },
-    new AbortController().signal,
-    (event: WorkflowRunEvent) => {
-      if (event.kind === "started") runId = event.runId;
-    },
-    syncService,
-    undefined,
-    { syncGate: undefined },
-  );
+  if (fanOut) {
+    ({ workflow, runId } = await saveFanOutGateRun(repoContext));
+  } else {
+    await executeWorkflowWithLocks(
+      resolved,
+      repoContext,
+      datastoreConfig,
+      { workflowIdOrName: workflow.name, inputs: {} },
+      new AbortController().signal,
+      (event: WorkflowRunEvent) => {
+        if (event.kind === "started") runId = event.runId;
+      },
+      syncService,
+      undefined,
+      { syncGate: undefined },
+    );
+  }
   if (!runId) throw new Error("no run id observed");
 
   const authConfig: ServeAuthConfig = {
@@ -194,7 +249,14 @@ async function suspendAtGate(
     activeRunRegistry: new ActiveRunRegistry(),
     serveOptions: { autoResume: false } as MergedServeOptions,
   } as ConnectionContext;
-  return { ctx, workflow, runId, loader };
+  return {
+    ctx,
+    workflow,
+    runId,
+    loader,
+    jobName: fanOut ? "patch" : "main",
+    stepName: fanOut ? FAN_OUT_GATE : GATE,
+  };
 }
 
 interface Reply {
@@ -219,7 +281,7 @@ async function approve(h: Harness, principal: Principal): Promise<Reply> {
     socket,
     h.ctx,
     "approve-1",
-    { workflowIdOrName: h.workflow.name, stepName: GATE, runId: h.runId },
+    { workflowIdOrName: h.workflow.name, stepName: h.stepName, runId: h.runId },
     new AbortController(),
     principal,
   );
@@ -232,7 +294,7 @@ async function reject(h: Harness, principal: Principal): Promise<Reply> {
     socket,
     h.ctx,
     "reject-1",
-    { workflowIdOrName: h.workflow.name, stepName: GATE, runId: h.runId },
+    { workflowIdOrName: h.workflow.name, stepName: h.stepName, runId: h.runId },
     new AbortController(),
     principal,
   );
@@ -246,7 +308,7 @@ async function gate(
     createWorkflowId(h.workflow.id),
     createWorkflowRunId(h.runId),
   );
-  const step = run?.getJob("main")?.getStep(GATE);
+  const step = run?.getJob(h.jobName)?.getStep(h.stepName);
   return {
     status: step?.status,
     decidedBy: step?.approvalDecision?.decidedBy,
@@ -323,6 +385,67 @@ Deno.test({
         const decided = await gate(h);
         assertEquals(decided.approved, false);
         assertEquals(decided.decidedBy, "user:release-approver");
+      } finally {
+        await h.loader.dispose();
+      }
+    });
+  },
+});
+
+for (const explicit of [false, true]) {
+  Deno.test({
+    name: `approve policy: a fan-out plan gate is decided as a plain gate is${
+      explicit ? " with an explicit grant required" : " by default"
+    }`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withRepo(async (repoDir) => {
+        const h = await suspendAtGate(repoDir, explicit, true);
+        try {
+          const byResumer = await approve(h, RESUMER);
+          if (explicit) {
+            assertEquals(byResumer.type, "error", JSON.stringify(byResumer));
+            assertStringIncludes(byResumer.error!.message, "Access denied");
+            assertEquals((await gate(h)).status, "waiting_approval");
+            const allowed = await approve(h, APPROVER);
+            assertEquals(allowed.type, "workflow.approve");
+            assertEquals((await gate(h)).decidedBy, "user:release-approver");
+          } else {
+            assertEquals(byResumer.type, "workflow.approve");
+            assertEquals((await gate(h)).decidedBy, "user:swamp-resumer");
+          }
+          assertEquals((await gate(h)).approved, true);
+        } finally {
+          await h.loader.dispose();
+        }
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "approve policy: rejecting a fan-out plan gate through serve holds its lanes and fails the job",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const h = await suspendAtGate(repoDir, true, true);
+      try {
+        const denied = await reject(h, RESUMER);
+        assertEquals(denied.type, "error", JSON.stringify(denied));
+        const allowed = await reject(h, APPROVER);
+        assertEquals(allowed.type, "workflow.reject", JSON.stringify(allowed));
+        const run = await h.ctx.repoContext.workflowRunRepo.findById(
+          createWorkflowId(h.workflow.id),
+          createWorkflowRunId(h.runId),
+        );
+        const job = run!.getJob("patch")!;
+        assertEquals(job.status, "failed");
+        assertEquals(job.getStep("apply[w-1]")?.status, "skipped");
+        assertEquals(job.getStep("apply[w-1]")?.settledByAbort, true);
+        assertEquals((await gate(h)).approved, false);
       } finally {
         await h.loader.dispose();
       }

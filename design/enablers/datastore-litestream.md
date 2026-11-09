@@ -996,7 +996,9 @@ change that is live on filesystem-v3 serve today, and it changes no file
 content. A systemd-managed serve needs `KillMode=mixed` or `process`: under the
 default `control-group` the detached supervisor and Litestream are signalled
 with serve, within about 1 ms, and Litestream exits (after its own final sync)
-before serve's closing sync runs. The unit `serve daemon enable` writes sets
+before serve's closing sync runs. A supervisor that is itself signalled waits
+up to its stop wait for Litestream to exit on its own before it sends SIGTERM:
+a second SIGTERM ends Litestream at once and cuts that final sync short. The unit `serve daemon enable` writes sets
 `KillMode=mixed`. For a unit swamp does not write, or a container that
 signals every process, serve skips its closing compaction once the sidecar is
 gone, so it commits nothing no replica holds, and confirms without a sidecar:

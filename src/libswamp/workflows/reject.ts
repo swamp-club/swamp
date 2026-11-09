@@ -84,6 +84,8 @@ export interface WorkflowRejectData {
   cancelledNestedRuns?: CascadedNestedRunData[];
   stopRequestedNestedRuns?: CascadedNestedRunData[];
   awaitingParent?: AwaitingParentData;
+  /** a fan-out job's gate: the lanes the rejection held, which never started */
+  fanOutHeld?: { jobName: string; held: string[]; reason: "rejected" };
 }
 
 export type WorkflowRejectEvent =
@@ -161,6 +163,7 @@ type RejectOutcome =
     workflowName: string;
     workflowId: string;
     decidedBy: string;
+    fanOutHeld?: WorkflowRejectData["fanOutHeld"];
   };
 
 /**
@@ -245,14 +248,32 @@ async function rejectClaimedRun(
 
   const decidedBy = input.decidedBy ?? Deno.env.get("USER") ??
     Deno.env.get("USERNAME") ?? "unknown";
-  step.recordApprovalDecision({
+  const decision = {
     approved: false,
     reason: input.reason,
     decidedBy,
     ...(input.client !== undefined ? { client: input.client } : {}),
     decidedAt: new Date().toISOString(),
-  });
-  step.fail(input.reason ?? "Approval rejected");
+  };
+  const gateJob = jobName !== undefined ? run.getJob(jobName) : undefined;
+  let fanOutHeld: WorkflowRejectData["fanOutHeld"];
+  if (
+    gateJob?.fanOutPlan !== undefined &&
+    gateJob.fanOutGateKindOf(step.stepName) !== undefined
+  ) {
+    fanOutHeld = {
+      jobName: gateJob.jobName,
+      held: gateJob.rejectFanOutGate(
+        step.stepName,
+        decision,
+        input.reason ?? "Approval rejected",
+      ),
+      reason: "rejected",
+    };
+  } else {
+    step.recordApprovalDecision(decision);
+    step.fail(input.reason ?? "Approval rejected");
+  }
   // The gate's job is left open: settling ends it from its failed gate,
   // along with every other job and step the rejection leaves unfinished.
   completeAndSettle(run, settlementWorkflow);
@@ -260,7 +281,13 @@ async function rejectClaimedRun(
   if (deps.runTracker) {
     deps.runTracker.complete(run.id, "failed");
   }
-  return { run, workflowName, workflowId, decidedBy };
+  return {
+    run,
+    workflowName,
+    workflowId,
+    decidedBy,
+    ...(fanOutHeld !== undefined ? { fanOutHeld } : {}),
+  };
 }
 
 export async function* workflowReject(
@@ -323,7 +350,8 @@ export async function* workflowReject(
           yield { kind: "error", error: outcome.error };
           return;
         }
-        const { run, workflowName, workflowId, decidedBy } = outcome;
+        const { run, workflowName, workflowId, decidedBy, fanOutHeld } =
+          outcome;
         // The decision is saved: an unreadable linked run must not turn it
         // into an error, so these reads are best effort.
         const nested = await settleNestedRunsOf(deps, deps.cascade, run)
@@ -346,6 +374,7 @@ export async function* workflowReject(
             runStatus: "failed",
             ...(nested ? nestedCascadeFields(nested) : {}),
             ...(awaitingParent ? { awaitingParent } : {}),
+            ...(fanOutHeld !== undefined ? { fanOutHeld } : {}),
           },
         };
       })(),

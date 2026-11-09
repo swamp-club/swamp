@@ -38,6 +38,10 @@ import { containsExpression } from "../../domain/expressions/expression_parser.t
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
 import { signalByKeyCommand } from "../../domain/workflows/signal_wait.ts";
+import {
+  type FanOutGatePrompt,
+  fanOutGatePromptText,
+} from "../../domain/workflows/fan_out_gates.ts";
 import { unguardedConsole } from "../../domain/models/console_guard.ts";
 import { UserError } from "../../domain/errors.ts";
 import { prettyJson } from "../output/json_stream.ts";
@@ -525,6 +529,14 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               }: "${e.prompt}"`,
           ),
         );
+        // the first line repeats the prompt above
+        for (
+          const line of e.fanOutGate !== undefined
+            ? fanOutGatePromptText(e.fanOutGate).split("\n").slice(1)
+            : []
+        ) {
+          writeOutput(this.pipe.line(name, escapeControlCharacters(line)));
+        }
         writeBlankLine();
         writeOutput(
           this.pipe.line(
@@ -1235,6 +1247,7 @@ interface RequestedGate {
   stepId: string;
   prompt: string;
   timeout?: number;
+  fanOutGate?: FanOutGatePrompt;
 }
 
 class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
@@ -1346,6 +1359,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
           stepId: e.stepId,
           prompt: e.prompt,
           timeout: e.timeout,
+          ...(e.fanOutGate !== undefined ? { fanOutGate: e.fanOutGate } : {}),
         });
       },
       signal_wait_requested: (e) => {
@@ -1491,6 +1505,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               jobId: gate.jobId,
               prompt: gate.prompt,
               timeout: gate.timeout,
+              ...(gate.fanOutGate !== undefined
+                ? { fanOutGate: gate.fanOutGate }
+                : {}),
             }
             : {
               workflowName: e.run.workflowName,
@@ -1499,6 +1516,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
               jobId: e.jobId,
               prompt: e.prompt,
               timeout: e.timeout,
+              ...(e.fanOutGate !== undefined
+                ? { fanOutGate: e.fanOutGate }
+                : {}),
             },
           ...waitsField,
           ...(e.nested ? { waitingOnNestedRun: e.nested } : {}),
@@ -1610,6 +1630,9 @@ function fanOutPlanLines(e: FanOutPlanned): string[] {
           }`
       }`,
     );
+  }
+  if (e.approve !== undefined) {
+    lines.push(`approval gates ${dim("-")} ${e.approve.join(", ")}`);
   }
   if (e.resumed !== undefined) {
     lines.push(

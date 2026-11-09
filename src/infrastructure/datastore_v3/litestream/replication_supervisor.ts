@@ -280,7 +280,7 @@ async function superviseHeld(
       await deps.sleep(options.tickMs);
       if (exited) return "litestream-exited";
       if (stopRequested) {
-        await stopChild(child, options.stopWaitMs, deps);
+        await stopSignalledChild(child, options.stopWaitMs, deps);
         return "stop-requested";
       }
       const idle = shouldIdleExit(
@@ -448,6 +448,22 @@ class ReplicaCheck {
       this.#running = undefined;
     });
   }
+}
+
+/**
+ * a stop signal reaches the whole group, Litestream included, and a second
+ * SIGTERM ends Litestream at once, cutting its final upload short
+ */
+async function stopSignalledChild(
+  child: LitestreamChild,
+  stopWaitMs: number,
+  deps: SupervisorDeps,
+): Promise<void> {
+  const exitedAlone = await Promise.race([
+    child.exited.then(() => true, () => true),
+    deps.sleep(stopWaitMs).then(() => false),
+  ]);
+  if (!exitedAlone) await stopChild(child, stopWaitMs, deps);
 }
 
 async function stopChild(

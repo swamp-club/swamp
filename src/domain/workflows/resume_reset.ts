@@ -295,6 +295,8 @@ function selectResetRecords(
   pairs: ReadonlyMap<string, string> | undefined,
   templateKeysToReset: ReadonlySet<string>,
   entryJobs: ReadonlySet<string>,
+  // only an explicit --from asks an approved gate again
+  resetGates: boolean,
 ): SelectedRecord[] {
   // a forEach template entry was replaced by expanded entries, so prefix
   // matching applies only to steps the definition declares with forEach
@@ -303,15 +305,20 @@ function selectResetRecords(
     const job = workflowJobOf(workflow, jobRun, pairs);
     if (!job) continue;
     const kept = entryJobs.has(job.name) ? keptLanes(jobRun) : new Set();
+    let laneRecordCount = 0;
+    let lanesReset = 0;
+    const gates: string[] = [];
     for (const stepRun of jobRun.steps) {
       const lane = laneStepOf(stepRun.stepName, jobRun.fanOutPlan?.lanes);
       if (lane !== undefined) {
+        laneRecordCount++;
         if (
           !kept.has(lane.worker) &&
           templateKeysToReset.has(
             stepRunKey({ jobName: job.name, stepName: lane.authored }),
           )
         ) {
+          lanesReset++;
           selected.push({
             jobName: jobRun.jobName,
             stepName: stepRun.stepName,
@@ -319,6 +326,12 @@ function selectResetRecords(
             branch: "lane",
           });
         }
+        continue;
+      }
+      if (
+        jobRun.fanOutGateKindOf(stepRun.stepName) !== undefined
+      ) {
+        gates.push(stepRun.stepName);
         continue;
       }
       const branch = matchRecord(job, stepRun);
@@ -329,6 +342,17 @@ function selectResetRecords(
         forEachTemplate: stepRun.forEachTemplate,
         branch,
       });
+    }
+    // a gate is asked again only when the job runs again from its start
+    if (resetGates && lanesReset > 0 && lanesReset === laneRecordCount) {
+      for (const stepName of gates) {
+        selected.push({
+          jobName: jobRun.jobName,
+          stepName,
+          forEachTemplate: undefined,
+          branch: "lane",
+        });
+      }
     }
   }
   return selected;
@@ -378,6 +402,7 @@ export function computeStepsToReset(
     pairs,
     keys,
     new Set([entry.jobName]),
+    true,
   )
     .map(({ jobName, stepName }) => ({ jobName, stepName }));
   if (stepsToReset.length === 0) {
@@ -613,6 +638,16 @@ export function planFailedRunResume(
   // first: without a plan a lane record reads as a step the workflow lacks
   const fanOut = fanOutStructure(workflow, run);
   if (fanOut !== undefined) throw refuse(fanOut);
+  // a lane held by the rejection would otherwise start under a decided gate
+  const rejectedGate = run.failedSteps().find((step) =>
+    step.approvalRejected &&
+    run.getJob(step.jobName)?.fanOutGateKindOf(step.stepName) !== undefined
+  );
+  if (rejectedGate !== undefined) {
+    throw refuse(
+      `Approval gate "${rejectedGate.stepName}" of fan-out job "${rejectedGate.jobName}" was rejected; neither a retry nor --from asks it again.`,
+    );
+  }
 
   const pairs = pairExpressionJobs(workflow, run);
   const entries = from !== undefined
@@ -638,6 +673,7 @@ export function planFailedRunResume(
     pairs,
     keys,
     new Set(entries.map((entry) => entry.jobName)),
+    from !== undefined,
   );
   if (selected.length === 0) {
     throw from !== undefined

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { fanOutGatePromptText } from "../../domain/workflows/fan_out_gates.ts";
 import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
@@ -194,6 +195,14 @@ export function renderApprovals(
             "  Inputs:       {inputs}",
             { inputs: inputsDigest },
           );
+        }
+        // the first line repeats the prompt above
+        for (
+          const line of item.fanOutGate !== undefined
+            ? fanOutGatePromptText(item.fanOutGate).split("\n").slice(1)
+            : []
+        ) {
+          writeOutput(`  ${escapeControlCharacters(line)}`);
         }
         const refusal = decisionRefusal(item);
         if (refusal) cliCtx.logger.info(refusal);

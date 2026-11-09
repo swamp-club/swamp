@@ -3430,3 +3430,92 @@ Deno.test("JsonWorkflowRunRenderer: a run whose JSON cannot be printed is report
     console.log = originalLog;
   }
 });
+
+const PLAN_GATE_PROMPT = {
+  gate: "plan" as const,
+  job: "patch",
+  selector: { labels: { fleet: "web" } },
+  members: [
+    { worker: "w-1", disposition: "dispatch", batch: 0 },
+    { worker: "w-2", disposition: "excluded", reason: "draining" },
+  ],
+  batches: [["w-1"]],
+  budget: { allowed: 0 },
+};
+
+function gateEvents(withGate: boolean): WorkflowRunEvent[] {
+  const prompt =
+    "Approve the fan-out plan of job 'patch' before any lane starts";
+  return [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "fleet",
+      jobs: [{ id: "patch", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "patch" },
+    {
+      kind: "approval_requested",
+      runId: "run-1",
+      jobId: "patch",
+      stepId: "patch[approve-plan]",
+      prompt,
+      ...(withGate ? { fanOutGate: PLAN_GATE_PROMPT } : {}),
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "patch",
+      stepId: "patch[approve-plan]",
+      prompt,
+      ...(withGate ? { fanOutGate: PLAN_GATE_PROMPT } : {}),
+    },
+  ];
+}
+
+Deno.test("ConsoleWorkflowRunRenderer: a fan-out gate prints its members, batches and budget under the prompt", async () => {
+  const renderer = createWorkflowRunRenderer("log", { workflowName: "fleet" });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(gateEvents(true)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "approval required");
+  assertStringIncludes(output, "Selector: fleet=web");
+  assertStringIncludes(output, "w-1: dispatch, lane in batch 1");
+  assertStringIncludes(output, "w-2: excluded (draining), no lane");
+  assertStringIncludes(output, "Batch 1: w-1");
+  assertStringIncludes(output, "Budget: 0 failed lane(s) allowed");
+  assertStringIncludes(
+    output,
+    "swamp workflow approve fleet 'patch[approve-plan]'",
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a gate without fan-out data prints no plan lines", async () => {
+  const renderer = createWorkflowRunRenderer("log", { workflowName: "fleet" });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(gateEvents(false)), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("Selector:"), false);
+  assertEquals(output.includes("Budget:"), false);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a fan-out gate carries its prompt data in approvalRequired", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "fleet",
+    });
+    await consumeStream(toStream(gateEvents(true)), renderer.handlers());
+  } finally {
+    console.log = originalLog;
+  }
+  const parsed = JSON.parse(logs.at(-1)!);
+  assertEquals(parsed.approvalRequired.stepId, "patch[approve-plan]");
+  assertEquals(parsed.approvalRequired.fanOutGate, PLAN_GATE_PROMPT);
+});

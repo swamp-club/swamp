@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { fanOutGateRecordOf } from "../../domain/remote/fan_out.ts";
+import {
+  type FanOutGatePrompt,
+  fanOutGatePrompt,
+} from "../../domain/workflows/fan_out_gates.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -90,6 +95,7 @@ export interface PendingApproval {
    */
   parentMissing?: boolean;
   serveStarted?: boolean;
+  fanOutGate?: FanOutGatePrompt;
 }
 
 export interface ExpiredApproval {
@@ -296,6 +302,13 @@ export async function* workflowApprovals(
               : undefined;
           }
 
+          const lanes = job?.fanOutPlan?.lanes;
+          const gate = lanes !== undefined
+            ? fanOutGateRecordOf(waiting.jobName, waiting.stepName, lanes)
+            : undefined;
+          const fanOutGate = gate !== undefined && job !== undefined
+            ? fanOutGatePrompt(job.toData(), gate, (text) => run.mask(text))
+            : undefined;
           // One unreadable parent must not fail the whole listing.
           const verdict = parentRun && parentWaiting === false
             ? await nestedLink.parentVerdict(run).catch(() => undefined)
@@ -308,6 +321,7 @@ export async function* workflowApprovals(
             suspendedAt: step?.startedAt?.toISOString(),
             prompt,
             inputs: run.inputs,
+            ...(fanOutGate !== undefined ? { fanOutGate } : {}),
             ...(run.initiatedBy !== undefined
               ? { initiatedBy: run.initiatedBy }
               : {}),

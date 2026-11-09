@@ -21,6 +21,8 @@ import type { MethodExecutionEvent } from "../models/method_events.ts";
 import type { DataHandle } from "../models/model.ts";
 import type { EnvVarUsageDetail } from "../models/validation_service.ts";
 import type { AssertSeverity } from "./step_task.ts";
+import type { FanOutGatePrompt } from "./fan_out_gates.ts";
+import type { FanOutGateKind } from "../remote/fan_out.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { WorkflowRun } from "./workflow_run.ts";
 
@@ -82,6 +84,8 @@ export type WorkflowExecutionEvent =
     /** set for a rollout: the frozen plan's batches and its budget, null for none */
     batches?: string[][];
     maxFailures?: number | null;
+    /** set when the plan holds approval gates: the kinds it holds */
+    approve?: FanOutGateKind[];
     /**
      * set on a resume: the lanes that run again and those whose result stands;
      * for a rollout, held names the re-run lanes the last halt held
@@ -168,6 +172,8 @@ export type WorkflowExecutionEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+    /** a fan-out job's gate: what the approver decides on, read from the plan */
+    fanOutGate?: FanOutGatePrompt;
   }
   | {
     kind: "signal_wait_requested";
@@ -329,6 +335,7 @@ export type WorkflowExecutionEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+    fanOutGate?: FanOutGatePrompt;
     /**
      * set when the run suspended on a nested workflow step rather than a gate
      * of its own; jobId and stepId are then the nested step

@@ -1117,6 +1117,7 @@ export type WorkflowRunEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+    fanOutGate?: FanOutGatePrompt;
   }
   | { kind: "step_queued"; jobId: string; stepId: string; requirement: string }
   | {
@@ -1196,12 +1197,39 @@ export type WorkflowRunEvent =
   | ({ kind: "suspended"; run: WorkflowRunView } & SuspendedGate)
   | { kind: "error"; error: SerializedError };
 
+/** A fan-out job's approval gate, built from the run's frozen plan. */
+export interface FanOutGatePrompt {
+  gate: "plan" | "canary";
+  job: string;
+  selector: { labels?: Record<string, string>; platform?: string };
+  members: {
+    worker: string;
+    disposition: string;
+    reason?: string;
+    batch?: number;
+  }[];
+  batches: string[][];
+  /** used is set at the canary gate */
+  budget: { allowed: number | null; used?: number };
+  canary?: {
+    lanes: {
+      worker: string;
+      status: "succeeded" | "failed" | "not_run";
+      failedSteps: { step: string; error?: string }[];
+      assertions: { step: string; severity: string; message: string }[];
+    }[];
+  };
+  /** at the canary gate: the lanes the next batch starts */
+  next?: string[];
+}
+
 /** Where a suspended run waits: a gate, a signal wait, or a nested run. */
 export interface SuspendedGate {
   jobId: string;
   stepId: string;
   prompt: string;
   timeout?: number;
+  fanOutGate?: FanOutGatePrompt;
   /** the run waits on a suspended child run; jobId and stepId are the nested step */
   nested?: { workflowName: string; runId: string };
   /** the run waits for a signal at jobId and stepId */

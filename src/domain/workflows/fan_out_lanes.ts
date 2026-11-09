@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { FanOutMember, FanOutSelector } from "../remote/fan_out.ts";
+import {
+  type FanOutGateKind,
+  fanOutGateWorker,
+  type FanOutMember,
+  type FanOutSelector,
+} from "../remote/fan_out.ts";
 import { describePlacement } from "../remote/scheduler.ts";
 import type { PoolWorker } from "../remote/worker_pool.ts";
 import { mergePlacementFields, type PlacementFields } from "./placement.ts";
@@ -47,10 +52,18 @@ export function planLaneSteps(
   jobName: string,
   authoredSteps: readonly string[],
   workers: readonly string[],
+  gates: readonly FanOutGateKind[] = [],
 ): ReadonlyMap<string, LaneStep> {
   const authored = new Set(authoredSteps);
   const steps = new Map<string, LaneStep>();
   for (const worker of workers) {
+    // a gate record is named as a lane of this worker would be
+    const gate = gates.find((kind) => fanOutGateWorker(kind) === worker);
+    if (gate !== undefined) {
+      throw new Error(
+        `Fan-out job '${jobName}' cannot name its lanes: worker '${worker}' has the name its ${gate} approval gate takes. Rename the worker or remove ${gate} from approve.`,
+      );
+    }
     for (const step of authoredSteps) {
       const name = laneStepName(step, worker);
       const clash = steps.get(name);

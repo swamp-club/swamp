@@ -161,6 +161,7 @@ export type {
   DataResponse,
   DataSearchPayload,
   DetachedNestedRunData,
+  FanOutGatePrompt,
   ModelMethodRunEvent,
   ModelMethodRunPayload,
   ModelMethodRunView,
