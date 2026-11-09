@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { ExtensionOrigin } from "../extensions/extension_origin.ts";
+import type { WebhookTypeOrigin } from "./webhook_type_registry.ts";
 
 export type WebhookTypeTrust =
   | { readonly trusted: true }
@@ -35,7 +35,7 @@ function collectiveOf(scopedName: string): string | undefined {
  */
 export function evaluateWebhookTypeTrust(
   scheme: string,
-  origin: ExtensionOrigin | undefined,
+  origin: WebhookTypeOrigin | undefined,
   trustedCollectives: readonly string[],
 ): WebhookTypeTrust {
   if (origin?.kind === "local") return { trusted: true };

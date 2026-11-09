@@ -20,11 +20,11 @@
 import fc from "fast-check";
 import { assertEquals } from "@std/assert";
 import { evaluateWebhookTypeTrust } from "./webhook_type_trust.ts";
-import type { ExtensionOrigin } from "../extensions/extension_origin.ts";
+import type { WebhookTypeOrigin } from "./webhook_type_registry.ts";
 
 const collective = fc.stringMatching(/^[a-z0-9][a-z0-9_-]{0,7}$/);
 const trustList = fc.array(collective, { maxLength: 6 });
-const pulledOrigin: fc.Arbitrary<ExtensionOrigin | undefined> = fc.oneof(
+const pulledOrigin: fc.Arbitrary<WebhookTypeOrigin | undefined> = fc.oneof(
   fc.constant(undefined),
   fc.constant({ kind: "pulled" } as const),
   collective.map((c) =>

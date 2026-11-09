@@ -61,7 +61,7 @@ import type { RunTrackerStore } from "../infrastructure/persistence/run_tracker_
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
-import type { ExtensionOrigin } from "../domain/extensions/extension_origin.ts";
+import type { WebhookTypeOrigin } from "../domain/webhooks/webhook_type_registry.ts";
 
 await initializeLogging({});
 
@@ -773,7 +773,7 @@ const TOKEN_HEADER = "x-test-secret-token";
 function registerExtension(
   handler: Partial<WebhookHandler>,
   configSchema?: z.ZodTypeAny,
-  origin: ExtensionOrigin | null = { kind: "local" },
+  origin: WebhookTypeOrigin | null = { kind: "local" },
 ): ExtensionWebhookScheme {
   const type: ExtensionWebhookScheme = `@test/hook-${crypto.randomUUID()}`;
   webhookTypeRegistry.register({
