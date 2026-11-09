@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { SwampClient } from "./client.ts";
 import { SwampClientError } from "./stream.ts";
 
@@ -102,6 +102,7 @@ Deno.test("SwampClient - workflowRun receives completed event", async () => {
   const result = await client.workflowRun({
     workflowIdOrName: "test-wf",
   });
+  assert(result.outcome === "completed");
   assertEquals(result.workflowName, "test-wf");
   assertEquals(result.status, "succeeded");
 
@@ -610,4 +611,369 @@ Deno.test("SwampClient - modelMethodRunStream throws when the socket closes mid-
     assertEquals(kinds, ["validating_inputs"]);
     assertEquals((error as Error)?.message, "WebSocket closed");
   });
+});
+
+// ── How each request settles ────────────────────────────────────────────
+
+type Frame = Record<string, unknown>;
+type Request = { type: string; id: string; payload?: Record<string, unknown> };
+
+const RUN = {
+  id: "run-1",
+  workflowId: "wf-1",
+  workflowName: "gated",
+  status: "suspended",
+  jobs: [],
+};
+
+const event = (id: string, e: Frame): Frame => ({
+  type: "event",
+  id,
+  event: e,
+});
+const done = (id: string): Frame => ({ type: "done", id });
+
+/** A serve stand-in that answers each request with scripted frames. */
+async function withScriptedServer(
+  script: (req: Request) => Frame[],
+  fn: (client: SwampClient, received: Request[]) => Promise<void>,
+): Promise<void> {
+  const received: Request[] = [];
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    socket.onmessage = (e) => {
+      const msg = JSON.parse(e.data as string) as Request;
+      received.push(msg);
+      for (const frame of script(msg)) socket.send(JSON.stringify(frame));
+    };
+    return response;
+  });
+  const client = new SwampClient(`ws://localhost:${server.addr.port}/ws`);
+  try {
+    await fn(client, received);
+  } finally {
+    client.close();
+    await server.shutdown();
+  }
+}
+
+const gateFrames = (id: string): Frame[] => [
+  event(id, { kind: "started", runId: "run-1", workflowName: "gated" }),
+  event(id, {
+    kind: "approval_requested",
+    runId: "run-1",
+    jobId: "gate",
+    stepId: "approve",
+    prompt: "Approve?",
+  }),
+  event(id, {
+    kind: "suspended",
+    run: RUN,
+    jobId: "gate",
+    stepId: "approve",
+    prompt: "Approve?",
+    timeout: 300,
+  }),
+  done(id),
+];
+
+Deno.test("SwampClient - workflowRun settles as suspended when the run stops at a gate", async () => {
+  await withScriptedServer((req) => gateFrames(req.id), async (client) => {
+    const seen: string[] = [];
+    const result = await client.workflowRun({ workflowIdOrName: "gated" }, {
+      suspended: (e) => {
+        seen.push(`suspended:${e.stepId}`);
+      },
+    });
+    assertEquals(seen, ["suspended:approve"]);
+    assert(result.outcome === "suspended");
+    assertEquals(result.gate, {
+      jobId: "gate",
+      stepId: "approve",
+      prompt: "Approve?",
+      timeout: 300,
+    });
+    assertEquals(result.id, "run-1");
+    assertEquals(result.status, "suspended");
+  });
+});
+
+Deno.test("SwampClient - workflowRun settles a cancelled run with its reason beside the run", async () => {
+  await withScriptedServer(
+    (req) => [
+      event(req.id, {
+        kind: "cancelled",
+        run: { ...RUN, status: "cancelled" },
+        reason: "superseded",
+      }),
+      done(req.id),
+    ],
+    async (client) => {
+      const result = await client.workflowRun({ workflowIdOrName: "gated" });
+      assert(result.outcome === "cancelled");
+      assertEquals(result.reason, "superseded");
+      assertEquals(result.status, "cancelled");
+    },
+  );
+});
+
+Deno.test("SwampClient - workflowRun settles an idempotent replay as replayed", async () => {
+  await withScriptedServer(
+    (req) => [
+      event(req.id, {
+        kind: "started",
+        runId: "run-1",
+        workflowName: "gated",
+        replayed: true,
+      }),
+      done(req.id),
+    ],
+    async (client) => {
+      const result = await client.workflowRun({
+        workflowIdOrName: "gated",
+        idempotencyKey: "k1",
+      });
+      assertEquals(result, { outcome: "replayed", runId: "run-1" });
+    },
+  );
+});
+
+Deno.test("SwampClient - a done frame with no terminal event rejects every pending request", async () => {
+  await withScriptedServer(
+    (req) => [
+      event(req.id, { kind: "started", runId: "run-1", workflowName: "x" }),
+      done(req.id),
+    ],
+    async (client) => {
+      for (
+        const call of [
+          () => client.workflowRun({ workflowIdOrName: "x" }),
+          () => client.workflowResume({ workflowIdOrName: "x", runId: "r" }),
+          () => client.modelMethodRun({ modelIdOrName: "m", methodName: "go" }),
+          () => client.request("workflow.resume", { workflowIdOrName: "x" }),
+        ]
+      ) {
+        const err = await assertRejects(call, SwampClientError);
+        assertEquals(err.code, "no_terminal_event");
+      }
+    },
+  );
+});
+
+Deno.test("SwampClient - workflowResume sends workflow.resume and settles at the next gate or the end", async () => {
+  let resumes = 0;
+  await withScriptedServer(
+    (req) =>
+      ++resumes === 1 ? gateFrames(req.id) : [
+        event(req.id, {
+          kind: "completed",
+          run: { ...RUN, status: "succeeded" },
+        }),
+        done(req.id),
+      ],
+    async (client, received) => {
+      const first = await client.workflowResume({
+        workflowIdOrName: "gated",
+        runId: "run-1",
+      });
+      assertEquals(first.outcome, "suspended");
+      const second = await client.workflowResume({
+        workflowIdOrName: "gated",
+        runId: "run-1",
+      });
+      assert(second.outcome === "completed");
+      assertEquals(second.status, "succeeded");
+      assertEquals(received.map((r) => r.type), [
+        "workflow.resume",
+        "workflow.resume",
+      ]);
+    },
+  );
+});
+
+Deno.test("SwampClient - request resolves a suspended streamed reply with its run", async () => {
+  await withScriptedServer((req) => gateFrames(req.id), async (client) => {
+    const run = await client.request<{ status: string }>("workflow.resume", {
+      workflowIdOrName: "gated",
+    });
+    assertEquals(run.status, "suspended");
+  });
+});
+
+Deno.test("SwampClient - workflowRunStream ends after a suspended event", async () => {
+  await withScriptedServer((req) => gateFrames(req.id), async (client) => {
+    const kinds: string[] = [];
+    for await (const e of client.workflowRunStream({ workflowIdOrName: "g" })) {
+      kinds.push(e.kind);
+    }
+    assertEquals(kinds, ["started", "approval_requested", "suspended"]);
+  });
+});
+
+Deno.test("SwampClient - a closed socket rejects pending requests with connection_closed", async () => {
+  await withScriptedServer(() => [], async (client) => {
+    const pending = client.workflowRun({ workflowIdOrName: "x" });
+    await client.connect();
+    client.close();
+    const err = await assertRejects(() => pending, SwampClientError);
+    assertEquals(err.code, "connection_closed");
+  });
+});
+
+Deno.test("SwampClient - a send that throws leaves nothing pending", async () => {
+  await withScriptedServer(() => [], async (client) => {
+    await assertRejects(
+      () =>
+        client.workflowRun({
+          workflowIdOrName: "x",
+          inputs: { n: 1n },
+        }),
+      TypeError,
+    );
+    const pending = (client as unknown as { pending: Map<string, unknown> })
+      .pending;
+    assertEquals(pending.size, 0);
+  });
+});
+
+// A WebSocket server over raw TCP, so a test decides when a connection the
+// client closed actually ends; Deno.serve answers the close frame itself.
+class RawSocketServer {
+  private listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  private accepted: Deno.Conn[] = [];
+  private buffers = new Map<Deno.Conn, Uint8Array>();
+  readonly url = `ws://127.0.0.1:${
+    (this.listener.addr as Deno.NetAddr).port
+  }/ws`;
+
+  async accept(): Promise<Deno.Conn> {
+    const conn = await this.listener.accept();
+    this.accepted.push(conn);
+    this.buffers.set(conn, new Uint8Array());
+    const head = new TextDecoder().decode(await this.readUntilHeaderEnd(conn));
+    const key = /sec-websocket-key:\s*(\S+)/i.exec(head)![1];
+    const digest = await crypto.subtle.digest(
+      "SHA-1",
+      new TextEncoder().encode(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"),
+    );
+    const accept = btoa(String.fromCharCode(...new Uint8Array(digest)));
+    await conn.write(
+      new TextEncoder().encode(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n" +
+          `Connection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+      ),
+    );
+    return conn;
+  }
+
+  async readText(conn: Deno.Conn): Promise<string> {
+    const head = await this.read(conn, 2);
+    let length = head[1] & 0x7f;
+    if (length === 126) {
+      const ext = await this.read(conn, 2);
+      length = (ext[0] << 8) | ext[1];
+    }
+    const mask = await this.read(conn, 4);
+    const body = await this.read(conn, length);
+    return new TextDecoder().decode(body.map((b, i) => b ^ mask[i % 4]));
+  }
+
+  async sendText(conn: Deno.Conn, text: string): Promise<void> {
+    const body = new TextEncoder().encode(text);
+    const head = body.length < 126
+      ? [0x81, body.length]
+      : [0x81, 126, body.length >> 8, body.length & 0xff];
+    await conn.write(new Uint8Array([...head, ...body]));
+  }
+
+  close(): void {
+    for (const conn of this.accepted) {
+      try {
+        conn.close();
+      } catch {
+        // already closed by the test
+      }
+    }
+    this.listener.close();
+  }
+
+  private async readUntilHeaderEnd(conn: Deno.Conn): Promise<Uint8Array> {
+    for (;;) {
+      const buf = this.buffers.get(conn)!;
+      const text = new TextDecoder().decode(buf);
+      const end = text.indexOf("\r\n\r\n");
+      if (end >= 0) {
+        this.buffers.set(conn, buf.slice(end + 4));
+        return buf.slice(0, end);
+      }
+      await this.fill(conn);
+    }
+  }
+
+  private async read(conn: Deno.Conn, n: number): Promise<Uint8Array> {
+    while (this.buffers.get(conn)!.length < n) await this.fill(conn);
+    const buf = this.buffers.get(conn)!;
+    this.buffers.set(conn, buf.slice(n));
+    return buf.slice(0, n);
+  }
+
+  private async fill(conn: Deno.Conn): Promise<void> {
+    const chunk = new Uint8Array(4096);
+    const n = await conn.read(chunk);
+    if (n === null) throw new Error("connection ended");
+    const buf = this.buffers.get(conn)!;
+    const next = new Uint8Array(buf.length + n);
+    next.set(buf);
+    next.set(chunk.subarray(0, n), buf.length);
+    this.buffers.set(conn, next);
+  }
+}
+
+Deno.test("SwampClient - a closed socket ending after a reconnect leaves the new socket and its requests alone", async () => {
+  const server = new RawSocketServer();
+  const client = new SwampClient(server.url);
+  try {
+    const firstConn = server.accept();
+    await client.connect();
+    const oldConn = await firstConn;
+    const oldRequest = client.request("workflow.search");
+    await server.readText(oldConn);
+
+    client.close();
+    const secondConn = server.accept();
+    await client.connect();
+    const newConn = await secondConn;
+    const newRequest = client.request("workflow.search");
+    const sent = JSON.parse(await server.readText(newConn)) as Request;
+
+    oldConn.close();
+    const oldError = await oldRequest.then(() => undefined, (e) => e);
+
+    await server.sendText(
+      newConn,
+      JSON.stringify({
+        type: "workflow.search",
+        id: sent.id,
+        payload: { data: { ok: true } },
+      }),
+    );
+    assertEquals(await newRequest, { data: { ok: true } });
+
+    const another = client.request("workflow.search");
+    const next = JSON.parse(await server.readText(newConn)) as Request;
+    await server.sendText(
+      newConn,
+      JSON.stringify({
+        type: "workflow.search",
+        id: next.id,
+        payload: { data: { again: true } },
+      }),
+    );
+    assertEquals(await another, { data: { again: true } });
+    assert(oldError instanceof SwampClientError);
+    assertEquals(oldError.code, "connection_closed");
+  } finally {
+    client.close();
+    server.close();
+  }
 });

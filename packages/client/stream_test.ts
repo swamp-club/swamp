@@ -219,3 +219,21 @@ Deno.test("result - skips non-terminal events", async () => {
   const completed = await result<TestEvent>(asyncOf(...events));
   assertEquals(completed.result, "all done");
 });
+
+Deno.test("result - throws SwampClientError suspended when the run stops at a gate", async () => {
+  type GateEvent =
+    | TestEvent
+    | { kind: "suspended"; stepId: string };
+  const err = await assertRejects(
+    () =>
+      result<GateEvent>(
+        asyncOf<GateEvent>(
+          { kind: "started", id: "r1" },
+          { kind: "suspended", stepId: "approve" },
+        ),
+      ),
+    SwampClientError,
+  );
+  assertEquals(err.code, "suspended");
+  assertEquals(err.details, { kind: "suspended", stepId: "approve" });
+});

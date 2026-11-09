@@ -1085,13 +1085,56 @@ export type ServerMessage =
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string }
+  | {
+    kind: "superseded_runs";
+    cancelledRunIds: string[];
+    detachedNestedRuns?: DetachedNestedRunData[];
+    cancelledNestedRuns?: CascadedNestedRunData[];
+    stopRequestedNestedRuns?: CascadedNestedRunData[];
+    skippedRuns?: SkippedSupersedeData[];
+  }
+  | {
+    kind: "started";
+    runId: string;
+    /** set on a nested run's started event; track a run by the one without it */
+    parentRunId?: string;
+    workflowName: string;
+    jobs?: WorkflowRunJobInfo[];
+    /** an idempotent retry answered with the first start's run */
+    replayed?: boolean;
+  }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
   | { kind: "step_started"; jobId: string; stepId: string }
   | { kind: "step_completed"; jobId: string; stepId: string }
   | { kind: "step_skipped"; jobId: string; stepId: string }
+  | {
+    kind: "approval_requested";
+    runId: string;
+    workflowName?: string;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
+  | { kind: "step_queued"; jobId: string; stepId: string; requirement: string }
+  | {
+    kind: "step_target_disconnected";
+    jobId: string;
+    stepId: string;
+    target: string;
+  }
+  | {
+    kind: "assert_result";
+    jobId: string;
+    stepId: string;
+    passed: boolean;
+    message: string;
+    severity: "low" | "medium" | "high";
+    expr: string;
+    error?: string;
+  }
   | {
     kind: "step_failed";
     jobId: string;
@@ -1150,12 +1193,84 @@ export type WorkflowRunEvent =
   | { kind: "report_failed"; reportName: string; scope: string; error: string }
   | { kind: "completed"; run: WorkflowRunView }
   | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
+  | ({ kind: "suspended"; run: WorkflowRunView } & SuspendedGate)
   | { kind: "error"; error: SerializedError };
+
+/** Where a suspended run waits: a gate, a signal wait, or a nested run. */
+export interface SuspendedGate {
+  jobId: string;
+  stepId: string;
+  prompt: string;
+  timeout?: number;
+  /** the run waits on a suspended child run; jobId and stepId are the nested step */
+  nested?: { workflowName: string; runId: string };
+  /** the run waits for a signal at jobId and stepId */
+  wait?: { id: string; deadline: string; key?: string };
+  /** open signal waits held by nested runs, each at the run that has to act */
+  nestedSignalWaits?: NestedSignalWaitData[];
+}
+
+export interface NestedSignalWaitData {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  jobId: string;
+  stepId: string;
+  waitId: string;
+  deadline: string;
+  key?: string;
+}
+
+export interface WorkflowRunJobInfo {
+  id: string;
+  stepCount: number;
+  dependsOn: string[];
+}
+
+export interface DetachedNestedRunData {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  jobName: string;
+  stepName: string;
+  cancelCommand: string;
+}
+
+export interface CascadedNestedRunData {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  jobName: string;
+  stepName: string;
+}
+
+export interface SkippedSupersedeData {
+  runId: string;
+  waitIds: string[];
+}
+
+/**
+ * How a workflow run or resume settled. The run's fields sit beside `outcome`,
+ * so code reading `status` or `jobs` keeps working; narrow on `outcome` first.
+ */
+export type WorkflowRunResult =
+  | (WorkflowRunView & { outcome: "completed" })
+  | (WorkflowRunView & { outcome: "cancelled"; reason?: string })
+  | (WorkflowRunView & { outcome: "suspended"; gate: SuspendedGate })
+  /** an idempotent retry: serve answered with the first start's run id only */
+  | { outcome: "replayed"; runId: string };
 
 /** Events emitted during a model method run. */
 export type ModelMethodRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "resolving_model"; modelIdOrName: string }
+  | {
+    kind: "auto_created";
+    modelType: string;
+    definitionName: string;
+    definitionPath: string;
+  }
+  | { kind: "global_args_updated"; definitionName: string }
   | {
     kind: "model_resolved";
     modelName: string;
