@@ -321,8 +321,14 @@ Deno.test("renderServeCheckConfig: a clean grant check says how many files it re
 });
 
 Deno.test("renderServeCheckConfig: webhook warnings are shown and do not fail the check", () => {
-  const warning =
-    "Skipped webhook route '/api/github': it is under '/api', which serve reserves for its own API; use a route under /hooks/ instead";
+  const warning = {
+    route: "/api/github",
+    workflow: "deploy",
+    reason:
+      "is under '/api', which serve reserves for its own API; use a route under /hooks/ instead",
+    message:
+      "Skipped webhook route '/api/github': it is under '/api', which serve reserves for its own API; use a route under /hooks/ instead",
+  };
   const output = stripAnsiCode(
     captureLogs(() =>
       renderServeCheckConfig(
@@ -332,7 +338,7 @@ Deno.test("renderServeCheckConfig: webhook warnings are shown and do not fail th
     ),
   );
   assertStringIncludes(output, "Webhook warnings:");
-  assertStringIncludes(output, `! ${warning}`);
+  assertStringIncludes(output, `! ${warning.message}`);
   assertStringIncludes(output, "Result: PASSED");
   const json = JSON.parse(
     captureLogs(() =>

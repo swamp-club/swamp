@@ -2862,9 +2862,12 @@ const checkConfigCommand = new Command()
     // serve starts without a route it will not serve, so this does not fail
     const webhookWarnings = (merged.webhookConfigs ?? []).flatMap((entry) => {
       const reason = webhookRouteProblem(entry.route);
-      return reason === undefined
-        ? []
-        : [skippedWebhookMessage(entry.route, reason)];
+      return reason === undefined ? [] : [{
+        route: entry.route,
+        workflow: entry.workflow,
+        reason,
+        message: skippedWebhookMessage(entry.route, reason),
+      }];
     });
     const webhookReport = webhookWarnings.length > 0 ? { webhookWarnings } : {};
     const unnamedType = restrictionFindings.find((finding) =>
