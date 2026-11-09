@@ -207,12 +207,22 @@ export type RefreshOutcome =
   }
   | { readonly kind: "refused"; readonly reason: RefreshRefusalReason };
 
-export type RefreshRefusalReason =
+export const REFRESH_REFUSAL_REASONS = [
+  "mismatch",
+  "unknown",
+  "not_issued",
+  "not_admitted",
+  "ended",
+  "expired",
+  "superseded",
+  "unreadable",
+] as const satisfies readonly (
   | "mismatch"
-  | "unknown"
-  | "not_issued"
   | "not_admitted"
-  | Exclude<DelegationStanding["kind"], "standing">;
+  | Exclude<DelegationStanding["kind"], "standing">
+)[];
+
+export type RefreshRefusalReason = typeof REFRESH_REFUSAL_REASONS[number];
 
 /**
  * the refresh token is kept for the delegation's life and needs the
