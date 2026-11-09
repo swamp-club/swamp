@@ -593,3 +593,52 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "fan-out rollout: a resumed lane whose worker went offline fails before it starts and spends the budget, so nothing is sent and the rest are held",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start({ graceWindowMs: 200 });
+    const w = await workers(fleet, 3);
+    w[0].behavior = { kind: "fail", error: "canary broke" };
+    await fleet.saveWorkflow({
+      name: "offline",
+      inputs: {},
+      jobs: [rolloutJob(
+        fleet,
+        { batches: [1, "100%"], maxFailures: 0 },
+        [{ name: "apply" }],
+        {
+          fanOut: {
+            offline: "fail",
+            rollout: { batches: [1, "100%"], maxFailures: 0 },
+          },
+        },
+      )],
+    });
+    const run = await fleet.runWorkflow("offline");
+    assertEquals(run.status, "failed");
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 1], ["w-2", 0], ["w-3", 0]]),
+    );
+
+    w[0].behavior = { kind: "succeed" };
+    await w[1].disconnect();
+    const retried = await fleet.retryRun("offline", run.id);
+
+    assertEquals(retried.status, "failed");
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 1], ["w-2", 0], ["w-3", 0]]),
+    );
+    const data = await recordOf(fleet, "offline", run.id);
+    assertEquals(data.jobs[0].fanOutHalts?.[1], {
+      batch: 0,
+      maxFailures: 0,
+      failed: ["w-2"],
+      held: ["w-1", "w-3"],
+    });
+  },
+});
