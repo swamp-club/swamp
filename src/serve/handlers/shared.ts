@@ -23,6 +23,7 @@ import {
   isIntegrationClient,
 } from "../../domain/access/client.ts";
 import type { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
+import type { DelegationDirectory } from "../../domain/access/delegation_directory.ts";
 import type { FollowerCatchUp } from "../follower_feed.ts";
 import type { GcMutex } from "../gc_mutex.ts";
 import type { EventLoopLagReader } from "../ws_request_span.ts";
@@ -348,6 +349,7 @@ export const DEFAULT_QUERY_LIMIT = 1000;
 
 export interface ConnectionContext {
   integrationDirectory?: IntegrationDirectory;
+  delegationDirectory?: DelegationDirectory;
   repoDir: string;
   repoContext: RepositoryContext;
   followerGate?: FollowerGate;

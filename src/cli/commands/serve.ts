@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
+import { DelegationDirectory } from "../../domain/access/delegation_directory.ts";
+import {
+  DELEGATION_DATA_NAME,
+  DELEGATION_MODEL_TYPE,
+} from "../../domain/models/access/delegation_model.ts";
 import {
   INTEGRATION_DATA_NAME,
   INTEGRATION_MODEL_TYPE,
@@ -572,6 +577,7 @@ import {
 import {
   type AccessDataPoller,
   createAccessDataPoller,
+  DELEGATION_DATA_SUBDIRS,
   INTEGRATION_DATA_SUBDIRS,
 } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
@@ -3674,6 +3680,7 @@ export const serveCommand = new Command()
     let serveCommitEffects: ServeCommitEffects | undefined;
     let accessDataPoller: AccessDataPoller | null = null;
     let integrationDataPoller: AccessDataPoller | null = null;
+    let delegationDataPoller: AccessDataPoller | null = null;
     let runtimeDataPoller: RuntimeDataPoller | null = null;
     let repoMarker = null;
     try {
@@ -5060,6 +5067,10 @@ export const serveCommand = new Command()
       repoContext.unifiedDataRepo,
       { eventBus: repoContext.eventBus },
     );
+    const delegationDirectory = new DelegationDirectory(
+      repoContext.unifiedDataRepo,
+      { eventBus: repoContext.eventBus },
+    );
     const policySnapshotLoader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,
       repoContext.eventBus,
@@ -5105,7 +5116,25 @@ export const serveCommand = new Command()
       dataNames: [INTEGRATION_DATA_NAME],
       modelTypes: [INTEGRATION_MODEL_TYPE.normalized],
     });
+    delegationDataPoller = await createAccessDataPoller({
+      syncService,
+      syncGate,
+      pollIntervalMs: datastorePollIntervalMs,
+      policySnapshotLoader: delegationDirectory,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      namespace: serveNamespace,
+      datastoreConfig,
+      datastoreEngine,
+      datastoreResolver: repoDatastoreResolver,
+      eventBus: repoContext.eventBus,
+      subdirs: DELEGATION_DATA_SUBDIRS,
+      reloadEveryCycle: true,
+      reloading: "delegation directory",
+      dataNames: [DELEGATION_DATA_NAME],
+      modelTypes: [DELEGATION_MODEL_TYPE.normalized],
+    });
     await integrationDirectory.reload();
+    await delegationDirectory.reload();
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
       mode: grantReloadMode,
@@ -5169,6 +5198,7 @@ export const serveCommand = new Command()
 
     accessDataPoller?.start();
     integrationDataPoller?.start();
+    delegationDataPoller?.start();
 
     if (syncService) {
       runtimeDataPoller = new RuntimeDataPoller({
@@ -5668,6 +5698,7 @@ export const serveCommand = new Command()
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         integrationDirectory,
+        delegationDirectory,
         repoDir: resolvedRepoDir,
         repoContext,
         gcMutex,
@@ -8387,6 +8418,10 @@ export const serveCommand = new Command()
         const poller = integrationDataPoller;
         await stages.run("integration data poller", () => poller.stop());
       }
+      if (delegationDataPoller) {
+        const poller = delegationDataPoller;
+        await stages.run("delegation data poller", () => poller.stop());
+      }
       if (runtimeDataPoller) {
         const poller = runtimeDataPoller;
         await stages.run("runtime data poller", () => poller.stop());
@@ -8402,6 +8437,10 @@ export const serveCommand = new Command()
       await stages.run(
         "integration directory",
         () => integrationDirectory.dispose(),
+      );
+      await stages.run(
+        "delegation directory",
+        () => delegationDirectory.dispose(),
       );
       // a tick's chunk sweep must never overlap the closing compaction and
       // lease release; stop() aborts it, so the wait ends at its next batch or
@@ -8710,6 +8749,7 @@ export const serveCommand = new Command()
         source: feedSource,
         reloadPolicy: () => policySnapshotLoader.load(),
         reloadIntegrations: () => integrationDirectory.reload(),
+        reloadDelegations: () => delegationDirectory.reload(),
         checkConfig: () => configPoller?.pollNow(),
         isFollower: () => connectionCtx.followerGate?.role === "follower",
       });

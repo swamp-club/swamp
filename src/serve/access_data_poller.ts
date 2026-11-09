@@ -62,6 +62,11 @@ export const INTEGRATION_DATA_SUBDIRS: readonly string[] = [
   "data/@swamp/integration",
 ];
 
+export const DELEGATION_DATA_SUBDIRS: readonly string[] = [
+  "data/swamp/delegation",
+  "data/@swamp/delegation",
+];
+
 /** what a poller keeps current: the policy snapshot, or the integration list */
 export interface AccessDataReloadTarget {
   load(): Promise<unknown>;

@@ -132,6 +132,7 @@ import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import {
   isControlPlaneModelType,
+  isDelegationModelType,
   isIntegrationModelType,
 } from "../domain/models/control_plane_types.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -2746,6 +2747,10 @@ class DatastoreApi {
       const identity = partition.identity;
       if (identity.kind === "model" && isIntegrationModelType(identity.type)) {
         await ctx.integrationDirectory?.reload();
+      } else if (
+        identity.kind === "model" && isDelegationModelType(identity.type)
+      ) {
+        await ctx.delegationDirectory?.reload();
       } else if (
         identity.kind === "model" && isControlPlaneModelType(identity.type)
       ) {

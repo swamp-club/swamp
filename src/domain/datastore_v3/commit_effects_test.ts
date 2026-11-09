@@ -56,6 +56,16 @@ Deno.test("commitEffectOf: names what a commit to each kind of partition changes
     commitEffectOf(
       partitionOf({
         kind: "model",
+        type: ModelType.create("swamp/delegation"),
+        id: ID,
+      }),
+    ),
+    "delegations",
+  );
+  assertEquals(
+    commitEffectOf(
+      partitionOf({
+        kind: "model",
         type: ModelType.create("swamp/server-token"),
         id: ID,
       }),

@@ -21,6 +21,7 @@
 
 import {
   isControlPlaneModelType,
+  isDelegationModelType,
   isIntegrationModelType,
 } from "../models/control_plane_types.ts";
 import type { PartitionKey } from "./partition_key.ts";
@@ -30,6 +31,7 @@ export type CommitEffect =
   | "lockfile"
   | "access"
   | "integrations"
+  | "delegations"
   | "runtime";
 
 export function commitEffectOf(partition: PartitionKey): CommitEffect {
@@ -41,6 +43,7 @@ export function commitEffectOf(partition: PartitionKey): CommitEffect {
       return "lockfile";
     case "model":
       if (isIntegrationModelType(identity.type)) return "integrations";
+      if (isDelegationModelType(identity.type)) return "delegations";
       return isControlPlaneModelType(identity.type) ? "access" : "runtime";
     case "run":
     case "definition":

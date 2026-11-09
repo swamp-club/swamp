@@ -40,6 +40,7 @@ export interface ServeCommitEffectsDeps {
   reloadPolicy(): Promise<unknown>;
   /** never rejects: a failed read refuses integration tokens by itself */
   reloadIntegrations?(): Promise<unknown>;
+  reloadDelegations?(): Promise<unknown>;
   checkConfig(): void;
   isFollower(): boolean;
 }
@@ -208,6 +209,9 @@ export class ServeCommitEffects {
     // on a leader too: a stored workflow step or a member's commit can write one
     if (effects.has("integrations")) {
       await this.#deps.reloadIntegrations?.();
+    }
+    if (effects.has("delegations")) {
+      await this.#deps.reloadDelegations?.();
     }
     if (!this.#deps.isFollower()) {
       // A node that took the lead with an unknown policy reloads it: its own
