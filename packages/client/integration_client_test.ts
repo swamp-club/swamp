@@ -183,6 +183,23 @@ Deno.test("SwampIntegrationClient.refresh: a lost reply is sent again, and team_
   assertEquals(waiting.sent.length, 1);
 });
 
+Deno.test("SwampIntegrationClient.refresh: once serve has rotated a refresh token, a lost reply is not sent again", async () => {
+  const rotated = {
+    status: 200,
+    body: {
+      status: "issued",
+      accessToken: "a",
+      accessTokenExpiresAt: LATER,
+      refreshToken: "r2",
+    },
+  };
+  const { fetch, sent } = scriptedFetch([rotated, "network_error"]);
+  const c = client(fetch);
+  await c.refresh("r1");
+  await assertRejects(() => c.refresh("r2"), SwampHttpError);
+  assertEquals(sent.length, 2);
+});
+
 Deno.test("accessTokenTiming: measures life on serve's clock, so a skewed local clock moves nothing", () => {
   const serveNow = Date.UTC(2026, 0, 1, 12);
   const localNow = serveNow + 45 * 60_000; // this clock runs 45 minutes fast

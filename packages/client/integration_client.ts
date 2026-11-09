@@ -123,6 +123,9 @@ const ROUTE = {
 export class SwampIntegrationClient {
   readonly #credential: string;
   readonly #transport: HttpTransport;
+  // an older serve rotates refresh tokens, so resending one after a lost reply
+  // could present a token it already replaced and end the link
+  #serveRotates = false;
 
   constructor(url: string, options: SwampIntegrationClientOptions) {
     refuseInBrowser("SwampIntegrationClient");
@@ -218,10 +221,13 @@ export class SwampIntegrationClient {
       "refresh",
       { refreshToken },
       options,
-      (r) => r.status === 0 || r.code === "not_saved" || refusedBeforeActing(r),
+      (r) =>
+        (r.status === 0 && !this.#serveRotates) || r.code === "not_saved" ||
+        refusedBeforeActing(r),
     );
     const body = reply.body;
     if (reply.status === 200) {
+      if (typeof body.refreshToken === "string") this.#serveRotates = true;
       const expiresAt = String(body.accessTokenExpiresAt);
       const timing = accessTokenTiming(
         reply,
