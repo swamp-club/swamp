@@ -277,6 +277,18 @@ function aliasBomb(route: string): string {
   return lines.join("\n") + "\n";
 }
 
+function scalarAliasBomb(route: string): string {
+  return [
+    `route: ${route}`,
+    "workflow: deploy",
+    'secret: "@vault=hooks:k"',
+    'scheme: "@acme/hook"',
+    "config:",
+    `  pad: &s "${"x".repeat(32 * 1024)}"`,
+    `  events: [${Array(6000).fill("*s").join(",")}]`,
+  ].join("\n") + "\n";
+}
+
 Deno.test("webhook route files: a YAML alias bomb is refused alone, and the reload after it still applies a serve config route", async () => {
   await withTempDir(async (dir) => {
     const routes = join(dir, "webhook-routes");
@@ -284,6 +296,10 @@ Deno.test("webhook route files: a YAML alias bomb is refused alone, and the relo
     await Deno.writeTextFile(
       join(routes, "bomb.yaml"),
       aliasBomb("/hooks/bomb"),
+    );
+    await Deno.writeTextFile(
+      join(routes, "scalar-bomb.yaml"),
+      scalarAliasBomb("/hooks/scalar-bomb"),
     );
     await Deno.writeTextFile(join(routes, "ok.yaml"), routeFile("/hooks/ok"));
     const service = new WebhookService({
@@ -309,6 +325,7 @@ Deno.test("webhook route files: a YAML alias bomb is refused alone, and the relo
 
       assertStringIncludes(first.errors.join("\n"), "bomb.yaml");
       assertStringIncludes(second.errors.join("\n"), "bomb.yaml");
+      assertStringIncludes(second.errors.join("\n"), "scalar-bomb.yaml");
       assertEquals(
         service.listEndpoints().map((e) => e.route),
         ["/hooks/cfg9", "/hooks/ok"],

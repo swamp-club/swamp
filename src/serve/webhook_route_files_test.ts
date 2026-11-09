@@ -439,3 +439,54 @@ Deno.test("loadWebhookRouteFiles: refuses nesting deeper than the cap", async ()
     assertStringIncludes(refused.message, "nests deeper than");
   });
 });
+
+Deno.test("loadWebhookRouteFiles: refuses scalar aliases that repeat text past the file size", async () => {
+  await withTempDir(async (dir) => {
+    const aliases = Array(2000).fill("*s").join(",");
+    await Deno.writeTextFile(
+      join(dir, "scalar.yaml"),
+      VALID +
+        `scheme: "@acme/hook"\nconfig:\n  pad: &s "${"x".repeat(1024)}"\n` +
+        `  events: [${aliases}]\n`,
+    );
+
+    const [refused] = (await loadWebhookRouteFiles(dir)).refused;
+
+    assertStringIncludes(refused.message, "only YAML aliases produce");
+  });
+});
+
+Deno.test("loadWebhookRouteFiles: refuses aliased keys that repeat text past the file size", async () => {
+  await withTempDir(async (dir) => {
+    const nested = Array.from(
+      { length: 200 },
+      (_, i) => `  m${i}: {*k : 1}`,
+    ).join("\n");
+    await Deno.writeTextFile(
+      join(dir, "keys.yaml"),
+      VALID +
+        `scheme: "@acme/hook"\nconfig:\n  key: &k "${
+          "k".repeat(1024)
+        }"\n${nested}\n`,
+    );
+
+    const [refused] = (await loadWebhookRouteFiles(dir)).refused;
+
+    assertStringIncludes(refused.message, "only YAML aliases produce");
+  });
+});
+
+Deno.test("loadWebhookRouteFiles: a large route file without aliases is not mistaken for one", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "big-ok.yaml"),
+      VALID +
+        `scheme: "@acme/hook"\nconfig:\n  note: "${"y".repeat(60 * 1024)}"\n`,
+    );
+
+    const load = await loadWebhookRouteFiles(dir);
+
+    assertEquals(load.refused, []);
+    assertEquals(load.files.map((f) => f.file), ["big-ok.yaml"]);
+  });
+});

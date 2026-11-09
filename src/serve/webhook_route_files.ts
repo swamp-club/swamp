@@ -54,14 +54,21 @@ const MAX_ROUTE_FILE_BYTES = 64 * 1024;
 const MAX_ROUTE_FILE_DEPTH = 32;
 
 /**
- * a YAML alias parses to a shared node, so a few hundred bytes can expand to
- * gigabytes when serve compares or validates the route; refuse any sharing
+ * a YAML alias parses to a shared node or a repeated string, so a few hundred
+ * bytes can expand to gigabytes when serve compares or validates the route
  */
+const ALIAS_TEXT_PROBLEM =
+  "its values hold more text than the file itself, which only YAML aliases " +
+  "produce; route files do not allow them";
+
 function yamlShapeProblem(value: unknown): string | undefined {
   const seen = new Set<object>();
+  let text = 0;
   const stack: { node: unknown; depth: number }[] = [{ node: value, depth: 0 }];
   while (stack.length > 0) {
     const { node, depth } = stack.pop()!;
+    if (typeof node === "string") text += node.length;
+    if (text > MAX_ROUTE_FILE_BYTES) return ALIAS_TEXT_PROBLEM;
     if (typeof node !== "object" || node === null) continue;
     if (seen.has(node)) {
       return "it uses YAML anchors and aliases, which route files do not allow";
@@ -70,10 +77,16 @@ function yamlShapeProblem(value: unknown): string | undefined {
     if (depth >= MAX_ROUTE_FILE_DEPTH) {
       return `it nests deeper than ${MAX_ROUTE_FILE_DEPTH} levels`;
     }
-    const children = Array.isArray(node) ? node : Object.values(node);
-    for (const child of children) stack.push({ node: child, depth: depth + 1 });
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push({ node: child, depth: depth + 1 });
+      continue;
+    }
+    for (const [key, child] of Object.entries(node)) {
+      text += key.length;
+      stack.push({ node: child, depth: depth + 1 });
+    }
   }
-  return undefined;
+  return text > MAX_ROUTE_FILE_BYTES ? ALIAS_TEXT_PROBLEM : undefined;
 }
 
 export interface WebhookRouteFile {
