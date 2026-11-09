@@ -19,6 +19,8 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   DeviceGrantPollError,
   getUserInfo,
@@ -901,4 +903,76 @@ Deno.test("sendInstanceHeartbeat: throws with status text on non-JSON error body
   } finally {
     await mock.shutdown();
   }
+});
+
+async function userInfoWithLogs(
+  body: Record<string, unknown>,
+): Promise<{
+  result: Awaited<ReturnType<typeof getUserInfo>>;
+  warnings: string[];
+}> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "oauth-client"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  const mock = startMockServer(() =>
+    Response.json({ sub: "user-1", email: "user@example.com", ...body })
+  );
+  try {
+    const result = await getUserInfo(
+      `http://localhost:${mock.port}`,
+      "my-token",
+      "collectives",
+      AbortSignal.timeout(5000),
+    );
+    const warnings = records
+      .filter((r) => r.level === "warning")
+      .map((r) => r.message.map(String).join(""));
+    return { result, warnings };
+  } finally {
+    await mock.shutdown();
+    await reset();
+    await initializeLogging({});
+  }
+}
+
+Deno.test("getUserInfo: an absent groups field is flagged without a warning", async () => {
+  const { result, warnings } = await userInfoWithLogs({});
+  assertEquals(result.collectives, []);
+  assertEquals(result.collectivesFieldAbsent, true);
+  assertEquals(warnings, []);
+});
+
+Deno.test("getUserInfo: a present groups field is not flagged absent, even when empty", async () => {
+  const { result, warnings } = await userInfoWithLogs({ collectives: [] });
+  assertEquals(result.collectives, []);
+  assert(!("collectivesFieldAbsent" in result));
+  assertEquals(warnings, []);
+});
+
+Deno.test("getUserInfo: a groups field that is not a list warns and reads nothing", async () => {
+  const { result, warnings } = await userInfoWithLogs({ collectives: "eng" });
+  assertEquals(result.collectives, []);
+  assert(!("collectivesFieldAbsent" in result));
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0], "collectives");
+  assertStringIncludes(warnings[0], "is not a list");
+});
+
+Deno.test("getUserInfo: non-string entries in the groups field are dropped with a warning", async () => {
+  const { result, warnings } = await userInfoWithLogs({
+    collectives: ["eng", { slug: "ops" }, 7],
+  });
+  assertEquals(result.collectives, ["eng"]);
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0], "2 entries that are not strings");
 });

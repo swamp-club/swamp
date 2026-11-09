@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   type DeviceAuthDeps,
   handleDeviceAuth,
@@ -623,7 +625,7 @@ Deno.test("handleDeviceAuth: POST /auth/device/token emits auth.login.denied on 
   assertEquals(sink.events[0].principalId, "user-1");
   assertEquals(
     sink.events[0].detail,
-    "user is not a member of any allowed collective",
+    "user is not a member of any allowed collective; collectives read from userinfo: team-a",
   );
 });
 
@@ -994,4 +996,121 @@ Deno.test("handleDeviceAuth: a client in the sign-in request has no effect", asy
     ),
     "direct:cli",
   );
+});
+
+async function deniedLogin(
+  overrides: Partial<DeviceAuthDeps>,
+): Promise<{ detail?: string; logs: string[]; body: Record<string, unknown> }> {
+  const sink = createCollectingSink();
+  const emitter = new AuditEmitter([sink]);
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "device-auth"],
+        lowestLevel: "info",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    const deps = makeMockDeps({
+      auditEmitter: emitter,
+      checkAdmission: () => ({
+        admitted: false,
+        reason: "user is not a member of any allowed collective (team-a)",
+      }),
+      ...overrides,
+    });
+    const result = await handleDeviceAuth(
+      postRequest("/auth/device/token", { deviceCode: "dev-123" }),
+      deps,
+    );
+    assertEquals(result?.status, 403);
+    const body = await result!.json();
+    await emitter.flush();
+    return {
+      detail: sink.events[0]?.detail,
+      logs: records.map((r) => r.message.map(String).join("")),
+      body,
+    };
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+}
+
+Deno.test("handleDeviceAuth: an admission denial logs and audits the collectives read, and hints at personal collectives", async () => {
+  const { detail, logs, body } = await deniedLogin({
+    getUserInfo: () =>
+      Promise.resolve({
+        sub: "user-1",
+        email: "user@example.com",
+        collectives: ["acme", "ops"],
+        groups: [],
+      }),
+  });
+  assertEquals(
+    detail,
+    "user is not a member of any allowed collective (team-a); collectives read from userinfo: acme, ops",
+  );
+  const denied = logs.find((l) => l.startsWith("Admission denied"));
+  assert(denied !== undefined);
+  assertStringIncludes(denied, "collectives read from userinfo: acme, ops");
+  assertStringIncludes(denied, "personal collectives");
+  assertStringIncludes(denied, "--allowed-users");
+  assertEquals(body, {
+    error: "Not admitted",
+    reason: "user is not a member of any allowed collective (team-a)",
+  });
+});
+
+Deno.test("handleDeviceAuth: an admission denial says when userinfo read no collectives or had no field", async () => {
+  const empty = await deniedLogin({
+    getUserInfo: () =>
+      Promise.resolve({
+        sub: "user-1",
+        email: "user@example.com",
+        collectives: [],
+        groups: [],
+      }),
+  });
+  assertStringIncludes(
+    empty.detail ?? "",
+    "; collectives read from userinfo: none",
+  );
+  const absent = await deniedLogin({
+    getUserInfo: () =>
+      Promise.resolve({
+        sub: "user-1",
+        email: "user@example.com",
+        collectives: [],
+        groups: [],
+        collectivesFieldAbsent: true,
+      }),
+  });
+  assertStringIncludes(
+    absent.detail ?? "",
+    "; userinfo has no collectives field",
+  );
+  assert(
+    absent.logs.some((l) => l.includes("userinfo has no collectives field")),
+  );
+});
+
+Deno.test("handleDeviceAuth: an allowed-users-only denial has no personal collective hint", async () => {
+  const base = makeMockDeps();
+  const { logs } = await deniedLogin({
+    authConfig: { ...base.authConfig, allowedCollectives: [] },
+    checkAdmission: () => ({
+      admitted: false,
+      reason: "user is not in the allowed-users list",
+    }),
+  });
+  const denied = logs.find((l) => l.startsWith("Admission denied"));
+  assert(denied !== undefined);
+  assert(!denied.includes("personal collectives"));
 });

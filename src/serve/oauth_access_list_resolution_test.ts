@@ -34,7 +34,9 @@ import {
   assertAccessListsUsable,
   checkAccessLists,
   chooseResolutionMode,
+  findPersonalCollectives,
   listUncachedNames,
+  personalCollectivesAmongResolved,
   type ResolutionMode,
   resolveAccessLists,
   unresolvedCacheKey,
@@ -684,4 +686,111 @@ Deno.test("checkAccessLists: a lookup error other than not-found throws", async 
     UserError,
     "Failed to resolve admin 'alice'",
   );
+});
+
+Deno.test("personalCollectivesAmongResolved: an allowed collective named like a resolved admin is personal", async () => {
+  const { resolve } = fakeResolver(["webframp"]);
+  const resolution = await run({
+    admins: ["webframp"],
+    mode: "full",
+    resolve,
+  });
+  const found = personalCollectivesAmongResolved(
+    ["webframp", "platform-eng"],
+    resolution.resolved,
+  );
+  assertEquals(found.map((p) => p.slug), ["webframp"]);
+  assertEquals(found[0].username, "webframp");
+  assertStringIncludes(found[0].message, "--allowed-users");
+  assertStringIncludes(found[0].message, "personal collective");
+});
+
+Deno.test("personalCollectivesAmongResolved: matches a cached admin", async () => {
+  const resolution = await run({
+    admins: ["alice"],
+    cache: { alice: "sub-alice" },
+    mode: "cached",
+  });
+  assertEquals(
+    personalCollectivesAmongResolved(["alice"], resolution.resolved)
+      .map((p) => p.slug),
+    ["alice"],
+  );
+});
+
+Deno.test("personalCollectivesAmongResolved: an owner already in allowed-users is not reported", async () => {
+  const { resolve } = fakeResolver(["alice", "bob"]);
+  const resolution = await run({
+    admins: ["alice"],
+    allowedUsers: ["alice", "bob"],
+    mode: "full",
+    resolve,
+  });
+  assertEquals(
+    personalCollectivesAmongResolved(["alice", "bob"], resolution.resolved),
+    [],
+  );
+});
+
+Deno.test("personalCollectivesAmongResolved: nothing when no slug is a resolved username", async () => {
+  const { resolve } = fakeResolver(["alice"]);
+  const resolution = await run({ admins: ["alice"], mode: "full", resolve });
+  assertEquals(
+    personalCollectivesAmongResolved(["eng"], resolution.resolved),
+    [],
+  );
+  assertEquals(personalCollectivesAmongResolved([], resolution.resolved), []);
+});
+
+Deno.test("personalCollectivesAmongResolved: an unresolved admin name is not a match", async () => {
+  const { resolve } = fakeResolver(["alice"]);
+  const resolution = await run({
+    admins: ["alice", "ghost"],
+    mode: "full",
+    resolve,
+  });
+  assertEquals(
+    personalCollectivesAmongResolved(["ghost"], resolution.resolved),
+    [],
+  );
+});
+
+Deno.test("findPersonalCollectives: reports each slug that resolves as a username", async () => {
+  const { resolve, calls } = fakeResolver(["webframp"], ["flaky"]);
+  const found = await findPersonalCollectives(
+    ["eng", "webframp", "flaky"],
+    [],
+    resolve,
+  );
+  assertEquals(found.map((p) => p.slug), ["webframp"]);
+  assertEquals(calls, ["eng", "webframp", "flaky"]);
+});
+
+Deno.test("findPersonalCollectives: a refused lookup is not reported as personal", async () => {
+  const found = await findPersonalCollectives(
+    ["webframp"],
+    [],
+    (username) =>
+      Promise.reject(
+        new UsernameLookupRefusedError(username, PROVIDER, 403, "Forbidden"),
+      ),
+  );
+  assertEquals(found, []);
+});
+
+Deno.test("findPersonalCollectives: no lookups for no collectives", async () => {
+  const { resolve, calls } = fakeResolver(["webframp"]);
+  assertEquals(await findPersonalCollectives([], [], resolve), []);
+  assertEquals(calls, []);
+});
+
+Deno.test("findPersonalCollectives: an owner already in allowed-users is neither looked up nor reported", async () => {
+  const { resolve, calls } = fakeResolver(["webframp", "alice"]);
+  const found = await findPersonalCollectives(
+    ["webframp", "alice"],
+    ["user:webframp"],
+    resolve,
+  );
+  assertEquals(found.map((p) => p.slug), ["alice"]);
+  assertEquals(calls, ["alice"]);
 });

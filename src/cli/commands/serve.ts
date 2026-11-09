@@ -3063,7 +3063,7 @@ const checkConfigCommand = new Command()
         : null,
     );
     const { resolveUsername } = await import("../../serve/oauth_client.ts");
-    const { checkAccessLists } = await import(
+    const { checkAccessLists, findPersonalCollectives } = await import(
       "../../serve/oauth_access_list_resolution.ts"
     );
     // Looked up afresh, as the admin lists are: this command cannot read the
@@ -3108,6 +3108,17 @@ const checkConfigCommand = new Command()
         ),
       providerUrl,
     );
+    const personalCollectives = await findPersonalCollectives(
+      authConfig.allowedCollectives,
+      authConfig.allowedUsers,
+      (username) =>
+        resolveUsername(
+          providerUrl,
+          username,
+          token,
+          AbortSignal.timeout(10_000),
+        ),
+    );
     const notFound = check.entries.filter((e) => e.status === "not-found");
     const clientSecretRefusal = checkOAuthClientSecret(
       options.oauthClientSecretFile as string | undefined,
@@ -3124,6 +3135,9 @@ const checkConfigCommand = new Command()
       entries: check.entries,
       allowedCollectives: authConfig.allowedCollectives,
       wouldStart: wouldStart && keyUsable && grantsLoad,
+      ...(personalCollectives.length > 0
+        ? { personalCollectiveWarnings: personalCollectives }
+        : {}),
       ...(check.refusal !== undefined
         ? { refusal: check.refusal }
         : clientSecretRefusal !== undefined
@@ -4729,6 +4743,7 @@ export const serveCommand = new Command()
         assertAccessListsUsable,
         chooseResolutionMode,
         listUncachedNames,
+        personalCollectivesAmongResolved,
         resolveAccessLists,
       } = await import("../../serve/oauth_access_list_resolution.ts");
       const cachedMap = credentials.resolvedAdmins ?? {};
@@ -4909,6 +4924,19 @@ export const serveCommand = new Command()
           logger
             .error`Skipping allowed-user ${u.entry}: not found on ${authConfig.oauthProvider} since ${u.notFoundSince}. It stays skipped until removed from --allowed-users / auth.allowed-users. If the account exists now (swamp serve check-config), remove the name, restart, then add it back.`;
         }
+      }
+
+      // matched against names already resolved: startup makes no lookups of its own
+      for (
+        const personal of personalCollectivesAmongResolved(
+          authConfig.allowedCollectives,
+          resolution.resolved,
+        )
+      ) {
+        logger.warn(
+          "Allowed collective {slug} is the personal collective of user {username}: swamp-club leaves personal collectives out of OAuth logins, so it admits no one. Add {username} to --allowed-users / auth.allowed-users to admit that user.",
+          { slug: personal.slug, username: personal.username },
+        );
       }
 
       // Refuse to start before persisting or applying anything, so a

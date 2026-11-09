@@ -19,7 +19,10 @@
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { AccessListCheckEntry } from "../../serve/oauth_access_list_resolution.ts";
+import type {
+  AccessListCheckEntry,
+  PersonalCollective,
+} from "../../serve/oauth_access_list_resolution.ts";
 import type { OutputMode } from "./output.ts";
 import type { IneffectiveRestriction } from "../../domain/access/serve_auth_config.ts";
 import type { GrantFileCheckIssue } from "../../domain/access/grant_file_loader.ts";
@@ -55,6 +58,11 @@ export interface ServeCheckConfigData {
    * sources absent where the check ran; they do not fail the check
    */
   readonly grantWarnings?: readonly GrantFileCheckIssue[];
+  /**
+   * advisory: allowed collectives that are personal collectives, which
+   * swamp-club leaves out of OAuth logins; they do not fail the check
+   */
+  readonly personalCollectiveWarnings?: readonly PersonalCollective[];
   /** advisory: route files a serve.yaml or --webhook route shadows */
   readonly webhookWarnings?: readonly WebhookRouteWarning[];
   /**
@@ -145,6 +153,9 @@ export function renderServeCheckConfig(
       lines.push(
         `${cyan("Allowed collectives:")} ${data.allowedCollectives.join(", ")}`,
       );
+      for (const personal of data.personalCollectiveWarnings ?? []) {
+        lines.push(`  ${yellow("!")} ${personal.message}`);
+      }
     }
   }
 

@@ -381,3 +381,63 @@ export async function checkAccessLists(
     return { entries, wouldStart: false, refusal: err.message };
   }
 }
+
+export interface PersonalCollective {
+  readonly slug: string;
+  readonly username: string;
+  readonly message: string;
+}
+
+function personalCollective(slug: string): PersonalCollective {
+  return {
+    slug,
+    username: slug,
+    message:
+      `allowed collective '${slug}' is the personal collective of user '${slug}': ` +
+      "swamp-club leaves personal collectives out of OAuth logins, so it admits no one. " +
+      `Add '${slug}' to --allowed-users / auth.allowed-users to admit that user.`,
+  };
+}
+
+/**
+ * a personal collective's slug is its owner's username, and swamp-club refuses
+ * a username another collective's slug holds, so a slug that is a username is
+ * personal
+ */
+export function personalCollectivesAmongResolved(
+  allowedCollectives: readonly string[],
+  resolved: readonly ResolvedEntry[],
+): PersonalCollective[] {
+  const owners = new Set(
+    resolved.filter((r) => r.kind === "admin").map((r) => r.username),
+  );
+  const allowed = new Set(
+    resolved.filter((r) => r.kind === "allowed-user").map((r) => r.username),
+  );
+  return allowedCollectives
+    .filter((slug) => owners.has(slug) && !allowed.has(slug))
+    .map(personalCollective);
+}
+
+/**
+ * a lookup that fails says nothing, so it is never reported as personal; an
+ * owner already in allowed-users is admitted, so it is not reported either
+ */
+export async function findPersonalCollectives(
+  allowedCollectives: readonly string[],
+  allowedUsers: readonly string[],
+  resolve: UsernameResolver,
+): Promise<PersonalCollective[]> {
+  const allowed = new Set(allowedUsers.map(usernameOf));
+  const found: PersonalCollective[] = [];
+  for (const slug of allowedCollectives) {
+    if (allowed.has(slug)) continue;
+    try {
+      await resolve(slug);
+      found.push(personalCollective(slug));
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}

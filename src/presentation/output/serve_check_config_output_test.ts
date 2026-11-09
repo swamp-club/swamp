@@ -397,3 +397,40 @@ Deno.test("renderServeCheckConfig: a refused routes directory is named in the re
   );
   assertEquals(json.webhookRoutesDirError, data.webhookRoutesDirError);
 });
+
+Deno.test("renderServeCheckConfig: personal collective warnings are shown in every mode and do not fail the check", () => {
+  const personal = {
+    slug: "webframp",
+    username: "webframp",
+    message:
+      "allowed collective 'webframp' is the personal collective of user 'webframp'",
+  };
+  const data: ServeCheckConfigData = {
+    ...partial,
+    passed: true,
+    entries: [partial.entries[0]],
+    allowedCollectives: ["webframp", "eng"],
+    personalCollectiveWarnings: [personal],
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderServeCheckConfig(data, "log")),
+  );
+  assertStringIncludes(output, "Allowed collectives: webframp, eng");
+  assertStringIncludes(output, `! ${personal.message}`);
+  assertStringIncludes(output, "Result: PASSED");
+  assertEquals(
+    JSON.parse(captureLogs(() => renderServeCheckConfig(data, "json")))
+      .personalCollectiveWarnings,
+    [personal],
+  );
+});
+
+Deno.test("renderServeCheckConfig: json mode has no personal collective key when none were found", () => {
+  const output = JSON.parse(captureLogs(() =>
+    renderServeCheckConfig({
+      ...partial,
+      allowedCollectives: ["eng"],
+    }, "json")
+  ));
+  assertFalse("personalCollectiveWarnings" in output);
+});

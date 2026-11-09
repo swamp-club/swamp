@@ -524,6 +524,32 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "checkWebhookRoutesDir: a missing routes directory reached through a symlink is still refused",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (root) => {
+      const real = join(root, "real");
+      await Deno.mkdir(join(real, "extensions"), { recursive: true });
+      await Deno.symlink(real, join(root, "link"), { type: "dir" });
+
+      await assertRejects(
+        () =>
+          checkWebhookRoutesDir(
+            join(root, "link", "extensions", "webhooks", "routes"),
+            [join(real, "extensions")],
+          ),
+        Error,
+        "holds extension code",
+      );
+      await checkWebhookRoutesDir(join(root, "link", "routes"), [
+        join(real, "extensions"),
+      ]);
+    });
+  },
+});
+
 Deno.test("loadWebhookRouteFiles: refuses a file over the size cap", async () => {
   await withTempDir(async (dir) => {
     await Deno.writeTextFile(
