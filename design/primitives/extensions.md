@@ -2099,6 +2099,11 @@ trustedCollectives:
   - myorg
 ```
 
+Trust also gates use, not only installation: `swamp serve` refuses a webhook
+route whose extension scheme is a pulled type from an untrusted collective,
+however the extension was installed (see the webhook section of
+[serve](serve.md)). Local extensions are always trusted.
+
 Membership collectives are cached in `auth.json` during `auth login` and
 `auth whoami`; a run authenticated by an API key source (`SWAMP_API_KEY`,
 `SWAMP_API_KEY_FILE` or `--club-api-key-file`) caches them in

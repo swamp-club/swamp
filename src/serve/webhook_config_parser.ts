@@ -29,6 +29,8 @@ export interface WebhookConfigParserDeps {
   /** opened on every parse, so a reload sees vault configuration changes */
   readonly openVaults: () => Promise<VaultSecretResolver>;
   readonly resolveType: (type: string) => Promise<boolean>;
+  /** read on every parse, so a reload judges routes on the refreshed list */
+  readonly trustedCollectives: () => readonly string[];
 }
 
 /** all entries parse or the call throws; route files call it one entry at a time */
@@ -50,6 +52,10 @@ export function createWebhookConfigParser(
     const parsed = await Promise.all(
       configs.map((entry) => parseWebhookConfig(entry, vaults)),
     );
-    return await resolveExtensionWebhookEndpoints(parsed, deps.resolveType);
+    return await resolveExtensionWebhookEndpoints(
+      parsed,
+      deps.resolveType,
+      deps.trustedCollectives(),
+    );
   };
 }

@@ -715,9 +715,9 @@ export async function reloadPulledExtensions(
   }
 }
 
-export async function reloadTrustedCollectives(
+export async function loadTrustedCollectives(
   repoDir: string,
-): Promise<void> {
+): Promise<string[]> {
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
 
@@ -730,11 +730,18 @@ export async function reloadTrustedCollectives(
     // Auth file unreadable — continue without membership collectives
   }
 
-  const collectives = resolveTrustedCollectives(marker, authCollectives);
+  return resolveTrustedCollectives(marker, authCollectives);
+}
+
+export async function reloadTrustedCollectives(
+  repoDir: string,
+): Promise<string[]> {
+  const collectives = await loadTrustedCollectives(repoDir);
   const resolver = getAutoResolver();
   if (resolver) {
     resolver.updateAllowedCollectives(collectives);
   }
+  return collectives;
 }
 
 export async function resolveLockfilePath(
@@ -770,6 +777,8 @@ export interface ServeReloadOptions {
   workflowReloader?: () => Promise<number>;
   extensionDiscoverer?: () => Promise<number>;
   webhookUpdater?: WebhookUpdater;
+  /** receives the refreshed trust list before the webhook routes are parsed */
+  trustedCollectivesUpdater?: (collectives: readonly string[]) => void;
   configPath?: string;
 }
 
@@ -896,7 +905,8 @@ async function runServeReload(
     }
 
     try {
-      await reloadTrustedCollectives(repoDir);
+      const collectives = await reloadTrustedCollectives(repoDir);
+      options?.trustedCollectivesUpdater?.(collectives);
     } catch (err) {
       errors.push(
         "Failed to refresh trust list: " +

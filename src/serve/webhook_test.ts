@@ -61,6 +61,7 @@ import type { RunTrackerStore } from "../infrastructure/persistence/run_tracker_
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import type { ExtensionOrigin } from "../domain/extensions/extension_origin.ts";
 
 await initializeLogging({});
 
@@ -772,6 +773,7 @@ const TOKEN_HEADER = "x-test-secret-token";
 function registerExtension(
   handler: Partial<WebhookHandler>,
   configSchema?: z.ZodTypeAny,
+  origin: ExtensionOrigin | null = { kind: "local" },
 ): ExtensionWebhookScheme {
   const type: ExtensionWebhookScheme = `@test/hook-${crypto.randomUUID()}`;
   webhookTypeRegistry.register({
@@ -779,6 +781,7 @@ function registerExtension(
     name: "Test hook",
     description: "Test webhook extension",
     configSchema,
+    ...(origin ? { origin } : {}),
     createHandler: () => ({
       signatureHeader: TOKEN_HEADER,
       requiredHeaders: [TOKEN_HEADER],
@@ -793,6 +796,7 @@ function extensionService(
   scheme: ExtensionWebhookScheme,
   acceptsRuns?: () => boolean,
   leaderLink?: LeaderLink,
+  trustedCollectives?: () => readonly string[],
 ): {
   service: WebhookService;
   pendingRuns: unknown[];
@@ -801,6 +805,7 @@ function extensionService(
   const service = new WebhookService({
     ...(acceptsRuns !== undefined ? { acceptsRuns } : {}),
     ...(leaderLink !== undefined ? { leaderLink } : {}),
+    ...(trustedCollectives !== undefined ? { trustedCollectives } : {}),
     repoDir: "/tmp/fake",
     syncGate: undefined,
     repoContext: {} as unknown as RepositoryContext,
@@ -1113,6 +1118,7 @@ Deno.test("resolveExtensionWebhookEndpoints: applies the type's configSchema", a
   const [ep] = await resolveExtensionWebhookEndpoints(
     [extensionEndpoint(type, {})],
     () => Promise.resolve(true),
+    [],
   );
   assertEquals(ep.verifier, { scheme: type, config: { header: "x-default" } });
 });
@@ -1124,6 +1130,7 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects invalid config", async () =
       resolveExtensionWebhookEndpoints(
         [extensionEndpoint(type, { header: 1 })],
         () => Promise.resolve(true),
+        [],
       ),
     UserError,
     "Invalid config for webhook /hooks/ext",
@@ -1136,6 +1143,7 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects an unresolvable type", asyn
       resolveExtensionWebhookEndpoints(
         [extensionEndpoint("@test/nope", {})],
         () => Promise.resolve(false),
+        [],
       ),
     UserError,
     "no installed extension provides that webhook type",
@@ -1150,6 +1158,7 @@ Deno.test("resolveExtensionWebhookEndpoints: a type lookup that throws is an env
       resolveExtensionWebhookEndpoints(
         [extensionEndpoint("@test/flaky", {})],
         () => Promise.reject(new Error("registry unreachable")),
+        [],
       ),
     WebhookEnvironmentError,
     "registry unreachable",
@@ -1162,6 +1171,7 @@ Deno.test("resolveExtensionWebhookEndpoints: an uninstalled type is a refusal, n
       resolveExtensionWebhookEndpoints(
         [extensionEndpoint("@test/nope", {})],
         () => Promise.resolve(false),
+        [],
       ),
     UserError,
   );
@@ -1173,8 +1183,135 @@ Deno.test("resolveExtensionWebhookEndpoints: leaves built-in endpoints untouched
   const resolved = await resolveExtensionWebhookEndpoints(
     [builtin],
     () => Promise.reject(new Error("should not resolve")),
+    [],
   );
   assertEquals(resolved, [builtin]);
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: refuses a pulled type from an untrusted collective", async () => {
+  const type = registerExtension({}, undefined, {
+    kind: "pulled",
+    extensionName: "@test/hooks",
+  });
+  const error = await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint(type, {})],
+        () => Promise.resolve(true),
+        ["swamp"],
+      ),
+    UserError,
+  );
+  assertStringIncludes(error.message, "/hooks/ext");
+  assertStringIncludes(error.message, type);
+  assertStringIncludes(error.message, "collective 'test'");
+  assertStringIncludes(error.message, "swamp extension trust add test");
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: accepts a pulled type once its collective is trusted", async () => {
+  const type = registerExtension({}, undefined, {
+    kind: "pulled",
+    extensionName: "@test/hooks",
+  });
+  const [ep] = await resolveExtensionWebhookEndpoints(
+    [extensionEndpoint(type, {})],
+    () => Promise.resolve(true),
+    ["swamp", "TEST"],
+  );
+  assertEquals(ep.verifier.scheme, type);
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: refuses a pulled type whose owning extension is from an untrusted collective", async () => {
+  const type = registerExtension({}, undefined, {
+    kind: "pulled",
+    extensionName: "@other/hooks",
+  });
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint(type, {})],
+        () => Promise.resolve(true),
+        ["test"],
+      ),
+    UserError,
+    "collective 'other'",
+  );
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: refuses a type of unknown origin from an untrusted collective", async () => {
+  const type = registerExtension({}, undefined, null);
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint(type, {})],
+        () => Promise.resolve(true),
+        [],
+      ),
+    UserError,
+    "collective 'test'",
+  );
+});
+
+Deno.test("handleRequest: a pulled type from an untrusted collective fails closed before verifying", async () => {
+  let verified = 0;
+  const type = registerExtension(
+    {
+      verify: () => {
+        verified++;
+        return true;
+      },
+    },
+    undefined,
+    { kind: "pulled", extensionName: "@test/hooks" },
+  );
+  const { service, pendingRuns } = extensionService(
+    type,
+    undefined,
+    undefined,
+    () => ["swamp"],
+  );
+  const events: WebhookEvent[] = [];
+  service.setEventHandler((e) => events.push(e));
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(res?.status, 500);
+  assertEquals(await res!.json(), { error: "Internal server error" });
+  assertEquals(pendingRuns.length, 0);
+  assertEquals(verified, 0);
+  const rejected = events.find((e) => e.kind === "webhook_rejected");
+  assertStringIncludes(
+    rejected && "reason" in rejected ? rejected.reason : "",
+    "untrusted collective test",
+  );
+});
+
+Deno.test("handleRequest: a route stops serving once its collective leaves the trust list", async () => {
+  let verified = 0;
+  const type = registerExtension(
+    {
+      verify: (_body, headers, secret) => {
+        verified++;
+        return headers.get(TOKEN_HEADER) === secret;
+      },
+    },
+    undefined,
+    { kind: "pulled", extensionName: "@test/hooks" },
+  );
+  let trusted: readonly string[] = ["swamp", "test"];
+  const { service, pendingRuns } = extensionService(
+    type,
+    undefined,
+    undefined,
+    () => trusted,
+  );
+  const first = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(first?.status, 200);
+  assertEquals(pendingRuns.length, 1);
+
+  trusted = ["swamp"];
+  const second = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(second?.status, 500);
+  assertEquals(pendingRuns.length, 1);
+  assertEquals(verified, 1);
 });
 
 Deno.test("updateEndpoints: swaps active endpoints and returns change count", async () => {

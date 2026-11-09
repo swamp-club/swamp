@@ -2571,6 +2571,7 @@ export async function handleServeReload(
         : undefined,
       workflowReloader: ctx.workflowReloader,
       webhookUpdater: ctx.webhookUpdater,
+      trustedCollectivesUpdater: ctx.trustedCollectivesUpdater,
       configPath: ctx.serveConfigPath,
     };
     const result = await performServeReload(

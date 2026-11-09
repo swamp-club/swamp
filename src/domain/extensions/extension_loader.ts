@@ -104,6 +104,7 @@ import {
   type ExtensionContributor,
   isPulledExtensionPath,
 } from "./extension_precedence.ts";
+import type { ExtensionOrigin } from "./extension_origin.ts";
 import { isStagingEntryName } from "./install_journal.ts";
 import { markErrorPaths } from "../errors.ts";
 
@@ -345,6 +346,14 @@ export class ExtensionLoader {
     this.repository = repository;
     this.logger = getLogger(["swamp", adapter.kind, "loader"]);
     this.appliedSourceRows = this.localSourceRows();
+  }
+
+  private originOf(sourcePath: string): ExtensionOrigin {
+    if (!this.isPulledSourcePath(sourcePath)) return { kind: "local" };
+    const extensionName = this.owningExtension(sourcePath);
+    return extensionName === undefined
+      ? { kind: "pulled" }
+      : { kind: "pulled", extensionName };
   }
 
   private owningExtension(sourcePath: string): string | undefined {
@@ -796,6 +805,7 @@ export class ExtensionLoader {
             ...ctx,
             absolutePath,
             pulled: this.isPulledBoundary(baseDir),
+            origin: this.originOf(absolutePath),
             extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: fingerprint,
             sourceSnapshot: snapshot,
@@ -1683,6 +1693,7 @@ export class ExtensionLoader {
         denoRuntime: this.denoRuntime,
         repoDir: this.repoDir,
         pulled: this.isPulledBoundary(entry.source_path),
+        origin: this.originOf(entry.source_path),
         extensionName: this.owningExtension(entry.source_path),
         sourceFingerprint: entry.source_fingerprint || undefined,
         sourceSnapshot: snapshot,
@@ -2308,6 +2319,7 @@ export class ExtensionLoader {
             denoRuntime: this.denoRuntime,
             repoDir: this.repoDir,
             pulled: this.isPulledBoundary(baseDir),
+            origin: this.originOf(absolutePath),
             extensionName: this.owningExtension(absolutePath),
             sourceFingerprint: effectiveFingerprint,
             sourceSnapshot: snapshot,

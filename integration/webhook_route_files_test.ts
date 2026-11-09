@@ -64,6 +64,7 @@ async function parse(
   return await resolveExtensionWebhookEndpoints(
     parsed,
     () => Promise.resolve(false),
+    [],
   );
 }
 

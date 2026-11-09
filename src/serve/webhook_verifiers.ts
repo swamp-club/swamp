@@ -19,6 +19,7 @@
 
 import type { WebhookHandler } from "../domain/webhooks/webhook_handler.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import { evaluateWebhookTypeTrust } from "../domain/webhooks/webhook_type_trust.ts";
 
 const TIMESTAMP_TOLERANCE_SECONDS = 300;
 
@@ -246,15 +247,32 @@ export function isExtensionWebhookScheme(
   return EXTENSION_WEBHOOK_SCHEME_PATTERN.test(value);
 }
 
+export type WebhookHandlerResolution =
+  | { readonly kind: "ready"; readonly handler: WebhookHandler }
+  | { readonly kind: "missing" }
+  | { readonly kind: "untrusted"; readonly collective: string };
+
 /**
  * extension handlers are looked up on every call so a SIGHUP reload takes
- * effect; undefined when the type is not loaded, so callers must fail closed
+ * effect; trust is judged on the same registry entry that builds the handler,
+ * so a reload cannot swap the entry between the decision and its use
  */
 export function resolveWebhookHandler(
   config: VerifierConfig,
-): WebhookHandler | undefined {
-  if (!("config" in config)) return createVerifier(config);
-  return webhookTypeRegistry.get(config.scheme)?.createHandler({
-    ...config.config,
-  });
+  trustedCollectives: readonly string[],
+): WebhookHandlerResolution {
+  if (!("config" in config)) {
+    return { kind: "ready", handler: createVerifier(config) };
+  }
+  const info = webhookTypeRegistry.get(config.scheme);
+  if (!info) return { kind: "missing" };
+  const trust = evaluateWebhookTypeTrust(
+    config.scheme,
+    info.origin,
+    trustedCollectives,
+  );
+  if (!trust.trusted) {
+    return { kind: "untrusted", collective: trust.collective };
+  }
+  return { kind: "ready", handler: info.createHandler({ ...config.config }) };
 }

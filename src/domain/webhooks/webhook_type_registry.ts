@@ -19,6 +19,7 @@
 
 import type { z } from "zod";
 import type { WebhookHandler } from "./webhook_handler.ts";
+import type { ExtensionOrigin } from "../extensions/extension_origin.ts";
 
 /**
  * Information about a registered webhook type. Built-in schemes (github,
@@ -30,6 +31,8 @@ export interface WebhookTypeInfo {
   description: string;
   configSchema?: z.ZodTypeAny;
   createHandler: (config: Record<string, unknown>) => WebhookHandler;
+  /** absent is read as pulled, so a type of unknown source is never trusted */
+  origin?: ExtensionOrigin;
 }
 
 export interface LazyWebhookEntry {

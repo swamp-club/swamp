@@ -505,6 +505,7 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import {
   createExtensionDiscoverer,
   isReloading,
+  loadTrustedCollectives,
   performServeReload,
   reloadAfterExtensionChange,
   seedPulledTypeSnapshot,
@@ -4312,6 +4313,15 @@ export const serveCommand = new Command()
       }
     }
 
+    // every reload path refreshes it, so webhook deliveries judge trust on the
+    // list in force rather than the one serve started with
+    let trustedCollectives: readonly string[] = await loadTrustedCollectives(
+      resolvedRepoDir,
+    );
+    const trustedCollectivesUpdater = (next: readonly string[]) => {
+      trustedCollectives = next;
+    };
+
     if (repoMarker?.datastore?.managedConfig) {
       const extensionDiscoverer = createExtensionDiscoverer({
         lockfilePath: extensionLockfilePath,
@@ -4332,6 +4342,7 @@ export const serveCommand = new Command()
             {
               extensionDiscoverer,
               workflowReloader: reloadExtensionWorkflows,
+              trustedCollectivesUpdater,
             },
           );
           if (result.success && result.reloadedCount > 0) {
@@ -6734,6 +6745,7 @@ export const serveCommand = new Command()
         reloadAfterExtensionChange(resolvedRepoDir, extensionLockfilePath, {
           extensionDiscoverer: changeDiscoverer,
           workflowReloader: reloadExtensionWorkflows,
+          trustedCollectivesUpdater,
         });
     }
 
@@ -7057,6 +7069,7 @@ export const serveCommand = new Command()
           { defaultVaultName: repoMarker?.defaultVault },
         ),
       resolveType: (type) => resolveWebhookType(type, getAutoResolver()),
+      trustedCollectives: () => trustedCollectives,
     });
     let flagEndpoints: WebhookEndpoint[] = [];
     if (webhookSourceIsCliFlags) {
@@ -7069,6 +7082,7 @@ export const serveCommand = new Command()
           webhookFlags.map((f) => parseWebhookFlag(f, vaultService)),
         ),
         (type) => resolveWebhookType(type, getAutoResolver()),
+        trustedCollectives,
       );
     }
     const webhookRoutesDir = resolveServePath(
@@ -7119,6 +7133,7 @@ export const serveCommand = new Command()
           WEBHOOK_PRINCIPAL,
         ),
       maxConcurrentRuns: maxConcurrentWebhookRuns,
+      trustedCollectives: () => trustedCollectives,
     });
 
     const webhookRejections = new WebhookRejectionCoalescer();
@@ -7235,6 +7250,7 @@ export const serveCommand = new Command()
       service: webhookService,
     });
     connectionCtx.webhookUpdater = webhookUpdater;
+    connectionCtx.trustedCollectivesUpdater = trustedCollectivesUpdater;
     connectionCtx.webhookAdmissionSnapshots = () =>
       webhookService.admissionSnapshots();
 
@@ -8525,6 +8541,7 @@ export const serveCommand = new Command()
             workflowReloader: connectionCtx.workflowReloader,
             extensionDiscoverer: sighupDiscoverer,
             webhookUpdater,
+            trustedCollectivesUpdater,
             configPath: serveConfigPath,
           };
         performServeReload(

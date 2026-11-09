@@ -432,6 +432,7 @@ export interface ConnectionContext {
   webhookAdmissionSnapshots?: () =>
     import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[];
   webhookUpdater?: import("../webhook_reload.ts").WebhookUpdater;
+  trustedCollectivesUpdater?: (collectives: readonly string[]) => void;
   resolvedUserNames?: Record<string, string>;
   grantUsernameResolver?: GrantUsernameResolver;
   serveOptions?: MergedServeOptions;

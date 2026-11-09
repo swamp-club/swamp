@@ -38,6 +38,10 @@ import {
   WebhookService,
 } from "../src/serve/webhook.ts";
 import { webhookTypeRegistry } from "../src/domain/webhooks/webhook_type_registry.ts";
+import { createWebhookUpdater } from "../src/serve/webhook_reload.ts";
+import { parseWebhookConfig } from "../src/serve/serve_config.ts";
+import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
+import type { DatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -65,6 +69,7 @@ Deno.test({
         transform: (body) => ({ update: body }),
         respond: () => ({ status: 202, body: "ok", enqueue: true }),
       }),
+      origin: { kind: "local" },
     });
 
     const repoDir = await Deno.makeTempDir({ prefix: "swamp-webhook-ext-" });
@@ -118,6 +123,7 @@ Deno.test({
       const endpoints = await resolveExtensionWebhookEndpoints(
         [await parseWebhookFlag(`/hooks/bot:bot-wf:s3cret:${type}`)],
         (t) => Promise.resolve(webhookTypeRegistry.has(t)),
+        [],
       );
 
       const runTracker = new RunTrackerStore(join(repoDir, "run-tracker.db"));
@@ -175,6 +181,98 @@ Deno.test({
       }
     } finally {
       await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "webhook extension scheme: a pulled type from an untrusted collective is refused at startup, on reload and per delivery",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const type = `@test/pulled-token-${crypto.randomUUID()}`;
+    let verified = 0;
+    webhookTypeRegistry.register({
+      type,
+      name: "Pulled token",
+      description: "Static secret token header from a pulled extension",
+      createHandler: () => ({
+        signatureHeader: TOKEN_HEADER,
+        requiredHeaders: [TOKEN_HEADER],
+        verify: (_body, headers, secret) => {
+          verified++;
+          return headers.get(TOKEN_HEADER) === secret;
+        },
+      }),
+      origin: { kind: "pulled", extensionName: "@test/pulled-token" },
+    });
+    const flag = `/hooks/pulled:wf:s3cret:${type}`;
+    const resolveType = (t: string) =>
+      Promise.resolve(webhookTypeRegistry.has(t));
+
+    const refusal = await resolveExtensionWebhookEndpoints(
+      [await parseWebhookFlag(flag)],
+      resolveType,
+      ["swamp"],
+    ).then(() => null, (e: Error) => e);
+    assert(refusal !== null, "untrusted pulled type must be refused");
+    assert(refusal.message.includes("swamp extension trust add test"));
+
+    let trusted: readonly string[] = ["swamp", "test"];
+    const endpoints = await resolveExtensionWebhookEndpoints(
+      [await parseWebhookFlag(flag)],
+      resolveType,
+      trusted,
+    );
+    const service = new WebhookService({
+      repoDir: "/nonexistent",
+      repoContext: {} as unknown as RepositoryContext,
+      datastoreConfig: {} as unknown as DatastoreConfig,
+      endpoints,
+      syncGate: undefined,
+      trustedCollectives: () => trusted,
+    });
+    const updater = createWebhookUpdater({
+      source: "config",
+      service,
+      parse: async (configs) =>
+        await resolveExtensionWebhookEndpoints(
+          await Promise.all(
+            configs.map((c) => parseWebhookConfig(c)),
+          ),
+          resolveType,
+          trusted,
+        ),
+    });
+
+    try {
+      trusted = ["swamp"];
+      const reload = await updater([
+        {
+          route: "/hooks/pulled",
+          workflow: "wf",
+          secret: "s3cret",
+          scheme: type,
+        },
+      ]).then(() => null, (e: Error) => e);
+      assert(reload !== null, "reload must refuse the untrusted route");
+      assertEquals(service.listEndpoints().map((e) => e.route), [
+        "/hooks/pulled",
+      ]);
+
+      const res = await service.handleRequest(
+        new Request("http://localhost/hooks/pulled", {
+          method: "POST",
+          headers: { [TOKEN_HEADER]: "s3cret" },
+          body: "{}",
+        }),
+      );
+      assertEquals(res?.status, 500);
+      assertEquals(verified, 0);
+    } finally {
+      await service.stop();
+      webhookTypeRegistry.invalidateType(type);
     }
   },
 });

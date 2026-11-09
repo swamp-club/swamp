@@ -653,6 +653,39 @@ Deno.test("performServeReload: calls webhookUpdater with configs from serve.yaml
   }
 });
 
+Deno.test("performServeReload: hands the refreshed trust list over before the webhook routes are parsed", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp.yaml"),
+      `swampVersion: "20260101.120000.0"\ninitializedAt: "2026-01-01T00:00:00.000Z"\ntrustedCollectives:\n  - swamp\n  - acme\n`,
+    );
+    const order: string[] = [];
+    let received: readonly string[] | undefined;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        trustedCollectivesUpdater: (collectives) => {
+          order.push("trust");
+          received = collectives;
+        },
+        webhookUpdater: () => {
+          order.push("webhooks");
+          return Promise.resolve({ changed: 0, warnings: [], errors: [] });
+        },
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(order, ["trust", "webhooks"]);
+    assertEquals(received, ["swamp", "acme"]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("performServeReload: passes empty array when serve.yaml has no webhooks", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

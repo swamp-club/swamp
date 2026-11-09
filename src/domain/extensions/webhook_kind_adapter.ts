@@ -27,7 +27,11 @@ import {
   EXPORT_DECLARATION_PATTERNS,
   sourceFromExportDeclaration,
 } from "./export_declaration.ts";
-import type { KindAdapter, ValidationResult } from "./kind_adapter.ts";
+import type {
+  KindAdapter,
+  RegistrationContext,
+  ValidationResult,
+} from "./kind_adapter.ts";
 
 const USER_WEBHOOK_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
 
@@ -94,6 +98,7 @@ export const webhookKindAdapter: KindAdapter = {
     _typeNormalized: string,
     validated: Record<string, unknown>,
     _module: Record<string, unknown>,
+    context: RegistrationContext,
   ): void {
     const v = validated as z.infer<typeof UserWebhookSchema>;
     webhookTypeRegistry.register({
@@ -102,6 +107,7 @@ export const webhookKindAdapter: KindAdapter = {
       description: v.description,
       configSchema: v.configSchema,
       createHandler: v.createHandler,
+      ...(context.origin ? { origin: context.origin } : {}),
     });
   },
 
@@ -118,6 +124,7 @@ export const webhookKindAdapter: KindAdapter = {
     _typeNormalized: string,
     validated: Record<string, unknown>,
     _module: Record<string, unknown>,
+    context: RegistrationContext,
   ): void {
     const v = validated as z.infer<typeof UserWebhookSchema>;
     webhookTypeRegistry.promoteFromLazy({
@@ -126,6 +133,7 @@ export const webhookKindAdapter: KindAdapter = {
       description: v.description,
       configSchema: v.configSchema,
       createHandler: v.createHandler,
+      ...(context.origin ? { origin: context.origin } : {}),
     });
   },
 

@@ -27,6 +27,7 @@ import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { FreshnessKind } from "./bundle_freshness.ts";
 import type { ExtensionContributor } from "./extension_precedence.ts";
 import type { SourceSnapshot } from "./source_snapshot.ts";
+import type { ExtensionOrigin } from "./extension_origin.ts";
 import { UserError } from "../errors.ts";
 
 export type LoaderKind =
@@ -66,6 +67,8 @@ export interface RegistrationContext {
   repoDir: string | null;
   /** the source is a pulled extension's, so its rebuilds read no Deno config */
   pulled?: boolean;
+  /** decided on canonical and symlink-resolved paths, so it can gate trust */
+  origin?: ExtensionOrigin;
   extensionName?: string;
   sourceFingerprint?: string;
   sourceSnapshot?: SourceSnapshot;
