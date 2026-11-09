@@ -3528,8 +3528,12 @@ class DatastoreApi {
     );
     try {
       // every put settles before the batch is discarded or the request answers
-      await Promise.allSettled(workers);
+      const settled = await Promise.allSettled(workers);
       failed.signal.throwIfAborted();
+      for (const outcome of settled) {
+        if (outcome.status === "rejected") throw outcome.reason;
+      }
+      signal.throwIfAborted();
       await batch.commit(signal);
     } finally {
       await batch.discard();

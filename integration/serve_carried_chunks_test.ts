@@ -20,7 +20,10 @@
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { carriedBytesInFlightForTesting } from "../src/serve/datastore_api.ts";
-import type { ChunkBatch } from "../src/domain/datastore_v3/chunk_store.ts";
+import {
+  type ChunkBatch,
+  ChunkStore,
+} from "../src/domain/datastore_v3/chunk_store.ts";
 import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
 import { UploadLedger } from "../src/infrastructure/datastore_v3/upload_ledger.ts";
 import {
@@ -225,5 +228,75 @@ Deno.test({
         await sent;
       }
     });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a chunk upload whose client went away while its store ran on unstaged storage is not recorded as stored",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const ledger = new UploadLedger();
+    let ended = false;
+    const reserve = ledger.reserve.bind(ledger);
+    ledger.reserve = (principal, size, now) => {
+      const admission = reserve(principal, size, now);
+      if (!admission.allowed) return admission;
+      const cancel = admission.reservation.cancel.bind(admission.reservation);
+      admission.reservation.cancel = () => {
+        ended = true;
+        cancel();
+      };
+      return admission;
+    };
+    await withServer(writer(), async (server) => {
+      // a bucket write that finishes whatever the request's signal says
+      const unstaged = new ChunkStore(
+        new Proxy(server.v3.storage, {
+          get: (target, prop) => {
+            if (prop === "stageChunks" || prop === "syncChunkDirectories") {
+              return undefined;
+            }
+            const value = Reflect.get(target, prop, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }),
+      );
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => release = resolve);
+      let started = false;
+      server.v3.chunkStore.beginBatch = (namespace) => {
+        const batch = unstaged.beginBatch(namespace);
+        const put = batch.put.bind(batch);
+        batch.put = async (sha256, bytes) => {
+          started = true;
+          await held;
+          await put(sha256, bytes, new AbortController().signal);
+        };
+        return batch;
+      };
+      const content = new TextEncoder().encode(`gone ${crypto.randomUUID()}`);
+      const sha = await sha256Hex(content);
+      const controller = new AbortController();
+      // straight to the handler: over HTTP/1.1 a disconnect never aborts the request's signal
+      const sent = server.handle(
+        new Request(`${server.url}/chunks/${sha}`, {
+          method: "PUT",
+          headers: {
+            authorization: "Bearer alice-token",
+            "content-length": String(content.length),
+          },
+          body: content,
+          signal: controller.signal,
+        }),
+      ).then((response) => response.body?.cancel(), () => {});
+      await waitFor(() => started, "the store to start");
+      controller.abort();
+      release();
+      await sent;
+      await waitFor(() => ended, "the upload to end");
+      assertEquals(ledger.size, 0);
+    }, ledger);
   },
 });
