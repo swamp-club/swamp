@@ -3929,19 +3929,19 @@ Deno.test("validateExpressionTypes: a refused expression in forEach.in, a guard,
   assertEquals(failures.map((r) => [r.name, r.error]), [
     [
       "Task expressions in job 'main' step 'fan'",
-      "task.inputs.cmd holds ${{ range(1, 3) }}, which a run refuses: found no matching overload for 'range(int, int)'",
+      "inputs.cmd holds ${{ range(1, 3) }}, which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
     ],
     [
       "Task expressions in job 'main' step 'fan'",
-      "forEach.in holds ${{ range(1, 9) }}, which a run refuses: found no matching overload for 'range(int, int)'",
+      "forEach.in holds ${{ range(1, 9) }}, which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
     ],
     [
       "Task expressions in job 'main' step 'fan'",
-      "guard holds range(1, 2) == [], which a run refuses: found no matching overload for 'range(int, int)'",
+      "guard holds range(1, 2) == [], which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
     ],
     [
       "Task expressions in job 'main' step 'check'",
-      "task.expr holds range(1, 4) == [], which a run refuses: found no matching overload for 'range(int, int)'",
+      "task.expr holds range(1, 4) == [], which a run refuses: found no matching overload for 'range(int, int)'. swamp's CEL provides no function or overload for this call; build a list from a literal, an input or data",
     ],
   ]);
 });
@@ -3998,4 +3998,20 @@ Deno.test("validateExpressionTypes: a workflow whose expressions check gains no 
   const plain = await service.validate(workflow);
   const checked = await typeCheckingService([]).validate(workflow);
   assertEquals(checked.map((r) => r.name), plain.map((r) => r.name));
+});
+
+Deno.test("validateExpressionTypes: an assert expr wrapped in ${{ }} is not reported twice", async () => {
+  const checked: string[] = [];
+  const workflow = Workflow.create({
+    name: "wrapped",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "check",
+        task: StepTask.assert("${{ range(1, 2) == [] }}", "never"),
+      })],
+    })],
+  });
+  await typeCheckingService(checked).validate(workflow);
+  assertEquals(checked, []);
 });

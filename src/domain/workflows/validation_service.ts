@@ -51,6 +51,7 @@ import {
 import {
   containsExpression,
   extractExpressions,
+  isAssertExprPath,
 } from "../expressions/expression_parser.ts";
 import type { SecretMisuseFinding } from "../models/validation_service.ts";
 import { literalCallTexts } from "../expressions/cel_grammar.ts";
@@ -187,7 +188,11 @@ function expressionLocation(
   const match = /^jobs\[(\d+)\](?:\.steps\[(\d+)\])?\.?/.exec(path);
   const job = match ? workflow.jobs[Number(match[1])] : undefined;
   if (!match || !job) return { name: "Task expressions", path };
-  const relative = path.slice(match[0].length);
+  // task arguments are named as the foreign-text check names them
+  const relative = path.slice(match[0].length).replace(
+    /^task\.(?=(?:inputs|globalArgs)[.[])/,
+    "",
+  );
   const step = match[2] === undefined ? undefined : job.steps[Number(match[2])];
   return step
     ? {
@@ -345,7 +350,9 @@ export class DefaultWorkflowValidationService
       (path) =>
         PROSE_DESCRIPTION_PATH.test(path) || inputDescriptions.has(path),
     );
-    expressions.push(...bareStepExpressions(workflow));
+    for (const expression of bareStepExpressions(workflow)) {
+      expressions.push(expression);
+    }
     return expressions.flatMap(({ celExpression, path, embedded }) =>
       this.diagnoseSecrets!(celExpression, path, workflow, embedded).map((
         finding,
@@ -370,15 +377,17 @@ export class DefaultWorkflowValidationService
     const expressions: { celExpression: string; path: string; raw?: string }[] =
       [];
     for (const [jobIndex, job] of workflow.toData().jobs.entries()) {
-      expressions.push(
-        ...extractExpressions(
-          job,
-          `jobs[${jobIndex}]`,
-          (path) => PROSE_DESCRIPTION_PATH.test(path),
-        ),
+      const found = extractExpressions(
+        job,
+        `jobs[${jobIndex}]`,
+        // an assert expr inside ${{ }} is already refused on its own
+        (path) => PROSE_DESCRIPTION_PATH.test(path) || isAssertExprPath(path),
       );
+      for (const expression of found) expressions.push(expression);
     }
-    expressions.push(...bareStepExpressions(workflow));
+    for (const expression of bareStepExpressions(workflow)) {
+      expressions.push(expression);
+    }
     const results: WorkflowValidationResult[] = [];
     for (const { celExpression, path, raw } of expressions) {
       if (isForeignExpression(celExpression)) continue;
@@ -390,7 +399,11 @@ export class DefaultWorkflowValidationService
           location.name,
           `${location.path} holds ${
             raw ?? celExpression
-          }, which a run refuses: ${reason}`,
+          }, which a run refuses: ${reason}` +
+            (reason.startsWith("found no matching overload")
+              ? `. swamp's CEL provides no function or overload for this ` +
+                `call; build a list from a literal, an input or data`
+              : ""),
         ),
       );
     }

@@ -3518,7 +3518,7 @@ iteration evaluates its own guard:
 - name: read-plate
   forEach:
     item: well
-    in: ${{ range(1, 97) }}
+    in: ${{ ["A1", "A2", "A3"] }}
   guard: ${{ data.latest("plate-reader", self.well) }}
   task:
     modelName: plate-reader

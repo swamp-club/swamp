@@ -49,6 +49,7 @@ Deno.test("checkExpressionTypes: a function swamp does not provide is refused wi
 
 Deno.test("checkExpressionTypes: an unknown function in a branch no run takes is still refused", () => {
   assert(checkExpressionTypes("false ? range(1, 2) : [1]") !== undefined);
+  assert(evaluationThrows("false ? range(1, 2) : [1]"));
 });
 
 Deno.test("checkExpressionTypes: expressions swamp evaluates are accepted", () => {
