@@ -18,13 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { join, resolve } from "@std/path";
 import {
   parseCommaSeparatedLabels,
   parseConcurrency,
+  resolveWorkerCacheDir,
   validateMaxDispatches,
   validateOrchestratorUrl,
 } from "./worker_shared.ts";
 import { UserError } from "../../domain/errors.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("parseCommaSeparatedLabels: parses key=value pairs and skips blanks", () => {
   assertEquals(parseCommaSeparatedLabels("a=1, b=2,,"), { a: "1", b: "2" });
@@ -90,4 +93,37 @@ Deno.test("parseConcurrency: rejects zero, fractions and words", () => {
       '--concurrency must be a positive integer or "auto"',
     );
   }
+});
+
+Deno.test("resolveWorkerCacheDir: resolves a relative path against the working directory", () => {
+  assertPathEquals(
+    resolveWorkerCacheDir(join("..", "wcache")),
+    resolve(Deno.cwd(), "..", "wcache"),
+  );
+});
+
+Deno.test("resolveWorkerCacheDir: keeps an absolute path", () => {
+  const absolute = resolve(Deno.cwd(), "worker-cache");
+  assertPathEquals(resolveWorkerCacheDir(absolute), absolute);
+});
+
+Deno.test("resolveWorkerCacheDir: normalizes dot-dot segments", () => {
+  const absolute = resolve(Deno.cwd(), "a");
+  assertPathEquals(
+    resolveWorkerCacheDir(join(absolute, "b", "..", "c")),
+    join(absolute, "c"),
+  );
+});
+
+Deno.test("resolveWorkerCacheDir: resolves a directory that does not exist yet", () => {
+  const missing = `missing-${crypto.randomUUID()}`;
+  assertPathEquals(
+    resolveWorkerCacheDir(missing),
+    resolve(Deno.cwd(), missing),
+  );
+});
+
+Deno.test("resolveWorkerCacheDir: treats unset and empty as no cache dir", () => {
+  assertEquals(resolveWorkerCacheDir(undefined), undefined);
+  assertEquals(resolveWorkerCacheDir(""), undefined);
 });
