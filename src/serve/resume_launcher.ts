@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { delegationOfSessionName } from "./delegated_token_auth.ts";
 import type { CompletedRunSlot } from "./handlers/run_data_attributes.ts";
 import {
   deferCompletedForOutputs,
@@ -229,6 +230,24 @@ export async function startDetachedResume(
         : error instanceof UserError
         ? { refusal: "refused" as const }
         : {}),
+    };
+  }
+
+  // a run bound to a delegation resumes only while the delegation stands,
+  // whoever asks: the sweep, a boot, a gate decision or the app itself
+  const boundDelegation = delegationOfSessionName(
+    resolvedRun.triggeringPrincipal?.tokenBinding?.name ?? "",
+  );
+  if (
+    boundDelegation !== undefined &&
+    ctx.delegationDirectory?.standingOf(boundDelegation).kind !== "standing"
+  ) {
+    return {
+      ok: false,
+      code: "workflow_resume_failed",
+      message:
+        "This run was started through a link that has ended, so it can't be resumed",
+      refusal: "refused",
     };
   }
 

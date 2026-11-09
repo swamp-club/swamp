@@ -1046,3 +1046,82 @@ Deno.test("createRunVaultScope: a run started through an integration uses the va
     true,
   );
 });
+
+const delegationBinding = {
+  name: "delegation:0b9f6f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  principalId: "user:bot",
+};
+
+Deno.test("ServeRunVaultPolicy: a run bound to a delegation is checked against it, never a token record, and fails closed once it ends", async () => {
+  let standing: string | undefined = "user:bot";
+  let reads = 0;
+  let now = 1_000;
+  const policy = new ServeRunVaultPolicy({
+    authMode: "oauth",
+    policySnapshotLoader: {
+      decisionService: service([
+        grant({ subject: { kind: "user", name: "bot" } }),
+      ]),
+    },
+    readTokenRecord: () => {
+      reads++;
+      return Promise.reject(new Error("no server token"));
+    },
+    delegationPrincipal: () => standing,
+    now: () => now,
+    tokenTtlMs: 1,
+  }, {
+    source: "persisted",
+    principal: { kind: "user", id: "bot" },
+    tokenBinding: delegationBinding,
+    idpGroups: [],
+    collectives: [],
+  });
+  assertEquals(policy.triggeringPrincipal?.tokenBinding, delegationBinding);
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    true,
+  );
+  // a token rotation changes nothing the binding names
+  now += 10;
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    true,
+  );
+  standing = undefined;
+  now += 10;
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    false,
+  );
+  standing = "user:someone-else";
+  now += 10;
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    false,
+  );
+  assertEquals(reads, 0);
+});
+
+Deno.test("ServeRunVaultPolicy: without a delegation lookup a delegation binding fails closed, as on an older node", async () => {
+  const policy = new ServeRunVaultPolicy({
+    authMode: "oauth",
+    policySnapshotLoader: {
+      decisionService: service([
+        grant({ subject: { kind: "user", name: "bot" } }),
+      ]),
+    },
+    readTokenRecord: () => Promise.reject(new Error("no server token")),
+  }, {
+    source: "persisted",
+    principal: { kind: "user", id: "bot" },
+    tokenBinding: delegationBinding,
+    idpGroups: [],
+    collectives: [],
+  });
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    false,
+  );
+});

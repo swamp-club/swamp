@@ -370,3 +370,24 @@ Deno.test("decide: an ended delegation, or one for another integration, is refus
   }).decide(ALICE, "read", DEPLOY);
   assertEquals(other?.grantId, DELEGATION_ENDED_GRANT_ID);
 });
+
+Deno.test("decide: a delegated token can't create or edit a workflow, its triggers or a schedule, whatever the person's grants", () => {
+  const s = service(
+    [
+      grant(["read", "write", "run", "approve", "signal"], "workflow", "*"),
+      grant(["read", "write", "run"], "model", "*"),
+      ADMIN,
+    ],
+    active(ceiling(["approve", "read", "run", "signal"], "workflow:*")),
+  );
+  // a workflow's definition holds its triggers and schedules, so write is
+  // the only way to make one, and serve.yaml overrides need admin
+  assertEquals(s.decide(ALICE, "write", DEPLOY)?.effect, "deny");
+  assertEquals(s.decide(ALICE, "admin", ADMIN_RESOURCE)?.effect, "deny");
+  assertEquals(
+    s.decide(ALICE, "write", { kind: "model", name: "m", fields: {} })
+      ?.effect,
+    "deny",
+  );
+  assertEquals(s.decide(ALICE, "run", DEPLOY)?.effect, "allow");
+});

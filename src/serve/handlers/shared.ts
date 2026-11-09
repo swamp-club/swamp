@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { delegationOfSessionName } from "../delegated_token_auth.ts";
+import { integrationClient } from "../../domain/access/client.ts";
 import { FAN_OUT_EVENT_KINDS } from "../../domain/workflows/execution_events.ts";
 import {
   integrationOfClient,
@@ -1239,6 +1241,10 @@ export async function decideSubjectAccess(
   const principal = subject.principal;
   const token = subject.token;
   if (!loader || !principal || !token) return false;
+  const delegationId = delegationOfSessionName(token.name);
+  if (delegationId !== undefined) {
+    return decideDelegatedSubject(ctx, delegationId, subject, action, resource);
+  }
   let record;
   try {
     record = await readServerTokenRecord(ctx.repoContext, token.name);
@@ -1271,6 +1277,38 @@ export async function decideSubjectAccess(
     { kind: "access", name: "*", fields: {} },
   );
   return adminDecision !== null && adminDecision.effect === "allow";
+}
+
+/** the delegation the subject's session was bound to, decided as it stands now */
+function decideDelegatedSubject(
+  ctx: ConnectionContext,
+  delegationId: string,
+  subject: DecisionSubject,
+  action: Action,
+  resource: AccessResource,
+): boolean {
+  const directory = ctx.delegationDirectory;
+  const record = directory?.recordOf(delegationId);
+  const person = record?.person;
+  if (
+    directory === undefined || record === undefined || person === undefined ||
+    directory.standingOf(delegationId).kind !== "standing" ||
+    `user:${person.sub}` !== subject.token?.principalId ||
+    `user:${person.sub}` !== principalToString(subject.principal!)
+  ) return false;
+  const service = ctx.policySnapshotLoader!.decisionService;
+  const decision = service.decide(
+    {
+      principal: subject.principal!,
+      collectives: person.collectives,
+      groups: person.groups,
+      client: integrationClient(record.integrationId),
+      delegation: delegationId,
+    },
+    action,
+    resource,
+  );
+  return decision?.effect === "allow";
 }
 
 export function authorizeOrReject(
