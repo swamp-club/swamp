@@ -3110,6 +3110,7 @@ const checkConfigCommand = new Command()
     );
     const personalCollectives = await findPersonalCollectives(
       authConfig.allowedCollectives,
+      authConfig.allowedUsers,
       (username) =>
         resolveUsername(
           providerUrl,

@@ -484,8 +484,9 @@ OAuth mode the operator must configure at least one of:
 - `--allowed-collectives`: the user must belong to one of these collectives,
   checked against the collectives the IdP reports in userinfo. swamp-club
   leaves personal collectives out, so a personal collective admits no one; its
-  owner is admitted with `--allowed-users`. Serve and `serve check-config` warn
-  about an allowed collective that is a personal one.
+  owner is admitted with `--allowed-users`. `serve check-config` warns about
+  every allowed collective that is a personal one; serve warns at startup only
+  when the owner is a configured admin, since it makes no lookups of its own.
 - `--allowed-users`: the user's OAuth sub must be in this list.
 
 If neither is set, the server refuses to start rather than admit anyone.

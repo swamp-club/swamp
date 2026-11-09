@@ -705,17 +705,30 @@ Deno.test("personalCollectivesAmongResolved: an allowed collective named like a 
   assertStringIncludes(found[0].message, "personal collective");
 });
 
-Deno.test("personalCollectivesAmongResolved: matches a resolved allowed-user and a cached admin", async () => {
+Deno.test("personalCollectivesAmongResolved: matches a cached admin", async () => {
   const resolution = await run({
     admins: ["alice"],
-    allowedUsers: ["bob"],
-    cache: { alice: "sub-alice", "allowed:bob": "sub-bob" },
+    cache: { alice: "sub-alice" },
     mode: "cached",
   });
   assertEquals(
-    personalCollectivesAmongResolved(["alice", "bob"], resolution.resolved)
+    personalCollectivesAmongResolved(["alice"], resolution.resolved)
       .map((p) => p.slug),
-    ["alice", "bob"],
+    ["alice"],
+  );
+});
+
+Deno.test("personalCollectivesAmongResolved: an owner already in allowed-users is not reported", async () => {
+  const { resolve } = fakeResolver(["alice", "bob"]);
+  const resolution = await run({
+    admins: ["alice"],
+    allowedUsers: ["alice", "bob"],
+    mode: "full",
+    resolve,
+  });
+  assertEquals(
+    personalCollectivesAmongResolved(["alice", "bob"], resolution.resolved),
+    [],
   );
 });
 
@@ -746,6 +759,7 @@ Deno.test("findPersonalCollectives: reports each slug that resolves as a usernam
   const { resolve, calls } = fakeResolver(["webframp"], ["flaky"]);
   const found = await findPersonalCollectives(
     ["eng", "webframp", "flaky"],
+    [],
     resolve,
   );
   assertEquals(found.map((p) => p.slug), ["webframp"]);
@@ -755,6 +769,7 @@ Deno.test("findPersonalCollectives: reports each slug that resolves as a usernam
 Deno.test("findPersonalCollectives: a refused lookup is not reported as personal", async () => {
   const found = await findPersonalCollectives(
     ["webframp"],
+    [],
     (username) =>
       Promise.reject(
         new UsernameLookupRefusedError(username, PROVIDER, 403, "Forbidden"),
@@ -765,6 +780,17 @@ Deno.test("findPersonalCollectives: a refused lookup is not reported as personal
 
 Deno.test("findPersonalCollectives: no lookups for no collectives", async () => {
   const { resolve, calls } = fakeResolver(["webframp"]);
-  assertEquals(await findPersonalCollectives([], resolve), []);
+  assertEquals(await findPersonalCollectives([], [], resolve), []);
   assertEquals(calls, []);
+});
+
+Deno.test("findPersonalCollectives: an owner already in allowed-users is neither looked up nor reported", async () => {
+  const { resolve, calls } = fakeResolver(["webframp", "alice"]);
+  const found = await findPersonalCollectives(
+    ["webframp", "alice"],
+    ["user:webframp"],
+    resolve,
+  );
+  assertEquals(found.map((p) => p.slug), ["alice"]);
+  assertEquals(calls, ["alice"]);
 });
