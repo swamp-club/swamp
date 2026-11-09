@@ -607,8 +607,7 @@ export class WebhookService {
   private endpoints: WebhookEndpoint[];
   private skipped: SkippedWebhookRoute[];
 
-  // Every route source reaches the table through here, including reload, which
-  // reads serve.yaml without validating it; a refused route is skipped alone.
+  // a refused route is skipped alone, never failing the others
   constructor(private readonly deps: WebhookServiceDeps) {
     const { allowed, refused } = partitionWebhookRoutes(deps.endpoints);
     this.endpoints = allowed;
