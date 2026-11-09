@@ -889,3 +889,49 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "fan-out approval: on a retry while the canary gate is undecided, the canary runs before the gate opens even when a later lane failed the last halt",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    const w = await workers(fleet, 3);
+    const rollout = {
+      batches: [1, "100%"],
+      maxFailures: 0,
+      approve: ["plan", "canary"],
+    };
+    await fleet.saveWorkflow({
+      name: "gated",
+      inputs: {},
+      jobs: [{
+        ...gatedJob(fleet, rollout),
+        fanOut: { offline: "fail", rollout },
+      }],
+    });
+    const run = await fleet.runWorkflow("gated");
+    await w[2].disconnect();
+    await fleet.decideGate("gated", run.id, PLAN, true);
+    assertEquals((await fleet.resumeRun("gated", run.id)).status, "failed");
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 0], ["w-2", 0], ["w-3", 0]]),
+    );
+
+    await w[2].connect();
+    const events: WorkflowExecutionEvent[] = [];
+    const retried = await fleet.retryRun("gated", run.id, { events });
+    assertEquals(retried.status, "suspended");
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 1], ["w-2", 0], ["w-3", 0]]),
+    );
+    const [requested] = approvalRequests(events);
+    assertEquals(requested.stepId, CANARY);
+    assertEquals(
+      requested.fanOutGate?.canary?.lanes.map((l) => [l.worker, l.status]),
+      [["w-1", "succeeded"]],
+    );
+  },
+});

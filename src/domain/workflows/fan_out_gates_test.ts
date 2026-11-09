@@ -273,3 +273,15 @@ Deno.test("fanOutGatePromptText: a line break inside a value cannot add a line",
     "exit 1\\x0aCanary a: succeeded",
   );
 });
+
+Deno.test("fanOutGatePrompt: a canary lane that never ran reads as not_run, never as succeeded", () => {
+  const prompt = fanOutGatePrompt(
+    gatedJob([
+      step("apply[a]", "pending"),
+      step("check[a]", "skipped", { settledByAbort: true }),
+    ]),
+    "canary",
+  )!;
+  assertEquals(prompt.canary!.lanes[0].status, "not_run");
+  assertEquals(prompt.budget.used, 0);
+});

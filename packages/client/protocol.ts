@@ -1215,7 +1215,7 @@ export interface FanOutGatePrompt {
   canary?: {
     lanes: {
       worker: string;
-      status: "succeeded" | "failed";
+      status: "succeeded" | "failed" | "not_run";
       failedSteps: { step: string; error?: string }[];
       assertions: { step: string; severity: string; message: string }[];
     }[];

@@ -36,7 +36,7 @@ export interface FanOutGateMember {
 
 export interface FanOutCanaryLane {
   readonly worker: string;
-  readonly status: "succeeded" | "failed";
+  readonly status: "succeeded" | "failed" | "not_run";
   /** steps that failed without allowFailure, with their errors */
   readonly failedSteps: { readonly step: string; readonly error?: string }[];
   /** assertions that did not pass, of any severity */
@@ -121,9 +121,13 @@ function laneResult(
       allowedFailure: step.allowedFailure ?? false,
     })),
   );
+  // a lane that never ran must not read as a passed canary
+  const ran = steps.some((step) =>
+    step.status !== "pending" && !step.settledByAbort
+  );
   return {
     worker,
-    status: failed ? "failed" : "succeeded",
+    status: failed ? "failed" : ran ? "succeeded" : "not_run",
     failedSteps: steps.filter((step) =>
       step.status === "failed" && !step.allowedFailure
     ).map((step) => ({

@@ -3338,7 +3338,10 @@ job, named in the lane form: `patch[approve-plan]` and
   `nextBatch` would start the first lane outside frozen batch 0, every batch-0
   lane has settled, and the budget still allows it. A canary that spends the
   budget halts as above and the gate never opens; the halt holds the gate
-  record with the lanes (`job_skipped`, `settledByAbort`).
+  record with the lanes (`job_skipped`, `settledByAbort`). While the canary
+  gate is undecided, a retry puts only canary lanes the last halt failed ahead
+  of the rest, so the canary always runs before its gate opens; a canary lane
+  that never ran reads as `not_run` in the approver's view.
 - A gate opens as `manual_approval` does: `waiting_approval`, an
   `approval_requested` event, and the run suspends. Its `approvalPrompt` is a
   fixed line naming the gate and the job. The approver's view is built from

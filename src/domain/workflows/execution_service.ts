@@ -5983,13 +5983,21 @@ export class WorkflowExecutionService {
         const stream = laneStreams.get(worker);
         if (stream !== undefined) yield* stream();
       }
+      const canaryGate = jobRun.fanOutGate("canary");
+      const canary = new Set(frozen.batches[0] ?? []);
+      const canaryUndecided = canaryGate !== undefined &&
+        !gateApproved(canaryGate.toData());
+      // an undecided canary gate opens after the canary, so only canary lanes
+      // the last halt failed go ahead of it
       const batches = resumeRollout(
         frozen.batches,
         new Set(rerun),
-        new Set(lastHalt?.failed ?? []),
+        new Set(
+          (lastHalt?.failed ?? []).filter((worker) =>
+            !canaryUndecided || canary.has(worker)
+          ),
+        ),
       );
-      const canaryGate = jobRun.fanOutGate("canary");
-      const canary = new Set(frozen.batches[0] ?? []);
       // a retry re-runs failed lanes, so a failed kept lane is this attempt's:
       // a canary that failed within the budget before its gate was approved
       const keptFailed = lanes.filter((worker) =>
@@ -5997,9 +6005,7 @@ export class WorkflowExecutionService {
       );
       const end = yield* runRolloutLanes<WorkflowExecutionEvent>({
         rollout: { batches, maxFailures: frozen.maxFailures },
-        held: (worker) =>
-          canaryGate !== undefined && !canary.has(worker) &&
-          !gateApproved(canaryGate.toData()),
+        held: (worker) => canaryUndecided && !canary.has(worker),
         failedBeforeStart: [...keptFailed, ...failedBeforeStart],
         limit: laneLimit,
         signal: options.signal,

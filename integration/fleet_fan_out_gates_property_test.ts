@@ -40,7 +40,9 @@ type Action =
   | { kind: "retry" }
   | { kind: "retryFrom" }
   | { kind: "fix" }
-  | { kind: "break"; worker: number };
+  | { kind: "break"; worker: number }
+  | { kind: "disconnect"; worker: number }
+  | { kind: "reconnect"; worker: number };
 
 interface Scenario {
   workers: number;
@@ -56,6 +58,9 @@ class Model {
   readonly lanes = new Map<string, LaneState>();
   readonly gates = new Map<GateKind, GateState>();
   readonly dispatches = new Map<string, number>();
+  readonly offline = new Set<string>();
+  // the first pass plans; every later one runs on the stored plan
+  private planned = false;
   status: "suspended" | "failed" | "succeeded" = "succeeded";
   rejected = false;
   lastHaltFailed: string[] = [];
@@ -81,6 +86,8 @@ class Model {
   }
 
   run(): void {
+    const stored = this.planned;
+    this.planned = true;
     if (this.gates.has("plan") && this.gates.get("plan") !== "approved") {
       this.gates.set("plan", "waiting");
       this.status = "suspended";
@@ -93,12 +100,25 @@ class Model {
       [...this.lanes].filter(([w, s]) => s === "failed" && !rerun.has(w))
         .map(([w]) => w),
     );
+    // offline fail: a stored plan's lane whose worker is gone fails unstarted
+    if (stored) {
+      for (const worker of rerun) {
+        if (!this.offline.has(worker)) continue;
+        this.lanes.set(worker, "failed");
+        failed.add(worker);
+      }
+    }
+    const canaryUndecided = this.gates.has("canary") &&
+      this.gates.get("canary") !== "approved";
+    const failedFirst = this.lastHaltFailed.filter((w) =>
+      !canaryUndecided || this.batches[0].includes(w)
+    );
     const rollout = this.batches.length > 1 || this.maxFailures !== null;
     const first = this.batches.flat().filter((w) =>
-      rerun.has(w) && this.lastHaltFailed.includes(w)
+      rerun.has(w) && failedFirst.includes(w)
     );
     const rest = this.batches.map((b) =>
-      b.filter((w) => rerun.has(w) && !this.lastHaltFailed.includes(w))
+      b.filter((w) => rerun.has(w) && !failedFirst.includes(w))
     ).filter((b) => b.length > 0);
     const order = rollout
       ? (first.length > 0 ? [first, ...rest] : rest)
@@ -109,11 +129,16 @@ class Model {
     for (const batch of order) {
       const started: string[] = [];
       let paused = false;
+      let halted = false;
       for (const worker of batch) {
+        if (this.lanes.get(worker) !== "pending") continue;
         if (
           rollout && this.maxFailures !== null &&
           failed.size > this.maxFailures
-        ) break;
+        ) {
+          halted = true;
+          break;
+        }
         if (gated() && !canary.has(worker)) {
           paused = true;
           break;
@@ -131,7 +156,7 @@ class Model {
         this.status = "suspended";
         return;
       }
-      if (started.length < batch.length) break;
+      if (halted) break;
     }
     const held = order.flat().filter((w) => this.lanes.get(w) === "pending");
     if (held.length > 0) {
@@ -223,6 +248,14 @@ const scenarioArb: fc.Arbitrary<Scenario> = fc.record({
         kind: "break",
         worker,
       })),
+      fc.integer({ min: 0, max: 3 }).map((worker): Action => ({
+        kind: "disconnect",
+        worker,
+      })),
+      fc.integer({ min: 0, max: 3 }).map((worker): Action => ({
+        kind: "reconnect",
+        worker,
+      })),
     ),
     { minLength: 2, maxLength: 7 },
   ),
@@ -254,6 +287,7 @@ interface Coverage {
   reasked: number;
   approvedFailedCanary: number;
   succeeded: number;
+  disconnected: number;
 }
 
 Deno.test({
@@ -270,6 +304,7 @@ Deno.test({
       reasked: 0,
       approvedFailedCanary: 0,
       succeeded: 0,
+      disconnected: 0,
     };
     await fc.assert(
       fc.asyncProperty(scenarioArb, async (scenario) => {
@@ -311,6 +346,7 @@ Deno.test({
           jobs: [{
             name: "patch",
             fanOut: {
+              offline: "fail",
               rollout: {
                 batches: scenario.batches,
                 ...(scenario.maxFailures !== null
@@ -373,6 +409,19 @@ Deno.test({
             const name = names[action.worker % names.length];
             failing.add(name);
             behave();
+            continue;
+          }
+          if (action.kind === "disconnect" || action.kind === "reconnect") {
+            const worker = fleetWorkers[action.worker % names.length];
+            const gone = model.offline.has(worker.name);
+            if (action.kind === "disconnect" && !gone) {
+              await worker.disconnect();
+              model.offline.add(worker.name);
+              coverage.disconnected++;
+            } else if (action.kind === "reconnect" && gone) {
+              await worker.connect();
+              model.offline.delete(worker.name);
+            }
             continue;
           }
           if (action.kind === "approve" || action.kind === "reject") {
@@ -462,6 +511,24 @@ Deno.test({
             actions: [{ kind: "approve" }, { kind: "fix" }, {
               kind: "retry",
             }],
+          }],
+          // a later lane failing unstarted halts; the retry runs the canary first
+          [{
+            workers: 3,
+            batches: [1, "100%"],
+            maxFailures: 0,
+            approve: ["plan", "canary"],
+            failing: [],
+            actions: [
+              { kind: "disconnect", worker: 2 },
+              { kind: "approve" },
+              {
+                kind: "reconnect",
+                worker: 2,
+              },
+              { kind: "retry" },
+              { kind: "approve" },
+            ],
           }],
           // --from with no lane kept asks both approved gates again
           [{
