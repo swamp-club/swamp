@@ -538,38 +538,6 @@ Deno.test("loadServeConfig: webhook route not starting with / produces error", (
   });
 });
 
-Deno.test("loadServeConfig: a webhook route serve will skip still loads", () => {
-  withTempDir((dir) => {
-    writeConfig(dir, {
-      webhooks: [
-        { route: "/api/github", workflow: "deploy", secret: "s" },
-        { route: "/hooks/./ci", workflow: "deploy", secret: "s" },
-      ],
-    });
-    const config = loadServeConfig(undefined, dir);
-    assertEquals(config?.webhooks?.map((w) => w.route), [
-      "/api/github",
-      "/hooks/./ci",
-    ]);
-  });
-});
-
-Deno.test("loadServeConfig: legacy webhook routes outside the reserved roots load", () => {
-  withTempDir((dir) => {
-    writeConfig(dir, {
-      webhooks: [
-        { route: "/deploy", workflow: "deploy", secret: "s" },
-        { route: "/hooks/github", workflow: "deploy", secret: "s" },
-      ],
-    });
-    const config = loadServeConfig(undefined, dir);
-    assertEquals(config?.webhooks?.map((w) => w.route), [
-      "/deploy",
-      "/hooks/github",
-    ]);
-  });
-});
-
 Deno.test("loadServeConfig: webhook with invalid scheme produces error", () => {
   withTempDir((dir) => {
     writeConfig(dir, {

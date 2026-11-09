@@ -18,14 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
-import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { WebhookConfigEntry } from "./serve_config.ts";
-import {
-  type WebhookEndpoint,
-  type WebhookRouteSource,
-  WebhookService,
-} from "./webhook.ts";
+import type { WebhookEndpoint, WebhookRouteSource } from "./webhook.ts";
 import { createWebhookUpdater, FLAG_ROUTES_WARNING } from "./webhook_reload.ts";
 
 function entry(route: string): WebhookConfigEntry {
@@ -51,7 +45,6 @@ function harness(source: WebhookRouteSource) {
         applied.push(endpoints);
         return endpoints.length;
       },
-      skippedRoutes: () => [],
     },
     parse: (configs) => {
       parsed.push(configs);
@@ -108,7 +101,6 @@ Deno.test("createWebhookUpdater: a parse failure leaves the routes untouched", a
         applied.push(endpoints);
         return endpoints.length;
       },
-      skippedRoutes: () => [],
     },
     parse: () => Promise.reject(new Error("vault unreachable")),
   });
@@ -122,36 +114,4 @@ Deno.test("createWebhookUpdater: a parse failure leaves the routes untouched", a
 
   assertEquals(message, "vault unreachable");
   assertEquals(applied, []);
-});
-
-Deno.test("createWebhookUpdater: a reload applies the allowed routes and warns about a reserved one", async () => {
-  const service = new WebhookService({
-    repoDir: "/tmp/fake",
-    syncGate: undefined,
-    repoContext: {} as RepositoryContext,
-    datastoreConfig: {} as DatastoreConfig,
-    endpoints: [endpoint("/hooks/a")],
-  });
-  const updater = createWebhookUpdater({
-    source: "config",
-    service,
-    parse: (configs) => Promise.resolve(configs.map((c) => endpoint(c.route))),
-  });
-
-  const result = await updater([
-    entry("/hooks/a"),
-    entry("/hooks/b"),
-    entry("/api/github"),
-  ]);
-
-  assertEquals(result.changed, 1);
-  assertEquals(result.warnings, [
-    "Skipped webhook route '/api/github': it is under '/api', which serve " +
-    "reserves for its own API; use a route under /hooks/ instead",
-  ]);
-  assertEquals(service.listEndpoints().map((e) => e.route), [
-    "/hooks/a",
-    "/hooks/b",
-  ]);
-  await service.stop();
 });
