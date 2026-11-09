@@ -459,3 +459,155 @@ Deno.test("SwampClient - request rejects when connection fails", async () => {
     Error,
   );
 });
+
+// ── Stream errors ───────────────────────────────────────────────────────
+
+async function withReplyServer(
+  reply: (socket: WebSocket, id: string) => void,
+  fn: (client: SwampClient) => Promise<void>,
+): Promise<void> {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    socket.onmessage = (e) => reply(socket, JSON.parse(e.data as string).id);
+    return response;
+  });
+  const client = new SwampClient(`ws://localhost:${server.addr.port}/ws`);
+  try {
+    await fn(client);
+  } finally {
+    client.close();
+    await server.shutdown();
+  }
+}
+
+const REFUSAL = {
+  code: "unauthorized",
+  message: "Access denied: user:bob does not have 'run' on workflow:gated",
+  details: { action: "run" },
+};
+
+function sendRefusal(socket: WebSocket, id: string): void {
+  socket.send(JSON.stringify({ type: "error", id, error: REFUSAL }));
+}
+
+function sendEventsThenError(socket: WebSocket, id: string): void {
+  for (const kind of ["validating_inputs", "evaluating_workflow"]) {
+    socket.send(JSON.stringify({ type: "event", id, event: { kind } }));
+  }
+  socket.send(JSON.stringify({
+    type: "event",
+    id,
+    event: {
+      kind: "error",
+      error: { code: "execution_failed", message: "step failed" },
+    },
+  }));
+}
+
+function sendEventThenClose(socket: WebSocket, id: string): void {
+  socket.send(JSON.stringify({
+    type: "event",
+    id,
+    event: { kind: "validating_inputs" },
+  }));
+  socket.close();
+}
+
+async function collect(
+  stream: AsyncIterable<{ kind: string }>,
+): Promise<{ kinds: string[]; error: unknown }> {
+  const kinds: string[] = [];
+  try {
+    for await (const event of stream) kinds.push(event.kind);
+  } catch (error) {
+    return { kinds, error };
+  }
+  return { kinds, error: undefined };
+}
+
+function assertSameClientError(actual: unknown, expected: unknown): void {
+  if (!(actual instanceof SwampClientError)) {
+    throw new Error(`expected SwampClientError, got ${String(actual)}`);
+  }
+  if (!(expected instanceof SwampClientError)) {
+    throw new Error(`expected SwampClientError, got ${String(expected)}`);
+  }
+  assertEquals(
+    { code: actual.code, message: actual.message, details: actual.details },
+    {
+      code: expected.code,
+      message: expected.message,
+      details: expected.details,
+    },
+  );
+}
+
+Deno.test("SwampClient - workflowRunStream throws a refusal that arrives while it waits", async () => {
+  await withReplyServer(sendRefusal, async (client) => {
+    const { kinds, error } = await collect(
+      client.workflowRunStream({ workflowIdOrName: "gated" }),
+    );
+    assertEquals(kinds, []);
+    const expected = await client.workflowRun({ workflowIdOrName: "gated" })
+      .catch((e) => e);
+    assertSameClientError(error, expected);
+    assertEquals((error as SwampClientError).code, "unauthorized");
+  });
+});
+
+Deno.test("SwampClient - modelMethodRunStream throws a refusal that arrives while it waits", async () => {
+  await withReplyServer(sendRefusal, async (client) => {
+    const payload = { modelIdOrName: "gated", methodName: "run" };
+    const { kinds, error } = await collect(
+      client.modelMethodRunStream(payload),
+    );
+    assertEquals(kinds, []);
+    const expected = await client.modelMethodRun(payload).catch((e) => e);
+    assertSameClientError(error, expected);
+    assertEquals((error as SwampClientError).code, "unauthorized");
+  });
+});
+
+Deno.test("SwampClient - workflowRunStream yields every event before an in-band error, then throws it", async () => {
+  await withReplyServer(sendEventsThenError, async (client) => {
+    const { kinds, error } = await collect(
+      client.workflowRunStream({ workflowIdOrName: "failing" }),
+    );
+    assertEquals(kinds, ["validating_inputs", "evaluating_workflow", "error"]);
+    const expected = await client.workflowRun({ workflowIdOrName: "failing" })
+      .catch((e) => e);
+    assertSameClientError(error, expected);
+  });
+});
+
+Deno.test("SwampClient - modelMethodRunStream yields every event before an in-band error, then throws it", async () => {
+  await withReplyServer(sendEventsThenError, async (client) => {
+    const payload = { modelIdOrName: "failing", methodName: "run" };
+    const { kinds, error } = await collect(
+      client.modelMethodRunStream(payload),
+    );
+    assertEquals(kinds, ["validating_inputs", "evaluating_workflow", "error"]);
+    const expected = await client.modelMethodRun(payload).catch((e) => e);
+    assertSameClientError(error, expected);
+  });
+});
+
+Deno.test("SwampClient - workflowRunStream throws when the socket closes mid-stream", async () => {
+  await withReplyServer(sendEventThenClose, async (client) => {
+    const { kinds, error } = await collect(
+      client.workflowRunStream({ workflowIdOrName: "w" }),
+    );
+    assertEquals(kinds, ["validating_inputs"]);
+    assertEquals((error as Error)?.message, "WebSocket closed");
+  });
+});
+
+Deno.test("SwampClient - modelMethodRunStream throws when the socket closes mid-stream", async () => {
+  await withReplyServer(sendEventThenClose, async (client) => {
+    const { kinds, error } = await collect(
+      client.modelMethodRunStream({ modelIdOrName: "m", methodName: "run" }),
+    );
+    assertEquals(kinds, ["validating_inputs"]);
+    assertEquals((error as Error)?.message, "WebSocket closed");
+  });
+});

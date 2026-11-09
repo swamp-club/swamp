@@ -40,6 +40,7 @@ import {
   SwampClientError,
   withDefaults,
 } from "./stream.ts";
+import { AsyncIterableQueue } from "./queue.ts";
 
 export interface SwampClientOptions {
   token?: string;
@@ -182,10 +183,8 @@ export class SwampClient {
       reject: (err) => queue.error(err),
       handlers: withDefaults<WorkflowRunEvent>({}, (event) => {
         queue.push(event);
-        if (
-          event.kind === "completed" || event.kind === "error" ||
-          event.kind === "cancelled"
-        ) {
+        // an error event ends through reject, so the stream throws after it
+        if (event.kind === "completed" || event.kind === "cancelled") {
           queue.done();
         }
       }),
@@ -216,10 +215,8 @@ export class SwampClient {
       reject: (err) => queue.error(err),
       handlers: withDefaults<ModelMethodRunEvent>({}, (event) => {
         queue.push(event);
-        if (
-          event.kind === "completed" || event.kind === "error" ||
-          event.kind === "cancelled"
-        ) {
+        // an error event ends through reject, so the stream throws after it
+        if (event.kind === "completed" || event.kind === "cancelled") {
           queue.done();
         }
       }),
@@ -337,66 +334,5 @@ export class SwampClient {
       throw new Error("WebSocket is not connected");
     }
     this.socket.send(JSON.stringify(request));
-  }
-}
-
-/**
- * Simple async iterable queue for bridging push-based WebSocket events
- * into a pull-based AsyncGenerator.
- */
-class AsyncIterableQueue<T> implements AsyncIterable<T> {
-  private buffer: T[] = [];
-  private resolve: ((value: IteratorResult<T>) => void) | null = null;
-  private finished = false;
-  private err: Error | null = null;
-
-  push(value: T): void {
-    if (this.finished) return;
-    if (this.resolve) {
-      const r = this.resolve;
-      this.resolve = null;
-      r({ value, done: false });
-    } else {
-      this.buffer.push(value);
-    }
-  }
-
-  done(): void {
-    this.finished = true;
-    if (this.resolve) {
-      const r = this.resolve;
-      this.resolve = null;
-      r({ value: undefined as unknown as T, done: true });
-    }
-  }
-
-  error(err: Error): void {
-    this.err = err;
-    this.finished = true;
-    if (this.resolve) {
-      const r = this.resolve;
-      this.resolve = null;
-      r({ value: undefined as unknown as T, done: true });
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: (): Promise<IteratorResult<T>> => {
-        if (this.err) return Promise.reject(this.err);
-        if (this.buffer.length > 0) {
-          return Promise.resolve({ value: this.buffer.shift()!, done: false });
-        }
-        if (this.finished) {
-          return Promise.resolve({
-            value: undefined as unknown as T,
-            done: true,
-          });
-        }
-        return new Promise<IteratorResult<T>>((resolve) => {
-          this.resolve = resolve;
-        });
-      },
-    };
   }
 }
