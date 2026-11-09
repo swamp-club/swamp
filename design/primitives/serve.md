@@ -1505,13 +1505,17 @@ each tick (`snapshotWebhookRoutesDir`) and applies a change once two ticks see
 the same snapshot, so a deploy caught mid-write waits a tick. Its first settled
 snapshot is always applied, which catches an edit made between startup and the
 first poll. It applies through the same updater as `swamp serve reload`
-(`createWebhookRouteApplier`), with the `serve.yaml` webhook list from the last
-apply, so a poll changes only file routes and never re-reads `serve.yaml`.
+(`createWebhookRouteApplier`), keeping the live `serve.yaml` and `--webhook`
+endpoints as they are, so a poll changes only file routes, never re-reads
+`serve.yaml` and never resolves an operator secret (a vault outage on an
+operator route cannot fail it).
 Applies are serialized, so a reload and a poll never overwrite each other. A
 snapshot error or a failing apply is reported in health and retried; a failing
 apply stops after three attempts until the files change again. A route file
 refused on an outage (`WebhookEnvironmentError`) leaves the snapshot unapplied,
-so every poll applies it again until it loads, logging its errors once. Every node polls
+so every poll applies it again until it loads, logging its errors once; audit
+events compare refusals by file and route, so a varying error text does not
+audit each retry. Every node polls
 its own directory, since a follower forwards only routes in its own table.
 
 Each apply that changes the live routes or the set of refused and kept files

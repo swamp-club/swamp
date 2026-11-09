@@ -210,3 +210,19 @@ Deno.test("WebhookRoutesPoller: an outage refusal is applied again on every poll
   assertEquals(applies, MAX_FAILED_ROUTE_APPLIES + 3);
   assertEquals(poller.status().lastError, null);
 });
+
+Deno.test("WebhookRoutesPoller: a snapshot error clears once the directory reads again", async () => {
+  const { state, poller } = harness("v1");
+  await poller.pollNow();
+  await poller.pollNow();
+  assertEquals(state.applies, 1);
+
+  state.snapshotError = new Error("permission denied");
+  await poller.pollNow();
+  assertEquals(poller.status().lastError !== null, true);
+
+  state.snapshotError = undefined;
+  await poller.pollNow();
+  assertEquals(poller.status().lastError, null);
+  assertEquals(state.applies, 1);
+});

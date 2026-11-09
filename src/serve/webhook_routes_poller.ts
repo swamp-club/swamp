@@ -46,6 +46,8 @@ export interface WebhookRoutesPollStatus {
   readonly lastError: string | null;
 }
 
+const SNAPSHOT_ERROR_PREFIX = "Could not read the webhook routes directory: ";
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -124,14 +126,15 @@ export class WebhookRoutesPoller {
       snapshot = await this.#options.snapshot();
     } catch (error) {
       this.#lastCheckedAt = this.#now().toISOString();
-      const reason = `Could not read the webhook routes directory: ${
-        message(error)
-      }`;
+      const reason = `${SNAPSHOT_ERROR_PREFIX}${message(error)}`;
       if (this.#lastError !== reason) logger.warn`${reason}`;
       this.#lastError = reason;
       return;
     }
     this.#lastCheckedAt = this.#now().toISOString();
+    if (this.#lastError?.startsWith(SNAPSHOT_ERROR_PREFIX)) {
+      this.#lastError = null;
+    }
 
     // a deploy caught mid-write differs from the last tick, so it waits a tick
     const settled = snapshot === this.#previous;

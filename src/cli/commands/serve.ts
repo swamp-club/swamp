@@ -7287,9 +7287,6 @@ export const serveCommand = new Command()
     const webhookRouteApplier = createWebhookRouteApplier({
       ...webhookRouteTableDeps,
       service: webhookService,
-      initialConfigs: webhookSourceIsCliFlags
-        ? []
-        : merged.webhookConfigs ?? [],
       initialTable: initialWebhookRoutes,
       onApplied: (record) =>
         emitWebhookRoutesApplied({

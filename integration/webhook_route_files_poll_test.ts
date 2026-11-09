@@ -91,7 +91,10 @@ function routeFile(route: string, workflow = "deploy", key = "k"): string {
 }
 
 /** serve's startup and poll wiring, with real files, loader, service and health */
-async function startServe(dir: string) {
+async function startServe(
+  dir: string,
+  configs: readonly WebhookConfigEntry[] = [],
+) {
   const routesDir = join(dir, "webhook-routes");
   const vaultState = { down: false };
   const vault = vaultFor(vaultState);
@@ -100,7 +103,7 @@ async function startServe(dir: string) {
     parse: (configs) => parse(vault, configs),
     loadRouteFiles: () => loadWebhookRouteFiles(routesDir),
   };
-  const initialTable = await buildWebhookRouteTable(deps, []);
+  const initialTable = await buildWebhookRouteTable(deps, configs);
   const service = new WebhookService({
     repoDir: dir,
     syncGate: undefined,
@@ -353,6 +356,39 @@ Deno.test("webhook route files poll: a file deployed during a vault outage goes 
       serve.vaultState.down = false;
       await serve.poller.pollNow();
       assertEquals(serve.live(), [["/hooks/push", "push.yaml"]]);
+    } finally {
+      await serve.poller.stop();
+      await serve.service.stop();
+    }
+  });
+});
+
+Deno.test("webhook route files poll: a vault outage with serve.yaml routes still retries a deployed file", async () => {
+  await withTempDir(async (dir) => {
+    const serve = await startServe(dir, [{
+      route: "/hooks/op",
+      workflow: "deploy",
+      secret: "@vault=hooks:op",
+    }]);
+    const { routesDir } = serve;
+    await Deno.mkdir(routesDir);
+    try {
+      await serve.pollTwice();
+
+      serve.vaultState.down = true;
+      await Deno.writeTextFile(
+        join(routesDir, "push.yaml"),
+        routeFile("/hooks/push"),
+      );
+      for (let i = 0; i < 6; i++) await serve.poller.pollNow();
+      assertEquals(serve.live(), [["/hooks/op", "config"]]);
+
+      serve.vaultState.down = false;
+      await serve.poller.pollNow();
+      assertEquals(serve.live(), [
+        ["/hooks/op", "config"],
+        ["/hooks/push", "push.yaml"],
+      ]);
     } finally {
       await serve.poller.stop();
       await serve.service.stop();

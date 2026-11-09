@@ -93,13 +93,19 @@ export interface WebhookRouteTable {
   readonly retryable: boolean;
 }
 
-/** operator routes parse all-or-nothing; route files are refused one at a time */
+/**
+ * operator routes parse all-or-nothing, or are reused as live when a poll
+ * passes them; route files are refused one at a time
+ */
 export async function buildWebhookRouteTable(
   deps: WebhookRouteTableDeps,
   configs: readonly WebhookConfigEntry[],
   previous: readonly WebhookEndpoint[] = [],
+  liveOperator?: readonly WebhookEndpoint[],
 ): Promise<WebhookRouteTable> {
-  const operator: WebhookEndpoint[] = deps.source === "flag"
+  const operator: WebhookEndpoint[] = liveOperator !== undefined
+    ? [...liveOperator]
+    : deps.source === "flag"
     ? (deps.flagEndpoints ?? []).map((e) => ({ ...e, source: "flag" }))
     : (configs.length > 0 ? await deps.parse(configs) : []).map((e) => ({
       ...e,
@@ -168,8 +174,6 @@ export interface WebhookUpdaterDeps extends WebhookRouteTableDeps {
     WebhookService,
     "updateEndpoints" | "currentEndpoints"
   >;
-  /** the serve config list serve started with, reused by a route-file poll */
-  readonly initialConfigs?: readonly WebhookConfigEntry[];
   /** the table serve started with, so health reports it before any reload */
   readonly initialTable?: WebhookRouteTable;
   /** runs after an apply that changed routes or refusals; must not throw */
@@ -179,18 +183,21 @@ export interface WebhookUpdaterDeps extends WebhookRouteTableDeps {
 
 export interface WebhookRouteApplier {
   readonly update: WebhookUpdater;
-  /** re-reads route files only, against the serve config list last applied */
+  /** re-reads route files only; the live operator routes are kept as they are */
   reapplyRouteFiles(context: WebhookApplyContext): Promise<WebhookReloadResult>;
   status(): WebhookRouteFileStatus;
 }
 
+// by file and route, not message text: a vault error that varies between
+// retried polls must not audit each poll
 function refusalSignature(
   status: Pick<WebhookRouteFileStatus, "refused" | "kept" | "directoryError">,
 ): string {
   return JSON.stringify([
-    status.refused.map((r) => r.message).sort(),
-    status.kept.map((k) => k.message).sort(),
-    status.directoryError ?? null,
+    status.refused.map((r) => `${r.file}|${r.route ?? ""}|${!!r.outage}`)
+      .sort(),
+    status.kept.map((k) => `${k.file}|${k.route}|${k.reason}`).sort(),
+    status.directoryError !== undefined,
   ]);
 }
 
@@ -198,7 +205,6 @@ export function createWebhookRouteApplier(
   deps: WebhookUpdaterDeps,
 ): WebhookRouteApplier {
   const now = deps.now ?? (() => new Date());
-  let lastConfigs: readonly WebhookConfigEntry[] = deps.initialConfigs ?? [];
   let status: WebhookRouteFileStatus = deps.initialTable
     ? {
       lastApplied: { at: now().toISOString(), trigger: "startup" },
@@ -218,15 +224,23 @@ export function createWebhookRouteApplier(
     return result;
   };
 
+  // configs null re-reads route files only, so a vault outage on an operator
+  // route can never fail a poll
   const apply = async (
-    configs: readonly WebhookConfigEntry[],
+    configs: readonly WebhookConfigEntry[] | null,
     context: WebhookApplyContext,
   ): Promise<WebhookReloadResult> => {
     const previous = deps.service.currentEndpoints();
-    const table = await buildWebhookRouteTable(deps, configs, previous);
+    const table = await buildWebhookRouteTable(
+      deps,
+      configs ?? [],
+      previous,
+      configs === null
+        ? previous.filter((e) => (e.source ?? "config") !== "file")
+        : undefined,
+    );
     const diff = diffWebhookEndpoints(previous, table.endpoints);
     const changed = deps.service.updateEndpoints(table.endpoints);
-    lastConfigs = configs;
     const errors = [
       ...(table.directoryError !== undefined ? [table.directoryError] : []),
       ...table.refused.map((refused) => refused.message),
@@ -260,7 +274,7 @@ export function createWebhookRouteApplier(
       });
     }
     const warnings = [
-      ...(deps.source === "flag" && configs.length > 0
+      ...(deps.source === "flag" && configs !== null && configs.length > 0
         ? [FLAG_ROUTES_WARNING]
         : []),
       ...table.shadowed.map(shadowedRouteFileMessage),
@@ -276,8 +290,7 @@ export function createWebhookRouteApplier(
   return {
     update: (configs, context) =>
       serialized(() => apply(configs, context ?? { trigger: "reload" })),
-    reapplyRouteFiles: (context) =>
-      serialized(() => apply(lastConfigs, context)),
+    reapplyRouteFiles: (context) => serialized(() => apply(null, context)),
     status: () => status,
   };
 }

@@ -382,6 +382,7 @@ function lastGoodHarness(files: Record<string, FileState>) {
     endpoints: [],
   });
   const records: WebhookRouteApplyRecord[] = [];
+  let outages = 0;
   const applier = createWebhookRouteApplier({
     source: "config",
     service,
@@ -393,7 +394,10 @@ function lastGoodHarness(files: Record<string, FileState>) {
         return Promise.reject(new Error(`no key for ${config.route}`));
       }
       if (config.secret.includes("down") || state.down.has(config.route)) {
-        return Promise.reject(new WebhookEnvironmentError("vault timed out"));
+        outages++;
+        return Promise.reject(
+          new WebhookEnvironmentError(`vault timed out (request ${outages})`),
+        );
       }
       return Promise.resolve(configs.map((c) => ({
         ...endpoint(c.route),
@@ -646,7 +650,7 @@ Deno.test("createWebhookRouteApplier: a routes directory refused by placement dr
   assertEquals(applier.status().kept, []);
 });
 
-Deno.test("createWebhookRouteApplier: reapplyRouteFiles reuses the serve config list last applied", async () => {
+Deno.test("createWebhookRouteApplier: reapplyRouteFiles keeps the live serve config routes", async () => {
   const { state, applier, live } = lastGoodHarness({});
   await applier.update([entry("/hooks/op")]);
 
@@ -806,4 +810,27 @@ Deno.test("createWebhookRouteApplier: a dropped last good route says why it was 
   assertEquals(result.errors, [
     "Refused webhook route file a.yaml: bad YAML; its last good route /hooks/a was not kept: b.yaml now serves it",
   ]);
+});
+
+Deno.test("createWebhookRouteApplier: a poll never re-parses serve config routes, so their vault outage cannot fail it", async () => {
+  const { state, applier, live } = lastGoodHarness({});
+  await applier.update([entry("/hooks/op")]);
+
+  state.down.add("/hooks/op");
+  state.files["a.yaml"] = { kind: "ok", route: "/hooks/a" };
+  const result = await applier.reapplyRouteFiles({ trigger: "poll" });
+
+  assertEquals(result.errors, []);
+  assertEquals(live(), ["/hooks/op<-config", "/hooks/a<-a.yaml"]);
+});
+
+Deno.test("createWebhookRouteApplier: a refusal whose message changes between polls audits once", async () => {
+  const { state, applier, records } = lastGoodHarness({});
+  state.files["a.yaml"] = { kind: "ok", route: "/hooks/a" };
+  state.down.add("/hooks/a");
+  const first = await applier.reapplyRouteFiles({ trigger: "poll" });
+  const second = await applier.reapplyRouteFiles({ trigger: "poll" });
+
+  assertEquals(first.errors[0] === second.errors[0], false);
+  assertEquals(records.length, 1);
 });
