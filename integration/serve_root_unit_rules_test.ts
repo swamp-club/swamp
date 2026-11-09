@@ -250,6 +250,9 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // Workflow runs from the workflow.run handler, webhooks and the scheduler:
   // the post-run push. Each step's model lock still pushes on its own.
   "src/serve/deps.ts: executeWorkflowWithLocks",
+  // the link service, routes and operator end call it from a request handler or
+  // a timer, never from inside a run's root
+  "src/serve/delegation_store.ts: DelegationStore",
   // hand marks re-staged just before their push via stageWritesThenPush; each
   // root covers only the marks and the push, and the writes before them run in
   // a root of their own with no push

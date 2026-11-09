@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { integrationClient } from "../domain/access/client.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
@@ -76,14 +77,15 @@ export function createDelegationAuditor(
         resourceName: record.id,
         principalKind: person ? "user" : "integration",
         principalId: person ? person.sub : record.integrationId,
-        initiatedBy: person?.username ?? `integration:${record.integrationId}`,
+        initiatedBy: person?.username ??
+          integrationClient(record.integrationId),
         actor: person
           ? {
             email: person.email,
             ...(person.username ? { username: person.username } : {}),
           }
           : undefined,
-        client: `integration:${record.integrationId}`,
+        client: integrationClient(record.integrationId),
         delegation: record.id,
         sourceIp: "server",
         requestId: crypto.randomUUID(),

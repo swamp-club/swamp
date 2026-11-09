@@ -29,16 +29,19 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 const PINNED = [
-  // Six v2 sync callbacks (managed-config boot pull, cache hydration, the
-  // config, access-data, integration-data and runtime-data pollers) and the
-  // token GC pull: each needs a sync service, which a v3 serve does not have.
-  "src/cli/commands/serve.ts :: serveCommand (x7)",
+  // Seven v2 sync callbacks (managed-config boot pull, cache hydration, the
+  // config, access-data, integration-data, delegation-data and runtime-data
+  // pollers) and the token GC pull: each needs a sync service, which a v3 serve
+  // does not have.
+  "src/cli/commands/serve.ts :: serveCommand (x8)",
   // Calls its callback only after a pull, and is built only with a sync service.
   "src/serve/access_data_poller.ts :: AccessDataPoller",
   // Cache hydration pulls through the sync service; never built on v3.
   "src/serve/boot_reconciliation.ts :: hydrateLocalCache",
   // Invalidates only when it holds a sync service.
   "src/serve/config_poller.ts :: ConfigPoller",
+  // Only when the lock pulled: acquireModelLocks syncs a v2 custom datastore only.
+  "src/serve/delegation_store.ts :: DelegationStore",
   // Only when the lock pulled: acquireModelLocks syncs a v2 custom datastore only.
   "src/serve/deps.ts :: createStepLockHook",
   // Inside the sync-service branch of the mint.
@@ -49,8 +52,9 @@ const PINNED = [
   "src/serve/handlers/access_handlers.ts :: pullBeforeTokenWrite",
   // Datastore setup refuses a v3 datastore before it invalidates.
   "src/serve/handlers/admin_handlers.ts :: serveDatastoreSetupDeps",
-  // Only when the run's lock pulled, which a v3 datastore never does.
-  "src/serve/handlers/model_handlers.ts :: handleModelMethodRun (x2)",
+  // Only when the run's lock pulled, which a v3 datastore never does; a first
+  // integration register locks its id the same way.
+  "src/serve/handlers/model_handlers.ts :: handleModelMethodRun (x3)",
   // pullModelsUnlocked returns false on anything but a v2 custom datastore.
   "src/serve/handlers/model_handlers.ts :: pullBeforeUnlockedRun",
   // Built only with a sync service.

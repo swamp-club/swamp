@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { integrationClient } from "../domain/access/client.ts";
 import {
   accessTokenExpiry,
   accessTokenMatches,
@@ -134,7 +135,7 @@ export async function authenticateDelegatedToken(
       email: record.person.email,
       ...(record.person.username ? { username: record.person.username } : {}),
     },
-    client: `integration:${record.integrationId}`,
+    client: integrationClient(record.integrationId),
     delegation: id,
     accessExpiresAt: expiry ?? record.tokens!.accessExpiresAt,
   };

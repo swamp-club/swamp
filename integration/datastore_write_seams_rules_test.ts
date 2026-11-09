@@ -509,6 +509,7 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/serve/deps.ts: createModelMethodRunDeps: YamlDefinitionRepository",
   "src/serve/deps.ts: createWorkflowRunDeps: YamlDefinitionRepository",
   "src/serve/deps.ts: createWorkflowRunDeps: YamlEvaluatedWorkflowRepository",
+  "src/serve/delegation_store.ts: DelegationStore: YamlDefinitionRepository",
   "src/serve/device_auth_handler.ts: mintServerTokenImpl: YamlDefinitionRepository",
   "src/serve/handlers/access_handlers.ts: handleAccessReload: YamlDefinitionRepository",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprovals: YamlEvaluatedWorkflowRepository",

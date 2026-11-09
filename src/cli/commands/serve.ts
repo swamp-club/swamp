@@ -23,6 +23,7 @@ import {
   registerDelegationLookup,
 } from "../../serve/delegated_token_auth.ts";
 import { DelegationStore } from "../../serve/delegation_store.ts";
+import { createRecordLock } from "../../serve/deps.ts";
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
 import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
 import {
@@ -6783,9 +6784,13 @@ export const serveCommand = new Command()
     const delegationStore = new DelegationStore({
       repoDir: resolvedRepoDir,
       repoContext,
-      datastoreConfig,
-      syncService,
-      syncGate,
+      lock: createRecordLock(
+        resolvedRepoDir,
+        repoContext,
+        datastoreConfig,
+        syncService,
+        syncGate,
+      ),
       confirmReplicated,
       directory: delegationDirectory,
     });

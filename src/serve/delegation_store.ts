@@ -26,25 +26,28 @@ import {
   type DelegationRecord,
   DelegationSchema,
 } from "../domain/models/access/delegation_model.ts";
-import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
-import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { Definition } from "../domain/definitions/definition.ts";
 import { createResourceWriter } from "../domain/models/data_writer.ts";
-import { acquireModelLocks } from "../cli/repo_context.ts";
-import { runCommandInRootUnit } from "../cli/command_root_unit.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import { type SyncGate, withRunSyncGate } from "./sync_gate.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 const logger = getSwampLogger(["serve", "delegation-store"]);
+
+export interface DelegationRecordLock {
+  readonly synced: boolean;
+  push(): Promise<void>;
+  release(): Promise<void>;
+}
 
 export interface DelegationStoreDeps {
   readonly repoDir: string;
   readonly repoContext: RepositoryContext;
-  readonly datastoreConfig: DatastoreConfig;
-  readonly syncService?: DatastoreSyncService;
-  readonly syncGate?: SyncGate;
+  /** the record's model lock, pulling it fresh on a v2 custom datastore */
+  readonly lock: (modelType: string, modelId: string) => Promise<
+    DelegationRecordLock
+  >;
   readonly confirmReplicated?: () => Promise<void>;
   readonly directory: Pick<DelegationDirectory, "reload">;
 }
@@ -120,18 +123,7 @@ export class DelegationStore {
     change: (current: DelegationRecord | null) => Promise<TransitionResult<T>>,
   ): Promise<T> {
     const deps = this.#deps;
-    const locks = await acquireModelLocks(
-      deps.datastoreConfig,
-      [{ modelType: DELEGATION_MODEL_TYPE.normalized, modelId: id }],
-      deps.repoDir,
-      deps.syncService,
-      deps.repoContext.catalogStore,
-      undefined,
-      {
-        wrapSync: (fn, kind) => withRunSyncGate(deps.syncGate, fn, kind),
-        repoContext: deps.repoContext,
-      },
-    );
+    const locks = await deps.lock(DELEGATION_MODEL_TYPE.normalized, id);
     if (locks.synced) deps.repoContext.catalogStore.invalidate();
     const current = await this.read(id);
     const result = await change(current).catch(async (error) => {
@@ -144,11 +136,7 @@ export class DelegationStore {
     }
     const written = result.write;
     try {
-      await runCommandInRootUnit(
-        deps.repoContext,
-        { push: locks.push, release: locks.release, pushWhen: "completed" },
-        () => this.#write(written),
-      );
+      await this.#inRoot(locks, () => this.#write(written));
       await deps.confirmReplicated?.();
     } catch (error) {
       await this.#rollBack(id, current, error);
@@ -185,6 +173,30 @@ export class DelegationStore {
         { id, error: error instanceof Error ? error.message : String(error) },
       );
     }
+  }
+
+  /** the push runs only once fn resolved, and its error is held past the release */
+  async #inRoot(
+    lock: DelegationRecordLock,
+    fn: () => Promise<void>,
+  ): Promise<void> {
+    let pushError: { error: unknown } | undefined;
+    try {
+      await runInRootUnitOfWork(this.#deps.repoContext, {
+        flush: async ({ completed }) => {
+          if (!completed) return;
+          try {
+            await lock.push();
+          } catch (error) {
+            pushError = { error };
+          }
+        },
+        pushWhen: "completed",
+      }, fn);
+    } finally {
+      await lock.release();
+    }
+    if (pushError !== undefined) throw pushError.error;
   }
 
   async #write(record: DelegationRecord): Promise<void> {
