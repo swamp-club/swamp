@@ -83,6 +83,9 @@ import {
   type WorkflowRejectEvent,
 } from "../src/libswamp/workflows/reject.ts";
 import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
+import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
+import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
+import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import { createWorkerModelRunDeps } from "../src/libswamp/worker/run_deps.ts";
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
@@ -612,6 +615,31 @@ export class Fleet implements AsyncDisposable {
       }),
       options.events,
     );
+  }
+
+  /** what serve's handlers act through, with auth off and the given auto-resume */
+  serveContext(autoResume: boolean): ConnectionContext {
+    return {
+      repoDir: this.repoDir,
+      repoContext: this.repoContext,
+      datastoreConfig: this.#repo.datastoreConfig,
+      datastoreResolver: this.#repo.datastoreResolver,
+      authConfig: {
+        mode: "none",
+        admins: [],
+        allowedCollectives: [],
+        allowedUsers: [],
+        oauthProvider: "",
+        groupsField: "",
+        restrictedModelTypes: [],
+        restrictedCommands: [],
+        approveRequiresExplicitGrant: false,
+        signalRequiresExplicitGrant: false,
+        tagRequiresExplicitGrant: false,
+      },
+      activeRunRegistry: new ActiveRunRegistry(),
+      serveOptions: { autoResume } as MergedServeOptions,
+    } as ConnectionContext;
   }
 
   /** Resumes a suspended run after a decision, as serve's auto-resume does. */

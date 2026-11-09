@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { handleWorkflowApprove } from "../src/serve/handlers/workflow_handlers.ts";
 import "../src/domain/models/models.ts";
 import type { WorkflowExecutionEvent } from "../src/domain/workflows/execution_events.ts";
 import type { WorkflowRunData } from "../src/domain/workflows/workflow_run.ts";
@@ -788,6 +790,102 @@ Deno.test({
     assertEquals(
       fleet.dispatchCounts(),
       counts([["approve-plan", 1], ["w-1", 1]]),
+    );
+  },
+});
+
+async function approveThroughServe(
+  ctx: ReturnType<Fleet["serveContext"]>,
+  workflow: string,
+  runId: string,
+  stepName: string,
+): Promise<Record<string, unknown>> {
+  const sent: string[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send(data: string) {
+      sent.push(data);
+    },
+  } as unknown as WebSocket;
+  await handleWorkflowApprove(
+    socket,
+    ctx,
+    "approve-1",
+    { workflowIdOrName: workflow, stepName, runId },
+    new AbortController(),
+    null,
+  );
+  const reply = JSON.parse(sent[0]);
+  assertEquals(reply.type, "workflow.approve", JSON.stringify(reply));
+  return reply.payload.data;
+}
+
+Deno.test({
+  name:
+    "fan-out approval: serve's approve handler auto-resumes a gated fan-out run on the worker pool, gate by gate",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await workers(fleet, 3);
+    const workflow = await fleet.saveWorkflow({
+      name: "gated",
+      inputs: {},
+      jobs: [gatedJob(fleet, {
+        batches: [1, "100%"],
+        maxFailures: 0,
+        approve: ["plan", "canary"],
+      })],
+    });
+    const run = await fleet.runWorkflow("gated");
+    assertEquals(run.status, "suspended");
+    const ctx = fleet.serveContext(true);
+    const status = async () => {
+      const data = await fleet.runRecord(workflow, run.id);
+      return {
+        run: data.status,
+        canary: data.jobs[0].steps.find((s) => s.stepName === CANARY)?.status,
+      };
+    };
+
+    const planReply = await approveThroughServe(
+      ctx,
+      "gated",
+      run.id,
+      PLAN,
+    );
+    assertEquals(planReply.autoResumed, true);
+    await waitFor(
+      async () => (await status()).canary === "waiting_approval",
+      "the auto-resumed run to suspend at the canary gate",
+    );
+    await waitFor(
+      () => ctx.activeRunRegistry?.get(run.id) === undefined,
+      "the first continuation to end",
+    );
+    assertEquals((await status()).run, "suspended");
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 1], ["w-2", 0], ["w-3", 0]]),
+    );
+
+    const canaryReply = await approveThroughServe(
+      ctx,
+      "gated",
+      run.id,
+      CANARY,
+    );
+    assertEquals(canaryReply.autoResumed, true);
+    await waitFor(
+      async () => (await status()).run === "succeeded",
+      "the auto-resumed run to finish the rollout",
+    );
+    await waitFor(
+      () => ctx.activeRunRegistry?.get(run.id) === undefined,
+      "the second continuation to end",
+    );
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 1], ["w-2", 1], ["w-3", 1]]),
     );
   },
 });
