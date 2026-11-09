@@ -161,12 +161,20 @@ export class DelegationStore {
       error: cause instanceof Error ? cause.message : String(cause),
     });
     if (previous === null) return;
+    // one attempt that never rolls back itself, so a failing restore can't
+    // restore the record it was undoing
     try {
-      await this.#locked(id, () =>
-        Promise.resolve({
-          write: { ...previous, updatedAt: new Date().toISOString() },
-          value: undefined,
-        }));
+      const deps = this.#deps;
+      const locks = await deps.lock(DELEGATION_MODEL_TYPE.normalized, id);
+      try {
+        await this.#inRoot(
+          locks,
+          () =>
+            this.#write({ ...previous, updatedAt: new Date().toISOString() }),
+        );
+      } finally {
+        await deps.directory.reload();
+      }
     } catch (error) {
       logger.error(
         "Delegation {id} could not be restored after a failed write; its tokens were never handed out: {error}",
