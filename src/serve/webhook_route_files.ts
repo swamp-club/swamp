@@ -98,6 +98,8 @@ export interface RefusedRouteFile {
   readonly file: string;
   readonly route?: string;
   readonly message: string;
+  /** the environment failed rather than the file, so a later try may load it */
+  readonly outage?: boolean;
 }
 
 export interface RouteFileLoad {
@@ -112,7 +114,7 @@ export interface RouteFileLoad {
 export interface KeptRouteFile {
   readonly file: string;
   readonly route: string;
-  readonly reason: "outage" | "refused";
+  readonly reason: "outage" | "last_good";
   readonly message: string;
 }
 
@@ -310,6 +312,23 @@ async function digestHex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
     .join("");
 }
 
+/** a file swapped or grown after its stat is still read within the cap */
+async function readAtMost(
+  path: string,
+  limit: number,
+): Promise<Uint8Array<ArrayBuffer>> {
+  using file = await Deno.open(path, { read: true });
+  if (!(await file.stat()).isFile) return new Uint8Array(0);
+  const buffer = new Uint8Array(limit);
+  let filled = 0;
+  while (filled < limit) {
+    const read = await file.read(buffer.subarray(filled));
+    if (read === null) break;
+    filled += read;
+  }
+  return buffer.slice(0, filled);
+}
+
 /**
  * a value that changes whenever a file the loader would read changes; files
  * over the size cap count by size alone, since the loader refuses them unread
@@ -346,7 +365,7 @@ export async function snapshotWebhookRoutesDir(dir: string): Promise<string> {
         entries.push(`${name}:${info.isFile ? "file" : "other"}:${info.size}`);
         continue;
       }
-      const bytes = await Deno.readFile(path);
+      const bytes = await readAtMost(path, MAX_ROUTE_FILE_BYTES + 1);
       entries.push(`${name}:${bytes.length}:${await digestHex(bytes)}`);
     } catch (cause) {
       entries.push(`${name}:unreadable:${cause}`);
@@ -488,7 +507,10 @@ export async function parseRouteFiles(
         });
         continue;
       }
-      refused.push(refusal(file, entry.route, reason));
+      refused.push({
+        ...refusal(file, entry.route, reason),
+        ...(error instanceof WebhookEnvironmentError ? { outage: true } : {}),
+      });
     }
   }
   return { endpoints, refused, kept };
@@ -506,6 +528,10 @@ export interface LastGoodRouteFilesInput {
   readonly loaderRefused: readonly RefusedRouteFile[];
   /** the routes directory could not be read; never set for a placement refusal */
   readonly directoryUnreadable: boolean;
+  /** re-checks a last good entry, so a revoked key or scheme is not kept */
+  readonly parse: (
+    configs: readonly WebhookConfigEntry[],
+  ) => Promise<WebhookEndpoint[]>;
   /** why a kept endpoint may no longer serve, e.g. an untrusted scheme */
   readonly keepRefusal?: (endpoint: WebhookEndpoint) => string | undefined;
 }
@@ -533,23 +559,60 @@ function lastGoodCandidate(
     kept: {
       file: refused.file,
       route: endpoint.route,
-      reason: "refused",
+      reason: "last_good",
       message: `${refused.message}; its last good route ${endpoint.route} ` +
         "keeps serving until the file loads",
     },
   };
 }
 
+function notKept(candidate: KeepCandidate, why: string): RefusedRouteFile {
+  return {
+    ...candidate.refusal,
+    message: `${candidate.refusal.message}; its last good route ` +
+      `${candidate.endpoint.route} was not kept: ${why}`,
+  };
+}
+
+/**
+ * Re-parses the last good entry: a fresh secret on success, the old endpoint
+ * through an outage, and no endpoint when the vault or trust list now says no.
+ */
+async function recheckLastGood(
+  candidate: KeepCandidate,
+  parse: LastGoodRouteFilesInput["parse"],
+): Promise<{ endpoint: WebhookEndpoint } | { refusal: string }> {
+  const entry = candidate.endpoint.routeFileEntry;
+  if (entry === undefined) return { endpoint: candidate.endpoint };
+  try {
+    const [fresh] = await parse([entry]);
+    return {
+      endpoint: {
+        ...fresh,
+        source: "file",
+        file: candidate.endpoint.file,
+        routeFileEntry: entry,
+      },
+    };
+  } catch (error) {
+    if (error instanceof WebhookEnvironmentError) {
+      return { endpoint: candidate.endpoint };
+    }
+    return { refusal: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * A file that loaded before keeps its last good route when an edit or a broken
- * directory stops it loading. An unchanged file refused by an answer (missing
- * key, untrusted scheme) or a deleted file is dropped, so revocation still works.
+ * directory stops it loading; an answer that revokes the route still drops it.
  */
-export function keepLastGoodRouteFiles(input: LastGoodRouteFilesInput): {
+export async function keepLastGoodRouteFiles(
+  input: LastGoodRouteFilesInput,
+): Promise<{
   endpoints: WebhookEndpoint[];
   refused: RefusedRouteFile[];
   kept: KeptRouteFile[];
-} {
+}> {
   const { previous, parsed } = input;
   const candidates: KeepCandidate[] = [];
   const refused: RefusedRouteFile[] = [];
@@ -603,18 +666,26 @@ export function keepLastGoodRouteFiles(input: LastGoodRouteFilesInput): {
     if (keptEntry) kept.push(keptEntry);
   }
 
-  const claimed = new Set(endpoints.map((e) => e.route));
+  const claimed = new Map(endpoints.map((e) => [e.route, e.file ?? ""]));
   for (const candidate of candidates) {
     // a file that loads beats a kept route on the same path
-    if (
-      claimed.has(candidate.endpoint.route) ||
-      input.keepRefusal?.(candidate.endpoint) !== undefined
-    ) {
-      refused.push(candidate.refusal);
+    const claimer = claimed.get(candidate.endpoint.route);
+    if (claimer !== undefined) {
+      refused.push(notKept(candidate, `${claimer} now serves it`));
       continue;
     }
-    claimed.add(candidate.endpoint.route);
-    endpoints.push(candidate.endpoint);
+    const stale = input.keepRefusal?.(candidate.endpoint);
+    if (stale !== undefined) {
+      refused.push(notKept(candidate, stale));
+      continue;
+    }
+    const checked = await recheckLastGood(candidate, input.parse);
+    if ("refusal" in checked) {
+      refused.push(notKept(candidate, checked.refusal));
+      continue;
+    }
+    claimed.set(checked.endpoint.route, checked.endpoint.file ?? "");
+    endpoints.push(checked.endpoint);
     kept.push(candidate.kept);
   }
   return { endpoints, refused, kept };

@@ -61,14 +61,19 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-const vault: VaultSecretResolver = {
-  get: (vaultName, key) =>
-    vaultName === "hooks" && key !== "missing"
-      ? Promise.resolve(`secret-${key}`)
-      : Promise.resolve(""),
-};
+function vaultFor(state: { down: boolean }): VaultSecretResolver {
+  return {
+    get: (vaultName, key) => {
+      if (state.down) return Promise.reject(new Error("vault timed out"));
+      return vaultName === "hooks" && key !== "missing"
+        ? Promise.resolve(`secret-${key}`)
+        : Promise.resolve("");
+    },
+  };
+}
 
 async function parse(
+  vault: VaultSecretResolver,
   configs: readonly WebhookConfigEntry[],
 ): Promise<WebhookEndpoint[]> {
   const parsed = await Promise.all(
@@ -88,9 +93,11 @@ function routeFile(route: string, workflow = "deploy", key = "k"): string {
 /** serve's startup and poll wiring, with real files, loader, service and health */
 async function startServe(dir: string) {
   const routesDir = join(dir, "webhook-routes");
+  const vaultState = { down: false };
+  const vault = vaultFor(vaultState);
   const deps: WebhookRouteTableDeps = {
     source: "config",
-    parse,
+    parse: (configs) => parse(vault, configs),
     loadRouteFiles: () => loadWebhookRouteFiles(routesDir),
   };
   const initialTable = await buildWebhookRouteTable(deps, []);
@@ -146,6 +153,7 @@ async function startServe(dir: string) {
   };
   return {
     routesDir,
+    vaultState,
     service,
     applier,
     poller,
@@ -188,7 +196,7 @@ Deno.test("webhook route files poll: a deploy alone adds, keeps, updates and rem
       const broken = (await serve.health.collect()).webhookRouteFiles!;
       assertEquals(broken.kept.map((k) => [k.file, k.reason]), [[
         "push.yaml",
-        "refused",
+        "last_good",
       ]]);
       assertEquals(broken.lastApplied?.trigger, "poll");
       assertEquals(serve.events.length, 2);
@@ -314,6 +322,37 @@ Deno.test("webhook route files poll: a reload during a poll applies one after th
       assertEquals(serve.live(), [["/hooks/a", "a.yaml"]]);
       assertEquals(serve.events.length, 1);
       assertEquals(serve.events[0].detail?.startsWith("trigger=reload"), true);
+    } finally {
+      await serve.poller.stop();
+      await serve.service.stop();
+    }
+  });
+});
+
+Deno.test("webhook route files poll: a file deployed during a vault outage goes live once the vault answers", async () => {
+  await withTempDir(async (dir) => {
+    const serve = await startServe(dir);
+    const { routesDir } = serve;
+    await Deno.mkdir(routesDir);
+    try {
+      await serve.pollTwice();
+
+      serve.vaultState.down = true;
+      await Deno.writeTextFile(
+        join(routesDir, "push.yaml"),
+        routeFile("/hooks/push"),
+      );
+      await serve.pollTwice();
+      await serve.poller.pollNow();
+      assertEquals(serve.live(), []);
+      assertEquals(
+        (await serve.health.collect()).webhookRouteFiles?.poll?.lastError,
+        "Some webhook route files failed on an outage; retrying on the next poll",
+      );
+
+      serve.vaultState.down = false;
+      await serve.poller.pollNow();
+      assertEquals(serve.live(), [["/hooks/push", "push.yaml"]]);
     } finally {
       await serve.poller.stop();
       await serve.service.stop();

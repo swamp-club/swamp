@@ -473,7 +473,7 @@ Deno.test("createWebhookRouteApplier: a route file edited into bad YAML keeps it
   ]);
   assertEquals(applier.status().kept.map((k) => [k.file, k.reason]), [[
     "a.yaml",
-    "refused",
+    "last_good",
   ]]);
   assertEquals(applier.status().refused, []);
 });
@@ -515,7 +515,7 @@ Deno.test("createWebhookRouteApplier: an edit that fails during an outage keeps 
   await applier.update([]);
 
   assertEquals(workflowOf("/hooks/a"), "v1");
-  assertEquals(applier.status().kept[0].reason, "refused");
+  assertEquals(applier.status().kept[0].reason, "last_good");
 });
 
 Deno.test("createWebhookRouteApplier: an unchanged file whose vault key is gone is dropped", async () => {
@@ -721,6 +721,7 @@ Deno.test("createWebhookRouteApplier: health reports the startup table before an
       }],
       kept: [],
       shadowed: [],
+      retryable: false,
     },
     now: () => new Date("2026-11-09T00:00:00.000Z"),
   });
@@ -729,4 +730,80 @@ Deno.test("createWebhookRouteApplier: health reports the startup table before an
     trigger: "startup",
   });
   assertEquals(applier.status().refused.map((r) => r.file), ["a.yaml"]);
+});
+
+Deno.test("createWebhookRouteApplier: a new file refused during an outage asks to be applied again", async () => {
+  const { state, applier, live } = lastGoodHarness({});
+  await applier.update([]);
+
+  state.files["a.yaml"] = { kind: "ok", route: "/hooks/a" };
+  state.down.add("/hooks/a");
+  const during = await applier.reapplyRouteFiles({ trigger: "poll" });
+  assertEquals(during.retryable, true);
+  assertEquals(live(), []);
+
+  state.down.delete("/hooks/a");
+  const after = await applier.reapplyRouteFiles({ trigger: "poll" });
+  assertEquals(after.retryable, undefined);
+  assertEquals(live(), ["/hooks/a<-a.yaml"]);
+});
+
+Deno.test("createWebhookRouteApplier: a content refusal does not ask to be applied again", async () => {
+  const { state, applier } = lastGoodHarness({});
+  state.files["a.yaml"] = { kind: "broken" };
+  state.files["b.yaml"] = {
+    kind: "ok",
+    route: "/hooks/b",
+    secret: "@vault=hooks:missing",
+  };
+  const result = await applier.reapplyRouteFiles({ trigger: "poll" });
+  assertEquals(result.retryable, undefined);
+  assertEquals(result.errors.length, 2);
+});
+
+Deno.test("createWebhookRouteApplier: a last good route whose vault key was revoked is not kept", async () => {
+  const { state, applier, live } = lastGoodHarness({
+    "a.yaml": { kind: "ok", route: "/hooks/a" },
+  });
+  await applier.update([]);
+
+  state.files["a.yaml"] = { kind: "broken" };
+  state.missing.add("/hooks/a");
+  const result = await applier.update([]);
+
+  assertEquals(live(), []);
+  assertEquals(applier.status().kept, []);
+  assertEquals(result.errors, [
+    "Refused webhook route file a.yaml: bad YAML; its last good route /hooks/a was not kept: no key for /hooks/a",
+  ]);
+});
+
+Deno.test("createWebhookRouteApplier: a last good route rechecked during an outage keeps serving", async () => {
+  const { state, applier, live } = lastGoodHarness({
+    "a.yaml": { kind: "ok", route: "/hooks/a" },
+  });
+  await applier.update([]);
+
+  state.files["a.yaml"] = { kind: "broken" };
+  state.down.add("/hooks/a");
+  await applier.update([]);
+
+  assertEquals(live(), ["/hooks/a<-a.yaml"]);
+  assertEquals(applier.status().kept.map((k) => k.reason), ["last_good"]);
+});
+
+Deno.test("createWebhookRouteApplier: a dropped last good route says why it was not kept", async () => {
+  const { state, applier } = lastGoodHarness({
+    "a.yaml": { kind: "ok", route: "/hooks/a" },
+    "b.yaml": { kind: "ok", route: "/hooks/b" },
+  });
+  await applier.update([]);
+
+  state.files["a.yaml"] = { kind: "broken" };
+  state.files["b.yaml"] = { kind: "ok", route: "/hooks/a" };
+  const result = await applier.update([]);
+
+  assertEquals(result.errors, [
+    "Refused webhook route file a.yaml: bad YAML; its last good route /hooks/a was not kept: b.yaml now serves it",
+  ]);
 });

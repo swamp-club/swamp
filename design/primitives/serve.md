@@ -1471,13 +1471,16 @@ On a reload or a poll, a route file that loaded before also keeps its last good
 route when an edit stops it loading (`keepLastGoodRouteFiles` in
 `src/serve/webhook_route_files.ts`): bad YAML, a schema error, a literal secret,
 a clash with a new file over its route, or an edited entry that fails to parse
-for any reason. The endpoint built from the file's last good content keeps
-serving, and the error says so. Revocation still takes a route down: an
-unchanged file refused by an answer (a missing key, a refused read, an
-untrusted or uninstalled scheme) is dropped, a deleted file is removed, a file
-that now loads beats a kept route on the same path, and a kept route whose
-scheme fails the trust list in force, or is no longer installed, is dropped
-(`webhookSchemeKeepRefusal`). A routes directory refused by placement (inside
+for any reason. The file's last good entry is parsed again on each apply, so the
+kept route (reason `last_good`) serves with a freshly resolved secret, or with
+its old endpoint while the vault cannot answer, and the error says so.
+Revocation still takes a route down: an unchanged file refused by an answer (a
+missing key, a refused read, an untrusted or uninstalled scheme) is dropped, a
+last good entry the vault or trust list now refuses is not kept, a deleted file
+is removed, a file that now loads beats a kept route on the same path, and a
+kept route whose scheme fails the trust list in force, or is no longer
+installed, is dropped (`webhookSchemeKeepRefusal`); each such error says why
+the last good route was not kept. A routes directory refused by placement (inside
 extension code, `WebhookRoutesDirPlacementError`) loads no file routes; one that
 cannot be read keeps every live file route on a reload or poll. Either is
 reported once (`webhook_routes_dir_refused` at startup, a reload error), while
@@ -1506,7 +1509,9 @@ first poll. It applies through the same updater as `swamp serve reload`
 apply, so a poll changes only file routes and never re-reads `serve.yaml`.
 Applies are serialized, so a reload and a poll never overwrite each other. A
 snapshot error or a failing apply is reported in health and retried; a failing
-apply stops after three attempts until the files change again. Every node polls
+apply stops after three attempts until the files change again. A route file
+refused on an outage (`WebhookEnvironmentError`) leaves the snapshot unapplied,
+so every poll applies it again until it loads, logging its errors once. Every node polls
 its own directory, since a follower forwards only routes in its own table.
 
 Each apply that changes the live routes or the set of refused and kept files

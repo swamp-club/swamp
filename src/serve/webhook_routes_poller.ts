@@ -27,6 +27,8 @@ export const MAX_FAILED_ROUTE_APPLIES = 3;
 export interface WebhookRoutesApplyResult {
   readonly changed: number;
   readonly errors: readonly string[];
+  /** a file failed on an outage, so the same snapshot is applied again */
+  readonly retryable?: boolean;
 }
 
 export interface WebhookRoutesPollerOptions {
@@ -64,6 +66,7 @@ export class WebhookRoutesPoller {
   #lastCheckedAt: string | null = null;
   #lastAppliedAt: string | null = null;
   #lastError: string | null = null;
+  #loggedErrors = "";
 
   constructor(options: WebhookRoutesPollerOptions) {
     this.#options = options;
@@ -161,11 +164,14 @@ export class WebhookRoutesPoller {
       return;
     }
 
-    // the snapshot read before applying, so an edit made during it is seen
-    this.#applied = snapshot;
+    // the snapshot read before applying, so an edit made during it is seen;
+    // an outage leaves it unapplied so every poll tries again until it clears
+    if (!result.retryable) this.#applied = snapshot;
     this.#failedSnapshot = undefined;
     this.#failures = 0;
-    this.#lastError = null;
+    this.#lastError = result.retryable
+      ? "Some webhook route files failed on an outage; retrying on the next poll"
+      : null;
     this.#lastAppliedAt = this.#now().toISOString();
     if (result.changed > 0) {
       logger.info(
@@ -173,6 +179,10 @@ export class WebhookRoutesPoller {
         { count: result.changed },
       );
     }
+    // a retried outage repeats the same errors every poll; log them once
+    const logged = JSON.stringify([snapshot, result.errors]);
+    if (logged === this.#loggedErrors) return;
+    this.#loggedErrors = logged;
     for (const error of result.errors) {
       logger.warn`Webhook route files (poll): ${error}`;
     }

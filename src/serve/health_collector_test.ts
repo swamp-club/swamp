@@ -593,7 +593,7 @@ Deno.test("HealthCollector: reports route file status from its provider", async 
     kept: [{
       file: "a.yaml",
       route: "/hooks/a",
-      reason: "refused",
+      reason: "last_good",
       message: "Refused webhook route file a.yaml: bad YAML",
     }],
     shadowed: [],

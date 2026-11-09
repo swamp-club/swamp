@@ -225,9 +225,10 @@ scheme: github
 - On a reload or poll, a file that loaded before keeps its last good route when
   an edit breaks it (bad YAML, a clash, a refused edit) or the directory cannot
   be read; the error lists it as kept. An unchanged file whose vault key is gone
-  or whose scheme is no longer trusted is dropped, and so is a deleted file. If
-  a vault or scheme lookup is down, an unchanged file keeps its live route; at
-  startup there is nothing to keep, so it is refused.
+  or whose scheme is no longer trusted is dropped, and so is a deleted file or a
+  last good route whose key was revoked. If a vault or scheme lookup is down, an
+  unchanged file keeps its live route and a polled file is retried each poll
+  until it loads; at startup there is nothing to keep, so it is refused.
 - Each reload or poll that changes routes writes a `webhook.routes.applied`
   audit event with `file:<name>` sources; admin health shows refused and kept
   files and the poll state under `webhookRouteFiles`.

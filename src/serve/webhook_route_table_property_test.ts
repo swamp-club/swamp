@@ -153,7 +153,11 @@ Deno.test("buildWebhookRouteTable: last good routes never break the route table 
           assert(after[index].kind !== "absent", "a deleted file never serves");
           if (fresh.has(endpoint.file!)) continue;
           assert(
-            previous.includes(endpoint),
+            previous.some((p) =>
+              p.file === endpoint.file && p.route === endpoint.route &&
+              JSON.stringify(p.routeFileEntry) ===
+                JSON.stringify(endpoint.routeFileEntry)
+            ),
             `${endpoint.file} serves only as its own last good route`,
           );
           assert(

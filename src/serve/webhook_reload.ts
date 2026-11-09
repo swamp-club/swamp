@@ -45,6 +45,8 @@ export interface WebhookReloadResult {
    * routes still applied
    */
   readonly errors: readonly string[];
+  /** a route file failed on an outage, so applying again may load it */
+  readonly retryable?: boolean;
 }
 
 export type WebhookApplyTrigger = "startup" | "reload" | "signal" | "poll";
@@ -87,6 +89,8 @@ export interface WebhookRouteTable {
   readonly shadowed: readonly ShadowedRouteFile[];
   /** the routes directory could not be used, so no new file route loaded */
   readonly directoryError?: string;
+  /** a route file failed on an outage rather than on its content */
+  readonly retryable: boolean;
 }
 
 /** operator routes parse all-or-nothing; route files are refused one at a time */
@@ -114,12 +118,13 @@ export async function buildWebhookRouteTable(
     }
   }
   const parsed = await parseRouteFiles(load.files, deps.parse, previous);
-  const fileRoutes = keepLastGoodRouteFiles({
+  const fileRoutes = await keepLastGoodRouteFiles({
     previous,
     files: load.files,
     parsed,
     loaderRefused: load.refused,
     directoryUnreadable,
+    parse: deps.parse,
     ...(deps.keepRefusal ? { keepRefusal: deps.keepRefusal } : {}),
   });
   const { endpoints, shadowed } = mergeWebhookRoutes(
@@ -132,6 +137,7 @@ export async function buildWebhookRouteTable(
     kept: fileRoutes.kept,
     shadowed,
     ...(directoryError !== undefined ? { directoryError } : {}),
+    retryable: parsed.refused.some((r) => r.outage === true),
   };
 }
 
@@ -259,7 +265,12 @@ export function createWebhookRouteApplier(
         : []),
       ...table.shadowed.map(shadowedRouteFileMessage),
     ];
-    return { changed, warnings, errors };
+    return {
+      changed,
+      warnings,
+      errors,
+      ...(table.retryable ? { retryable: true } : {}),
+    };
   };
 
   return {

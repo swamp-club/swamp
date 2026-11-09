@@ -178,3 +178,35 @@ Deno.test("WebhookRoutesPoller: status reports the interval before any check", (
     lastError: null,
   });
 });
+
+Deno.test("WebhookRoutesPoller: an outage refusal is applied again on every poll until it clears", async () => {
+  let outage = true;
+  let applies = 0;
+  const poller = new WebhookRoutesPoller({
+    intervalMs: 60_000,
+    snapshot: () => Promise.resolve("v1"),
+    apply: () => {
+      applies++;
+      return Promise.resolve(
+        outage
+          ? { changed: 0, errors: ["vault timed out"], retryable: true }
+          : { changed: 1, errors: [] },
+      );
+    },
+  });
+
+  for (let i = 0; i < MAX_FAILED_ROUTE_APPLIES + 3; i++) {
+    await poller.pollNow();
+  }
+  assertEquals(applies, MAX_FAILED_ROUTE_APPLIES + 2);
+  assertEquals(
+    poller.status().lastError,
+    "Some webhook route files failed on an outage; retrying on the next poll",
+  );
+
+  outage = false;
+  await poller.pollNow();
+  await poller.pollNow();
+  assertEquals(applies, MAX_FAILED_ROUTE_APPLIES + 3);
+  assertEquals(poller.status().lastError, null);
+});

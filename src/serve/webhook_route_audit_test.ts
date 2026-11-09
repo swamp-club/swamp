@@ -114,7 +114,7 @@ Deno.test("emitWebhookRoutesApplied: refusals make a failure and list files, nev
     audit({
       diff: { added: [], changed: [], removed: [] },
       refused: [{ file: "b.yaml" }],
-      kept: [{ file: "a.yaml", route: "/hooks/a", reason: "refused" }],
+      kept: [{ file: "a.yaml", route: "/hooks/a", reason: "last_good" }],
       directoryError: "Failed to read webhook routes directory /secret/path",
       outcome: "failure",
     }),
@@ -123,7 +123,7 @@ Deno.test("emitWebhookRoutesApplied: refusals make a failure and list files, nev
   assertEquals(events[0].outcome, "failure");
   assertEquals(
     events[0].detail,
-    "trigger=poll kept=/hooks/a(file:a.yaml,refused) refused=file:b.yaml directory=unusable",
+    "trigger=poll kept=/hooks/a(file:a.yaml,last_good) refused=file:b.yaml directory=unusable",
   );
 });
 
