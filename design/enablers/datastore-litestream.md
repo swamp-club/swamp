@@ -1412,14 +1412,15 @@ whose copy is current pays only the check. Since 4E the restore logs a line
 naming the lineage before it starts and one with its time after, so the cost
 is visible; the restore deadline is 30 minutes (about 4.5 s per GB).
 
-**Tests.** `integration/datastore_v3_litestream_restore_test.ts` runs real
-Litestream with a file replica, each "machine" a worker with its own module
-state, host name (as the lease sees it) and checkout: a fresh restore, a
-stale refresh, a current reader that restores nothing, a takeover, a zombie
-stalled past its lease that commits and is resumed after the takeover, a
-writer killed before its first confirmation, a lease taken on a stale copy,
-serve's retake restoring into its open store, GC that leaves a planted
-symlink alone, setup on a second checkout, and the opt-in S3 case.
+**Tests.** The `integration/datastore_v3_litestream_restore*_test.ts` files,
+sharing `datastore_v3_litestream_restore_helpers.ts`, run real Litestream with
+a file replica, each "machine" a worker with its own module state, host name
+(as the lease sees it) and checkout: a fresh restore, a stale refresh, a
+current reader that restores nothing, a takeover, a zombie stalled past its
+lease that commits and is resumed after the takeover, a writer killed before
+its first confirmation, a lease taken on a stale copy, serve's retake
+restoring into its open store, GC that leaves a planted symlink alone, setup
+on a second checkout, and the opt-in S3 case.
 `integration/datastore_v3_litestream_restorer_test.ts` drives the restorer's
 fallback, truncation and refusals with a stand-in binary.
 `published_lineage_property_test.ts` runs the protocol model-based over two
@@ -1648,8 +1649,8 @@ its round trips, which Phase 4A modelled at 24–283 ms.
   - an unconfirmed sync fails the request, and the next sync ships the
     commit;
   - a request that commits nothing makes no sync.
-- `datastore_v3_litestream_restore_test.ts`: a write confirmed before serve
-  answers survives a crash and a takeover.
+- `datastore_v3_litestream_restore_recovery_test.ts`: a write confirmed before
+  serve answers survives a crash and a takeover.
 - `integration/serve_write_confirmation_rules_test.ts` pins the dispatch, and
   that only serve, with replication on, sets the confirmation.
 
