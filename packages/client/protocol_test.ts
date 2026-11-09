@@ -42,6 +42,8 @@
 
 import type * as client from "./protocol.ts";
 import type * as serve from "../../src/serve/protocol.ts";
+import type * as libswampWorkflows from "../../src/libswamp/workflows/run.ts";
+import type * as libswampModels from "../../src/libswamp/models/run.ts";
 
 type MutuallyAssignable<A, B> = [A] extends [B] ? [B] extends [A] ? true
   : false
@@ -467,9 +469,8 @@ void _pinnedDivergentPairs;
 
 // Client-only types with no serve counterpart, intentionally excluded:
 // DataResponse (client-side generic for the serve *Response family),
-// WorkflowRunEvent / ModelMethodRunEvent / WorkflowRunView /
-// ModelMethodRunView (wire shapes of libswamp domain events, which
-// src/serve/protocol.ts does not re-declare).
+// WorkflowRunView / ModelMethodRunView. The event unions are checked against
+// libswamp in section 4.
 
 // ── 3. Union variants, compared per discriminant ─────────────────────────
 
@@ -524,6 +525,63 @@ const _divergentMessageVariants: MutuallyAssignable<
   never
 > = true;
 void _divergentMessageVariants;
+
+// ── 4. Run event unions against libswamp ─────────────────────────────────
+//
+// Every kind serve can send must be one the client declares, and each serve
+// variant must be receivable as the client's variant of the same kind. Not
+// sent unless asked: signal_wait_requested (local-only) and the fan-out kinds
+// (only with eventKinds). `error` differs by design: serve serializes the
+// SwampError before sending it.
+
+type NotSentByDefault =
+  | "signal_wait_requested"
+  | "job_fanout_planned"
+  | "job_fanout_waiting"
+  | "job_fanout_summary";
+
+type ServeWorkflowEvent = Exclude<
+  libswampWorkflows.WorkflowRunEvent,
+  { kind: NotSentByDefault | "error" }
+>;
+type ServeModelEvent = Exclude<
+  libswampModels.ModelMethodRunEvent,
+  { kind: "error" }
+>;
+
+type EventVariantCompat<
+  S extends { kind: string },
+  C extends { kind: string },
+> = {
+  [K in S["kind"]]: ClientSendable<
+    Extract<S, { kind: K }>,
+    Extract<C, { kind: K }>
+  >;
+};
+
+const _workflowEventKindsMatch: MutuallyAssignable<
+  ServeWorkflowEvent["kind"] | "error",
+  client.WorkflowRunEvent["kind"]
+> = true;
+void _workflowEventKindsMatch;
+
+const _modelEventKindsMatch: MutuallyAssignable<
+  ServeModelEvent["kind"] | "error",
+  client.ModelMethodRunEvent["kind"]
+> = true;
+void _modelEventKindsMatch;
+
+const _workflowEventVariants: MutuallyAssignable<
+  FalseKeys<EventVariantCompat<ServeWorkflowEvent, client.WorkflowRunEvent>>,
+  never
+> = true;
+void _workflowEventVariants;
+
+const _modelEventVariants: MutuallyAssignable<
+  FalseKeys<EventVariantCompat<ServeModelEvent, client.ModelMethodRunEvent>>,
+  never
+> = true;
+void _modelEventVariants;
 
 // A tiny runtime smoke test so this file registers in the test summary
 // rather than passing as a silent no-op. The real assertions are the

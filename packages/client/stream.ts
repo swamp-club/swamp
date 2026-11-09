@@ -62,7 +62,8 @@ export async function consumeStream<E extends StreamEvent>(
 
 /**
  * Fast-forwards through a stream to the `completed` event.
- * Throws a SwampClientError if an `error` event is encountered.
+ * Throws a SwampClientError if an `error` event is encountered, or one with
+ * code `suspended` (the event in `details`) if the run stops at a gate.
  */
 export async function result<E extends StreamEvent>(
   stream: AsyncIterable<HasTerminals<E>>,
@@ -70,6 +71,13 @@ export async function result<E extends StreamEvent>(
   for await (const event of stream) {
     if (event.kind === "completed") {
       return event as unknown as Extract<E, { kind: "completed" }>;
+    }
+    if (event.kind === "suspended") {
+      throw new SwampClientError(
+        "suspended",
+        "The run suspended before it completed",
+        event,
+      );
     }
     if (event.kind === "error") {
       const error = (event as unknown as { error: SerializedError }).error;

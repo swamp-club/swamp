@@ -26,11 +26,22 @@
  * const client = new SwampClient("ws://localhost:9090");
  * await client.connect();
  *
- * // Callback-based: resolves with completed payload
- * const run = await client.workflowRun(
+ * // Callback-based: settles when the run completes, is cancelled, or
+ * // suspends at a gate; narrow on `outcome` before reading the run
+ * const result = await client.workflowRun(
  *   { workflowIdOrName: "my-workflow", inputs: { env: "dev" } },
  *   { started: (e) => console.log(`Run ${e.runId} started`) },
  * );
+ * if (result.outcome === "suspended") {
+ *   console.log(`Waiting at ${result.gate.stepId}: ${result.gate.prompt}`);
+ *   // after the gate is approved, continue the same run
+ *   await client.workflowResume({
+ *     workflowIdOrName: "my-workflow",
+ *     runId: result.id,
+ *   });
+ * } else if (result.outcome !== "replayed") {
+ *   console.log(`Run ${result.id} ended ${result.status}`);
+ * }
  *
  * // AsyncIterable-based: for-await-of event stream
  * for await (const event of client.workflowRunStream({ workflowIdOrName: "my-workflow" })) {
@@ -48,22 +59,30 @@ export type { SwampClientOptions } from "./client.ts";
 
 // Protocol types
 export type {
+  CascadedNestedRunData,
   DataGetPayload,
   DataListPayload,
   DataQueryPayload,
   DataResponse,
   DataSearchPayload,
+  DetachedNestedRunData,
   ModelMethodRunEvent,
   ModelMethodRunPayload,
   ModelMethodRunView,
   ModelSearchPayload,
+  NestedSignalWaitData,
   RunHistoryPayload,
   SerializedError,
   SerializedEvent,
   ServerMessage,
   ServerRequest,
+  SkippedSupersedeData,
+  SuspendedGate,
+  WorkflowResumePayload,
   WorkflowRunEvent,
+  WorkflowRunJobInfo,
   WorkflowRunPayload,
+  WorkflowRunResult,
   WorkflowRunSearchPayload,
   WorkflowRunView,
   WorkflowSearchPayload,
