@@ -166,7 +166,6 @@ import {
   FAN_OUT_GATE_KINDS,
   type FanOutGateKind,
   fanOutGateName,
-  fanOutGateOf,
 } from "../remote/fan_out.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
@@ -1230,7 +1229,7 @@ function suspendedEventFor(
     // definition answers only for a record without them
     const jobRun = run.getJob(waiting.jobName);
     const stepRun = jobRun?.getStep(waiting.stepName);
-    const gate = fanOutGateOf(waiting.jobName, waiting.stepName);
+    const gate = jobRun?.fanOutGateKindOf(waiting.stepName);
     const fanOutGate = gate !== undefined && jobRun !== undefined
       ? fanOutGatePrompt(jobRun.toData(), gate, (text) => run.mask(text))
       : undefined;
@@ -5818,7 +5817,7 @@ export class WorkflowExecutionService {
     const lastHalt = jobRun.fanOutHalts[jobRun.fanOutHalts.length - 1];
 
     const planGates = FAN_OUT_GATE_KINDS.filter((kind) =>
-      jobRun.getStep(fanOutGateName(job.name, kind)) !== undefined
+      jobRun.fanOutGate(kind) !== undefined
     );
     const laneRerun = (worker: string) =>
       job.steps.some((step) =>
@@ -5863,7 +5862,7 @@ export class WorkflowExecutionService {
         : {}),
     };
     // before any waiting event: a host is not waiting while the gate holds it
-    const planGate = jobRun.getStep(fanOutGateName(job.name, "plan"));
+    const planGate = jobRun.fanOutGate("plan");
     if (planGate !== undefined && !gateApproved(planGate.toData())) {
       yield* this.openFanOutGate(
         workflow,
@@ -5989,7 +5988,7 @@ export class WorkflowExecutionService {
         new Set(rerun),
         new Set(lastHalt?.failed ?? []),
       );
-      const canaryGate = jobRun.getStep(fanOutGateName(job.name, "canary"));
+      const canaryGate = jobRun.fanOutGate("canary");
       const canary = new Set(frozen.batches[0] ?? []);
       // a retry re-runs failed lanes, so a failed kept lane is this attempt's:
       // a canary that failed within the budget before its gate was approved
@@ -6153,7 +6152,7 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
   ): Generator<WorkflowExecutionEvent> {
     const stepName = fanOutGateName(job.name, gate);
-    const stepRun = jobRun.getStep(stepName)!;
+    const stepRun = jobRun.fanOutGate(gate)!;
     if (stepRun.status !== "pending" && stepRun.status !== "waiting_approval") {
       throw new Error(
         `Gate '${stepName}' of job '${job.name}' cannot open: it is ${stepRun.status}`,

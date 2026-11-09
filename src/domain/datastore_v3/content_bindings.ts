@@ -561,17 +561,22 @@ function fanOutHaltRefusal(
 
 const SETTLED_UNSTARTED: ReadonlySet<string> = new Set(["skipped", "failed"]);
 
-// held or cancelled before it started: what a halt, rejection or cancel writes
+// held, cancelled or refused before it started: nothing ran on its worker
 function settledUnstarted(step: StepRunData): boolean {
-  return step.settledByAbort === true && SETTLED_UNSTARTED.has(step.status);
+  return (step.settledByAbort === true &&
+    SETTLED_UNSTARTED.has(step.status)) ||
+    (step.status === "failed" && step.startedAt === undefined);
+}
+
+function started(step: StepRunData): boolean {
+  return step.status !== "pending" && !settledUnstarted(step);
 }
 
 function leftPending(
   prior: StepRunData | undefined,
   step: StepRunData,
 ): boolean {
-  return prior?.status === "pending" && step.status !== "pending" &&
-    !settledUnstarted(step);
+  return prior?.status === "pending" && started(step);
 }
 
 /**
@@ -607,9 +612,6 @@ function fanOutGateRefusal(
           return `it adds the ${kind} approval gate of job '${job.jobName}' already started`;
         }
       }
-      if (plan.lanes.some((lane) => lane.worker === `approve-${kind}`)) {
-        return `its ${kind} approval gate of job '${job.jobName}' is named as a lane of the plan`;
-      }
     }
     if (gates.has("canary") && plan.batches.length < 2) {
       return `it gives job '${job.jobName}' a canary approval gate with no batch after the canary`;
@@ -632,7 +634,7 @@ function fanOutGateRefusal(
         return `it opens the ${kind} approval gate of job '${job.jobName}' with a prompt swamp does not write`;
       }
       if (
-        kind === "plan" && laneSteps.some((step) => step.status !== "pending")
+        kind === "plan" && laneSteps.some(started)
       ) {
         return `it opens the plan approval gate of job '${job.jobName}' after a lane started`;
       }
@@ -643,9 +645,7 @@ function fanOutGateRefusal(
             step.status === "unknown" || step.status.startsWith("waiting")
           );
           if (
-            canary.has(worker)
-              ? open
-              : steps.some((s) => s.status !== "pending")
+            canary.has(worker) ? open : steps.some(started)
           ) {
             return `it opens the canary approval gate of job '${job.jobName}' ${
               canary.has(worker)

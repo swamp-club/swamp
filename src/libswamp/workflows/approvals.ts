@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { fanOutGateOf } from "../../domain/remote/fan_out.ts";
+import { fanOutGateRecordOf } from "../../domain/remote/fan_out.ts";
 import {
   type FanOutGatePrompt,
   fanOutGatePrompt,
@@ -303,7 +303,10 @@ export async function* workflowApprovals(
               : undefined;
           }
 
-          const gate = fanOutGateOf(waiting.jobName, waiting.stepName);
+          const lanes = job?.fanOutPlan?.lanes;
+          const gate = lanes !== undefined
+            ? fanOutGateRecordOf(waiting.jobName, waiting.stepName, lanes)
+            : undefined;
           const fanOutGate = gate !== undefined && job !== undefined
             ? fanOutGatePrompt(job.toData(), gate, (text) => run.mask(text))
             : undefined;

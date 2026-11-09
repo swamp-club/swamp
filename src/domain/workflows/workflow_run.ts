@@ -42,7 +42,13 @@ import type { RunTriggeringPrincipal } from "../vaults/run_vault_access.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import { AssertSeveritySchema } from "./step_task.ts";
-import { fanOutGateOf, type FanOutPlan, hasLane } from "../remote/fan_out.ts";
+import {
+  type FanOutGateKind,
+  fanOutGateName,
+  fanOutGateRecordOf,
+  type FanOutPlan,
+  hasLane,
+} from "../remote/fan_out.ts";
 import {
   type NestedRunRef,
   type ParentRunRef,
@@ -1029,6 +1035,21 @@ export class JobRun implements TriggerEvaluationContext {
     for (const name of laneStepNames) this._steps.push(StepRun.pending(name));
   }
 
+  /** the gate's record, never a lane record of the same name */
+  fanOutGate(kind: FanOutGateKind): StepRun | undefined {
+    const name = fanOutGateName(this.jobName, kind);
+    return this.fanOutGateKindOf(name) === kind
+      ? this.getStep(name)
+      : undefined;
+  }
+
+  fanOutGateKindOf(stepName: string): FanOutGateKind | undefined {
+    const plan = this._fanOutPlan;
+    return plan === undefined
+      ? undefined
+      : fanOutGateRecordOf(this.jobName, stepName, plan.lanes);
+  }
+
   /**
    * decides a waiting gate as rejected, holds every lane with a step still to
    * run and fails the job in one call, so no save holds half a rejection
@@ -1041,7 +1062,7 @@ export class JobRun implements TriggerEvaluationContext {
     const plan = this._fanOutPlan;
     const gate = this.getStep(stepName);
     if (
-      plan === undefined || fanOutGateOf(this.jobName, stepName) === undefined
+      plan === undefined || this.fanOutGateKindOf(stepName) === undefined
     ) {
       throw new Error(
         `Step '${stepName}' is not an approval gate of fan-out job '${this.jobName}'`,
@@ -1079,7 +1100,7 @@ export class JobRun implements TriggerEvaluationContext {
     for (const step of this._steps) {
       if (
         step.status === "pending" &&
-        fanOutGateOf(this.jobName, step.stepName) !== undefined
+        this.fanOutGateKindOf(step.stepName) !== undefined
       ) {
         step.skipUnstarted({ kind: "job_skipped" });
       }

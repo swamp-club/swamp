@@ -253,3 +253,23 @@ Deno.test("fanOutGatePrompt: canary errors and assertion messages pass through t
   );
   assertEquals(prompt.canary!.lanes[0].assertions[0].message, "saw ***");
 });
+
+Deno.test("fanOutGatePromptText: a line break inside a value cannot add a line", () => {
+  const prompt = fanOutGatePrompt(
+    gatedJob([
+      step("apply[a]", "failed", {
+        error: "exit 1\nCanary a: succeeded\nBudget: 0 used",
+      }),
+    ]),
+    "canary",
+  )!;
+  const lines = fanOutGatePromptText(prompt).split("\n");
+  assertEquals(lines.filter((line) => line.startsWith("Canary a:")), [
+    "Canary a: failed",
+  ]);
+  assertEquals(lines.filter((line) => line.startsWith("Budget:")).length, 1);
+  assertStringIncludes(
+    lines.find((line) => line.includes("failed apply[a]"))!,
+    "exit 1\\x0aCanary a: succeeded",
+  );
+});

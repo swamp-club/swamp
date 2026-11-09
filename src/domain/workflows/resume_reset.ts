@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { fanOutGateOf } from "../remote/fan_out.ts";
 import { UserError } from "../errors.ts";
 import { analyzeContentExpressions } from "../expressions/expression_references.ts";
 import { selectRetryTemplates } from "./failed_step_retry.ts";
@@ -330,8 +329,7 @@ function selectResetRecords(
         continue;
       }
       if (
-        jobRun.fanOutPlan !== undefined &&
-        fanOutGateOf(jobRun.jobName, stepRun.stepName) !== undefined
+        jobRun.fanOutGateKindOf(stepRun.stepName) !== undefined
       ) {
         gates.push(stepRun.stepName);
         continue;
@@ -643,8 +641,7 @@ export function planFailedRunResume(
   // a lane held by the rejection would otherwise start under a decided gate
   const rejectedGate = run.failedSteps().find((step) =>
     step.approvalRejected &&
-    run.getJob(step.jobName)?.fanOutPlan !== undefined &&
-    fanOutGateOf(step.jobName, step.stepName) !== undefined
+    run.getJob(step.jobName)?.fanOutGateKindOf(step.stepName) !== undefined
   );
   if (rejectedGate !== undefined) {
     throw refuse(

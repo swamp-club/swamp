@@ -3327,7 +3327,11 @@ job, named in the lane form: `patch[approve-plan]` and
   has more than one batch: a small fleet can plan into one batch even when the
   rollout lists two. `job_fanout_planned` names the gates the plan holds
   (`approve`). Gates are read from the run, never from the definition, so an
-  edit to `approve` after a run planned changes nothing for that run.
+  edit to `approve` after a run planned changes nothing for that run. A record
+  is a gate only when it is not a lane record of the plan
+  (`fanOutGateRecordOf`): without `approve`, step `patch` on a worker named
+  `approve-plan` is a lane. The timeout is read when a gate opens, as a
+  `manual_approval` step's is, and then kept on the gate record.
 - The plan gate opens once the plan is saved and `job_fanout_planned` is sent,
   before any `job_fanout_waiting` event and before any lane starts, on either
   lane path. The canary gate opens through the lane driver's `held` hook: once
@@ -3371,7 +3375,10 @@ job, named in the lane form: `patch[approve-plan]` and
   every lane step is pending, and a canary gate only once every batch-0 lane
   has settled and no later lane has started. No lane step leaves pending past
   an undecided plan gate, and no lane outside batch 0 past an undecided canary
-  gate, except to be held or cancelled.
+  gate, except to be held, cancelled, or failed before it started (a lane
+  `resumedLaneVerdict` fails carries no `startedAt`). Log mode escapes each
+  line of the approver's view, so a step error holding a line break cannot add
+  a line to it.
 
 **Resume, retry and recover.** A resumed fan-out job runs on its stored plan:
 `runFanOutJob` skips planning, takes its lanes from the plan's batches and its

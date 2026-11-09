@@ -21,8 +21,9 @@ import {
   FAN_OUT_GATE_KINDS,
   type FanOutGateKind,
   fanOutGateName,
-  fanOutGateOf,
+  fanOutGateRecordOf,
 } from "../remote/fan_out.ts";
+import { escapeControlCharacters } from "../control_characters.ts";
 import { laneFailed, laneRecords } from "./fan_out_lanes.ts";
 import type { JobRunData, StepRunData } from "./workflow_run.ts";
 
@@ -83,7 +84,11 @@ export function fanOutGates(
   const gates = new Map<FanOutGateKind, StepRunData>();
   if (job.fanOutPlan === undefined) return gates;
   for (const step of job.steps) {
-    const kind = fanOutGateOf(job.jobName, step.stepName);
+    const kind = fanOutGateRecordOf(
+      job.jobName,
+      step.stepName,
+      job.fanOutPlan.lanes,
+    );
     if (kind !== undefined) gates.set(kind, step);
   }
   return gates;
@@ -200,7 +205,7 @@ function budgetText(budget: FanOutGatePrompt["budget"]): string {
     : `${budget.used} used, ${allowed}`;
 }
 
-/** the prompt as text, for log mode and the approvals list */
+/** one line per item; a value holding a line break cannot add a line */
 export function fanOutGatePromptText(prompt: FanOutGatePrompt): string {
   const lines = [fanOutGatePromptLine(prompt.job, prompt.gate)];
   lines.push(`Selector: ${selectorText(prompt.selector)}`);
@@ -239,5 +244,5 @@ export function fanOutGatePromptText(prompt: FanOutGatePrompt): string {
   if (prompt.next !== undefined) {
     lines.push(`Next batch: ${prompt.next.join(", ")}`);
   }
-  return lines.join("\n");
+  return lines.map(escapeControlCharacters).join("\n");
 }

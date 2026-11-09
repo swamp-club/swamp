@@ -73,6 +73,22 @@ export function fanOutGateOf(
   );
 }
 
+/**
+ * a lane record wins over a gate name: without approve, step job on a worker
+ * named approve-plan is a lane, and a plan with that gate refuses such a worker
+ */
+export function fanOutGateRecordOf(
+  jobName: string,
+  stepName: string,
+  lanes: readonly { readonly worker: string }[],
+): FanOutGateKind | undefined {
+  const isLane = lanes.some((lane) =>
+    stepName.length > lane.worker.length + 2 &&
+    stepName.endsWith(`[${lane.worker}]`)
+  );
+  return isLane ? undefined : fanOutGateOf(jobName, stepName);
+}
+
 export const RolloutPolicySchema = z.object({
   batches: z.array(RolloutBatchSizeSchema).min(1),
   maxFailures: FailureBudgetSchema.optional(),

@@ -575,10 +575,15 @@ Deno.test({
       saves.push({ data, decision: deciding });
       return await save(workflowId, run);
     };
-    const decide = async (runId: string, gate: string, approved: boolean) => {
+    const decide = async (
+      runId: string,
+      gate: string,
+      approved: boolean,
+      name = "gated",
+    ) => {
       deciding = true;
       try {
-        await fleet.decideGate("gated", runId, gate, approved);
+        await fleet.decideGate(name, runId, gate, approved);
       } finally {
         deciding = false;
       }
@@ -610,9 +615,34 @@ Deno.test({
     await decide(second.id, PLAN, true);
     await fleet.resumeRun("gated", second.id);
     await decide(second.id, CANARY, false);
+    // under offline fail a worker that leaves during the plan gate fails its
+    // lane before it starts, while the canary gate still waits
+    const rollout = {
+      batches: [1, "100%"],
+      maxFailures: 1,
+      approve: ["plan", "canary"],
+    };
+    await fleet.saveWorkflow({
+      name: "gated-offline",
+      inputs: {},
+      jobs: [{
+        ...gatedJob(fleet, rollout),
+        fanOut: { offline: "fail", rollout },
+      }],
+    });
+    const third = await fleet.runWorkflow("gated-offline");
+    await w[3].disconnect();
+    await decide(third.id, PLAN, true, "gated-offline");
+    const paused = await fleet.resumeRun("gated-offline", third.id);
+    assertEquals(paused.status, "suspended");
+    const offline = stepStatuses(
+      await recordOf(fleet, "gated-offline", third.id),
+    );
+    assertEquals(offline["patch/apply[w-4]"], "failed");
+    assertEquals(offline[`patch/${CANARY}`], "waiting_approval");
 
     let judged = 0;
-    for (const runId of [first.id, second.id]) {
+    for (const runId of [first.id, second.id, third.id]) {
       const ofRun = saves.filter((s) => s.data.id === runId);
       for (let i = 1; i < ofRun.length; i++) {
         // serve itself writes a decision; a member never forwards one
@@ -734,5 +764,30 @@ Deno.test({
     assertEquals(again.status, "failed");
     assertEquals(approvalRequests(events), []);
     assertEquals(fleet.dispatchCounts(), counts([["w-1", 1], ["w-2", 1]]));
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out approval: without approve, a lane whose record has a gate's name runs as a lane",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await fleet.addWorker("approve-plan", { labels: WEB });
+    await fleet.addWorker("w-1", { labels: WEB });
+    const job = gatedJob(fleet, { batches: ["100%"] });
+    await fleet.saveWorkflow({
+      name: "named",
+      inputs: {},
+      jobs: [{ ...job, steps: [{ ...job.steps[0], name: "patch" }] }],
+    });
+    const events: WorkflowRunEvent[] = [];
+    const run = await fleet.runWorkflow("named", { events });
+    assertEquals(run.status, "succeeded");
+    assertEquals(approvalRequests(events), []);
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["approve-plan", 1], ["w-1", 1]]),
+    );
   },
 });

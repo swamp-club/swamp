@@ -39,7 +39,6 @@ import {
   gateTimeoutSeconds,
 } from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { fanOutGateOf } from "../../domain/remote/fan_out.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
@@ -260,7 +259,7 @@ async function rejectClaimedRun(
   let fanOutHeld: WorkflowRejectData["fanOutHeld"];
   if (
     gateJob?.fanOutPlan !== undefined &&
-    fanOutGateOf(gateJob.jobName, step.stepName) !== undefined
+    gateJob.fanOutGateKindOf(step.stepName) !== undefined
   ) {
     fanOutHeld = {
       jobName: gateJob.jobName,
