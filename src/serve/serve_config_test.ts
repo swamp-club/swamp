@@ -42,6 +42,7 @@ import {
   type ServeConfigFile,
   type TriggerOverrideEntry,
   validateTriggerOverrideEntry,
+  validateWebhookEntries,
   type WebhookConfigEntry,
   writeServeConfigFile,
 } from "./serve_config.ts";
@@ -626,6 +627,46 @@ Deno.test("loadServeConfig: webhook non-object config produces error", () => {
       "config must be an object",
     );
   });
+});
+
+Deno.test("validateWebhookEntries: an absent list is empty", () => {
+  assertEquals(validateWebhookEntries(undefined, "/repo/serve.yaml"), []);
+});
+
+Deno.test("validateWebhookEntries: a value that is not a list is refused", () => {
+  for (const value of [null, { route: "/hooks/a" }, "/hooks/a", 3]) {
+    assertThrows(
+      () => validateWebhookEntries(value, "/repo/serve.yaml"),
+      Error,
+      "Invalid webhooks in /repo/serve.yaml: expected array",
+    );
+  }
+});
+
+Deno.test("validateWebhookEntries: returns a valid list unchanged", () => {
+  const entries = [
+    { route: "/hooks/a", workflow: "deploy", secret: "s" },
+    {
+      route: "/hooks/b",
+      workflow: "deploy",
+      secret: "s",
+      scheme: "generic",
+      header: "X-Sig",
+    },
+  ];
+  assertEquals(validateWebhookEntries(entries, "/repo/serve.yaml"), entries);
+});
+
+Deno.test("validateWebhookEntries: names the index and file of a refused entry", () => {
+  assertThrows(
+    () =>
+      validateWebhookEntries([
+        { route: "/hooks/a", workflow: "deploy", secret: "s" },
+        { route: "hooks/b", workflow: "deploy", secret: "s" },
+      ], "/repo/serve.yaml"),
+    Error,
+    "Invalid webhook at index 1 in /repo/serve.yaml: route must start with '/'",
+  );
 });
 
 Deno.test("loadServeConfig: empty file returns null", () => {

@@ -711,22 +711,7 @@ function validateConfigValues(
     }
   }
 
-  if (raw.webhooks !== undefined) {
-    if (!Array.isArray(raw.webhooks)) {
-      throw configError(
-        path,
-        `Invalid webhooks in ${path}: expected array, got ${typeof raw
-          .webhooks}`,
-      );
-    }
-    for (let i = 0; i < raw.webhooks.length; i++) {
-      validateWebhookEntry(
-        raw.webhooks[i],
-        path,
-        `webhook at index ${i} in ${path}`,
-      );
-    }
-  }
+  validateWebhookEntries(raw.webhooks, path);
 
   validateStringList("trusted-hosts", raw["trusted-hosts"], path);
 
@@ -796,6 +781,23 @@ export function parseTokenSecretsKeyConfig(
   if (block === undefined) return undefined;
   validateTokenSecretsConfig(block, path);
   return { vault: block.vault!, key: block.key! };
+}
+
+export function validateWebhookEntries(
+  value: unknown,
+  path: string,
+): readonly WebhookConfigEntry[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw configError(
+      path,
+      `Invalid webhooks in ${path}: expected array, got ${typeof value}`,
+    );
+  }
+  for (let i = 0; i < value.length; i++) {
+    validateWebhookEntry(value[i], path, `webhook at index ${i} in ${path}`);
+  }
+  return value as WebhookConfigEntry[];
 }
 
 /** label names the entry in errors, e.g. "webhook at index 0 in serve.yaml" */
