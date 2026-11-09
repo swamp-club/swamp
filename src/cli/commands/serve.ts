@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
+import {
+  delegationSessionName,
+  registerDelegationLookup,
+} from "../../serve/delegated_token_auth.ts";
 import { DelegationDirectory } from "../../domain/access/delegation_directory.ts";
 import {
   DELEGATION_DATA_NAME,
@@ -130,6 +134,7 @@ import {
   cancelReasonFor,
   closeConnectionsForPrincipal,
   type ConnectionContext,
+  DELEGATION_ENDED_REASON,
   emitRunCancelAudit,
   emitSystemAuditEvent,
   isCallerAuthorized,
@@ -5073,6 +5078,7 @@ export const serveCommand = new Command()
       repoContext.unifiedDataRepo,
       { eventBus: repoContext.eventBus },
     );
+    registerDelegationLookup(repoContext, delegationDirectory);
     const policySnapshotLoader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,
       repoContext.eventBus,
@@ -6748,6 +6754,7 @@ export const serveCommand = new Command()
         intervalMs: DEFAULT_TOKEN_SESSION_REVALIDATION_MS,
         listTokenSessions,
         readToken: (name) => readServerTokenRecord(repoContext, name),
+        delegationStanding: (id) => delegationDirectory.standingOf(id).kind,
         terminateSessions: (name, options) =>
           terminateTokenSessions(name, {
             ...options,
@@ -6766,6 +6773,22 @@ export const serveCommand = new Command()
           code: 4003,
           reason: `Session ended: integration ${reason}`,
           cause: `integration-${reason}`,
+          initiatedBy: "system",
+          audit: {
+            emitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
+          },
+        });
+      }
+    });
+    // every node closes an ended delegation's sockets and streams as soon as
+    // its directory sees the end; requests already decide afresh
+    delegationDirectory.onEnded((ended) => {
+      for (const { id } of ended) {
+        terminateTokenSessions(delegationSessionName(id), {
+          code: 4003,
+          reason: DELEGATION_ENDED_REASON,
+          cause: "delegation-ended",
           initiatedBy: "system",
           audit: {
             emitter: connectionCtx.auditEmitter,

@@ -360,3 +360,30 @@ Deno.test("TokenSessionRevalidationService: a tick runs with no active span when
     for (const span of seen) assertEquals(span, undefined);
   });
 });
+
+Deno.test("runOnce: a delegation's sessions are checked against the directory and never read as a server token", async () => {
+  const standing = new Map([["d-live", "standing"], ["d-ended", "ended"]]);
+  const h = harness(
+    [
+      { name: "delegation:d-live", createdAt: MINT_1 },
+      { name: "delegation:d-ended", createdAt: MINT_1 },
+      { name: "delegation:d-missing", createdAt: MINT_1 },
+    ],
+    () => Promise.reject(new Error("no server token is read")),
+  );
+  const service = new TokenSessionRevalidationService({
+    ...h.deps,
+    delegationStanding: (id) => standing.get(id) ?? "unknown",
+  });
+
+  assertEquals(await service.runOnce(), 2);
+  assertEquals(h.reads, []);
+  assertEquals(h.closes.map((c) => c.name).sort(), [
+    "delegation:d-ended",
+    "delegation:d-missing",
+  ]);
+  for (const close of h.closes) {
+    assertEquals(close.options.cause, "delegation-ended");
+    assertEquals(close.options.code, 4003);
+  }
+});

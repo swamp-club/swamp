@@ -645,7 +645,8 @@ export type TokenSessionTerminationCause =
   | "deleted"
   | "invalid"
   | "integration-revoked"
-  | "integration-narrowed";
+  | "integration-narrowed"
+  | "delegation-ended";
 
 // each close reason names its cause so a client can tell a revoked token from a
 // principal losing access; keep under the close-frame size limit
@@ -654,6 +655,9 @@ export const ACCESS_CHANGED_CLOSE_CODE = 4004;
 export const STREAM_ACCESS_CHANGED_REASON =
   "Session ended: access changed, reconnect";
 export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
+export const DELEGATION_ENDED_REASON = "Session ended: the link has ended";
+export const DELEGATION_EXPIRED_REASON =
+  "Session ended: access token expired, refresh and reconnect";
 export const TOKEN_ROTATED_REASON =
   "Session revoked: token rotated, reconnect with the new credential";
 export const TOKEN_GONE_REASON = "Session revoked: token no longer exists";
@@ -1044,6 +1048,7 @@ export function bindAuthenticatedConnection(
     readonly oauthIdentity?: ActorIdentity;
     readonly client?: string;
     readonly delegation?: string;
+    readonly sessionExpiresAt?: string;
   },
 ): void {
   setConnectionCollectives(
@@ -1060,6 +1065,27 @@ export function bindAuthenticatedConnection(
   setConnectionLoginIdentity(socket, auth.oauthIdentity);
   setConnectionClient(socket, auth.client);
   setConnectionDelegation(socket, auth.delegation);
+  if (auth.sessionExpiresAt !== undefined) {
+    closeAtExpiry(socket, auth.tokenName, auth.sessionExpiresAt);
+  }
+}
+
+/** a delegated access token lives an hour; the socket it opened goes with it */
+function closeAtExpiry(
+  socket: WebSocket,
+  name: string,
+  expiresAt: string,
+): void {
+  const delay = Math.max(0, Date.parse(expiresAt) - Date.now());
+  const timer = setTimeout(() => {
+    if (!tokenSockets.get(name)?.has(socket)) return;
+    tokenSockets.get(name)?.delete(socket);
+    if (tokenSockets.get(name)?.size === 0) tokenSockets.delete(name);
+    connectionTokens.delete(socket);
+    closeSession(socket, 4002, DELEGATION_EXPIRED_REASON);
+  }, delay);
+  Deno.unrefTimer(timer);
+  socket.addEventListener("close", () => clearTimeout(timer), { once: true });
 }
 
 export function connectionActorIdentity(
