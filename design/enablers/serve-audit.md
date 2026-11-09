@@ -352,6 +352,28 @@ and the kind-prefixed principal in `principalId` for every token; the audit log
 is append-only and hash-chained, so they keep that shape. Token-creation events
 use the new token's name as the resource name.
 
+### Delegation events
+
+A link's steps are `auth` events with resource kind `delegation`, the delegation's
+ID as the resource name, and a `delegation` field holding that ID (added only when
+set, like `client`, so other events keep their digests). The principal is the
+linked person once swamp-club has reported them, and the integration before that;
+`client` is `integration:<id>`. `detail` holds `outcome=`, swamp-club's `request=`
+and `link=` IDs and `external=<platform>/<team>/<user>`, never a token, secret or
+consent URL.
+
+- `delegation.link_started`, `delegation.consent_result` (approved, denied,
+  refused, expired or not admitted), `delegation.refused` (with the reason),
+  `delegation.recorded`
+- `delegation.tokens_issued`, `delegation.refreshed`, `delegation.refresh_reuse`
+  (a reused refresh token ended the delegation)
+- `delegation.ended` (with the cause: operator, app_ended, expired, superseded,
+  integration_revoked, not_redeemed, replaced or refresh_reuse),
+  `delegation.club_ended`, `delegation.club_end_failed`
+
+`auth.session.terminated` events for a delegation's sessions carry the cause
+`delegation-ended`.
+
 ## Trigger events
 
 Scheduled and webhook runs act as built-in service principals
