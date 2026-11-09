@@ -543,3 +543,38 @@ Deno.test("HealthCollector: reports a flag route's source", async () => {
 
   assertEquals(snapshot.webhooks.map((w) => w.source), ["flag"]);
 });
+
+Deno.test("HealthCollector: reports a file route's source and file name", async () => {
+  const deps = makeDeps({
+    webhookProvider: {
+      listEndpoints: () => [
+        {
+          route: "/hooks/github",
+          workflowIdOrName: "deploy",
+          scheme: "github",
+          source: "file",
+          file: "github.yaml",
+        },
+        {
+          route: "/hooks/other",
+          workflowIdOrName: "deploy",
+          scheme: "github",
+          source: "config",
+        },
+      ],
+      queueStatus: () => ({
+        active: 0,
+        queued: 0,
+        oldestQueuedAt: null,
+        lastQueueDelayMs: null,
+      }),
+    },
+  });
+
+  const snapshot = await new HealthCollector(deps).collect();
+
+  assertEquals(
+    snapshot.webhooks.map((w) => [w.source, w.file]),
+    [["file", "github.yaml"], ["config", undefined]],
+  );
+});

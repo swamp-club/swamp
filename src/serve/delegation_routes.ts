@@ -21,12 +21,14 @@ import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { z } from "zod";
 import { Ceiling } from "../domain/access/ceiling.ts";
 import {
+  accessTokenHeld,
   canonicalExternalKey,
   DELEGATED_ACCESS_LIFE_MS,
   delegationStanding,
   issueDelegationTokens,
   refreshDelegation,
   type RefreshOutcome,
+  type RefreshRefusalReason,
   startDelegation,
 } from "../domain/access/delegation.ts";
 import type { DelegationDirectory } from "../domain/access/delegation_directory.ts";
@@ -91,8 +93,7 @@ export interface DelegationAuditRecord
     | DelegationAuditEvent["action"]
     | "link_started"
     | "tokens_issued"
-    | "refreshed"
-    | "refresh_reuse";
+    | "refreshed";
 }
 
 export interface DelegationRouteDeps {
@@ -131,6 +132,86 @@ const RedeemBodySchema = z.object({
 
 const TokenBodySchema = z.object({ token: z.string().max(200) });
 const RefreshBodySchema = z.object({ refreshToken: z.string().max(200) });
+
+/** every code these routes answer with, beside a forwarding node's 503s */
+export const DELEGATION_ROUTE_CODES = [
+  "already_redeemed",
+  "ceiling_too_wide",
+  "club_busy",
+  "club_refused",
+  "club_unavailable",
+  "email_required",
+  "internal_error",
+  "invalid_ceiling",
+  "invalid_client",
+  "invalid_grant",
+  "invalid_request",
+  "links_not_enabled",
+  "links_unavailable",
+  "method_not_allowed",
+  "no_instance",
+  "not_found",
+  "not_saved",
+  "payload_too_large",
+  "rate_limited",
+  "team_not_ready",
+  "team_unknown",
+  "too_many_pending",
+  "unsupported_media_type",
+] as const;
+
+export type DelegationRouteCode = typeof DELEGATION_ROUTE_CODES[number];
+
+export interface DelegationFailureBody {
+  readonly code: DelegationRouteCode;
+  readonly message: string;
+  /** on a refused refresh only */
+  readonly reason?: RefreshRefusalReason;
+}
+
+export interface LinkStartedBody {
+  readonly pendingId: string;
+  readonly redeemSecret: string;
+  readonly consentUrl: string;
+  readonly expiresIn: number;
+  readonly interval: number;
+}
+
+export interface LinkPersonBody {
+  readonly username?: string;
+  readonly email?: string;
+}
+
+export interface TokensIssuedBody {
+  readonly status: "issued";
+  readonly delegationId: string;
+  readonly accessToken: string;
+  readonly accessTokenExpiresAt: string;
+  readonly refreshToken: string;
+  readonly expiresAt?: string;
+  readonly person: LinkPersonBody;
+}
+
+export type RedeemBody =
+  | { readonly status: "pending"; readonly interval: number }
+  | { readonly status: "refused"; readonly reason: string }
+  | { readonly status: "ended"; readonly cause: string }
+  | TokensIssuedBody;
+
+/** the refresh token is kept, so a refresh answers only a new access token */
+export interface RefreshedBody {
+  readonly status: "refreshed";
+  readonly delegationId: string;
+  readonly accessToken: string;
+  readonly accessTokenExpiresAt: string;
+  readonly expiresIn: number;
+  readonly expiresAt?: string;
+  readonly person: LinkPersonBody;
+}
+
+export interface EndedBody {
+  readonly ended: true;
+}
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
@@ -411,13 +492,20 @@ async function start(
     outcome: "started",
     detail: `from=${sourceIp}`,
   });
-  return json({
-    pendingId: id,
-    redeemSecret: redeem.value,
-    consentUrl: started.consentUrl,
-    expiresIn: started.expiresIn,
-    interval: record.club.pollIntervalSeconds,
-  }, 201);
+  return json(
+    {
+      pendingId: id,
+      redeemSecret: redeem.value,
+      consentUrl: started.consentUrl,
+      expiresIn: started.expiresIn,
+      interval: record.club.pollIntervalSeconds,
+    } satisfies LinkStartedBody,
+    201,
+  );
+}
+
+function personBody(record: DelegationRecord): LinkPersonBody {
+  return { username: record.person?.username, email: record.person?.email };
 }
 
 function tokensBody(
@@ -427,7 +515,7 @@ function tokensBody(
     refresh: { value: string };
     accessExpiresAt: string;
   },
-) {
+): TokensIssuedBody {
   return {
     status: "issued",
     delegationId: record.id,
@@ -435,10 +523,7 @@ function tokensBody(
     accessTokenExpiresAt: tokens.accessExpiresAt,
     refreshToken: tokens.refresh.value,
     expiresAt: record.expiresAt,
-    person: {
-      username: record.person?.username,
-      email: record.person?.email,
-    },
+    person: personBody(record),
   };
 }
 
@@ -474,15 +559,20 @@ async function redeem(
   switch (record.phase) {
     case "awaiting_consent":
     case "reporting":
-      return json({
-        status: "pending",
-        interval: record.club.pollIntervalSeconds,
-      }, 202);
+      return json(
+        {
+          status: "pending",
+          interval: record.club.pollIntervalSeconds,
+        } satisfies RedeemBody,
+        202,
+      );
     case "refused":
-      return json({
-        status: "refused",
-        reason: record.refusal?.reason ?? "refused",
-      });
+      return json(
+        {
+          status: "refused",
+          reason: record.refusal?.reason ?? "refused",
+        } satisfies RedeemBody,
+      );
     case "issued":
       return httpFailure(
         409,
@@ -490,7 +580,12 @@ async function redeem(
         "This link's tokens were already issued",
       );
     case "ended":
-      return json({ status: "ended", cause: record.ended?.cause ?? "ended" });
+      return json(
+        {
+          status: "ended",
+          cause: record.ended?.cause ?? "ended",
+        } satisfies RedeemBody,
+      );
     case "consented":
       break;
   }
@@ -552,16 +647,29 @@ async function refresh(
     `delegation-refresh:${integrationId}|address:${sourceIp}`,
     async () => {
       const known = await deps.store.readOrNull(id);
-      return { ok: known !== null && known.integrationId === integrationId };
+      if (known === null || known.integrationId !== integrationId) {
+        return { ok: false, refusal: "unknown" as const };
+      }
+      // an ended link is an answer, not a guess, so it is no failed attempt
+      if (known.tokens === undefined) {
+        return { ok: true, refusal: "not_issued" as const };
+      }
+      const matches = await delegatedSecretMatches(
+        parsed.data.refreshToken,
+        known.tokens.refreshHash,
+      );
+      return matches
+        ? { ok: true }
+        : { ok: false, refusal: "mismatch" as const };
     },
   );
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
-  if (!guarded.result.ok) {
-    return httpFailure(401, "invalid_grant", "The refresh token was refused");
+  if (guarded.result.refusal !== undefined) {
+    return refreshRefused(guarded.result.refusal);
   }
   const team = await deps.capability().catch(() => null);
   if (team === null || !team.ok) {
-    // nothing rotates and nothing ends: the app retries the same token
+    // nothing changes: the app retries the same token
     return httpFailure(
       503,
       "team_not_ready",
@@ -605,35 +713,34 @@ async function refresh(
         : { write: result.record, value: result };
     },
   );
-  if (outcome.kind === "reuse") {
-    deps.audit?.({
-      action: "refresh_reuse",
-      record: outcome.record,
-      outcome: "ended",
-      detail: `from=${sourceIp}`,
-    });
-    return httpFailure(
-      401,
-      "invalid_grant",
-      "The refresh token was already used, so the link has ended",
-    );
-  }
-  if (outcome.kind === "refused") {
-    return httpFailure(
-      401,
-      "invalid_grant",
-      `The link can't be refreshed (${outcome.reason})`,
-    );
-  }
+  if (outcome.kind === "refused") return refreshRefused(outcome.reason);
   deps.audit?.({
     action: "refreshed",
     record: outcome.record,
-    outcome: "rotated",
+    outcome: "refreshed",
   });
-  return json({
-    ...tokensBody(outcome.record, outcome.tokens),
-    expiresIn: Math.round(DELEGATED_ACCESS_LIFE_MS / 1000),
-  });
+  return json(
+    {
+      status: "refreshed",
+      delegationId: outcome.record.id,
+      accessToken: outcome.access.value,
+      accessTokenExpiresAt: outcome.accessExpiresAt,
+      expiresIn: Math.round(DELEGATED_ACCESS_LIFE_MS / 1000),
+      expiresAt: outcome.record.expiresAt,
+      person: personBody(outcome.record),
+    } satisfies RefreshedBody,
+  );
+}
+
+function refreshRefused(reason: RefreshRefusalReason): Response {
+  return Response.json(
+    {
+      code: "invalid_grant",
+      message: `The link can't be refreshed (${reason})`,
+      reason,
+    } satisfies DelegationFailureBody,
+    { status: 401 },
+  );
 }
 
 async function end(
@@ -653,13 +760,13 @@ async function end(
     );
   }
   const record = await deps.store.readOrNull(secret.delegationId);
-  const hash = secret.kind === "access"
-    ? [record?.tokens?.accessHash, record?.tokens?.previousAccessHash]
-    : [record?.tokens?.refreshHash];
-  let matches = false;
-  for (const stored of hash) {
-    if (await delegatedSecretMatches(parsed.data.token, stored)) matches = true;
-  }
+  const matches = record !== null &&
+    (secret.kind === "access"
+      ? await accessTokenHeld(record, parsed.data.token)
+      : await delegatedSecretMatches(
+        parsed.data.token,
+        record.tokens?.refreshHash,
+      ));
   if (record === null || record.integrationId !== integrationId || !matches) {
     return httpFailure(401, "invalid_grant", "The token was refused");
   }
@@ -670,5 +777,5 @@ async function end(
     deps.now?.() ?? Date.now(),
     deps.audit,
   );
-  return json({ ended: true });
+  return json({ ended: true } satisfies EndedBody);
 }

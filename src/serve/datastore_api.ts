@@ -146,6 +146,7 @@ import {
   isSha256Hex,
   parseRange,
 } from "../infrastructure/datastore_v3/chunk_ingest.ts";
+import { CarriedBytesBudget } from "./carried_bytes_budget.ts";
 import {
   ChunksMissingError,
   commitForwarded,
@@ -264,6 +265,11 @@ export const MAX_VOUCH_COMMITS = 10_000;
  */
 type Vouch = "vouched" | "refused" | "undecided";
 
+/** carries no names or keys */
+function commitStage<T>(stage: string, fn: () => Promise<T>): Promise<T> {
+  return withSpan(`swamp.serve.datastore.commit.${stage}`, {}, () => fn());
+}
+
 /**
  * The work one request may spend deciding which chunks the caller may
  * reference, shared by every chunk it asks about, so a `chunks/has` of
@@ -302,6 +308,23 @@ export class VouchBudget {
 }
 /** The most chunk requests one principal has in flight. */
 export const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
+
+export const CARRIED_PUT_CONCURRENCY = 4;
+
+/** read chunks waiting on storage, across every request: a slow bucket stalls reads */
+export const CARRIED_BYTES_IN_FLIGHT_BUDGET = 128 * 1024 * 1024;
+
+const carriedBytesBudget = new CarriedBytesBudget(
+  CARRIED_BYTES_IN_FLIGHT_BUDGET,
+);
+
+export function carriedBytesInFlightForTesting(): number {
+  return carriedBytesBudget.used;
+}
+
+function budgetedBytesOf(size: number): number {
+  return Math.min(size, CARRIED_BYTES_IN_FLIGHT_BUDGET);
+}
 
 /**
  * A chunk read refused because whether the caller may read it could not be
@@ -1235,14 +1258,16 @@ class DatastoreApi {
     // once it has arrived, below; this pass refuses early on access alone.
     let authorization;
     try {
-      await this.#catchUp();
-      authorization = await authorizeCommit(
-        partition,
-        ops,
-        this.#resolver,
-        this.#writeAuthority(),
-        "deferred",
-      );
+      authorization = await commitStage("authorize", async () => {
+        await this.#catchUp();
+        return await authorizeCommit(
+          partition,
+          ops,
+          this.#resolver,
+          this.#writeAuthority(),
+          "deferred",
+        );
+      });
     } catch (error) {
       await reader.cancel();
       throw error;
@@ -1276,14 +1301,17 @@ class DatastoreApi {
       );
     }
     // The content arrives after the envelope. Room for each chunk is
-    // reserved in the upload ledger before it is read, then it is hashed
-    // and staged, so the request holds one chunk at a time and the quota
-    // counts what it has sent so far. A mismatch fails the request before
-    // anything is committed.
+    // reserved in the upload ledger before it is read, so the quota counts
+    // what it has sent so far. A mismatch fails the request before anything
+    // is committed.
     let provided: Set<string> | Response;
     try {
-      provided = await this.#withChunkSlot(() =>
-        this.#ingestCarried(reader, envelope.chunks, signal, last)
+      provided = await commitStage(
+        "ingest",
+        () =>
+          this.#withChunkSlot(() =>
+            this.#ingestCarried(reader, envelope.chunks, signal, last)
+          ),
       );
     } catch (error) {
       await reader.cancel();
@@ -1307,8 +1335,12 @@ class DatastoreApi {
     // record they read is guarded below. A retry of a commit that already
     // landed is answered as it, without judging its content again.
     let content: ForwardedContentAuthority | undefined;
-    if (await landedForwardedCommit(this.#v3, request) === undefined) {
-      await this.#catchUp();
+    const landedBefore = await commitStage(
+      "landed_lookup",
+      () => landedForwardedCommit(this.#v3, request),
+    );
+    if (landedBefore === undefined) {
+      await commitStage("content_catch_up", () => this.#catchUp());
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
       // Possession is decided once, before the content check reads any of
       // it, so a chunk the budget cannot decide is answered as not
@@ -1318,14 +1350,18 @@ class DatastoreApi {
       const possession = this.#commitVouchBudget(uncarried);
       const vouched = new Set<string>();
       const refused = new Set<string>();
-      for (const hash of referenced) {
-        if (carried.has(hash)) continue;
-        const vouch = await this.#mayReference(hash, possession, resolver);
-        if (vouch === "vouched") vouched.add(hash);
-        else if (vouch === "refused") refused.add(hash);
-        else return chunkNotProvided(hash);
-      }
-      content = new ForwardedContentAuthority({
+      const undecided = await commitStage("possession", async () => {
+        for (const hash of referenced) {
+          if (carried.has(hash)) continue;
+          const vouch = await this.#mayReference(hash, possession, resolver);
+          if (vouch === "vouched") vouched.add(hash);
+          else if (vouch === "refused") refused.add(hash);
+          else return hash;
+        }
+        return undefined;
+      });
+      if (undecided !== undefined) return chunkNotProvided(undecided);
+      const judging = new ForwardedContentAuthority({
         ctx: this.#deps.ctx,
         v3: this.#v3,
         partition,
@@ -1339,13 +1375,15 @@ class DatastoreApi {
               "vouched"),
         signal: signal,
       });
-      const checked = await authorizeCommit(
-        partition,
-        ops,
-        resolver,
-        this.#writeAuthority(),
-        content,
-      );
+      content = judging;
+      const checked = await commitStage("content_check", () =>
+        authorizeCommit(
+          partition,
+          ops,
+          resolver,
+          this.#writeAuthority(),
+          judging,
+        ));
       if (!checked.ok) return refusalResponse(checked);
     }
     // Authorised again under the datastore's forwarded-commit lock, once the
@@ -1358,25 +1396,33 @@ class DatastoreApi {
           performance.now() - lockWaitFrom,
         ),
       });
-      await this.#catchUp();
+      await commitStage("locked_catch_up", () => this.#catchUp());
       // A retry of a commit that landed is answered before proof of
       // possession: its chunks may since have left the upload ledger.
-      const duplicate = await landedForwardedCommit(this.#v3, request);
+      const duplicate = await commitStage(
+        "locked_landed_lookup",
+        () => landedForwardedCommit(this.#v3, request),
+      );
       if (duplicate !== undefined) return { result: duplicate };
       if (content === undefined) return { contentChanged: true as const };
       // Looked up afresh: a definition retagged during the upload is judged
       // as it is now.
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
-      const recheck = await authorizeCommit(
-        partition,
-        ops,
-        resolver,
-        this.#writeAuthority(),
-        "deferred",
+      const recheck = await commitStage(
+        "locked_authorize",
+        () =>
+          authorizeCommit(
+            partition,
+            ops,
+            resolver,
+            this.#writeAuthority(),
+            "deferred",
+          ),
       );
       if (!recheck.ok) return recheck;
       // The records the content was judged against must not have moved.
-      if (!(await content.unchanged())) {
+      const judged = content;
+      if (!(await commitStage("locked_unchanged", () => judged.unchanged()))) {
         return { contentChanged: true as const };
       }
       // Proof of possession under the lock too, so a read grant revoked
@@ -1386,15 +1432,19 @@ class DatastoreApi {
       const underLock = this.#commitVouchBudget(
         referenced.filter((hash) => !carried.has(hash)).length,
       );
-      for (const hash of referenced) {
-        if (
-          carried.has(hash) ||
-          (await this.#mayReference(hash, underLock, resolver) === "vouched")
-        ) {
-          continue;
+      const notProvided = await commitStage("locked_possession", async () => {
+        for (const hash of referenced) {
+          if (
+            carried.has(hash) ||
+            (await this.#mayReference(hash, underLock, resolver) === "vouched")
+          ) {
+            continue;
+          }
+          return hash;
         }
-        return { notProvided: hash };
-      }
+        return undefined;
+      });
+      if (notProvided !== undefined) return { notProvided };
       // Judged under the forwarded lock, as leases change hands between
       // commits: the live fenced lease covering the partition decides, once
       // any kept lease on it is adopted.
@@ -1403,15 +1453,16 @@ class DatastoreApi {
       }
       const lease = this.#leaseOpFor(partition, envelope.lease);
       if (lease === "lost") return { leaseLost: true as const };
-      const result = await commitForwarded(
-        this.#v3,
-        {
-          ...request,
-          ...(lease === undefined ? {} : { lease }),
-          stored: carried,
-        },
-        signal,
-      );
+      const result = await commitStage("append", () =>
+        commitForwarded(
+          this.#v3,
+          {
+            ...request,
+            ...(lease === undefined ? {} : { lease }),
+            stored: carried,
+          },
+          signal,
+        ));
       return { result };
     });
     if ("adoptionPending" in landed) return adoptionPendingResponse();
@@ -3398,10 +3449,8 @@ class DatastoreApi {
   }
 
   /**
-   * Reads, verifies and stages a commit's carried chunks one at a time,
-   * each reserved in the upload ledger before it is read, then makes them
-   * durable together and records them. Resolves with their hashes, or a
-   * 429 once the caller's quota or entry cap is spent.
+   * Reads carried chunks in order, storing each while the next is read; each is
+   * reserved in the upload ledger first. Resolves with their hashes, or a 429.
    */
   async #ingestCarried(
     reader: FramedReader,
@@ -3412,8 +3461,12 @@ class DatastoreApi {
     const reservations: UploadReservation[] = [];
     const staged = new Map<string, UploadReservation>();
     const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
+    const failed = new AbortController();
+    const puts = AbortSignal.any([signal, failed.signal]);
+    const inFlight = new Set<Promise<void>>();
     try {
       for (const chunk of declared) {
+        failed.signal.throwIfAborted();
         // What this request reserved counts too, so requests in flight
         // together cannot pass the quota or the entry cap.
         const admission = this.#deps.ledger.reserve(
@@ -3423,17 +3476,42 @@ class DatastoreApi {
         );
         if (!admission.allowed) return uploadQuotaExceeded();
         reservations.push(admission.reservation);
+        while (inFlight.size >= CARRIED_PUT_CONCURRENCY) {
+          await Promise.race(inFlight);
+        }
+        failed.signal.throwIfAborted();
         const verified = await ingestChunk(
           reader,
           chunk,
           { maxChunkBytes: this.#maxChunkBytes() },
-          signal,
+          puts,
         );
-        await batch.put(verified.sha256, verified.bytes, signal);
-        if (!staged.has(verified.sha256)) {
-          staged.set(verified.sha256, admission.reservation);
-        }
+        // taken once read, so a slow sender holds no room others wait on
+        const release = await carriedBytesBudget.acquire(
+          budgetedBytesOf(verified.bytes.byteLength),
+          puts,
+        );
+        const reservation = admission.reservation;
+        const put: Promise<void> = batch.put(
+          verified.sha256,
+          verified.bytes,
+          puts,
+        ).then(
+          () => {
+            if (!staged.has(verified.sha256)) {
+              staged.set(verified.sha256, reservation);
+            }
+          },
+          // the first failure is the reason the others see
+          (error) => failed.abort(error),
+        ).finally(() => {
+          release();
+          inFlight.delete(put);
+        });
+        inFlight.add(put);
       }
+      await Promise.all(inFlight);
+      failed.signal.throwIfAborted();
       // a batch's later commits follow this one's chunks
       if (last) await reader.assertEnd(signal);
       if (staged.size === 0) return new Set();
@@ -3450,6 +3528,8 @@ class DatastoreApi {
       }
       return new Set(staged.keys());
     } finally {
+      failed.abort(new Error("The carried chunks' request has ended"));
+      await Promise.allSettled([...inFlight]);
       for (const reservation of reservations) reservation.cancel();
       await batch.discard();
     }
@@ -3461,10 +3541,33 @@ class DatastoreApi {
   ): Promise<void> {
     if (chunks.length === 0) return;
     const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
-    try {
-      for (const chunk of chunks) {
-        await batch.put(chunk.sha256, chunk.bytes, signal);
+    const failed = new AbortController();
+    const puts = AbortSignal.any([signal, failed.signal]);
+    let next = 0;
+    const worker = async () => {
+      while (next < chunks.length) {
+        puts.throwIfAborted();
+        const chunk = chunks[next++];
+        try {
+          await batch.put(chunk.sha256, chunk.bytes, puts);
+        } catch (error) {
+          failed.abort(error);
+          throw error;
+        }
       }
+    };
+    const workers = Array.from(
+      { length: Math.min(CARRIED_PUT_CONCURRENCY, chunks.length) },
+      worker,
+    );
+    try {
+      // every put settles before the batch is discarded or the request answers
+      const settled = await Promise.allSettled(workers);
+      failed.signal.throwIfAborted();
+      for (const outcome of settled) {
+        if (outcome.status === "rejected") throw outcome.reason;
+      }
+      signal.throwIfAborted();
       await batch.commit(signal);
     } finally {
       await batch.discard();

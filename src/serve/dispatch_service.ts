@@ -23,7 +23,7 @@ import {
   runGeneratorWithoutVaultAccess,
   withoutVaultAccess,
 } from "../domain/vaults/run_vault_access.ts";
-import { join } from "@std/path";
+import { isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import {
   dispatchTraceCarrier,
   observeExecutionWork,
@@ -48,6 +48,7 @@ import {
   REMOTE_PROTOCOL_VERSION,
   type RpcStreamEvent,
   shipsReferencesOnly,
+  type WithheldAsset,
 } from "../domain/remote/protocol.ts";
 import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
@@ -119,6 +120,48 @@ async function sha256Hex(text: string): Promise<string> {
     new Uint8Array(digest),
     (b) => b.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+type AssetRefusal = WithheldAsset["reason"];
+
+/**
+ * the containment check runs on real paths, so a declared file reached through
+ * a symlinked directory is refused like a symlinked file
+ */
+async function readShippableAsset(
+  filesRoot: string,
+  realRoot: string | undefined,
+  relPath: string,
+): Promise<Uint8Array | AssetRefusal> {
+  const path = join(filesRoot, relPath);
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(path);
+  } catch {
+    return "missing";
+  }
+  if (info.isSymlink) return "a symlink";
+  if (!info.isFile) return "not a regular file";
+  let real: string;
+  try {
+    real = await Deno.realPath(path);
+  } catch {
+    return "missing";
+  }
+  if (realRoot === undefined || !isWithin(realRoot, real)) {
+    return "outside the extension directory";
+  }
+  try {
+    return await Deno.readFile(real);
+  } catch {
+    return "missing";
+  }
+}
+
+function isWithin(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel.length > 0 && !isAbsolute(rel) && rel !== ".." &&
+    !rel.startsWith(`..${SEPARATOR}`);
 }
 
 export interface DispatchGateway {
@@ -1251,35 +1294,63 @@ export class DispatchService {
     }
     const js = await modelDef.bundleSourceFactory();
     const filesRoot = modelDef.extensionFilesRoot;
-    const additionalFiles = await modelDef.readExtensionAdditionalFiles?.();
-    if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
+    const declared = await modelDef.readExtensionDeclaredAssets?.();
+    const additionalFiles = declared?.additionalFiles;
+    const binaries = declared?.binaries;
+    if (
+      !filesRoot || (!additionalFiles?.length && !binaries?.length)
+    ) {
       const fingerprint = await sha256Hex(js);
       this.#options.bundles.register(fingerprint, {
         js,
         filesRoot,
         additionalFiles,
+        binaries,
       });
       return fingerprint;
     }
+    const binarySet = new Set(binaries);
+    const realRoot = await Deno.realPath(filesRoot).catch(() => undefined);
     const assetHashes = new Map<string, string>();
+    const refused: WithheldAsset[] = [];
+    // additionalFiles keep the relPath:hash part so a bundle without binaries
+    // keeps its fingerprint; bin: makes moving a file between fields a new one
     const parts: string[] = [js];
-    for (const relPath of [...additionalFiles].sort()) {
-      try {
-        const hash = await hashAssetBytes(
-          await Deno.readFile(join(filesRoot, relPath)),
-        );
-        assetHashes.set(relPath, hash);
-        parts.push(`${relPath}:${hash}`);
-      } catch {
-        parts.push(`${relPath}:missing`);
+    const declaredPaths = new Set([...additionalFiles ?? [], ...binarySet]);
+    for (const relPath of [...declaredPaths].sort()) {
+      const isBinary = binarySet.has(relPath);
+      const part = isBinary ? `bin:${relPath}` : relPath;
+      const asset = await readShippableAsset(filesRoot, realRoot, relPath);
+      if (typeof asset === "string") {
+        parts.push(`${part}:missing`);
+        refused.push({
+          relPath,
+          field: isBinary ? "binaries" : "additionalFiles",
+          reason: asset,
+        });
+        continue;
       }
+      const hash = await hashAssetBytes(asset);
+      assetHashes.set(relPath, hash);
+      parts.push(`${part}:${hash}`);
     }
     const fingerprint = await sha256Hex(parts.join("\0"));
+    if (this.#options.bundles.get(fingerprint) === null) {
+      for (const { relPath, field, reason } of refused) {
+        logger.warn(
+          "Asset {relPath} declared in {field} of {type} is {reason}; " +
+            "it is not shipped to workers",
+          { relPath, field, reason, type: modelDef.type.normalized },
+        );
+      }
+    }
     this.#options.bundles.register(fingerprint, {
       js,
       filesRoot,
       additionalFiles,
+      binaries,
       assetHashes,
+      withheld: refused,
     });
     return fingerprint;
   }

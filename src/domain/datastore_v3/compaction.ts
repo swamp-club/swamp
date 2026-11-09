@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { BlobRef } from "./blob_ref.ts";
-import { type LiveDataVersion, projectCatalog } from "./catalog_projection.ts";
+import {
+  greatestLiveIn,
+  liveAfter,
+  type LiveDataVersion,
+  projectCatalog,
+} from "./catalog_projection.ts";
 import { type CatalogNameState, foldCatalogActions } from "./catalog_state.ts";
 import type { Commit } from "./commit.ts";
 import type { FileAccess } from "./file_access.ts";
@@ -126,10 +131,9 @@ export function foldCommit(
       base.setFileOwnership(namespace, key, decision.next);
     }
   }
-  const projection = projectCatalog(
-    commit.ops,
-    (name) => base.liveVersions(namespace, partition, name),
-  );
+  const versionsOf = (name: string) =>
+    base.liveVersions(namespace, partition, name);
+  const projection = projectCatalog(commit.ops, greatestLiveIn(versionsOf));
   // Read every name's catalog state as it was before the commit, then write
   // the live versions, then the catalog: a store may keep catalog rows as
   // references to live versions.
@@ -137,8 +141,13 @@ export function foldCommit(
     projection.actions,
     (name) => base.catalogName(namespace, partition, name),
   );
-  for (const [name, versions] of projection.live) {
-    base.setLiveVersions(namespace, partition, name, versions);
+  for (const [name, changes] of projection.versions) {
+    base.setLiveVersions(
+      namespace,
+      partition,
+      name,
+      liveAfter(versionsOf(name), changes),
+    );
   }
   for (const [name, state] of catalog) {
     base.setCatalogName(namespace, partition, name, state);

@@ -42,27 +42,64 @@ export type CatalogAction =
   | { readonly kind: "forward"; readonly name: string; readonly to: string }
   | { readonly kind: "end-forward"; readonly name: string };
 
+/**
+ * what a commit does to a name's live versions: a version put replaces any
+ * live one of its number, and a removed version is never also put
+ */
+export interface LiveVersionChanges {
+  readonly put: readonly LiveDataVersion[];
+  readonly removed: readonly number[];
+}
+
 export interface CatalogProjection {
   readonly actions: readonly CatalogAction[];
-  readonly live: ReadonlyMap<string, readonly LiveDataVersion[]>;
+  readonly versions: ReadonlyMap<string, LiveVersionChanges>;
 }
+
+export type GreatestLiveBefore = (
+  name: string,
+  excluding: ReadonlySet<number>,
+) => LiveDataVersion | undefined;
 
 export function isRenameMarker(metadata: DataMetadata): boolean {
   return metadata.lifecycle === "deleted" && metadata.renamedTo !== undefined;
 }
 
+export function greatestLiveIn(
+  versionsOf: (name: string) => readonly LiveDataVersion[],
+): GreatestLiveBefore {
+  return (name, excluding) =>
+    greatest(versionsOf(name).filter((v) => !excluding.has(v.version)));
+}
+
+export function liveAfter(
+  before: readonly LiveDataVersion[],
+  changes: LiveVersionChanges | undefined,
+): LiveDataVersion[] {
+  const live = new Map(before.map((v) => [v.version, v]));
+  for (const version of changes?.removed ?? []) live.delete(version);
+  for (const entry of changes?.put ?? []) live.set(entry.version, entry);
+  return [...live.values()].sort((a, b) => a.version - b.version);
+}
+
+interface NameChanges {
+  readonly put: Map<number, LiveDataVersion>;
+  readonly removed: Set<number>;
+}
+
+/** reads only the greatest live version, and only of names it reconciles */
 export function projectCatalog(
   ops: readonly Op[],
-  liveBefore: (name: string) => readonly LiveDataVersion[],
+  greatestLiveBefore: GreatestLiveBefore,
 ): CatalogProjection {
-  const live = new Map<string, Map<number, LiveDataVersion>>();
-  const liveOf = (name: string): Map<number, LiveDataVersion> => {
-    let versions = live.get(name);
-    if (versions === undefined) {
-      versions = new Map(liveBefore(name).map((v) => [v.version, v]));
-      live.set(name, versions);
+  const changes = new Map<string, NameChanges>();
+  const changesOf = (name: string): NameChanges => {
+    let entry = changes.get(name);
+    if (entry === undefined) {
+      entry = { put: new Map(), removed: new Set() };
+      changes.set(name, entry);
     }
-    return versions;
+    return entry;
   };
   const actions: CatalogAction[] = [];
   const reconcile = new Set<string>();
@@ -70,10 +107,12 @@ export function projectCatalog(
   for (const op of ops) {
     if (op.kind === "data-version") {
       const { metadata } = op;
-      liveOf(metadata.name).set(metadata.version, {
+      const entry = changesOf(metadata.name);
+      entry.put.set(metadata.version, {
         version: metadata.version,
         metadata,
       });
+      entry.removed.delete(metadata.version);
       if (isRenameMarker(metadata)) {
         actions.push(
           { kind: "remove-name", name: metadata.name },
@@ -90,7 +129,9 @@ export function projectCatalog(
       const intent = op.intent;
       if (intent.kind !== "data.delete" && intent.kind !== "data.gc") continue;
       if (intent.version !== undefined) {
-        liveOf(intent.name).delete(intent.version);
+        const entry = changesOf(intent.name);
+        entry.put.delete(intent.version);
+        entry.removed.add(intent.version);
         actions.push({
           kind: "remove-version",
           name: intent.name,
@@ -111,7 +152,15 @@ export function projectCatalog(
   }
 
   for (const name of reconcile) {
-    const top = greatest(liveOf(name));
+    const entry = changesOf(name);
+    let top = greatestLiveBefore(name, entry.removed);
+    // a version put in this commit replaces a stored one of its number
+    const put = greatest([...entry.put.values()]);
+    if (
+      put !== undefined && (top === undefined || put.version >= top.version)
+    ) {
+      top = put;
+    }
     if (top === undefined) {
       actions.push(
         { kind: "remove-name", name },
@@ -129,20 +178,20 @@ export function projectCatalog(
 
   return {
     actions,
-    live: new Map(
-      [...live].map(([name, versions]) => [
-        name,
-        [...versions.values()].sort((a, b) => a.version - b.version),
-      ]),
+    versions: new Map(
+      [...changes].map(([name, entry]) => [name, {
+        put: [...entry.put.values()].sort((a, b) => a.version - b.version),
+        removed: [...entry.removed].sort((a, b) => a - b),
+      }]),
     ),
   };
 }
 
 function greatest(
-  versions: ReadonlyMap<number, LiveDataVersion>,
+  versions: Iterable<LiveDataVersion>,
 ): LiveDataVersion | undefined {
   let top: LiveDataVersion | undefined;
-  for (const entry of versions.values()) {
+  for (const entry of versions) {
     if (top === undefined || entry.version > top.version) top = entry;
   }
   return top;

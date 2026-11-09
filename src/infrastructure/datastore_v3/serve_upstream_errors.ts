@@ -36,6 +36,7 @@ import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   V3_SERVE_UNREACHABLE_CODE,
 } from "../../domain/datastore_v3/writer_lease.ts";
+import { LEASE_LAPSED_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   parseServeLeader,
@@ -55,31 +56,86 @@ export type ServeRequestSent = "never" | "maybe";
  * datastore's storage, which is never reached another way
  */
 export class ServeUnreachableError extends UserError {
-  declare readonly code: typeof V3_SERVE_UNREACHABLE_CODE;
+  declare readonly code:
+    | typeof V3_SERVE_UNREACHABLE_CODE
+    | typeof LEASE_LAPSED_CODE;
 
   constructor(
     readonly serveUrl: string,
     readonly sent: ServeRequestSent,
     cause: unknown,
+    lapsed?: { readonly lease: string; readonly request: string },
   ) {
     const reason = cause instanceof Error ? cause.message : String(cause);
-    const outcome = sent === "never"
+    const kept = `The change is kept: the next command that ` +
+      `writes in this checkout sends it again, and serve records it once ` +
+      `whether or not it already landed.`;
+    const outcome = lapsed !== undefined
+      ? sent === "never"
+        ? `This command's lease on ${lapsed.lease} at serve lapsed ` +
+          `unrenewed, so ${lapsed.request} was not sent and the datastore ` +
+          `was not changed.`
+        : `This command's lease on ${lapsed.lease} at serve lapsed ` +
+          `unrenewed while ${lapsed.request} was in flight, so serve may or ` +
+          `may not have made the change. ${kept}`
+      : sent === "never"
       ? `Swamp could not reach serve at ${serveUrl} (${reason}), so the ` +
         `datastore was not changed.`
       : `Swamp lost its connection to serve at ${serveUrl} (${reason}) ` +
         `after the request may have reached it, so serve may or may not ` +
-        `have made the change. The change is kept: the next command that ` +
-        `writes in this checkout sends it again, and serve records it once ` +
-        `whether or not it already landed.`;
-    super(
-      `${outcome} This datastore is reached only through serve, so swamp ` +
+        `have made the change. ${kept}`;
+    const next = lapsed !== undefined
+      ? ` A lease lapses when this command cannot renew it in time, which a ` +
+        `slow or saturated link to serve can cause. Run the command again.`
+      : ` This datastore is reached only through serve, so swamp ` +
         `never goes around serve to the datastore's storage. Run the ` +
-        `command again once serve is reachable.`,
-      V3_SERVE_UNREACHABLE_CODE,
+        `command again once serve is reachable.`;
+    super(
+      `${outcome}${next}`,
+      lapsed !== undefined ? LEASE_LAPSED_CODE : V3_SERVE_UNREACHABLE_CODE,
     );
     this.name = "ServeUnreachableError";
     this.cause = cause;
   }
+}
+
+/** why every request of the command stops once its lease lapsed unrenewed */
+export class ServeLeaseLapsedLatch extends Error {
+  constructor(readonly lockKey: string) {
+    super(`the lease on ${lockKey} lapsed unrenewed`);
+    this.name = "ServeLeaseLapsedLatch";
+  }
+}
+
+/**
+ * a request stopped by the command's own lapsed lease, not by serve: named so,
+ * and kept a ServeUnreachableError so every write path handles it as before
+ */
+export class ServeLeaseLapsedRequestError extends ServeUnreachableError {
+  readonly lapsedServeRequest = true;
+
+  constructor(
+    serveUrl: string,
+    sent: ServeRequestSent,
+    latch: ServeLeaseLapsedLatch,
+    request: { readonly route: string; readonly bodyBytes: number },
+  ) {
+    super(serveUrl, sent, latch, {
+      lease: latch.lockKey,
+      request: request.bodyBytes > 0
+        ? `an upload of ${
+          formatRequestBytes(request.bodyBytes)
+        } (${request.route})`
+        : `a request (${request.route})`,
+    });
+    this.name = "ServeLeaseLapsedRequestError";
+  }
+}
+
+function formatRequestBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 /**

@@ -28,6 +28,7 @@ import {
   assertInstanceOf,
   assertRejects,
   assertStrictEquals,
+  assertStringIncludes,
 } from "@std/assert";
 import { withMockedFetch } from "@swamp-club/swamp-testing";
 import { createHash } from "node:crypto";
@@ -60,6 +61,7 @@ import {
   MAX_HAS_HASHES,
   MAX_PUT_OP_REPLY_BYTES,
   MAX_WRITTEN_COMMIT_REPLY_BYTES,
+  MIN_SERVE_UPLOAD_BYTES_PER_SECOND,
   resetHeardServeRepliesForTesting,
   routeTemplate,
   SERVE_DATASTORE_ACCESS_HEADER,
@@ -70,10 +72,13 @@ import {
   SERVE_REPLY_MAX_BYTES,
   ServeDatastoreClient,
   type ServeDatastoreClientOptions,
+  serveRequestDeadlineMs,
   serveRequestTimeoutMs,
 } from "./serve_datastore_client.ts";
 import {
   ServeAuthFailedError,
+  ServeLeaseLapsedLatch,
+  ServeLeaseLapsedRequestError,
   ServePreconditionFailedError,
   ServeRateLimitedError,
   ServeReplyTooLargeError,
@@ -81,6 +86,11 @@ import {
   ServeUnreachableError,
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
+import { LEASE_LAPSED_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  isLapsedServeRequest,
+  V3_SERVE_UNREACHABLE_CODE,
+} from "../../domain/datastore_v3/writer_lease.ts";
 import { serveStamped } from "./serve_upstream_test_helpers.ts";
 
 const BASE = "https://serve.example.com";
@@ -307,6 +317,38 @@ Deno.test("ServeDatastoreClient.postCommit: frames the envelope and carried chun
     requests[0].url,
     `${PREFIX}/partitions/${encodeURIComponent(partition.toString())}/commits`,
   );
+});
+
+Deno.test("serveRequestDeadlineMs: adds the body's bytes at the floor upload rate to the flat timeout", () => {
+  assertEquals(serveRequestDeadlineMs(30_000, 0), 30_000);
+  assertEquals(
+    serveRequestDeadlineMs(30_000, MIN_SERVE_UPLOAD_BYTES_PER_SECOND),
+    31_000,
+  );
+  // 128 MiB, a 64 MiB output stored as result and log
+  assertEquals(serveRequestDeadlineMs(30_000, 128 * 1024 * 1024), 542_000);
+});
+
+Deno.test("ServeDatastoreClient: a request's deadline grows with the bytes it uploads; a bodiless one keeps the flat timeout", async () => {
+  const deadlines: number[] = [];
+  const chunk = new Uint8Array(2 * MIN_SERVE_UPLOAD_BYTES_PER_SECOND);
+  const hash = sha(chunk);
+  const { client } = clientWith(
+    (req) =>
+      req.method === "PUT"
+        ? Response.json({ sha256: hash, size: chunk.length })
+        : new Response(chunk),
+    {
+      timeoutMs: 5_000,
+      timeoutSignal: (ms) => {
+        deadlines.push(ms);
+        return new AbortController().signal;
+      },
+    },
+  );
+  await client.putChunk(hash, chunk, signal());
+  await client.getChunk(hash, signal());
+  assertEquals(deadlines, [7_000, 5_000]);
 });
 
 Deno.test("ServeDatastoreClient.postCommit: an answer without duplicate or warning is a fresh commit", async () => {
@@ -1380,6 +1422,63 @@ Deno.test("ServeDatastoreClient: once a write latched serve unreachable, a reque
   const fresh = clientWith(() => Response.json({ changes: [], head: 0 }));
   await fresh.client.changes(0, signal()).catch(() => {});
   assertEquals(fresh.requests.length, 1, "a new command asks serve again");
+});
+
+Deno.test("ServeDatastoreClient: a lease that lapsed unrenewed ends a request in flight as the lapse, naming the request and its size, and the next as never sent", async () => {
+  let pending = 0;
+  const chunk = new Uint8Array(2 * 1024 * 1024);
+  const { client, requests } = clientWith((req) => {
+    pending++;
+    return new Promise<Response>((_, reject) => {
+      req.signal.addEventListener("abort", () => reject(req.signal.reason));
+    });
+  });
+  try {
+    const inFlight = assertRejects(
+      () => client.putChunk(sha(chunk), chunk, signal()),
+      ServeLeaseLapsedRequestError,
+    );
+    await waitFor(() => pending === 1, "the upload to be sent");
+    latchServeUnreachable(
+      client.baseUrl,
+      new ServeLeaseLapsedLatch("model aws/vpc prod"),
+    );
+    const lapsed = await inFlight;
+    assertInstanceOf(lapsed, ServeUnreachableError);
+    assertEquals(lapsed.code, LEASE_LAPSED_CODE);
+    assertEquals(lapsed.sent, "maybe");
+    assert(isLapsedServeRequest(lapsed));
+    assertStringIncludes(
+      lapsed.message,
+      "lease on model aws/vpc prod at serve lapsed unrenewed while an upload of 2.0 MiB (PUT chunks/{sha256})",
+    );
+    assertStringIncludes(lapsed.message, "The change is kept");
+
+    const next = await assertRejects(
+      () => client.changes(0, signal()),
+      ServeLeaseLapsedRequestError,
+    );
+    assertEquals(next.sent, "never");
+    assertStringIncludes(next.message, "a request (GET changes) was not sent");
+    assertEquals(requests.length, 1, "nothing more was sent");
+  } finally {
+    clearServeUnreachableLatches();
+  }
+});
+
+Deno.test("ServeDatastoreClient: a latch that is not a lapse keeps the unreachable code", async () => {
+  try {
+    const { client } = clientWith(() => Response.json({}));
+    latchServeUnreachable(client.baseUrl, new Error("a commit timed out"));
+    const error = await assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(error.code, V3_SERVE_UNREACHABLE_CODE);
+    assertEquals(isLapsedServeRequest(error), false);
+  } finally {
+    clearServeUnreachableLatches();
+  }
 });
 
 Deno.test("ServeDatastoreClient: a dedicated HTTP client is made once, on first use, and closed by close()", async () => {

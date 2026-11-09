@@ -57,6 +57,7 @@ Deno.test("serveConfigRows: renders a real serve.config payload with everything 
     hotReload: true,
     trustProxy: true,
     webhookConfigs: [{ route: "/hook", workflow: "deploy", secret: "s" }],
+    webhookRoutesDir: "webhook-routes",
   }));
 
   assertEquals(rows, [
@@ -70,6 +71,7 @@ Deno.test("serveConfigRows: renders a real serve.config payload with everything 
     { label: "Hot Reload", value: "enabled", ok: true },
     { label: "Trust Proxy", value: "enabled", ok: true },
     { label: "Webhooks", value: "1 endpoint", ok: false },
+    { label: "Webhook Routes Dir", value: "webhook-routes", ok: false },
   ]);
 });
 

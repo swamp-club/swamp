@@ -3539,3 +3539,59 @@ Deno.test("loadServeConfig: reads advertise-address and tls.ca-cert, and refuses
     assertThrows(() => loadServeConfig(undefined, dir));
   });
 });
+
+Deno.test("mergeServeOptions: webhook-routes-dir defaults to webhook-routes", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.webhookRoutesDir, "webhook-routes");
+});
+
+Deno.test("mergeServeOptions: an empty webhook-routes-dir reads as unset", () => {
+  const env = (name: string) =>
+    name === "SWAMP_WEBHOOK_ROUTES_DIR" ? "" : undefined;
+  assertEquals(
+    mergeServeOptions(null, {}, new Set<string>(), env).webhookRoutesDir,
+    "webhook-routes",
+  );
+});
+
+Deno.test("mergeServeOptions: webhook-routes-dir resolves CLI, then env, then config", () => {
+  const config: ServeConfigFile = { "webhook-routes-dir": "from-config" };
+  const env = (name: string) =>
+    name === "SWAMP_WEBHOOK_ROUTES_DIR" ? "from-env" : undefined;
+
+  assertEquals(
+    mergeServeOptions(
+      config,
+      { webhookRoutesDir: "from-cli" },
+      new Set(["webhook-routes-dir"]),
+      env,
+    )
+      .webhookRoutesDir,
+    "from-cli",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), env).webhookRoutesDir,
+    "from-env",
+  );
+  assertEquals(
+    mergeServeOptions(config, {}, new Set<string>(), () => undefined)
+      .webhookRoutesDir,
+    "from-config",
+  );
+});
+
+Deno.test("loadServeConfig: webhook-routes-dir must be a string", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = join(dir, "serve.yaml");
+    await Deno.writeTextFile(path, "webhook-routes-dir: 3\n");
+    assertThrows(() => loadServeConfig(path, dir), Error, "webhook-routes-dir");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});

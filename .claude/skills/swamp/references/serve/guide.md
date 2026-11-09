@@ -194,6 +194,37 @@ or `tag`: an older build drops such a grant whole, with every other action in
 it, so a deny on `write,tag` stops denying `write` there. Until every host is
 upgraded, keep `signal` and `tag` in grants of their own.
 
+## Webhook Route Files
+
+A webhook route can come from a reviewed repo change instead of host config: one
+YAML file per route in `webhook-routes/` (`--webhook-routes-dir` to move it),
+with the same fields as a `webhooks[]` entry in `.swamp/serve.yaml`.
+
+```yaml
+# webhook-routes/github-push.yaml
+route: /hooks/github-push
+workflow: deploy
+secret: "@vault=webhooks:github-push"
+scheme: github
+```
+
+- The route must sit under `/hooks/`, with segments of letters, digits and
+  `-._~` only; the secret must be `@vault=<vault>:<key>`.
+- YAML aliases that repeat a mapping, a list or a large string are refused in
+  route files; write each value out.
+- `swamp serve reload` makes a new or changed file live; deleting the file
+  removes the route on the next reload.
+- A bad file is refused on its own (named in the startup log or reload errors);
+  two files claiming one route are both refused. A `serve.yaml` or `--webhook`
+  route on the same path wins, and the file route is reported as shadowed.
+- If a reload cannot reach a file's vault or extension scheme (backend down,
+  timeout), an unchanged file keeps its live route and the reload lists it as
+  kept. A missing key, an edited file, or an outage at startup still refuses it.
+- Run `swamp serve check-config` in CI on the PR to catch a bad file before it
+  reaches serve. It does not look up vault keys or resolve extension schemes.
+- Health and the dashboard show such a route with source `file` and its file
+  name. Extensions never contribute routes.
+
 ## CLI Grant Management
 
 ```bash
@@ -242,10 +273,12 @@ An app acts as a person only after they link: the app calls
 the person swamp-club's consent URL, then redeems
 `POST
 /api/v1/delegations/redeem` for a 1-hour access token and a refresh token
-(`/refresh` rotates both; reusing an old refresh token ends the link). Rights
-are the person's grants within the integration's ceiling and what they consented
-to. A link lasts 30 days. Links need an oauth-mode serve registered with
-swamp-club, and every serve node upgraded.
+(`/refresh` mints a new access token and keeps the refresh token, so racing
+refreshes are harmless; swamp-lib's `SwampIntegrationClient`, `DelegatedTokens`
+and `SwampActionClient` wrap these routes). Rights are the person's grants
+within the integration's ceiling and what they consented to. A link lasts 30
+days. Links need an oauth-mode serve registered with swamp-club, and every serve
+node upgraded.
 
 ```bash
 swamp access delegation list [--integration slack-bot] [--state issued]

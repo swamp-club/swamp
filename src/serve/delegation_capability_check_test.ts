@@ -17,12 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
   checkDelegationCapability,
   DELEGATION_LINKS_CAPABILITY,
 } from "./delegation_capability_check.ts";
+import { SERVE_INSTANCE_CAPABILITIES } from "./instance_heartbeat.ts";
 
 function storeOf(records: Record<string, unknown>): ControlPlaneStore {
   const encoded = new Map(
@@ -69,6 +70,18 @@ Deno.test("checkDelegationCapability: passes when every live node has the capabi
     storeOf({ a: heartbeat("a"), b: heartbeat("b") }),
   );
   assertEquals(result, { ok: true });
+});
+
+Deno.test("checkDelegationCapability: a live node that still rotates refresh tokens refuses and is named", async () => {
+  const rotating = heartbeat("rot", { capabilities: ["delegation-links-1"] });
+  const result = await checkDelegationCapability(
+    storeOf({ a: heartbeat("a"), rot: rotating }),
+  );
+  assertEquals(result, { ok: false, instances: ["rot (host-rot)"] });
+});
+
+Deno.test("SERVE_INSTANCE_CAPABILITIES: this build advertises the capability it requires", () => {
+  assert(SERVE_INSTANCE_CAPABILITIES.includes(DELEGATION_LINKS_CAPABILITY));
 });
 
 Deno.test("checkDelegationCapability: a live node from an older build refuses and is named", async () => {

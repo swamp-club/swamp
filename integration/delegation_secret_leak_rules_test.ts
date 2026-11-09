@@ -71,11 +71,10 @@ Deno.test("delegation links: no token, credential, redeem secret, consent code o
       const refreshed = await rig.post("refresh", {
         refreshToken: firstRefresh,
       });
-      secrets.push(
-        refreshed.body.accessToken as string,
-        refreshed.body.refreshToken as string,
-      );
-      await rig.post("refresh", { refreshToken: firstRefresh });
+      secrets.push(refreshed.body.accessToken as string);
+      const wrong = `${firstRefresh.slice(0, -1)}0`;
+      await rig.post("refresh", { refreshToken: wrong });
+      await rig.post("end", { token: firstRefresh });
       await rig.service.tick();
       for (const event of rig.audit) auditor(event);
 

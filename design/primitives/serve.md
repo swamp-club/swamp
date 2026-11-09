@@ -87,6 +87,7 @@ without it the default file is optional.
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
 | `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely and are fixed until restart; only the file list reloads |
+| `--webhook-routes-dir` / `webhook-routes-dir` | `SWAMP_WEBHOOK_ROUTES_DIR` | `webhook-routes` | Directory of route files, one route per YAML file, read at startup and on every reload, flag mode included. A relative path resolves against the repository; a directory that is or sits inside the webhook extensions dir, `extensions/` or `.swamp/` loads no file routes and is reported as an error (see Webhooks) |
 | `--max-concurrent-webhook-runs` / `max-concurrent-webhook-runs` | `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS` | `1` | Webhook runs in flight at once, across all routes; deliveries to the same route may overlap. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
@@ -1426,6 +1427,78 @@ either:
   `config` (`webhooks[].config`, yaml only) is validated against the type's
   `configSchema`.
 
+**Route files.** A route can also come from a reviewed change to the repo: each
+`*.yaml` or `*.yml` file at the top level of the webhook routes directory
+(`--webhook-routes-dir`, default `webhook-routes/`) holds one mapping with the
+`webhooks[]` fields (`src/serve/webhook_route_files.ts`). Code review on the
+change is the gate: approving a route file approves its workflow, scheme and
+secret reference, and its runs are authorized as `service:webhook` like any
+other route. A route file's route must sit under `/hooks/`
+(`fileRouteProblem` in `src/serve/webhook_route.ts`): not the bare prefix, with
+no empty, `.` or `..` segments, and every segment made of letters, digits and
+`-._~` only, so the route is its own canonical pathname. Routes from
+`serve.yaml` and `--webhook` have no such restriction. The secret must be
+`@vault=<vault>:<key>`; a literal, `@env=` or `@file=` secret is refused.
+Unknown keys, a symlink leaving the directory, anything but a regular file, a
+file over 64 KiB, a YAML alias that repeats a mapping or list, parsed values
+holding more text than the file itself (only aliases produce that; either can
+expand to gigabytes when serve compares routes), nesting deeper than 32 levels,
+and two files claiming one route (both are refused, each error naming the other
+file) are refused too. Each file is judged and parsed on
+its own, vault lookup and extension scheme resolution included, so a bad file is
+refused alone with an error naming the file and route, and never stops serve or
+the other routes. A failure about the environment rather than the file (a
+configured vault that cannot answer, vaults that cannot be opened, a webhook type
+lookup that throws) raises `WebhookEnvironmentError`
+(`src/serve/webhook.ts`); on a reload a file that fails that way keeps its live
+endpoint, with the secret resolved when it last loaded, as long as the same file
+still holds the same route and an unchanged entry, and the reload reports it as
+kept among its errors. A missing key in a reachable vault, a refused read, an
+unconfigured vault, an empty value, an uninstalled scheme or an edited file still
+refuses it, and at startup there is no live endpoint to keep, so an outage
+refuses the file there too. A routes directory that cannot be used (unreadable, or inside
+extension code) loads no file routes and is reported once
+(`webhook_routes_dir_refused` at startup, a reload error), while serve starts
+and operator routes still apply. A `serve.yaml` or `--webhook` route on the same
+path wins, and the file route is reported as shadowed.
+`buildWebhookRouteTable` (`src/serve/webhook_reload.ts`) builds the table at
+startup and on every reload, where refused files come back as reload errors and
+shadowed routes as warnings (the reload still succeeds and exits 0); at startup
+they log as `webhook_route_file_refused` and `webhook_route_shadowed`. Route
+files are read in flag mode too, where the flag routes stay fixed. Deleting a
+file removes its route on the next reload. `swamp serve check-config` fails on a
+refused route file and warns on a shadowed one; it does no vault lookup or
+extension resolution, so a missing key or an uninstalled scheme is refused only
+by serve, and it reports an unusable routes directory (`webhookRoutesDirError`
+in `--json`) and fails without aborting. The extension-directory check runs on
+every load, so a symlinked routes directory arriving with a reload is refused
+too. The loader never reads extension directories, and only serve's startup and
+the reload updater register routes
+(`integration/serve_webhook_route_files_rules_test.ts`), so pulling an extension
+cannot open an endpoint.
+
+**Extension scheme trust.** A route may use an extension type only when the
+type is local (from the repository's own extension directories or a source
+mount) or pulled from a trusted collective (`trustedCollectives`, see
+[Trusted Collectives](extensions.md#trusted-collectives)). For a pulled type,
+both the scheme's collective and the owning extension's collective must be
+trusted; pulling or pinning an extension confers no trust. Whether a type is
+pulled is decided on canonical, symlink-resolved paths
+(`ExtensionLoader.isPulledSourcePath`), and a type with no recorded origin is
+treated as pulled. The rule (`evaluateWebhookTypeTrust`,
+`src/domain/webhooks/webhook_type_trust.ts`) is applied to every route source,
+at startup and on reload, with an error naming the route, scheme and
+collective and the `swamp extension trust add` fix. A refused `serve.yaml` or
+`--webhook` route stops startup or fails the webhook part of a reload; a refused
+route file is refused alone like any other bad file (it is not an environment
+failure, so a reload does not keep its old endpoint). It is applied again on every delivery against
+the trust list in force, so a route whose collective leaves the list stops
+serving even while a refused reload keeps the old route set; the caller gets
+the generic `500` and nothing is queued. Every reload path refreshes the trust
+list, so a change made with `swamp extension trust` reaches a running serve on
+the next `swamp serve reload` or restart. Deliveries verified and queued before
+a trust removal still run, and boot replay does not re-verify them.
+
 An extension handler may also `transform` the payload body and `respond` with a
 custom HTTP response, optionally without starting a run. Core keeps every
 security decision: hooks run only after verification, `transform` sees only
@@ -1784,8 +1857,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   with no routes, so a reload can add the first one. Routes from `--webhook`
   flags are process arguments and never reload; when the config file also
   lists `webhooks`, the reload response carries a `warnings` entry saying the
-  list was ignored (`src/serve/webhook_reload.ts`). The admin health snapshot
-  and the dashboard show each route's `source` (`config` or `flag`). The
+  list was ignored (`src/serve/webhook_reload.ts`). Route files reload as well, in either mode. The admin health snapshot and the dashboard show each route's `source` (`config`, `flag` or `file`, with the route file's name in `file`), and log and reload text name a file route `file:<name>`. The
   config poller's extension reload does not re-read webhooks.
 
   `workflow.trigger.set` and `workflow.trigger.remove` over WebSocket apply

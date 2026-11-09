@@ -24,7 +24,11 @@ import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import type { RunWriteFence } from "../domain/workflows/run_write_fence.ts";
-import { withoutVaultAccess } from "../domain/vaults/run_vault_access.ts";
+import {
+  VaultAccessDeniedError,
+  withoutVaultAccess,
+} from "../domain/vaults/run_vault_access.ts";
+import { isSecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import type { SyncGate } from "./sync_gate.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
@@ -42,12 +46,18 @@ import {
   type WorkflowRunView,
 } from "../libswamp/workflows/workflow_run_view.ts";
 import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
+import type { WebhookConfigEntry } from "./serve_config.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import {
+  evaluateWebhookTypeTrust,
+  untrustedWebhookSchemeMessage,
+} from "../domain/webhooks/webhook_type_trust.ts";
 import {
   isExtensionWebhookScheme,
   isWebhookScheme,
   resolveWebhookHandler,
   type VerifierConfig,
+  type WebhookHandlerResolution,
 } from "./webhook_verifiers.ts";
 
 const logger = getSwampLogger(["serve", "webhook"]);
@@ -118,6 +128,17 @@ const VAULT_PREFIX = "@vault=";
 
 export interface VaultSecretResolver {
   get(vaultName: string, secretKey: string): Promise<string>;
+  /** absent, every named vault counts as configured */
+  getVaultNames?(): string[];
+}
+
+/** something a route depends on could not answer; the route itself may be fine */
+export class WebhookEnvironmentError extends UserError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, "webhook_environment_unavailable");
+    this.name = "WebhookEnvironmentError";
+    if (options?.cause !== undefined) this.cause = options.cause;
+  }
 }
 
 export async function resolveSecret(
@@ -186,21 +207,30 @@ export async function resolveSecret(
           `Ensure a vault is configured in your repo (see 'swamp vault create')`,
       );
     }
+    let value: string;
     try {
-      const value = await vault.get(vaultName, secretKey);
-      if (!value) {
-        throw new UserError(
-          `Vault '${vaultName}' returned an empty value for key '${secretKey}'`,
-        );
-      }
-      return value;
+      value = await vault.get(vaultName, secretKey);
     } catch (cause) {
-      if (cause instanceof UserError) throw cause;
-      throw new UserError(
+      const message =
         `Webhook secret could not be resolved from vault '${vaultName}', ` +
-          `key '${secretKey}' (via ${VAULT_PREFIX}): ${cause}`,
+        `key '${secretKey}' (via ${VAULT_PREFIX}): ${cause}`;
+      // a missing key, a refused read or an unconfigured vault is an answer;
+      // only a configured vault failing to answer is an outage
+      const configured = vault.getVaultNames?.().includes(vaultName) ?? true;
+      if (
+        !configured || isSecretNotFoundError(cause) ||
+        cause instanceof VaultAccessDeniedError
+      ) {
+        throw cause instanceof UserError ? cause : new UserError(message);
+      }
+      throw new WebhookEnvironmentError(message, { cause });
+    }
+    if (!value) {
+      throw new UserError(
+        `Vault '${vaultName}' returned an empty value for key '${secretKey}'`,
       );
     }
+    return value;
   }
 
   return raw;
@@ -211,6 +241,12 @@ export interface WebhookEndpoint {
   readonly workflowIdOrName: string;
   readonly secret: string;
   readonly verifier: VerifierConfig;
+  /** absent reads as "config" */
+  readonly source?: WebhookRouteSource;
+  /** the route file's name, when source is "file" */
+  readonly file?: string;
+  /** the parsed route file this endpoint came from; never output */
+  readonly routeFileEntry?: WebhookConfigEntry;
 }
 
 /**
@@ -288,6 +324,7 @@ export async function parseWebhookFlag(
 export async function resolveExtensionWebhookEndpoints(
   endpoints: readonly WebhookEndpoint[],
   resolveType: (type: string) => Promise<boolean>,
+  trustedCollectives: readonly string[],
 ): Promise<WebhookEndpoint[]> {
   const resolved: WebhookEndpoint[] = [];
   for (const endpoint of endpoints) {
@@ -296,9 +333,19 @@ export async function resolveExtensionWebhookEndpoints(
       resolved.push(endpoint);
       continue;
     }
-    const info = await resolveType(verifier.scheme)
-      ? webhookTypeRegistry.get(verifier.scheme)
-      : undefined;
+    let found: boolean;
+    try {
+      found = await resolveType(verifier.scheme);
+    } catch (cause) {
+      throw new WebhookEnvironmentError(
+        `Webhook ${endpoint.route} uses scheme '${verifier.scheme}', but the ` +
+          `webhook type could not be resolved: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        { cause },
+      );
+    }
+    const info = found ? webhookTypeRegistry.get(verifier.scheme) : undefined;
     if (!info) {
       // The scheme is a webhook type, not an extension name — one
       // extension can ship several types under other names, so the hint
@@ -307,6 +354,20 @@ export async function resolveExtensionWebhookEndpoints(
         `Webhook ${endpoint.route} uses scheme '${verifier.scheme}', but no ` +
           `installed extension provides that webhook type. Pull the ` +
           `extension that ships it — find it with 'swamp extension search'.`,
+      );
+    }
+    const trust = evaluateWebhookTypeTrust(
+      verifier.scheme,
+      info.origin,
+      trustedCollectives,
+    );
+    if (!trust.trusted) {
+      throw new UserError(
+        untrustedWebhookSchemeMessage(
+          endpoint.route,
+          verifier.scheme,
+          trust.collective,
+        ),
       );
     }
     let config: Record<string, unknown> = { ...verifier.config };
@@ -435,12 +496,10 @@ export type WebhookEvent =
 
 export type WebhookEventHandler = (event: WebhookEvent) => void;
 
-/** Where a serve's webhook routes come from; flags replace the file list. */
-export type WebhookRouteSource = "config" | "flag";
+/** flags replace the serve config list; route files merge under either */
+export type WebhookRouteSource = "config" | "flag" | "file";
 
 export interface WebhookServiceDeps {
-  /** where every route came from; defaults to the serve config */
-  routeSource?: WebhookRouteSource;
   /**
    * false on a follower in team mode, which answers a verified delivery with a
    * retryable 503 so the sender retries to the leader or once one leads.
@@ -488,6 +547,11 @@ export interface WebhookServiceDeps {
    * time, in arrival order.
    */
   maxConcurrentRuns?: number;
+  /**
+   * read on every delivery, so a reload that drops a collective refuses its
+   * routes at once; absent, only local extension types are trusted
+   */
+  trustedCollectives?: () => readonly string[];
   now?: () => number;
 }
 
@@ -564,6 +628,7 @@ export interface WebhookEndpointInfo {
   readonly workflowIdOrName: string;
   readonly scheme: string;
   readonly source: WebhookRouteSource;
+  readonly file?: string;
 }
 
 /**
@@ -641,7 +706,9 @@ export class WebhookService {
       } else if (
         old.workflowIdOrName !== ep.workflowIdOrName ||
         old.secret !== ep.secret ||
-        JSON.stringify(old.verifier) !== JSON.stringify(ep.verifier)
+        JSON.stringify(old.verifier) !== JSON.stringify(ep.verifier) ||
+        (old.source ?? "config") !== (ep.source ?? "config") ||
+        old.file !== ep.file
       ) {
         changed++;
         logger.info("Webhook route updated: {route} → {workflow} ({scheme})", {
@@ -663,13 +730,18 @@ export class WebhookService {
     return changed;
   }
 
+  /** holds resolved secrets: for the route table builder only */
+  currentEndpoints(): readonly WebhookEndpoint[] {
+    return this.endpoints;
+  }
+
   listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {
-    const source = this.deps.routeSource ?? "config";
     return this.endpoints.map((e) => ({
       route: e.route,
       workflowIdOrName: e.workflowIdOrName,
       scheme: e.verifier.scheme,
-      source,
+      source: e.source ?? "config",
+      ...(e.file !== undefined ? { file: e.file } : {}),
     }));
   }
 
@@ -748,14 +820,23 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    const verifier = this.resolveHandler(endpoint);
-    if (!verifier) {
+    const resolution = this.resolveHandler(endpoint);
+    if (resolution.kind === "missing") {
       return this.handlerFailure(
         endpoint,
         "Webhook handler unavailable",
         sourceIp,
       );
     }
+    if (resolution.kind === "untrusted") {
+      return this.handlerFailure(
+        endpoint,
+        `Webhook scheme ${endpoint.verifier.scheme} comes from untrusted ` +
+          `collective ${resolution.collective}`,
+        sourceIp,
+      );
+    }
+    const verifier = resolution.handler;
 
     for (const header of verifier.requiredHeaders) {
       if (!req.headers.get(header)) {
@@ -974,15 +1055,18 @@ export class WebhookService {
 
   private resolveHandler(
     endpoint: WebhookEndpoint,
-  ): ReturnType<typeof resolveWebhookHandler> {
+  ): WebhookHandlerResolution {
     try {
-      return resolveWebhookHandler(endpoint.verifier);
+      return resolveWebhookHandler(
+        endpoint.verifier,
+        this.deps.trustedCollectives?.() ?? [],
+      );
     } catch (error) {
       logger.warn("Webhook handler creation failed on {route}: {error}", {
         route: endpoint.route,
         error: error instanceof Error ? error.message : String(error),
       });
-      return undefined;
+      return { kind: "missing" };
     }
   }
 

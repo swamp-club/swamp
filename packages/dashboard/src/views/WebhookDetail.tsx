@@ -299,6 +299,17 @@ export function WebhookDetail(
                           </span>
                         </>
                       )
+                      : entry.source === "file"
+                      ? (
+                        <>
+                          Route file{" "}
+                          <span className="mono">{entry.file ?? ""}</span>
+                          <span className="trig-sub">
+                            Changes apply with{" "}
+                            <span className="mono">swamp serve reload</span>.
+                          </span>
+                        </>
+                      )
                       : (
                         <>
                           Serve config

@@ -319,3 +319,81 @@ Deno.test("renderServeCheckConfig: a clean grant check says how many files it re
     data,
   );
 });
+
+Deno.test("renderServeCheckConfig: a shadowed route file is a warning and does not fail the check", () => {
+  const warning = {
+    route: "/hooks/github",
+    workflow: "deploy",
+    reason: "shadowed by the serve config",
+    message:
+      "Shadowed webhook route file github.yaml (route /hooks/github): the serve config defines the same route, which serve uses instead",
+  };
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig(
+        { ...tokenMode, webhookWarnings: [warning] },
+        "log",
+      )
+    ),
+  );
+  assertStringIncludes(output, "Webhook warnings:");
+  assertStringIncludes(output, `! ${warning.message}`);
+  assertStringIncludes(output, "Result: PASSED");
+  const json = JSON.parse(
+    captureLogs(() =>
+      renderServeCheckConfig(
+        { ...tokenMode, webhookWarnings: [warning] },
+        "json",
+      )
+    ),
+  );
+  assertEquals(json.webhookWarnings, [warning]);
+});
+
+Deno.test("renderServeCheckConfig: route file errors are shown in log and json", () => {
+  const error = {
+    file: "push.yaml",
+    route: "/hooks/push",
+    message:
+      "Refused webhook route file push.yaml (route /hooks/push): the secret must be a vault reference (@vault=<vault>:<key>); route files refuse literal, @env= and @file= secrets",
+  };
+  const data = { ...tokenMode, passed: false, webhookRouteFileErrors: [error] };
+  const output = stripAnsiCode(
+    captureLogs(() => renderServeCheckConfig(data, "log")),
+  );
+  assertStringIncludes(output, "Webhook route file errors:");
+  assertStringIncludes(output, `✗ ${error.message}`);
+  assertStringIncludes(
+    output,
+    "Result: FAILED (1 webhook route file(s) refused; swamp serve would start without them)",
+  );
+  const json = JSON.parse(
+    captureLogs(() => renderServeCheckConfig(data, "json")),
+  );
+  assertEquals(json.webhookRouteFileErrors, [error]);
+});
+
+Deno.test("renderServeCheckConfig: a refused routes directory is named in the result", () => {
+  const data = {
+    ...tokenMode,
+    passed: false,
+    webhookRoutesDirError:
+      "Webhook routes directory /r/extensions/routes is or sits inside /r/extensions, which holds extension code",
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderServeCheckConfig(data, "log")),
+  );
+  assertStringIncludes(output, "Webhook route file errors:");
+  assertStringIncludes(
+    output,
+    "✗ Webhook routes directory /r/extensions/routes",
+  );
+  assertStringIncludes(
+    output,
+    "Result: FAILED (webhook routes directory refused; swamp serve would start without them)",
+  );
+  const json = JSON.parse(
+    captureLogs(() => renderServeCheckConfig(data, "json")),
+  );
+  assertEquals(json.webhookRoutesDirError, data.webhookRoutesDirError);
+});

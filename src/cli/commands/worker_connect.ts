@@ -29,6 +29,7 @@ import {
   parseCommaSeparatedLabels,
   parseConcurrency,
   parseLabels,
+  resolveWorkerCacheDir,
   validateMaxDispatches,
   validateOrchestratorUrl,
 } from "./worker_shared.ts";
@@ -196,8 +197,10 @@ export const workerConnectCommand = new Command()
       : {};
     const labels = { ...envLabels, ...flagLabels };
 
-    const cacheDir = (options.cacheDir as string | undefined) ??
-      Deno.env.get("SWAMP_WORKER_CACHE_DIR");
+    const cacheDir = resolveWorkerCacheDir(
+      (options.cacheDir as string | undefined) ??
+        Deno.env.get("SWAMP_WORKER_CACHE_DIR"),
+    );
 
     const maxDispatchesRaw = (options.maxDispatches as number | undefined) ??
       (() => {

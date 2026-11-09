@@ -233,6 +233,31 @@ Deno.test("DataPlaneClient: bundle and asset fetch paths are fingerprint-keyed",
   ]);
 });
 
+Deno.test("DataPlaneClient: listAssets returns the executables and withheld assets, empty when the orchestrator sends none", async () => {
+  const withheld = [{
+    relPath: "bin/link",
+    field: "binaries",
+    reason: "a symlink",
+  }];
+  let body: Record<string, unknown> = {
+    files: ["bin/tool", "a.json"],
+    executables: ["bin/tool"],
+    withheld,
+  };
+  const { client } = clientWith(() => new Response(JSON.stringify(body)));
+  assertEquals(await client.listAssets("fp-1"), {
+    files: ["bin/tool", "a.json"],
+    executables: ["bin/tool"],
+    withheld,
+  });
+  body = { files: ["a.json"] };
+  assertEquals(await client.listAssets("fp-1"), {
+    files: ["a.json"],
+    executables: [],
+    withheld: [],
+  });
+});
+
 Deno.test("DataPlaneClient: artifact cache evicts oldest entries at capacity", async () => {
   let fetchCount = 0;
   const client = new DataPlaneClient({

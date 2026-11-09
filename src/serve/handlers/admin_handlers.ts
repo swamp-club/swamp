@@ -2571,6 +2571,7 @@ export async function handleServeReload(
         : undefined,
       workflowReloader: ctx.workflowReloader,
       webhookUpdater: ctx.webhookUpdater,
+      trustedCollectivesUpdater: ctx.trustedCollectivesUpdater,
       configPath: ctx.serveConfigPath,
     };
     const result = await performServeReload(
@@ -3219,6 +3220,7 @@ export function redactServeOptions(
       workflow: wh.workflow,
       scheme: wh.scheme ?? "github",
     })),
+    webhookRoutesDir: opts.webhookRoutesDir ?? null,
     maxConcurrentRuns: opts.maxConcurrentRuns ?? null,
     maxConcurrentWebhookRuns: opts.maxConcurrentWebhookRuns ?? null,
     maxRunsPerPrincipal: opts.maxRunsPerPrincipal ?? null,

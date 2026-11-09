@@ -67,7 +67,7 @@ export function resolveExtensionFile(
     throw markErrorPaths(
       new UserError(
         `Extension file not found: ${absPath}. Check that the file exists ` +
-          `on disk and matches the manifest's additionalFiles entry.`,
+          `on disk and matches the manifest's additionalFiles or binaries entry.`,
       ),
       [absPath],
     );

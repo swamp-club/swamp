@@ -71,6 +71,11 @@ export const DelegationTokensSchema = z.object({
   accessExpiresAt: z.string().datetime(),
   previousAccessHash: HASH.optional(),
   previousAccessExpiresAt: z.string().datetime().optional(),
+  // a third access token; an older build reads only the legacy pair
+  olderAccess: z.array(z.object({
+    hash: HASH,
+    expiresAt: z.string().datetime(),
+  })).max(1).optional(),
   refreshHash: HASH,
   generation: z.number().int().min(1),
 });

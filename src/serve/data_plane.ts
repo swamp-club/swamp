@@ -1092,12 +1092,17 @@ export class DataPlane {
       ) {
         return errorResponse(400, "Asset path escapes the bundle root");
       }
-      const allowed = bundle.additionalFiles;
-      if (!allowed || !allowed.includes(relPath)) {
+      if (
+        !bundle.additionalFiles?.includes(relPath) &&
+        !bundle.binaries?.includes(relPath)
+      ) {
         return errorResponse(
           404,
-          "Asset not declared in manifest additionalFiles",
+          "Asset not declared in manifest additionalFiles or binaries",
         );
+      }
+      if (bundle.assetHashes && !bundle.assetHashes.has(relPath)) {
+        return errorResponse(404, "Asset not shipped with this bundle");
       }
       return await this.#serveAssetFile(
         target,
@@ -1111,19 +1116,23 @@ export class DataPlane {
   }
 
   /**
-   * only files declared in additionalFiles and present on disk are listed, so
-   * undeclared repository content such as .git/ and .env is never exposed
+   * only declared files present on disk are listed, so undeclared repository
+   * content such as .git/ and .env is never exposed
    */
   #listDeclaredAssetFiles(
     bundle: import("./bundle_registry.ts").RegisteredBundle,
   ): Response {
-    const { filesRoot, additionalFiles, assetHashes } = bundle;
-    if (!filesRoot || !additionalFiles || additionalFiles.length === 0) {
-      return json({ files: [] });
+    const { filesRoot, assetHashes } = bundle;
+    const binaries = new Set(bundle.binaries);
+    const declared = new Set([...bundle.additionalFiles ?? [], ...binaries]);
+    const withheld = bundle.withheld ?? [];
+    if (!filesRoot || declared.size === 0) {
+      return json({ files: [], executables: [], withheld });
     }
     const root = resolve(filesRoot);
     const files: string[] = [];
-    for (const relPath of additionalFiles) {
+    const executables: string[] = [];
+    for (const relPath of declared) {
       // only the files the fingerprint hashed
       if (assetHashes && !assetHashes.has(relPath)) continue;
       const target = resolve(join(root, relPath));
@@ -1137,12 +1146,13 @@ export class DataPlane {
         const stat = Deno.lstatSync(target);
         if (stat.isFile) {
           files.push(relPath);
+          if (binaries.has(relPath)) executables.push(relPath);
         }
       } catch {
-        // File declared but missing on disk — skip silently.
+        // gone since dispatch hashed it: the worker cannot fetch it either
       }
     }
-    return json({ files });
+    return json({ files, executables, withheld });
   }
 
   async #serveAssetFile(

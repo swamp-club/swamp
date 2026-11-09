@@ -2471,7 +2471,10 @@ of `--fail-on`, a run that ends `failed` or `cancelled` always exits non-zero,
 whichever event reports it: a run whose record was already cancelled ends
 with a `completed` event carrying the `cancelled` status, and that must not
 read as success. A run cancelled because its model lease lapsed exits with
-`datastore_v3_lease_lapsed` (75 when nothing of the command landed).
+`datastore_v3_lease_lapsed` (75 when nothing of the command landed). An upload
+the lapse stopped mid-request reports the same code, not
+`datastore_v3_serve_unreachable`, and exits as serve being unreachable does (1
+once a step landed).
 
 **JUnit XML output (`--junit`):** `swamp workflow run --junit [--out <file>]`
 emits one `<testcase>` per assert step, with a `<failure>` element when false.
@@ -3518,7 +3521,7 @@ iteration evaluates its own guard:
 - name: read-plate
   forEach:
     item: well
-    in: ${{ range(1, 97) }}
+    in: ${{ ["A1", "A2", "A3"] }}
   guard: ${{ data.latest("plate-reader", self.well) }}
   task:
     modelName: plate-reader

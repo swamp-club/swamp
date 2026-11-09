@@ -608,6 +608,12 @@ export interface VersionUpgrade {
   ) => Record<string, unknown>;
 }
 
+/** binaries are written executable on a worker; additionalFiles are not */
+export interface DeclaredExtensionAssets {
+  additionalFiles: string[];
+  binaries: string[];
+}
+
 export interface ModelDefinition<
   TGlobalArgs extends z.ZodTypeAny = z.ZodTypeAny,
 > {
@@ -640,17 +646,18 @@ export interface ModelDefinition<
   bundleSourceFactory?: () => Promise<string>;
 
   /**
-   * root that additionalFiles entries resolve from at runtime; undefined for
-   * built-in types and source-loaded directories without a manifest.yaml
+   * root that additionalFiles and binaries entries resolve from at runtime;
+   * undefined for built-in types and source-loaded directories without a
+   * manifest.yaml
    */
   extensionFilesRoot?: string;
 
   /**
-   * reads the manifest's declared additionalFiles as they are now; only these
-   * ship to remote workers. Undefined for built-in types and directories
-   * without a manifest.yaml.
+   * reads the manifest's declared assets as they are now; only these ship to
+   * remote workers. Undefined for built-in types and directories without a
+   * manifest.yaml.
    */
-  readExtensionAdditionalFiles?: () => Promise<string[]>;
+  readExtensionDeclaredAssets?: () => Promise<DeclaredExtensionAssets>;
 
   /**
    * scoped name of the providing extension, set by the loader at registration;

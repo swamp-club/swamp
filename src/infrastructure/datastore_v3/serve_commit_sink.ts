@@ -62,6 +62,7 @@ import {
 import {
   ChunkNotCachedError,
   ServeChunksMissingError,
+  ServeCommitMayLandError,
   ServeStaleSeqError,
   ServeUnreachableError,
   ServeUpstreamDivergedError,
@@ -82,6 +83,12 @@ export const MAX_BATCH_CARRIED_BYTES = 64 * 1024 * 1024;
 export const MAX_RELEASE_CARRIED_BYTES = 1024 * 1024;
 
 export const MAX_CARRIED_CHUNKS = 1024;
+
+/**
+ * how many times one process uploads a commit's chunks that serve answers
+ * with a failure; past it the commit fails at once and stays in the outbox
+ */
+export const CARRIED_SEND_ATTEMPTS = 3;
 
 /**
  * How many times one flush builds a commit again on a moved head: other
@@ -193,6 +200,32 @@ export function createServeCommitSink(
     return chunks;
   };
 
+  const carriedFailures = new Map<
+    string,
+    { count: number; error: unknown }
+  >();
+  const exhaustedFailure = (commit: Commit): { error: unknown } | undefined => {
+    const failures = carriedFailures.get(commit.txnId);
+    return failures !== undefined && failures.count >= CARRIED_SEND_ATTEMPTS
+      ? { error: failures.error }
+      : undefined;
+  };
+  const noteCarriedFailure = (
+    commit: Commit,
+    chunks: readonly CommitChunk[],
+    error: unknown,
+  ): void => {
+    // only serve failing to store, never a refusal or one that clears on its own
+    if (
+      chunks.length === 0 || !(error instanceof ServeUpstreamError) ||
+      error.status < 500 || error instanceof ServeCommitMayLandError
+    ) {
+      return;
+    }
+    const count = (carriedFailures.get(commit.txnId)?.count ?? 0) + 1;
+    carriedFailures.set(commit.txnId, { count, error });
+  };
+
   const carried = async (
     commit: Commit,
     hashes: readonly string[],
@@ -298,6 +331,7 @@ export function createServeCommitSink(
     signal: AbortSignal,
   ): Promise<CommitStoreAppendResult> => {
     neverSent.delete(commit.txnId);
+    carriedFailures.delete(commit.txnId);
     if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
       const landed = commit.ops.flatMap((op) =>
         op.kind === "data-version"
@@ -344,6 +378,8 @@ export function createServeCommitSink(
     commit: Commit,
     leaseId: string | undefined,
   ): Promise<CommitStoreAppendResult> => {
+    const exhausted = exhaustedFailure(commit);
+    if (exhausted !== undefined) throw exhausted.error;
     const signal = options.signal();
     const envelope = envelopeOf(commit, leaseId);
     const refs = [...new Set(commit.chunkRefs())];
@@ -371,6 +407,7 @@ export function createServeCommitSink(
         );
       }
     } catch (error) {
+      noteCarriedFailure(commit, chunks, error);
       throw await refusedWith(commit, error, signal);
     }
     return await landedWith(commit, leaseId, reply, signal);
@@ -470,13 +507,18 @@ export function createServeCommitSink(
     release: string | undefined,
   ): Promise<void> => {
     if (waiting.length === 0) return;
-    // one commit and nothing to end goes on the single route
-    if (waiting.length === 1 && release === undefined) {
+    // one commit and nothing to end goes on the single route, as does one
+    // that has used up its uploads: alone, it fails without sending
+    if (
+      (waiting.length === 1 && release === undefined) ||
+      waiting.some((entry) => exhaustedFailure(entry.commit) !== undefined)
+    ) {
       await sendAlone(waiting);
       return;
     }
     const signal = options.signal();
     let batch: CommitBatchReply | undefined;
+    let sentChunks: CommitChunk[][] = [];
     let quieted: string | undefined;
     try {
       batch = await withSpan(
@@ -487,6 +529,7 @@ export function createServeCommitSink(
             waiting.map((entry) => entry.commit),
             signal,
           );
+          sentChunks = chunks;
           const carriedBytes = chunks.flat().reduce(
             (total, chunk) => total + chunk.bytes.byteLength,
             0,
@@ -526,7 +569,8 @@ export function createServeCommitSink(
       if (error instanceof ServeUnreachableError) {
         latchServeUnreachable(client.baseUrl, error);
       }
-      for (const entry of waiting) {
+      for (const [index, entry] of waiting.entries()) {
+        noteCarriedFailure(entry.commit, sentChunks[index] ?? [], error);
         if (mayHaveEnded) {
           noteCommandLanded(
             entry.commit.partition,
@@ -577,6 +621,7 @@ export function createServeCommitSink(
           );
         } else {
           const error = outcome.error;
+          noteCarriedFailure(entry.commit, sentChunks[index] ?? [], error);
           entry.resolve(
             await underLease(entry.commit, entry.lease, async () => {
               throw await refusedWith(entry.commit, error, signal);

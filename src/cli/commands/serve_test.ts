@@ -1194,6 +1194,11 @@ Deno.test("collectServeExtraArgs: forwards --max-concurrent-webhook-runs", () =>
   assertEquals(args, ["--max-concurrent-webhook-runs", "8"]);
 });
 
+Deno.test("collectServeExtraArgs: forwards --webhook-routes-dir", () => {
+  const args = collectServeExtraArgs({ webhookRoutesDir: "routes" });
+  assertEquals(args, ["--webhook-routes-dir", "routes"]);
+});
+
 Deno.test("collectServeExtraArgs: forwards --max-runs-per-principal", () => {
   const args = collectServeExtraArgs({ maxRunsPerPrincipal: 10 });
   assertEquals(args, ["--max-runs-per-principal", "10"]);
@@ -2356,4 +2361,44 @@ Deno.test("collectServeExtraArgs: forwards --address to the daemon (swamp-club#4
     collectServeExtraArgs({ address: "https://swamp.example.com" }),
     ["--address", "https://swamp.example.com"],
   );
+});
+
+Deno.test("serve check-config: a refused route file is named in the json report and fails the check", async () => {
+  const dir = await Deno.makeTempDir();
+  const previousExitCode = Deno.exitCode;
+  const lines: string[] = [];
+  const originalLog = console.log;
+  try {
+    await Deno.mkdir(join(dir, "webhook-routes"));
+    await Deno.writeTextFile(
+      join(dir, "webhook-routes", "push.yaml"),
+      "route: /hooks/push\nworkflow: deploy\nsecret: plain\n",
+    );
+    await Deno.writeTextFile(
+      join(dir, "webhook-routes", "deploy.yaml"),
+      'route: /deploy\nworkflow: deploy\nsecret: "@vault=v:k"\n',
+    );
+    Deno.exitCode = 0;
+    console.log = (...args: unknown[]) => lines.push(args.join(" "));
+    const { serveCommand } = await import("./serve.ts");
+    const { Command } = await import("@cliffy/command");
+    await new Command()
+      .globalOption("--json", "JSON output")
+      .globalOption("--repo-dir <dir:string>", "Repository directory")
+      .command("serve", serveCommand)
+      .parse(["serve", "check-config", "--repo-dir", dir, "--json"]);
+    console.log = originalLog;
+
+    const report = JSON.parse(lines.join("\n"));
+    assertEquals(report.passed, false);
+    assertEquals(
+      report.webhookRouteFileErrors.map((e: { file: string }) => e.file),
+      ["deploy.yaml", "push.yaml"],
+    );
+    assertEquals(Deno.exitCode, 1);
+  } finally {
+    console.log = originalLog;
+    Deno.exitCode = previousExitCode;
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

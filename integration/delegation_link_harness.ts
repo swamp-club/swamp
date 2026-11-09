@@ -25,12 +25,14 @@ import { DelegationDirectory } from "../src/domain/access/delegation_directory.t
 import { generateIntegrationCredential } from "../src/domain/access/integration_credential.ts";
 import type {
   IntegrationCredentialRecord,
+  IntegrationDirectory,
   IntegrationStanding,
 } from "../src/domain/access/integration_directory.ts";
 import type { DelegationCapability } from "../src/serve/delegation_capability_check.ts";
 import { DelegationLinkService } from "../src/serve/delegation_link_service.ts";
 import {
   type DelegationAuditRecord,
+  type DelegationRouteDeps,
   handleDelegationRequest,
   matchDelegationRoute,
 } from "../src/serve/delegation_routes.ts";
@@ -133,6 +135,9 @@ export interface Rig {
   pass: () => Promise<void>;
   audit: DelegationAuditRecord[];
   team: { capability: DelegationCapability };
+  serveClock: { offsetMs: number; now: () => number };
+  routeDeps: DelegationRouteDeps;
+  integrations: Pick<IntegrationDirectory, "credentialOf" | "standingOf">;
   post: (
     route: string,
     body: unknown,
@@ -145,6 +150,7 @@ export async function withRig(
   options: {
     requireEmailMatch?: boolean;
     admission?: TokenAdmissionChecker | null;
+    ceiling?: Ceiling;
   } = {},
 ): Promise<void> {
   resetRateLimitState();
@@ -162,7 +168,7 @@ export async function withRig(
       credentialOf: (id: string) => id === "slack-bot" ? record : undefined,
       standingOf: (id: string): IntegrationStanding =>
         id === "slack-bot"
-          ? { kind: "active", ceiling: CEILING }
+          ? { kind: "active", ceiling: options.ceiling ?? CEILING }
           : { kind: "unknown" },
     };
     const directory = new DelegationDirectory(repo.repoContext.unifiedDataRepo);
@@ -186,6 +192,20 @@ export async function withRig(
     });
     const audit: DelegationAuditRecord[] = [];
     const team = { capability: { ok: true } as DelegationCapability };
+    const serveClock = {
+      offsetMs: 0,
+      now: () => Date.now() + serveClock.offsetMs,
+    };
+    const routeDeps: DelegationRouteDeps = {
+      integrations,
+      directory,
+      store,
+      client: () => client,
+      capability: () => Promise.resolve(team.capability),
+      audit: (event) => audit.push(event),
+      admission: options.admission ?? null,
+      now: serveClock.now,
+    };
     let offsetMs = 0;
     const service = new DelegationLinkService({
       now: () => Date.now() + offsetMs,
@@ -214,15 +234,7 @@ export async function withRig(
         req,
         matchDelegationRoute(new URL(req.url).pathname)!,
         "127.0.0.1",
-        {
-          integrations,
-          directory,
-          store,
-          client: () => client,
-          capability: () => Promise.resolve(team.capability),
-          audit: (event) => audit.push(event),
-          admission: options.admission ?? null,
-        },
+        routeDeps,
       );
       return {
         status: response.status,
@@ -243,6 +255,9 @@ export async function withRig(
         },
         audit,
         team,
+        serveClock,
+        routeDeps,
+        integrations,
         post,
       });
     } finally {

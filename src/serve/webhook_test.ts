@@ -22,6 +22,7 @@ import {
   currentVaultAccess,
   RunVaultAccess,
   runWithVaultAccess,
+  VaultAccessDeniedError,
 } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
@@ -43,9 +44,11 @@ import {
   resolveSecret,
   RUN_ID_HEADER,
   type WebhookEndpoint,
+  WebhookEnvironmentError,
   type WebhookEvent,
   WebhookService,
 } from "./webhook.ts";
+import { SecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 import { hmacSha256Hex } from "./webhook_verifiers.ts";
 import type { VaultSecretResolver } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -58,6 +61,7 @@ import type { RunTrackerStore } from "../infrastructure/persistence/run_tracker_
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
+import type { WebhookTypeOrigin } from "../domain/webhooks/webhook_type_registry.ts";
 
 await initializeLogging({});
 
@@ -400,6 +404,92 @@ Deno.test("resolveSecret: throws for @vault= when vault get fails", async () => 
   );
 });
 
+function failingVault(
+  error: unknown,
+  vaultNames?: string[],
+): VaultSecretResolver {
+  return {
+    get: () => Promise.reject(error),
+    ...(vaultNames !== undefined ? { getVaultNames: () => vaultNames } : {}),
+  };
+}
+
+Deno.test("resolveSecret: a configured vault that cannot answer is an environment failure", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=hooks:key",
+        failingVault(new Error("backend timed out"), ["hooks"]),
+      ),
+    WebhookEnvironmentError,
+    "could not be resolved from vault 'hooks', key 'key'",
+  );
+  assertStringIncludes(error.message, "backend timed out");
+});
+
+Deno.test("resolveSecret: a provider's own UserError from a configured vault is an environment failure", async () => {
+  await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=hooks:key",
+        failingVault(new UserError("op CLI not signed in"), ["hooks"]),
+      ),
+    WebhookEnvironmentError,
+    "op CLI not signed in",
+  );
+});
+
+Deno.test("resolveSecret: a missing key in a reachable vault is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=hooks:key",
+        failingVault(new SecretNotFoundError("hooks", "key"), ["hooks"]),
+      ),
+    SecretNotFoundError,
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+});
+
+Deno.test("resolveSecret: an unconfigured vault is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=missing:key",
+        failingVault(new Error("Vault 'missing' not found"), ["hooks"]),
+      ),
+    UserError,
+    "could not be resolved from vault 'missing'",
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+});
+
+Deno.test("resolveSecret: a refused vault read is a refusal, not an outage", async () => {
+  const denied = new VaultAccessDeniedError({
+    vaultName: "hooks",
+    action: "read",
+    reason: "no grant allows it",
+  });
+  const error = await assertRejects(
+    () => resolveSecret("@vault=hooks:key", failingVault(denied, ["hooks"])),
+    VaultAccessDeniedError,
+  );
+  assertEquals(error, denied);
+});
+
+Deno.test("resolveSecret: an empty value from a reachable vault is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret("@vault=hooks:key", {
+        get: () => Promise.resolve(""),
+        getVaultNames: () => ["hooks"],
+      }),
+    UserError,
+    "returned an empty value",
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+});
+
 Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", async () => {
   await withMockedEnv(
     { TEST_WH_SECRET_LEGACY_758: "resolved-secret" },
@@ -683,6 +773,7 @@ const TOKEN_HEADER = "x-test-secret-token";
 function registerExtension(
   handler: Partial<WebhookHandler>,
   configSchema?: z.ZodTypeAny,
+  origin: WebhookTypeOrigin | null = { kind: "local" },
 ): ExtensionWebhookScheme {
   const type: ExtensionWebhookScheme = `@test/hook-${crypto.randomUUID()}`;
   webhookTypeRegistry.register({
@@ -690,6 +781,7 @@ function registerExtension(
     name: "Test hook",
     description: "Test webhook extension",
     configSchema,
+    ...(origin ? { origin } : {}),
     createHandler: () => ({
       signatureHeader: TOKEN_HEADER,
       requiredHeaders: [TOKEN_HEADER],
@@ -704,6 +796,7 @@ function extensionService(
   scheme: ExtensionWebhookScheme,
   acceptsRuns?: () => boolean,
   leaderLink?: LeaderLink,
+  trustedCollectives?: () => readonly string[],
 ): {
   service: WebhookService;
   pendingRuns: unknown[];
@@ -712,6 +805,7 @@ function extensionService(
   const service = new WebhookService({
     ...(acceptsRuns !== undefined ? { acceptsRuns } : {}),
     ...(leaderLink !== undefined ? { leaderLink } : {}),
+    ...(trustedCollectives !== undefined ? { trustedCollectives } : {}),
     repoDir: "/tmp/fake",
     syncGate: undefined,
     repoContext: {} as unknown as RepositoryContext,
@@ -1024,6 +1118,7 @@ Deno.test("resolveExtensionWebhookEndpoints: applies the type's configSchema", a
   const [ep] = await resolveExtensionWebhookEndpoints(
     [extensionEndpoint(type, {})],
     () => Promise.resolve(true),
+    [],
   );
   assertEquals(ep.verifier, { scheme: type, config: { header: "x-default" } });
 });
@@ -1035,6 +1130,7 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects invalid config", async () =
       resolveExtensionWebhookEndpoints(
         [extensionEndpoint(type, { header: 1 })],
         () => Promise.resolve(true),
+        [],
       ),
     UserError,
     "Invalid config for webhook /hooks/ext",
@@ -1047,6 +1143,7 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects an unresolvable type", asyn
       resolveExtensionWebhookEndpoints(
         [extensionEndpoint("@test/nope", {})],
         () => Promise.resolve(false),
+        [],
       ),
     UserError,
     "no installed extension provides that webhook type",
@@ -1055,13 +1152,166 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects an unresolvable type", asyn
   assertStringIncludes(error.message, "swamp extension search");
 });
 
+Deno.test("resolveExtensionWebhookEndpoints: a type lookup that throws is an environment failure", async () => {
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint("@test/flaky", {})],
+        () => Promise.reject(new Error("registry unreachable")),
+        [],
+      ),
+    WebhookEnvironmentError,
+    "registry unreachable",
+  );
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: an uninstalled type is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint("@test/nope", {})],
+        () => Promise.resolve(false),
+        [],
+      ),
+    UserError,
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+});
+
 Deno.test("resolveExtensionWebhookEndpoints: leaves built-in endpoints untouched", async () => {
   const builtin = await parseWebhookFlag("/hooks/gh:deploy:secret");
   const resolved = await resolveExtensionWebhookEndpoints(
     [builtin],
     () => Promise.reject(new Error("should not resolve")),
+    [],
   );
   assertEquals(resolved, [builtin]);
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: refuses a pulled type from an untrusted collective", async () => {
+  const type = registerExtension({}, undefined, {
+    kind: "pulled",
+    extensionName: "@test/hooks",
+  });
+  const error = await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint(type, {})],
+        () => Promise.resolve(true),
+        ["swamp"],
+      ),
+    UserError,
+  );
+  assertStringIncludes(error.message, "/hooks/ext");
+  assertStringIncludes(error.message, type);
+  assertStringIncludes(error.message, "collective 'test'");
+  assertStringIncludes(error.message, "swamp extension trust add test");
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: accepts a pulled type once its collective is trusted", async () => {
+  const type = registerExtension({}, undefined, {
+    kind: "pulled",
+    extensionName: "@test/hooks",
+  });
+  const [ep] = await resolveExtensionWebhookEndpoints(
+    [extensionEndpoint(type, {})],
+    () => Promise.resolve(true),
+    ["swamp", "TEST"],
+  );
+  assertEquals(ep.verifier.scheme, type);
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: refuses a pulled type whose owning extension is from an untrusted collective", async () => {
+  const type = registerExtension({}, undefined, {
+    kind: "pulled",
+    extensionName: "@other/hooks",
+  });
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint(type, {})],
+        () => Promise.resolve(true),
+        ["test"],
+      ),
+    UserError,
+    "collective 'other'",
+  );
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: refuses a type of unknown origin from an untrusted collective", async () => {
+  const type = registerExtension({}, undefined, null);
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint(type, {})],
+        () => Promise.resolve(true),
+        [],
+      ),
+    UserError,
+    "collective 'test'",
+  );
+});
+
+Deno.test("handleRequest: a pulled type from an untrusted collective fails closed before verifying", async () => {
+  let verified = 0;
+  const type = registerExtension(
+    {
+      verify: () => {
+        verified++;
+        return true;
+      },
+    },
+    undefined,
+    { kind: "pulled", extensionName: "@test/hooks" },
+  );
+  const { service, pendingRuns } = extensionService(
+    type,
+    undefined,
+    undefined,
+    () => ["swamp"],
+  );
+  const events: WebhookEvent[] = [];
+  service.setEventHandler((e) => events.push(e));
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(res?.status, 500);
+  assertEquals(await res!.json(), { error: "Internal server error" });
+  assertEquals(pendingRuns.length, 0);
+  assertEquals(verified, 0);
+  const rejected = events.find((e) => e.kind === "webhook_rejected");
+  assertStringIncludes(
+    rejected && "reason" in rejected ? rejected.reason : "",
+    "untrusted collective test",
+  );
+});
+
+Deno.test("handleRequest: a route stops serving once its collective leaves the trust list", async () => {
+  let verified = 0;
+  const type = registerExtension(
+    {
+      verify: (_body, headers, secret) => {
+        verified++;
+        return headers.get(TOKEN_HEADER) === secret;
+      },
+    },
+    undefined,
+    { kind: "pulled", extensionName: "@test/hooks" },
+  );
+  let trusted: readonly string[] = ["swamp", "test"];
+  const { service, pendingRuns } = extensionService(
+    type,
+    undefined,
+    undefined,
+    () => trusted,
+  );
+  const first = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(first?.status, 200);
+  assertEquals(pendingRuns.length, 1);
+
+  trusted = ["swamp"];
+  const second = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(second?.status, 500);
+  assertEquals(pendingRuns.length, 1);
+  assertEquals(verified, 1);
 });
 
 Deno.test("updateEndpoints: swaps active endpoints and returns change count", async () => {
@@ -1083,6 +1333,24 @@ Deno.test("updateEndpoints: swaps active endpoints and returns change count", as
   assertEquals(changed, 2);
   assertEquals(service.listEndpoints().length, 1);
   assertEquals(service.listEndpoints()[0].route, "/hooks/b");
+});
+
+Deno.test("currentEndpoints: returns the table the last update set", async () => {
+  const ep1 = await parseWebhookFlag("/hooks/a:wf-a:secret-a");
+  const ep2 = await parseWebhookFlag("/hooks/b:wf-b:secret-b");
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints: [ep1],
+  });
+  assertEquals(service.currentEndpoints(), [ep1]);
+
+  service.updateEndpoints([ep2]);
+
+  assertEquals(service.currentEndpoints(), [ep2]);
+  assertEquals(service.currentEndpoints()[0].secret, "secret-b");
 });
 
 Deno.test("updateEndpoints: returns 0 when endpoints are unchanged", async () => {
@@ -2257,12 +2525,38 @@ Deno.test("WebhookService: a service built with no routes passes POSTs through u
   assertEquals(response?.status, 200);
 });
 
-Deno.test("WebhookService.listEndpoints: reports where the routes came from", async () => {
-  const fromConfig = (await triggerService()).service;
-  const fromFlags = (await triggerService({ routeSource: "flag" })).service;
+Deno.test("WebhookService.listEndpoints: reports where each route came from", async () => {
+  const base = await parseWebhookFlag("/hooks/gh:deploy:secret");
+  const { service } = await triggerService({
+    endpoints: [
+      base,
+      { ...base, route: "/hooks/flag", source: "flag" },
+      { ...base, route: "/hooks/file", source: "file", file: "file.yaml" },
+    ],
+  });
 
-  assertEquals(fromConfig.listEndpoints().map((e) => e.source), ["config"]);
-  assertEquals(fromFlags.listEndpoints().map((e) => e.source), ["flag"]);
-  await fromConfig.stop();
-  await fromFlags.stop();
+  assertEquals(
+    service.listEndpoints().map((e) => [e.route, e.source, e.file]),
+    [
+      ["/hooks/gh", "config", undefined],
+      ["/hooks/flag", "flag", undefined],
+      ["/hooks/file", "file", "file.yaml"],
+    ],
+  );
+  await service.stop();
+});
+
+Deno.test("WebhookService.updateEndpoints: a route whose source alone changed counts as updated", async () => {
+  const base = await parseWebhookFlag("/hooks/gh:deploy:secret");
+  const { service } = await triggerService({
+    endpoints: [{ ...base, source: "file", file: "gh.yaml" }],
+  });
+
+  assertEquals(
+    service.updateEndpoints([{ ...base, source: "file", file: "gh.yaml" }]),
+    0,
+  );
+  assertEquals(service.updateEndpoints([base]), 1);
+  assertEquals(service.updateEndpoints([{ ...base, source: "config" }]), 0);
+  await service.stop();
 });

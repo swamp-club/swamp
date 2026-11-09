@@ -37,6 +37,7 @@ import {
   MAX_DISPATCH_SECRET_LOADS,
   type QueryDataParams,
   type ReadOutputParams,
+  type WithheldAsset,
   WORKER_OUTPUTS_PATH,
   WORKER_QUERY_PATH,
 } from "../domain/remote/protocol.ts";
@@ -135,6 +136,13 @@ function combineSignals(
     return undefined;
   }
   return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+}
+
+/** executables is the subset of files declared in the manifest's binaries */
+export interface BundleAssetListing {
+  files: string[];
+  executables: string[];
+  withheld: WithheldAsset[];
 }
 
 export class DataPlaneClient {
@@ -512,14 +520,22 @@ export class DataPlaneClient {
   async listAssets(
     fingerprint: string,
     signal?: AbortSignal,
-  ): Promise<string[]> {
+  ): Promise<BundleAssetListing> {
     const response = await this.#request(
       "GET",
       `/bundle/${encodeURIComponent(fingerprint)}/files`,
       { signal },
     );
-    const body = await response.json() as { files: string[] };
-    return body.files;
+    const body = await response.json() as {
+      files: string[];
+      executables?: string[];
+      withheld?: WithheldAsset[];
+    };
+    return {
+      files: body.files,
+      executables: body.executables ?? [],
+      withheld: body.withheld ?? [],
+    };
   }
 }
 
