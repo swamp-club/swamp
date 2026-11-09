@@ -30,7 +30,10 @@ import {
   BlobRef,
   type BlobRefJSON,
 } from "../../domain/datastore_v3/blob_ref.ts";
-import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projection.ts";
+import type {
+  LiveDataVersion,
+  LiveVersionChanges,
+} from "../../domain/datastore_v3/catalog_projection.ts";
 import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
 import type { CompactedBaseEntry } from "../../domain/datastore_v3/commit_store.ts";
 import {
@@ -340,7 +343,7 @@ export interface AppliedCommit {
    */
   readonly cursor?: number;
   readonly records: ReadonlyMap<string, AppliedRecord | null>;
-  readonly live: ReadonlyMap<string, readonly LiveDataVersion[]>;
+  readonly versions: ReadonlyMap<string, LiveVersionChanges>;
   readonly files?: ReadonlyMap<string, FileOwnership>;
   /**
    * keys whose files were written or removed without a sync, and the boot;
@@ -373,9 +376,9 @@ export class ReadModelState {
   readonly #selectRecord: StatementSync;
   readonly #selectAnyRecordIn: StatementSync;
   readonly #selectBlobs: StatementSync;
-  readonly #selectVersions: StatementSync;
-  readonly #deleteVersions: StatementSync;
-  readonly #insertVersion: StatementSync;
+  readonly #selectTopVersions: StatementSync;
+  readonly #deleteVersion: StatementSync;
+  readonly #upsertVersion: StatementSync;
   readonly #selectOwnership: StatementSync;
   readonly #upsertOwnership: StatementSync;
   readonly #insertUnsynced: StatementSync;
@@ -430,14 +433,15 @@ export class ReadModelState {
     this.#selectBlobs = db.prepare(
       "SELECT blob FROM live_records WHERE namespace = ? AND blob IS NOT NULL",
     );
-    this.#selectVersions = db.prepare(
-      "SELECT metadata FROM data_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    this.#selectTopVersions = db.prepare(
+      "SELECT version, metadata FROM data_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version DESC LIMIT ?",
     );
-    this.#deleteVersions = db.prepare(
-      "DELETE FROM data_versions WHERE namespace = ? AND partition = ? AND name = ?",
+    this.#deleteVersion = db.prepare(
+      "DELETE FROM data_versions WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
     );
-    this.#insertVersion = db.prepare(
-      "INSERT INTO data_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+    this.#upsertVersion = db.prepare(
+      "INSERT INTO data_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?) " +
+        "ON CONFLICT (namespace, partition, name, version) DO UPDATE SET metadata = excluded.metadata",
     );
     this.#selectOwnership = db.prepare(
       "SELECT owner, mark, present FROM materialised_keys WHERE namespace = ? AND record_key = ?",
@@ -597,18 +601,30 @@ export class ReadModelState {
     return row?.applied_seq ?? 0;
   }
 
-  liveVersions(
+  /**
+   * reads at most one row more than it skips, so the cost is the commit's,
+   * not the name's history
+   */
+  greatestLiveVersion(
     namespace: string,
     partition: string,
     name: string,
-  ): LiveDataVersion[] {
+    excluding: ReadonlySet<number>,
+  ): { found: LiveDataVersion | undefined; rowsRead: number } {
     this.#requireOpen();
-    return (this.#selectVersions.all(namespace, partition, name) as {
-      metadata: string;
-    }[]).map((row) => {
-      const metadata = DataMetadataSchema.parse(JSON.parse(row.metadata));
-      return { version: metadata.version, metadata };
-    });
+    const rows = this.#selectTopVersions.all(
+      namespace,
+      partition,
+      name,
+      excluding.size + 1,
+    ) as { version: number; metadata: string }[];
+    const row = rows.find((r) => !excluding.has(r.version));
+    if (row === undefined) return { found: undefined, rowsRead: rows.length };
+    const metadata = DataMetadataSchema.parse(JSON.parse(row.metadata));
+    return {
+      found: { version: metadata.version, metadata },
+      rowsRead: rows.length,
+    };
   }
 
   fileOwnership(
@@ -794,10 +810,17 @@ export class ReadModelState {
             );
           }
         }
-        for (const [name, versions] of commit.live) {
-          this.#deleteVersions.run(commit.namespace, commit.partition, name);
-          for (const { version, metadata } of versions) {
-            this.#insertVersion.run(
+        for (const [name, changes] of commit.versions) {
+          for (const version of changes.removed) {
+            this.#deleteVersion.run(
+              commit.namespace,
+              commit.partition,
+              name,
+              version,
+            );
+          }
+          for (const { version, metadata } of changes.put) {
+            this.#upsertVersion.run(
               commit.namespace,
               commit.partition,
               name,

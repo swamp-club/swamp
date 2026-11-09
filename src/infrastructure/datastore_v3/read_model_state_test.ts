@@ -139,7 +139,7 @@ Deno.test("ReadModelState.liveRecord: records who wrote each record, and a schem
         partition: "p",
         seq,
         records: new Map([[key, { sha256: "a".repeat(64), writer }]]),
-        live: new Map(),
+        versions: new Map(),
       });
     try {
       apply(1, "serve.yaml", "");
@@ -179,7 +179,7 @@ Deno.test("ReadModelState.presentKeysFoldedTo: keeps in step with applied files,
         partition: "p",
         seq: ++seq,
         records: new Map(),
-        live: new Map(),
+        versions: new Map(),
         files: new Map(
           files.map((
             [key, present],

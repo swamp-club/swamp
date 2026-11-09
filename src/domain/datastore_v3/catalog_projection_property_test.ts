@@ -21,7 +21,9 @@ import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   type CatalogAction,
+  greatestLiveIn,
   isRenameMarker,
+  liveAfter,
   type LiveDataVersion,
   projectCatalog,
 } from "./catalog_projection.ts";
@@ -127,21 +129,21 @@ Deno.test("projectCatalog: the catalog tracks each name's top live version acros
             touched.push(step);
             const effect = projectCatalog(
               stepOps,
-              (name) => working.get(name) ?? [],
+              greatestLiveIn((name) => working.get(name) ?? []),
             );
-            for (const [name, versions] of effect.live) {
-              working.set(name, [...versions]);
+            for (const [name, changes] of effect.versions) {
+              working.set(name, liveAfter(working.get(name) ?? [], changes));
             }
           }
           if (ops.length === 0) continue;
 
           const projection = projectCatalog(
             ops,
-            (name) => live.get(name) ?? [],
+            greatestLiveIn((name) => live.get(name) ?? []),
           );
           for (const action of projection.actions) catalog.apply(action);
-          for (const [name, versions] of projection.live) {
-            live.set(name, [...versions]);
+          for (const [name, changes] of projection.versions) {
+            live.set(name, liveAfter(live.get(name) ?? [], changes));
           }
           for (const step of touched) {
             if (step.kind === "expire") expired.add(step.name);
@@ -241,3 +243,195 @@ function opsFor(
       })];
   }
 }
+
+/** the oracle: folds every touched name's full live set */
+function fullSetFold(
+  ops: readonly Op[],
+  liveBefore: (name: string) => readonly LiveDataVersion[],
+): {
+  actions: CatalogAction[];
+  live: Map<string, LiveDataVersion[]>;
+} {
+  const live = new Map<string, Map<number, LiveDataVersion>>();
+  const liveOf = (name: string) => {
+    let versions = live.get(name);
+    if (versions === undefined) {
+      versions = new Map(liveBefore(name).map((v) => [v.version, v]));
+      live.set(name, versions);
+    }
+    return versions;
+  };
+  const actions: CatalogAction[] = [];
+  const reconcile = new Set<string>();
+  for (const op of ops) {
+    if (op.kind === "data-version") {
+      const { metadata } = op;
+      liveOf(metadata.name).set(metadata.version, {
+        version: metadata.version,
+        metadata,
+      });
+      if (isRenameMarker(metadata)) {
+        actions.push(
+          { kind: "remove-name", name: metadata.name },
+          {
+            kind: "forward",
+            name: metadata.name,
+            to: metadata.renamedTo as string,
+          },
+        );
+      } else {
+        actions.push({ kind: "upsert-version", metadata });
+      }
+    } else if (op.kind === "tombstone") {
+      const intent = op.intent;
+      if (intent.kind !== "data.delete" && intent.kind !== "data.gc") continue;
+      if (intent.version !== undefined) {
+        liveOf(intent.name).delete(intent.version);
+        actions.push({
+          kind: "remove-version",
+          name: intent.name,
+          version: intent.version,
+        });
+        reconcile.add(intent.name);
+      } else if (intent.kind === "data.gc") {
+        reconcile.delete(intent.name);
+        actions.push(
+          { kind: "remove-name", name: intent.name },
+          { kind: "end-forward", name: intent.name },
+        );
+      }
+    }
+  }
+  for (const name of reconcile) {
+    let top: LiveDataVersion | undefined;
+    for (const v of liveOf(name).values()) {
+      if (top === undefined || v.version > top.version) top = v;
+    }
+    if (top === undefined) {
+      actions.push({ kind: "remove-name", name }, {
+        kind: "end-forward",
+        name,
+      });
+    } else if (isRenameMarker(top.metadata)) {
+      actions.push(
+        { kind: "remove-name", name },
+        { kind: "forward", name, to: top.metadata.renamedTo as string },
+      );
+    } else {
+      actions.push({ kind: "upsert-version", metadata: top.metadata });
+    }
+  }
+  return {
+    actions,
+    live: new Map(
+      [...live].map(([name, versions]) => [
+        name,
+        [...versions.values()].sort((a, b) => a.version - b.version),
+      ]),
+    ),
+  };
+}
+
+function versionAt(
+  name: string,
+  version: number,
+  renamedTo: string | undefined,
+): LiveDataVersion {
+  const op = dataVersionOp({
+    key: dataKey(name, version),
+    metadata: renamedTo === undefined ? metadata(name, version) : {
+      ...(metadata(name, version) as Record<string, unknown>),
+      lifecycle: "deleted",
+      renamedTo,
+    },
+  });
+  return { version, metadata: op.metadata };
+}
+
+const arbMarker = fc.option(fc.constantFrom("c", "d"), { freq: 4 });
+
+const arbStored = fc.record({
+  a: fc.uniqueArray(fc.tuple(fc.integer({ min: 1, max: 8 }), arbMarker), {
+    selector: ([v]) => v,
+    maxLength: 8,
+  }),
+  b: fc.uniqueArray(fc.tuple(fc.integer({ min: 1, max: 8 }), arbMarker), {
+    selector: ([v]) => v,
+    maxLength: 8,
+  }),
+});
+
+const arbOp = fc.oneof(
+  fc.record({
+    kind: fc.constant("put" as const),
+    name: fc.constantFrom(...NAMES),
+    version: fc.integer({ min: 1, max: 9 }),
+    marker: arbMarker,
+  }),
+  fc.record({
+    kind: fc.constantFrom("delete" as const, "gc" as const),
+    name: fc.constantFrom(...NAMES),
+    version: fc.option(fc.integer({ min: 1, max: 9 }), { freq: 4 }),
+  }),
+);
+
+Deno.test("projectCatalog: version changes give the same actions and live sets as the full-set fold", () => {
+  fc.assert(
+    fc.property(
+      arbStored,
+      fc.array(arbOp, { maxLength: 8 }),
+      (stored, steps) => {
+        const before = new Map<string, LiveDataVersion[]>(
+          NAMES.map((name) => [
+            name,
+            stored[name]
+              .map(([v, to]) => versionAt(name, v, to ?? undefined))
+              .sort((x, y) => x.version - y.version),
+          ]),
+        );
+        const ops: Op[] = steps.map((step) =>
+          step.kind === "put"
+            ? dataVersionOp({
+              key: dataKey(step.name, step.version),
+              metadata: versionAt(
+                step.name,
+                step.version,
+                step.marker ?? undefined,
+              ).metadata,
+            })
+            : tombstoneOp({
+              intent: modelIntent(
+                step.version === null
+                  ? { kind: `data.${step.kind}`, name: step.name }
+                  : {
+                    kind: `data.${step.kind}`,
+                    name: step.name,
+                    version: step.version,
+                  },
+              ),
+              key: step.version === null
+                ? RecordKey.create(`data/m/${step.name}/latest`)
+                : dataKey(step.name, step.version),
+            })
+        );
+        const versionsOf = (name: string) => before.get(name) ?? [];
+        const expected = fullSetFold(ops, versionsOf);
+        const projection = projectCatalog(ops, greatestLiveIn(versionsOf));
+        assertEquals(projection.actions, expected.actions);
+        assertEquals(
+          new Map(
+            [...projection.versions].map((
+              [name, changes],
+            ) => [name, liveAfter(versionsOf(name), changes)]),
+          ),
+          expected.live,
+        );
+        for (const changes of projection.versions.values()) {
+          const put = new Set(changes.put.map((v) => v.version));
+          assert(changes.removed.every((v) => !put.has(v)));
+        }
+      },
+    ),
+    { numRuns: 1000 },
+  );
+});

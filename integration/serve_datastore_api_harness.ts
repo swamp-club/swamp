@@ -419,14 +419,14 @@ export async function saveBody(
   server: Server,
   version: number,
   expectedSeq: number,
-  options: { lease?: string; txnId?: string } = {},
+  options: { lease?: string; txnId?: string; name?: string } = {},
 ): Promise<Uint8Array> {
   const content = new TextEncoder().encode(`content of version ${version}`);
   return commitBody({
     expectedSeq,
     txnId: options.txnId ?? crypto.randomUUID(),
     ...(options.lease === undefined ? {} : { lease: options.lease }),
-    ops: await blobSaveOps(server, "vpc", version, content),
+    ops: await blobSaveOps(server, options.name ?? "vpc", version, content),
     chunks: [{ sha256: await sha256Hex(content), size: content.length }],
   }, [content]);
 }
@@ -436,7 +436,7 @@ export async function save(
   token: string,
   version: number,
   expectedSeq: number,
-  options: { lease?: string } = {},
+  options: { lease?: string; name?: string } = {},
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   return await post(
     partitionPath(server),

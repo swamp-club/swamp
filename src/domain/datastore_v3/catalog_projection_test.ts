@@ -19,7 +19,14 @@
 
 import { assertEquals } from "@std/assert";
 import type { DataMetadata } from "../data/data_metadata.ts";
-import { type LiveDataVersion, projectCatalog } from "./catalog_projection.ts";
+import {
+  type CatalogAction,
+  greatestLiveIn,
+  liveAfter,
+  type LiveDataVersion,
+  projectCatalog,
+} from "./catalog_projection.ts";
+import type { Op } from "./op.ts";
 import { dataVersionOp, leaseOp, tombstoneOp } from "./op.ts";
 import { RecordKey } from "./record_key.ts";
 import {
@@ -81,6 +88,25 @@ function gcOp(name: string, version?: number) {
 
 const none = () => [];
 
+/** the projection, with each touched name's live set as it is after it */
+function project(
+  ops: readonly Op[],
+  versionsOf: (name: string) => readonly LiveDataVersion[],
+): {
+  actions: readonly CatalogAction[];
+  live: Map<string, LiveDataVersion[]>;
+} {
+  const projection = projectCatalog(ops, greatestLiveIn(versionsOf));
+  return {
+    actions: projection.actions,
+    live: new Map(
+      [...projection.versions].map((
+        [name, changes],
+      ) => [name, liveAfter(versionsOf(name), changes)]),
+    ),
+  };
+}
+
 function versions(
   map: ReadonlyMap<string, readonly LiveDataVersion[]>,
 ): Record<string, number[]> {
@@ -94,7 +120,7 @@ function meta(version: number, name = "a"): DataMetadata {
 }
 
 Deno.test("projectCatalog: a save upserts its version's row", async () => {
-  const projection = projectCatalog(
+  const projection = project(
     [await savePut("a", 1), versionOp("a", 1)],
     none,
   );
@@ -109,7 +135,7 @@ Deno.test("projectCatalog: an append replaces its live version's row, as v2 appe
     key: dataKey("a", 1),
     metadata: { ...(metadata("a", 1) as Record<string, unknown>), size: 42 },
   });
-  const projection = projectCatalog(
+  const projection = project(
     [
       await savePut("a", 1, "a@1 and more", undefined, "data.append"),
       appended,
@@ -124,7 +150,7 @@ Deno.test("projectCatalog: an append replaces its live version's row, as v2 appe
 });
 
 Deno.test("projectCatalog: a versioned delete upserts the new latest, as v2 delete(version) does", () => {
-  const projection = projectCatalog(
+  const projection = project(
     [deleteOp("a", 3)],
     () => [live("a", 1), live("a", 2), live("a", 3)],
   );
@@ -136,7 +162,7 @@ Deno.test("projectCatalog: a versioned delete upserts the new latest, as v2 dele
 });
 
 Deno.test("projectCatalog: deleting every version removes the name and its forward", () => {
-  const projection = projectCatalog(
+  const projection = project(
     [deleteOp("a", 1), deleteOp("a", 2), deleteOp("a")],
     () => [live("a", 1), live("a", 2)],
   );
@@ -150,7 +176,7 @@ Deno.test("projectCatalog: deleting every version removes the name and its forwa
 });
 
 Deno.test("projectCatalog: a rename marker removes the old name and forwards it", async () => {
-  const projection = projectCatalog(
+  const projection = project(
     [
       await savePut("b", 1),
       versionOp("b", 1),
@@ -167,7 +193,7 @@ Deno.test("projectCatalog: a rename marker removes the old name and forwards it"
 });
 
 Deno.test("projectCatalog: a delete that leaves a rename marker on top keeps the name forwarded", () => {
-  const projection = projectCatalog(
+  const projection = project(
     [deleteOp("a", 4)],
     () => [live("a", 1), liveMarker("a", 2, "b"), live("a", 4)],
   );
@@ -181,7 +207,7 @@ Deno.test("projectCatalog: a delete that leaves a rename marker on top keeps the
 Deno.test("projectCatalog: a delete that exposes a pre-rename version restores its row", () => {
   // a@1 saved, renamed (marker a@2), a@3 saved, then a@3 and the marker
   // deleted: v2 re-upserts a@1, the row the rename removed.
-  const projection = projectCatalog(
+  const projection = project(
     [deleteOp("a", 3), deleteOp("a", 2)],
     () => [live("a", 1), liveMarker("a", 2, "b"), live("a", 3)],
   );
@@ -193,7 +219,7 @@ Deno.test("projectCatalog: a delete that exposes a pre-rename version restores i
 });
 
 Deno.test("projectCatalog: gc removes old versions and upserts the latest", () => {
-  const projection = projectCatalog(
+  const projection = project(
     [gcOp("a", 1), gcOp("a", 2)],
     () => [live("a", 1), live("a", 2), live("a", 3)],
   );
@@ -205,7 +231,7 @@ Deno.test("projectCatalog: gc removes old versions and upserts the latest", () =
 });
 
 Deno.test("projectCatalog: a version-less gc expires the name; its versions stay live", () => {
-  const projection = projectCatalog([gcOp("a")], () => [live("a", 1)]);
+  const projection = project([gcOp("a")], () => [live("a", 1)]);
   assertEquals(projection.actions, [
     { kind: "remove-name", name: "a" },
     { kind: "end-forward", name: "a" },
@@ -214,13 +240,13 @@ Deno.test("projectCatalog: a version-less gc expires the name; its versions stay
 });
 
 Deno.test("projectCatalog: a version-less delete alone changes nothing", () => {
-  const projection = projectCatalog([deleteOp("a")], () => [live("a", 1)]);
+  const projection = project([deleteOp("a")], () => [live("a", 1)]);
   assertEquals(projection.actions, []);
   assertEquals(versions(projection.live), {});
 });
 
 Deno.test("projectCatalog: a lease and a plain put change nothing", async () => {
-  const projection = projectCatalog(
+  const projection = project(
     [leaseOp({ holder: "serve", fence: 1 }), await savePut("a", 1)],
     none,
   );
@@ -229,7 +255,7 @@ Deno.test("projectCatalog: a lease and a plain put change nothing", async () => 
 });
 
 Deno.test("projectCatalog: an expiry after a versioned gc in one commit stays expired", () => {
-  const projection = projectCatalog(
+  const projection = project(
     [gcOp("a", 1), gcOp("a")],
     () => [live("a", 1), live("a", 2)],
   );
@@ -241,7 +267,7 @@ Deno.test("projectCatalog: an expiry after a versioned gc in one commit stays ex
 });
 
 Deno.test("projectCatalog: a versioned delete after an expiry in one commit upserts the latest, as v2 does", () => {
-  const projection = projectCatalog(
+  const projection = project(
     [gcOp("a"), deleteOp("a", 1)],
     () => [live("a", 1), live("a", 2)],
   );
