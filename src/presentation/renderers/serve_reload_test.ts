@@ -141,3 +141,38 @@ Deno.test("serveReloadRenderer json: includes warnings", () => {
     "Ignored the webhooks list",
   ]);
 });
+
+Deno.test("serveReloadRenderer log: a refused route file on a successful reload logs as an error", async () => {
+  const records: { level: string; message: string }[] = [];
+  await configure({
+    reset: true,
+    sinks: {
+      kept: (record) => {
+        records.push({
+          level: record.level,
+          message: record.message.map((part) => String(part)).join(""),
+        });
+      },
+    },
+    loggers: [
+      { category: ["serve"], sinks: ["kept"], lowestLevel: "info" },
+      { category: ["logtape", "meta"], sinks: [], lowestLevel: "fatal" },
+    ],
+  });
+  try {
+    createServeReloadRenderer("log").render({
+      success: true,
+      reloadedCount: 0,
+      webhooksReloaded: 1,
+      warnings: ["Shadowed webhook route file a.yaml (route /hooks/a): x"],
+      errors: ["Refused webhook route file b.yaml (route /hooks/b): y"],
+    });
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  const refused = records.find((r) => r.message.includes("b.yaml"));
+  const shadowed = records.find((r) => r.message.includes("a.yaml"));
+  assertEquals(refused?.level, "error");
+  assertEquals(shadowed?.level, "warning");
+});

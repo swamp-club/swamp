@@ -97,6 +97,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   advertiseAddress: "SWAMP_SERVE_ADVERTISE_ADDRESS",
   caCert: "SWAMP_CA_CERT",
   grantsDir: "SWAMP_GRANTS_DIR",
+  webhookRoutesDir: "SWAMP_WEBHOOK_ROUTES_DIR",
   wsIdleTimeout: "SWAMP_WS_IDLE_TIMEOUT",
   queueTimeout: "SWAMP_QUEUE_TIMEOUT",
   verifyOnEnroll: "SWAMP_VERIFY_ON_ENROLL",
@@ -127,6 +128,8 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   signalRequiresExplicitGrant: "SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT",
   tagRequiresExplicitGrant: "SWAMP_TAG_REQUIRES_EXPLICIT_GRANT",
 };
+
+export const DEFAULT_WEBHOOK_ROUTES_DIR = "webhook-routes";
 
 export interface WebhookConfigEntry {
   readonly route: string;
@@ -181,6 +184,7 @@ export interface ServeConfigFile {
   address?: string;
   "advertise-address"?: string;
   "grants-dir"?: string;
+  "webhook-routes-dir"?: string;
   "grant-reload"?: string;
   "ws-idle-timeout"?: string;
   "queue-timeout"?: string;
@@ -306,6 +310,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "dispatch-env-allow",
   "grants-file",
   "grants-dir",
+  "webhook-routes-dir",
   "grant-reload",
   "address",
   "advertise-address",
@@ -587,6 +592,7 @@ function validateConfigValues(
     ["address", raw["address"]],
     ["advertise-address", raw["advertise-address"]],
     ["grants-dir", raw["grants-dir"]],
+    ["webhook-routes-dir", raw["webhook-routes-dir"]],
     ["grant-reload", raw["grant-reload"]],
     ["ws-idle-timeout", raw["ws-idle-timeout"]],
     ["queue-timeout", raw["queue-timeout"]],
@@ -714,7 +720,11 @@ function validateConfigValues(
       );
     }
     for (let i = 0; i < raw.webhooks.length; i++) {
-      validateWebhookEntry(raw.webhooks[i], path, i);
+      validateWebhookEntry(
+        raw.webhooks[i],
+        path,
+        `webhook at index ${i} in ${path}`,
+      );
     }
   }
 
@@ -788,40 +798,41 @@ export function parseTokenSecretsKeyConfig(
   return { vault: block.vault!, key: block.key! };
 }
 
-function validateWebhookEntry(
+/** label names the entry in errors, e.g. "webhook at index 0 in serve.yaml" */
+export function validateWebhookEntry(
   entry: unknown,
   path: string,
-  index: number,
+  label: string,
 ): void {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: expected object`,
+      `Invalid ${label}: expected object`,
     );
   }
   const obj = entry as Record<string, unknown>;
   if (typeof obj.route !== "string" || !obj.route) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: route is required and must be a string`,
+      `Invalid ${label}: route is required and must be a string`,
     );
   }
   if (!obj.route.startsWith("/")) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: route must start with '/', got '${obj.route}'`,
+      `Invalid ${label}: route must start with '/', got '${obj.route}'`,
     );
   }
   if (typeof obj.workflow !== "string" || !obj.workflow) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: workflow is required and must be a string`,
+      `Invalid ${label}: workflow is required and must be a string`,
     );
   }
   if (typeof obj.secret !== "string" || !obj.secret) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: secret is required and must be a string`,
+      `Invalid ${label}: secret is required and must be a string`,
     );
   }
   if (obj.scheme !== undefined) {
@@ -832,7 +843,7 @@ function validateWebhookEntry(
     ) {
       throw configError(
         path,
-        `Invalid webhook at index ${index} in ${path}: scheme must be one of ${
+        `Invalid ${label}: scheme must be one of ${
           WEBHOOK_SCHEMES.join(", ")
         } or a webhook extension type (@collective/name), got '${obj.scheme}'`,
       );
@@ -840,7 +851,7 @@ function validateWebhookEntry(
     if (obj.scheme === "generic" && typeof obj.header !== "string") {
       throw configError(
         path,
-        `Invalid webhook at index ${index} in ${path}: generic scheme requires a header name`,
+        `Invalid ${label}: generic scheme requires a header name`,
       );
     }
   }
@@ -851,7 +862,7 @@ function validateWebhookEntry(
   ) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: config must be an object`,
+      `Invalid ${label}: config must be an object`,
     );
   }
   if (
@@ -861,7 +872,7 @@ function validateWebhookEntry(
   ) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: config is only supported for webhook extension schemes`,
+      `Invalid ${label}: config is only supported for webhook extension schemes`,
     );
   }
 }
@@ -1013,6 +1024,8 @@ export interface MergedServeOptions {
   caCert?: string;
   grantsFile?: string;
   grantsDir?: string;
+  /** relative paths resolve against the repository */
+  webhookRoutesDir: string;
   grantReload: string;
   address?: string;
   advertiseAddress?: string;
@@ -1251,6 +1264,13 @@ export function mergeServeOptions(
     config?.["grants-dir"],
     undefined,
   );
+
+  const webhookRoutesDir = resolveString(
+    "webhook-routes-dir",
+    cliOptions.webhookRoutesDir as string | undefined,
+    config?.["webhook-routes-dir"],
+    undefined,
+  ) || DEFAULT_WEBHOOK_ROUTES_DIR;
 
   const grantReload = resolveString(
     "grant-reload",
@@ -1576,6 +1596,7 @@ export function mergeServeOptions(
     keyFile,
     grantsFile,
     grantsDir,
+    webhookRoutesDir,
     grantReload,
     ...(address !== undefined ? { address } : {}),
     ...(advertiseAddress !== undefined ? { advertiseAddress } : {}),

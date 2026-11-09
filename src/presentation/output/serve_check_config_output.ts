@@ -55,6 +55,28 @@ export interface ServeCheckConfigData {
    * sources absent where the check ran; they do not fail the check
    */
   readonly grantWarnings?: readonly GrantFileCheckIssue[];
+  /** advisory: route files a serve.yaml or --webhook route shadows */
+  readonly webhookWarnings?: readonly WebhookRouteWarning[];
+  /**
+   * route files serve would refuse; serve still starts, but any one fails the
+   * check so a bad file is caught before it reaches serve
+   */
+  readonly webhookRouteFileErrors?: readonly WebhookRouteFileError[];
+  /** the routes directory is unusable; serve starts with no file routes */
+  readonly webhookRoutesDirError?: string;
+}
+
+export interface WebhookRouteFileError {
+  readonly file: string;
+  readonly route?: string;
+  readonly message: string;
+}
+
+export interface WebhookRouteWarning {
+  readonly route: string;
+  readonly workflow: string;
+  readonly reason: string;
+  readonly message: string;
 }
 
 /** Whether the external token secrets key resolves. Never holds the key. */
@@ -141,6 +163,28 @@ export function renderServeCheckConfig(
     }
   }
 
+  const webhookWarnings = data.webhookWarnings ?? [];
+  if (webhookWarnings.length > 0) {
+    lines.push("");
+    lines.push(cyan("Webhook warnings:"));
+    for (const warning of webhookWarnings) {
+      lines.push(`  ${yellow("!")} ${warning.message}`);
+    }
+  }
+
+  const routeFileErrors = data.webhookRouteFileErrors ?? [];
+  const routesDirError = data.webhookRoutesDirError;
+  if (routeFileErrors.length > 0 || routesDirError !== undefined) {
+    lines.push("");
+    lines.push(cyan("Webhook route file errors:"));
+    if (routesDirError !== undefined) {
+      lines.push(`  ${red(CROSS)} ${routesDirError}`);
+    }
+    for (const error of routeFileErrors) {
+      lines.push(`  ${red(CROSS)} ${error.message}`);
+    }
+  }
+
   const grantErrors = data.grantErrors ?? [];
   const grantWarnings = data.grantWarnings ?? [];
   if (
@@ -192,9 +236,20 @@ export function renderServeCheckConfig(
   const notFound = data.entries.filter((e) => e.status === "not-found").length;
   let result = green("PASSED");
   if (!data.passed) {
+    const startsWithout = [
+      ...(notFound > 0 ? [`${notFound} unknown name(s)`] : []),
+      ...(routesDirError !== undefined
+        ? ["webhook routes directory refused"]
+        : []),
+      ...(routeFileErrors.length > 0
+        ? [`${routeFileErrors.length} webhook route file(s) refused`]
+        : []),
+    ];
     const why = data.refusal !== undefined || tokenKey?.status === "failed" ||
         grantErrors.length > 0
       ? "swamp serve would refuse to start"
+      : startsWithout.length > 0
+      ? `${startsWithout.join(", ")}; swamp serve would start without them`
       : `${notFound} unknown name(s); swamp serve would start without them`;
     result = `${red("FAILED")} ${dim(`(${why})`)}`;
   }

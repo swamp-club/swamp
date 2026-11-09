@@ -1194,6 +1194,11 @@ Deno.test("collectServeExtraArgs: forwards --max-concurrent-webhook-runs", () =>
   assertEquals(args, ["--max-concurrent-webhook-runs", "8"]);
 });
 
+Deno.test("collectServeExtraArgs: forwards --webhook-routes-dir", () => {
+  const args = collectServeExtraArgs({ webhookRoutesDir: "routes" });
+  assertEquals(args, ["--webhook-routes-dir", "routes"]);
+});
+
 Deno.test("collectServeExtraArgs: forwards --max-runs-per-principal", () => {
   const args = collectServeExtraArgs({ maxRunsPerPrincipal: 10 });
   assertEquals(args, ["--max-runs-per-principal", "10"]);

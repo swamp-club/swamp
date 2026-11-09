@@ -3219,6 +3219,7 @@ export function redactServeOptions(
       workflow: wh.workflow,
       scheme: wh.scheme ?? "github",
     })),
+    webhookRoutesDir: opts.webhookRoutesDir ?? null,
     maxConcurrentRuns: opts.maxConcurrentRuns ?? null,
     maxConcurrentWebhookRuns: opts.maxConcurrentWebhookRuns ?? null,
     maxRunsPerPrincipal: opts.maxRunsPerPrincipal ?? null,

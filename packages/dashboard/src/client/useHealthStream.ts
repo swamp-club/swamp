@@ -83,7 +83,9 @@ export interface WebhookEntry {
   /** Signature verification scheme, when serve reports it. */
   scheme?: string;
   /** Where the route is defined, when serve reports it. */
-  source?: "config" | "flag";
+  source?: "config" | "flag" | "file";
+  /** The route file's name, for a route defined in a route file. */
+  file?: string;
   /** Unset on servers that predate webhook queue reporting (swamp-club#3665). */
   active?: number;
   queued?: number;

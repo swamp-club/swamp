@@ -194,6 +194,32 @@ or `tag`: an older build drops such a grant whole, with every other action in
 it, so a deny on `write,tag` stops denying `write` there. Until every host is
 upgraded, keep `signal` and `tag` in grants of their own.
 
+## Webhook Route Files
+
+A webhook route can come from a reviewed repo change instead of host config: one
+YAML file per route in `webhook-routes/` (`--webhook-routes-dir` to move it),
+with the same fields as a `webhooks[]` entry in `.swamp/serve.yaml`.
+
+```yaml
+# webhook-routes/github-push.yaml
+route: /hooks/github-push
+workflow: deploy
+secret: "@vault=webhooks:github-push"
+scheme: github
+```
+
+- The route must sit under `/hooks/`, with segments of letters, digits and
+  `-._~` only; the secret must be `@vault=<vault>:<key>`.
+- `swamp serve reload` makes a new or changed file live; deleting the file
+  removes the route on the next reload.
+- A bad file is refused on its own (named in the startup log or reload errors);
+  two files claiming one route are both refused. A `serve.yaml` or `--webhook`
+  route on the same path wins, and the file route is reported as shadowed.
+- Run `swamp serve check-config` in CI on the PR to catch a bad file before it
+  reaches serve. It does not look up vault keys or resolve extension schemes.
+- Health and the dashboard show such a route with source `file` and its file
+  name. Extensions never contribute routes.
+
 ## CLI Grant Management
 
 ```bash

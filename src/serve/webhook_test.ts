@@ -2257,12 +2257,38 @@ Deno.test("WebhookService: a service built with no routes passes POSTs through u
   assertEquals(response?.status, 200);
 });
 
-Deno.test("WebhookService.listEndpoints: reports where the routes came from", async () => {
-  const fromConfig = (await triggerService()).service;
-  const fromFlags = (await triggerService({ routeSource: "flag" })).service;
+Deno.test("WebhookService.listEndpoints: reports where each route came from", async () => {
+  const base = await parseWebhookFlag("/hooks/gh:deploy:secret");
+  const { service } = await triggerService({
+    endpoints: [
+      base,
+      { ...base, route: "/hooks/flag", source: "flag" },
+      { ...base, route: "/hooks/file", source: "file", file: "file.yaml" },
+    ],
+  });
 
-  assertEquals(fromConfig.listEndpoints().map((e) => e.source), ["config"]);
-  assertEquals(fromFlags.listEndpoints().map((e) => e.source), ["flag"]);
-  await fromConfig.stop();
-  await fromFlags.stop();
+  assertEquals(
+    service.listEndpoints().map((e) => [e.route, e.source, e.file]),
+    [
+      ["/hooks/gh", "config", undefined],
+      ["/hooks/flag", "flag", undefined],
+      ["/hooks/file", "file", "file.yaml"],
+    ],
+  );
+  await service.stop();
+});
+
+Deno.test("WebhookService.updateEndpoints: a route whose source alone changed counts as updated", async () => {
+  const base = await parseWebhookFlag("/hooks/gh:deploy:secret");
+  const { service } = await triggerService({
+    endpoints: [{ ...base, source: "file", file: "gh.yaml" }],
+  });
+
+  assertEquals(
+    service.updateEndpoints([{ ...base, source: "file", file: "gh.yaml" }]),
+    0,
+  );
+  assertEquals(service.updateEndpoints([base]), 1);
+  assertEquals(service.updateEndpoints([{ ...base, source: "config" }]), 0);
+  await service.stop();
 });

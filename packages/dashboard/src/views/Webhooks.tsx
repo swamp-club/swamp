@@ -89,6 +89,7 @@ const LAST_RUN_LABELS: Record<string, string> = {
 const SOURCE_LABELS: Record<string, string> = {
   config: "Serve config",
   flag: "--webhook flag",
+  file: "Route file",
 };
 
 /** What the webhook table can be filtered by, beyond free text. */

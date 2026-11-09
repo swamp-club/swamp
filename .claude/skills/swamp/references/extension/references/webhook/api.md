@@ -135,6 +135,11 @@ CLI equivalent (no `config`):
 Serve fails at startup if the type is not installed (trusted collectives are
 auto-pulled) or the config is invalid.
 
+A route file in the repo's `webhook-routes/` directory can name the same scheme
+and `config`; it takes only an `@vault=` secret and a route under `/hooks/`, and
+a missing type refuses only that file. An extension never declares a route:
+routes come only from `serve.yaml`, `--webhook` flags and route files.
+
 ## Testing
 
 ```typescript

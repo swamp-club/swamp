@@ -211,6 +211,10 @@ export interface WebhookEndpoint {
   readonly workflowIdOrName: string;
   readonly secret: string;
   readonly verifier: VerifierConfig;
+  /** absent reads as "config" */
+  readonly source?: WebhookRouteSource;
+  /** the route file's name, when source is "file" */
+  readonly file?: string;
 }
 
 /**
@@ -435,12 +439,10 @@ export type WebhookEvent =
 
 export type WebhookEventHandler = (event: WebhookEvent) => void;
 
-/** Where a serve's webhook routes come from; flags replace the file list. */
-export type WebhookRouteSource = "config" | "flag";
+/** flags replace the serve config list; route files merge under either */
+export type WebhookRouteSource = "config" | "flag" | "file";
 
 export interface WebhookServiceDeps {
-  /** where every route came from; defaults to the serve config */
-  routeSource?: WebhookRouteSource;
   /**
    * false on a follower in team mode, which answers a verified delivery with a
    * retryable 503 so the sender retries to the leader or once one leads.
@@ -564,6 +566,7 @@ export interface WebhookEndpointInfo {
   readonly workflowIdOrName: string;
   readonly scheme: string;
   readonly source: WebhookRouteSource;
+  readonly file?: string;
 }
 
 /**
@@ -641,7 +644,9 @@ export class WebhookService {
       } else if (
         old.workflowIdOrName !== ep.workflowIdOrName ||
         old.secret !== ep.secret ||
-        JSON.stringify(old.verifier) !== JSON.stringify(ep.verifier)
+        JSON.stringify(old.verifier) !== JSON.stringify(ep.verifier) ||
+        (old.source ?? "config") !== (ep.source ?? "config") ||
+        old.file !== ep.file
       ) {
         changed++;
         logger.info("Webhook route updated: {route} → {workflow} ({scheme})", {
@@ -664,12 +669,12 @@ export class WebhookService {
   }
 
   listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {
-    const source = this.deps.routeSource ?? "config";
     return this.endpoints.map((e) => ({
       route: e.route,
       workflowIdOrName: e.workflowIdOrName,
       scheme: e.verifier.scheme,
-      source,
+      source: e.source ?? "config",
+      ...(e.file !== undefined ? { file: e.file } : {}),
     }));
   }
 

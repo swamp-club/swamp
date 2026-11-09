@@ -131,7 +131,19 @@ import {
   createWebhookRunAuthorizer,
 } from "../../serve/trigger_audit.ts";
 import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
-import { createWebhookUpdater } from "../../serve/webhook_reload.ts";
+import {
+  buildWebhookRouteTable,
+  createWebhookUpdater,
+  type WebhookRouteTableDeps,
+} from "../../serve/webhook_reload.ts";
+import {
+  checkRouteFiles,
+  checkWebhookRoutesDir,
+  loadWebhookRouteFiles,
+  shadowedRouteFileMessage,
+  webhookRouteSourceLabel,
+} from "../../serve/webhook_route_files.ts";
+import { resolveWebhooksDir } from "../resolve_webhooks_dir.ts";
 import {
   cachedUnlessRejected,
   createTokenAdmissionChecker,
@@ -328,6 +340,8 @@ import {
 import {
   renderServeCheckConfig,
   type TokenSecretsKeyCheck,
+  type WebhookRouteFileError,
+  type WebhookRouteWarning,
 } from "../../presentation/output/serve_check_config_output.ts";
 import type { TokenSecretsKeyRef } from "../../domain/vaults/token_secrets_key.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
@@ -393,6 +407,7 @@ import {
   resolveServePath,
   resolveServeTlsPaths,
   SERVE_CONFIG_PATH,
+  type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
 import {
   OAUTH_CLIENT_SECRET_FILE_FLAG,
@@ -573,6 +588,7 @@ import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_i
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { basename, join, resolve } from "@std/path";
+import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -1595,6 +1611,67 @@ const SERVE_CA_CERT_DESCRIPTION =
   "this node forwards to its team's leader (a relative path resolves " +
   "against the repository)";
 
+async function checkWebhookRouteFiles(
+  repoDir: string,
+  merged: MergedServeOptions,
+): Promise<{
+  directoryError?: string;
+  errors: WebhookRouteFileError[];
+  warnings: WebhookRouteWarning[];
+}> {
+  let marker: RepoMarkerData | null = null;
+  try {
+    marker = await new RepoMarkerRepository().read(RepoPath.create(repoDir));
+  } catch {
+    // no marker: serve falls back to the default webhook extensions dir too
+  }
+  const flags = merged.webhook ?? [];
+  const operator = flags.length > 0
+    ? flags.map((spec) => ({
+      route: spec.split(":")[0],
+      source: "flag" as const,
+    }))
+    : (merged.webhookConfigs ?? []).map((entry) => ({
+      route: entry.route,
+      source: "config" as const,
+    }));
+  const check = await checkRouteFiles(
+    resolveServePath(repoDir, merged.webhookRoutesDir),
+    webhookRouteExtensionDirs(repoDir, marker),
+    operator,
+  );
+  return {
+    ...(check.directoryError !== undefined
+      ? { directoryError: check.directoryError }
+      : {}),
+    errors: check.refused.map((refused) => ({
+      file: refused.file,
+      ...(refused.route !== undefined ? { route: refused.route } : {}),
+      message: refused.message,
+    })),
+    warnings: check.shadowed.map((shadow) => ({
+      route: shadow.route,
+      workflow: shadow.workflow,
+      reason: `shadowed by ${
+        shadow.by === "flag" ? "a --webhook flag" : "the serve config"
+      }`,
+      message: shadowedRouteFileMessage(shadow),
+    })),
+  };
+}
+
+/** where extension code lives; a webhook routes directory may sit in none */
+function webhookRouteExtensionDirs(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+): string[] {
+  return [
+    resolve(repoDir, resolveWebhooksDir(marker)),
+    join(repoDir, "extensions"),
+    join(repoDir, ".swamp"),
+  ];
+}
+
 export function collectServeExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
   if (options.config) {
@@ -1617,6 +1694,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.grantsDir) {
     args.push("--grants-dir", options.grantsDir as string);
+  }
+  if (options.webhookRoutesDir) {
+    args.push("--webhook-routes-dir", options.webhookRoutesDir as string);
   }
   if (options.grantReload && options.grantReload !== "manual") {
     args.push("--grant-reload", options.grantReload as string);
@@ -2234,6 +2314,10 @@ const daemonEnableCommand = new Command()
     "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory (a relative path resolves against the repository); their grants are stored with source file:grants-dir/<filename>",
   )
   .option(
+    "--webhook-routes-dir <path:string>",
+    "Directory of webhook route files, one route per YAML file, loaded at startup and on 'swamp serve reload' (default: webhook-routes; a relative path resolves against the repository; env: SWAMP_WEBHOOK_ROUTES_DIR)",
+  )
+  .option(
     "--grant-reload <mode:string>",
     "Policy snapshot reload mode: manual (default) or auto",
     { default: "manual" },
@@ -2785,6 +2869,10 @@ const checkConfigCommand = new Command()
     "Directory of grants YAML files to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_DIR)",
   )
   .option(
+    "--webhook-routes-dir <path:string>",
+    "Directory of webhook route files to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_WEBHOOK_ROUTES_DIR)",
+  )
+  .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
     "Path to a file containing the collective API key used to look up " +
       "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
@@ -2852,6 +2940,19 @@ const checkConfigCommand = new Command()
       grantErrors,
       grantWarnings: grantCheck.warnings,
     };
+    const routeFileCheck = await checkWebhookRouteFiles(repoDir, merged);
+    const webhookWarnings = routeFileCheck.warnings;
+    const routeFilesLoad = routeFileCheck.errors.length === 0 &&
+      routeFileCheck.directoryError === undefined;
+    const webhookReport = {
+      ...(webhookWarnings.length > 0 ? { webhookWarnings } : {}),
+      ...(routeFileCheck.errors.length > 0
+        ? { webhookRouteFileErrors: routeFileCheck.errors }
+        : {}),
+      ...(routeFileCheck.directoryError !== undefined
+        ? { webhookRoutesDirError: routeFileCheck.directoryError }
+        : {}),
+    };
     const unnamedType = restrictionFindings.find((finding) =>
       finding.reason === "no-type"
     );
@@ -2903,7 +3004,7 @@ const checkConfigCommand = new Command()
     if (authConfig.mode !== "oauth") {
       const starts = keyUsable && grantsLoad;
       renderServeCheckConfig({
-        passed: starts,
+        passed: starts && routeFilesLoad,
         authMode: authConfig.mode,
         entries: [],
         allowedCollectives: [],
@@ -2912,7 +3013,7 @@ const checkConfigCommand = new Command()
         ...grantReport,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
-      if (!starts) Deno.exitCode = 1;
+      if (!starts || !routeFilesLoad) Deno.exitCode = 1;
       return;
     }
 
@@ -2984,7 +3085,7 @@ const checkConfigCommand = new Command()
     );
     const wouldStart = check.wouldStart && clientSecretRefusal === undefined;
     const passed = wouldStart && notFound.length === 0 && keyUsable &&
-      grantsLoad;
+      grantsLoad && routeFilesLoad;
 
     renderServeCheckConfig({
       passed,
@@ -3089,6 +3190,10 @@ export const serveCommand = new Command()
   .option(
     "--grants-dir <path:string>",
     "Path to an additional directory of grants YAML files, read alongside the repository grants/ directory (a relative path resolves against the repository); their grants are stored with source file:grants-dir/<filename> (env: SWAMP_GRANTS_DIR)",
+  )
+  .option(
+    "--webhook-routes-dir <path:string>",
+    "Directory of webhook route files, one route per YAML file, loaded at startup and on 'swamp serve reload' (default: webhook-routes; a relative path resolves against the repository; env: SWAMP_WEBHOOK_ROUTES_DIR)",
   )
   .option(
     "--grant-reload <mode:string>",
@@ -6943,32 +7048,58 @@ export const serveCommand = new Command()
     }
 
     const webhookSourceIsCliFlags = webhookFlags.length > 0;
-    const hasWebhooks = webhookSourceIsCliFlags ||
-      (merged.webhookConfigs && merged.webhookConfigs.length > 0);
-    let webhookEndpoints: WebhookEndpoint[] = [];
-    if (hasWebhooks) {
+    const parseWebhookConfigs = async (
+      configs: readonly WebhookConfigEntry[],
+    ): Promise<WebhookEndpoint[]> => {
       const vaultService = await VaultService.fromRepository(
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
-      webhookEndpoints = webhookSourceIsCliFlags
-        ? await Promise.all(
+      const parsed = await Promise.all(
+        configs.map((e) => parseWebhookConfig(e, vaultService)),
+      );
+      return await resolveExtensionWebhookEndpoints(
+        parsed,
+        (type) => resolveWebhookType(type, getAutoResolver()),
+      );
+    };
+    let flagEndpoints: WebhookEndpoint[] = [];
+    if (webhookSourceIsCliFlags) {
+      const vaultService = await VaultService.fromRepository(
+        resolvedRepoDir,
+        { defaultVaultName: repoMarker?.defaultVault },
+      );
+      flagEndpoints = await resolveExtensionWebhookEndpoints(
+        await Promise.all(
           webhookFlags.map((f) => parseWebhookFlag(f, vaultService)),
-        )
-        : await Promise.all(
-          merged.webhookConfigs!.map((e) =>
-            parseWebhookConfig(e, vaultService)
-          ),
-        );
-      webhookEndpoints = await resolveExtensionWebhookEndpoints(
-        webhookEndpoints,
+        ),
         (type) => resolveWebhookType(type, getAutoResolver()),
       );
     }
-    const endpoints = webhookEndpoints;
+    const webhookRoutesDir = resolveServePath(
+      resolvedRepoDir,
+      merged.webhookRoutesDir,
+    );
+    const webhookRouteTableDeps: WebhookRouteTableDeps = {
+      source: webhookSourceIsCliFlags ? "flag" : "config",
+      parse: parseWebhookConfigs,
+      flagEndpoints,
+      // re-checked on every load: a symlinked routes dir can arrive with a reload
+      loadRouteFiles: async () => {
+        await checkWebhookRoutesDir(
+          webhookRoutesDir,
+          webhookRouteExtensionDirs(resolvedRepoDir, repoMarker),
+        );
+        return await loadWebhookRouteFiles(webhookRoutesDir);
+      },
+    };
+    const initialWebhookRoutes = await buildWebhookRouteTable(
+      webhookRouteTableDeps,
+      webhookSourceIsCliFlags ? [] : merged.webhookConfigs ?? [],
+    );
+    const endpoints = [...initialWebhookRoutes.endpoints];
     // built with no routes too, so a reload can add the first one
     const webhookService = new WebhookService({
-      routeSource: webhookSourceIsCliFlags ? "flag" : "config",
       acceptsRuns: () => !isFollowing(),
       ...(leaderLink !== undefined ? { leaderLink } : {}),
       repoDir: resolvedRepoDir,
@@ -7045,42 +7176,68 @@ export const serveCommand = new Command()
       }
     });
 
-    for (const ep of endpoints) {
+    for (const ep of webhookService.listEndpoints()) {
       if (isJson) {
         console.log(JSON.stringify({
           kind: "webhook_registered",
           route: ep.route,
           workflow: ep.workflowIdOrName,
-          scheme: ep.verifier.scheme,
+          scheme: ep.scheme,
+          source: ep.source,
+          ...(ep.file !== undefined ? { file: ep.file } : {}),
         }));
       } else {
         logger.info(
-          "Webhook registered: {route} → {workflow} (scheme: {scheme})",
+          "Webhook registered: {route} → {workflow} (scheme: {scheme}, source: {source})",
           {
             route: ep.route,
             workflow: ep.workflowIdOrName,
-            scheme: ep.verifier.scheme,
+            scheme: ep.scheme,
+            source: webhookRouteSourceLabel(ep),
           },
         );
       }
     }
+    if (initialWebhookRoutes.directoryError !== undefined) {
+      if (isJson) {
+        console.log(JSON.stringify({
+          kind: "webhook_routes_dir_refused",
+          message: initialWebhookRoutes.directoryError,
+        }));
+      } else {
+        logger.error("{message}", {
+          message: initialWebhookRoutes.directoryError,
+        });
+      }
+    }
+    for (const refused of initialWebhookRoutes.refused) {
+      if (isJson) {
+        console.log(JSON.stringify({
+          kind: "webhook_route_file_refused",
+          file: refused.file,
+          ...(refused.route !== undefined ? { route: refused.route } : {}),
+          message: refused.message,
+        }));
+      } else {
+        logger.error("{message}", { message: refused.message });
+      }
+    }
+    for (const shadow of initialWebhookRoutes.shadowed) {
+      if (isJson) {
+        console.log(JSON.stringify({
+          kind: "webhook_route_shadowed",
+          file: shadow.file,
+          route: shadow.route,
+          by: shadow.by,
+        }));
+      } else {
+        logger.warn("{message}", { message: shadowedRouteFileMessage(shadow) });
+      }
+    }
 
     const webhookUpdater = createWebhookUpdater({
-      source: webhookSourceIsCliFlags ? "flag" : "config",
+      ...webhookRouteTableDeps,
       service: webhookService,
-      parse: async (configs) => {
-        const vaultService = await VaultService.fromRepository(
-          resolvedRepoDir,
-          { defaultVaultName: repoMarker?.defaultVault },
-        );
-        const parsed = await Promise.all(
-          configs.map((e) => parseWebhookConfig(e, vaultService)),
-        );
-        return await resolveExtensionWebhookEndpoints(
-          parsed,
-          (type) => resolveWebhookType(type, getAutoResolver()),
-        );
-      },
     });
     connectionCtx.webhookUpdater = webhookUpdater;
     connectionCtx.webhookAdmissionSnapshots = () =>

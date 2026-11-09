@@ -412,7 +412,11 @@ Deno.test("performServeReload: reads trigger overrides and webhooks from configP
         },
         webhookUpdater: (configs) => {
           receivedWebhooks = configs;
-          return Promise.resolve({ changed: configs.length, warnings: [] });
+          return Promise.resolve({
+            changed: configs.length,
+            warnings: [],
+            errors: [],
+          });
         },
       },
     );
@@ -630,7 +634,11 @@ Deno.test("performServeReload: calls webhookUpdater with configs from serve.yaml
       {
         webhookUpdater: (configs) => {
           receivedConfigs = configs;
-          return Promise.resolve({ changed: configs.length, warnings: [] });
+          return Promise.resolve({
+            changed: configs.length,
+            warnings: [],
+            errors: [],
+          });
         },
       },
     );
@@ -663,7 +671,11 @@ Deno.test("performServeReload: passes empty array when serve.yaml has no webhook
       {
         webhookUpdater: (configs) => {
           receivedConfigs = configs;
-          return Promise.resolve({ changed: configs.length, warnings: [] });
+          return Promise.resolve({
+            changed: configs.length,
+            warnings: [],
+            errors: [],
+          });
         },
       },
     );
@@ -690,7 +702,11 @@ Deno.test("performServeReload: carries webhook warnings into the response", asyn
       join(tmpDir, "nonexistent_lockfile.json"),
       {
         webhookUpdater: () =>
-          Promise.resolve({ changed: 0, warnings: ["routes are fixed"] }),
+          Promise.resolve({
+            changed: 0,
+            warnings: ["routes are fixed"],
+            errors: [],
+          }),
       },
     );
 
@@ -698,6 +714,36 @@ Deno.test("performServeReload: carries webhook warnings into the response", asyn
     assertEquals(result.webhooksReloaded, 0);
     assertEquals(result.warnings, ["routes are fixed"]);
     assertEquals(result.errors, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: reports refused route files as errors and still succeeds", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp", "serve.yaml"),
+      `port: 8080\n`,
+    );
+
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        webhookUpdater: () =>
+          Promise.resolve({
+            changed: 1,
+            warnings: [],
+            errors: ["Refused webhook route file bad.yaml: no"],
+          }),
+      },
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(result.webhooksReloaded, 1);
+    assertEquals(result.errors, ["Refused webhook route file bad.yaml: no"]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
@@ -716,7 +762,8 @@ Deno.test("performServeReload: omits warnings when there are none", async () => 
       tmpDir,
       join(tmpDir, "nonexistent_lockfile.json"),
       {
-        webhookUpdater: () => Promise.resolve({ changed: 0, warnings: [] }),
+        webhookUpdater: () =>
+          Promise.resolve({ changed: 0, warnings: [], errors: [] }),
       },
     );
 
@@ -776,7 +823,11 @@ Deno.test("performServeReload: shares config read between triggers and webhooks"
         },
         webhookUpdater: (configs) => {
           webhooksCalled = true;
-          return Promise.resolve({ changed: configs.length, warnings: [] });
+          return Promise.resolve({
+            changed: configs.length,
+            warnings: [],
+            errors: [],
+          });
         },
       },
     );
