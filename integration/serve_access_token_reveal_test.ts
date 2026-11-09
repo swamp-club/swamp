@@ -310,6 +310,7 @@ Deno.test("access.token.reveal: an admin reveals a rotated token through serve, 
       data.token,
       repo.repoDir,
       repo.repoContext,
+      null,
     );
     assert(auth.ok, JSON.stringify(auth));
     assertEquals(auth.principalId, "user:member");

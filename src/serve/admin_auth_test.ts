@@ -73,6 +73,7 @@ function dashboardTokenRepoContext(
 function makeDeps(overrides: Partial<AdminAuthDeps> = {}): AdminAuthDeps {
   return {
     authMode: "token",
+    tokenAdmission: null,
     repoDir: "/tmp/test",
     // deno-lint-ignore no-explicit-any
     repoContext: {} as any,
@@ -340,4 +341,27 @@ Deno.test("authenticateToken: a request without a bearer token does not count to
     if (!result.ok) assertEquals(result.response.status, 401);
   }
   assertEquals(checkIpBurst(clientAddr).allowed, true);
+});
+
+Deno.test("authenticateDashboardSessionToken: refuses a person who is no longer admitted, keeping the session", async () => {
+  const deniesEveryone = {
+    serverToken: () =>
+      Promise.resolve({ admitted: false, reason: "not in allowed-users" }),
+    delegation: () => ({ admitted: false, reason: "not in allowed-users" }),
+  };
+  const result = await authenticateDashboardSessionToken(
+    new Request("https://serve.test/api/v1/health"),
+    freshClientAddr(),
+    makeDeps({
+      repoContext: dashboardTokenRepoContext(),
+      tokenAdmission: deniesEveryone,
+    }),
+    DASHBOARD_SESSION,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.response.status, 401);
+    assertEquals(result.invalidateSession, false);
+  }
 });

@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { createTokenAdmissionChecker } from "../src/serve/token_admission.ts";
 import { generateIntegrationCredential } from "../src/domain/access/integration_credential.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { authenticateDelegatedToken } from "../src/serve/delegated_token_auth.ts";
@@ -316,4 +317,29 @@ Deno.test("delegation links: a pending link is polled at swamp-club's interval, 
     await rig.service.tick();
     assertEquals(rig.club.statusPolls, 1);
   });
+});
+
+Deno.test("delegation links: a person no longer admitted cannot refresh, and can again once re-admitted", async () => {
+  let allowedUsers: string[] = [];
+  const admission = createTokenAdmissionChecker({
+    lists: () => ({ allowedCollectives: [], allowedUsers }),
+    hasStoredLogin: () => Promise.resolve(false),
+  });
+  await withRig(async (rig) => {
+    const { pendingId, redeemSecret } = await startAndConsent(rig);
+    const redeemed = await rig.post("redeem", { pendingId, redeemSecret });
+    assertEquals(redeemed.status, 200, JSON.stringify(redeemed.body));
+    const refresh = redeemed.body.refreshToken as string;
+
+    allowedUsers = ["someone-else"];
+    const refused = await rig.post("refresh", { refreshToken: refresh });
+    assertEquals(refused.status, 401);
+    assertEquals(refused.body.code, "invalid_grant");
+    assertStringIncludes(String(refused.body.message), "not_admitted");
+    assertEquals((await rig.store.read(pendingId))?.phase, "issued");
+
+    allowedUsers = ["person-1"];
+    const refreshed = await rig.post("refresh", { refreshToken: refresh });
+    assertEquals(refreshed.status, 200, JSON.stringify(refreshed.body));
+  }, { admission });
 });

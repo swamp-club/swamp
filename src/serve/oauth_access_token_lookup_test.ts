@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
-import { lookupOAuthAccessToken } from "./oauth_access_token_lookup.ts";
+import {
+  hasOAuthAccessToken,
+  lookupOAuthAccessToken,
+} from "./oauth_access_token_lookup.ts";
+import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 const USER_VAULT = "default";
 
@@ -99,4 +103,57 @@ Deno.test("lookupOAuthAccessToken: returns null when an unmigrated token has no 
   });
 
   assertEquals(result, null);
+});
+
+function presenceVault(
+  vaults: Record<string, readonly string[] | "down">,
+) {
+  return {
+    getVaultNames: () => Object.keys(vaults),
+    has(vaultName: string, key: string): Promise<boolean> {
+      const keys = vaults[vaultName];
+      if (keys === "down") return Promise.reject(new Error("vault offline"));
+      return Promise.resolve(keys.includes(key));
+    },
+  };
+}
+
+Deno.test("hasOAuthAccessToken: finds a login's token in the token-secrets vault", async () => {
+  const key = oauthAccessTokenKey("tok-1");
+  const vault = presenceVault({ [TOKEN_SECRETS_VAULT_NAME]: [key] });
+  assertEquals(
+    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT }),
+    true,
+  );
+});
+
+Deno.test("hasOAuthAccessToken: falls back to the token's own vault", async () => {
+  const key = oauthAccessTokenKey("tok-1");
+  const vault = presenceVault({
+    [TOKEN_SECRETS_VAULT_NAME]: [],
+    [USER_VAULT]: [key],
+  });
+  assertEquals(
+    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT }),
+    true,
+  );
+});
+
+Deno.test("hasOAuthAccessToken: a manual token has none, and a missing vault is not an error", async () => {
+  const vault = presenceVault({ [USER_VAULT]: [] });
+  assertEquals(
+    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT }),
+    false,
+  );
+});
+
+Deno.test("hasOAuthAccessToken: a vault that cannot answer throws", async () => {
+  const vault = presenceVault({ [TOKEN_SECRETS_VAULT_NAME]: "down" });
+  let threw = false;
+  try {
+    await hasOAuthAccessToken(vault, { name: "tok-1", vaultName: USER_VAULT });
+  } catch {
+    threw = true;
+  }
+  assertEquals(threw, true);
 });

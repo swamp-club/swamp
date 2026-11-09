@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { checkAdmission } from "./admission.ts";
+import { checkAdmission, checkPrincipalAdmission } from "./admission.ts";
 
 Deno.test("checkAdmission: admits user in allowed-users list", () => {
   const result = checkAdmission(
@@ -108,5 +108,47 @@ Deno.test("checkAdmission: matches first collective found", () => {
   assertEquals(
     result.reason,
     "user is a member of allowed collective 'dev-team'",
+  );
+});
+
+const LISTS = { allowedCollectives: ["acme"], allowedUsers: ["sub-alice"] };
+
+Deno.test("checkPrincipalAdmission: admits a person in allowed-users by their sub", () => {
+  assertEquals(
+    checkPrincipalAdmission("user:sub-alice", [], LISTS).admitted,
+    true,
+  );
+});
+
+Deno.test("checkPrincipalAdmission: admits a person through an allowed collective", () => {
+  assertEquals(
+    checkPrincipalAdmission("user:sub-bob", ["acme"], LISTS).admitted,
+    true,
+  );
+});
+
+Deno.test("checkPrincipalAdmission: refuses a person removed from both lists", () => {
+  const result = checkPrincipalAdmission("user:sub-bob", ["other"], LISTS);
+  assertEquals(result.admitted, false);
+});
+
+Deno.test("checkPrincipalAdmission: admits everyone when no lists are set", () => {
+  assertEquals(
+    checkPrincipalAdmission("user:anyone", [], {
+      allowedCollectives: [],
+      allowedUsers: [],
+    }).admitted,
+    true,
+  );
+});
+
+Deno.test("checkPrincipalAdmission: a credential that is not a person's fails closed", () => {
+  assertEquals(
+    checkPrincipalAdmission("service:webhook", ["acme"], LISTS).admitted,
+    false,
+  );
+  assertEquals(
+    checkPrincipalAdmission("not-a-principal", ["acme"], LISTS).admitted,
+    false,
   );
 });

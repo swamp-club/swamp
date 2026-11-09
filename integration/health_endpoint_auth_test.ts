@@ -112,6 +112,7 @@ Deno.test("health endpoint auth: a valid token without grants reads health with 
 
     const deps: AdminAuthDeps = {
       authMode: "token",
+      tokenAdmission: null,
       repoDir,
       repoContext,
       policySnapshotLoader: denyAll(),

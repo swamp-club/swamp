@@ -47,3 +47,20 @@ export async function lookupOAuthAccessToken(
     return null;
   }
 }
+
+/**
+ * Whether an OAuth login stored an access token for this token, in the same
+ * vaults the lookup reads; throws when a vault cannot answer.
+ */
+export async function hasOAuthAccessToken(
+  vaultService: Pick<VaultService, "has" | "getVaultNames">,
+  token: { readonly name: string; readonly vaultName: string },
+): Promise<boolean> {
+  const key = oauthAccessTokenKey(token.name);
+  const configured = new Set(vaultService.getVaultNames());
+  for (const vault of new Set([TOKEN_SECRETS_VAULT_NAME, token.vaultName])) {
+    if (!configured.has(vault)) continue;
+    if (await vaultService.has(vault, key)) return true;
+  }
+  return false;
+}

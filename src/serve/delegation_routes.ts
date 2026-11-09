@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { z } from "zod";
 import { Ceiling } from "../domain/access/ceiling.ts";
 import {
@@ -107,6 +108,8 @@ export interface DelegationRouteDeps {
   readonly leaderLink?: LeaderLink;
   readonly audit?: (event: DelegationAuditRecord) => void;
   readonly now?: () => number;
+  /** null outside OAuth mode */
+  readonly admission: TokenAdmissionChecker | null;
 }
 
 const StartBodySchema = z.object({
@@ -573,6 +576,17 @@ async function refresh(
         return {
           write: null,
           value: { kind: "refused" as const, reason: "unknown" },
+        };
+      }
+      // a denial, not an end: the link refreshes again once the person is
+      // admitted again
+      if (
+        deps.admission !== null && current.person !== undefined &&
+        !deps.admission.delegation(current.person).admitted
+      ) {
+        return {
+          write: null,
+          value: { kind: "refused" as const, reason: "not_admitted" },
         };
       }
       const standing = delegationStanding(

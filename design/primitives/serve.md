@@ -848,8 +848,8 @@ An `AccessDataPoller` reloads the snapshot when another process changed
 a v2 filesystem datastore it fingerprints the shared directories and ignores
 the instance's own writes (swamp-club#3371). In OAuth mode, a `CollectiveRefreshService`
 re-fetches each logged-in user's collectives from the provider every
-`--group-refresh-interval`. It closes connections whose admission lapsed
-(`src/serve/collective_refresh_service.ts`). It applies a userinfo answer only
+`--group-refresh-interval` (`src/serve/collective_refresh_service.ts`), and the
+next session revalidation pass closes connections whose admission lapsed. It applies a userinfo answer only
 when its subject matches the token's principal, and otherwise keeps the token's
 snapshot and logs a warning, so whoever can write a stored access token cannot
 choose whose collectives a token gets. A token is refreshed only when an

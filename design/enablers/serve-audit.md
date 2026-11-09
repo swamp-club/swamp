@@ -323,10 +323,14 @@ Actions:
 - `auth.login.denied`: admission failed or the user denied authorization
 - `auth.login.expired`: the device code expired before completion
 - `auth.token.used`: a server token passed direct authentication
+- `auth.token.not_admitted`: a credential issued to a person was refused
+  because the person no longer passes admission. Outcome `denied`; `detail`
+  carries the admission reason
 - `auth.session.terminated`: the server closed a WebSocket session or SSE
   health stream because the token it was opened with lost its authority.
-  `detail` is the cause: `revoked`, `rotated`, `expired`, `deleted` or
-  `invalid` (the record no longer parses). `initiatedBy` is the admin who
+  `detail` is the cause: `revoked`, `rotated`, `expired`, `deleted`,
+  `invalid` (the record no longer parses) or `not-admitted` (the person no
+  longer passes admission). `initiatedBy` is the admin who
   revoked or rotated the token, or `system` when the periodic revalidation
   found it. `sourceIp` is the closed session's address. One event is written
   per session closed this way, before it closes; deprovisioning closes a

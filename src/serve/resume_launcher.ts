@@ -250,6 +250,21 @@ export async function startDetachedResume(
       refusal: "refused",
     };
   }
+  const boundPerson = boundDelegation === undefined
+    ? undefined
+    : ctx.delegationDirectory?.recordOf(boundDelegation)?.person;
+  if (
+    boundPerson !== undefined && ctx.tokenAdmission &&
+    !ctx.tokenAdmission.delegation(boundPerson).admitted
+  ) {
+    return {
+      ok: false,
+      code: "workflow_resume_failed",
+      message:
+        "This run was started through a link for someone no longer admitted to this server, so it can't be resumed",
+      refusal: "refused",
+    };
+  }
 
   const buffer = new RunEventBuffer(DEFAULT_BUFFER_CAPACITY, {
     holdOutcome: ctx.holdRepliesUntilCommitted === true,

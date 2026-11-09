@@ -132,6 +132,7 @@ Deno.test("server token auth: direct ingress is read-only and emits a secret-fre
       `${name}.${secret}`,
       repoDir,
       repoContext,
+      null,
       {
         emitter,
         instanceId: "instance-1",

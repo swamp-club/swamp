@@ -43,9 +43,12 @@ import {
   decideRunVaultAccess,
   resumeRunVaultScope,
   type RunVaultPolicyDeps,
+  runVaultScopeContext,
   ServeRunVaultPolicy,
   serviceRunVaultScope,
 } from "./run_vault_access_policy.ts";
+import type { TokenAdmissionChecker } from "./token_admission.ts";
+import type { ConnectionContext } from "./handlers/shared.ts";
 
 function grant(overrides: Partial<Grant> = {}): Grant {
   return {
@@ -1124,4 +1127,69 @@ Deno.test("ServeRunVaultPolicy: without a delegation lookup a delegation binding
     (await policy.decide("roomcontrol", "read", "get")).allowed,
     false,
   );
+});
+
+function admitting(admitted: () => boolean): TokenAdmissionChecker {
+  const result = () => ({ admitted: admitted(), reason: "test" });
+  return {
+    serverToken: () => Promise.resolve(result()),
+    delegation: () => result(),
+  };
+}
+
+Deno.test("ServeRunVaultPolicy: a token-bound run loses vault access while its person is not admitted", async () => {
+  let admitted = true;
+  let now = 1_000;
+  const policy = new ServeRunVaultPolicy({
+    authMode: "oauth",
+    policySnapshotLoader: {
+      decisionService: service([
+        grant({ subject: { kind: "user", name: "bot" } }),
+      ]),
+    },
+    readTokenRecord: () => Promise.resolve(tokenRecord({})),
+    admission: admitting(() => admitted),
+    now: () => now,
+    tokenTtlMs: 1,
+  }, {
+    source: "token",
+    principal: { kind: "user", id: "bot" },
+    tokenBinding: binding,
+    idpGroups: [],
+    collectives: [],
+  });
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    true,
+  );
+  admitted = false;
+  now += 10;
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    false,
+  );
+  admitted = true;
+  now += 10;
+  assertEquals(
+    (await policy.decide("roomcontrol", "read", "get")).allowed,
+    true,
+  );
+});
+
+Deno.test("runVaultScopeContext: a delegation whose person is not admitted has no principal", () => {
+  let admitted = true;
+  const ctx = {
+    authConfig: { mode: "oauth" },
+    policySnapshotLoader: null,
+    repoContext: {},
+    delegationDirectory: {
+      standingOf: () => ({ kind: "standing" }),
+      recordOf: () => ({ person: { sub: "bot", collectives: [] } }),
+    },
+    tokenAdmission: admitting(() => admitted),
+  } as unknown as ConnectionContext;
+  const scope = runVaultScopeContext(ctx);
+  assertEquals(scope.delegationPrincipal?.("d-1"), "user:bot");
+  admitted = false;
+  assertEquals(scope.delegationPrincipal?.("d-1"), undefined);
 });

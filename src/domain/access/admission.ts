@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { parsePrincipal } from "./principal.ts";
+
 export interface AdmissionResult {
   readonly admitted: boolean;
   readonly reason: string;
@@ -54,4 +56,35 @@ export function checkAdmission(
       })`
       : "user is not in the allowed-users list",
   };
+}
+
+export interface AdmissionLists {
+  readonly allowedCollectives: readonly string[];
+  readonly allowedUsers: readonly string[];
+}
+
+/**
+ * Admission of a credential issued to a person: the rule login and consent
+ * apply, over a stored principal. A principal that is not a user fails closed.
+ */
+export function checkPrincipalAdmission(
+  principalId: string,
+  collectives: readonly string[],
+  lists: AdmissionLists,
+): AdmissionResult {
+  let principal;
+  try {
+    principal = parsePrincipal(principalId);
+  } catch {
+    return { admitted: false, reason: "credential has no valid principal" };
+  }
+  if (principal.kind !== "user") {
+    return { admitted: false, reason: "credential is not a person's" };
+  }
+  return checkAdmission(
+    principal.id,
+    collectives,
+    lists.allowedCollectives,
+    lists.allowedUsers,
+  );
 }

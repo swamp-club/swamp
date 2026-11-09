@@ -15,7 +15,11 @@ For a team writing one v3 datastore through serve (team mode), see
 | `oauth` | `--auth-mode oauth` | Users authenticate via swamp-club              |
 
 OAuth mode requires `--allowed-collectives` or `--allowed-users` to control
-admission. Use `--admins` to grant admin access to specific principals.
+admission. Use `--admins` to grant admin access to specific principals. Removing
+someone from either list (and restarting serve) refuses their login tokens,
+integration links and open sessions on the next request or within 30 s. Adding
+them back restores the same credentials. Tokens minted with
+`swamp access token create` are not subject to admission.
 
 At startup, serve skips any `admins` or `allowed-users` username the provider
 does not know and logs an ERROR for it. A name that resolved before keeps its
