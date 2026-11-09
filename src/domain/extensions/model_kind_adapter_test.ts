@@ -1400,17 +1400,38 @@ Deno.test("register: a file newly declared in the manifest is read without re-re
       register();
       const def = modelRegistry.get(type);
       assertEquals(def?.extensionFilesRoot, dir);
-      assertEquals(await def?.readExtensionAdditionalFiles?.(), [
-        "scripts/a.py",
-      ]);
+      assertEquals(await def?.readExtensionDeclaredAssets?.(), {
+        additionalFiles: ["scripts/a.py"],
+        binaries: [],
+      });
 
       await writeManifest(manifestDeclaring(["scripts/a.py", "scripts/b.py"]));
-      assertEquals(await def?.readExtensionAdditionalFiles?.(), [
-        "scripts/a.py",
-        "scripts/b.py",
-      ]);
+      assertEquals(await def?.readExtensionDeclaredAssets?.(), {
+        additionalFiles: ["scripts/a.py", "scripts/b.py"],
+        binaries: [],
+      });
     },
   );
+});
+
+Deno.test("register: the reader returns the manifest's binaries beside its additionalFiles", async () => {
+  const manifest = [
+    manifestDeclaring(["layouts/swamp.json"]).trimEnd(),
+    "binaries:",
+    "  - layouts/swamp.svg",
+    "  - bin/tool",
+    "",
+  ].join("\n");
+  await withManifestExtension(manifest, async ({ type, register }) => {
+    register();
+    assertEquals(
+      await modelRegistry.get(type)?.readExtensionDeclaredAssets?.(),
+      {
+        additionalFiles: ["layouts/swamp.json"],
+        binaries: ["layouts/swamp.svg", "bin/tool"],
+      },
+    );
+  });
 });
 
 Deno.test("register: re-registering under an edited manifest sees the edit", async () => {
@@ -1421,8 +1442,8 @@ Deno.test("register: re-registering under an edited manifest sees the edit", asy
       await writeManifest(manifestDeclaring(["scripts/b.py"]));
       register();
       assertEquals(
-        await modelRegistry.get(type)?.readExtensionAdditionalFiles?.(),
-        ["scripts/b.py"],
+        await modelRegistry.get(type)?.readExtensionDeclaredAssets?.(),
+        { additionalFiles: ["scripts/b.py"], binaries: [] },
       );
     },
   );
@@ -1445,13 +1466,13 @@ Deno.test("register: a manifest corrupted after registration declares nothing an
         register();
         await writeManifest("additionalFiles: [unclosed\n");
         assertEquals(
-          await modelRegistry.get(type)?.readExtensionAdditionalFiles?.(),
-          [],
+          await modelRegistry.get(type)?.readExtensionDeclaredAssets?.(),
+          { additionalFiles: [], binaries: [] },
         );
         assertEquals(records.length, 1);
         assertStringIncludes(
           String(records[0].message),
-          "for additionalFiles; defaulting to empty",
+          "for declared assets; defaulting to empty",
         );
       },
     );

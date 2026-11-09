@@ -22,6 +22,7 @@ import { modelRegistry } from "../domain/models/model.ts";
 import { wordedError, wordedText } from "../domain/behavior_wording.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { DataPlaneClient } from "./data_plane_client.ts";
+import type { WithheldAsset } from "../domain/remote/protocol.ts";
 import { primaryExport } from "../domain/extensions/kind_adapter.ts";
 import {
   BEHAVIOR_EXPORT_NAME,
@@ -36,6 +37,7 @@ export const BUILTIN_BUNDLE_PREFIX = "builtin:";
 export interface LoadedBundle {
   modelDef: ModelDefinition;
   filesDir?: string;
+  withheldAssets?: readonly WithheldAsset[];
 }
 
 export class WorkerBundleCache {
@@ -91,10 +93,14 @@ export class WorkerBundleCache {
     if (js === null) {
       js = await this.#client.fetchBundle(fingerprint, signal);
       await Deno.mkdir(bundleDir, { recursive: true });
-      await Deno.writeTextFile(bundlePath, js);
+      await writeAtomically(bundlePath, new TextEncoder().encode(js), false);
     }
 
-    const filesDir = await this.#prefetchAssets(fingerprint, bundleDir, signal);
+    const { filesDir, withheld } = await this.#prefetchAssets(
+      fingerprint,
+      bundleDir,
+      signal,
+    );
 
     const module = await import(toFileUrl(bundlePath).href) as Record<
       string,
@@ -118,6 +124,7 @@ export class WorkerBundleCache {
         ? modelDef
         : { ...modelDef, extensionFilesRoot: filesDir },
       filesDir,
+      withheldAssets: withheld,
     };
   }
 
@@ -125,12 +132,16 @@ export class WorkerBundleCache {
     fingerprint: string,
     bundleDir: string,
     signal?: AbortSignal,
-  ): Promise<string | undefined> {
-    const files = await this.#client.listAssets(fingerprint, signal);
+  ): Promise<{ filesDir?: string; withheld: WithheldAsset[] }> {
+    const { files, executables, withheld } = await this.#client.listAssets(
+      fingerprint,
+      signal,
+    );
     if (files.length === 0) {
-      return undefined;
+      return { withheld };
     }
     const filesDir = join(bundleDir, "files");
+    const executable = new Set(executables);
     for (const relPath of files) {
       const target = join(filesDir, ...relPath.split("/"));
       try {
@@ -141,8 +152,45 @@ export class WorkerBundleCache {
       }
       const bytes = await this.#client.fetchAsset(fingerprint, relPath, signal);
       await Deno.mkdir(dirname(target), { recursive: true });
-      await Deno.writeFile(target, bytes);
+      await writeAtomically(target, bytes, executable.has(relPath));
     }
-    return filesDir;
+    return { filesDir, withheld };
+  }
+}
+
+/**
+ * dispatches on one worker share the cache dir but not this class, so a file
+ * appears only complete and with its final mode: a reader never sees a partial
+ * write, and a binary is never executed while still open for writing
+ */
+async function writeAtomically(
+  target: string,
+  bytes: Uint8Array,
+  executable: boolean,
+): Promise<void> {
+  const temp = `${target}.${crypto.randomUUID()}.tmp`;
+  try {
+    await Deno.writeFile(temp, bytes);
+    if (executable && Deno.build.os !== "windows") {
+      await Deno.chmod(temp, 0o755);
+    }
+    try {
+      await Deno.rename(temp, target);
+    } catch (error) {
+      // Windows refuses to replace a file another dispatch holds open; that
+      // dispatch already wrote the same fingerprinted bytes
+      if (!await exists(target)) throw error;
+    }
+  } finally {
+    await Deno.remove(temp).catch(() => {});
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }

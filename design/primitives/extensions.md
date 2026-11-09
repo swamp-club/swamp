@@ -1273,8 +1273,8 @@ Push rejects:
 ### Runtime access
 
 Method `execute` functions and report functions get a context with an
-`extensionFile(relPath)` helper. It turns a relative `additionalFiles` path into
-an absolute path, whether the extension was added with
+`extensionFile(relPath)` helper. It turns a relative `additionalFiles` or
+`binaries` path into an absolute path, whether the extension was added with
 `swamp extension source add` (relative to the manifest) or pulled from the
 registry (under `.swamp/pulled-extensions/<name>/files/`).
 
@@ -2337,7 +2337,9 @@ acceptable on its own (see Declared acceptances):
 The `binaries` manifest field declares executable host helpers. They skip the
 file-extension allowlist but get every other check (hidden files, symlinks, size
 limits, file count). On POSIX systems, executable mode bits survive publish and
-pull.
+pull, and a remote worker receives declared binaries with the
+`additionalFiles` and writes them executable (see
+[remote execution](../enablers/remote-execution.md)).
 
 On pull, the CLI warns the user to inspect declared binaries before use. The
 list is also sent to swamp-club as push metadata for display on extension pages.

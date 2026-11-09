@@ -1153,6 +1153,73 @@ Deno.test("DataPlane: /bundle/{fp}/file rejects undeclared file access", async (
   });
 });
 
+Deno.test("DataPlane: a binaries asset is listed as executable and served byte for byte", async () => {
+  await withHarness(async (h) => {
+    const assetsRoot = join(h.tempDir, "assets");
+    await Deno.mkdir(join(assetsRoot, "layouts"), { recursive: true });
+    const svg = new Uint8Array([0x3c, 0xff, 0xfe, 0x00]);
+    await Deno.writeTextFile(join(assetsRoot, "layouts", "swamp.json"), "{}");
+    await Deno.writeFile(join(assetsRoot, "layouts", "swamp.svg"), svg);
+    h.bundles.register("fp-bin", {
+      js: "export {};",
+      filesRoot: assetsRoot,
+      additionalFiles: ["layouts/swamp.json"],
+      binaries: ["layouts/swamp.svg"],
+      assetHashes: new Map([
+        [
+          "layouts/swamp.json",
+          await hashAssetBytes(new TextEncoder().encode("{}")),
+        ],
+        ["layouts/swamp.svg", await hashAssetBytes(svg)],
+      ]),
+    });
+
+    const list = await h.plane.handle(request("/bundle/fp-bin/files"));
+    assertEquals(await list!.json(), {
+      files: ["layouts/swamp.json", "layouts/swamp.svg"],
+      executables: ["layouts/swamp.svg"],
+      withheld: [],
+    });
+    const file = await h.plane.handle(
+      request("/bundle/fp-bin/file/layouts/swamp.svg"),
+    );
+    assertEquals(file?.status, 200);
+    assertEquals(new Uint8Array(await file!.arrayBuffer()), svg);
+  });
+});
+
+Deno.test("DataPlane: an undeclared asset is refused naming both manifest fields, and a declared one the fingerprint did not hash is not shipped", async () => {
+  await withHarness(async (h) => {
+    const assetsRoot = join(h.tempDir, "assets");
+    await Deno.mkdir(assetsRoot, { recursive: true });
+    await Deno.writeTextFile(join(assetsRoot, "refused"), "x");
+    await Deno.writeTextFile(join(assetsRoot, "undeclared"), "x");
+    h.bundles.register("fp-refused", {
+      js: "export {};",
+      filesRoot: assetsRoot,
+      binaries: ["refused"],
+      assetHashes: new Map(),
+    });
+
+    const undeclared = await h.plane.handle(
+      request("/bundle/fp-refused/file/undeclared"),
+    );
+    assertEquals(undeclared?.status, 404);
+    assertEquals(
+      (await undeclared!.json()).error,
+      "Asset not declared in manifest additionalFiles or binaries",
+    );
+    const refused = await h.plane.handle(
+      request("/bundle/fp-refused/file/refused"),
+    );
+    assertEquals(refused?.status, 404);
+    assertEquals(
+      (await refused!.json()).error,
+      "Asset not shipped with this bundle",
+    );
+  });
+});
+
 Deno.test("DataPlane: per-dispatch redactor scrubs secrets from written resources", async () => {
   await withHarness(async (h) => {
     const { SecretRedactor } = await import(

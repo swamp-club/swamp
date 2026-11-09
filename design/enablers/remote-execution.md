@@ -1235,8 +1235,11 @@ orchestrator's HTTP/2 data plane (`GET /bundle/{fingerprint}`) and loads it
 worker needs nothing pre-installed.
 
 The fingerprint is `sha256Hex(js)` over the bundled source, together with a
-hash of each declared asset's bytes when the extension has `additionalFiles`,
-computed at dispatch time (see `DispatchService.#ensureBundle`). A worker
+hash of each declared asset's bytes when the extension declares
+`additionalFiles` or `binaries`, computed at dispatch time (see
+`DispatchService.#ensureBundle`). A binary's entry is marked as one, so moving a
+file between the two fields changes the fingerprint; a bundle without binaries
+fingerprints as it did before binaries shipped. A worker
 caches what it has fetched, so a bundle ships at most once per worker per
 version.
 
@@ -1251,9 +1254,9 @@ itself; the step fails until serve registers the definition again (a reload or
 restart for a pulled extension, the next run's refresh for a repo-local one). A
 bundle already built for the definition keeps shipping, since it is the code
 serve runs. Assets are read at each dispatch, as serve's own runs read them, so
-an edited asset ships under a new fingerprint. So is the manifest's
-`additionalFiles` list: a file newly declared there ships on the next dispatch
-without a reload or restart, and a manifest that no longer parses declares
+an edited asset ships under a new fingerprint. So are the manifest's
+`additionalFiles` and `binaries` lists: a file newly declared there ships on the
+next dispatch without a reload or restart, and a manifest that no longer parses declares
 nothing, as it would after a restart. The data plane serves an asset
 only while its bytes match the hash in the fingerprint, and answers 409 for one
 changed between the dispatch and the fetch; the listing route lists only the
@@ -1269,11 +1272,24 @@ Co-located extension assets (files resolved through
 `context.extensionFile(relPath)`) are not inlined into the single-file JS
 bundle. `extensionFile()` is synchronous and must resolve a local path, so
 before running, the worker prefetches only the files declared in the manifest's
-`additionalFiles`, via `GET /bundle/{fingerprint}/files` +
+`additionalFiles` and `binaries`, via `GET /bundle/{fingerprint}/files` +
 `GET /bundle/{fingerprint}/file/{relPath}`. Both routes serve only the declared
 set. Undeclared files under the extension's `filesRoot` are never listed or
-served, so unrelated repository content is not exposed to remote workers.
-Assets are cached under the fingerprint like the bundle.
+served, so unrelated repository content is not exposed to remote workers. A
+declared file ships only if it is a regular file, not a symlink, whose real path
+lies inside the real `filesRoot`; one that is missing or fails that check is
+left out of the fingerprint, logged once at dispatch with the field and the
+reason, and refused if fetched. The listing carries those withheld entries too,
+so the worker's `extensionFile()` names the field and the reason instead of
+returning a path that does not exist; any other path gets the same "not found,
+check the manifest" error as a local run. The listing names which files came
+from
+`binaries`, and the worker writes those executable, as `swamp extension pull`
+does. Assets are cached under the fingerprint like the bundle. Dispatches on
+one worker share that cache, so the bundle and each asset are written to a temp
+file beside the target, given their final mode, and renamed into place: a
+concurrent dispatch never reads a partial file or runs a binary still open for
+writing.
 
 ### Pre-flight checks are skipped for remote steps; reports run at the orchestrator
 

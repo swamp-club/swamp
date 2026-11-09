@@ -29,6 +29,7 @@ import {
   type CheckDefinition,
   type CheckResult,
   type DataHandle,
+  type DeclaredExtensionAssets,
   type ExtensionMemberSet,
   FileOutputSpecSchema,
   type MethodContext,
@@ -720,17 +721,21 @@ function resolveExtensionAssets(
  * read on every call so a dispatch ships what the manifest declares now; an
  * unreadable manifest declares nothing, as it would after a restart
  */
-function createAdditionalFilesReader(
+function createDeclaredAssetsReader(
   manifestPath: string,
-): () => Promise<string[]> {
+): () => Promise<DeclaredExtensionAssets> {
   return async () => {
     try {
       const content = await Deno.readTextFile(manifestPath);
-      return parseExtensionManifest(content).additionalFiles;
+      const manifest = parseExtensionManifest(content);
+      return {
+        additionalFiles: manifest.additionalFiles,
+        binaries: manifest.binaries,
+      };
     } catch {
       logger
-        .warn`Failed to parse manifest at ${manifestPath} for additionalFiles; defaulting to empty`;
-      return [];
+        .warn`Failed to parse manifest at ${manifestPath} for declared assets; defaulting to empty`;
+      return { additionalFiles: [], binaries: [] };
     }
   };
 }
@@ -872,8 +877,8 @@ export const modelKindAdapter: KindAdapter = {
       context.repoDir,
     );
     modelDef.extensionFilesRoot = assets?.filesRoot;
-    modelDef.readExtensionAdditionalFiles = assets
-      ? createAdditionalFilesReader(assets.manifestPath)
+    modelDef.readExtensionDeclaredAssets = assets
+      ? createDeclaredAssetsReader(assets.manifestPath)
       : undefined;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;
@@ -920,8 +925,8 @@ export const modelKindAdapter: KindAdapter = {
       context.repoDir,
     );
     modelDef.extensionFilesRoot = assets?.filesRoot;
-    modelDef.readExtensionAdditionalFiles = assets
-      ? createAdditionalFilesReader(assets.manifestPath)
+    modelDef.readExtensionDeclaredAssets = assets
+      ? createDeclaredAssetsReader(assets.manifestPath)
       : undefined;
     modelDef.extensionName = context.extensionName;
     modelDef.sourceFingerprint = context.sourceFingerprint;

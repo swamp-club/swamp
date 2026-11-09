@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { WithheldAsset } from "../domain/remote/protocol.ts";
+
 /**
  * fingerprints are content hashes, so entries never change once registered and
  * a worker caches them forever
@@ -26,10 +28,14 @@ export interface RegisteredBundle {
   js: string;
   filesRoot?: string;
   /**
-   * only these files are served to workers; an empty or undefined list ships no
-   * co-located assets
+   * only these files and binaries are served to workers; with both empty or
+   * undefined no co-located assets ship
    */
   additionalFiles?: string[];
+  /** served like additionalFiles, and written executable by the worker */
+  binaries?: string[];
+  /** listed to the worker so its extensionFile() can say why one is absent */
+  withheld?: readonly WithheldAsset[];
   /**
    * content hash of each asset when the fingerprint was computed; the data
    * plane serves only bytes that still match, so a fingerprint never names
