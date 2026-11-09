@@ -69,10 +69,8 @@ export type TransitionResult<T> =
   | { readonly write: null; readonly value: T };
 
 /**
- * every change to one delegation runs under its record's lock, reading the
- * record fresh after the lock's pull; a change is returned only once it is
- * published (and replicated on v3), so a caller never hands out a token no
- * other node will honour
+ * every change runs under the record's lock and is returned only once published
+ * (and replicated on v3), so no caller hands out a token another node won't honour
  */
 export class DelegationStore {
   readonly #deps: DelegationStoreDeps;
