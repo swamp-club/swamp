@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { Ceiling } from "../src/domain/access/ceiling.ts";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
@@ -36,6 +41,7 @@ import {
   setConnectionDelegation,
 } from "../src/serve/handlers/shared.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
+import { RunEventBuffer } from "../src/serve/run_event_buffer.ts";
 import { handleMessage, MAX_ACTIVE_REQUESTS } from "../src/serve/connection.ts";
 import { handleHttpActionRequest } from "../src/serve/http_action_route.ts";
 import { SERVE_ACTION_PATH } from "../src/serve/protocol.ts";
@@ -47,9 +53,11 @@ import {
 import {
   CALLER,
   createServeCtx,
+  errorFrame,
   type Frame,
   grant,
   saveGatedWorkflow,
+  sendRequest,
   type ServeRepo,
   testDelegationOf,
   withServeRepo,
@@ -2123,4 +2131,313 @@ test("the action route: a run above the ceiling is refused, and an empty ceiling
       assertEquals(approvals.status, 403, JSON.stringify(approvals.body));
     },
   );
+});
+
+class WatchedRegistry extends ActiveRunRegistry {
+  listed = 0;
+  override list(): ReturnType<ActiveRunRegistry["list"]> {
+    this.listed++;
+    return super.list();
+  }
+}
+
+interface HeldWindow {
+  registry: WatchedRegistry;
+  release: () => void;
+  tasks: Promise<void>[];
+}
+
+/**
+ * the run saves suspended, then awaits ctx.confirmReplicated before it leaves
+ * the registry, so a held confirmation holds the run in that window
+ */
+async function withHeldWindow(
+  grants: ReturnType<typeof grant>[],
+  fn: (
+    route: Route,
+    repo: ServeRepo,
+    ctx: ConnectionContext,
+    held: HeldWindow,
+  ) => Promise<void>,
+): Promise<void> {
+  await withServeRepo(async (repo) => {
+    const registry = new WatchedRegistry();
+    let release!: () => void;
+    const replicated = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ctx = {
+      ...createServeCtx(repo, grants, { activeRunRegistry: registry }),
+      confirmReplicated: () => replicated,
+    } as ConnectionContext;
+    const route = startRoute(ctx);
+    const tasks: Promise<void>[] = [];
+    try {
+      await fn(route, repo, ctx, { registry, release, tasks });
+    } finally {
+      release();
+      // a started run's handler pushes and replies after it leaves the registry
+      await Promise.allSettled(tasks);
+      await settled(ctx).catch(() => {});
+      await route.shutdown();
+    }
+  });
+}
+
+/**
+ * started over the WebSocket: a held confirmation also holds an HTTP start's
+ * reply, which waits for its handler
+ */
+async function suspendInWindow(
+  repo: ServeRepo,
+  ctx: ConnectionContext,
+  held: HeldWindow,
+): Promise<
+  { name: string; runId: string; waiting: string; suspendedAt: string }
+> {
+  const name = `winding-${crypto.randomUUID()}`;
+  const workflow = Workflow.create({
+    name,
+    jobs: ["a", "b"].map((job) =>
+      Job.create({
+        name: job,
+        steps: [
+          Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+        ],
+      })
+    ),
+  });
+  await repo.repoContext.workflowRepo.save(workflow);
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send() {},
+    close() {},
+  } as unknown as WebSocket;
+  const task = handleMessage(
+    socket,
+    ctx,
+    new Map(),
+    new MessageEvent("message", {
+      data: JSON.stringify({
+        type: "workflow.run",
+        id: crypto.randomUUID(),
+        payload: { workflowIdOrName: name },
+      }),
+    }),
+    CALLER,
+  );
+  if (task) held.tasks.push(task);
+  let run: WorkflowRun | undefined;
+  await waitFor(async () => {
+    run = (await repo.repoContext.workflowRunRepo.findAllByWorkflowId(
+      workflow.id,
+    ))[0];
+    return run?.status === "suspended";
+  }, "the run saved suspended");
+  assertEquals(ctx.activeRunRegistry?.size, 1, "the run is still registered");
+  const waiting = ["a", "b"].find((job) =>
+    run!.getJob(job)!.getStep("gate")!.status === "waiting_approval"
+  )!;
+  const suspendedAt = run!.getJob(waiting)!.getStep("gate")!.startedAt!
+    .toISOString();
+  return { name, runId: run!.id, waiting, suspendedAt };
+}
+
+async function decideInWindow<T>(
+  held: HeldWindow,
+  send: () => Promise<T>,
+): Promise<T> {
+  const before = held.registry.listed;
+  const reply = send();
+  await waitFor(
+    () => held.registry.listed > before,
+    "the request is waiting for the run",
+  );
+  held.release();
+  return await reply;
+}
+
+const windowDecision = (
+  type: "workflow.approve" | "workflow.reject",
+  target: { name: string; runId: string; suspendedAt: string },
+  extra: Record<string, unknown> = {},
+) => ({
+  type,
+  payload: {
+    workflowIdOrName: target.name,
+    runId: target.runId,
+    stepName: "gate",
+    suspendedAt: target.suspendedAt,
+    ...extra,
+  },
+});
+
+test("an approval sent while a suspended run is still leaving waits for it, then decides", async () => {
+  await withHeldWindow([everyAction()], async (route, repo, ctx, held) => {
+    const target = await suspendInWindow(repo, ctx, held);
+
+    const approved = await decideInWindow(
+      held,
+      () =>
+        route.post(
+          windowDecision("workflow.approve", target, {
+            jobName: target.waiting,
+          }),
+        ),
+    );
+
+    assertEquals(approved.status, 200, JSON.stringify(approved.body));
+  });
+});
+
+test("a step name in two jobs sent while the run is still leaving is refused as ambiguous, not busy", async () => {
+  await withHeldWindow([everyAction()], async (route, repo, ctx, held) => {
+    const target = await suspendInWindow(repo, ctx, held);
+
+    const refused = await decideInWindow(
+      held,
+      () => route.post(windowDecision("workflow.approve", target)),
+    );
+
+    assertEquals(refused.status, 409);
+    assertEquals(refused.body.code, "ambiguous_gate");
+  });
+});
+
+test("a rejection sent while a suspended run is still leaving waits for it, then decides", async () => {
+  await withHeldWindow([everyAction()], async (route, repo, ctx, held) => {
+    const target = await suspendInWindow(repo, ctx, held);
+
+    const rejected = await decideInWindow(
+      held,
+      () =>
+        route.post(
+          windowDecision("workflow.reject", target, {
+            jobName: target.waiting,
+          }),
+        ),
+    );
+
+    assertEquals(rejected.status, 200, JSON.stringify(rejected.body));
+  });
+});
+
+test("a resume sent while a suspended run is still leaving waits for it, then gets the run's own answer instead of busy", async () => {
+  await withHeldWindow([everyAction()], async (_route, repo, ctx, held) => {
+    const target = await suspendInWindow(repo, ctx, held);
+
+    const frames = await decideInWindow(
+      held,
+      () =>
+        sendRequest(
+          ctx,
+          {
+            type: "workflow.resume",
+            id: crypto.randomUUID(),
+            payload: { workflowIdOrName: target.name, runId: target.runId },
+          },
+          CALLER,
+          { awaitRuns: false },
+        ),
+    );
+
+    const error = errorFrame(frames)?.error;
+    assertEquals(error?.code, "workflow_resume_failed", JSON.stringify(frames));
+    assertStringIncludes(error!.message, "still awaiting approval");
+  });
+});
+
+test("a caller refused the decision does not wait for a run still leaving, and is audited once", async () => {
+  // a run grant implies approve here, so the refused caller may only read
+  const readOnly = grant({
+    subject: { kind: "user", name: "other" },
+    actions: ["read"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  await withHeldWindow(
+    [everyAction(), readOnly],
+    async (route, repo, ctx, held) => {
+      const target = await suspendInWindow(repo, ctx, held);
+      const audit = capturingAudit(ctx);
+      const before = held.registry.listed;
+
+      const refused = await route.post(
+        windowDecision("workflow.approve", target, {
+          jobName: target.waiting,
+        }),
+        { token: "other.secret" },
+      );
+
+      assertEquals(refused.status, 403, JSON.stringify(refused.body));
+      assertEquals(held.registry.listed, before);
+      assertEquals(
+        audit.filter((e) => e.outcome === "denied").length,
+        1,
+        JSON.stringify(audit),
+      );
+    },
+  );
+});
+
+/** an entry with no workflow id is never waited for, so it holds the run */
+function holdRun(ctx: ConnectionContext, runId: string): () => void {
+  ctx.activeRunRegistry!.register({
+    runId,
+    kind: "workflow-run",
+    resourceName: "held",
+    buffer: new RunEventBuffer(10),
+    controller: new AbortController(),
+    startedAt: new Date(),
+    completion: new Promise<void>(() => {}),
+    principalId: null,
+  });
+  return () => ctx.activeRunRegistry!.deregister(runId);
+}
+
+test("a decision on a run another operation holds reports a refusal a retry cannot change, and busy otherwise", async () => {
+  await withRoute([everyAction()], async (route, repo, ctx) => {
+    const name = `held-${crypto.randomUUID()}`;
+    await repo.repoContext.workflowRepo.save(Workflow.create({
+      name,
+      jobs: ["a", "b"].map((job) =>
+        Job.create({
+          name: job,
+          steps: [
+            Step.create({ name: "gate", task: StepTask.manualApproval("ok?") }),
+          ],
+        })
+      ),
+    }));
+    const started = await route.post(start(name, crypto.randomUUID()));
+    assertEquals(started.status, 202, JSON.stringify(started.body));
+    await settled(ctx);
+    const runId = started.body.data.runId as string;
+    const run = (await storedRun(repo, name, runId))!;
+    const waiting = ["a", "b"].find((job) =>
+      run.getJob(job)!.getStep("gate")!.status === "waiting_approval"
+    )!;
+    const target = {
+      name,
+      runId,
+      suspendedAt: run.getJob(waiting)!.getStep("gate")!.startedAt!
+        .toISOString(),
+    };
+
+    const unhold = holdRun(ctx, runId);
+    try {
+      const ambiguous = await route.post(
+        windowDecision("workflow.approve", target),
+      );
+      assertEquals(ambiguous.status, 409);
+      assertEquals(ambiguous.body.code, "ambiguous_gate");
+
+      const open = await route.post(
+        windowDecision("workflow.approve", target, { jobName: waiting }),
+      );
+      assertEquals(open.status, 409);
+      assertEquals(open.body.code, "busy");
+    } finally {
+      unhold();
+    }
+  });
 });
