@@ -132,7 +132,10 @@ import {
 } from "../../serve/trigger_audit.ts";
 import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
 import { createWebhookUpdater } from "../../serve/webhook_reload.ts";
-import { createTokenAdmissionChecker } from "../../serve/token_admission.ts";
+import {
+  cachedUnlessRejected,
+  createTokenAdmissionChecker,
+} from "../../serve/token_admission.ts";
 import { hasOAuthAccessToken } from "../../serve/oauth_access_token_lookup.ts";
 import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { principalToString } from "../../domain/access/principal.ts";
@@ -5742,18 +5745,19 @@ export const serveCommand = new Command()
     const datastoreQuarantine = new ControlPlaneQuarantineStore(
       controlPlaneStore,
     );
-    let admissionVaults: Promise<VaultService> | undefined;
+    const admissionVaults = cachedUnlessRejected(() =>
+      VaultService.fromRepository(resolvedRepoDir, {
+        defaultVaultName: repoMarker?.defaultVault,
+      })
+    );
     // read at call time from the shared auth config, so later list changes apply
     const tokenAdmission = authConfig.mode === "oauth"
       ? createTokenAdmissionChecker({
         lists: () => authConfig,
         hasStoredLogin: (token) =>
-          withoutVaultAccess(async () => {
-            admissionVaults ??= VaultService.fromRepository(resolvedRepoDir, {
-              defaultVaultName: repoMarker?.defaultVault,
-            });
-            return await hasOAuthAccessToken(await admissionVaults, token);
-          }),
+          withoutVaultAccess(async () =>
+            await hasOAuthAccessToken(await admissionVaults(), token)
+          ),
       })
       : null;
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =

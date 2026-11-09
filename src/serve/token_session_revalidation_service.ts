@@ -125,7 +125,6 @@ export interface TokenSessionRevalidationDeps {
   terminateSessions(name: string, options: TokenSessionCloseOptions): number;
   /** a delegation's sessions are checked against the directory, never a token record */
   delegationStanding?(id: string): string;
-  /** the person a standing delegation acts for, for the admission check */
   delegationPerson?(
     id: string,
   ):

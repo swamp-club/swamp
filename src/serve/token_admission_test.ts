@@ -20,7 +20,10 @@
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import type { AdmissionLists } from "../domain/access/admission.ts";
-import { createTokenAdmissionChecker } from "./token_admission.ts";
+import {
+  cachedUnlessRejected,
+  createTokenAdmissionChecker,
+} from "./token_admission.ts";
 
 await initializeLogging({});
 
@@ -132,4 +135,25 @@ Deno.test("TokenAdmissionChecker: a delegation is checked on its linked person",
   assertEquals(checker.delegation(person).admitted, true);
   setLists(BOB_ONLY);
   assertEquals(checker.delegation(person).admitted, false);
+});
+
+Deno.test("cachedUnlessRejected: a failed setup is retried, a successful one is shared", async () => {
+  let calls = 0;
+  const get = cachedUnlessRejected(() => {
+    calls++;
+    return calls === 1
+      ? Promise.reject(new Error("vault offline"))
+      : Promise.resolve(`vaults-${calls}`);
+  });
+
+  let failed = false;
+  try {
+    await get();
+  } catch {
+    failed = true;
+  }
+  assertEquals(failed, true);
+  assertEquals(await get(), "vaults-2");
+  assertEquals(await get(), "vaults-2");
+  assertEquals(calls, 2);
 });

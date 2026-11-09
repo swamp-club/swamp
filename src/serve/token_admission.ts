@@ -33,7 +33,6 @@ const OUTSIDE_ADMISSION: AdmissionResult = {
   reason: "credential was not issued by a login",
 };
 
-/** Admission of credentials already issued, read against the lists in force. */
 export interface TokenAdmissionChecker {
   serverToken(
     token:
@@ -107,5 +106,22 @@ export function createTokenAdmissionChecker(
         deps.lists(),
       );
     },
+  };
+}
+
+/** Shares one pending result; a rejection is dropped so the next call retries. */
+export function cachedUnlessRejected<T>(
+  factory: () => Promise<T>,
+): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => {
+    if (pending === undefined) {
+      const attempt = factory();
+      pending = attempt;
+      attempt.catch(() => {
+        if (pending === attempt) pending = undefined;
+      });
+    }
+    return pending;
   };
 }
