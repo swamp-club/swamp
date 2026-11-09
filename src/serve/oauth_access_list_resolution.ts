@@ -381,3 +381,52 @@ export async function checkAccessLists(
     return { entries, wouldStart: false, refusal: err.message };
   }
 }
+
+export interface PersonalCollective {
+  readonly slug: string;
+  readonly username: string;
+  readonly message: string;
+}
+
+function personalCollective(slug: string): PersonalCollective {
+  return {
+    slug,
+    username: slug,
+    message:
+      `allowed collective '${slug}' is the personal collective of user '${slug}': ` +
+      "swamp-club leaves personal collectives out of OAuth logins, so it admits no one. " +
+      `Add '${slug}' to --allowed-users / auth.allowed-users to admit that user.`,
+  };
+}
+
+/**
+ * a personal collective's slug is its owner's username, and swamp-club refuses
+ * a username another collective's slug holds, so a slug that is a username is
+ * personal
+ */
+export function personalCollectivesAmongResolved(
+  allowedCollectives: readonly string[],
+  resolved: readonly ResolvedEntry[],
+): PersonalCollective[] {
+  const usernames = new Set(resolved.map((r) => r.username));
+  return allowedCollectives
+    .filter((slug) => usernames.has(slug))
+    .map(personalCollective);
+}
+
+/** a lookup that fails says nothing, so it is never reported as personal */
+export async function findPersonalCollectives(
+  allowedCollectives: readonly string[],
+  resolve: UsernameResolver,
+): Promise<PersonalCollective[]> {
+  const found: PersonalCollective[] = [];
+  for (const slug of allowedCollectives) {
+    try {
+      await resolve(slug);
+      found.push(personalCollective(slug));
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}

@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+
+const logger = getSwampLogger(["serve", "oauth-client"]);
+
 export interface DeviceGrantResponse {
   readonly deviceCode: string;
   readonly userCode: string;
@@ -41,6 +45,8 @@ export interface OAuthUserInfo {
   readonly username?: string;
   readonly collectives: string[];
   readonly groups: string[];
+  /** the userinfo response had no groupsField claim at all */
+  readonly collectivesFieldAbsent?: true;
 }
 
 export type DeviceGrantPollErrorCode =
@@ -170,6 +176,20 @@ export async function getUserInfo(
   const collectives = Array.isArray(rawCollectives)
     ? rawCollectives.filter((c): c is string => typeof c === "string")
     : [];
+  if (rawCollectives !== undefined && !Array.isArray(rawCollectives)) {
+    logger.warn(
+      "Userinfo field {groupsField} is not a list, so no collectives were read from it",
+      { groupsField },
+    );
+  } else if (
+    Array.isArray(rawCollectives) &&
+    collectives.length < rawCollectives.length
+  ) {
+    logger.warn(
+      "Userinfo field {groupsField} held {dropped} entries that are not strings; they were ignored",
+      { groupsField, dropped: rawCollectives.length - collectives.length },
+    );
+  }
   // IdP groups only: collectives admit, they never stand in for groups.
   const rawGroups = data.groups;
   const groups = Array.isArray(rawGroups)
@@ -185,6 +205,9 @@ export async function getUserInfo(
       : {}),
     collectives,
     groups,
+    ...(rawCollectives === undefined
+      ? { collectivesFieldAbsent: true as const }
+      : {}),
   };
 }
 

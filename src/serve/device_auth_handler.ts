@@ -176,6 +176,18 @@ function emitAuthAuditEvent(
   return event;
 }
 
+function collectivesRead(
+  userInfo: Pick<OAuthUserInfo, "collectives" | "collectivesFieldAbsent">,
+  groupsField: string,
+): string {
+  if (userInfo.collectivesFieldAbsent) {
+    return `userinfo has no ${groupsField} field`;
+  }
+  return userInfo.collectives.length > 0
+    ? `${groupsField} read from userinfo: ${userInfo.collectives.join(", ")}`
+    : `${groupsField} read from userinfo: none`;
+}
+
 function jsonResponse(
   status: number,
   body: Record<string, unknown>,
@@ -340,16 +352,25 @@ async function handleDeviceToken(
     );
 
     if (!admissionResult.admitted) {
-      logger.info("Admission denied for {sub}: {reason}", {
-        sub: userInfo.sub,
-        reason: admissionResult.reason,
-      });
+      const read = collectivesRead(userInfo, deps.authConfig.groupsField);
+      if (deps.authConfig.allowedCollectives.length > 0) {
+        logger.info(
+          "Admission denied for {sub}: {reason}; {read}. swamp-club leaves personal collectives out of userinfo; admit a personal collective owner with --allowed-users",
+          { sub: userInfo.sub, reason: admissionResult.reason, read },
+        );
+      } else {
+        logger.info("Admission denied for {sub}: {reason}; {read}", {
+          sub: userInfo.sub,
+          reason: admissionResult.reason,
+          read,
+        });
+      }
       emitAuthAuditEvent(
         deps,
         "auth.login.denied",
         "denied",
         userInfo.sub,
-        admissionResult.reason,
+        `${admissionResult.reason}; ${read}`,
         undefined,
         userInfo,
       );

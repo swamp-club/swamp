@@ -482,7 +482,10 @@ Before authorization, an admission gate decides who may connect at all. In
 OAuth mode the operator must configure at least one of:
 
 - `--allowed-collectives`: the user must belong to one of these collectives,
-  checked against the IdP's group claims.
+  checked against the collectives the IdP reports in userinfo. swamp-club
+  leaves personal collectives out, so a personal collective admits no one; its
+  owner is admitted with `--allowed-users`. Serve and `serve check-config` warn
+  about an allowed collective that is a personal one.
 - `--allowed-users`: the user's OAuth sub must be in this list.
 
 If neither is set, the server refuses to start rather than admit anyone.
