@@ -19,7 +19,8 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import type { WebhookEndpoint } from "./webhook.ts";
+import type { WebhookConfigEntry } from "./serve_config.ts";
+import { type WebhookEndpoint, WebhookEnvironmentError } from "./webhook.ts";
 import {
   checkRouteFiles,
   checkWebhookRoutesDir,
@@ -267,6 +268,176 @@ Deno.test("parseRouteFiles: tags file routes and refuses only the file that fail
   );
   assertEquals(result.refused.map((r) => r.message), [
     "Refused webhook route file a.yaml (route /hooks/a): Vault 'v' returned an empty value for key 'a'",
+  ]);
+});
+
+function outageEntry(
+  overrides: Partial<WebhookConfigEntry> = {},
+): WebhookConfigEntry {
+  return {
+    route: "/hooks/a",
+    workflow: "w",
+    secret: "@vault=v:a",
+    scheme: "@acme/hook",
+    config: { mode: "push", limits: { burst: 2, rate: 5 } },
+    ...overrides,
+  };
+}
+
+function liveFileEndpoint(
+  file: string,
+  entry: WebhookConfigEntry,
+): WebhookEndpoint {
+  return endpoint(entry.route, {
+    secret: "live-secret",
+    source: "file",
+    file,
+    routeFileEntry: entry,
+  });
+}
+
+const outage = () =>
+  Promise.reject(new WebhookEnvironmentError("backend timed out"));
+
+Deno.test("parseRouteFiles: records the entry each file endpoint came from", async () => {
+  const entry = outageEntry();
+  const result = await parseRouteFiles(
+    [{ file: "a.yaml", entry }],
+    (configs) => Promise.resolve([endpoint(configs[0].route)]),
+  );
+  assertEquals(result.endpoints[0].routeFileEntry, entry);
+  assertEquals(result.kept, []);
+});
+
+Deno.test("parseRouteFiles: an outage keeps an unchanged file's live endpoint", async () => {
+  const live = liveFileEndpoint("a.yaml", outageEntry());
+
+  const result = await parseRouteFiles(
+    [{ file: "a.yaml", entry: outageEntry() }],
+    outage,
+    [live],
+  );
+
+  assertEquals(result.endpoints, [live]);
+  assertEquals(result.refused, []);
+  assertEquals(result.kept, [{
+    file: "a.yaml",
+    route: "/hooks/a",
+    message:
+      "Kept the live endpoint for webhook route file a.yaml (route /hooks/a), unchanged since it last loaded: backend timed out",
+  }]);
+});
+
+Deno.test("parseRouteFiles: reordered keys still count as an unchanged file", async () => {
+  const live = liveFileEndpoint("a.yaml", outageEntry());
+  const reordered: WebhookConfigEntry = {
+    config: { limits: { rate: 5, burst: 2 }, mode: "push" },
+    secret: "@vault=v:a",
+    scheme: "@acme/hook",
+    workflow: "w",
+    route: "/hooks/a",
+  };
+
+  const result = await parseRouteFiles(
+    [{ file: "a.yaml", entry: reordered }],
+    outage,
+    [live],
+  );
+
+  assertEquals(result.endpoints, [live]);
+});
+
+Deno.test("parseRouteFiles: an outage refuses a file that changed since it loaded", async () => {
+  for (
+    const changed of [
+      outageEntry({ secret: "@vault=v:rotated" }),
+      outageEntry({ workflow: "other" }),
+      outageEntry({ config: { mode: "push", limits: { burst: 3, rate: 5 } } }),
+    ]
+  ) {
+    const result = await parseRouteFiles(
+      [{ file: "a.yaml", entry: changed }],
+      outage,
+      [liveFileEndpoint("a.yaml", outageEntry())],
+    );
+    assertEquals(result.endpoints, []);
+    assertEquals(result.kept, []);
+    assertEquals(result.refused.map((r) => r.message), [
+      "Refused webhook route file a.yaml (route /hooks/a): backend timed out",
+    ]);
+  }
+});
+
+Deno.test("parseRouteFiles: YAML timestamps and binary values count toward an unchanged file", async () => {
+  const withValues = (since: string, bytes: number[]) =>
+    outageEntry({
+      config: { since: new Date(since), key: new Uint8Array(bytes) },
+    });
+  const live = liveFileEndpoint(
+    "a.yaml",
+    withValues("2024-01-01T00:00:00Z", [1, 2]),
+  );
+
+  const same = await parseRouteFiles(
+    [{ file: "a.yaml", entry: withValues("2024-01-01T00:00:00Z", [1, 2]) }],
+    outage,
+    [live],
+  );
+  assertEquals(same.endpoints, [live]);
+
+  for (
+    const changed of [
+      withValues("2025-06-01T00:00:00Z", [1, 2]),
+      withValues("2024-01-01T00:00:00Z", [1, 3]),
+      outageEntry({
+        config: { since: "2024-01-01T00:00:00.000Z", key: [1, 2] },
+      }),
+    ]
+  ) {
+    const result = await parseRouteFiles(
+      [{ file: "a.yaml", entry: changed }],
+      outage,
+      [live],
+    );
+    assertEquals(result.endpoints, []);
+    assertEquals(result.refused.length, 1);
+  }
+});
+
+Deno.test("parseRouteFiles: an outage refuses a file with no live endpoint of its own", async () => {
+  const entry = outageEntry();
+  for (
+    const previous of [
+      [],
+      [liveFileEndpoint("other.yaml", entry)],
+      [endpoint("/hooks/a", { source: "config", routeFileEntry: entry })],
+      [endpoint("/hooks/a", { source: "file", file: "a.yaml" })],
+    ]
+  ) {
+    const result = await parseRouteFiles(
+      [{ file: "a.yaml", entry }],
+      outage,
+      previous,
+    );
+    assertEquals(result.endpoints, []);
+    assertEquals(result.kept, []);
+    assertEquals(result.refused.length, 1);
+  }
+});
+
+Deno.test("parseRouteFiles: a refusal about the file is not kept even with a live endpoint", async () => {
+  const live = liveFileEndpoint("a.yaml", outageEntry());
+
+  const result = await parseRouteFiles(
+    [{ file: "a.yaml", entry: outageEntry() }],
+    () => Promise.reject(new Error("Secret 'a' not found in vault 'v'")),
+    [live],
+  );
+
+  assertEquals(result.endpoints, []);
+  assertEquals(result.kept, []);
+  assertEquals(result.refused.map((r) => r.message), [
+    "Refused webhook route file a.yaml (route /hooks/a): Secret 'a' not found in vault 'v'",
   ]);
 });
 

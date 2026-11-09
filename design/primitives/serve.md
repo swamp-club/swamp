@@ -1447,7 +1447,16 @@ and two files claiming one route (both are refused, each error naming the other
 file) are refused too. Each file is judged and parsed on
 its own, vault lookup and extension scheme resolution included, so a bad file is
 refused alone with an error naming the file and route, and never stops serve or
-the other routes. A routes directory that cannot be used (unreadable, or inside
+the other routes. A failure about the environment rather than the file (a
+configured vault that cannot answer, vaults that cannot be opened, a webhook type
+lookup that throws) raises `WebhookEnvironmentError`
+(`src/serve/webhook.ts`); on a reload a file that fails that way keeps its live
+endpoint, with the secret resolved when it last loaded, as long as the same file
+still holds the same route and an unchanged entry, and the reload reports it as
+kept among its errors. A missing key in a reachable vault, a refused read, an
+unconfigured vault, an empty value, an uninstalled scheme or an edited file still
+refuses it, and at startup there is no live endpoint to keep, so an outage
+refuses the file there too. A routes directory that cannot be used (unreadable, or inside
 extension code) loads no file routes and is reported once
 (`webhook_routes_dir_refused` at startup, a reload error), while serve starts
 and operator routes still apply. A `serve.yaml` or `--webhook` route on the same

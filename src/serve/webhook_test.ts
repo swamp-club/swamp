@@ -22,6 +22,7 @@ import {
   currentVaultAccess,
   RunVaultAccess,
   runWithVaultAccess,
+  VaultAccessDeniedError,
 } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
@@ -43,9 +44,11 @@ import {
   resolveSecret,
   RUN_ID_HEADER,
   type WebhookEndpoint,
+  WebhookEnvironmentError,
   type WebhookEvent,
   WebhookService,
 } from "./webhook.ts";
+import { SecretNotFoundError } from "../domain/vaults/secret_not_found_error.ts";
 import { hmacSha256Hex } from "./webhook_verifiers.ts";
 import type { VaultSecretResolver } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -398,6 +401,92 @@ Deno.test("resolveSecret: throws for @vault= when vault get fails", async () => 
     Error,
     "could not be resolved from vault",
   );
+});
+
+function failingVault(
+  error: unknown,
+  vaultNames?: string[],
+): VaultSecretResolver {
+  return {
+    get: () => Promise.reject(error),
+    ...(vaultNames !== undefined ? { getVaultNames: () => vaultNames } : {}),
+  };
+}
+
+Deno.test("resolveSecret: a configured vault that cannot answer is an environment failure", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=hooks:key",
+        failingVault(new Error("backend timed out"), ["hooks"]),
+      ),
+    WebhookEnvironmentError,
+    "could not be resolved from vault 'hooks', key 'key'",
+  );
+  assertStringIncludes(error.message, "backend timed out");
+});
+
+Deno.test("resolveSecret: a provider's own UserError from a configured vault is an environment failure", async () => {
+  await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=hooks:key",
+        failingVault(new UserError("op CLI not signed in"), ["hooks"]),
+      ),
+    WebhookEnvironmentError,
+    "op CLI not signed in",
+  );
+});
+
+Deno.test("resolveSecret: a missing key in a reachable vault is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=hooks:key",
+        failingVault(new SecretNotFoundError("hooks", "key"), ["hooks"]),
+      ),
+    SecretNotFoundError,
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+});
+
+Deno.test("resolveSecret: an unconfigured vault is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret(
+        "@vault=missing:key",
+        failingVault(new Error("Vault 'missing' not found"), ["hooks"]),
+      ),
+    UserError,
+    "could not be resolved from vault 'missing'",
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+});
+
+Deno.test("resolveSecret: a refused vault read is a refusal, not an outage", async () => {
+  const denied = new VaultAccessDeniedError({
+    vaultName: "hooks",
+    action: "read",
+    reason: "no grant allows it",
+  });
+  const error = await assertRejects(
+    () => resolveSecret("@vault=hooks:key", failingVault(denied, ["hooks"])),
+    VaultAccessDeniedError,
+  );
+  assertEquals(error, denied);
+});
+
+Deno.test("resolveSecret: an empty value from a reachable vault is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveSecret("@vault=hooks:key", {
+        get: () => Promise.resolve(""),
+        getVaultNames: () => ["hooks"],
+      }),
+    UserError,
+    "returned an empty value",
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
 });
 
 Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", async () => {
@@ -1055,6 +1144,30 @@ Deno.test("resolveExtensionWebhookEndpoints: rejects an unresolvable type", asyn
   assertStringIncludes(error.message, "swamp extension search");
 });
 
+Deno.test("resolveExtensionWebhookEndpoints: a type lookup that throws is an environment failure", async () => {
+  await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint("@test/flaky", {})],
+        () => Promise.reject(new Error("registry unreachable")),
+      ),
+    WebhookEnvironmentError,
+    "registry unreachable",
+  );
+});
+
+Deno.test("resolveExtensionWebhookEndpoints: an uninstalled type is a refusal, not an outage", async () => {
+  const error = await assertRejects(
+    () =>
+      resolveExtensionWebhookEndpoints(
+        [extensionEndpoint("@test/nope", {})],
+        () => Promise.resolve(false),
+      ),
+    UserError,
+  );
+  assertEquals(error instanceof WebhookEnvironmentError, false);
+});
+
 Deno.test("resolveExtensionWebhookEndpoints: leaves built-in endpoints untouched", async () => {
   const builtin = await parseWebhookFlag("/hooks/gh:deploy:secret");
   const resolved = await resolveExtensionWebhookEndpoints(
@@ -1083,6 +1196,24 @@ Deno.test("updateEndpoints: swaps active endpoints and returns change count", as
   assertEquals(changed, 2);
   assertEquals(service.listEndpoints().length, 1);
   assertEquals(service.listEndpoints()[0].route, "/hooks/b");
+});
+
+Deno.test("currentEndpoints: returns the table the last update set", async () => {
+  const ep1 = await parseWebhookFlag("/hooks/a:wf-a:secret-a");
+  const ep2 = await parseWebhookFlag("/hooks/b:wf-b:secret-b");
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints: [ep1],
+  });
+  assertEquals(service.currentEndpoints(), [ep1]);
+
+  service.updateEndpoints([ep2]);
+
+  assertEquals(service.currentEndpoints(), [ep2]);
+  assertEquals(service.currentEndpoints()[0].secret, "secret-b");
 });
 
 Deno.test("updateEndpoints: returns 0 when endpoints are unchanged", async () => {

@@ -31,7 +31,7 @@ import {
   validateWebhookEntry,
   type WebhookConfigEntry,
 } from "./serve_config.ts";
-import type { WebhookEndpoint } from "./webhook.ts";
+import { type WebhookEndpoint, WebhookEnvironmentError } from "./webhook.ts";
 import { fileRouteProblem } from "./webhook_route.ts";
 
 const ROUTE_FILE_KEYS: ReadonlySet<string> = new Set([
@@ -103,6 +103,13 @@ export interface RefusedRouteFile {
 export interface RouteFileLoad {
   readonly files: readonly WebhookRouteFile[];
   readonly refused: readonly RefusedRouteFile[];
+}
+
+/** an unchanged file whose dependencies could not answer keeps its live endpoint */
+export interface KeptRouteFile {
+  readonly file: string;
+  readonly route: string;
+  readonly message: string;
 }
 
 export interface ShadowedRouteFile {
@@ -341,28 +348,83 @@ export async function loadWebhookRouteFiles(
   return { files, refused };
 }
 
-/** a missing vault key or an unresolvable scheme refuses only that file */
+// YAML yields Date and Uint8Array beside plain data; key order never counts.
+// Route files are bounded in size and depth by the loader, so recursion is safe
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date &&
+      Object.is(a.getTime(), b.getTime());
+  }
+  if (a instanceof Uint8Array || b instanceof Uint8Array) {
+    return a instanceof Uint8Array && b instanceof Uint8Array &&
+      a.length === b.length && a.every((byte, i) => byte === b[i]);
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+      a.every((item, i) => sameValue(item, b[i]));
+  }
+  if (
+    typeof a !== "object" || a === null || typeof b !== "object" || b === null
+  ) {
+    return Object.is(a, b);
+  }
+  const aKeys = Object.keys(a);
+  const bRecord = b as Record<string, unknown>;
+  return aKeys.length === Object.keys(b).length &&
+    aKeys.every((key) =>
+      Object.hasOwn(bRecord, key) &&
+      sameValue((a as Record<string, unknown>)[key], bRecord[key])
+    );
+}
+
+/**
+ * a missing vault key or an unresolvable scheme refuses only that file; an
+ * outage keeps the file's live endpoint, but only while the file is unchanged
+ */
 export async function parseRouteFiles(
   files: readonly WebhookRouteFile[],
   parse: (configs: readonly WebhookConfigEntry[]) => Promise<WebhookEndpoint[]>,
-): Promise<{ endpoints: WebhookEndpoint[]; refused: RefusedRouteFile[] }> {
+  previous: readonly WebhookEndpoint[] = [],
+): Promise<{
+  endpoints: WebhookEndpoint[];
+  refused: RefusedRouteFile[];
+  kept: KeptRouteFile[];
+}> {
   const endpoints: WebhookEndpoint[] = [];
   const refused: RefusedRouteFile[] = [];
+  const kept: KeptRouteFile[] = [];
   for (const { file, entry } of files) {
     try {
       const [endpoint] = await parse([entry]);
-      endpoints.push({ ...endpoint, source: "file", file });
+      endpoints.push({
+        ...endpoint,
+        source: "file",
+        file,
+        routeFileEntry: entry,
+      });
     } catch (error) {
-      refused.push(
-        refusal(
+      const reason = error instanceof Error ? error.message : String(error);
+      const live = error instanceof WebhookEnvironmentError
+        ? previous.find((e) =>
+          e.source === "file" && e.file === file && e.route === entry.route &&
+          e.routeFileEntry !== undefined && sameValue(e.routeFileEntry, entry)
+        )
+        : undefined;
+      if (live) {
+        endpoints.push(live);
+        kept.push({
           file,
-          entry.route,
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
+          route: entry.route,
+          message: `Kept the live endpoint for ${
+            label(file, entry.route)
+          }, unchanged since it last loaded: ${reason}`,
+        });
+        continue;
+      }
+      refused.push(refusal(file, entry.route, reason));
     }
   }
-  return { endpoints, refused };
+  return { endpoints, refused, kept };
 }
 
 type RouteOrigin = Pick<WebhookEndpoint, "route" | "source" | "file">;

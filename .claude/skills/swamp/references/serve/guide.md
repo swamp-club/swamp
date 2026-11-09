@@ -217,6 +217,9 @@ scheme: github
 - A bad file is refused on its own (named in the startup log or reload errors);
   two files claiming one route are both refused. A `serve.yaml` or `--webhook`
   route on the same path wins, and the file route is reported as shadowed.
+- If a reload cannot reach a file's vault or extension scheme (backend down,
+  timeout), an unchanged file keeps its live route and the reload lists it as
+  kept. A missing key, an edited file, or an outage at startup still refuses it.
 - Run `swamp serve check-config` in CI on the PR to catch a bad file before it
   reaches serve. It does not look up vault keys or resolve extension schemes.
 - Health and the dashboard show such a route with source `file` and its file
