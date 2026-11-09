@@ -183,7 +183,15 @@ export function fanOutGatePrompt(
     ...base,
     budget: {
       allowed: plan.maxFailures,
-      used: lanes.filter((lane) => lane.status === "failed").length,
+      // what the rollout counts: a later lane failed unstarted spends it too
+      used: [...records.values()].filter((steps) =>
+        laneFailed(
+          steps.map((step) => ({
+            status: step.status,
+            allowedFailure: step.allowedFailure ?? false,
+          })),
+        )
+      ).length,
     },
     canary: { lanes },
     next: [...(plan.batches[1] ?? [])],

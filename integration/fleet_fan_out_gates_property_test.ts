@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import "../src/domain/models/models.ts";
 import { judgeRunRecord } from "../src/domain/datastore_v3/content_bindings.ts";
+import { fanOutGatePrompt } from "../src/domain/workflows/fan_out_gates.ts";
 import type { WorkflowRunData } from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Fleet, type FleetWorker } from "./fleet_harness.ts";
@@ -379,7 +380,8 @@ Deno.test({
         model.run();
 
         const check = async (step: string) => {
-          const actual = observed(await fleet.runRecord(workflow, run.id));
+          const record = await fleet.runRecord(workflow, run.id);
+          const actual = observed(record);
           const context = `${step}: ${JSON.stringify(scenario)}`;
           assertEquals(actual.status, model.status, context);
           assertEquals(actual.lanes, model.lanes, context);
@@ -390,7 +392,21 @@ Deno.test({
             context,
           );
           if (model.waitingGate() === "plan") coverage.planWait++;
-          if (model.waitingGate() === "canary") coverage.canaryWait++;
+          if (model.waitingGate() === "canary") {
+            coverage.canaryWait++;
+            // what the approver is shown is what the rollout counts
+            const prompt = fanOutGatePrompt(record.jobs[0], "canary")!;
+            assertEquals(
+              prompt.budget.used,
+              [...model.lanes.values()].filter((s) => s === "failed").length,
+              context,
+            );
+            assertEquals(
+              prompt.canary!.lanes.map((lane): string => lane.status),
+              batches[0].map((w): string => model.lanes.get(w)!),
+              context,
+            );
+          }
           if ([...model.lanes.values()].includes("held") && !model.rejected) {
             coverage.halted++;
           }
@@ -529,6 +545,17 @@ Deno.test({
               { kind: "retry" },
               { kind: "approve" },
             ],
+          }],
+          // a later lane failing unstarted is budget the canary gate shows
+          [{
+            workers: 3,
+            batches: [1, "100%"],
+            maxFailures: 1,
+            approve: ["plan", "canary"],
+            failing: [],
+            actions: [{ kind: "disconnect", worker: 2 }, { kind: "approve" }, {
+              kind: "approve",
+            }],
           }],
           // --from with no lane kept asks both approved gates again
           [{

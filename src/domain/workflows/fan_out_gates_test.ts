@@ -285,3 +285,16 @@ Deno.test("fanOutGatePrompt: a canary lane that never ran reads as not_run, neve
   assertEquals(prompt.canary!.lanes[0].status, "not_run");
   assertEquals(prompt.budget.used, 0);
 });
+
+Deno.test("fanOutGatePrompt: budget used at the canary gate counts a later lane that failed before it started", () => {
+  const prompt = fanOutGatePrompt(
+    gatedJob([
+      step("apply[a]", "succeeded"),
+      step("apply[b]", "pending"),
+      step("apply[c]", "failed", { error: "not connected" }),
+    ]),
+    "canary",
+  )!;
+  assertEquals(prompt.budget, { allowed: 0, used: 1 });
+  assertEquals(prompt.canary!.lanes.map((l) => l.status), ["succeeded"]);
+});
