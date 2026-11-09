@@ -196,7 +196,7 @@ Deno.test("ServeLinkClient: an unreachable swamp-club is unavailable, and names 
 });
 
 Deno.test("displaySafeReason: cuts to swamp-club's limit and drops invisible characters", () => {
-  assertEquals(displaySafeReason("  a​b\nc  "), "a b c");
+  assertEquals(displaySafeReason("  a\u200bb\nc  "), "a b c");
   assertEquals(displaySafeReason("\u0001"), "refused");
   assertEquals(displaySafeReason("y".repeat(300)).length, MAX_REFUSAL_REASON);
 });
