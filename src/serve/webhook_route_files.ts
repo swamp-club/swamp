@@ -31,7 +31,7 @@ import {
   validateWebhookEntry,
   type WebhookConfigEntry,
 } from "./serve_config.ts";
-import type { WebhookEndpoint } from "./webhook.ts";
+import { type WebhookEndpoint, WebhookEnvironmentError } from "./webhook.ts";
 import { fileRouteProblem } from "./webhook_route.ts";
 
 const ROUTE_FILE_KEYS: ReadonlySet<string> = new Set([
@@ -103,6 +103,13 @@ export interface RefusedRouteFile {
 export interface RouteFileLoad {
   readonly files: readonly WebhookRouteFile[];
   readonly refused: readonly RefusedRouteFile[];
+}
+
+/** an unchanged file whose dependencies could not answer keeps its live endpoint */
+export interface KeptRouteFile {
+  readonly file: string;
+  readonly route: string;
+  readonly message: string;
 }
 
 export interface ShadowedRouteFile {
@@ -341,28 +348,70 @@ export async function loadWebhookRouteFiles(
   return { files, refused };
 }
 
-/** a missing vault key or an unresolvable scheme refuses only that file */
+// route files are bounded in size and depth by the loader, so recursion is safe
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [
+      key,
+      canonical((value as Record<string, unknown>)[key]),
+    ]),
+  );
+}
+
+function sameEntry(a: WebhookConfigEntry, b: WebhookConfigEntry): boolean {
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
+/**
+ * a missing vault key or an unresolvable scheme refuses only that file; an
+ * outage keeps the file's live endpoint, but only while the file is unchanged
+ */
 export async function parseRouteFiles(
   files: readonly WebhookRouteFile[],
   parse: (configs: readonly WebhookConfigEntry[]) => Promise<WebhookEndpoint[]>,
-): Promise<{ endpoints: WebhookEndpoint[]; refused: RefusedRouteFile[] }> {
+  previous: readonly WebhookEndpoint[] = [],
+): Promise<{
+  endpoints: WebhookEndpoint[];
+  refused: RefusedRouteFile[];
+  kept: KeptRouteFile[];
+}> {
   const endpoints: WebhookEndpoint[] = [];
   const refused: RefusedRouteFile[] = [];
+  const kept: KeptRouteFile[] = [];
   for (const { file, entry } of files) {
     try {
       const [endpoint] = await parse([entry]);
-      endpoints.push({ ...endpoint, source: "file", file });
+      endpoints.push({
+        ...endpoint,
+        source: "file",
+        file,
+        routeFileEntry: entry,
+      });
     } catch (error) {
-      refused.push(
-        refusal(
+      const reason = error instanceof Error ? error.message : String(error);
+      const live = error instanceof WebhookEnvironmentError
+        ? previous.find((e) =>
+          e.source === "file" && e.file === file && e.route === entry.route &&
+          e.routeFileEntry !== undefined && sameEntry(e.routeFileEntry, entry)
+        )
+        : undefined;
+      if (live) {
+        endpoints.push(live);
+        kept.push({
           file,
-          entry.route,
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
+          route: entry.route,
+          message: `Kept the live endpoint for ${
+            label(file, entry.route)
+          }, unchanged since it last loaded: ${reason}`,
+        });
+        continue;
+      }
+      refused.push(refusal(file, entry.route, reason));
     }
   }
-  return { endpoints, refused };
+  return { endpoints, refused, kept };
 }
 
 type RouteOrigin = Pick<WebhookEndpoint, "route" | "source" | "file">;

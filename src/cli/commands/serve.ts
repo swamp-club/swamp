@@ -403,12 +403,11 @@ import {
   parseAuditConfig,
   parseExplicitFlags,
   parseTokenSecretsKeyConfig,
-  parseWebhookConfig,
   resolveServePath,
   resolveServeTlsPaths,
   SERVE_CONFIG_PATH,
-  type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
+import { createWebhookConfigParser } from "../../serve/webhook_config_parser.ts";
 import {
   OAUTH_CLIENT_SECRET_FILE_FLAG,
   resolveOAuthClientSecret,
@@ -7051,21 +7050,14 @@ export const serveCommand = new Command()
     }
 
     const webhookSourceIsCliFlags = webhookFlags.length > 0;
-    const parseWebhookConfigs = async (
-      configs: readonly WebhookConfigEntry[],
-    ): Promise<WebhookEndpoint[]> => {
-      const vaultService = await VaultService.fromRepository(
-        resolvedRepoDir,
-        { defaultVaultName: repoMarker?.defaultVault },
-      );
-      const parsed = await Promise.all(
-        configs.map((e) => parseWebhookConfig(e, vaultService)),
-      );
-      return await resolveExtensionWebhookEndpoints(
-        parsed,
-        (type) => resolveWebhookType(type, getAutoResolver()),
-      );
-    };
+    const parseWebhookConfigs = createWebhookConfigParser({
+      openVaults: () =>
+        VaultService.fromRepository(
+          resolvedRepoDir,
+          { defaultVaultName: repoMarker?.defaultVault },
+        ),
+      resolveType: (type) => resolveWebhookType(type, getAutoResolver()),
+    });
     let flagEndpoints: WebhookEndpoint[] = [];
     if (webhookSourceIsCliFlags) {
       const vaultService = await VaultService.fromRepository(

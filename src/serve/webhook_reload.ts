@@ -20,6 +20,7 @@
 import type { WebhookConfigEntry } from "./serve_config.ts";
 import type { WebhookEndpoint, WebhookService } from "./webhook.ts";
 import {
+  type KeptRouteFile,
   mergeWebhookRoutes,
   parseRouteFiles,
   type RefusedRouteFile,
@@ -31,7 +32,10 @@ import {
 export interface WebhookReloadResult {
   readonly changed: number;
   readonly warnings: readonly string[];
-  /** refused route files or routes directory; the other routes still applied */
+  /**
+   * refused route files, kept stale routes or the routes directory; the other
+   * routes still applied
+   */
   readonly errors: readonly string[];
 }
 
@@ -58,6 +62,7 @@ export interface WebhookRouteTableDeps {
 export interface WebhookRouteTable {
   readonly endpoints: readonly WebhookEndpoint[];
   readonly refused: readonly RefusedRouteFile[];
+  readonly kept: readonly KeptRouteFile[];
   readonly shadowed: readonly ShadowedRouteFile[];
   /** the routes directory could not be used, so no file route loaded */
   readonly directoryError?: string;
@@ -67,6 +72,7 @@ export interface WebhookRouteTable {
 export async function buildWebhookRouteTable(
   deps: WebhookRouteTableDeps,
   configs: readonly WebhookConfigEntry[],
+  previous: readonly WebhookEndpoint[] = [],
 ): Promise<WebhookRouteTable> {
   const operator: WebhookEndpoint[] = deps.source === "flag"
     ? (deps.flagEndpoints ?? []).map((e) => ({ ...e, source: "flag" }))
@@ -85,7 +91,7 @@ export async function buildWebhookRouteTable(
       directoryError = error instanceof Error ? error.message : String(error);
     }
   }
-  const parsed = await parseRouteFiles(load.files, deps.parse);
+  const parsed = await parseRouteFiles(load.files, deps.parse, previous);
   const { endpoints, shadowed } = mergeWebhookRoutes(
     operator,
     parsed.endpoints,
@@ -93,18 +99,26 @@ export async function buildWebhookRouteTable(
   return {
     endpoints,
     refused: [...load.refused, ...parsed.refused],
+    kept: parsed.kept,
     shadowed,
     ...(directoryError !== undefined ? { directoryError } : {}),
   };
 }
 
 export interface WebhookUpdaterDeps extends WebhookRouteTableDeps {
-  readonly service: Pick<WebhookService, "updateEndpoints">;
+  readonly service: Pick<
+    WebhookService,
+    "updateEndpoints" | "currentEndpoints"
+  >;
 }
 
 export function createWebhookUpdater(deps: WebhookUpdaterDeps): WebhookUpdater {
   return async (configs) => {
-    const table = await buildWebhookRouteTable(deps, configs);
+    const table = await buildWebhookRouteTable(
+      deps,
+      configs,
+      deps.service.currentEndpoints(),
+    );
     const changed = deps.service.updateEndpoints(table.endpoints);
     const warnings = [
       ...(deps.source === "flag" && configs.length > 0
@@ -118,6 +132,7 @@ export function createWebhookUpdater(deps: WebhookUpdaterDeps): WebhookUpdater {
       errors: [
         ...(table.directoryError !== undefined ? [table.directoryError] : []),
         ...table.refused.map((refused) => refused.message),
+        ...table.kept.map((kept) => kept.message),
       ],
     };
   };
