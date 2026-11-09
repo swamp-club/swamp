@@ -156,6 +156,18 @@ import { getWorkerPoolReader } from "../remote/worker_pool.ts";
 import { planFanOut } from "../remote/scheduler.ts";
 import { planBatches, resumeRollout } from "../remote/rollout.ts";
 import { runRolloutLanes } from "./fan_out_rollout.ts";
+import {
+  fanOutGatePrompt,
+  fanOutGatePromptLine,
+  gateApproved,
+  plannedGateNames,
+} from "./fan_out_gates.ts";
+import {
+  FAN_OUT_GATE_KINDS,
+  type FanOutGateKind,
+  fanOutGateName,
+  fanOutGateOf,
+} from "../remote/fan_out.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
   FROM_JOB_WITHOUT_FROM,
@@ -1216,12 +1228,18 @@ function suspendedEventFor(
     // the step run holds the prompt and timeout its gate was requested with; a
     // forEach-expanded step has no step of its name in the definition, so the
     // definition answers only for a record without them
-    const stepRun = run.getJob(waiting.jobName)?.getStep(waiting.stepName);
+    const jobRun = run.getJob(waiting.jobName);
+    const stepRun = jobRun?.getStep(waiting.stepName);
+    const gate = fanOutGateOf(waiting.jobName, waiting.stepName);
+    const fanOutGate = gate !== undefined && jobRun !== undefined
+      ? fanOutGatePrompt(jobRun.toData(), gate)
+      : undefined;
     return {
       kind: "suspended",
       run,
       jobId: waiting.jobName,
       stepId: waiting.stepName,
+      ...(fanOutGate !== undefined ? { fanOutGate } : {}),
       // The prompt is a resolved expression: shown masked, as the record
       // and the run view show it.
       prompt: run.mask(
@@ -5724,6 +5742,7 @@ export class WorkflowExecutionService {
     let laneSteps: ReadonlyMap<string, { worker: string; authored: string }> =
       new Map();
     let lanes: string[] = stored?.batches.flat() ?? [];
+    let gateSteps: string[] = [];
     if (plan?.kind === "refused") {
       refusal = refusedPlanMessage(
         job.name,
@@ -5734,11 +5753,17 @@ export class WorkflowExecutionService {
     } else if (plan !== undefined) {
       const batches = planBatches(plan.members, policy.rollout);
       lanes = batches.flat();
+      gateSteps = plannedGateNames(
+        job.name,
+        policy.rollout?.approve ?? [],
+        batches.length,
+      );
       try {
         laneSteps = planLaneSteps(
           job.name,
           job.steps.map((step) => step.name),
           lanes,
+          policy.rollout?.approve,
         );
         refuseSharedLaneInstances(
           job.name,
@@ -5759,7 +5784,7 @@ export class WorkflowExecutionService {
           batches,
           fanOutSnapshot(options.authoredWorkflow, job.name, lanes, poolByName),
         );
-        jobRun.expandLanes([...laneSteps.keys()]);
+        jobRun.expandLanes([...laneSteps.keys()], gateSteps);
         // the plan is durable before any lane start can be journalled
         await this.saveRun(workflow.id, run);
       }
@@ -5792,6 +5817,9 @@ export class WorkflowExecutionService {
     const rollout = frozen.batches.length > 1 || frozen.maxFailures !== null;
     const lastHalt = jobRun.fanOutHalts[jobRun.fanOutHalts.length - 1];
 
+    const planGates = FAN_OUT_GATE_KINDS.filter((kind) =>
+      jobRun.getStep(fanOutGateName(job.name, kind)) !== undefined
+    );
     const laneRerun = (worker: string) =>
       job.steps.some((step) =>
         jobRun.getStep(laneStepName(step.name, worker))?.status === "pending"
@@ -5811,6 +5839,7 @@ export class WorkflowExecutionService {
       plannedLanes: stored?.plannedLanes ??
         (plan?.kind === "planned" ? plan.plannedLanes : lanes.length),
       members: members.map(fanOutEventMember),
+      ...(planGates.length > 0 ? { approve: planGates } : {}),
       ...(rollout
         ? {
           batches: frozen.batches.map((batch) => [...batch]),
@@ -5833,6 +5862,19 @@ export class WorkflowExecutionService {
         }
         : {}),
     };
+    // before any waiting event: a host is not waiting while the gate holds it
+    const planGate = jobRun.getStep(fanOutGateName(job.name, "plan"));
+    if (planGate !== undefined && !gateApproved(planGate.toData())) {
+      yield* this.openFanOutGate(
+        workflow,
+        run,
+        job,
+        jobRun,
+        "plan",
+        expressionContext,
+      );
+      return;
+    }
     const queueTimeoutSeconds = fields?.queueTimeout ??
       (reader.queueTimeoutMs !== undefined
         ? reader.queueTimeoutMs / 1000
@@ -5947,8 +5989,13 @@ export class WorkflowExecutionService {
         new Set(rerun),
         new Set(lastHalt?.failed ?? []),
       );
+      const canaryGate = jobRun.getStep(fanOutGateName(job.name, "canary"));
+      const canary = new Set(frozen.batches[0] ?? []);
       const end = yield* runRolloutLanes<WorkflowExecutionEvent>({
         rollout: { batches, maxFailures: frozen.maxFailures },
+        held: (worker) =>
+          canaryGate !== undefined && !canary.has(worker) &&
+          !gateApproved(canaryGate.toData()),
         failedBeforeStart,
         limit: laneLimit,
         signal: options.signal,
@@ -5962,6 +6009,17 @@ export class WorkflowExecutionService {
           lanes: [...batchLanes],
         }),
       });
+      if (end.kind === "paused") {
+        yield* this.openFanOutGate(
+          workflow,
+          run,
+          job,
+          jobRun,
+          "canary",
+          expressionContext,
+        );
+        return;
+      }
       const failed = batches.flat().filter((worker) =>
         laneFailed(stepsOfLane(worker))
       );
@@ -5977,11 +6035,15 @@ export class WorkflowExecutionService {
             failed,
             held,
           },
-          // a resumed lane keeps the steps it finished before its failed one
-          held.flatMap((worker) =>
-            stepsOfLane(worker).filter((step) => step.status === "pending")
-              .map((step) => step.stepName)
-          ),
+          // a resumed lane keeps the steps it finished before its failed one;
+          // a gate never reached is held with the lanes, so a retry reopens it
+          [
+            ...held.flatMap((worker) =>
+              stepsOfLane(worker).filter((step) => step.status === "pending")
+                .map((step) => step.stepName)
+            ),
+            ...(canaryGate?.status === "pending" ? [canaryGate.stepName] : []),
+          ],
         );
         yield {
           kind: "job_fanout_halted",
@@ -6070,6 +6132,44 @@ export class WorkflowExecutionService {
     jobSpan.setAttribute("job.status", jobRun.status);
     yield summary;
     yield { kind: "job_completed", jobId: job.name, status: jobRun.status };
+  }
+
+  /**
+   * a gate of a fan-out job suspends the run as a manual_approval step does;
+   * its prompt line is fixed and the rest is read from the frozen plan
+   */
+  private *openFanOutGate(
+    workflow: Workflow,
+    run: WorkflowRun,
+    job: Job,
+    jobRun: JobRun,
+    gate: FanOutGateKind,
+    expressionContext: ExpressionContext | undefined,
+  ): Generator<WorkflowExecutionEvent> {
+    const stepName = fanOutGateName(job.name, gate);
+    const stepRun = jobRun.getStep(stepName)!;
+    const timeout = job.fanOutPolicy?.rollout?.approveTimeout;
+    const prompt = fanOutGatePromptLine(job.name, gate);
+    // a gate asked again waits from a new start, as a manual_approval does
+    stepRun.start();
+    stepRun.waitForApproval(prompt, timeout);
+    yield {
+      kind: "step_started",
+      jobId: job.name,
+      stepId: stepName,
+    };
+    const data = fanOutGatePrompt(jobRun.toData(), gate);
+    yield {
+      kind: "approval_requested",
+      runId: run.id,
+      workflowName: workflow.name,
+      jobId: job.name,
+      stepId: stepName,
+      prompt: stepRun.approvalPrompt ?? prompt,
+      timeout: stepRun.approvalTimeout,
+      ...(data !== undefined ? { fanOutGate: data } : {}),
+    };
+    run.suspend(expressionContext?.inputs);
   }
 
   /**

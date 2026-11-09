@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { FanOutGatePrompt } from "../../domain/workflows/fan_out_gates.ts";
 import { getLogger } from "@logtape/logtape";
 import { cancelled, type SwampError } from "../errors.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -175,6 +176,8 @@ export type WorkflowRunEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+    /** a fan-out job's gate: what the approver decides on */
+    fanOutGate?: FanOutGatePrompt;
   }
   | {
     kind: "signal_wait_requested";
@@ -300,6 +303,7 @@ export type WorkflowRunEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
+    fanOutGate?: FanOutGatePrompt;
     /**
      * set when the run suspended on a nested workflow step waiting on a
      * suspended child run; jobId and stepId are then the nested step
@@ -976,6 +980,7 @@ export function mapWorkflowExecutionEvent(
         stepId: event.stepId,
         prompt: event.prompt,
         timeout: event.timeout,
+        ...(event.fanOutGate ? { fanOutGate: event.fanOutGate } : {}),
         ...(event.nested ? { nested: { ...event.nested } } : {}),
         ...(event.wait ? { wait: { ...event.wait } } : {}),
         ...(event.nestedSignalWaits

@@ -34,12 +34,15 @@ export interface RolloutLanes<T> {
   /** read once the lane's stream has ended */
   failed(lane: string): boolean;
   batchStarted(batch: number, lanes: readonly string[]): T;
+  /** true while an undecided gate holds this lane; consulted once nextBatch would start it */
+  held?(lane: string): boolean;
 }
 
 export type RolloutEnd =
   | { readonly kind: "complete" }
   | { readonly kind: "aborted" }
-  | { readonly kind: "halted"; readonly held: string[] };
+  | { readonly kind: "halted"; readonly held: string[] }
+  | { readonly kind: "paused"; readonly lane: string };
 
 type LaneMessage<T> =
   | { readonly lane: string; readonly kind: "event"; readonly event: T }
@@ -86,13 +89,14 @@ export async function* runRolloutLanes<T>(
   let running = 0;
   const announced = new Set<number>();
   let halted = false;
+  let paused: string | undefined;
   let laneError: { readonly cause: unknown } | undefined;
 
   try {
     while (true) {
       while (
-        !halted && laneError === undefined && !lanes.signal?.aborted &&
-        running < limit
+        !halted && paused === undefined && laneError === undefined &&
+        !lanes.signal?.aborted && running < limit
       ) {
         const decision = nextBatch(progress, lanes.rollout);
         if (decision.kind === "halt") {
@@ -100,6 +104,11 @@ export async function* runRolloutLanes<T>(
           break;
         }
         if (decision.kind !== "start") break;
+        // a gate opens only where the budget would start a lane
+        if (lanes.held?.(decision.lanes[0]) === true) {
+          paused = decision.lanes[0];
+          break;
+        }
         if (!announced.has(decision.batch)) {
           announced.add(decision.batch);
           yield lanes.batchStarted(
@@ -114,8 +123,8 @@ export async function* runRolloutLanes<T>(
         drains.push(drain(lane));
       }
       if (running === 0 && messages.length === 0) {
-        const stopped = halted || laneError !== undefined ||
-          lanes.signal?.aborted;
+        const stopped = halted || paused !== undefined ||
+          laneError !== undefined || lanes.signal?.aborted;
         // a batch waits only on running lanes, so waiting with none would hang
         if (!stopped && nextBatch(progress, lanes.rollout).kind === "wait") {
           throw new Error("fan-out rollout is waiting with no lane running");
@@ -147,6 +156,7 @@ export async function* runRolloutLanes<T>(
   }
   if (laneError !== undefined) throw laneError.cause;
   if (lanes.signal?.aborted) return { kind: "aborted" };
+  if (paused !== undefined) return { kind: "paused", lane: paused };
   if (halted) {
     const held = lanes.rollout.batches.flat().filter((lane) =>
       !started.has(lane)

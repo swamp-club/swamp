@@ -145,6 +145,7 @@ export const workflowRejectCommand = withRemoteOptions(
               cliCtx.logger
                 .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
               cliCtx.logger.info("Workflow run marked as failed.");
+              logFanOutHeld(cliCtx, e.data);
               logNestedRunFollowUps(cliCtx, e.data, {
                 server: options.server as string | undefined,
               });
@@ -215,6 +216,7 @@ export const workflowRejectCommand = withRemoteOptions(
                   cliCtx.logger
                     .info`Rejected step ${e.data.stepName} in workflow ${e.data.workflowName}`;
                   cliCtx.logger.info("Workflow run marked as failed.");
+                  logFanOutHeld(cliCtx, e.data);
                   logNestedRunFollowUps(cliCtx, e.data);
                 }
               },
@@ -239,4 +241,13 @@ function logNestedRunFollowUps(
   if (data.awaitingParent) {
     renderAwaitingParent(cliCtx, data.awaitingParent, remote);
   }
+}
+
+function logFanOutHeld(cliCtx: CommandContext, data: WorkflowRejectData): void {
+  const held = data.fanOutHeld;
+  if (held === undefined) return;
+  cliCtx.logger
+    .info`Fan-out job ${held.jobName}: ${held.held.length} lane(s) held, never started (reason ${held.reason}): ${
+    held.held.join(", ")
+  }`;
 }

@@ -1257,3 +1257,245 @@ Deno.test("judgeRunRecord: a held lane may keep an allowed failure from an earli
     );
   }
 });
+
+const PLAN_GATE = "patch[approve-plan]";
+const CANARY_GATE = "patch[approve-canary]";
+const APPROVED = {
+  status: "succeeded" as const,
+  approvalDecision: { approved: true, decidedAt: "2026-11-09T00:00:00.000Z" },
+};
+const PLAN_PROMPT =
+  "Approve the fan-out plan of job 'patch' before any lane starts";
+const CANARY_PROMPT =
+  "Approve the rest of the rollout of job 'patch' after its canary batch";
+
+function gatedRun(steps: StepRunData[]): WorkflowRunData {
+  return run([], {
+    jobs: [{
+      jobName: "patch",
+      status: "running",
+      steps,
+      fanOutPlan: ROLLOUT_PLAN,
+    }],
+  } as Partial<WorkflowRunData>);
+}
+
+const LANES = [step("apply[w-a]"), step("apply[w-b]"), step("apply[w-c]")];
+
+Deno.test("judgeRunRecord: gate records are added pending with the plan, and opened where the plan puts them", () => {
+  const planned = gatedRun([step(PLAN_GATE), step(CANARY_GATE), ...LANES]);
+  assertEquals(
+    judge(fanOutRun([step("apply")]), {
+      ...planned,
+      jobs: [{ ...planned.jobs[0] }],
+    }).refusal,
+    undefined,
+  );
+  const planOpen = gatedRun([
+    step(PLAN_GATE, {
+      status: "waiting_approval",
+      approvalPrompt: PLAN_PROMPT,
+    }),
+    step(CANARY_GATE),
+    ...LANES,
+  ]);
+  assertEquals(judge(planned, planOpen).refusal, undefined);
+  const canaryRan = gatedRun([
+    step(PLAN_GATE, APPROVED),
+    step(CANARY_GATE),
+    step("apply[w-a]", { status: "succeeded" }),
+    step("apply[w-b]"),
+    step("apply[w-c]"),
+  ]);
+  const planApproved = gatedRun([
+    step(PLAN_GATE, APPROVED),
+    step(CANARY_GATE),
+    ...LANES,
+  ]);
+  assertEquals(judge(planApproved, canaryRan).refusal, undefined);
+  const canaryOpen = gatedRun([
+    step(PLAN_GATE, APPROVED),
+    step(CANARY_GATE, {
+      status: "waiting_approval",
+      approvalPrompt: CANARY_PROMPT,
+    }),
+    step("apply[w-a]", { status: "succeeded" }),
+    step("apply[w-b]"),
+    step("apply[w-c]"),
+  ]);
+  assertEquals(judge(canaryRan, canaryOpen).refusal, undefined);
+});
+
+Deno.test("judgeRunRecord: a gate added after the plan, added started, or dropped is refused", () => {
+  const planned = gatedRun([step(PLAN_GATE), ...LANES]);
+  assertStringIncludes(
+    judge(gatedRun(LANES), planned).refusal ?? "",
+    "adds the plan approval gate of job 'patch' after its plan",
+  );
+  assertStringIncludes(
+    judge(
+      fanOutRun([step("apply")]),
+      gatedRun([step(PLAN_GATE, { status: "succeeded" }), ...LANES]),
+    ).refusal ?? "",
+    "already started",
+  );
+  assertStringIncludes(
+    judge(planned, gatedRun(LANES)).refusal ?? "",
+    "drops the plan approval gate",
+  );
+});
+
+Deno.test("judgeRunRecord: a gate opened out of place or with another prompt is refused", () => {
+  const planned = gatedRun([step(PLAN_GATE), step(CANARY_GATE), ...LANES]);
+  assertStringIncludes(
+    judge(
+      planned,
+      gatedRun([
+        step(PLAN_GATE, {
+          status: "waiting_approval",
+          approvalPrompt: "Approve hosts w-x, w-y",
+        }),
+        step(CANARY_GATE),
+        ...LANES,
+      ]),
+    ).refusal ?? "",
+    "with a prompt swamp does not write",
+  );
+  const started = gatedRun([
+    step(PLAN_GATE),
+    step(CANARY_GATE),
+    step("apply[w-a]", { status: "succeeded" }),
+    step("apply[w-b]"),
+    step("apply[w-c]"),
+  ]);
+  assertStringIncludes(
+    judge(
+      started,
+      gatedRun([
+        step(PLAN_GATE, {
+          status: "waiting_approval",
+          approvalPrompt: PLAN_PROMPT,
+        }),
+        step(CANARY_GATE),
+        step("apply[w-a]", { status: "succeeded" }),
+        step("apply[w-b]"),
+        step("apply[w-c]"),
+      ]),
+    ).refusal ?? "",
+    "after a lane started",
+  );
+  const canaryRunning = gatedRun([
+    step(PLAN_GATE, APPROVED),
+    step(CANARY_GATE),
+    step("apply[w-a]", { status: "running" }),
+    step("apply[w-b]"),
+    step("apply[w-c]"),
+  ]);
+  assertStringIncludes(
+    judge(
+      canaryRunning,
+      gatedRun([
+        step(PLAN_GATE, APPROVED),
+        step(CANARY_GATE, {
+          status: "waiting_approval",
+          approvalPrompt: CANARY_PROMPT,
+        }),
+        step("apply[w-a]", { status: "running" }),
+        step("apply[w-b]"),
+        step("apply[w-c]"),
+      ]),
+    ).refusal ?? "",
+    "before the canary batch settled",
+  );
+});
+
+Deno.test("judgeRunRecord: no lane starts past an undecided gate, but held or cancelled lanes settle", () => {
+  const planned = gatedRun([step(PLAN_GATE), step(CANARY_GATE), ...LANES]);
+  assertStringIncludes(
+    judge(
+      planned,
+      gatedRun([
+        step(PLAN_GATE),
+        step(CANARY_GATE),
+        step("apply[w-a]", { status: "running" }),
+        step("apply[w-b]"),
+        step("apply[w-c]"),
+      ]),
+    ).refusal ?? "",
+    "starts lane 'w-a' of job 'patch' before its plan is approved",
+  );
+  const canaryDone = gatedRun([
+    step(PLAN_GATE, APPROVED),
+    step(CANARY_GATE),
+    step("apply[w-a]", { status: "succeeded" }),
+    step("apply[w-b]"),
+    step("apply[w-c]"),
+  ]);
+  assertStringIncludes(
+    judge(
+      canaryDone,
+      gatedRun([
+        step(PLAN_GATE, APPROVED),
+        step(CANARY_GATE),
+        step("apply[w-a]", { status: "succeeded" }),
+        step("apply[w-b]", { status: "running" }),
+        step("apply[w-c]"),
+      ]),
+    ).refusal ?? "",
+    "starts lane 'w-b' of job 'patch' before its canary is approved",
+  );
+  assertEquals(
+    judge(
+      planned,
+      gatedRun([
+        step(PLAN_GATE),
+        step(CANARY_GATE, HELD),
+        step("apply[w-a]", HELD),
+        step("apply[w-b]", HELD),
+        step("apply[w-c]", { status: "failed", settledByAbort: true }),
+      ]),
+    ).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a canary gate with no batch after the canary, or a gate named as a lane, is refused", () => {
+  const onePlan = { ...ROLLOUT_PLAN, batches: [["w-a", "w-b", "w-c"]] };
+  assertStringIncludes(
+    judge(
+      fanOutRun([step("apply")]),
+      run([], {
+        jobs: [{
+          jobName: "patch",
+          status: "running",
+          steps: [step(CANARY_GATE), ...LANES],
+          fanOutPlan: onePlan,
+        }],
+      } as Partial<WorkflowRunData>),
+    ).refusal ?? "",
+    "no batch after the canary",
+  );
+  const laneNamed = {
+    ...ROLLOUT_PLAN,
+    lanes: [...ROLLOUT_PLAN.lanes, {
+      name: "patch[approve-plan]",
+      worker: "approve-plan",
+      instanceUuid: "u-x",
+      steps: [],
+    }],
+  };
+  assertStringIncludes(
+    judge(
+      fanOutRun([step("apply")]),
+      run([], {
+        jobs: [{
+          jobName: "patch",
+          status: "running",
+          steps: [step(PLAN_GATE), ...LANES],
+          fanOutPlan: laneNamed,
+        }],
+      } as Partial<WorkflowRunData>),
+    ).refusal ?? "",
+    "is named as a lane of the plan",
+  );
+});

@@ -32,6 +32,12 @@ import {
   type WorkflowRunData,
 } from "../workflows/workflow_run.ts";
 import { laneFailed, laneRecords } from "../workflows/fan_out_lanes.ts";
+import {
+  fanOutGatePromptLine,
+  fanOutGates,
+  gateApproved,
+} from "../workflows/fan_out_gates.ts";
+import type { FanOutGateKind } from "../remote/fan_out.ts";
 import type { Intent } from "./intent.ts";
 import { StepStart, type StepStartData } from "../workflows/step_start.ts";
 
@@ -281,7 +287,7 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
   }
 
   const fanOut = fanOutPlanRefusal(before, after) ??
-    fanOutHaltRefusal(before, after);
+    fanOutHaltRefusal(before, after) ?? fanOutGateRefusal(before, after);
   if (fanOut !== undefined) return refuse(fanOut);
 
   const seen = new Set<string>();
@@ -548,6 +554,123 @@ function fanOutHaltRefusal(
     const mismatch = haltMismatch(job, halts[halts.length - 1]);
     if (mismatch !== undefined) {
       return `its fan-out halt of job '${job.jobName}' ${mismatch}`;
+    }
+  }
+  return undefined;
+}
+
+const SETTLED_UNSTARTED: ReadonlySet<string> = new Set(["skipped", "failed"]);
+
+// held or cancelled before it started: what a halt, rejection or cancel writes
+function settledUnstarted(step: StepRunData): boolean {
+  return step.settledByAbort === true && SETTLED_UNSTARTED.has(step.status);
+}
+
+function leftPending(
+  prior: StepRunData | undefined,
+  step: StepRunData,
+): boolean {
+  return prior?.status === "pending" && step.status !== "pending" &&
+    !settledUnstarted(step);
+}
+
+/**
+ * gates are written once, pending, with the plan, and never dropped; a gate
+ * opens only where its plan puts it, with its fixed prompt line, and no lane
+ * passes an undecided gate
+ */
+function fanOutGateRefusal(
+  before: WorkflowRunData | undefined,
+  after: WorkflowRunData,
+): string | undefined {
+  for (const job of after.jobs) {
+    const prior = before?.jobs.find((candidate) =>
+      candidate.jobName === job.jobName
+    );
+    const priorGates = prior !== undefined
+      ? fanOutGates(prior)
+      : new Map<FanOutGateKind, StepRunData>();
+    const gates = fanOutGates(job);
+    for (const [kind] of priorGates) {
+      if (!gates.has(kind)) {
+        return `it drops the ${kind} approval gate of job '${job.jobName}'`;
+      }
+    }
+    const plan = job.fanOutPlan;
+    if (plan === undefined || gates.size === 0) continue;
+    for (const [kind, gate] of gates) {
+      if (!priorGates.has(kind)) {
+        if (prior?.fanOutPlan !== undefined) {
+          return `it adds the ${kind} approval gate of job '${job.jobName}' after its plan`;
+        }
+        if (gate.status !== "pending") {
+          return `it adds the ${kind} approval gate of job '${job.jobName}' already started`;
+        }
+      }
+      if (plan.lanes.some((lane) => lane.worker === `approve-${kind}`)) {
+        return `its ${kind} approval gate of job '${job.jobName}' is named as a lane of the plan`;
+      }
+    }
+    if (gates.has("canary") && plan.batches.length < 2) {
+      return `it gives job '${job.jobName}' a canary approval gate with no batch after the canary`;
+    }
+
+    const priorSteps = new Map(
+      (prior?.steps ?? []).map((step) => [step.stepName, step]),
+    );
+    const records = laneRecords(job.steps, plan.lanes);
+    const canary = new Set(plan.batches[0] ?? []);
+    const laneSteps = [...records.values()].flat();
+    for (const [kind, gate] of gates) {
+      const was = priorSteps.get(gate.stepName);
+      if (
+        gate.status !== "waiting_approval" || was?.status === "waiting_approval"
+      ) {
+        continue;
+      }
+      if (gate.approvalPrompt !== fanOutGatePromptLine(job.jobName, kind)) {
+        return `it opens the ${kind} approval gate of job '${job.jobName}' with a prompt swamp does not write`;
+      }
+      if (
+        kind === "plan" && laneSteps.some((step) => step.status !== "pending")
+      ) {
+        return `it opens the plan approval gate of job '${job.jobName}' after a lane started`;
+      }
+      if (kind === "canary") {
+        for (const [worker, steps] of records) {
+          const open = steps.some((step) =>
+            step.status === "pending" || step.status === "running" ||
+            step.status === "unknown" || step.status.startsWith("waiting")
+          );
+          if (
+            canary.has(worker)
+              ? open
+              : steps.some((s) => s.status !== "pending")
+          ) {
+            return `it opens the canary approval gate of job '${job.jobName}' ${
+              canary.has(worker)
+                ? "before the canary batch settled"
+                : "after a later batch started"
+            }`;
+          }
+        }
+      }
+    }
+    const planGate = gates.get("plan");
+    const canaryGate = gates.get("canary");
+    for (const [worker, steps] of records) {
+      for (const step of steps) {
+        if (!leftPending(priorSteps.get(step.stepName), step)) continue;
+        if (planGate !== undefined && !gateApproved(planGate)) {
+          return `it starts lane '${worker}' of job '${job.jobName}' before its plan is approved`;
+        }
+        if (
+          canaryGate !== undefined && !canary.has(worker) &&
+          !gateApproved(canaryGate)
+        ) {
+          return `it starts lane '${worker}' of job '${job.jobName}' before its canary is approved`;
+        }
+      }
     }
   }
   return undefined;

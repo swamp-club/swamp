@@ -132,3 +132,39 @@ Deno.test("runRolloutLanes: an abort starts nothing more and ends aborted, holdi
   assertEquals(started, ["a"]);
   assertEquals(end, { kind: "aborted" });
 });
+
+Deno.test("runRolloutLanes: an undecided gate pauses before the first lane it holds, once earlier batches settled", async () => {
+  const started: string[] = [];
+  const { events, end } = await drain(runRolloutLanes(lanes({
+    start: async function* (lane) {
+      started.push(lane);
+      yield `ran ${lane}`;
+    },
+    held: (lane) => lane !== "a",
+  })));
+  assertEquals(started, ["a"]);
+  assertEquals(events, ["batch 0: a", "ran a"]);
+  assertEquals(end, { kind: "paused", lane: "b" });
+});
+
+Deno.test("runRolloutLanes: a canary that spends the budget halts and the gate never opens", async () => {
+  const asked: string[] = [];
+  const { end } = await drain(runRolloutLanes(lanes({
+    failed: (lane) => lane === "a",
+    held: (lane) => {
+      asked.push(lane);
+      return lane !== "a";
+    },
+  })));
+  assertEquals(end, { kind: "halted", held: ["b", "c"] });
+  assertEquals(asked, ["a"]);
+});
+
+Deno.test("runRolloutLanes: a canary failure within the budget still pauses at the gate", async () => {
+  const { end } = await drain(runRolloutLanes(lanes({
+    rollout: { batches: [["a"], ["b", "c"]], maxFailures: 1 },
+    failed: (lane) => lane === "a",
+    held: (lane) => lane !== "a",
+  })));
+  assertEquals(end, { kind: "paused", lane: "b" });
+});

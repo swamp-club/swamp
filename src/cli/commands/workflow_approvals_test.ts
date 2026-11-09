@@ -553,3 +553,26 @@ Deno.test("renderApprovals: a caller who may decide keeps the approve and reject
   );
   assertEquals(lines.some((l) => l.includes("workflow approve")), true);
 });
+
+Deno.test("renderApprovals: a fan-out gate prints its plan under the prompt", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [pending({
+      stepName: "patch[approve-plan]",
+      fanOutGate: {
+        gate: "plan",
+        job: "patch",
+        selector: { labels: { fleet: "web" } },
+        members: [{ worker: "w-1", disposition: "dispatch", batch: 0 }],
+        batches: [["w-1"]],
+        budget: { allowed: null },
+      },
+    })])
+  );
+  assertEquals(lines.slice(0, 5), [
+    "  Selector: fleet=web",
+    "  Members:",
+    "    w-1: dispatch, lane in batch 1",
+    "  Batch 1: w-1",
+    "  Budget: no budget",
+  ]);
+});

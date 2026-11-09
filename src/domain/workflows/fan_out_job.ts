@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
+import { FAN_OUT_GATE_KINDS, fanOutGateName } from "../remote/fan_out.ts";
 import type { JobData } from "./job.ts";
 import { mergePlacementFields, type PlacementFields } from "./placement.ts";
 
@@ -86,10 +87,21 @@ export function fanOutJobRefusals(
       });
     }
 
+    const gates = job.fanOut === "all" ? [] : job.fanOut.rollout?.approve ?? [];
     job.steps.forEach((step, stepIndex) => {
       const stepAt = (...rest: (string | number)[]) =>
         at("steps", stepIndex, ...rest);
       const where = `Step '${step.name}' in fan-out job '${name}'`;
+      const gate = FAN_OUT_GATE_KINDS.find((kind) =>
+        gates.includes(kind) && fanOutGateName(name, kind) === step.name
+      );
+      if (gate !== undefined) {
+        refusals.push({
+          path: stepAt("name"),
+          message:
+            `${where} has the name of the job's ${gate} approval gate. Rename the step.`,
+        });
+      }
       for (const field of ["target", "labels", "platform"] as const) {
         if (step[field] === undefined) continue;
         refusals.push({

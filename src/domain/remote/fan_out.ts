@@ -49,10 +49,60 @@ export const FailureBudgetSchema = z.union([
 
 export type FailureBudget = z.infer<typeof FailureBudgetSchema>;
 
+export const FanOutGateKindSchema = z.enum(["plan", "canary"]);
+
+export type FanOutGateKind = z.infer<typeof FanOutGateKindSchema>;
+
+export const FAN_OUT_GATE_KINDS: readonly FanOutGateKind[] = ["plan", "canary"];
+
+// the lane form job[worker]; a plan with gates refuses a worker of this name
+export function fanOutGateWorker(kind: FanOutGateKind): string {
+  return `approve-${kind}`;
+}
+
+export function fanOutGateName(jobName: string, kind: FanOutGateKind): string {
+  return `${jobName}[${fanOutGateWorker(kind)}]`;
+}
+
+export function fanOutGateOf(
+  jobName: string,
+  stepName: string,
+): FanOutGateKind | undefined {
+  return FAN_OUT_GATE_KINDS.find((kind) =>
+    fanOutGateName(jobName, kind) === stepName
+  );
+}
+
 export const RolloutPolicySchema = z.object({
   batches: z.array(RolloutBatchSizeSchema).min(1),
   maxFailures: FailureBudgetSchema.optional(),
+  approve: z.array(FanOutGateKindSchema).min(1).optional(),
+  // seconds, as a manual_approval step's timeout
+  approveTimeout: z.number().int().positive().optional(),
 }).superRefine((rollout, ctx) => {
+  const gates = rollout.approve ?? [];
+  if (new Set(gates).size !== gates.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["approve"],
+      message: "approve lists a gate more than once",
+    });
+  }
+  if (gates.includes("canary") && rollout.batches.length < 2) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["approve"],
+      message:
+        "approve: canary needs a batch after the canary; add batches, for example [1, 100%]",
+    });
+  }
+  if (rollout.approveTimeout !== undefined && gates.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["approveTimeout"],
+      message: "approveTimeout needs approve: plan, canary, or both",
+    });
+  }
   const last = rollout.batches.length - 1;
   rollout.batches.forEach((size, index) => {
     const isRest = size === "100%";

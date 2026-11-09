@@ -3152,7 +3152,8 @@ fan-out job itself.
 `fanOut` takes the short form `all` or an object parsed by
 `FanOutPolicySchema` (`src/domain/remote/fan_out.ts`): `offline`
 (`wait` | `skip` | `fail`, default `wait`), `minWorkers` (default 1, never 0)
-and an optional `rollout` (`batches`, `maxFailures`). `all` is stored as
+and an optional `rollout` (`batches`, `maxFailures`, `approve`,
+`approveTimeout`). `all` is stored as
 written and means the defaults. "Rollouts" below says how a run acts on
 `rollout`.
 
@@ -3178,7 +3179,12 @@ path and `workflow validate` report them:
 - A task naming one definition (`behavior:` / `model:` by name or id, or
   `modelIdOrName`), since every lane would share it. Use `behaviorType` +
   `behaviorName` so each worker gets its own instance. `assert` steps are fine.
-- `workflow`, `manual_approval` and `wait_for_signal` steps.
+- `workflow`, `manual_approval` and `wait_for_signal` steps. A fan-out job
+  asks for approval through `rollout.approve` instead (see "Approval gates").
+- `approve: [canary]` with a single batch (a canary needs a batch after it),
+  `approveTimeout` without `approve`, an `approve` value other than `plan` or
+  `canary` or listed twice, and an authored step named like one of the job's
+  gates.
 
 **Stored plan.** A job run may hold a `fanOutPlan` section, which
 `JobRun.recordFanOutPlan` writes once, and beside it a `fanOutSnapshot`: the
@@ -3263,7 +3269,8 @@ batch and no budget runs every lane at once, as a job without `rollout` does.
   stays the one host ceiling. Lanes are ordered as `planBatches` orders them:
   connected hosts by name, then waiting hosts last, so the canary is a host
   that is up. Batch percentages round up, and the last batch is `100%`. There
-  is no pause or bake time between batches.
+  is no bake time between batches; `approve: [canary]` pauses for a decision
+  after the first ("Approval gates").
 - The budget is a fixed number made at plan time: `maxFailures` as a count, or
   a percentage of `plannedLanes` rounded down (`resolveMaxFailures`). It is
   not a live rate, and without `maxFailures` there is no budget. A resumed
@@ -3305,6 +3312,64 @@ batch and no budget runs every lane at once, as a job without `rollout` does.
   settled. Without a halt record (an older swamp dropped it on save, or the
   run was interrupted and recovered) the re-run lanes walk the frozen batches
   in plan order.
+
+**Approval gates.** `rollout.approve` lists `plan`, `canary` or both, and
+`approveTimeout` gives their timeout in seconds, as a `manual_approval` step's
+`timeout` does. Each gate is an ordinary approval step record in the fan-out
+job, named in the lane form: `patch[approve-plan]` and
+`patch[approve-canary]` for job `patch` (`fanOutGateName` in
+`src/domain/remote/fan_out.ts`). `fan_out_gates.ts` holds the rest.
+
+- The gate records are written pending with the plan, in the same save
+  (`JobRun.expandLanes`). A plan whose lane worker is named `approve-plan` or
+  `approve-canary` while that gate is planned is refused, since the lane would
+  share the gate's name. A canary gate is written only when the frozen plan
+  has more than one batch: a small fleet can plan into one batch even when the
+  rollout lists two. `job_fanout_planned` names the gates the plan holds
+  (`approve`). Gates are read from the run, never from the definition, so an
+  edit to `approve` after a run planned changes nothing for that run.
+- The plan gate opens once the plan is saved and `job_fanout_planned` is sent,
+  before any `job_fanout_waiting` event and before any lane starts, on either
+  lane path. The canary gate opens through the lane driver's `held` hook: once
+  `nextBatch` would start the first lane outside frozen batch 0, every batch-0
+  lane has settled, and the budget still allows it. A canary that spends the
+  budget halts as above and the gate never opens; the halt holds the gate
+  record with the lanes (`job_skipped`, `settledByAbort`).
+- A gate opens as `manual_approval` does: `waiting_approval`, an
+  `approval_requested` event, and the run suspends. Its `approvalPrompt` is a
+  fixed line naming the gate and the job. The approver's view is built from
+  the run record whenever it is shown (`fanOutGatePrompt`), never stored: the
+  plan gate shows the selector, every member with its disposition, reason and
+  batch, the batches and the budget; the canary gate shows each canary lane's
+  result with its failed steps and failed assertions, the budget used and
+  allowed, and the lanes the next batch starts. `approval_requested`,
+  `suspended`, the JSON `approvalRequired` field and `workflow approvals` rows
+  carry it as `fanOutGate`; log mode prints it under the prompt.
+- Approve, the grants that allow it, `approveRequiresExplicitGrant`,
+  `autoResume` and timeouts are those of any gate. The continuation runs on
+  the stored plan as any resume does: `job_fanout_planned` carries `resumed`
+  with every lane re-run, and `resumedLaneVerdict` judges each lane, so under
+  `offline: skip` or `fail` a host that left during the wait fails at once.
+  An approved gate is not asked again, including on a resume after a later
+  halt; a retry with `--from` that runs the job again from its start, keeping
+  no lane, asks it again.
+- Reject calls `JobRun.rejectFanOutGate`: the decision, the failed gate, every
+  lane with a step still to run held (`job_skipped`, `settledByAbort`) and the
+  failed job, in one call. No `fanOutHalts` entry is written: that entry only
+  orders a resume, and a retry of a rejected gate is refused as a rejected
+  `manual_approval` is. No run executes at a rejection, so no
+  `job_fanout_halted` event is sent; the reject reply carries `fanOutHeld`
+  (job, held lanes, reason `rejected`). Downstream `succeeded` jobs are
+  skipped.
+- A timed-out gate is an expired gate as for `manual_approval`: approve and
+  reject are refused, no lane starts, and the run can only be cancelled.
+- The run-record judge (`fanOutGateRefusal`) accepts gate records only in the
+  record that adds the plan, pending, and never their removal. A gate may move
+  to `waiting_approval` only with its fixed prompt line, a plan gate only while
+  every lane step is pending, and a canary gate only once every batch-0 lane
+  has settled and no later lane has started. No lane step leaves pending past
+  an undecided plan gate, and no lane outside batch 0 past an undecided canary
+  gate, except to be held or cancelled.
 
 **Resume, retry and recover.** A resumed fan-out job runs on its stored plan:
 `runFanOutJob` skips planning, takes its lanes from the plan's batches and its

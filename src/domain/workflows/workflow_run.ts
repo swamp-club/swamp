@@ -42,7 +42,7 @@ import type { RunTriggeringPrincipal } from "../vaults/run_vault_access.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import { AssertSeveritySchema } from "./step_task.ts";
-import { type FanOutPlan, hasLane } from "../remote/fan_out.ts";
+import { fanOutGateOf, type FanOutPlan, hasLane } from "../remote/fan_out.ts";
 import {
   type NestedRunRef,
   type ParentRunRef,
@@ -1011,7 +1011,10 @@ export class JobRun implements TriggerEvaluationContext {
    * replaces the job's authored step records with its lanes' records; no
    * forEach template, so nothing groups lanes as iterations of one step
    */
-  expandLanes(laneStepNames: readonly string[]): void {
+  expandLanes(
+    laneStepNames: readonly string[],
+    gateStepNames: readonly string[] = [],
+  ): void {
     if (this._fanOutPlan === undefined) {
       throw new Error(`Job '${this.jobName}' has no fan-out plan to expand`);
     }
@@ -1022,7 +1025,67 @@ export class JobRun implements TriggerEvaluationContext {
       );
     }
     this._steps.splice(0, this._steps.length);
+    for (const name of gateStepNames) this._steps.push(StepRun.pending(name));
     for (const name of laneStepNames) this._steps.push(StepRun.pending(name));
+  }
+
+  /**
+   * decides a waiting gate as rejected, holds every lane with a step still to
+   * run and fails the job in one call, so no save holds half a rejection
+   */
+  rejectFanOutGate(
+    stepName: string,
+    decision: ApprovalDecisionData,
+    error: string,
+  ): string[] {
+    const plan = this._fanOutPlan;
+    const gate = this.getStep(stepName);
+    if (
+      plan === undefined || fanOutGateOf(this.jobName, stepName) === undefined
+    ) {
+      throw new Error(
+        `Step '${stepName}' is not an approval gate of fan-out job '${this.jobName}'`,
+      );
+    }
+    if (gate?.status !== "waiting_approval") {
+      throw new Error(
+        `Gate '${stepName}' of job '${this.jobName}' is not waiting for a decision`,
+      );
+    }
+    // worker names hold no brackets, so a suffix names at most one lane
+    const lanes = new Map(
+      plan.lanes.map((lane) => [
+        lane.worker,
+        this._steps.filter((step) =>
+          step.stepName.length > lane.worker.length + 2 &&
+          step.stepName.endsWith(`[${lane.worker}]`)
+        ),
+      ]),
+    );
+    const held = plan.batches.flat().filter((worker) =>
+      (lanes.get(worker) ?? []).some((step) => step.status === "pending")
+    );
+    gate.recordApprovalDecision({ ...decision, approved: false });
+    gate.fail(error);
+    // job_skipped, as a budget halt holds them; the failed gate records why
+    for (const worker of held) {
+      for (const step of lanes.get(worker)!) {
+        if (step.status === "pending") {
+          step.skipUnstarted({ kind: "job_skipped" });
+        }
+      }
+    }
+    // a later gate is never reached, so it is held with the lanes
+    for (const step of this._steps) {
+      if (
+        step.status === "pending" &&
+        fanOutGateOf(this.jobName, step.stepName) !== undefined
+      ) {
+        step.skipUnstarted({ kind: "job_skipped" });
+      }
+    }
+    this.fail();
+    return held;
   }
 
   /** dependsOn and cleanup rules of a lane read only that lane's steps */

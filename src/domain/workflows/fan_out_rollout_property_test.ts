@@ -31,6 +31,7 @@ interface Coverage {
   aborted: number;
   midBatchHalt: number;
   limited: number;
+  paused: number;
 }
 
 const batchesArb = fc.array(fc.integer({ min: 1, max: 4 }), {
@@ -48,6 +49,7 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
     aborted: 0,
     midBatchHalt: 0,
     limited: 0,
+    paused: 0,
   };
   await fc.assert(
     fc.asyncProperty(
@@ -58,7 +60,18 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
       fc.func(fc.boolean()),
       fc.func(fc.integer({ min: 1, max: 3 })),
       fc.option(fc.integer({ min: 0, max: 12 }), { nil: undefined }),
-      async (s, batches, maxFailures, limit, failsOf, stepsOf, abortAt) => {
+      // the first batch an undecided gate holds
+      fc.option(fc.integer({ min: 1, max: 3 }), { nil: undefined }),
+      async (
+        s,
+        batches,
+        maxFailures,
+        limit,
+        failsOf,
+        stepsOf,
+        abortAt,
+        gateFrom,
+      ) => {
         const lanes = batches.flat();
         const batchOf = new Map(
           batches.flatMap((batch, index) => batch.map((l) => [l, index])),
@@ -107,6 +120,9 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
             return failsOf(lane);
           },
           batchStarted: (batch) => ({ kind: "batch", batch }),
+          ...(gateFrom !== undefined
+            ? { held: (lane: string) => batchOf.get(lane)! >= gateFrom }
+            : {}),
         });
         const run = (async () => {
           while (true) {
@@ -124,6 +140,9 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
           }
         }
         assertEquals(new Set(started).size, started.length);
+        if (gateFrom !== undefined) {
+          for (const lane of started) assert(batchOf.get(lane)! < gateFrom);
+        }
         for (const lane of started) assert(settled.has(lane));
         const announced = seen.filter((e) => e.kind === "batch")
           .map((e) => (e as { batch: number }).batch);
@@ -138,7 +157,18 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
             ),
           );
         }
-        if (end.kind === "aborted") {
+        if (end.kind === "paused") {
+          coverage.paused++;
+          assert(gateFrom !== undefined);
+          assertEquals(batchOf.get(end.lane), gateFrom);
+          // the gate opens only where the budget would start the lane
+          if (maxFailures !== null) assert(failed.size <= maxFailures);
+          assertEquals(
+            new Set(started),
+            new Set(lanes.filter((l) => batchOf.get(l)! < gateFrom)),
+          );
+          for (const lane of started) assert(settled.has(lane));
+        } else if (end.kind === "aborted") {
           coverage.aborted++;
           assert(controller.signal.aborted);
         } else if (end.kind === "halted") {
@@ -152,6 +182,7 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
           }
         } else {
           coverage.complete++;
+          assert(gateFrom === undefined || gateFrom >= batches.length);
           assertEquals(new Set(started), new Set(lanes));
         }
       },

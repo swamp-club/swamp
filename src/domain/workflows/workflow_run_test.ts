@@ -4193,6 +4193,103 @@ Deno.test("JobRun.haltFanOut: a job without a fan-out plan cannot halt", () => {
   );
 });
 
+function gatedJob(): JobRun {
+  const job = JobRun.pending("patch", ["apply", "verify"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]]);
+  job.expandLanes(
+    ["apply[host-a]", "verify[host-a]", "apply[host-b]", "verify[host-b]"],
+    ["patch[approve-plan]", "patch[approve-canary]"],
+  );
+  job.start();
+  return job;
+}
+
+Deno.test("JobRun.expandLanes: adds the gate records, pending, beside the lanes", () => {
+  const job = gatedJob();
+  assertEquals(job.steps.map((step) => [step.stepName, step.status]), [
+    ["patch[approve-plan]", "pending"],
+    ["patch[approve-canary]", "pending"],
+    ["apply[host-a]", "pending"],
+    ["verify[host-a]", "pending"],
+    ["apply[host-b]", "pending"],
+    ["verify[host-b]", "pending"],
+  ]);
+});
+
+Deno.test("JobRun.rejectFanOutGate: records the rejection, holds every lane still to run and fails the job together", () => {
+  const job = gatedJob();
+  job.getStep("patch[approve-plan]")!.recordApprovalDecision({
+    approved: true,
+    decidedAt: new Date().toISOString(),
+  });
+  job.getStep("patch[approve-plan]")!.succeed();
+  for (const name of ["apply[host-a]", "verify[host-a]"]) {
+    job.getStep(name)!.start();
+    job.getStep(name)!.succeed();
+  }
+  job.getStep("patch[approve-canary]")!.waitForApproval("go?", 60);
+  const decidedAt = new Date().toISOString();
+  const held = job.rejectFanOutGate(
+    "patch[approve-canary]",
+    {
+      approved: false,
+      reason: "canary looks off",
+      decidedBy: "ops",
+      decidedAt,
+    },
+    "canary looks off",
+  );
+  assertEquals(held, ["host-b"]);
+  const gate = job.getStep("patch[approve-canary]")!;
+  assertEquals(gate.status, "failed");
+  assertEquals(gate.approvalDecision?.approved, false);
+  assertEquals(gate.approvalDecision?.decidedBy, "ops");
+  for (const name of ["apply[host-b]", "verify[host-b]"]) {
+    const step = job.getStep(name)!;
+    assertEquals(step.status, "skipped");
+    assertEquals(step.skipReason, { kind: "job_skipped" });
+    assertEquals(step.settledByAbort, true);
+  }
+  assertEquals(job.getStep("apply[host-a]")!.status, "succeeded");
+  assertEquals(job.status, "failed");
+  assertEquals(job.getStep("patch[approve-plan]")!.status, "succeeded");
+  // no schema change: the failed gate is the record of the rejection
+  assertEquals("fanOutHalts" in job.toData(), false);
+});
+
+Deno.test("JobRun.rejectFanOutGate: rejecting the plan gate holds the canary gate it never reached", () => {
+  const job = gatedJob();
+  job.getStep("patch[approve-plan]")!.waitForApproval("go?");
+  const held = job.rejectFanOutGate(
+    "patch[approve-plan]",
+    { approved: false, decidedAt: new Date().toISOString() },
+    "no",
+  );
+  assertEquals(held, ["host-a", "host-b"]);
+  const canary = job.getStep("patch[approve-canary]")!;
+  assertEquals(canary.status, "skipped");
+  assertEquals(canary.settledByAbort, true);
+  assertEquals(job.steps.some((step) => step.status === "pending"), false);
+});
+
+Deno.test("JobRun.rejectFanOutGate: refuses a gate that is not waiting or not a gate, and changes nothing", () => {
+  const job = gatedJob();
+  const decision = { approved: false, decidedAt: new Date().toISOString() };
+  assertThrows(
+    () => job.rejectFanOutGate("patch[approve-plan]", decision, "no"),
+    Error,
+    "is not waiting for a decision",
+  );
+  job.getStep("apply[host-a]")!.waitForApproval("x");
+  assertThrows(
+    () => job.rejectFanOutGate("apply[host-a]", decision, "no"),
+    Error,
+    "is not an approval gate",
+  );
+  assertEquals(job.getStep("apply[host-b]")!.status, "pending");
+  assertEquals(job.status, "running");
+});
+
 Deno.test("JobRun.toData: a job that never halted writes no fanOutHalts key", () => {
   const job = haltedJob();
   assertEquals("fanOutHalts" in job.toData(), false);

@@ -235,6 +235,61 @@ Deno.test("validateWorkflow: nested workflow, manual_approval and wait_for_signa
   }
 });
 
+Deno.test("validateWorkflow: an authored step named like an approval gate is refused", () => {
+  const rollout = { batches: [1, "100%"], approve: ["plan", "canary"] };
+  for (
+    const [gate, stepName] of [["plan", "patch[approve-plan]"], [
+      "canary",
+      "patch[approve-canary]",
+    ]]
+  ) {
+    assertEquals(
+      refusalsOf(fanOutWorkflow({
+        fanOut: { rollout },
+        steps: [{ name: stepName, task: DIRECT }],
+      })),
+      [
+        `Step '${stepName}' in fan-out job 'patch' has the name of the job's ${gate} approval gate. Rename the step.`,
+      ],
+    );
+  }
+  // without the gate there is no record to collide with
+  assertEquals(
+    refusalsOf(fanOutWorkflow({
+      fanOut: { rollout: { batches: ["100%"], approve: ["plan"] } },
+      steps: [{ name: "patch[approve-canary]", task: DIRECT }],
+    })),
+    [],
+  );
+});
+
+Deno.test("validateWorkflow: approval gate settings are refused where they cannot open", () => {
+  for (
+    const [rollout, message] of [
+      [{ batches: ["100%"], approve: ["canary"] }, "canary needs a batch"],
+      [{ batches: ["100%"], approve: ["deploy"] }, "Invalid"],
+      [{ batches: ["100%"], approveTimeout: 60 }, "approveTimeout needs"],
+    ] as const
+  ) {
+    const refusals = refusalsOf(fanOutWorkflow({ fanOut: { rollout } }));
+    assertEquals(
+      refusals.some((refusal) => refusal.includes(message)),
+      true,
+      `${JSON.stringify(rollout)}: ${JSON.stringify(refusals)}`,
+    );
+  }
+  // approve lives under rollout, which needs batches
+  assertEquals(
+    refusalsOf(fanOutWorkflow({ fanOut: { rollout: { approve: ["plan"] } } }))
+      .length > 0,
+    true,
+  );
+  assertEquals(
+    refusalsOf(fanOutWorkflow({ fanOut: { approve: ["plan"] } })).length > 0,
+    true,
+  );
+});
+
 Deno.test("validateWorkflow: the refusals leave a job without fanOut alone", () => {
   assertEquals(
     fanOutJobRefusals({
