@@ -58,6 +58,13 @@ function detailLines(view: IntegrationView): string[] {
       ? [`${bold(cyan("Ceiling changed:"))} ${view.ceilingChangedAt}`]
       : []),
     ...(view.revokedAt ? [`${bold(cyan("Revoked:"))} ${view.revokedAt}`] : []),
+    ...(view.requireEmailMatch
+      ? [
+        `${
+          bold(cyan("Links:"))
+        } only the person whose email the app names may approve`,
+      ]
+      : []),
     `${bold(cyan("Ceiling:"))} ${dim(view.ceilingDigest)}`,
     ...ceilingLines(view.ceiling),
   ];

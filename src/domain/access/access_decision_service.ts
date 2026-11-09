@@ -31,6 +31,11 @@ export interface AccessPrincipal {
    * a run's decisions; read by a condition on `client` and by the ceiling
    */
   readonly client: string | undefined;
+  /**
+   * required like client: an integration client without one is refused, so a
+   * site that drops it fails closed
+   */
+  readonly delegation: string | undefined;
 }
 
 export interface AccessResource {

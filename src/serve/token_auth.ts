@@ -17,6 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { DelegationLookup } from "../domain/access/delegation_directory.ts";
+import {
+  authenticateDelegatedToken,
+  delegationLookupFor,
+  isDelegatedSecret,
+} from "./delegated_token_auth.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { withSpan } from "../infrastructure/tracing/tracer.ts";
@@ -56,6 +62,8 @@ export interface ServerTokenAuthDeps {
     secretKey: string,
   ) => Promise<string>;
   readonly now?: () => number;
+  /** the directory delegated tokens are checked against, when not registered */
+  readonly delegations?: DelegationLookup;
 }
 
 export interface TokenAuthAuditContext {
@@ -308,6 +316,9 @@ export type ServerTokenAuthResult =
     oauthIdentity?: ActorIdentity;
     /** how serve issued the token; absent when the token records none */
     client?: string;
+    delegation?: string;
+    /** a delegated access token's expiry: a session it opened closes then */
+    sessionExpiresAt?: string;
   }
   | { ok: false; error: string; reason: TokenAuthRejectionReason };
 
@@ -359,6 +370,17 @@ export async function authenticateServerToken(
       error: "Token exceeds maximum length",
       reason: "invalid-format",
     };
+  }
+
+  if (isDelegatedSecret(presented)) {
+    const delegated = await authenticateDelegatedToken(
+      presented,
+      authDeps?.delegations ?? delegationLookupFor(repoContext),
+      authDeps?.now?.() ?? Date.now(),
+    );
+    if (!delegated.ok) return delegated;
+    const { accessExpiresAt, ...rest } = delegated;
+    return { ...rest, sessionExpiresAt: accessExpiresAt };
   }
 
   const split = splitServerToken(presented);

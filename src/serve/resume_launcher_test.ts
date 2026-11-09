@@ -2169,3 +2169,33 @@ Deno.test("autoResumeParentAfterChild: a resume by the initiator is judged on ru
   assertEquals(launched, true);
   assertEquals(registry.registered.length, 1);
 });
+
+Deno.test("startDetachedResume: a run bound to a delegation that has ended is refused before any step", async () => {
+  const workflow = makeWorkflow();
+  const run = makeApprovedRun(workflow);
+  const id = "0b9f6f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+  run.recordTriggeringPrincipal({
+    kind: "user",
+    id: "pat",
+    tokenBinding: {
+      name: `delegation:${id}`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      principalId: "user:pat",
+    },
+    membership: { localGroups: [], idpGroups: [], collectives: [] },
+  });
+  for (const standing of ["ended", "unknown"]) {
+    const { ctx, registry } = makeHarness(workflow, run);
+    (ctx as { delegationDirectory?: unknown }).delegationDirectory = {
+      standingOf: () => ({ kind: standing }),
+    };
+    const result = await startDetachedResume(ctx, registry, {
+      workflowIdOrName: "gated",
+      runId: run.id,
+      principalId: null,
+    });
+    assertEquals(result.ok, false, standing);
+    if (!result.ok) assertEquals(result.refusal, "refused");
+    assertEquals(registry.registered.length, 0);
+  }
+});

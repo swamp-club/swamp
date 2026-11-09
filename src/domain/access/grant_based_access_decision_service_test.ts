@@ -73,6 +73,7 @@ function makePrincipal(
     collectives,
     groups,
     client: undefined,
+    delegation: undefined,
   };
 }
 
@@ -1420,6 +1421,7 @@ function makeServicePrincipal(id: string): AccessPrincipal {
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
 }
 
@@ -1507,6 +1509,7 @@ Deno.test("decide: user and worker principals get no service default", () => {
         collectives: [],
         groups: [],
         client: undefined,
+        delegation: undefined,
       },
       "run",
       makeResource(),
@@ -2516,6 +2519,7 @@ Deno.test("decide: a service principal gets no signal from the trigger default",
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
   assertEquals(
     service.decide(principal, "run", makeResource())?.effect,
@@ -2827,6 +2831,7 @@ const ALICE: AccessPrincipal = {
   collectives: [],
   groups: [],
   client: undefined,
+  delegation: undefined,
 };
 const WORKFLOW: AccessResource = {
   kind: "workflow",

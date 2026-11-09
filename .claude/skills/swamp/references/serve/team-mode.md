@@ -66,6 +66,10 @@ that sent it. Members' older CLIs name their swamp-club username, so:
 An upgraded CLI writes a newer checkout state and outbox, so a member cannot go
 back to an older CLI in the same checkout.
 
+Links between people and integrations are refused while any live node is on a
+build without them, and a follower honours a refreshed access token only once
+its commit feed carries the refresh (the previous token works until it expires).
+
 ## Set up a member's checkout
 
 - `.swamp.yaml` names the datastore with `format: 3` (a clone carries it) and

@@ -48,6 +48,7 @@ import {
   saveRun,
   sendRequest,
   type ServeRepo,
+  testDelegationOf,
   withServeRepo,
 } from "./serve_request_harness.ts";
 
@@ -121,6 +122,7 @@ const CALLER_ACCESS: AccessCaller = {
   groups: [],
   sourceIp: "127.0.0.1",
   client: CLIENT,
+  delegation: testDelegationOf(CLIENT),
 };
 
 Deno.test("ceiling: an admin person with an empty ceiling is refused, and the audit event names the principal, client and ceiling", async () => {

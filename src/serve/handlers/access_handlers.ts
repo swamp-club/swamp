@@ -21,12 +21,25 @@ import {
   createIntegrationListDeps,
   integrationList,
 } from "../../libswamp/access/integration_list.ts";
+import {
+  createDelegationListDeps,
+  delegationList,
+  type DelegationListInput,
+  delegationView,
+} from "../../libswamp/access/delegation_list.ts";
+import {
+  type DelegationEndData,
+  OPERATOR_END_CAUSE,
+} from "../../libswamp/access/delegation_end.ts";
+import { endLocally } from "../delegation_link_service.ts";
 import { join } from "@std/path";
 import { ACCESS_DATA_SUBDIRS } from "../access_data_poller.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type {
   AccessCanIPayload,
   AccessCheckPayload,
+  AccessDelegationEndPayload,
+  AccessDelegationListPayload,
   AccessGrantListPayload,
   AccessGroupIdpEntry,
   AccessGroupListPayload,
@@ -110,6 +123,7 @@ import {
   type ConnectionContext,
   getConnectionClient,
   getConnectionCollectives,
+  getConnectionDelegation,
   getConnectionGroups,
   handlerLibSwampContext,
   pushChangedToRemote,
@@ -538,6 +552,7 @@ export async function handleAccessCheck(
       groups,
       // another subject is explained as direct: a request cannot name a client
       client: isSelfCheck ? getConnectionClient(socket) : undefined,
+      delegation: isSelfCheck ? getConnectionDelegation(socket) : undefined,
     };
     const decisions = service.explain(
       targetAccessPrincipal,
@@ -614,6 +629,7 @@ export async function handleAccessCanI(
       collectives,
       groups,
       client: getConnectionClient(socket),
+      delegation: getConnectionDelegation(socket),
     };
     const principalStr = principalToString(principal);
 
@@ -1063,6 +1079,131 @@ export async function handleAccessIntegrationList(
       socket,
       requestId,
       "access_integration_list_failed",
+      sanitizeErrorForClient(error),
+    );
+  }
+}
+
+const DELEGATION_RESOURCE = { kind: "access", name: "*", fields: {} } as const;
+
+export async function handleAccessDelegationList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessDelegationListPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      DELEGATION_RESOURCE,
+      ctx,
+    ).allowed
+  ) return;
+
+  try {
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      delegationList(
+        handlerLibSwampContext(ctx),
+        createDelegationListDeps(ctx.repoContext.dataQueryService),
+        payload as DelegationListInput,
+      ),
+      withDefaults({
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      }),
+    );
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    send(socket, {
+      type: "access.delegation.list",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "access_delegation_list_failed",
+      sanitizeErrorForClient(error),
+    );
+  }
+}
+
+/**
+ * not cancellable: the store's write is published or rolled back as one, and
+ * the leader's link service tells swamp-club afterwards
+ */
+export async function handleAccessDelegationEnd(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessDelegationEndPayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(
+      socket,
+      requestId,
+      principal,
+      "admin",
+      DELEGATION_RESOURCE,
+      ctx,
+    ).allowed
+  ) return;
+  const store = ctx.delegationStore;
+  if (store === undefined) {
+    sendError(
+      socket,
+      requestId,
+      "delegations_unavailable",
+      "This server does not hold delegations; send the request to the leader",
+    );
+    return;
+  }
+  try {
+    const nowMs = Date.now();
+    const outcome = await endLocally(
+      store,
+      payload.id,
+      OPERATOR_END_CAUSE,
+      nowMs,
+      ctx.delegationAudit,
+    );
+    if (outcome === null) {
+      sendError(
+        socket,
+        requestId,
+        "delegation_not_found",
+        `Delegation '${payload.id}' does not exist`,
+      );
+      return;
+    }
+    const data: DelegationEndData = {
+      delegation: delegationView(outcome.record),
+      alreadyEnded: !outcome.changed,
+    };
+    send(socket, {
+      type: "access.delegation.end",
+      id: requestId,
+      payload: { data: data as unknown as Record<string, unknown> },
+    });
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "access_delegation_end_failed",
       sanitizeErrorForClient(error),
     );
   }

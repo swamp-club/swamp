@@ -2040,6 +2040,7 @@ for (const effect of ["deny", null] as const) {
             collectives: ["acme"],
             groups: ["ops"],
             client: undefined,
+            delegation: undefined,
           },
           "admin",
           { kind: "access", name: "*", fields: {} },

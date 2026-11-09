@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { timingSafeEqual } from "../crypto/timing_safe_equal.ts";
+import { INTEGRATION_ID_PATTERN } from "./client.ts";
 import { generateOpaqueToken } from "../remote/session_credential.ts";
 
 const CREDENTIAL_PREFIX = "swi1";
@@ -49,4 +51,51 @@ export async function generateIntegrationCredential(
 ): Promise<GeneratedIntegrationCredential> {
   const credential = `${CREDENTIAL_PREFIX}.${id}.${generateOpaqueToken()}`;
   return { credential, hash: await integrationCredentialHash(credential) };
+}
+
+export const INTEGRATION_CREDENTIAL_PREFIX = CREDENTIAL_PREFIX;
+
+export interface IntegrationCredentialSource {
+  credentialOf(
+    id: string,
+  ):
+    | { readonly credentialHash: string; readonly requireEmailMatch: boolean }
+    | undefined;
+}
+
+export type IntegrationCredentialCheck =
+  | {
+    readonly ok: true;
+    readonly integrationId: string;
+    readonly requireEmailMatch: boolean;
+  }
+  | { readonly ok: false };
+
+/**
+ * one answer for every refusal, so a caller learns nothing about which ids
+ * exist; an unknown, revoked or unloaded integration has no credential
+ */
+export async function verifyIntegrationCredential(
+  presented: string,
+  source: IntegrationCredentialSource,
+): Promise<IntegrationCredentialCheck> {
+  const parts = presented.split(".");
+  if (
+    parts.length !== 3 || parts[0] !== CREDENTIAL_PREFIX ||
+    !INTEGRATION_ID_PATTERN.test(parts[1]) || !/^[0-9a-f]{64}$/.test(parts[2])
+  ) return { ok: false };
+  const integrationId = parts[1];
+  const record = source.credentialOf(integrationId);
+  const presentedHash = await integrationCredentialHash(presented);
+  if (
+    record === undefined ||
+    !timingSafeEqual(record.credentialHash, presentedHash)
+  ) {
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    integrationId,
+    requireEmailMatch: record.requireEmailMatch,
+  };
 }

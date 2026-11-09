@@ -775,3 +775,19 @@ Deno.test("ServerTokenSchema: a malformed client still parses, so the token can 
   });
   assertEquals(parsed.success, true);
 });
+
+for (const reserved of ["swda1", "swdr1", "swdx1", "swi1"]) {
+  Deno.test(`serverTokenModel: mint refuses the reserved name ${reserved}`, async () => {
+    const harness = createInMemoryWorkerContext(
+      SERVER_TOKEN_MODEL_TYPE,
+      reserved,
+    );
+    await assertRejects(
+      () => serverTokenModel.methods.mint.execute(mintArgs, harness.context),
+      Error,
+      "reserved",
+    );
+    assertEquals(harness.vault.size, 0);
+    assertEquals(harness.store.has("token-main"), false);
+  });
+}

@@ -25,7 +25,12 @@
 
 import { Ceiling } from "../src/domain/access/ceiling.ts";
 import type { IntegrationLookup } from "../src/domain/access/integration_directory.ts";
-import { setConnectionClient } from "../src/serve/handlers/shared.ts";
+import type { DelegationLookup } from "../src/domain/access/delegation_directory.ts";
+import type { DelegationRecord } from "../src/domain/models/access/delegation_model.ts";
+import {
+  setConnectionClient,
+  setConnectionDelegation,
+} from "../src/serve/handlers/shared.ts";
 import { join } from "@std/path";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -160,8 +165,31 @@ export const WIDEST_CEILING: IntegrationLookup = {
   }),
 };
 
+/**
+ * tests of something else act under a delegation that consented to everything;
+ * a test names the delegation by its integration's id
+ */
+export const CONSENTED_TO_EVERYTHING: DelegationLookup = {
+  standingOf: () => ({
+    kind: "standing",
+    ceiling: Ceiling.parse({
+      version: 1,
+      ceiling: [{
+        actions: ["approve", "read", "run", "signal"],
+        resource: "workflow:*",
+      }],
+    }),
+  }),
+  recordOf: (id) => ({ integrationId: id }) as DelegationRecord,
+};
+
+export function testDelegationOf(client: string): string {
+  return client.slice("integration:".length);
+}
+
 export interface ServeCtxOptions {
   integrations?: IntegrationLookup;
+  delegations?: DelegationLookup;
   restrictedCommands?: string[];
   detached?: boolean;
   syncService?: ConnectionContext["syncService"];
@@ -223,6 +251,7 @@ export function createServeCtx(
             {
               writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
               integrations: options.integrations ?? WIDEST_CEILING,
+              delegations: options.delegations ?? CONSENTED_TO_EVERYTHING,
             },
           ),
         } as unknown as PolicySnapshotLoader,
@@ -246,7 +275,12 @@ export async function sendRequest(
     close() {},
   } as unknown as WebSocket;
   // Nothing in production issues an integration client yet, so tests set it here.
-  if (options.client !== undefined) setConnectionClient(socket, options.client);
+  if (options.client !== undefined) {
+    setConnectionClient(socket, options.client);
+    if (options.client.startsWith("integration:")) {
+      setConnectionDelegation(socket, testDelegationOf(options.client));
+    }
+  }
   const active = new Map<string, AbortController>();
   handleMessage(
     socket,

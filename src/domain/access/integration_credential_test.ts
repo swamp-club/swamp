@@ -27,6 +27,7 @@ import {
   generateIntegrationCredential,
   INTEGRATION_CREDENTIAL_HASH_PATTERN,
   integrationCredentialHash,
+  verifyIntegrationCredential,
 } from "./integration_credential.ts";
 
 Deno.test("generateIntegrationCredential: has its format, and the hash is of what is shown", async () => {
@@ -42,4 +43,54 @@ Deno.test("generateIntegrationCredential: differs every time", async () => {
   const b = await generateIntegrationCredential("app");
   assertNotEquals(a.credential, b.credential);
   assertNotEquals(a.hash, b.hash);
+});
+
+function sourceOf(
+  records: Record<
+    string,
+    { credentialHash: string; requireEmailMatch: boolean }
+  >,
+) {
+  return { credentialOf: (id: string) => records[id] };
+}
+
+Deno.test("verifyIntegrationCredential: accepts the registered credential and names its integration", async () => {
+  const { credential, hash } = await generateIntegrationCredential("slack-bot");
+  const result = await verifyIntegrationCredential(
+    credential,
+    sourceOf({
+      "slack-bot": { credentialHash: hash, requireEmailMatch: true },
+    }),
+  );
+  assertEquals(result, {
+    ok: true,
+    integrationId: "slack-bot",
+    requireEmailMatch: true,
+  });
+});
+
+Deno.test("verifyIntegrationCredential: refuses another credential, an unknown integration and malformed input alike", async () => {
+  const registered = await generateIntegrationCredential("slack-bot");
+  const other = await generateIntegrationCredential("slack-bot");
+  const source = sourceOf({
+    "slack-bot": { credentialHash: registered.hash, requireEmailMatch: false },
+  });
+  const unknown = await generateIntegrationCredential("nobody");
+  for (
+    const presented of [
+      other.credential,
+      unknown.credential,
+      registered.credential.replace("swi1.", "swi2."),
+      `${registered.credential}.extra`,
+      registered.credential.slice(0, -1),
+      registered.credential.toUpperCase(),
+      "",
+    ]
+  ) {
+    assertEquals(
+      await verifyIntegrationCredential(presented, source),
+      { ok: false },
+      presented,
+    );
+  }
 });

@@ -22,12 +22,14 @@ import {
   CONTROL_PLANE_MODEL_TYPES,
   CONTROL_PLANE_STORED_TYPES,
   isControlPlaneModelType,
+  isDelegationModelType,
   normalizeModelTypeName,
 } from "./control_plane_types.ts";
 import { modelRegistry } from "./models.ts";
 
-Deno.test("CONTROL_PLANE_MODEL_TYPES: pins the nine control-plane types", () => {
+Deno.test("CONTROL_PLANE_MODEL_TYPES: pins the ten control-plane types", () => {
   assertEquals([...CONTROL_PLANE_MODEL_TYPES].sort(), [
+    "swamp/delegation",
     "swamp/enrollment-token",
     "swamp/fleet-probe",
     "swamp/grant",
@@ -118,5 +120,22 @@ Deno.test("normalizeModelTypeName: gives one key for every spelling of a type", 
 Deno.test("normalizeModelTypeName: returns null for a string that names no type", () => {
   for (const type of ["", "   ", "@", "@@", "::", "/", "@/", "@ /@"]) {
     assertEquals(normalizeModelTypeName(type), null, JSON.stringify(type));
+  }
+});
+
+Deno.test("isDelegationModelType: matches the delegation type in any spelling, and nothing else", () => {
+  for (
+    const type of [
+      "swamp/delegation",
+      "@swamp/delegation",
+      " SWAMP::delegation",
+    ]
+  ) {
+    assertEquals(isDelegationModelType(type), true, type);
+  }
+  for (
+    const type of ["swamp/integration", "swamp/delegations", "acme/delegation"]
+  ) {
+    assertEquals(isDelegationModelType(type), false, type);
   }
 });

@@ -35,6 +35,7 @@ const BOT: AccessPrincipal = {
   collectives: [],
   groups: [],
   client: undefined,
+  delegation: undefined,
 };
 
 const noConditions = () => false;

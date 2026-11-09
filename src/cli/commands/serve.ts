@@ -19,6 +19,27 @@
 
 import { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
 import {
+  delegationSessionName,
+  registerDelegationLookup,
+} from "../../serve/delegated_token_auth.ts";
+import { RESERVED_TOKEN_NAMES } from "../../domain/access/delegated_token.ts";
+import { DelegationStore } from "../../serve/delegation_store.ts";
+import { createRecordLock } from "../../serve/deps.ts";
+import { ServeLinkClient } from "../../serve/serve_link_client.ts";
+import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
+import {
+  type DelegationRouteDeps,
+  handleDelegationRequest,
+  matchDelegationRoute,
+} from "../../serve/delegation_routes.ts";
+import { checkDelegationCapability } from "../../serve/delegation_capability_check.ts";
+import { createDelegationAuditor } from "../../serve/delegation_audit.ts";
+import { DelegationDirectory } from "../../domain/access/delegation_directory.ts";
+import {
+  DELEGATION_DATA_NAME,
+  DELEGATION_MODEL_TYPE,
+} from "../../domain/models/access/delegation_model.ts";
+import {
   INTEGRATION_DATA_NAME,
   INTEGRATION_MODEL_TYPE,
 } from "../../domain/models/access/integration_model.ts";
@@ -125,6 +146,7 @@ import {
   cancelReasonFor,
   closeConnectionsForPrincipal,
   type ConnectionContext,
+  DELEGATION_ENDED_REASON,
   emitRunCancelAudit,
   emitSystemAuditEvent,
   isCallerAuthorized,
@@ -572,6 +594,7 @@ import {
 import {
   type AccessDataPoller,
   createAccessDataPoller,
+  DELEGATION_DATA_SUBDIRS,
   INTEGRATION_DATA_SUBDIRS,
 } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
@@ -766,6 +789,7 @@ export interface CancelAuthorizationRequest {
   principal: Principal;
   loginIdentity?: ActorIdentity;
   client?: string;
+  delegation?: string;
   collectives: readonly string[];
   groups: readonly string[];
   sourceIp: string;
@@ -818,6 +842,7 @@ export function authorizeCancelRequest(
       collectives: [...request.collectives],
       groups: [...request.groups],
       client: request.client,
+      delegation: request.delegation,
     },
     "admin",
     { kind: "access", name: "*", fields: {} },
@@ -3674,6 +3699,7 @@ export const serveCommand = new Command()
     let serveCommitEffects: ServeCommitEffects | undefined;
     let accessDataPoller: AccessDataPoller | null = null;
     let integrationDataPoller: AccessDataPoller | null = null;
+    let delegationDataPoller: AccessDataPoller | null = null;
     let runtimeDataPoller: RuntimeDataPoller | null = null;
     let repoMarker = null;
     try {
@@ -5060,6 +5086,11 @@ export const serveCommand = new Command()
       repoContext.unifiedDataRepo,
       { eventBus: repoContext.eventBus },
     );
+    const delegationDirectory = new DelegationDirectory(
+      repoContext.unifiedDataRepo,
+      { eventBus: repoContext.eventBus },
+    );
+    registerDelegationLookup(repoContext, delegationDirectory);
     const policySnapshotLoader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,
       repoContext.eventBus,
@@ -5069,6 +5100,7 @@ export const serveCommand = new Command()
         runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
         writeImpliesTag: !authConfig.tagRequiresExplicitGrant,
         integrations: integrationDirectory,
+        delegations: delegationDirectory,
       },
       readConditionTypeLiterals,
       readConditionFindings,
@@ -5105,7 +5137,39 @@ export const serveCommand = new Command()
       dataNames: [INTEGRATION_DATA_NAME],
       modelTypes: [INTEGRATION_MODEL_TYPE.normalized],
     });
+    delegationDataPoller = await createAccessDataPoller({
+      syncService,
+      syncGate,
+      pollIntervalMs: datastorePollIntervalMs,
+      policySnapshotLoader: delegationDirectory,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      namespace: serveNamespace,
+      datastoreConfig,
+      datastoreEngine,
+      datastoreResolver: repoDatastoreResolver,
+      eventBus: repoContext.eventBus,
+      subdirs: DELEGATION_DATA_SUBDIRS,
+      reloadEveryCycle: true,
+      reloading: "delegation directory",
+      dataNames: [DELEGATION_DATA_NAME],
+      modelTypes: [DELEGATION_MODEL_TYPE.normalized],
+    });
     await integrationDirectory.reload();
+    await delegationDirectory.reload();
+    // an older node answers a delegated token by looking up a server token of
+    // its prefix's name, so one existing would authenticate there
+    for (const reserved of RESERVED_TOKEN_NAMES) {
+      const found = await readServerTokenRecord(repoContext, reserved).then(
+        () => true,
+        () => false,
+      );
+      if (found) {
+        logger.warn(
+          "A server token is named {name}, which delegated credentials use; revoke it before linking anyone",
+          { name: reserved },
+        );
+      }
+    }
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
       mode: grantReloadMode,
@@ -5169,6 +5233,7 @@ export const serveCommand = new Command()
 
     accessDataPoller?.start();
     integrationDataPoller?.start();
+    delegationDataPoller?.start();
 
     if (syncService) {
       runtimeDataPoller = new RuntimeDataPoller({
@@ -5668,6 +5733,7 @@ export const serveCommand = new Command()
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         integrationDirectory,
+        delegationDirectory,
         repoDir: resolvedRepoDir,
         repoContext,
         gcMutex,
@@ -6714,6 +6780,7 @@ export const serveCommand = new Command()
         intervalMs: DEFAULT_TOKEN_SESSION_REVALIDATION_MS,
         listTokenSessions,
         readToken: (name) => readServerTokenRecord(repoContext, name),
+        delegationStanding: (id) => delegationDirectory.standingOf(id).kind,
         terminateSessions: (name, options) =>
           terminateTokenSessions(name, {
             ...options,
@@ -6726,12 +6793,85 @@ export const serveCommand = new Command()
       });
       tokenSessionRevalidationService.start();
     }
+
+    // links need swamp-club's consent page, so only an oauth-mode serve with
+    // its own client credentials offers them
+    const delegationStore = new DelegationStore({
+      repoDir: resolvedRepoDir,
+      repoContext,
+      lock: createRecordLock(
+        resolvedRepoDir,
+        repoContext,
+        datastoreConfig,
+        syncService,
+        syncGate,
+      ),
+      confirmReplicated,
+      directory: delegationDirectory,
+    });
+    const serveLinkClient = authConfig.mode === "oauth" &&
+        authConfig.oauthClientId !== undefined && oauthClientSecret !== ""
+      ? new ServeLinkClient({
+        baseUrl: authConfig.oauthProvider,
+        clientId: authConfig.oauthClientId,
+        clientSecret: oauthClientSecret,
+      })
+      : undefined;
+    const delegationAudit = createDelegationAuditor(connectionCtx);
+    connectionCtx.delegationStore = delegationStore;
+    connectionCtx.delegationAudit = delegationAudit;
+    const delegationRouteDeps: DelegationRouteDeps = {
+      integrations: integrationDirectory,
+      directory: delegationDirectory,
+      store: delegationStore,
+      client: () => serveLinkClient,
+      capability: () =>
+        checkDelegationCapability(
+          hasRemoteControlPlane ? controlPlaneStore : undefined,
+          { staleTtlMs },
+        ),
+      get followerGate() {
+        return connectionCtx.followerGate;
+      },
+      leaderLink,
+      audit: delegationAudit,
+    };
+    const delegationLinkService = new DelegationLinkService({
+      store: delegationStore,
+      directory: delegationDirectory,
+      integrations: integrationDirectory,
+      client: () => serveLinkClient,
+      admission: {
+        allowedCollectives: authConfig.allowedCollectives,
+        allowedUsers: authConfig.allowedUsers,
+      },
+      isLeader: () => connectionCtx.followerGate?.role !== "follower",
+      audit: delegationAudit,
+    });
+    delegationLinkService.start();
+
     integrationDirectory.onNarrowed((changes) => {
       for (const { id, reason } of changes) {
         terminateIntegrationSessions(id, {
           code: 4003,
           reason: `Session ended: integration ${reason}`,
           cause: `integration-${reason}`,
+          initiatedBy: "system",
+          audit: {
+            emitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
+          },
+        });
+      }
+    });
+    // every node closes an ended delegation's sockets and streams as soon as
+    // its directory sees the end; requests already decide afresh
+    delegationDirectory.onEnded((ended) => {
+      for (const { id } of ended) {
+        terminateTokenSessions(delegationSessionName(id), {
+          code: 4003,
+          reason: DELEGATION_ENDED_REASON,
+          cause: "delegation-ended",
           initiatedBy: "system",
           audit: {
             emitter: connectionCtx.auditEmitter,
@@ -7455,6 +7595,16 @@ export const serveCommand = new Command()
           );
         }
 
+        const delegationRoute = matchDelegationRoute(apiUrl.pathname);
+        if (delegationRoute !== undefined) {
+          return await handleDelegationRequest(
+            req,
+            delegationRoute,
+            clientAddress(),
+            delegationRouteDeps,
+          );
+        }
+
         if (apiUrl.pathname === SERVE_ACTION_PATH) {
           return await handleHttpActionRequest(req, clientAddress(), {
             ctx: connectionCtx,
@@ -7607,6 +7757,7 @@ export const serveCommand = new Command()
                   principal: cancelPrincipal,
                   loginIdentity: authResult.oauthIdentity,
                   client: authResult.client,
+                  delegation: authResult.delegation,
                   collectives: authResult.collectives,
                   groups: authResult.groups,
                   sourceIp: cancelRemoteAddr,
@@ -7991,6 +8142,7 @@ export const serveCommand = new Command()
                     sourceIp: dashboardRemoteAddr,
                     loginIdentity: result.oauthIdentity,
                     client: result.client,
+                    delegation: result.delegation,
                   },
                   crypto.randomUUID(),
                   "dashboard-session",
@@ -8372,6 +8524,10 @@ export const serveCommand = new Command()
         const service = tokenSessionRevalidationService;
         await stages.run("token session revalidation", () => service.dispose());
       }
+      await stages.run(
+        "delegation links",
+        () => delegationLinkService.stop(),
+      );
       if (clubHeartbeatService) {
         clubHeartbeatService.stop();
       }
@@ -8386,6 +8542,10 @@ export const serveCommand = new Command()
       if (integrationDataPoller) {
         const poller = integrationDataPoller;
         await stages.run("integration data poller", () => poller.stop());
+      }
+      if (delegationDataPoller) {
+        const poller = delegationDataPoller;
+        await stages.run("delegation data poller", () => poller.stop());
       }
       if (runtimeDataPoller) {
         const poller = runtimeDataPoller;
@@ -8402,6 +8562,10 @@ export const serveCommand = new Command()
       await stages.run(
         "integration directory",
         () => integrationDirectory.dispose(),
+      );
+      await stages.run(
+        "delegation directory",
+        () => delegationDirectory.dispose(),
       );
       // a tick's chunk sweep must never overlap the closing compaction and
       // lease release; stop() aborts it, so the wait ends at its next batch or
@@ -8710,6 +8874,7 @@ export const serveCommand = new Command()
         source: feedSource,
         reloadPolicy: () => policySnapshotLoader.load(),
         reloadIntegrations: () => integrationDirectory.reload(),
+        reloadDelegations: () => delegationDirectory.reload(),
         checkConfig: () => configPoller?.pollNow(),
         isFollower: () => connectionCtx.followerGate?.role === "follower",
       });

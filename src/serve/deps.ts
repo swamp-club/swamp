@@ -90,6 +90,7 @@ import {
   acquireModelLocks,
   createWorkflowRunClaims,
   type LockProgressWriter,
+  type ModelLockResult,
 } from "../cli/repo_context.ts";
 import {
   extractTraceContext,
@@ -484,6 +485,32 @@ export function createStepLockHook(
     }
     return result;
   };
+}
+
+/**
+ * one record's model lock for a write serve makes itself, outside any run;
+ * its pull and push take the sync gate's shared mode like a step's
+ */
+export function createRecordLock(
+  repoDir: string,
+  repoContext: RepositoryContext,
+  datastoreConfig: DatastoreConfig,
+  syncService: DatastoreSyncService | undefined,
+  syncGate: SyncGate | undefined,
+): (modelType: string, modelId: string) => Promise<ModelLockResult> {
+  return (modelType, modelId) =>
+    acquireModelLocks(
+      datastoreConfig,
+      [{ modelType, modelId }],
+      repoDir,
+      syncService,
+      repoContext.catalogStore,
+      undefined,
+      {
+        wrapSync: (fn, kind) => withRunSyncGate(syncGate, fn, kind),
+        repoContext,
+      },
+    );
 }
 
 /**

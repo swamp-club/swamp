@@ -137,7 +137,13 @@ function decisionOn(
   return new GrantBasedAccessDecisionService(
     new PolicySnapshot(grants, [], createConditionEvaluator()),
   ).decide(
-    { principal: CALLER, collectives: [], groups: [], client: undefined },
+    {
+      principal: CALLER,
+      collectives: [],
+      groups: [],
+      client: undefined,
+      delegation: undefined,
+    },
     action,
     resource,
   );

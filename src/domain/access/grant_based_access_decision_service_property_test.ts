@@ -42,6 +42,8 @@ import {
 } from "./resource_selector.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
+import type { DelegationLookup } from "./delegation_directory.ts";
+import type { DelegationRecord } from "../models/access/delegation_model.ts";
 
 const ACTIONS: readonly Action[] = ActionSchema.options;
 const IMPLIED = [
@@ -65,6 +67,7 @@ const PRINCIPAL: AccessPrincipal = {
   collectives: [],
   groups: ["idp-ops"],
   client: undefined,
+  delegation: undefined,
 };
 
 const RESOURCE: AccessResource = {
@@ -208,6 +211,7 @@ const arbPrincipal: fc.Arbitrary<AccessPrincipal> = fc.record({
   collectives: [],
   groups: [],
   client: undefined,
+  delegation: undefined,
 }));
 
 const arbResourceKind = fc.constantFrom<ResourceKind>("workflow", "model");
@@ -261,6 +265,7 @@ Deno.test("GrantBasedAccessDecisionService: a matching deny always beats the ser
             collectives: [],
             groups: [],
             client: undefined,
+            delegation: undefined,
           },
           "run",
           RESOURCE,
@@ -303,6 +308,7 @@ Deno.test("GrantBasedAccessDecisionService: a service deny that cannot be evalua
           collectives: [],
           groups: [],
           client: undefined,
+          delegation: undefined,
         };
         const decision = service.decide(principal, "run", RESOURCE);
         assert(decision?.grantId !== SERVICE_TRIGGER_DEFAULT_GRANT_ID);
@@ -330,6 +336,7 @@ Deno.test("property: a tags deny refuses the resources carrying the tag and, fai
           collectives: [],
           groups: [],
           client: undefined,
+          delegation: undefined,
         };
         const snapshot = new PolicySnapshot(
           [
@@ -417,6 +424,7 @@ Deno.test("property: a deny whose condition errors never yields an allow", () =>
           collectives: [],
           groups: [],
           client: undefined,
+          delegation: undefined,
         };
         const resource = {
           kind: "model" as const,
@@ -558,6 +566,7 @@ Deno.test("GrantBasedAccessDecisionService: a grant not naming client or run dec
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
   const base: AccessResource = {
     kind: "workflow",
@@ -647,28 +656,42 @@ const PERSON = {
   groups: [],
 };
 
-Deno.test("effective access: across random policies a ceiling never widens rights", () => {
+const delegationLookup = (
+  consented: Ceiling,
+  options: { kind?: "standing" | "ended"; integrationId?: string } = {},
+): DelegationLookup => ({
+  standingOf: () =>
+    options.kind === "ended"
+      ? { kind: "ended" }
+      : { kind: "standing", ceiling: consented },
+  recordOf: () =>
+    ({ integrationId: options.integrationId ?? "app" }) as DelegationRecord,
+});
+
+Deno.test("effective access: across random policies rights are grants, then the live ceiling, then the consented one", () => {
   fc.assert(fc.property(
     arbPolicyGrants,
+    arbCeiling,
     arbCeiling,
     fc.constantFrom(...ACTIONS),
     fc.constantFrom("workflow" as const, "model" as const, "access" as const),
     fc.constantFrom("w", "wz", "x", "*"),
-    (grants, ceiling, action, kind, name) => {
+    (grants, ceiling, consented, action, kind, name) => {
       const service = new GrantBasedAccessDecisionService(
         new PolicySnapshot(grants, [], createConditionEvaluator()),
         {
           integrations: integrationLookup({ kind: "active", ceiling }),
+          delegations: delegationLookup(consented),
         },
       );
       const resource: AccessResource = { kind, name, fields: { name } };
       const direct = service.decide(
-        { ...PERSON, client: undefined },
+        { ...PERSON, client: undefined, delegation: undefined },
         action,
         resource,
       );
       const through = service.decide(
-        { ...PERSON, client: "integration:app" },
+        { ...PERSON, client: "integration:app", delegation: "d" },
         action,
         resource,
       );
@@ -676,12 +699,77 @@ Deno.test("effective access: across random policies a ceiling never widens right
         assertEquals(direct?.effect, "allow");
         assertEquals(kind, "workflow");
         assert(ceiling.allows(action, name));
+        assert(consented.allows(action, name));
       }
-      if (ceiling.allows(action, name) && kind === "workflow") {
+      if (
+        ceiling.allows(action, name) && consented.allows(action, name) &&
+        kind === "workflow"
+      ) {
         assertEquals(through, direct);
       }
     },
   ));
+});
+
+Deno.test("effective access: an integration client with no delegation, an ended one or another integration's is refused whatever the grants say", () => {
+  fc.assert(fc.property(
+    arbPolicyGrants,
+    arbCeiling,
+    fc.constantFrom(...ACTIONS),
+    fc.constantFrom(
+      { delegation: undefined, kind: "standing" as const, of: "app" },
+      { delegation: "d", kind: "ended" as const, of: "app" },
+      { delegation: "d", kind: "standing" as const, of: "other" },
+    ),
+    (grants, ceiling, action, shape) => {
+      const service = new GrantBasedAccessDecisionService(
+        new PolicySnapshot(grants, [], createConditionEvaluator()),
+        {
+          integrations: integrationLookup({ kind: "active", ceiling }),
+          delegations: delegationLookup(ceiling, {
+            kind: shape.kind,
+            integrationId: shape.of,
+          }),
+        },
+      );
+      const principal = {
+        ...PERSON,
+        client: "integration:app",
+        delegation: shape.delegation,
+      };
+      const resource: AccessResource = {
+        kind: "workflow",
+        name: "w",
+        fields: { name: "w" },
+      };
+      assertEquals(service.decide(principal, action, resource)?.effect, "deny");
+      assertEquals(
+        service.decideAll(principal, action, "workflow")?.effect,
+        "deny",
+      );
+      assertEquals(
+        service.explain(principal, action, resource).map((d) => d.effect),
+        ["deny"],
+      );
+      assertEquals(
+        service.hasAnyGrantForKind(principal, action, "workflow"),
+        false,
+      );
+    },
+  ));
+});
+
+Deno.test("effective access: a delegation named without an integration client is refused", () => {
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([], [], createConditionEvaluator()),
+    {},
+  );
+  const decision = service.decide(
+    { ...PERSON, client: undefined, delegation: "d" },
+    "read",
+    { kind: "workflow", name: "w", fields: { name: "w" } },
+  );
+  assertEquals(decision?.effect, "deny");
 });
 
 Deno.test("effective access: an unknown, revoked or malformed integration is refused whatever the grants say", () => {
@@ -698,7 +786,7 @@ Deno.test("effective access: an unknown, revoked or malformed integration is ref
         new PolicySnapshot(grants, [], createConditionEvaluator()),
         { integrations: integrationLookup(standing) },
       );
-      const principal = { ...PERSON, client };
+      const principal = { ...PERSON, client, delegation: undefined };
       const resource: AccessResource = {
         kind: "workflow",
         name: "w",

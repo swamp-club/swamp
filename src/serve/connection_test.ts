@@ -4378,6 +4378,31 @@ Deno.test("validateServerRequest rejects access.token.revoke without name", () =
   );
 });
 
+Deno.test("validateServerRequest: access.delegation.list takes an integration and a known state", () => {
+  const list = (payload: unknown) =>
+    typeof validateServerRequest({
+      type: "access.delegation.list",
+      id: "r1",
+      payload,
+    });
+  assertEquals(list(undefined), "object");
+  assertEquals(list({ integrationId: "slack-bot", state: "issued" }), "object");
+  assertEquals(list({ state: "unreadable" }), "object");
+  assertEquals(list({ state: "deleted" }), "string");
+});
+
+Deno.test("validateServerRequest: access.delegation.end takes only a delegation's uuid", () => {
+  const end = (payload: unknown) =>
+    typeof validateServerRequest({
+      type: "access.delegation.end",
+      id: "r1",
+      payload,
+    });
+  assertEquals(end({ id: crypto.randomUUID() }), "object");
+  assertEquals(end({ id: "not-a-uuid" }), "string");
+  assertEquals(end({}), "string");
+});
+
 Deno.test("validateServerRequest accepts access.token.rotate", () => {
   assertEquals(
     typeof validateServerRequest({

@@ -643,6 +643,7 @@ Deno.test("PolicySnapshotLoader.decisionService: defaults to run implying approv
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
   const resource = { kind: "workflow" as const, name: "deploy", fields: {} };
   assertEquals(loader.decisionService.runImpliesApprove, true);
@@ -674,6 +675,7 @@ Deno.test("PolicySnapshotLoader.decisionService: keeps runImpliesApprove false a
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
   const resource = { kind: "workflow" as const, name: "deploy", fields: {} };
 

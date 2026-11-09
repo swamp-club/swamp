@@ -62,6 +62,7 @@ import {
   grant,
   saveGatedWorkflow,
   type ServeRepo,
+  testDelegationOf,
   withServeRepo,
 } from "./serve_request_harness.ts";
 
@@ -86,9 +87,11 @@ function tokenRecord(client: string | undefined): ServerToken {
   };
 }
 
+// an integration client acts under a delegation, which a server token never
+// carries, so the test adds one as a delegated token's authentication would
 function authenticator(client: string | undefined) {
-  return (token: string) =>
-    authenticateServerToken(
+  return async (token: string) => {
+    const result = await authenticateServerToken(
       token,
       "/nonexistent",
       {} as RepositoryContext,
@@ -98,6 +101,10 @@ function authenticator(client: string | undefined) {
         readSecret: () => Promise.resolve("secret-value"),
       },
     );
+    return result.ok && client?.startsWith("integration:")
+      ? { ...result, delegation: testDelegationOf(client) }
+      : result;
+  };
 }
 
 const WORKFLOW_GRANT = grant({

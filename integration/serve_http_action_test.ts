@@ -31,7 +31,10 @@ import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
-import { setConnectionClient } from "../src/serve/handlers/shared.ts";
+import {
+  setConnectionClient,
+  setConnectionDelegation,
+} from "../src/serve/handlers/shared.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { handleMessage, MAX_ACTIVE_REQUESTS } from "../src/serve/connection.ts";
 import { handleHttpActionRequest } from "../src/serve/http_action_route.ts";
@@ -48,6 +51,7 @@ import {
   grant,
   saveGatedWorkflow,
   type ServeRepo,
+  testDelegationOf,
   withServeRepo,
 } from "./serve_request_harness.ts";
 
@@ -82,6 +86,7 @@ function authenticate(token: string): Promise<ServerTokenAuthResult> {
     tokenName: token.split(".")[0],
     tokenCreatedAt: "2026-11-01T00:00:00.000Z",
     client: CLIENT,
+    delegation: testDelegationOf(CLIENT),
   } as ServerTokenAuthResult);
 }
 
@@ -2045,6 +2050,7 @@ async function sendOverWebSocket(
     close() {},
   } as unknown as WebSocket;
   setConnectionClient(socket, CLIENT);
+  setConnectionDelegation(socket, testDelegationOf(CLIENT));
   const active = new Map<string, AbortController>();
   await handleMessage(
     socket,

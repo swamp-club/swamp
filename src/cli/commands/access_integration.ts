@@ -26,6 +26,7 @@ import {
   INTEGRATION_DATA_NAME,
   INTEGRATION_ID_MAX_LENGTH,
   INTEGRATION_MODEL_TYPE,
+  integrationDefinitionId,
   integrationDefinitionName,
   integrationIdTakenMessage,
   IntegrationSchema,
@@ -320,20 +321,29 @@ async function runIntegrationMethod(
   if (run.methodName !== "register" && !isIntegration) {
     throw new UserError(`Integration '${run.id}' does not exist`);
   }
-  let modelLocks: ModelLockResult | undefined;
-  if (existing) {
-    const lockResult = await acquireModelLocks(
-      datastoreConfig,
-      [{
-        modelType: existing.type.normalized,
-        modelId: existing.definition.id,
-      }],
-      repoDir,
-      syncService,
-      repoContext.catalogStore,
-    );
-    if (lockResult.synced) repoContext.catalogStore.invalidate();
-    modelLocks = lockResult;
+  // a first register locks the id's deterministic record too, so two machines
+  // registering one id serialize and the second sees the first under the lock
+  const lockResult = await acquireModelLocks(
+    datastoreConfig,
+    [{
+      modelType: existing?.type.normalized ??
+        INTEGRATION_MODEL_TYPE.normalized,
+      modelId: existing?.definition.id ??
+        await integrationDefinitionId(definitionName),
+    }],
+    repoDir,
+    syncService,
+    repoContext.catalogStore,
+  );
+  if (lockResult.synced) repoContext.catalogStore.invalidate();
+  const modelLocks: ModelLockResult = lockResult;
+  if (run.methodName === "register" && !existing) {
+    try {
+      refuseTakenId(run.id, await listFromRepo(repoContext));
+    } catch (error) {
+      await modelLocks.release();
+      throw error;
+    }
   }
   await runIntegrationChange(
     repoContext,
@@ -444,6 +454,10 @@ const accessIntegrationRegisterCommand = withRemoteOptions(
     })
     .option("--ceiling <entry:string>", CEILING_DESCRIPTION, { collect: true })
     .option("--empty", "Allow nothing yet")
+    .option(
+      "--require-email-match",
+      "When the app links a person, only the swamp-club account with the email the app names may approve",
+    )
     .option("--repo-dir <dir:string>", repoDirOption),
 ).action(async function (options: AnyOptions, id: string) {
   const commandPath = ["access", "integration", "register"];
@@ -465,6 +479,7 @@ const accessIntegrationRegisterCommand = withRemoteOptions(
         name: options.name as string,
         ceiling: ceiling.toDocument(),
         credentialHash: hash,
+        ...(options.requireEmailMatch ? { requireEmailMatch: true } : {}),
       },
     });
   } catch (error) {

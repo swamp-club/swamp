@@ -62,6 +62,7 @@ const GRANTEE: AccessPrincipal = {
   collectives: [],
   groups: [],
   client: undefined,
+  delegation: undefined,
 };
 const RESOURCE = { kind: "model" as const, name: "granted-model", fields: {} };
 
@@ -472,6 +473,7 @@ function decisionFor(loader: PolicySnapshotLoader, id: string): string {
     collectives: [],
     groups: [],
     client: undefined,
+    delegation: undefined,
   };
   return loader.decisionService.decide(principal, "read", RESOURCE)?.effect ??
     "deny";

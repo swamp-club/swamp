@@ -469,3 +469,37 @@ Deno.test("ServeCommitEffects: an integration commit reloads the directory on a 
     }
   }
 });
+
+Deno.test("ServeCommitEffects: a delegation commit reloads the delegation directory on a leader and a follower, never the policy", async () => {
+  for (const follower of [true, false]) {
+    const store = fakeSource();
+    let policy = 0;
+    let delegations = 0;
+    const effects = new ServeCommitEffects({
+      source: store.source,
+      reloadPolicy: () => {
+        policy++;
+        return Promise.resolve();
+      },
+      reloadDelegations: () => {
+        delegations++;
+        return Promise.resolve();
+      },
+      checkConfig: () => {},
+      isFollower: () => follower,
+    });
+    effects.start();
+    try {
+      store.land(partitionOf({
+        kind: "model",
+        type: ModelType.create("swamp/delegation"),
+        id: ID,
+      }));
+      effects.poke();
+      await waitFor(() => delegations === 1, "the directory reloaded");
+      assertEquals(policy, 0);
+    } finally {
+      await effects.stop();
+    }
+  }
+});

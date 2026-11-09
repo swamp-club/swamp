@@ -1032,6 +1032,7 @@ function grantAuthority(grants: Partial<Grant>[]): CallerAuthority {
           collectives: [],
           groups: [],
           client: undefined,
+          delegation: undefined,
         },
         action,
         resource,

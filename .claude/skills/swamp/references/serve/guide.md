@@ -121,7 +121,8 @@ curl -X POST https://<host>/api/v1/signal \
 ### Acting over HTTP
 
 `POST /api/v1/action` runs workflow actions for an integration: bearer token
-only, per-person rate limit, one JSON reply with a stable `code` on failure.
+only (a person's delegated `swda1.` access token, see Integrations), per-person
+rate limit, one JSON reply with a stable `code` on failure.
 
 ```bash
 curl -X POST https://<host>/api/v1/action \
@@ -229,6 +230,24 @@ swamp access integration revoke slack-bot
 
 Changes apply with no `swamp access reload`. Revoking is final, and the id can't
 be used again. Upgrade every serve instance before registering one.
+`--require-email-match` lets only the swamp-club account whose email the app
+names approve a link.
+
+An app acts as a person only after they link: the app calls
+`POST /api/v1/delegations/links` with its credential as the bearer token, shows
+the person swamp-club's consent URL, then redeems
+`POST
+/api/v1/delegations/redeem` for a 1-hour access token and a refresh token
+(`/refresh` rotates both; reusing an old refresh token ends the link). Rights
+are the person's grants within the integration's ceiling and what they consented
+to. A link lasts 30 days. Links need an oauth-mode serve registered with
+swamp-club, and every serve node upgraded.
+
+```bash
+swamp access delegation list [--integration slack-bot] [--state issued]
+swamp access delegation show <id>
+swamp access delegation end <id>   # swamp-club is told by the leader
+```
 
 `swamp access check --client integration:<id>` judges a request against the
 registered ceiling as well as the grants, so it reports a refusal for an id that

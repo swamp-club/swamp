@@ -104,6 +104,7 @@ const CLIENT_LEFT_UNDEFINED = [
   "src/serve/run_vault_access_policy.ts#1",
   "src/serve/run_vault_access_policy.ts#2",
   "src/serve/run_vault_access_policy.ts#3",
+  "src/serve/run_vault_access_policy.ts#4",
   "src/serve/trigger_authorizer.ts#1",
 ];
 

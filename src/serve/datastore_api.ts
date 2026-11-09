@@ -132,6 +132,7 @@ import { ReadModelIncompleteError } from "../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../domain/datastore_v3/record_key.ts";
 import {
   isControlPlaneModelType,
+  isDelegationModelType,
   isIntegrationModelType,
 } from "../domain/models/control_plane_types.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -595,11 +596,11 @@ function callerReadAccess(
 ): string | undefined {
   if (ctx.authConfig.mode === "none") return UNRESTRICTED_READ_ACCESS;
   const loader = ctx.policySnapshotLoader;
-  const { principal, collectives, groups, client } = caller.access;
+  const { principal, collectives, groups, client, delegation } = caller.access;
   if (!loader || !principal) return NO_READ_ACCESS;
   try {
     return loader.decisionService.readAccessFingerprint(
-      { principal, collectives, groups, client },
+      { principal, collectives, groups, client, delegation },
       ctx.authConfig.restrictedModelTypes,
     );
   } catch (error) {
@@ -2746,6 +2747,10 @@ class DatastoreApi {
       const identity = partition.identity;
       if (identity.kind === "model" && isIntegrationModelType(identity.type)) {
         await ctx.integrationDirectory?.reload();
+      } else if (
+        identity.kind === "model" && isDelegationModelType(identity.type)
+      ) {
+        await ctx.delegationDirectory?.reload();
       } else if (
         identity.kind === "model" && isControlPlaneModelType(identity.type)
       ) {

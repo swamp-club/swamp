@@ -40,6 +40,8 @@ export interface IntegrationView {
   readonly createdAt: string;
   readonly ceilingChangedAt?: string;
   readonly revokedAt?: string;
+  /** present only when set, so a record without it reads unchanged */
+  readonly requireEmailMatch?: true;
 }
 
 export function integrationView(integration: Integration): IntegrationView {
@@ -54,6 +56,7 @@ export function integrationView(integration: Integration): IntegrationView {
       ? { ceilingChangedAt: integration.ceilingChangedAt }
       : {}),
     ...(integration.revokedAt ? { revokedAt: integration.revokedAt } : {}),
+    ...(integration.requireEmailMatch ? { requireEmailMatch: true } : {}),
   };
 }
 

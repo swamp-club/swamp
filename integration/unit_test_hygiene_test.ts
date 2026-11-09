@@ -149,6 +149,8 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/infrastructure/update/resumable_download_test.ts",
   "src/libswamp/extensions/push_pull_roundtrip_test.ts",
   "src/serve/oauth_client_test.ts",
+  // the swamp-club link API client: the unit IS the HTTP boundary
+  "src/serve/serve_link_client_test.ts",
 ];
 
 Deno.test(

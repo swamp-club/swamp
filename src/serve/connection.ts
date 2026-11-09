@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { DelegationPhaseSchema } from "../domain/models/access/delegation_model.ts";
 import {
   SERVE_CAPABILITY_GATE_ATTEMPT,
   SERVE_CAPABILITY_HTTP_ACTIONS,
@@ -164,6 +165,8 @@ import {
 import {
   handleAccessCanI,
   handleAccessCheck,
+  handleAccessDelegationEnd,
+  handleAccessDelegationList,
   handleAccessGrantList,
   handleAccessGroupList,
   handleAccessGroupListIdp,
@@ -1267,6 +1270,22 @@ const AccessIntegrationListRequestSchema = z.object({
   payload: z.object({}).optional(),
 });
 
+const AccessDelegationListRequestSchema = z.object({
+  type: z.literal("access.delegation.list"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    integrationId: z.string().min(1).max(256).optional(),
+    state: z.union([DelegationPhaseSchema, z.literal("unreadable")])
+      .optional(),
+  }).optional(),
+});
+
+const AccessDelegationEndRequestSchema = z.object({
+  type: z.literal("access.delegation.end"),
+  id: z.string().min(1).max(256),
+  payload: z.object({ id: z.string().uuid() }),
+});
+
 const AccessTokenListRequestSchema = z.object({
   type: z.literal("access.token.list"),
   id: z.string().min(1).max(256),
@@ -1670,6 +1689,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   CancelRequestSchema,
   AccessTokenListRequestSchema,
   AccessIntegrationListRequestSchema,
+  AccessDelegationListRequestSchema,
+  AccessDelegationEndRequestSchema,
   AccessTokenRevokeRequestSchema,
   AccessTokenRotateRequestSchema,
   AccessTokenMintRequestSchema,
@@ -3892,6 +3913,31 @@ export function handleMessage(
           principal,
         ),
         auditOpts("access", "access", "swamp/integration"),
+      );
+      break;
+    case "access.delegation.list":
+      task = audited(
+        handleAccessDelegationList(
+          socket,
+          ctx,
+          request.id,
+          request.payload ?? {},
+          controller,
+          principal,
+        ),
+        auditOpts("access", "access", "swamp/delegation"),
+      );
+      break;
+    case "access.delegation.end":
+      task = audited(
+        handleAccessDelegationEnd(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          principal,
+        ),
+        auditOpts("access", "access", `swamp/delegation/${request.payload.id}`),
       );
       break;
     case "access.token.list":

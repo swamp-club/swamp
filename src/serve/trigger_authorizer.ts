@@ -130,6 +130,7 @@ export function createTriggerAuthorizer(
         collectives: [],
         groups: [],
         client: undefined,
+        delegation: undefined,
       };
       const decision = loader.decisionService.decide(
         accessPrincipal,

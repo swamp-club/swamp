@@ -713,6 +713,26 @@ export {
   integrationView,
 } from "./access/integration_list.ts";
 export {
+  createDelegationListDeps,
+  delegationList,
+  type DelegationListData,
+  type DelegationListDeps,
+  type DelegationListEvent,
+  type DelegationListInput,
+  type DelegationView,
+  delegationView,
+  type DelegationViewState,
+} from "./access/delegation_list.ts";
+export {
+  createDelegationEndDeps,
+  delegationEnd,
+  type DelegationEndData,
+  type DelegationEndDeps,
+  type DelegationEndEvent,
+  type DelegationEndInput,
+  OPERATOR_END_CAUSE,
+} from "./access/delegation_end.ts";
+export {
   createServerTokenListDeps,
   serverTokenList,
   type ServerTokenListData,

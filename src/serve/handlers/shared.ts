@@ -17,12 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { DelegationStore } from "../delegation_store.ts";
+import type { DelegationAuditRecord } from "../delegation_routes.ts";
+import { delegationOfSessionName } from "../delegated_token_auth.ts";
+import { integrationClient } from "../../domain/access/client.ts";
 import { FAN_OUT_EVENT_KINDS } from "../../domain/workflows/execution_events.ts";
 import {
   integrationOfClient,
   isIntegrationClient,
 } from "../../domain/access/client.ts";
 import type { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
+import type { DelegationDirectory } from "../../domain/access/delegation_directory.ts";
 import type { FollowerCatchUp } from "../follower_feed.ts";
 import type { GcMutex } from "../gc_mutex.ts";
 import type { EventLoopLagReader } from "../ws_request_span.ts";
@@ -348,6 +353,10 @@ export const DEFAULT_QUERY_LIMIT = 1000;
 
 export interface ConnectionContext {
   integrationDirectory?: IntegrationDirectory;
+  delegationDirectory?: DelegationDirectory;
+  /** the leader's locked writer of delegation records, for an operator's end */
+  delegationStore?: DelegationStore;
+  delegationAudit?: (event: DelegationAuditRecord) => void;
   repoDir: string;
   repoContext: RepositoryContext;
   followerGate?: FollowerGate;
@@ -508,6 +517,7 @@ const connectionPrincipalId = new WeakMap<WebSocket, string>();
 const connectionSourceIp = new WeakMap<WebSocket, string>();
 const connectionLoginIdentity = new WeakMap<WebSocket, ActorIdentity>();
 const connectionClient = new WeakMap<WebSocket, string>();
+const connectionDelegation = new WeakMap<WebSocket, string>();
 const connectionCompression = new WeakMap<WebSocket, ConnectionCompression>();
 const principalSockets = new Map<string, Set<WebSocket>>();
 const connectionTokens = new WeakMap<WebSocket, TokenSessionBinding>();
@@ -642,7 +652,8 @@ export type TokenSessionTerminationCause =
   | "deleted"
   | "invalid"
   | "integration-revoked"
-  | "integration-narrowed";
+  | "integration-narrowed"
+  | "delegation-ended";
 
 // each close reason names its cause so a client can tell a revoked token from a
 // principal losing access; keep under the close-frame size limit
@@ -651,6 +662,9 @@ export const ACCESS_CHANGED_CLOSE_CODE = 4004;
 export const STREAM_ACCESS_CHANGED_REASON =
   "Session ended: access changed, reconnect";
 export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
+export const DELEGATION_ENDED_REASON = "Session ended: the link has ended";
+export const DELEGATION_EXPIRED_REASON =
+  "Session ended: access token expired, refresh and reconnect";
 export const TOKEN_ROTATED_REASON =
   "Session revoked: token rotated, reconnect with the new credential";
 export const TOKEN_GONE_REASON = "Session revoked: token no longer exists";
@@ -1013,6 +1027,19 @@ export function getConnectionClient(socket: WebSocket): string | undefined {
   return connectionClient.get(socket);
 }
 
+export function setConnectionDelegation(
+  socket: WebSocket,
+  delegation: string | undefined,
+): void {
+  if (delegation !== undefined) connectionDelegation.set(socket, delegation);
+}
+
+export function getConnectionDelegation(
+  socket: WebSocket,
+): string | undefined {
+  return connectionDelegation.get(socket);
+}
+
 /**
  * Binds what a credential proved to its connection. A follower forwards the
  * credential, so the leader binds the same values from its own read of it.
@@ -1027,6 +1054,8 @@ export function bindAuthenticatedConnection(
     readonly tokenCreatedAt: string;
     readonly oauthIdentity?: ActorIdentity;
     readonly client?: string;
+    readonly delegation?: string;
+    readonly sessionExpiresAt?: string;
   },
 ): void {
   setConnectionCollectives(
@@ -1042,6 +1071,28 @@ export function bindAuthenticatedConnection(
   });
   setConnectionLoginIdentity(socket, auth.oauthIdentity);
   setConnectionClient(socket, auth.client);
+  setConnectionDelegation(socket, auth.delegation);
+  if (auth.sessionExpiresAt !== undefined) {
+    closeAtExpiry(socket, auth.tokenName, auth.sessionExpiresAt);
+  }
+}
+
+/** a delegated access token lives an hour; the socket it opened goes with it */
+function closeAtExpiry(
+  socket: WebSocket,
+  name: string,
+  expiresAt: string,
+): void {
+  const delay = Math.max(0, Date.parse(expiresAt) - Date.now());
+  const timer = setTimeout(() => {
+    if (!tokenSockets.get(name)?.has(socket)) return;
+    tokenSockets.get(name)?.delete(socket);
+    if (tokenSockets.get(name)?.size === 0) tokenSockets.delete(name);
+    connectionTokens.delete(socket);
+    closeSession(socket, 4002, DELEGATION_EXPIRED_REASON);
+  }, delay);
+  Deno.unrefTimer(timer);
+  socket.addEventListener("close", () => clearTimeout(timer), { once: true });
 }
 
 export function connectionActorIdentity(
@@ -1079,6 +1130,8 @@ export interface AccessCaller {
   readonly sourceIp: string;
   readonly loginIdentity?: ActorIdentity;
   readonly client?: string;
+  /** set with an integration client; one without it is refused */
+  readonly delegation?: string;
 }
 
 type DenialOrigin = Pick<AccessCaller, "sourceIp" | "loginIdentity" | "client">;
@@ -1094,6 +1147,7 @@ export function accessCallerOf(
     sourceIp: getConnectionSourceIp(socket),
     loginIdentity: connectionLoginIdentity.get(socket),
     client: connectionClient.get(socket),
+    delegation: connectionDelegation.get(socket),
   };
 }
 
@@ -1136,6 +1190,7 @@ function decideForCaller(
     collectives,
     groups,
     client: caller.client,
+    delegation: caller.delegation,
   };
   const decision = every
     ? service.decideAll(accessPrincipal, action, resource.kind)
@@ -1191,6 +1246,10 @@ export async function decideSubjectAccess(
   const principal = subject.principal;
   const token = subject.token;
   if (!loader || !principal || !token) return false;
+  const delegationId = delegationOfSessionName(token.name);
+  if (delegationId !== undefined) {
+    return decideDelegatedSubject(ctx, delegationId, subject, action, resource);
+  }
   let record;
   try {
     record = await readServerTokenRecord(ctx.repoContext, token.name);
@@ -1211,6 +1270,8 @@ export async function decideSubjectAccess(
     collectives: record.collectives,
     groups: record.groups,
     client: record.client,
+    // a server-token record never carries a delegation
+    delegation: undefined,
   };
   const service = loader.decisionService;
   const decision = service.decide(subjectPrincipal, action, resource);
@@ -1221,6 +1282,38 @@ export async function decideSubjectAccess(
     { kind: "access", name: "*", fields: {} },
   );
   return adminDecision !== null && adminDecision.effect === "allow";
+}
+
+/** the delegation the subject's session was bound to, decided as it stands now */
+function decideDelegatedSubject(
+  ctx: ConnectionContext,
+  delegationId: string,
+  subject: DecisionSubject,
+  action: Action,
+  resource: AccessResource,
+): boolean {
+  const directory = ctx.delegationDirectory;
+  const record = directory?.recordOf(delegationId);
+  const person = record?.person;
+  if (
+    directory === undefined || record === undefined || person === undefined ||
+    directory.standingOf(delegationId).kind !== "standing" ||
+    `user:${person.sub}` !== subject.token?.principalId ||
+    `user:${person.sub}` !== principalToString(subject.principal!)
+  ) return false;
+  const service = ctx.policySnapshotLoader!.decisionService;
+  const decision = service.decide(
+    {
+      principal: subject.principal!,
+      collectives: person.collectives,
+      groups: person.groups,
+      client: integrationClient(record.integrationId),
+      delegation: delegationId,
+    },
+    action,
+    resource,
+  );
+  return decision?.effect === "allow";
 }
 
 export function authorizeOrReject(
@@ -1772,6 +1865,7 @@ export function callerResourceDecider(
     collectives: [...caller.collectives],
     groups: [...caller.groups],
     client: caller.client,
+    delegation: caller.delegation,
   };
   const adminDecision = service.decide(
     accessPrincipal,
@@ -1873,6 +1967,7 @@ export function authorizeAnyOrReject(
     collectives,
     groups,
     client: connectionClient.get(socket),
+    delegation: connectionDelegation.get(socket),
   };
 
   if (
@@ -1959,6 +2054,7 @@ function accessPrincipalOf(
     collectives: [...caller.collectives],
     groups: [...caller.groups],
     client: caller.client,
+    delegation: caller.delegation,
   };
 }
 

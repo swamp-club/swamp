@@ -27,7 +27,9 @@ import { z } from "zod";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ServerToken } from "../domain/models/access/server_token_model.ts";
 import { ServerTokenNotFoundError } from "./token_auth.ts";
+import { delegationOfSessionName } from "./delegated_token_auth.ts";
 import {
+  DELEGATION_ENDED_REASON,
   TOKEN_EXPIRED_REASON,
   TOKEN_GONE_REASON,
   TOKEN_INVALID_REASON,
@@ -119,6 +121,8 @@ export interface TokenSessionRevalidationDeps {
   listTokenSessions(): readonly { name: string; createdAt: string }[];
   readToken(name: string): Promise<ServerToken>;
   terminateSessions(name: string, options: TokenSessionCloseOptions): number;
+  /** a delegation's sessions are checked against the directory, never a token record */
+  delegationStanding?(id: string): string;
   now?(): number;
 }
 
@@ -188,6 +192,21 @@ export class TokenSessionRevalidationService {
     let closed = 0;
     for (const [name, mints] of mintsByName) {
       if (this.#disposed) break;
+      const delegationId = delegationOfSessionName(name);
+      if (delegationId !== undefined) {
+        const standing = this.#deps.delegationStanding?.(delegationId) ??
+          "unknown";
+        if (standing === "standing") continue;
+        for (const createdAt of mints) {
+          closed += this.#deps.terminateSessions(name, {
+            onlyCreatedAt: createdAt,
+            code: REVOKED_CLOSE_CODE,
+            reason: DELEGATION_ENDED_REASON,
+            cause: "delegation-ended",
+          });
+        }
+        continue;
+      }
       let token: ServerToken | null;
       try {
         token = await this.#deps.readToken(name);

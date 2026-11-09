@@ -52,6 +52,7 @@ const ADAM: AccessPrincipal = {
   collectives: [],
   groups: ["idp-ops"],
   client: undefined,
+  delegation: undefined,
 };
 
 const ADAM_SUBJECTS: readonly Subject[] = [

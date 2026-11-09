@@ -287,3 +287,40 @@ Deno.test("IntegrationDirectory: a record with no content refuses every integrat
   assertEquals(directory.standingOf("a").kind, "unknown");
   await directory.dispose();
 });
+
+Deno.test("IntegrationDirectory: copies with one ceiling but different credentials are refused", async () => {
+  const directory = new IntegrationDirectory(repo({
+    rows: [
+      { modelId: "1", attrs: record("a") },
+      {
+        modelId: "2",
+        attrs: record("a", { credentialHash: `sha256:${"1".repeat(64)}` }),
+      },
+    ],
+  }));
+  await directory.reload();
+  assertEquals(directory.standingOf("a").kind, "unknown");
+  assertEquals(directory.credentialOf("a"), undefined);
+  await directory.dispose();
+});
+
+Deno.test("IntegrationDirectory: credentialOf answers only for an active integration", async () => {
+  const directory = new IntegrationDirectory(repo({
+    rows: [
+      { modelId: "1", attrs: record("a", { requireEmailMatch: true }) },
+      { modelId: "2", attrs: record("b") },
+      { modelId: "3", attrs: record("c", { state: "revoked" }) },
+    ],
+  }));
+  assertEquals(directory.credentialOf("a"), undefined);
+  await directory.reload();
+  assertEquals(directory.credentialOf("a"), {
+    name: "a",
+    credentialHash: `sha256:${"0".repeat(64)}`,
+    requireEmailMatch: true,
+  });
+  assertEquals(directory.credentialOf("b")?.requireEmailMatch, false);
+  assertEquals(directory.credentialOf("c"), undefined);
+  assertEquals(directory.credentialOf("missing"), undefined);
+  await directory.dispose();
+});

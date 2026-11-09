@@ -23,6 +23,7 @@
  * allow scopes the principal; data grants play no part
  */
 
+import { delegationOfSessionName } from "./delegated_token_auth.ts";
 import type { AccessPrincipal } from "../domain/access/access_decision_service.ts";
 import { ActionSchema } from "../domain/access/action.ts";
 import type { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
@@ -54,6 +55,7 @@ import {
   type ConnectionContext,
   getConnectionClient,
   getConnectionCollectives,
+  getConnectionDelegation,
   getConnectionGroups,
   getConnectionLoginIdentity,
   vaultKindResource,
@@ -294,6 +296,11 @@ export interface RunVaultPolicyDeps {
     readonly decisionService: RunVaultDecisionService;
   };
   readonly readTokenRecord?: (name: string) => Promise<ServerToken>;
+  /**
+   * a run bound to a delegation is checked against the delegation, never a
+   * token record, so rotating its tokens does not cut the run off
+   */
+  readonly delegationPrincipal?: (id: string) => string | undefined;
   readonly now?: () => number;
   readonly tokenTtlMs?: number;
 }
@@ -388,6 +395,7 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
         groups: inputs.idpGroups,
         collectives: inputs.collectives,
         client: undefined,
+        delegation: undefined,
       });
     }
     const now = (this.#deps.now ?? Date.now)();
@@ -411,6 +419,21 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
     const read = this.#deps.readTokenRecord;
     const binding = inputs.tokenBinding;
     if (!read || !binding) return null;
+    const delegationId = delegationOfSessionName(binding.name);
+    if (delegationId !== undefined) {
+      const standing = this.#deps.delegationPrincipal?.(delegationId);
+      if (
+        standing === undefined || standing !== binding.principalId ||
+        standing !== principalToString(inputs.principal)
+      ) return null;
+      return {
+        principal: inputs.principal,
+        groups: inputs.idpGroups,
+        collectives: inputs.collectives,
+        client: undefined,
+        delegation: undefined,
+      };
+    }
     let record: ServerToken;
     try {
       record = await read(binding.name);
@@ -431,12 +454,14 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
         groups: record.groups,
         collectives: record.collectives,
         client: undefined,
+        delegation: undefined,
       }
       : {
         principal: inputs.principal,
         groups: inputs.idpGroups,
         collectives: inputs.collectives,
         client: undefined,
+        delegation: undefined,
       };
   }
 }
@@ -456,12 +481,19 @@ export function runVaultScopeContext(
     | "auditEmitter"
     | "instanceId"
     | "resolvedUserNames"
+    | "delegationDirectory"
   >,
 ): RunVaultScopeContext {
   return {
     authMode: ctx.authConfig.mode,
     policySnapshotLoader: ctx.policySnapshotLoader,
     readTokenRecord: (name) => readServerTokenRecord(ctx.repoContext, name),
+    delegationPrincipal: (id) => {
+      const directory = ctx.delegationDirectory;
+      if (directory?.standingOf(id).kind !== "standing") return undefined;
+      const sub = directory.recordOf(id)?.person?.sub;
+      return sub === undefined ? undefined : `user:${sub}`;
+    },
     auditEmitter: ctx.auditEmitter,
     instanceId: ctx.instanceId,
     resolvedUserNames: ctx.resolvedUserNames,
@@ -477,7 +509,13 @@ export function captureRunPrincipal(
   const collectives = [...getConnectionCollectives(socket)];
   const token = captureDecisionSubject(socket, principal).token;
   const client = getConnectionClient(socket);
-  if (token && getConnectionLoginIdentity(socket) === undefined) {
+  // a delegated session names the person from swamp-club, yet its binding is
+  // recorded so every later use of the run re-checks the delegation
+  if (
+    token &&
+    (getConnectionLoginIdentity(socket) === undefined ||
+      getConnectionDelegation(socket) !== undefined)
+  ) {
     return {
       source: "token",
       principal,

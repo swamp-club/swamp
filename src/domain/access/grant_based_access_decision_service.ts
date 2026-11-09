@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Ceiling } from "./ceiling.ts";
+import type { DelegationLookup } from "./delegation_directory.ts";
 import { getLogger } from "@logtape/logtape";
 import type { Grant } from "../models/access/grant_model.ts";
 import type {
@@ -133,6 +135,13 @@ export interface GrantBasedAccessDecisionServiceOptions {
   readonly writeImpliesTag?: boolean;
   /** absent, every integration is unknown and so refused */
   readonly integrations?: IntegrationLookup;
+  /** absent, every delegation is unknown and so refused */
+  readonly delegations?: DelegationLookup;
+  /**
+   * only for explaining what an integration's ceiling allows a person, where no
+   * delegation exists; serve never sets it
+   */
+  readonly explainWithoutDelegation?: boolean;
 }
 
 const IMPLYING_ACTION = {
@@ -286,6 +295,9 @@ function budgetExceededSubject(accessPrincipal: AccessPrincipal): Subject {
 export const INTEGRATION_CEILING_GRANT_ID = "builtin:integration-ceiling";
 export const INTEGRATION_UNKNOWN_GRANT_ID = "builtin:integration-unknown";
 export const INTEGRATION_REVOKED_GRANT_ID = "builtin:integration-revoked";
+export const DELEGATION_REQUIRED_GRANT_ID = "builtin:delegation-required";
+export const DELEGATION_ENDED_GRANT_ID = "builtin:delegation-ended";
+export const DELEGATION_CEILING_GRANT_ID = "builtin:delegation-ceiling";
 
 /** no grant is behind these, so naming one would mislead */
 export function integrationRefusalReason(grantId: string): string | undefined {
@@ -307,6 +319,8 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
   #snapshot: PolicySnapshot;
   readonly #implications: Implications;
   readonly #integrations: IntegrationLookup | undefined;
+  readonly #delegations: DelegationLookup | undefined;
+  readonly #explainWithoutDelegation: boolean;
   readonly #fingerprints = new WeakMap<PolicySnapshot, Map<string, string>>();
 
   constructor(
@@ -320,6 +334,38 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       tag: options.writeImpliesTag ?? true,
     };
     this.#integrations = options.integrations;
+    this.#delegations = options.delegations;
+    this.#explainWithoutDelegation = options.explainWithoutDelegation === true;
+  }
+
+  /**
+   * the consented ceiling of the delegation an integration client acts under,
+   * or the refusal's grant id; a delegation for another integration, or one
+   * named without an integration client, is refused
+   */
+  #consentedCeiling(
+    principal: AccessPrincipal,
+    integrationId: string | undefined,
+  ): { ceiling: Ceiling | undefined } | { refusal: string } {
+    if (principal.delegation === undefined) {
+      if (integrationId === undefined) return { ceiling: undefined };
+      return this.#explainWithoutDelegation
+        ? { ceiling: undefined }
+        : { refusal: DELEGATION_REQUIRED_GRANT_ID };
+    }
+    if (integrationId === undefined) {
+      return { refusal: DELEGATION_REQUIRED_GRANT_ID };
+    }
+    const standing = this.#delegations?.standingOf(principal.delegation) ??
+      { kind: "unknown" as const };
+    if (
+      standing.kind !== "standing" ||
+      this.#delegations?.recordOf(principal.delegation)?.integrationId !==
+        integrationId
+    ) {
+      return { refusal: DELEGATION_ENDED_GRANT_ID };
+    }
+    return { ceiling: standing.ceiling };
   }
 
   /** explicit, never null: sites fall back to an admin check on a null */
@@ -329,12 +375,16 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     resource: Pick<AccessResource, "kind" | "name">,
   ): AccessDecision | null {
     const integration = integrationOfClient(principal.client);
-    if (integration.kind === "none") return null;
     const refuse = (grantId: string): AccessDecision => ({
       effect: "deny",
       grantId,
       subject: budgetExceededSubject(principal),
     });
+    if (integration.kind === "none") {
+      return principal.delegation === undefined
+        ? null
+        : refuse(DELEGATION_REQUIRED_GRANT_ID);
+    }
     if (integration.kind === "malformed") {
       return refuse(INTEGRATION_UNKNOWN_GRANT_ID);
     }
@@ -346,10 +396,16 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     if (standing.kind === "revoked") {
       return refuse(INTEGRATION_REVOKED_GRANT_ID);
     }
-    return resource.kind === "workflow" &&
-        standing.ceiling.allows(action, resource.name)
+    if (
+      resource.kind !== "workflow" ||
+      !standing.ceiling.allows(action, resource.name)
+    ) return refuse(INTEGRATION_CEILING_GRANT_ID);
+    const consented = this.#consentedCeiling(principal, integration.id);
+    if ("refusal" in consented) return refuse(consented.refusal);
+    return consented.ceiling === undefined ||
+        consented.ceiling.allows(action, resource.name)
       ? null
-      : refuse(INTEGRATION_CEILING_GRANT_ID);
+      : refuse(DELEGATION_CEILING_GRANT_ID);
   }
 
   /** for showing a person's grants: what a ceiling could never let through */
@@ -359,11 +415,17 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     action: Action,
   ): boolean {
     const integration = integrationOfClient(principal.client);
-    if (integration.kind === "none") return true;
+    if (integration.kind === "none") return principal.delegation === undefined;
     if (integration.kind === "malformed") return false;
     const standing = this.#integrations?.standingOf(integration.id);
-    return standing?.kind === "active" && grant.resource.kind === "workflow" &&
-      standing.ceiling.overlaps(action, grant.resource);
+    if (
+      standing?.kind !== "active" || grant.resource.kind !== "workflow" ||
+      !standing.ceiling.overlaps(action, grant.resource)
+    ) return false;
+    const consented = this.#consentedCeiling(principal, integration.id);
+    if ("refusal" in consented) return false;
+    return consented.ceiling === undefined ||
+      consented.ceiling.overlaps(action, grant.resource);
   }
 
   get runImpliesApprove(): boolean {
@@ -420,6 +482,7 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
       [...principal.groups].sort(),
       [...restrictedTypes].sort(),
       principal.client ?? null,
+      principal.delegation ?? null,
     ]);
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
@@ -663,11 +726,18 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
   ): boolean {
     const integration = integrationOfClient(principal.client);
     if (integration.kind === "malformed") return false;
+    const consented = this.#consentedCeiling(
+      principal,
+      integration.kind === "integration" ? integration.id : undefined,
+    );
+    if ("refusal" in consented) return false;
     if (integration.kind === "integration") {
       const standing = this.#integrations?.standingOf(integration.id);
       if (
         standing?.kind !== "active" || kind !== "workflow" ||
-        !standing.ceiling.allowsSomewhere(action)
+        !standing.ceiling.allowsSomewhere(action) ||
+        (consented.ceiling !== undefined &&
+          !consented.ceiling.allowsSomewhere(action))
       ) return false;
     }
     const snapshot = this.#snapshot;

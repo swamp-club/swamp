@@ -25,6 +25,7 @@ import {
   DEFAULT_STALE_TTL_MS,
   type HeartbeatRecord,
   InstanceHeartbeatService,
+  SERVE_INSTANCE_CAPABILITIES,
 } from "./instance_heartbeat.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -358,4 +359,24 @@ Deno.test("InstanceHeartbeatService: a periodic write in flight at stop cannot r
     store.entries.get("heartbeats/race-stop")!,
   );
   assertExists(record?.stoppedAt);
+});
+
+Deno.test("InstanceHeartbeatService: a written record lists this build's capabilities", async () => {
+  const written = new Map<string, Uint8Array>();
+  const store = {
+    put: (key: string, data: Uint8Array) => {
+      written.set(key, data);
+      return Promise.resolve();
+    },
+    get: (key: string) => Promise.resolve(written.get(key) ?? null),
+    delete: () => Promise.resolve(),
+    list: () => Promise.resolve([...written.keys()]),
+  };
+  const service = new InstanceHeartbeatService(store, "cap-test");
+  await service.start();
+  await service.stop({ writeTimeoutMs: 1000 });
+  const record = InstanceHeartbeatService.parseRecord(
+    written.get("heartbeats/cap-test")!,
+  );
+  assertEquals(record?.capabilities, [...SERVE_INSTANCE_CAPABILITIES]);
 });

@@ -32,6 +32,14 @@ export const DEFAULT_STALE_TTL_MS = 90_000;
  */
 export const STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS = 5_000;
 
+/**
+ * what this build can do, read by peers before a feature every node must
+ * honour; a record without the list has none
+ */
+export const SERVE_INSTANCE_CAPABILITIES: readonly string[] = [
+  "delegation-links-1",
+];
+
 export interface HeartbeatRecord {
   instanceId: string;
   hostname: string;
@@ -46,6 +54,7 @@ export interface HeartbeatRecord {
    * peer reconciles it
    */
   stoppedAt?: string;
+  capabilities?: string[];
 }
 
 export class InstanceHeartbeatService {
@@ -180,6 +189,7 @@ export class InstanceHeartbeatService {
         ? { staleTtlMs: this.#staleTtlMs }
         : {}),
       ...(stoppedAt !== undefined ? { stoppedAt } : {}),
+      capabilities: [...SERVE_INSTANCE_CAPABILITIES],
     };
     await this.#store.put(
       `heartbeats/${this.#instanceId}`,
@@ -213,7 +223,10 @@ export class InstanceHeartbeatService {
         (parsed.address === undefined ||
           typeof parsed.address === "string") &&
         (parsed.stoppedAt === undefined ||
-          typeof parsed.stoppedAt === "string")
+          typeof parsed.stoppedAt === "string") &&
+        (parsed.capabilities === undefined ||
+          (Array.isArray(parsed.capabilities) &&
+            parsed.capabilities.every((c: unknown) => typeof c === "string")))
       ) {
         return parsed as HeartbeatRecord;
       }
