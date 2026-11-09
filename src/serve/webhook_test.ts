@@ -24,7 +24,12 @@ import {
   runWithVaultAccess,
 } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { propagation, type Span, trace } from "@opentelemetry/api";
@@ -241,6 +246,31 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", async () => {
     Error,
     "must start with '/'",
   );
+});
+
+Deno.test("parseWebhookFlag: rejects a route under a reserved serve root", async () => {
+  for (const route of ["/api/v1/cancel", "/health", "/", "/%61pi/x"]) {
+    await assertRejects(
+      () => parseWebhookFlag(`${route}:my-workflow:secret`),
+      UserError,
+      "which serve reserves for its own API",
+    );
+  }
+});
+
+Deno.test("parseWebhookFlag: rejects a route with a dot-dot segment", async () => {
+  await assertRejects(
+    () => parseWebhookFlag("/hooks/../x:my-workflow:secret"),
+    UserError,
+    "'.' or '..' segment",
+  );
+});
+
+Deno.test("parseWebhookFlag: accepts legacy routes outside the reserved roots", async () => {
+  for (const route of ["/deploy", "/deploy/", "/apiary", "/hooks/github"]) {
+    const endpoint = await parseWebhookFlag(`${route}:my-workflow:secret`);
+    assertEquals(endpoint.route, route);
+  }
 });
 
 Deno.test("resolveSecret: returns a literal string unchanged", async () => {
@@ -491,6 +521,61 @@ Deno.test("WebhookService.drain: matched routes get 503 with Retry-After while u
     new Request("http://localhost/hooks/other", { method: "POST" }),
   );
   assertEquals(unmatched, null);
+  await service.stop();
+});
+
+function serviceWith(endpoints: WebhookEndpoint[]): WebhookService {
+  return new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints,
+  });
+}
+
+function endpointAt(route: string): WebhookEndpoint {
+  return {
+    route,
+    workflowIdOrName: "deploy",
+    secret: "secret",
+    verifier: { scheme: "github" },
+  };
+}
+
+Deno.test("WebhookService: refuses construction with a route under a reserved serve root", () => {
+  assertThrows(
+    () => serviceWith([endpointAt("/hooks/ok"), endpointAt("/api/v1/cancel")]),
+    UserError,
+    "under '/api'",
+  );
+});
+
+Deno.test("WebhookService.updateEndpoints: a refused route leaves the previous table in place", async () => {
+  const service = serviceWith([endpointAt("/hooks/ok")]);
+  assertThrows(
+    () =>
+      service.updateEndpoints([
+        endpointAt("/hooks/new"),
+        endpointAt("/internal/runs"),
+      ]),
+    UserError,
+    "under '/internal'",
+  );
+  assertEquals(service.listEndpoints().map((e) => e.route), ["/hooks/ok"]);
+  const response = await service.handleRequest(
+    new Request("http://localhost/hooks/ok", { method: "POST", body: "{}" }),
+  );
+  assertEquals(response?.status, 401);
+  await service.stop();
+});
+
+Deno.test("WebhookService.updateEndpoints: accepts legacy and prefixed routes", async () => {
+  const service = serviceWith([]);
+  assertEquals(
+    service.updateEndpoints([endpointAt("/deploy"), endpointAt("/hooks/gh")]),
+    2,
+  );
   await service.stop();
 });
 

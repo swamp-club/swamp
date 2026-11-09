@@ -21,6 +21,7 @@ import {
   assertEquals,
   assertExists,
   assertNotEquals,
+  assertRejects,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -536,6 +537,71 @@ Deno.test("loadServeConfig: webhook route not starting with / produces error", (
       "must start with '/'",
     );
   });
+});
+
+Deno.test("loadServeConfig: webhook route under a reserved serve root produces error", () => {
+  for (const route of ["/api/v1/cancel", "/health", "/", "/%61pi/x"]) {
+    withTempDir((dir) => {
+      writeConfig(dir, {
+        webhooks: [
+          { route: "/hooks/ok", workflow: "deploy", secret: "s" },
+          { route, workflow: "deploy", secret: "s" },
+        ],
+      });
+      const error = assertThrows(
+        () => loadServeConfig(undefined, dir),
+        Error,
+        "Invalid webhook at index 1",
+      );
+      assertStringIncludes(
+        error.message,
+        "which serve reserves for its own API",
+      );
+      assertStringIncludes(error.message, "/hooks/");
+    });
+  }
+});
+
+Deno.test("loadServeConfig: webhook route with a dot segment produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      webhooks: [{ route: "/hooks/./ci", workflow: "deploy", secret: "s" }],
+    });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "'.' or '..' segment",
+    );
+  });
+});
+
+Deno.test("loadServeConfig: legacy webhook routes outside the reserved roots load", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, {
+      webhooks: [
+        { route: "/deploy", workflow: "deploy", secret: "s" },
+        { route: "/hooks/github", workflow: "deploy", secret: "s" },
+      ],
+    });
+    const config = loadServeConfig(undefined, dir);
+    assertEquals(config?.webhooks?.map((w) => w.route), [
+      "/deploy",
+      "/hooks/github",
+    ]);
+  });
+});
+
+Deno.test("parseWebhookConfig: refuses a route under a reserved serve root", async () => {
+  await assertRejects(
+    () =>
+      parseWebhookConfig({
+        route: "/internal/runs",
+        workflow: "deploy",
+        secret: "s",
+      }),
+    Error,
+    "under '/internal'",
+  );
 });
 
 Deno.test("loadServeConfig: webhook with invalid scheme produces error", () => {

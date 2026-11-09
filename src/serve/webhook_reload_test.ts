@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import type { WebhookConfigEntry } from "./serve_config.ts";
+import { assertEquals, assertRejects } from "@std/assert";
+import { UserError } from "../domain/errors.ts";
+import { parseWebhookConfig, type WebhookConfigEntry } from "./serve_config.ts";
 import type { WebhookEndpoint, WebhookRouteSource } from "./webhook.ts";
 import { createWebhookUpdater, FLAG_ROUTES_WARNING } from "./webhook_reload.ts";
 
@@ -113,5 +114,26 @@ Deno.test("createWebhookUpdater: a parse failure leaves the routes untouched", a
   }
 
   assertEquals(message, "vault unreachable");
+  assertEquals(applied, []);
+});
+
+Deno.test("createWebhookUpdater: a reload with a reserved route is refused before the routes change", async () => {
+  const applied: (readonly WebhookEndpoint[])[] = [];
+  const updater = createWebhookUpdater({
+    source: "config",
+    service: {
+      updateEndpoints: (endpoints) => {
+        applied.push(endpoints);
+        return endpoints.length;
+      },
+    },
+    parse: (configs) => Promise.all(configs.map((c) => parseWebhookConfig(c))),
+  });
+
+  await assertRejects(
+    () => updater([entry("/hooks/a"), entry("/api/v1/cancel")]),
+    UserError,
+    "Invalid webhook /api/v1/cancel: route '/api/v1/cancel' is under '/api'",
+  );
   assertEquals(applied, []);
 });

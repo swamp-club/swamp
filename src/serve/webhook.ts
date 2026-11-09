@@ -43,6 +43,7 @@ import {
 } from "../libswamp/workflows/workflow_run_view.ts";
 import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import { webhookRouteProblem } from "./webhook_route.ts";
 import {
   isExtensionWebhookScheme,
   isWebhookScheme,
@@ -276,10 +277,9 @@ export async function parseWebhookFlag(
     );
   }
 
-  if (!route.startsWith("/")) {
-    throw new UserError(
-      `Invalid --webhook route: must start with '/', got '${route}'`,
-    );
+  const routeProblem = webhookRouteProblem(route);
+  if (routeProblem !== undefined) {
+    throw new UserError(`Invalid --webhook route: ${routeProblem}`);
   }
 
   return { route, workflowIdOrName, secret, verifier };
@@ -570,6 +570,17 @@ export interface WebhookEndpointInfo {
  * up to maxConcurrentRuns queued runs execute at once; runs of the same route
  * or workflow may overlap since per-model locks guard shared state
  */
+// Every route source reaches the table through here, including reload, which
+// reads serve.yaml without validating it.
+function assertRoutesAllowed(endpoints: readonly WebhookEndpoint[]): void {
+  for (const endpoint of endpoints) {
+    const problem = webhookRouteProblem(endpoint.route);
+    if (problem !== undefined) {
+      throw new UserError(`Invalid webhook ${endpoint.route}: ${problem}`);
+    }
+  }
+}
+
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private readonly maxConcurrentRuns: number;
@@ -590,6 +601,7 @@ export class WebhookService {
   private endpoints: WebhookEndpoint[];
 
   constructor(private readonly deps: WebhookServiceDeps) {
+    assertRoutesAllowed(deps.endpoints);
     this.endpoints = [...deps.endpoints];
     this.maxConcurrentRuns = Math.max(1, deps.maxConcurrentRuns ?? 1);
     this.now = deps.now ?? Date.now;
@@ -625,6 +637,7 @@ export class WebhookService {
   }
 
   updateEndpoints(newEndpoints: readonly WebhookEndpoint[]): number {
+    assertRoutesAllowed(newEndpoints);
     const oldByRoute = new Map(this.endpoints.map((e) => [e.route, e]));
     const newByRoute = new Map(newEndpoints.map((e) => [e.route, e]));
 
