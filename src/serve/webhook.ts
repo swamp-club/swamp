@@ -43,7 +43,6 @@ import {
 } from "../libswamp/workflows/workflow_run_view.ts";
 import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
-import { partitionWebhookRoutes } from "./webhook_route.ts";
 import {
   isExtensionWebhookScheme,
   isWebhookScheme,
@@ -567,22 +566,6 @@ export interface WebhookEndpointInfo {
   readonly source: WebhookRouteSource;
 }
 
-export interface SkippedWebhookRoute {
-  readonly route: string;
-  readonly workflowIdOrName: string;
-  readonly reason: string;
-}
-
-function skippedRoutes(
-  refused: readonly { item: WebhookEndpoint; reason: string }[],
-): SkippedWebhookRoute[] {
-  return refused.map(({ item, reason }) => ({
-    route: item.route,
-    workflowIdOrName: item.workflowIdOrName,
-    reason,
-  }));
-}
-
 /**
  * up to maxConcurrentRuns queued runs execute at once; runs of the same route
  * or workflow may overlap since per-model locks guard shared state
@@ -605,13 +588,9 @@ export class WebhookService {
   private draining = false;
   private stopped = false;
   private endpoints: WebhookEndpoint[];
-  private skipped: SkippedWebhookRoute[];
 
-  // a refused route is skipped alone, never failing the others
   constructor(private readonly deps: WebhookServiceDeps) {
-    const { allowed, refused } = partitionWebhookRoutes(deps.endpoints);
-    this.endpoints = allowed;
-    this.skipped = skippedRoutes(refused);
+    this.endpoints = [...deps.endpoints];
     this.maxConcurrentRuns = Math.max(1, deps.maxConcurrentRuns ?? 1);
     this.now = deps.now ?? Date.now;
   }
@@ -645,12 +624,7 @@ export class WebhookService {
     });
   }
 
-  updateEndpoints(requested: readonly WebhookEndpoint[]): number {
-    const { allowed: newEndpoints, refused } = partitionWebhookRoutes(
-      requested,
-    );
-    // reported once, by the caller: reload returns these as warnings
-    this.skipped = skippedRoutes(refused);
+  updateEndpoints(newEndpoints: readonly WebhookEndpoint[]): number {
     const oldByRoute = new Map(this.endpoints.map((e) => [e.route, e]));
     const newByRoute = new Map(newEndpoints.map((e) => [e.route, e]));
 
@@ -687,10 +661,6 @@ export class WebhookService {
 
     this.endpoints = [...newEndpoints];
     return changed;
-  }
-
-  skippedRoutes(): ReadonlyArray<SkippedWebhookRoute> {
-    return this.skipped;
   }
 
   listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {

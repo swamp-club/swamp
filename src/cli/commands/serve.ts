@@ -133,10 +133,6 @@ import {
 import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
 import { createWebhookUpdater } from "../../serve/webhook_reload.ts";
 import {
-  skippedWebhookMessage,
-  webhookRouteProblem,
-} from "../../serve/webhook_route.ts";
-import {
   cachedUnlessRejected,
   createTokenAdmissionChecker,
 } from "../../serve/token_admission.ts";
@@ -2247,9 +2243,6 @@ const daemonEnableCommand = new Command()
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
       "scheme is one of github (default), jira, linear, stripe, slack, generic, " +
       "or a webhook extension type (@collective/name). " +
-      "A route under serve's own paths (/, /api, /auth, /health, /ready, " +
-      "/internal, /dashboard, /data, /bundle) is skipped with a warning; " +
-      "prefer /hooks/<name>. " +
       "Secret may use @env=VAR to read from an environment variable, " +
       "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
       "from a configured vault (avoids secrets in argv). " +
@@ -2859,17 +2852,6 @@ const checkConfigCommand = new Command()
       grantErrors,
       grantWarnings: grantCheck.warnings,
     };
-    // serve starts without a route it will not serve, so this does not fail
-    const webhookWarnings = (merged.webhookConfigs ?? []).flatMap((entry) => {
-      const reason = webhookRouteProblem(entry.route);
-      return reason === undefined ? [] : [{
-        route: entry.route,
-        workflow: entry.workflow,
-        reason,
-        message: skippedWebhookMessage(entry.route, reason),
-      }];
-    });
-    const webhookReport = webhookWarnings.length > 0 ? { webhookWarnings } : {};
     const unnamedType = restrictionFindings.find((finding) =>
       finding.reason === "no-type"
     );
@@ -2887,7 +2869,6 @@ const checkConfigCommand = new Command()
         refusal: unnamedType.message,
         restrictionWarnings,
         ...grantReport,
-        ...webhookReport,
       }, ctx.outputMode);
       Deno.exitCode = 1;
       return;
@@ -2929,7 +2910,6 @@ const checkConfigCommand = new Command()
         wouldStart: starts,
         restrictionWarnings,
         ...grantReport,
-        ...webhookReport,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
       if (!starts) Deno.exitCode = 1;
@@ -3020,7 +3000,6 @@ const checkConfigCommand = new Command()
         : {}),
       restrictionWarnings,
       ...grantReport,
-      ...webhookReport,
       ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
     }, ctx.outputMode);
 
@@ -3122,9 +3101,6 @@ export const serveCommand = new Command()
       "scheme is one of github (default), jira, linear, stripe, slack, generic, " +
       "or a webhook extension type (@collective/name); " +
       "generic requires a header name and accepts an optional value prefix. " +
-      "A route under serve's own paths (/, /api, /auth, /health, /ready, " +
-      "/internal, /dashboard, /data, /bundle) is skipped with a warning; " +
-      "prefer /hooks/<name>. " +
       "Secret may use @env=VAR to read from an environment variable, " +
       "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
       "from a configured vault (avoids secrets in argv). " +
@@ -7069,13 +7045,13 @@ export const serveCommand = new Command()
       }
     });
 
-    for (const ep of webhookService.listEndpoints()) {
+    for (const ep of endpoints) {
       if (isJson) {
         console.log(JSON.stringify({
           kind: "webhook_registered",
           route: ep.route,
           workflow: ep.workflowIdOrName,
-          scheme: ep.scheme,
+          scheme: ep.verifier.scheme,
         }));
       } else {
         logger.info(
@@ -7083,23 +7059,9 @@ export const serveCommand = new Command()
           {
             route: ep.route,
             workflow: ep.workflowIdOrName,
-            scheme: ep.scheme,
+            scheme: ep.verifier.scheme,
           },
         );
-      }
-    }
-    for (const skip of webhookService.skippedRoutes()) {
-      if (isJson) {
-        console.log(JSON.stringify({
-          kind: "webhook_skipped",
-          route: skip.route,
-          workflow: skip.workflowIdOrName,
-          reason: skip.reason,
-        }));
-      } else {
-        logger.warn("{message}", {
-          message: skippedWebhookMessage(skip.route, skip.reason),
-        });
       }
     }
 
