@@ -443,6 +443,17 @@ Deno.test("createServeCommitSink: a failure serve never answered does not count 
   });
 });
 
+Deno.test("createServeCommitSink: a refusal serve answers below 500 does not count toward a commit's uploads", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    const { commit } = await chunkedCommit(cache, 2);
+    serve.failsCarried = new ServeUpstreamError(401, "unauthorized", "no");
+    for (let i = 0; i < CARRIED_SEND_ATTEMPTS + 1; i++) {
+      await assertRejects(() => sink.append(commit), ServeUpstreamError);
+    }
+    assertEquals(serve.requests.postCommit, CARRIED_SEND_ATTEMPTS + 1);
+  });
+});
+
 Deno.test("createServeCommitSink: a unit's checkpoints resend a failing chunk-carrying batch commit at most CARRIED_SEND_ATTEMPTS times", async () => {
   await withCheckout(async ({ serve, cache, sink }) => {
     serve.takesBatches = true;

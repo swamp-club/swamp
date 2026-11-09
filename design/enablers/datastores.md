@@ -7528,11 +7528,11 @@ makes each commit durable until it lands.
    the unit builds the commit again on the new head under the same txnId (up
    to `SERVE_SEQ_GAP_ATTEMPTS`).
 6. On `chunk_missing`, the named chunks are sent once more.
-   A commit whose carried chunks serve answers with a failure (other than a
-   stale seq) is uploaded at most `CARRIED_SEND_ATTEMPTS` (3) times in one
+   A commit whose carried chunks serve answers with a 5xx failure (other than
+   a may-land 503) is uploaded at most `CARRIED_SEND_ATTEMPTS` (3) times in one
    process, keyed by its txnId; later flushes fail it without sending, and the
-   outbox keeps it for the next command. Without this, every later flush of
-   the command uploaded it again.
+   outbox keeps it for the next command. A flush holding such a commit goes on
+   the single route, so the commits after it are not tried.
 
 7. A flush's groups go as one `POST commits` when serve takes batches: in a
    round of distinct partitions in their order (run partitions last), each

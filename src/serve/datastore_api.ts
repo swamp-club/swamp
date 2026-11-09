@@ -3507,20 +3507,29 @@ class DatastoreApi {
   ): Promise<void> {
     if (chunks.length === 0) return;
     const batch = this.#v3.chunkStore.beginBatch(namespaceOf(this.#v3));
-    try {
-      let next = 0;
-      const worker = async () => {
-        while (next < chunks.length) {
-          const chunk = chunks[next++];
-          await batch.put(chunk.sha256, chunk.bytes, signal);
+    const failed = new AbortController();
+    const puts = AbortSignal.any([signal, failed.signal]);
+    let next = 0;
+    const worker = async () => {
+      while (next < chunks.length) {
+        puts.throwIfAborted();
+        const chunk = chunks[next++];
+        try {
+          await batch.put(chunk.sha256, chunk.bytes, puts);
+        } catch (error) {
+          failed.abort(error);
+          throw error;
         }
-      };
-      await Promise.all(
-        Array.from(
-          { length: Math.min(CARRIED_PUT_CONCURRENCY, chunks.length) },
-          worker,
-        ),
-      );
+      }
+    };
+    const workers = Array.from(
+      { length: Math.min(CARRIED_PUT_CONCURRENCY, chunks.length) },
+      worker,
+    );
+    try {
+      // every put settles before the batch is discarded or the request answers
+      await Promise.allSettled(workers);
+      failed.signal.throwIfAborted();
       await batch.commit(signal);
     } finally {
       await batch.discard();

@@ -63,7 +63,6 @@ import {
   ChunkNotCachedError,
   ServeChunksMissingError,
   ServeCommitMayLandError,
-  ServeRateLimitedError,
   ServeStaleSeqError,
   ServeUnreachableError,
   ServeUpstreamDivergedError,
@@ -216,12 +215,10 @@ export function createServeCommitSink(
     chunks: readonly CommitChunk[],
     error: unknown,
   ): void => {
-    // a stale seq, a rate limit or a may-land clears on its own: never capped
+    // only serve failing to store, never a refusal or one that clears on its own
     if (
       chunks.length === 0 || !(error instanceof ServeUpstreamError) ||
-      error instanceof ServeStaleSeqError ||
-      error instanceof ServeRateLimitedError ||
-      error instanceof ServeCommitMayLandError
+      error.status < 500 || error instanceof ServeCommitMayLandError
     ) {
       return;
     }
