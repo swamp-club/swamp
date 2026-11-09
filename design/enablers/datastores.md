@@ -3979,7 +3979,11 @@ v2 wrote them, with the same meaning.
 **Commits to catalog changes.** `projectCatalog`
 (`src/domain/datastore_v3/catalog_projection.ts`) is a pure domain service. It
 reads names and versions from intents and metadata, never from record keys,
-and gives the catalog actions v2 takes for the same change:
+and gives the catalog actions v2 takes for the same change, with each touched
+name's version changes (versions put, versions removed). It reads stored
+versions only to reconcile a name, and then only the greatest live version
+the commit did not remove, so applying a commit costs the same however many
+versions the name has:
 
 | Op | Catalog actions |
 |---|---|

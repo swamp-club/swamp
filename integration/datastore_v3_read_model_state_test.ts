@@ -59,7 +59,7 @@ function applied(overrides: Partial<AppliedCommit>): AppliedCommit {
     partition: "p",
     seq: 1,
     records: new Map(),
-    live: new Map(),
+    versions: new Map(),
     ...overrides,
   };
 }
@@ -89,11 +89,17 @@ Deno.test("ReadModelState: records a commit's index, versions, seq and cursor to
         ["data/a/1/raw", { sha256: A }],
         ["data/a/2/raw", { sha256: B, blob: MULTI }],
       ]),
-      live: new Map([["a", [{ version: 1, metadata }]]]),
+      versions: new Map([["a", {
+        put: [{ version: 1, metadata }],
+        removed: [],
+      }]]),
     }));
     assertEquals(state.cursor(), 7);
     assertEquals(state.appliedSeq("", "p"), 1);
-    assertEquals(state.liveVersions("", "p", "a"), [{ version: 1, metadata }]);
+    assertEquals(state.greatestLiveVersion("", "p", "a", new Set()), {
+      found: { version: 1, metadata },
+      rowsRead: 1,
+    });
     assertEquals(
       state.liveRecords("", "p").map((
         r,
@@ -107,13 +113,82 @@ Deno.test("ReadModelState: records a commit's index, versions, seq and cursor to
       seq: 2,
       cursor: 8,
       records: new Map([["data/a/2/raw", null]]),
-      live: new Map([["a", []]]),
+      versions: new Map([["a", { put: [], removed: [1] }]]),
     }));
     assertEquals(state.liveRecords("", "p").map((r) => r.key.toString()), [
       "data/a/1/raw",
     ]);
-    assertEquals(state.liveVersions("", "p", "a"), []);
+    assertEquals(state.greatestLiveVersion("", "p", "a", new Set()), {
+      found: undefined,
+      rowsRead: 0,
+    });
     assertEquals(state.chunksInUse(""), new Set());
+  });
+});
+
+Deno.test("ReadModelState.greatestLiveVersion: reads one row past each excluded version, never the whole history", async () => {
+  await withState((state) => {
+    const live = (version: number) => ({
+      version,
+      metadata: versionOp("a", version).metadata,
+    });
+    state.recordApplied(applied({
+      versions: new Map([["a", {
+        put: [1, 2, 3, 4, 5].map(live),
+        removed: [],
+      }]]),
+    }));
+    assertEquals(state.greatestLiveVersion("", "p", "a", new Set()), {
+      found: live(5),
+      rowsRead: 1,
+    });
+    assertEquals(state.greatestLiveVersion("", "p", "a", new Set([5, 4])), {
+      found: live(3),
+      rowsRead: 3,
+    });
+    // an excluded version not stored still costs at most one more row
+    assertEquals(state.greatestLiveVersion("", "p", "a", new Set([9])), {
+      found: live(5),
+      rowsRead: 2,
+    });
+    assertEquals(
+      state.greatestLiveVersion("", "p", "a", new Set([1, 2, 3, 4, 5])),
+      { found: undefined, rowsRead: 5 },
+    );
+    assertEquals(state.greatestLiveVersion("", "p", "b", new Set()), {
+      found: undefined,
+      rowsRead: 0,
+    });
+  });
+});
+
+Deno.test("ReadModelState: a commit's version changes touch only their own rows; a put replaces its number's metadata", async () => {
+  await withState((state) => {
+    const live = (version: number, size?: number) => ({
+      version,
+      metadata: {
+        ...versionOp("a", version).metadata,
+        ...(size === undefined ? {} : { size }),
+      },
+    });
+    state.recordApplied(applied({
+      versions: new Map([["a", {
+        put: [1, 2, 3].map((v) => live(v)),
+        removed: [],
+      }]]),
+    }));
+    state.recordApplied(applied({
+      seq: 2,
+      versions: new Map([["a", { put: [live(2, 42)], removed: [3] }]]),
+    }));
+    assertEquals(state.greatestLiveVersion("", "p", "a", new Set()), {
+      found: live(2, 42),
+      rowsRead: 1,
+    });
+    assertEquals(state.greatestLiveVersion("", "p", "a", new Set([2])), {
+      found: live(1),
+      rowsRead: 2,
+    });
   });
 });
 

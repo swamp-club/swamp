@@ -264,6 +264,11 @@ export const MAX_VOUCH_COMMITS = 10_000;
  */
 type Vouch = "vouched" | "refused" | "undecided";
 
+/** carries no names or keys */
+function commitStage<T>(stage: string, fn: () => Promise<T>): Promise<T> {
+  return withSpan(`swamp.serve.datastore.commit.${stage}`, {}, () => fn());
+}
+
 /**
  * The work one request may spend deciding which chunks the caller may
  * reference, shared by every chunk it asks about, so a `chunks/has` of
@@ -1235,14 +1240,16 @@ class DatastoreApi {
     // once it has arrived, below; this pass refuses early on access alone.
     let authorization;
     try {
-      await this.#catchUp();
-      authorization = await authorizeCommit(
-        partition,
-        ops,
-        this.#resolver,
-        this.#writeAuthority(),
-        "deferred",
-      );
+      authorization = await commitStage("authorize", async () => {
+        await this.#catchUp();
+        return await authorizeCommit(
+          partition,
+          ops,
+          this.#resolver,
+          this.#writeAuthority(),
+          "deferred",
+        );
+      });
     } catch (error) {
       await reader.cancel();
       throw error;
@@ -1282,8 +1289,12 @@ class DatastoreApi {
     // anything is committed.
     let provided: Set<string> | Response;
     try {
-      provided = await this.#withChunkSlot(() =>
-        this.#ingestCarried(reader, envelope.chunks, signal, last)
+      provided = await commitStage(
+        "ingest",
+        () =>
+          this.#withChunkSlot(() =>
+            this.#ingestCarried(reader, envelope.chunks, signal, last)
+          ),
       );
     } catch (error) {
       await reader.cancel();
@@ -1307,8 +1318,12 @@ class DatastoreApi {
     // record they read is guarded below. A retry of a commit that already
     // landed is answered as it, without judging its content again.
     let content: ForwardedContentAuthority | undefined;
-    if (await landedForwardedCommit(this.#v3, request) === undefined) {
-      await this.#catchUp();
+    const landedBefore = await commitStage(
+      "landed_lookup",
+      () => landedForwardedCommit(this.#v3, request),
+    );
+    if (landedBefore === undefined) {
+      await commitStage("content_catch_up", () => this.#catchUp());
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
       // Possession is decided once, before the content check reads any of
       // it, so a chunk the budget cannot decide is answered as not
@@ -1318,14 +1333,18 @@ class DatastoreApi {
       const possession = this.#commitVouchBudget(uncarried);
       const vouched = new Set<string>();
       const refused = new Set<string>();
-      for (const hash of referenced) {
-        if (carried.has(hash)) continue;
-        const vouch = await this.#mayReference(hash, possession, resolver);
-        if (vouch === "vouched") vouched.add(hash);
-        else if (vouch === "refused") refused.add(hash);
-        else return chunkNotProvided(hash);
-      }
-      content = new ForwardedContentAuthority({
+      const undecided = await commitStage("possession", async () => {
+        for (const hash of referenced) {
+          if (carried.has(hash)) continue;
+          const vouch = await this.#mayReference(hash, possession, resolver);
+          if (vouch === "vouched") vouched.add(hash);
+          else if (vouch === "refused") refused.add(hash);
+          else return hash;
+        }
+        return undefined;
+      });
+      if (undecided !== undefined) return chunkNotProvided(undecided);
+      const judging = new ForwardedContentAuthority({
         ctx: this.#deps.ctx,
         v3: this.#v3,
         partition,
@@ -1339,13 +1358,15 @@ class DatastoreApi {
               "vouched"),
         signal: signal,
       });
-      const checked = await authorizeCommit(
-        partition,
-        ops,
-        resolver,
-        this.#writeAuthority(),
-        content,
-      );
+      content = judging;
+      const checked = await commitStage("content_check", () =>
+        authorizeCommit(
+          partition,
+          ops,
+          resolver,
+          this.#writeAuthority(),
+          judging,
+        ));
       if (!checked.ok) return refusalResponse(checked);
     }
     // Authorised again under the datastore's forwarded-commit lock, once the
@@ -1358,25 +1379,33 @@ class DatastoreApi {
           performance.now() - lockWaitFrom,
         ),
       });
-      await this.#catchUp();
+      await commitStage("locked_catch_up", () => this.#catchUp());
       // A retry of a commit that landed is answered before proof of
       // possession: its chunks may since have left the upload ledger.
-      const duplicate = await landedForwardedCommit(this.#v3, request);
+      const duplicate = await commitStage(
+        "locked_landed_lookup",
+        () => landedForwardedCommit(this.#v3, request),
+      );
       if (duplicate !== undefined) return { result: duplicate };
       if (content === undefined) return { contentChanged: true as const };
       // Looked up afresh: a definition retagged during the upload is judged
       // as it is now.
       const resolver = memoized(serveResolver(this.#deps.ctx, this.#v3));
-      const recheck = await authorizeCommit(
-        partition,
-        ops,
-        resolver,
-        this.#writeAuthority(),
-        "deferred",
+      const recheck = await commitStage(
+        "locked_authorize",
+        () =>
+          authorizeCommit(
+            partition,
+            ops,
+            resolver,
+            this.#writeAuthority(),
+            "deferred",
+          ),
       );
       if (!recheck.ok) return recheck;
       // The records the content was judged against must not have moved.
-      if (!(await content.unchanged())) {
+      const judged = content;
+      if (!(await commitStage("locked_unchanged", () => judged.unchanged()))) {
         return { contentChanged: true as const };
       }
       // Proof of possession under the lock too, so a read grant revoked
@@ -1386,15 +1415,19 @@ class DatastoreApi {
       const underLock = this.#commitVouchBudget(
         referenced.filter((hash) => !carried.has(hash)).length,
       );
-      for (const hash of referenced) {
-        if (
-          carried.has(hash) ||
-          (await this.#mayReference(hash, underLock, resolver) === "vouched")
-        ) {
-          continue;
+      const notProvided = await commitStage("locked_possession", async () => {
+        for (const hash of referenced) {
+          if (
+            carried.has(hash) ||
+            (await this.#mayReference(hash, underLock, resolver) === "vouched")
+          ) {
+            continue;
+          }
+          return hash;
         }
-        return { notProvided: hash };
-      }
+        return undefined;
+      });
+      if (notProvided !== undefined) return { notProvided };
       // Judged under the forwarded lock, as leases change hands between
       // commits: the live fenced lease covering the partition decides, once
       // any kept lease on it is adopted.
@@ -1403,15 +1436,16 @@ class DatastoreApi {
       }
       const lease = this.#leaseOpFor(partition, envelope.lease);
       if (lease === "lost") return { leaseLost: true as const };
-      const result = await commitForwarded(
-        this.#v3,
-        {
-          ...request,
-          ...(lease === undefined ? {} : { lease }),
-          stored: carried,
-        },
-        signal,
-      );
+      const result = await commitStage("append", () =>
+        commitForwarded(
+          this.#v3,
+          {
+            ...request,
+            ...(lease === undefined ? {} : { lease }),
+            stored: carried,
+          },
+          signal,
+        ));
       return { result };
     });
     if ("adoptionPending" in landed) return adoptionPendingResponse();

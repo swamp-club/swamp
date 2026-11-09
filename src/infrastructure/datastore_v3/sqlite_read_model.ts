@@ -1676,14 +1676,33 @@ export class SqliteReadModel implements ReadModel {
       const projection: CatalogProjection = this.#timeSync("catalog", () => {
         const projection = projectCatalog(
           commit.ops,
-          (name) => this.#state.liveVersions(namespace, partition, name),
+          (name, excluding) => {
+            const { found, rowsRead } = this.#state.greatestLiveVersion(
+              namespace,
+              partition,
+              name,
+              excluding,
+            );
+            this.#stats?.bump("versions_read", rowsRead);
+            return found;
+          },
         );
-        this.#catalog.apply(namespace, commit.partition, projection.actions);
+        for (const changes of projection.versions.values()) {
+          this.#stats?.bump(
+            "versions_written",
+            changes.put.length + changes.removed.length,
+          );
+        }
         for (const action of projection.actions) {
           this.#stats?.bump(`catalog_${action.kind.replaceAll("-", "_")}`);
         }
         return projection;
       });
+      this.#timeSync(
+        "catalog_store",
+        () =>
+          this.#catalog.apply(namespace, commit.partition, projection.actions),
+      );
       this.#timeSync("state", () =>
         this.#state.recordApplied({
           namespace,
@@ -1691,7 +1710,7 @@ export class SqliteReadModel implements ReadModel {
           seq: commit.seq,
           cursor,
           records,
-          live: projection.live,
+          versions: projection.versions,
           files,
           unsynced: this.#boot === undefined
             ? undefined
