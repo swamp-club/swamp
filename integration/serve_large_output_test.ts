@@ -55,8 +55,8 @@ import {
   writer,
 } from "./serve_datastore_api_harness.ts";
 
-const STORAGE_CALL_MS = 100;
-const FLAT_TIMEOUT_MS = 50;
+const STORAGE_CALL_MS = 1_000;
+const FLAT_TIMEOUT_MS = 500;
 
 const NO_SYNC = {
   syncFile: () => Promise.resolve(),

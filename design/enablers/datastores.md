@@ -6714,11 +6714,13 @@ A request's deadline is the client's flat timeout (`SWAMP_SERVE_TIMEOUT_MS`,
 (`MIN_SERVE_UPLOAD_BYTES_PER_SECOND`), so a large commit is not cut off at
 30 s on a slow link; a request without a body keeps the flat timeout. Serve
 reads a commit's carried chunks in order and stores each while it reads the
-next, at most `CARRIED_PUT_CONCURRENCY` (4) per request. What it has read but
-not yet stored is bounded across all requests by
-`CARRIED_BYTES_IN_FLIGHT_BUDGET` (128 MiB): a read waits for room, never
-refused, and a failed store fails the request with nothing recorded in the
-upload ledger. A request stopped because the command's own lease lapsed
+next, at most `CARRIED_PUT_CONCURRENCY` (4) per request. Chunks read and
+waiting on storage are bounded across all requests by
+`CARRIED_BYTES_IN_FLIGHT_BUDGET` (128 MiB), taken once a chunk is read so a
+slow sender holds none of it; a request waiting for room holds the one chunk
+it has read, so the bound is the budget plus one chunk per waiting request.
+The wait is never refused, and a failed store fails the request with nothing
+recorded in the upload ledger. A request stopped because the command's own lease lapsed
 unrenewed fails as `datastore_v3_lease_lapsed`
 (`ServeLeaseLapsedRequestError`, naming the request and its size), with the
 exit code serve being unreachable has.
