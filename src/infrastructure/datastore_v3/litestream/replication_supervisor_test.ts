@@ -307,6 +307,59 @@ Deno.test({
 
 Deno.test({
   name:
+    "runReplicationSupervisor: a Litestream the stop signal reached exits on its own, with no second signal to cut its final upload short",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await setup(dir);
+      const h = harness();
+      let request!: () => void;
+      const stop = new Promise<void>((resolve) => request = resolve);
+      h.at(300, () => request());
+      // still uploading when the supervisor sees the stop
+      h.at(450, () => h.child.exit());
+      assertEquals(
+        await runReplicationSupervisor(options, {
+          ...h.deps,
+          stopRequested: stop,
+        }),
+        "stop-requested",
+      );
+      assertEquals(h.child.signals, []);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: a Litestream the stop signal did not reach is sent SIGTERM only after the stop wait, then SIGKILL",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { options } = await setup(dir);
+      const h = harness(["SIGKILL"]);
+      let request!: () => void;
+      const stop = new Promise<void>((resolve) => request = resolve);
+      let signalledBy: number | undefined;
+      h.at(300, () => request());
+      h.at(300 + options.stopWaitMs - 50, () => {
+        signalledBy = h.child.signals.length;
+      });
+      assertEquals(
+        await runReplicationSupervisor(options, {
+          ...h.deps,
+          stopRequested: stop,
+        }),
+        "stop-requested",
+      );
+      assertEquals(signalledBy, 0);
+      assertEquals(h.child.signals, ["SIGTERM", "SIGKILL"]);
+    });
+  },
+});
+
+Deno.test({
+  name:
     "runReplicationSupervisor: a binary that cannot be had leaves no record behind",
   ignore: !UNIX,
   async fn() {
