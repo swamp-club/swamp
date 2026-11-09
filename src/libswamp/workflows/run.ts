@@ -176,7 +176,6 @@ export type WorkflowRunEvent =
     stepId: string;
     prompt: string;
     timeout?: number;
-    /** a fan-out job's gate: what the approver decides on */
     fanOutGate?: FanOutGatePrompt;
   }
   | {

@@ -95,7 +95,6 @@ export interface PendingApproval {
    */
   parentMissing?: boolean;
   serveStarted?: boolean;
-  /** a fan-out job's gate: what the approver decides on, read from the plan */
   fanOutGate?: FanOutGatePrompt;
 }
 

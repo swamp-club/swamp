@@ -53,7 +53,7 @@ interface Scenario {
   actions: Action[];
 }
 
-/** the semantics the issue and design doc state, written independently of the executor */
+/** the gate semantics, stated independently: it shares no code with the executor */
 class Model {
   readonly lanes = new Map<string, LaneState>();
   readonly gates = new Map<GateKind, GateState>();
