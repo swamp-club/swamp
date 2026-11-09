@@ -47,6 +47,10 @@ import { setRunCheckpointIntervalForTesting } from "../src/infrastructure/persis
 import { dataGetCommand } from "../src/cli/commands/data_get.ts";
 import { dataListCommand } from "../src/cli/commands/data_list.ts";
 import {
+  COMMIT_BATCH_FEATURE,
+  SERVE_DATASTORE_FEATURES_HEADER,
+} from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
+import {
   type ReadableSpan,
   withCapturedSpans,
 } from "../src/infrastructure/tracing/span_test_helpers.ts";
@@ -77,14 +81,14 @@ const WORKFLOW = "two-steps";
 
 const PARTITION_READ = "GET partitions/{partition}/commits";
 const CHANGES = "GET changes";
-const LOCK = "POST locks";
 const RELEASE = "DELETE locks/{leaseId}";
+/** the lock, answered with the catch-up the copy lacks */
+const LOCK = "POST locks";
 const HAS = "POST chunks/has";
+/** one commit alone, answered with the commit as serve stamped it */
 const COMMIT = "POST partitions/{partition}/commits";
-/** the anchor check, then serve's changes feed */
-const CATCH_UP = [PARTITION_READ, CHANGES];
-/** the commit, then the read-back of the commit as serve stamped it */
-const FORWARD = [COMMIT, PARTITION_READ];
+/** a flush's commits together, confirmed once, ending the command's lease */
+const BATCH = "POST commits";
 
 /** Over the 8 KiB inline limit, so the version is stored as a chunk. */
 const CHUNKED_BYTES = 16 * 1024;
@@ -211,6 +215,37 @@ function requestsOf(spans: readonly ReadableSpan[]): string[] {
     );
 }
 
+/**
+ * serve as an older release answers: no batches, no commit stamped into its
+ * reply, no catch-up with a lock, no anchor checked with the feed
+ */
+function legacyServe(origin: string) {
+  return startProxy(origin, async (_request, forward) => {
+    const response = await forward();
+    const headers = new Headers(response.headers);
+    const features = headers.get(SERVE_DATASTORE_FEATURES_HEADER);
+    if (features !== null) {
+      headers.set(
+        SERVE_DATASTORE_FEATURES_HEADER,
+        features.split(",").filter((f) => f !== COMMIT_BATCH_FEATURE).join(
+          ",",
+        ),
+      );
+    }
+    if (!(headers.get("content-type") ?? "").includes("application/json")) {
+      return new Response(response.body, { status: response.status, headers });
+    }
+    const body = await response.json();
+    if (typeof body === "object" && body !== null) {
+      for (const field of ["catchUp", "commit", "parentTxnId", "anchor"]) {
+        delete (body as Record<string, unknown>)[field];
+      }
+    }
+    headers.delete("content-length");
+    return Response.json(body, { status: response.status, headers });
+  });
+}
+
 interface Member {
   readonly scratch: Scratch;
   readonly serve: Serve;
@@ -312,11 +347,8 @@ Deno.test({
       assertEquals(
         await steadyState(member, () => methodRun(member, WRITER)),
         [
-          ...CATCH_UP, // the writer hold; the repository open then reads it
-          LOCK,
-          ...CATCH_UP, // the lock's catch-up for a write
-          ...FORWARD,
-          RELEASE,
+          LOCK, // answered with the catch-up the writer hold left to it
+          BATCH, // the write, ending the lease
         ],
       );
     });
@@ -332,12 +364,9 @@ Deno.test({
       assertEquals(
         await steadyState(member, () => methodRun(member, CHUNKED_WRITER)),
         [
-          ...CATCH_UP,
           LOCK,
-          ...CATCH_UP,
           HAS,
-          ...FORWARD,
-          RELEASE,
+          BATCH,
         ],
       );
     });
@@ -365,28 +394,50 @@ Deno.test({
             [WORKFLOW],
           );
         const step = [
-          ...FORWARD, // the step's start, before its lock
+          COMMIT, // the step's start, before its lock
           LOCK,
-          ...CATCH_UP,
-          ...FORWARD, // its data under the lock
-          ...FORWARD, // the run record, still under the lock
-          RELEASE,
+          BATCH, // its data and the run record, ending the lease
         ];
         assertEquals(await steadyState(member, run), [
-          ...CATCH_UP,
-          ...FORWARD, // the run record
-          ...FORWARD, // the evaluated workflow
-          ...FORWARD, // the run's evaluated workflow with its record
+          CHANGES,
+          BATCH, // the run record, the evaluated workflow and the snapshot
           ...step,
           ...step,
-          ...FORWARD, // the run's summary report
           HAS, // the run record, over the inline limit by its end
-          ...FORWARD,
+          BATCH, // the run's summary report and its final record
         ]);
       });
     } finally {
       setRunCheckpointIntervalForTesting(undefined);
     }
+  },
+});
+
+Deno.test({
+  name:
+    "team-mode: against a serve without batches, stamped replies, lock catch-ups or anchor checks, a write falls back to a request per step",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withMember(async (member) => {
+      const proxy = legacyServe(member.serve.origin);
+      try {
+        const legacy = { ...member, env: serveEnv(proxy, "alice-token") };
+        assertEquals(
+          await steadyState(legacy, () => methodRun(legacy, WRITER)),
+          [
+            LOCK, // the writer hold left its catch-up to the lock
+            CHANGES, // which came with none, so it is read now
+            PARTITION_READ, // with no verdict, the anchor on its own
+            COMMIT,
+            PARTITION_READ, // the commit came back unstamped
+            RELEASE, // and the lease is released on its own
+          ],
+        );
+      } finally {
+        await proxy.close();
+      }
+    });
   },
 });
 
@@ -449,7 +500,7 @@ Deno.test({
           get: await steadyState(member, get),
           list: await steadyState(member, list),
         },
-        { get: CATCH_UP, list: CATCH_UP },
+        { get: [CHANGES], list: [CHANGES] },
       );
     });
   },

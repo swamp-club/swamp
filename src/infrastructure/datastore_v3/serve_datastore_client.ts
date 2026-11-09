@@ -142,6 +142,17 @@ export const SERVE_DATASTORE_ACCESS_HEADER = "x-swamp-datastore-access";
  */
 export const SERVE_DATASTORE_FEATURES_HEADER = "x-swamp-datastore-features";
 
+/** what serve last said of run initiators, per serve and token, process-wide */
+const heardInitiators = new Map<string, ServeInitiatorMode>();
+
+/** the features serve last named, per serve and token, process-wide */
+const heardFeatures = new Map<string, readonly string[]>();
+
+export function resetHeardServeRepliesForTesting(): void {
+  heardInitiators.clear();
+  heardFeatures.clear();
+}
+
 export const LEASE_OPS_FEATURE = "lease-ops";
 
 /** without it in serve's replies, a member commits each start as the whole record */
@@ -152,6 +163,15 @@ export const AUTHORIZE_ONLY_FEATURE = "authorize-only";
 
 /** serve names a lease's holder and answers at once when waiting cannot help */
 export const LEASE_HOLDER_FEATURE = "lease-holder";
+
+/**
+ * serve takes several partitions' commits in one `POST commits`, confirms them
+ * once, and can end the command's lease with them
+ */
+export const COMMIT_BATCH_FEATURE = "commit-batch";
+
+/** the most commits serve takes in one `POST commits` */
+export const MAX_BATCH_COMMITS = 16;
 
 /** serve refuses a new run record that does not name the principal it stamps */
 export const RUN_INITIATOR_FEATURE = "run-initiator";
@@ -220,6 +240,30 @@ export interface CommitReply {
   readonly seq: number;
   readonly duplicate: boolean;
   readonly warning?: string;
+  /** the commit as serve stamped it; absent from an older serve */
+  readonly commit?: unknown;
+  /** the txnId at the seq before it, when serve could name it */
+  readonly parentTxnId?: string;
+}
+
+export interface BatchedCommit {
+  readonly partition: PartitionKey;
+  readonly envelope: CommitEnvelope;
+  readonly chunks: readonly CommitChunk[];
+}
+
+/** what serve did with one commit of a batch */
+export type BatchedCommitOutcome =
+  | { readonly kind: "landed"; readonly reply: CommitReply }
+  /** the error the single route would have answered it with */
+  | { readonly kind: "refused"; readonly error: Error }
+  /** an earlier commit did not land, so serve did not try this one */
+  | { readonly kind: "not-tried" };
+
+export interface CommitBatchReply {
+  readonly outcomes: readonly BatchedCommitOutcome[];
+  /** serve ended the lease named to release with these commits */
+  readonly released: boolean;
 }
 
 export interface PartitionCommitsPage {
@@ -236,6 +280,36 @@ export interface ChangesPage {
   readonly changes: readonly ChangeEntry[];
   readonly cursor: number;
   readonly more: boolean;
+  /** serve's check of the anchor asked with the page; absent from an older serve */
+  readonly anchor?: AnchorVerdict;
+}
+
+/** the commit a copy's feed cursor follows */
+export interface FeedAnchor {
+  readonly namespace: string;
+  readonly partition: string;
+  readonly seq: number;
+  readonly txnId: string;
+}
+
+export type AnchorVerdict =
+  | { readonly verdict: "held" | "unchecked" }
+  | { readonly verdict: "behind"; readonly serveHead: number }
+  | { readonly verdict: "other-commit"; readonly serveTxnId: string };
+
+/** where a copy's feed stands, which serve answers with what it lacks */
+export interface CatchUpRequest {
+  readonly cursor: number;
+  readonly anchor?: FeedAnchor;
+}
+
+/** a catch-up serve answered along with another request */
+export interface DeliveredCatchUp {
+  readonly requested: CatchUpRequest;
+  /** the first page; absent when serve refused it */
+  readonly page?: ChangesPage;
+  /** what a GET changes would have been refused with (a compacted log) */
+  readonly refused?: Error;
 }
 
 export interface ChunkRange {
@@ -285,7 +359,12 @@ export interface ServeLeaseListing {
 }
 
 export type LockAcquireReply =
-  | { readonly acquired: true; readonly lease: LockLease }
+  | {
+    readonly acquired: true;
+    readonly lease: LockLease;
+    /** absent from an older serve, or when serve could not read it */
+    readonly catchUp?: DeliveredCatchUp;
+  }
   | {
     readonly acquired: false;
     readonly heldBy: string;
@@ -315,6 +394,8 @@ export class ServeDatastoreClient {
   #logCheck: ((logId: string | undefined) => void) | undefined;
   #accessCheck: ((fingerprint: string) => void) | undefined;
   #takesStepStarts = false;
+  #takesCommitBatches = false;
+  #heardReply = false;
   #initiatorMode: ServeInitiatorMode | undefined;
 
   constructor(options: ServeDatastoreClientOptions) {
@@ -439,29 +520,101 @@ export class ServeDatastoreClient {
     chunks: readonly CommitChunk[],
     signal: AbortSignal,
   ): Promise<CommitReply> {
-    const framed = encodeCommitBody({
-      expectedSeq: envelope.expectedSeq,
-      txnId: envelope.txnId,
-      ...(envelope.fence === undefined ? {} : { fence: envelope.fence }),
-      ...(envelope.lease === undefined ? {} : { lease: envelope.lease }),
-      ops: envelope.ops,
-      chunks: chunks.map((chunk) => ({
-        sha256: chunk.sha256,
-        size: chunk.bytes.byteLength,
+    const body = await this.#json(
+      {
+        method: "POST",
+        path: `${partitionPath(partition)}/commits`,
+        headers: { "content-type": COMMIT_CONTENT_TYPE },
+        body: frameCommit(envelope, chunks),
+      },
+      signal,
+      MAX_WRITTEN_COMMIT_REPLY_BYTES,
+    );
+    return commitReplyOf(body, "commits");
+  }
+
+  /**
+   * commits to several partitions in one request; serve applies them in order
+   * and stops at the first that does not land. Only for a serve that takes
+   * batches (takesCommitBatches)
+   */
+  async postCommits(
+    commits: readonly BatchedCommit[],
+    release: string | undefined,
+    signal: AbortSignal,
+  ): Promise<CommitBatchReply> {
+    const header = new TextEncoder().encode(JSON.stringify({
+      items: commits.map((commit) => ({
+        partition: commit.partition.toString(),
       })),
-    }, chunks);
-    const body = await this.#json({
-      method: "POST",
-      path: `${partitionPath(partition)}/commits`,
-      headers: { "content-type": COMMIT_CONTENT_TYPE },
-      body: framed,
-    }, signal);
-    if (!isSeq(body.seq)) throw invalidReply("commits", "seq");
-    return {
-      seq: body.seq,
-      duplicate: body.duplicate === true,
-      ...(typeof body.warning === "string" ? { warning: body.warning } : {}),
-    };
+      ...(release === undefined ? {} : { release }),
+    }));
+    const frames = commits.map((commit) =>
+      frameCommit(commit.envelope, commit.chunks)
+    );
+    const framed = new Uint8Array(
+      4 + header.byteLength +
+        frames.reduce((total, frame) => total + frame.byteLength, 0),
+    );
+    new DataView(framed.buffer).setUint32(0, header.byteLength, false);
+    framed.set(header, 4);
+    let offset = 4 + header.byteLength;
+    for (const frame of frames) {
+      framed.set(frame, offset);
+      offset += frame.byteLength;
+    }
+    const body = await this.#json(
+      {
+        method: "POST",
+        path: "commits",
+        headers: { "content-type": COMMIT_CONTENT_TYPE },
+        body: framed,
+      },
+      signal,
+      // each result may carry its whole commit, as a single reply does
+      commits.length * MAX_WRITTEN_COMMIT_REPLY_BYTES,
+    );
+    if (
+      !Array.isArray(body.results) || body.results.length > commits.length
+    ) {
+      throw invalidReply("commits", "one result per commit tried");
+    }
+    const outcomes: BatchedCommitOutcome[] = [];
+    for (const result of body.results as unknown[]) {
+      const item = result as {
+        status?: unknown;
+        body?: unknown;
+        retryAfter?: unknown;
+      } | null;
+      if (item === null || typeof item.status !== "number") {
+        throw invalidReply("commits", "a status per result");
+      }
+      outcomes.push(
+        item.status === 200
+          ? {
+            kind: "landed",
+            reply: commitReplyOf(
+              item.body as Record<string, unknown>,
+              "commits",
+            ),
+          }
+          : {
+            kind: "refused",
+            error: serveErrorFromReply(
+              item.status,
+              item.body,
+              this.baseUrl,
+              retryAfterSeconds(
+                typeof item.retryAfter === "string" ? item.retryAfter : null,
+              ),
+            ),
+          },
+      );
+    }
+    while (outcomes.length < commits.length) {
+      outcomes.push({ kind: "not-tried" });
+    }
+    return { outcomes, released: body.released === true };
   }
 
   /**
@@ -495,10 +648,12 @@ export class ServeDatastoreClient {
     return { head: body.head, commits: body.commits };
   }
 
+  /** with `anchor`, serve checks it too; an older serve ignores it */
   async changes(
     cursor: number,
     signal: AbortSignal,
     limit?: number,
+    anchor?: FeedAnchor,
   ): Promise<ChangesPage> {
     const body = await this.#json(
       {
@@ -507,28 +662,18 @@ export class ServeDatastoreClient {
         query: {
           cursor: String(cursor),
           ...(limit === undefined ? {} : { limit: String(limit) }),
+          ...(anchor === undefined ? {} : {
+            anchorNamespace: anchor.namespace,
+            anchorPartition: anchor.partition,
+            anchorSeq: String(anchor.seq),
+            anchorTxnId: anchor.txnId,
+          }),
         },
       },
       signal,
       pageMaxBytes(limit),
     );
-    if (
-      !Array.isArray(body.changes) || !isSeq(body.cursor) ||
-      typeof body.more !== "boolean"
-    ) {
-      throw invalidReply("changes", "changes, cursor and more");
-    }
-    const changes: ChangeEntry[] = [];
-    for (const entry of body.changes) {
-      const fields = entry as { cursor?: unknown; commit?: unknown } | null;
-      if (
-        fields === null || typeof fields !== "object" || !isSeq(fields.cursor)
-      ) {
-        throw invalidReply("changes", "each change's cursor");
-      }
-      changes.push({ cursor: fields.cursor, commit: fields.commit });
-    }
-    return { changes, cursor: body.cursor, more: body.more };
+    return changesPageOf(body, "changes");
   }
 
   /**
@@ -590,13 +735,20 @@ export class ServeDatastoreClient {
     ttlMs: number,
     waitMs: number,
     signal: AbortSignal,
-    options: { readonly holdMs?: number; readonly budgetMs?: number } = {},
+    options: {
+      readonly holdMs?: number;
+      readonly budgetMs?: number;
+      readonly catchUp?: CatchUpRequest;
+    } = {},
   ): Promise<LockAcquireReply> {
     // an older serve ignores a field it does not know; a command's lock
     // client has often read no reply yet, so it cannot wait to be told
-    const budget = options.budgetMs !== undefined
-      ? { budgetMs: Math.max(0, Math.floor(options.budgetMs)) }
-      : {};
+    const budget = {
+      ...(options.budgetMs !== undefined
+        ? { budgetMs: Math.max(0, Math.floor(options.budgetMs)) }
+        : {}),
+      ...(options.catchUp !== undefined ? { catchUp: options.catchUp } : {}),
+    };
     return await this.#exchange(
       {
         method: "POST",
@@ -638,15 +790,20 @@ export class ServeDatastoreClient {
           throw serveErrorFromReply(409, body, this.baseUrl);
         }
         if (!response.ok) throw await this.#refusal(response, "locks");
+        const body = await readBoundedJson(
+          response,
+          "locks",
+          SERVE_LEASE_REPLY_MAX_BYTES,
+        );
+        const catchUp = options.catchUp === undefined
+          ? undefined
+          : this.#deliveredCatchUp(
+            (body as { catchUp?: unknown } | null)?.catchUp,
+          );
         return {
           acquired: true,
-          lease: leaseOf(
-            await readBoundedJson(
-              response,
-              "locks",
-              SERVE_LEASE_REPLY_MAX_BYTES,
-            ),
-          ),
+          lease: leaseOf(body),
+          ...(catchUp === undefined ? {} : { catchUp }),
         };
       },
     );
@@ -936,13 +1093,73 @@ export class ServeDatastoreClient {
     });
   }
 
-  /** undefined until a reply from serve itself has been read */
+  /**
+   * undefined until a reply from serve itself has been read, by this client or
+   * another of this process's for the same serve and token (a lock's own)
+   */
   initiatorMode(): ServeInitiatorMode | undefined {
-    return this.#initiatorMode;
+    return this.#initiatorMode ?? heardInitiators.get(this.#heardKey());
+  }
+
+  #heardKey(): string {
+    return `${this.baseUrl}\0${this.#token ?? ""}`;
   }
 
   takesStepStarts(): boolean {
-    return this.#takesStepStarts;
+    return this.#takesStepStarts ||
+      this.#heardFeature(STEP_STARTS_FEATURE);
+  }
+
+  /** a client that read no reply yet goes by what another of the process's heard */
+  #heardFeature(feature: string): boolean {
+    return !this.#heardReply &&
+      (heardFeatures.get(this.#heardKey())?.includes(feature) ?? false);
+  }
+
+  /** a reply's catch-up that does not parse is read again, never trusted */
+  #deliveredCatchUp(value: unknown): DeliveredCatchUp | undefined {
+    if (typeof value !== "object" || value === null) return undefined;
+    const fields = value as Record<string, unknown>;
+    const requested = fields.requested as
+      | { cursor?: unknown; anchor?: unknown }
+      | undefined;
+    if (
+      typeof requested !== "object" || requested === null ||
+      !isSeq(requested.cursor)
+    ) {
+      return undefined;
+    }
+    const request: CatchUpRequest = {
+      cursor: requested.cursor,
+      ...(requested.anchor === undefined
+        ? {}
+        : { anchor: requested.anchor as FeedAnchor }),
+    };
+    const refused = fields.refused as
+      | { status?: unknown; body?: unknown }
+      | undefined;
+    if (refused !== undefined) {
+      if (typeof refused?.status !== "number") return undefined;
+      return {
+        requested: request,
+        refused: serveErrorFromReply(
+          refused.status,
+          refused.body,
+          this.baseUrl,
+        ),
+      };
+    }
+    try {
+      return { requested: request, page: changesPageOf(fields, "locks") };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** false until a reply from serve itself has said it takes batches */
+  takesCommitBatches(): boolean {
+    return this.#takesCommitBatches ||
+      this.#heardFeature(COMMIT_BATCH_FEATURE);
   }
 
   #exchange<T>(
@@ -1035,10 +1252,14 @@ export class ServeDatastoreClient {
           SERVE_DATASTORE_FEATURES_HEADER,
         ) ?? "").split(",").map((feature) => feature.trim());
         this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
+        this.#takesCommitBatches = features.includes(COMMIT_BATCH_FEATURE);
+        heardFeatures.set(this.#heardKey(), features);
+        this.#heardReply = true;
         this.#initiatorMode = initiatorModeOf(
           features,
           response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),
         );
+        heardInitiators.set(this.#heardKey(), this.#initiatorMode);
       }
       const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
       if (this.#accessCheck !== undefined && access !== null) {
@@ -1224,6 +1445,94 @@ function leaseHolderOf(raw: unknown): ServeLeaseHolder | undefined {
     principal: fields.principal,
     explicit: fields.explicit,
     expiresAt: fields.expiresAt,
+  };
+}
+
+function changesPageOf(
+  body: Record<string, unknown>,
+  route: string,
+): ChangesPage {
+  if (
+    !Array.isArray(body.changes) || !isSeq(body.cursor) ||
+    typeof body.more !== "boolean"
+  ) {
+    throw invalidReply(route, "changes, cursor and more");
+  }
+  const changes: ChangeEntry[] = [];
+  for (const entry of body.changes) {
+    const fields = entry as { cursor?: unknown; commit?: unknown } | null;
+    if (
+      fields === null || typeof fields !== "object" || !isSeq(fields.cursor)
+    ) {
+      throw invalidReply(route, "each change's cursor");
+    }
+    changes.push({ cursor: fields.cursor, commit: fields.commit });
+  }
+  const anchor = anchorVerdictOf(body.anchor);
+  return {
+    changes,
+    cursor: body.cursor,
+    more: body.more,
+    ...(anchor === undefined ? {} : { anchor }),
+  };
+}
+
+function anchorVerdictOf(value: unknown): AnchorVerdict | undefined {
+  const fields = value as
+    | { verdict?: unknown; serveHead?: unknown; serveTxnId?: unknown }
+    | null
+    | undefined;
+  switch (fields?.verdict) {
+    case "held":
+    case "unchecked":
+      return { verdict: fields.verdict };
+    case "behind":
+      return isSeq(fields.serveHead)
+        ? { verdict: "behind", serveHead: fields.serveHead }
+        : undefined;
+    case "other-commit":
+      return typeof fields.serveTxnId === "string"
+        ? { verdict: "other-commit", serveTxnId: fields.serveTxnId }
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function frameCommit(
+  envelope: CommitEnvelope,
+  chunks: readonly CommitChunk[],
+): Uint8Array<ArrayBuffer> {
+  return encodeCommitBody({
+    expectedSeq: envelope.expectedSeq,
+    txnId: envelope.txnId,
+    ...(envelope.fence === undefined ? {} : { fence: envelope.fence }),
+    ...(envelope.lease === undefined ? {} : { lease: envelope.lease }),
+    ops: envelope.ops,
+    chunks: chunks.map((chunk) => ({
+      sha256: chunk.sha256,
+      size: chunk.bytes.byteLength,
+    })),
+  }, chunks);
+}
+
+function commitReplyOf(
+  body: Record<string, unknown> | null | undefined,
+  route: string,
+): CommitReply {
+  if (typeof body !== "object" || body === null || !isSeq(body.seq)) {
+    throw invalidReply(route, "seq");
+  }
+  return {
+    seq: body.seq,
+    duplicate: body.duplicate === true,
+    ...(typeof body.warning === "string" ? { warning: body.warning } : {}),
+    ...(typeof body.commit === "object" && body.commit !== null
+      ? { commit: body.commit }
+      : {}),
+    ...(typeof body.parentTxnId === "string"
+      ? { parentTxnId: body.parentTxnId }
+      : {}),
   };
 }
 

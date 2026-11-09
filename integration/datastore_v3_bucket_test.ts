@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { logBucketWriteRetriesAt } from "../src/infrastructure/datastore_v3/bucket_write_retry.ts";
 import "../src/domain/models/models.ts";
 import {
   assert,
@@ -1400,6 +1401,21 @@ Deno.test({
   async fn() {
     const clock = phasedClock();
     const captured: LogRecord[] = [];
+    // the confirm is serve's, which logs each retry at info
+    logBucketWriteRetriesAt("info");
+    try {
+      await headRefused(clock, captured);
+    } finally {
+      logBucketWriteRetriesAt("debug");
+    }
+  },
+});
+
+async function headRefused(
+  clock: ReturnType<typeof phasedClock>,
+  captured: LogRecord[],
+): Promise<void> {
+  {
     await withRoot(async (root, bucket) => {
       const repoDir = join(root, "repo");
       await initRepo(repoDir);
@@ -1455,8 +1471,8 @@ Deno.test({
     assertEquals(failures.length, 1);
     assertStringIncludes(failures[0][1], "bucket_write_rate_limited");
     assertStringIncludes(failures[0][1], "head-");
-  },
-});
+  }
+}
 
 async function freshCheckoutRefusesUnreadableReplica(
   root: string,

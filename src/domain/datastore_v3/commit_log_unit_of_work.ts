@@ -72,6 +72,14 @@ export type TypedChange =
  * commit commits data partitions first and a workflow run's record last;
  * path-only stage is refused on v3 rather than guessed into an op
  */
+export interface DirectAppendOptions {
+  /**
+   * commits with everything the unit has staged, in the unit's order, instead
+   * of alone; a refusal of any of it refuses the append
+   */
+  readonly withStaged?: boolean;
+}
+
 export interface CommitLogUnitOfWork extends UnitOfWork {
   stageOp(change: TypedChange): Promise<void>;
   /**
@@ -86,12 +94,16 @@ export interface CommitLogUnitOfWork extends UnitOfWork {
    * one partition is refused
    */
   stageOps(changes: readonly TypedChange[]): Promise<void>;
-  checkpoint(): Promise<void>;
+  /** `release` names a lease to end with the commits, once they all land */
+  checkpoint(options?: { readonly release?: string }): Promise<void>;
   /**
    * commits changes for one partition as their own commit at once, never
    * staging them, so the commit waits on nothing the unit has staged
    */
-  appendNow(changes: readonly TypedChange[]): Promise<DirectAppendOutcome>;
+  appendNow(
+    changes: readonly TypedChange[],
+    options?: DirectAppendOptions,
+  ): Promise<DirectAppendOutcome>;
   stagedOps(): readonly TypedChange[];
 }
 

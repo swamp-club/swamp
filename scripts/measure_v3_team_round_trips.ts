@@ -23,6 +23,7 @@ import { dirname, join, resolve } from "@std/path";
 interface Options {
   readonly binaries: Readonly<Record<string, string>>;
   readonly latencyMs: number;
+  readonly farLatencyMs: number;
   readonly handshakeRtts: number;
   readonly rounds: number;
   readonly history: number;
@@ -53,6 +54,7 @@ function usage(): never {
   console.error(
     `usage: deno run -A scripts/measure_v3_team_round_trips.ts \\
   --binary label=path [--binary label=path ...] [--latency-ms 100] \\
+  [--far-latency-ms 140] \\
   [--handshake-rtts 2] [--rounds 12] [--history 200] [--followers 1] \\
   [--work-dir dir] [--fake-gcs-image image] [--keep] [--setup-only] \\
   [--large-history 20] [--large-kib 64] [--idle-ms 70000] [--cold-rounds 2] \\
@@ -123,6 +125,7 @@ function parseOptions(): Options {
   return {
     binaries,
     latencyMs: Number(args["latency-ms"]),
+    farLatencyMs: Number(args["far-latency-ms"] ?? 0),
     handshakeRtts: Number(args["handshake-rtts"]),
     rounds: Number(args.rounds),
     history: Number(args.history),
@@ -248,6 +251,84 @@ const DROPPED_RESPONSE_HEADERS = [
   "transfer-encoding",
   "connection",
 ];
+
+/**
+ * the far member's link to serve: every request, and every feed frame each
+ * way, waits a round trip; a new connection pays its handshakes too
+ */
+export function startMemberProxy(
+  port: number,
+  upstream: string,
+  latencyMs: number,
+  handshakeRtts: number,
+): Deno.HttpServer {
+  const connections = new Set<string>();
+  return Deno.serve(
+    { port, hostname: "127.0.0.1", onListen: () => {} },
+    async (req, info) => {
+      const remote = info.remoteAddr as Deno.NetAddr;
+      const key = `${remote.hostname}:${remote.port}`;
+      const handshake = connections.has(key) ? 0 : handshakeRtts;
+      connections.add(key);
+      const url = new URL(req.url);
+      if ((req.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
+        // upgraded at once, as a request awaited first is gone; the link's
+        // delay falls on each frame instead
+        const headers: Record<string, string> = {};
+        const auth = req.headers.get("authorization");
+        if (auth !== null) headers.authorization = auth;
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        const upstreamSocket = new WebSocket(
+          upstream.replace(/^http/, "ws") + url.pathname + url.search,
+          { headers } as unknown as string[],
+        );
+        const pending: string[] = [];
+        upstreamSocket.onopen = () => {
+          for (const frame of pending.splice(0)) upstreamSocket.send(frame);
+        };
+        socket.onmessage = (event) => {
+          setTimeout(() => {
+            if (upstreamSocket.readyState === WebSocket.OPEN) {
+              upstreamSocket.send(event.data);
+            } else pending.push(event.data);
+          }, latencyMs / 2);
+        };
+        upstreamSocket.onmessage = (event) => {
+          setTimeout(() => {
+            if (socket.readyState === WebSocket.OPEN) socket.send(event.data);
+          }, latencyMs / 2);
+        };
+        socket.onclose = () => upstreamSocket.close();
+        upstreamSocket.onclose = () => {
+          if (socket.readyState <= WebSocket.OPEN) socket.close();
+        };
+        return response;
+      }
+      const body = req.body === null
+        ? undefined
+        : new Uint8Array(await req.arrayBuffer());
+      await delay(latencyMs * (1 + handshake));
+      const forwarded = new Headers(req.headers);
+      forwarded.delete("host");
+      forwarded.delete("content-length");
+      const upstreamResponse = await fetch(
+        upstream + url.pathname + url.search,
+        {
+          method: req.method,
+          headers: forwarded,
+          ...(body === undefined ? {} : { body }),
+          redirect: "manual",
+        },
+      );
+      const headers = new Headers(upstreamResponse.headers);
+      for (const name of DROPPED_RESPONSE_HEADERS) headers.delete(name);
+      const bytes = req.method === "HEAD"
+        ? null
+        : new Uint8Array(await upstreamResponse.arrayBuffer());
+      return new Response(bytes, { status: upstreamResponse.status, headers });
+    },
+  );
+}
 
 function startStorageProxy(
   port: number,
@@ -557,6 +638,7 @@ async function setUpLane(
   const runEnv = baseEnv(env);
   const prefix = `${label}-${crypto.randomUUID().slice(0, 8)}`;
   const leaderRepo = join(root, "serve-a");
+  const farProxies: Deno.HttpServer[] = [];
   await initRepo(binary, leaderRepo, runEnv);
   await run(binary, [
     "datastore",
@@ -688,10 +770,24 @@ async function setUpLane(
     const name = `m${i + 1}`;
     const repo = join(root, name);
     await initRepo(binary, repo, runEnv);
-    // The far member reaches the leader through a follower.
-    const origin = i === memberCount - 1 && followers.length > 0
+    // The far member reaches the leader through a follower, or with
+    // --far-latency-ms straight to the leader over a slow link.
+    const far = i === memberCount - 1;
+    let origin = far && followers.length > 0 && options.farLatencyMs <= 0
       ? followers[0].origin
       : leader.origin;
+    if (far && options.farLatencyMs > 0) {
+      const port = freePort();
+      farProxies.push(
+        startMemberProxy(
+          port,
+          origin,
+          options.farLatencyMs,
+          options.handshakeRtts,
+        ),
+      );
+      origin = `http://127.0.0.1:${port}`;
+    }
     await pointAtServe(repo, leaderRepo, origin);
     members.push({ name, repo, origin, token: tokens[i] });
   }
@@ -700,6 +796,7 @@ async function setUpLane(
     followers,
     members,
     async stop() {
+      for (const proxy of farProxies) await proxy.shutdown();
       for (const node of [...followers, leader]) {
         try {
           node.process.kill("SIGTERM");
@@ -1309,7 +1406,10 @@ function k2aMs(sample: Sample): number {
 
 export function summarize(
   samples: readonly Sample[],
-  options: Pick<Options, "latencyMs" | "handshakeRtts" | "rounds" | "followers">,
+  options: Pick<
+    Options,
+    "latencyMs" | "handshakeRtts" | "rounds" | "followers" | "farLatencyMs"
+  >,
 ): string {
   const lines: string[] = [];
   lines.push(
@@ -1317,7 +1417,8 @@ export function summarize(
   );
   const groups = new Map<string, Sample[]>();
   for (const sample of samples) {
-    const near = sample.member === "m3" && options.followers > 0
+    const near = sample.member === "m3" &&
+        (options.followers > 0 || options.farLatencyMs > 0)
       ? "far"
       : "near";
     const key = `${sample.binary} | ${sample.command} | ${near}`;
@@ -1350,6 +1451,71 @@ export function summarize(
       } | ${
         percentile(storage, 50)
       }`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * a workflow sample split as the dogfood breakdown splits it: before the first
+ * step, the steps, the workflow's own work outside them, and teardown
+ */
+function workflowPhases(sample: Sample) {
+  const cli = sample.spans.find((span) => span.name === "swamp.cli");
+  const steps = sample.spans.filter((span) =>
+    span.name === "swamp.workflow.step"
+  ).sort((a, b) => a.startMs - b.startMs);
+  if (cli === undefined || steps.length === 0) return undefined;
+  const stepMs = steps.map((span) => span.endMs - span.startMs);
+  const teardown = spanTotal(sample, "swamp.cli.teardown");
+  const before = steps[0].startMs - cli.startMs;
+  const inside = cli.endMs - cli.startMs;
+  const commits = sample.memberRequests.filter((request) =>
+    request === "POST commits" ||
+    request === "POST partitions/{partition}/commits"
+  ).length;
+  return {
+    startup: sample.ms - inside,
+    before,
+    steps: stepMs,
+    workflowLevel: inside - before - stepMs.reduce((a, b) => a + b, 0) -
+      teardown,
+    teardown,
+    commits,
+    requests: sample.memberRequests.length,
+  };
+}
+
+export function summarizeWorkflows(
+  samples: readonly Sample[],
+  options: Pick<Options, "followers" | "farLatencyMs">,
+): string {
+  const lines = [
+    "binary | member | n | wall p50 / p95 ms | start-up p50 | before p50 | step 1 p50 | step 2 p50 | workflow-level p50 | teardown p50 / max | commit requests | requests",
+  ];
+  const groups = new Map<string, Sample[]>();
+  for (const sample of samples) {
+    if (sample.command !== "workflow" || sample.code !== 0) continue;
+    const far = sample.member === "m3" &&
+      (options.followers > 0 || options.farLatencyMs > 0);
+    const key = `${sample.binary} | ${far ? "far" : "near"}`;
+    groups.set(key, [...(groups.get(key) ?? []), sample]);
+  }
+  const p50 = (values: number[]) => Math.round(percentile(values, 50));
+  for (const [key, group] of groups) {
+    const phases = group.map(workflowPhases).filter((p) => p !== undefined);
+    lines.push(
+      `${key} | ${group.length} | ${p50(group.map((s) => s.ms))} / ${
+        Math.round(percentile(group.map((s) => s.ms), 95))
+      } | ${p50(phases.map((p) => p.startup))} | ${
+        p50(phases.map((p) => p.before))
+      } | ${p50(phases.map((p) => p.steps[0] ?? 0))} | ${
+        p50(phases.map((p) => p.steps[1] ?? 0))
+      } | ${p50(phases.map((p) => p.workflowLevel))} | ${
+        p50(phases.map((p) => p.teardown))
+      } / ${Math.round(Math.max(...phases.map((p) => p.teardown)))} | ${
+        p50(phases.map((p) => p.commits))
+      } | ${p50(phases.map((p) => p.requests))}`,
     );
   }
   return lines.join("\n");
@@ -1613,10 +1779,12 @@ async function main(): Promise<void> {
       JSON.stringify(all, null, 1),
     );
     console.log(summarize(all, options));
+    console.log(summarizeWorkflows(all, options));
     console.log(`\n${summarizeStartup(startups, posts.count)}`);
     console.log(`\n${summarizeClones(clones)}`);
-    const first = Object.keys(options.binaries)[0];
-    console.log(breakdown(all, first));
+    for (const label of new Set(all.map((s) => s.binary))) {
+      console.log(breakdown(all, label));
+    }
     console.error(`samples: ${join(options.workDir, "samples.json")}`);
     // serve's Litestream supervisors outlive it until they idle out
     await new Deno.Command("pkill", {

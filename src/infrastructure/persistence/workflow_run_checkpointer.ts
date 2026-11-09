@@ -190,9 +190,13 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
         run.id,
       );
       if (change === undefined) return;
-      const outcome = await appendToOpenUnitOfWork(this.#repoContext, [
-        change,
-      ]);
+      // with what the run saved before it (its evaluated workflow and
+      // snapshot), which serve authorizes as it does the record
+      const outcome = await appendToOpenUnitOfWork(
+        this.#repoContext,
+        [change],
+        { withStaged: true },
+      );
       if (outcome === "unsupported") this.#journalRefused = true;
     } catch (error) {
       throw new StepStartUnrecordedError(error, {

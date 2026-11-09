@@ -228,12 +228,17 @@ async function readKindSave(
   return await saveOut(ctx, serve, by);
 }
 
+/**
+ * `deferred`: the writer hold leaves its catch-up to the lock, as a changing
+ * `model method run` does, and the run is judged again once the lock is held
+ */
 async function lockedSave(
   scratch: Scratch,
   serve: Serve,
   client: Client,
   env: Record<string, string | undefined>,
   by: string,
+  options: { readonly deferred?: boolean } = {},
 ): Promise<number> {
   resetServeLeasesForTesting();
   resetLeaseRenewalsForTesting();
@@ -243,14 +248,16 @@ async function lockedSave(
       const ctx = await requireInitializedRepoUnlocked({
         repoDir: client.repoDir,
         outputMode: "json",
+        ...(options.deferred === true ? { catchUpAtLock: true } : {}),
       });
-      await assertOfflineRunAllowed(ctx.datastoreConfig, {
+      const run = {
         modelType: serve.modelType.normalized,
         modelId: serve.models.web,
         behaviorName: "web",
         methodName: "update",
         methodKind: "update",
-      });
+      } as const;
+      await assertOfflineRunAllowed(ctx.datastoreConfig, run);
       const locks = await acquireModelLocks(
         ctx.datastoreConfig,
         [{ modelType: serve.modelType.normalized, modelId: serve.models.web }],
@@ -260,6 +267,14 @@ async function lockedSave(
         () => {},
         { repoContext: ctx.repoContext },
       );
+      if (options.deferred === true) {
+        try {
+          await assertOfflineRunAllowed(ctx.datastoreConfig, run);
+        } catch (error) {
+          await locks.release();
+          throw error;
+        }
+      }
       return await runCommandInRootUnit(
         ctx.repoContext,
         { push: undefined, release: locks.release },
@@ -1031,6 +1046,82 @@ Deno.test({
         assert(notice.notice === "datastore_offline");
         assertEquals(notice.serveUrl, proxy.origin);
         assert(notice.lastContactAt !== undefined);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, catch-up left to the lock: a lock that finds serve unreachable takes the checkout offline; under an explicit lease the command queues, and the next lands it",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        assertEquals(
+          await command(
+            scratch,
+            alice,
+            env,
+            (ctx) => saveOut(ctx, serve, "online"),
+          ),
+          1,
+        );
+        const lease = await takeLease(scratch, serve, alice, env);
+
+        await proxy.down();
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "offline", {
+            deferred: true,
+          }),
+          2,
+        );
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.up();
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, catch-up left to the lock: without a lease a changing run is refused with the code once its lock finds serve unreachable, before it changes anything",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        await proxy.down();
+        const refused = await assertRejects(
+          () =>
+            lockedSave(scratch, serve, alice, env, "offline", {
+              deferred: true,
+            }),
+          OfflineLeaseRequiredError,
+        );
+        assertEquals(exitCodeForError(refused), 75);
+        proxy.up();
+        assertEquals(await servedVersions(serve), [1]);
       });
     });
   },

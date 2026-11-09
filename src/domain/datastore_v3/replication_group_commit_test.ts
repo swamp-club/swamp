@@ -23,9 +23,12 @@ import { V3ReplicationError } from "./litestream_replication.ts";
 
 function manualSyncs() {
   const calls: PromiseWithResolvers<number | undefined>[] = [];
+  const covering: number[] = [];
   return {
     calls,
-    sync: () => {
+    covering,
+    sync: (count: number) => {
+      covering.push(count);
       const call = Promise.withResolvers<number | undefined>();
       calls.push(call);
       return call.promise;
@@ -147,4 +150,18 @@ Deno.test("ReplicationGroupCommit: a sync that throws synchronously rejects its 
   await assertRejects(() => group.confirm(1), Error, "boom");
   await group.confirm(1);
   assertEquals(calls, 2);
+});
+
+Deno.test("ReplicationGroupCommit: each sync is told how many callers it covers, one when it starts idle", async () => {
+  const syncs = manualSyncs();
+  const group = new ReplicationGroupCommit(syncs.sync);
+  const first = group.confirm(1);
+  const rest = [2, 3].map((mark) => group.confirm(mark));
+  syncs.calls[0].resolve(1);
+  await first;
+  await flush();
+  syncs.calls[1].resolve(3);
+  await Promise.all(rest);
+  // one alone, then the two that queued behind it
+  assertEquals(syncs.covering, [1, 2]);
 });

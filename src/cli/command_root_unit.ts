@@ -45,6 +45,8 @@ export interface CommandRootUnitOptions {
    */
   checkpoint?: (options: CheckpointOptions) => Promise<number | void>;
   release?: () => Promise<void>;
+  /** a lease the root's final commits end with them, sparing a release */
+  releaseWithEnd?: string;
   /**
    * without it a cleanup error is thrown when fn resolved and only logged when
    * fn threw, so it never hides fn's error; a lost model lock or data version
@@ -102,11 +104,16 @@ export async function runCommandInRootUnit<T>(
         flush,
         pushWhen: options.pushWhen,
         checkpoint: options.checkpoint,
-        ...(hold === undefined ? {} : {
+        ...(hold === undefined && options.releaseWithEnd === undefined ? {} : {
           commitLog: {
-            onEnded: (rootCommitted: boolean) => {
-              committed = rootCommitted;
-            },
+            ...(hold === undefined ? {} : {
+              onEnded: (rootCommitted: boolean) => {
+                committed = rootCommitted;
+              },
+            }),
+            ...(options.releaseWithEnd === undefined
+              ? {}
+              : { releaseWithEnd: options.releaseWithEnd }),
           },
         }),
       }, fn),

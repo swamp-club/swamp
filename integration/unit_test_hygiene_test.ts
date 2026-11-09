@@ -130,6 +130,7 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/infrastructure/datastore_v3/litestream/litestream_control_client_test.ts",
   "src/infrastructure/datastore_v3/serve_datastore_client_test.ts",
   "src/infrastructure/datastore_v3/serve_feed_client_test.ts",
+  "src/infrastructure/datastore_v3/serve_lock_test.ts",
   "src/infrastructure/http/extension_api_client_test.ts",
   "src/infrastructure/http/swamp_club_client_search_test.ts",
   "src/infrastructure/http/swamp_club_client_inbox_test.ts",

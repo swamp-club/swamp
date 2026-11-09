@@ -56,6 +56,10 @@ Deno.test("matchDatastoreRoute: each route, with its segments decoded once", () 
     kind: "has",
     namespace: "_default",
   });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/commits"), {
+    kind: "batch",
+    namespace: "ns",
+  });
   assertEquals(
     matchDatastoreRoute(`/api/v1/datastore/ns/chunks/${"a".repeat(64)}`),
     { kind: "chunk", namespace: "ns", sha256: "a".repeat(64) },
@@ -246,7 +250,13 @@ Deno.test("callerReplyHeaders: a token serve names the caller's principal, encod
   );
   assertEquals(
     headers.get("x-swamp-datastore-features")?.split(","),
-    ["step-starts", "run-initiator", "lease-holder", "authorize-only"],
+    [
+      "step-starts",
+      "run-initiator",
+      "lease-holder",
+      "authorize-only",
+      "commit-batch",
+    ],
   );
   // a header value the Fetch API accepts
   new Headers([...headers]);
@@ -257,6 +267,6 @@ Deno.test("callerReplyHeaders: a serve without authentication names no principal
   assertEquals(headers.has("x-swamp-datastore-principal"), false);
   assertEquals(
     headers.get("x-swamp-datastore-features")?.split(","),
-    ["step-starts", "lease-holder", "authorize-only"],
+    ["step-starts", "lease-holder", "authorize-only", "commit-batch"],
   );
 });

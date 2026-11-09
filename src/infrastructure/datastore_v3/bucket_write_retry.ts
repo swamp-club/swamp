@@ -25,6 +25,19 @@ import { abortableSleep, type Sleep } from "../http/rate_limit.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "bucket"]);
 
+/** info in serve, which operators watch; debug in a member's CLI */
+let retryLogLevel: "info" | "debug" = "debug";
+
+export function logBucketWriteRetriesAt(level: "info" | "debug"): void {
+  retryLogLevel = level;
+}
+
+function retryLog(): typeof logger.info {
+  return retryLogLevel === "info"
+    ? logger.info.bind(logger)
+    : logger.debug.bind(logger);
+}
+
 /** kept under the writer lease heartbeat interval, a third of its TTL */
 export const BUCKET_WRITE_RETRY_BUDGET_MS = 5_000;
 const FIRST_BACKOFF_MS = 250;
@@ -140,8 +153,7 @@ async function retrying<T>(
     try {
       const result = await write(attempt);
       if (attempt > 1) {
-        logger
-          .info`Bucket write to ${object} succeeded on attempt ${attempt}`;
+        retryLog()`Bucket write to ${object} succeeded on attempt ${attempt}`;
       }
       return result;
     } catch (error) {
@@ -159,8 +171,7 @@ async function retrying<T>(
           .warn`Bucket write to ${object} failed (${code}) after ${attempt} attempt(s): ${error}`;
         throw error;
       }
-      logger
-        .info`Bucket write to ${object} was refused (${code}) on attempt ${attempt}; retrying in ${
+      retryLog()`Bucket write to ${object} was refused (${code}) on attempt ${attempt}; retrying in ${
         Math.round(backoff)
       }ms`;
       await deps.sleep(backoff, signal);

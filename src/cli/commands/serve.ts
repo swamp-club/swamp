@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { logBucketWriteRetriesAt } from "../../infrastructure/datastore_v3/bucket_write_retry.ts";
 import { IntegrationDirectory } from "../../domain/access/integration_directory.ts";
 import {
   delegationSessionName,
@@ -3389,6 +3390,7 @@ export const serveCommand = new Command()
     // step's prompts, so aborting a run must reach every process it started
     // even when serve runs in the foreground.
     setProcessGroupIsolation("always");
+    logBucketWriteRetriesAt("info");
     // remote callers also choose run arguments and inputs, so a refusal stops
     // at the first failing element
     setProcessArgumentParsePolicy("untrusted");

@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  HEAD_CONTENTION_COOL_DOWN_MS,
   HEAD_PACING_COOL_DOWN_MS,
   HEAD_PUBLISH_INTERVAL_MS,
   HeadPublishPacer,
@@ -80,4 +81,15 @@ Deno.test("HeadPublishPacer: waitWithin skips a wait that would leave the sync t
 
 Deno.test("HeadPublishPacer: the interval keeps clear of GCS's one write a second", () => {
   assertEquals(HEAD_PUBLISH_INTERVAL_MS > 1_000, true);
+});
+
+Deno.test("HeadPublishPacer: requests queued behind a sync pace the head too, for a shorter cool-down than a refusal", () => {
+  const pacer = new HeadPublishPacer();
+  pacer.attempted(10_000);
+  pacer.contended(10_050);
+  assertEquals(pacer.pacing(10_100), true);
+  assertEquals(pacer.waitMs(10_100), HEAD_PUBLISH_INTERVAL_MS - 100);
+  assertEquals(pacer.pacing(10_050 + HEAD_CONTENTION_COOL_DOWN_MS - 1), true);
+  assertEquals(pacer.pacing(10_050 + HEAD_CONTENTION_COOL_DOWN_MS), false);
+  assertEquals(HEAD_CONTENTION_COOL_DOWN_MS < HEAD_PACING_COOL_DOWN_MS, true);
 });

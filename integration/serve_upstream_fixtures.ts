@@ -558,6 +558,7 @@ export async function latestOf(
 export interface ProxiedRequest {
   readonly method: string;
   readonly path: string;
+  readonly search: string;
   readonly authorization: string | null;
 }
 
@@ -587,6 +588,7 @@ export function startProxy(
       requests.push({
         method: request.method,
         path: url.pathname,
+        search: url.search,
         authorization: request.headers.get("authorization"),
       });
       const body = request.body === null

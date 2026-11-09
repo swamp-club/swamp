@@ -48,6 +48,7 @@ import {
   type CommitLogUnitOfWork,
   CommitUnreachableError,
   type ContentSource,
+  type DirectAppendOptions,
   type DirectAppendOutcome,
   MayLandLaterError,
   type PartitionRefusal,
@@ -56,7 +57,10 @@ import {
   RunPartlyCommittedError,
   type TypedChange,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
-import type { CommitStore } from "../../domain/datastore_v3/commit_store.ts";
+import type {
+  CommitStore,
+  CommitStoreAppendResult,
+} from "../../domain/datastore_v3/commit_store.ts";
 import {
   createIntent,
   intentPartition,
@@ -120,7 +124,48 @@ export type CommitSink = Pick<CommitStore, "append" | "head"> & {
   readonly queuesOffline?: (partition: PartitionKey) => Promise<boolean>;
   /** false when the serve behind this sink cannot take a step start */
   readonly takesStepStarts?: () => boolean;
+  /**
+   * the next `slots` appends, one per slot, travel together, in slot order,
+   * once each has arrived or been skipped; undefined when they cannot, and
+   * each is appended alone. `release` names a lease to end with them
+   */
+  readonly beginBatch?: (
+    slots: number,
+    options?: { readonly release?: string },
+  ) => Promise<SinkBatch | undefined>;
+  /** the most appends one batch takes */
+  readonly batchLimit?: number;
 };
+
+interface FlushOptions {
+  /** a lease to end with the flush's last commits, once they all land */
+  readonly release?: string;
+}
+
+interface BatchSlot {
+  readonly batch: SinkBatch;
+  readonly slot: number;
+}
+
+export interface SinkBatch {
+  append(slot: number, commit: Commit): Promise<CommitStoreAppendResult>;
+  /** a slot whose group appends nothing, so the batch need not wait for it */
+  skip(slot: number): Promise<void>;
+}
+
+/**
+ * an earlier commit of its batch did not land, so this one was never sent; its
+ * group stays pending for the flush to decide on
+ */
+export class CommitNotTriedError extends Error {
+  constructor(readonly partition: string) {
+    super(
+      `The commit to partition ${partition} was not sent: an earlier commit ` +
+        `of its batch did not land`,
+    );
+    this.name = "CommitNotTriedError";
+  }
+}
 
 /**
  * covers versions staged but not committed yet, which the commit store cannot
@@ -206,6 +251,8 @@ export interface SinkOutbox {
 
 export interface CommitLogUnitOptions {
   readonly sink: CommitSink;
+  /** a root's: the lease its final commits end, once they all land */
+  readonly endRelease?: string;
   readonly chunkStore: ChunkStore;
   readonly namespace: Namespace;
   readonly writer: CommitWriter;
@@ -348,14 +395,17 @@ function nearestOpenAncestor(
  * staging; a later put or tombstone supersedes an unread handed-over stream
  * put, which is skipped, not read from a changed file
  */
-export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
+export async function checkpointFrom(
+  unit: UnitOfWork,
+  checkpointOptions?: FlushOptions,
+): Promise<boolean> {
   let current: UnitOfWork | undefined = unit;
   while (current !== undefined) {
     const state = states.get(current);
     if (state === undefined) return false;
     if (state.parent === undefined) {
       if (!state.isOpen()) return false;
-      await (current as CommitLogUnitOfWork).checkpoint();
+      await (current as CommitLogUnitOfWork).checkpoint(checkpointOptions);
       return true;
     }
     // Every ancestor ended, the root included: nothing can commit now.
@@ -373,6 +423,7 @@ export async function checkpointFrom(unit: UnitOfWork): Promise<boolean> {
 export async function appendNowFrom(
   unit: UnitOfWork,
   changes: readonly TypedChange[],
+  appendOptions?: DirectAppendOptions,
 ): Promise<DirectAppendOutcome | undefined> {
   let current: UnitOfWork | undefined = unit;
   while (current !== undefined) {
@@ -380,7 +431,16 @@ export async function appendNowFrom(
     if (state === undefined) return undefined;
     if (state.parent === undefined) {
       if (!state.isOpen()) return undefined;
-      return await (current as CommitLogUnitOfWork).appendNow(changes);
+      return await (current as CommitLogUnitOfWork).appendNow(
+        changes,
+        appendOptions,
+      );
+    }
+    // what a child staged belongs to the root it commits with, as a
+    // checkpoint promotes it
+    if (appendOptions?.withStaged === true) {
+      if (nearestOpenAncestor(state.parent) === undefined) return undefined;
+      state.promote();
     }
     current = nearestOpenAncestor(state.parent);
   }
@@ -429,7 +489,7 @@ export function createCommitLogUnitOfWork(
   let pending: Group[] = [];
   /** so a failed end can say what was committed */
   const landed: PartitionKey[] = [];
-  let inFlight: Group | undefined;
+  const inFlight = new Set<Group>();
   const stored = new WeakMap<PendingPut, PutOp>();
   /**
    * superseded stream puts that stay in their group (unstored ones in the group
@@ -476,7 +536,7 @@ export function createCommitLogUnitOfWork(
       streamPuts.delete(slot);
     }
     pending = pending.flatMap((group) => {
-      if (group === inFlight) {
+      if (inFlight.has(group)) {
         for (const other of group.changes) {
           if ("put" in other && streamPutSlot(other) === slot) {
             supersededInFlight.add(other.put);
@@ -545,7 +605,7 @@ export function createCommitLogUnitOfWork(
     }
   };
 
-  const flush = (): Promise<void> => {
+  const flush = (flushOptions: FlushOptions = {}): Promise<void> => {
     const run = flushing.then(async () => {
       pending = [
         ...pending,
@@ -564,20 +624,69 @@ export function createCommitLogUnitOfWork(
       const held = (group: Group) =>
         runRank(group) === 1 && refusals.length > 0;
       while (true) {
-        const group = pending.find((other) => !held(other));
-        if (group === undefined) break;
-        inFlight = group;
-        let withdrawn = false;
+        // a prefix of distinct partitions, stopping at a held group, so they
+        // land as they would one by one
+        const round: Group[] = [];
+        const limit = options.sink.batchLimit ?? Number.POSITIVE_INFINITY;
+        for (const group of pending) {
+          if (
+            round.length >= limit || held(group) ||
+            round.some((other) => other.partition.equals(group.partition))
+          ) {
+            break;
+          }
+          round.push(group);
+        }
+        if (round.length === 0) break;
+        const final = round.length === pending.length;
+        const batch = round.length > 1 ||
+            (final && flushOptions.release !== undefined)
+          ? await options.sink.beginBatch?.(
+            round.length,
+            final && flushOptions.release !== undefined
+              ? { release: flushOptions.release }
+              : undefined,
+          )
+          : undefined;
+        if (batch === undefined) round.splice(1);
+        for (const group of round) inFlight.add(group);
+        let settled: PromiseSettledResult<boolean>[];
         try {
-          withdrawn = await appendGroup(
-            group,
-            options,
-            clock,
-            stored,
-            supersededInFlight,
-            outbox,
+          settled = await Promise.allSettled(
+            round.map((group, slot) =>
+              appendGroup(
+                group,
+                options,
+                clock,
+                stored,
+                supersededInFlight,
+                outbox,
+                undefined,
+                batch === undefined ? undefined : { batch, slot },
+              )
+            ),
           );
-        } catch (error) {
+        } finally {
+          for (const group of round) inFlight.delete(group);
+        }
+        // The first failure that is not a refusal stops the flush once the
+        // round's outcomes are recorded; a commit after it was not sent.
+        let stop: { error: unknown } | undefined;
+        for (const [index, group] of round.entries()) {
+          const outcome = settled[index];
+          if (outcome.status === "fulfilled") {
+            pending = pending.filter((other) => other !== group);
+            if (outcome.value) continue;
+            noteCommitted(group, options);
+            noteCommandLanded(group.partition, intentKindsOf(group.changes));
+            if (!landed.some((other) => other.equals(group.partition))) {
+              landed.push(group.partition);
+            }
+            continue;
+          }
+          const error = outcome.reason;
+          // never sent: it stays pending, for this flush to decide on
+          if (error instanceof CommitNotTriedError) continue;
           // A seq gap only means another append moved the head first; the
           // group stays pending, is rebuilt at the new head, and the flush
           // stops as for any other failure.
@@ -585,13 +694,8 @@ export function createCommitLogUnitOfWork(
             !(error instanceof CommitRejectedError) ||
             error.reason === "seq-gap"
           ) {
-            // A refusal met earlier in this flush is never lost behind it:
-            // the caller sees the refusal, with this error as its cause, and
-            // the failed group stays pending for the next flush.
-            if (refusedNow.length > 0 || refusals.length > 0) {
-              throw refusedError(refusedNow, error);
-            }
-            throw error;
+            stop ??= { error };
+            continue;
           }
           // A refused commit can never land as it is: drop it, with the
           // splits of its partition formed with it (they were staged after
@@ -622,16 +726,14 @@ export function createCommitLogUnitOfWork(
           refusedNow.push(refusal);
           if (runRank(group) === 0) refusals = [...refusals, refusal];
           dropWork([group.partition]);
-          continue;
-        } finally {
-          inFlight = undefined;
         }
-        pending = pending.filter((other) => other !== group);
-        if (withdrawn) continue;
-        noteCommitted(group, options);
-        noteCommandLanded(group.partition, intentKindsOf(group.changes));
-        if (!landed.some((other) => other.equals(group.partition))) {
-          landed.push(group.partition);
+        if (stop !== undefined) {
+          // an earlier refusal is never lost behind it: thrown with this as
+          // its cause, the failed group pending for the next flush
+          if (refusedNow.length > 0 || refusals.length > 0) {
+            throw refusedError(refusedNow, stop.error);
+          }
+          throw stop.error;
         }
       }
       // Every flush throws until the refusals are acknowledged, so none is
@@ -745,7 +847,9 @@ export function createCommitLogUnitOfWork(
     // and, when it failed before forming them, its staged changes.
     let unlanded: readonly PartitionKey[] = [];
     try {
-      await flush();
+      await flush(
+        options.endRelease === undefined ? {} : { release: options.endRelease },
+      );
     } catch (error) {
       unlanded = [
         ...pending.map((group) => group.partition),
@@ -827,7 +931,7 @@ export function createCommitLogUnitOfWork(
     stage(change: StagedChange): Promise<void> {
       return Promise.reject(new PathOnlyChangeRefusedError(change));
     },
-    async checkpoint(): Promise<void> {
+    async checkpoint(checkpointOptions?: FlushOptions): Promise<void> {
       if (ended !== undefined) {
         throw new Error(`checkpoint called after the unit of work ${ended}`);
       }
@@ -836,10 +940,11 @@ export function createCommitLogUnitOfWork(
           "checkpoint called on a child unit of work; its root commits",
         );
       }
-      await flush();
+      await flush(checkpointOptions);
     },
     async appendNow(
       changes: readonly TypedChange[],
+      appendOptions?: DirectAppendOptions,
     ): Promise<DirectAppendOutcome> {
       if (ended !== undefined) {
         throw new Error(`appendNow called after the unit of work ${ended}`);
@@ -857,6 +962,26 @@ export function createCommitLogUnitOfWork(
       }
       if (checked.length === 0) return "excluded";
       requireBatchWithinLimit(checked);
+      // behind a refusal still unacknowledged, run commits are held, so the
+      // change goes alone, as without the option
+      if (appendOptions?.withStaged === true && refusals.length === 0) {
+        // a change the unit already holds is committed as staged, never twice
+        const heldKeys = new Set(
+          [...staged.flat(), ...pending.flatMap((group) => group.changes)]
+            .flatMap((change) => {
+              const key = keyOfChange(change);
+              return key === undefined ? [] : [`${change.partition}\0${key}`];
+            }),
+        );
+        const fresh = checked.filter((change) => {
+          const key = keyOfChange(change);
+          return key === undefined ||
+            !heldKeys.has(`${change.partition}\0${key}`);
+        });
+        if (fresh.length > 0) record(fresh);
+        await flush();
+        return "committed";
+      }
       const partition = checked[0].partition;
       for (const change of checked) {
         requireSamePartition(partition, change.partition);
@@ -1267,20 +1392,35 @@ function appendGroup(
   superseded: WeakSet<PendingPut>,
   unitOutbox: UnitOutbox,
   onQueued?: () => void,
+  batched?: BatchSlot,
 ): Promise<boolean> {
   return withSpan(
     "swamp.datastore.v3.commit.append_group",
     {},
-    () =>
-      appendGroupIn(
-        group,
-        options,
-        clock,
-        storedOps,
-        superseded,
-        unitOutbox,
-        onQueued,
-      ),
+    async () => {
+      // the slot is the first attempt's; a group that never reaches it frees
+      // it, so the batch never waits for a commit that will not come
+      const slot = batched === undefined
+        ? undefined
+        : { ...batched, used: false };
+      try {
+        return await appendGroupIn(
+          group,
+          options,
+          clock,
+          storedOps,
+          superseded,
+          unitOutbox,
+          onQueued,
+          slot,
+        );
+      } finally {
+        if (slot !== undefined && !slot.used) {
+          slot.used = true;
+          await slot.batch.skip(slot.slot);
+        }
+      }
+    },
   );
 }
 
@@ -1292,6 +1432,7 @@ async function appendGroupIn(
   superseded: WeakSet<PendingPut>,
   unitOutbox: UnitOutbox,
   onQueued?: () => void,
+  batched?: BatchSlot & { used: boolean },
 ): Promise<boolean> {
   if (clock().getTime() - group.formedAt > OUTBOX_RETRY_BOUND_MS) {
     // The store may have pruned a landed first attempt's txnId: appending
@@ -1410,9 +1551,18 @@ async function appendGroupIn(
         }
         unitOutbox.sent.set(group.txnId, group.partition.toString());
         try {
-          await options.sink.append(commit);
+          if (batched !== undefined && !batched.used) {
+            batched.used = true;
+            await batched.batch.append(batched.slot, commit);
+          } else {
+            await options.sink.append(commit);
+          }
           return;
         } catch (error) {
+          if (error instanceof CommitNotTriedError) {
+            unitOutbox.sent.delete(group.txnId);
+            throw error;
+          }
           // queued in the outbox while serve is unreachable: the entry stays,
           // marked, for the next command to land, and the unit goes on as if it
           // had landed

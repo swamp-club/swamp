@@ -292,6 +292,33 @@ Deno.test("modelMethodRun yields error for missing model", async () => {
   }
 });
 
+Deno.test("modelMethodRun: a name that now resolves to another definition than the one locked is refused before anything runs", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const deps = createTestDeps(definition, modelDef);
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      ...createTestInput("test-model", "run"),
+      lockedDefinitionId: "a-definition-removed-since",
+    }),
+  );
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "definition_changed_under_lock");
+  }
+  assertEquals(events.some((event) => event.kind === "executing"), false);
+
+  const locked = await collect(
+    modelMethodRun(ctx, deps, {
+      ...createTestInput("test-model", "run"),
+      lockedDefinitionId: definition.id,
+    }),
+  );
+  assertEquals(locked.at(-1)?.kind, "completed");
+});
+
 Deno.test("modelMethodRun yields error for unknown model type", async () => {
   const definition = createTestDefinition("test-model", "run");
   const deps = createTestDeps(definition, undefined);

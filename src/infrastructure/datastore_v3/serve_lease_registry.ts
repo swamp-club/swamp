@@ -144,6 +144,61 @@ export function heldServeLeaseOf(
   return lockKey === undefined ? undefined : held.get(keyOf(root, lockKey));
 }
 
+interface ReleasableLease {
+  readonly quiet: () => Promise<void>;
+  readonly resume: () => void;
+  released: boolean;
+}
+
+/** a command's own leases, by id, which the commit that ends the hold may end */
+const releasable = new Map<string, ReleasableLease>();
+
+/**
+ * offered by a command's own hold; `quiet` stops its renewals, so a renewal
+ * after serve ended the lease is never read as a lapse
+ */
+export function offerServeLeaseRelease(
+  leaseId: string,
+  quiet: () => Promise<void>,
+  resume: () => void,
+): void {
+  releasable.set(leaseId, { quiet, resume, released: false });
+}
+
+/** renews the quieted hold again: serve did not end the lease after all */
+export function resumeServeLease(leaseId: string): void {
+  const lease = releasable.get(leaseId);
+  if (lease !== undefined && !lease.released) lease.resume();
+}
+
+export function withdrawServeLeaseRelease(leaseId: string): void {
+  releasable.delete(leaseId);
+}
+
+/**
+ * quiets the hold before a commit asks serve to end its lease; false when the
+ * lease is not a command's own hold here, which is never ended by a commit
+ */
+export async function quietServeLeaseForRelease(
+  leaseId: string,
+): Promise<boolean> {
+  const lease = releasable.get(leaseId);
+  if (lease === undefined) return false;
+  await lease.quiet();
+  return true;
+}
+
+export function noteServeLeaseReleased(leaseId: string): void {
+  const lease = releasable.get(leaseId);
+  if (lease !== undefined) lease.released = true;
+}
+
+/** serve ended the lease with the commit that closed the hold */
+export function serveLeaseReleasedByCommit(leaseId: string): boolean {
+  return releasable.get(leaseId)?.released === true;
+}
+
 export function resetServeLeasesForTesting(): void {
   held.clear();
+  releasable.clear();
 }

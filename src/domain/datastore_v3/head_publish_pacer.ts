@@ -24,27 +24,38 @@ export const HEAD_PUBLISH_INTERVAL_MS = 1_200;
 export const HEAD_PACING_COOL_DOWN_MS = 30_000;
 
 /**
- * a head is published at once until the bucket refuses one of its writes;
- * pacing then holds until a cool-down passes with no refusal, so a member's
- * back-to-back commits pay nothing on a bucket that never pushes back
+ * how long after its last contended sync a head stays paced: short, so members
+ * that collide once do not pace each other's sequential commits for long
+ */
+export const HEAD_CONTENTION_COOL_DOWN_MS = 5_000;
+
+/**
+ * a head goes out at once until the bucket refuses a write or requests queue
+ * behind a sync, then is paced until a cool-down passes without either
  */
 export class HeadPublishPacer {
   readonly #intervalMs: number;
   readonly #coolDownMs: number;
+  readonly #contentionCoolDownMs: number;
   #lastAttemptAt: number | undefined;
   #lastRefusedAt: number | undefined;
+  #lastContendedAt: number | undefined;
 
   constructor(
     intervalMs: number = HEAD_PUBLISH_INTERVAL_MS,
     coolDownMs: number = HEAD_PACING_COOL_DOWN_MS,
+    contentionCoolDownMs: number = HEAD_CONTENTION_COOL_DOWN_MS,
   ) {
     this.#intervalMs = intervalMs;
     this.#coolDownMs = coolDownMs;
+    this.#contentionCoolDownMs = contentionCoolDownMs;
   }
 
   pacing(now: number): boolean {
-    return this.#lastRefusedAt !== undefined &&
-      now - this.#lastRefusedAt < this.#coolDownMs;
+    return (this.#lastRefusedAt !== undefined &&
+      now - this.#lastRefusedAt < this.#coolDownMs) ||
+      (this.#lastContendedAt !== undefined &&
+        now - this.#lastContendedAt < this.#contentionCoolDownMs);
   }
 
   waitMs(now: number): number {
@@ -67,5 +78,10 @@ export class HeadPublishPacer {
 
   rateLimited(at: number): void {
     this.#lastRefusedAt = Math.max(this.#lastRefusedAt ?? at, at);
+  }
+
+  /** more than one request was queued behind a running sync */
+  contended(at: number): void {
+    this.#lastContendedAt = Math.max(this.#lastContendedAt ?? at, at);
   }
 }

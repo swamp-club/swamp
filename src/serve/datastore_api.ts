@@ -149,6 +149,7 @@ import {
 import {
   ChunksMissingError,
   commitForwarded,
+  type ForwardedCommitResult,
   landedForwardedCommit,
   PreconditionConflictError,
   StaleSeqError,
@@ -160,8 +161,10 @@ import type {
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
 import {
   AUTHORIZE_ONLY_FEATURE,
+  COMMIT_BATCH_FEATURE,
   LEASE_HOLDER_FEATURE,
   LEASE_OPS_FEATURE,
+  MAX_BATCH_COMMITS,
   RUN_INITIATOR_FEATURE,
   SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_FEATURES_HEADER,
@@ -488,8 +491,12 @@ export function callerReplyHeaders(
   if (authMode === "none") {
     return [[
       SERVE_DATASTORE_FEATURES_HEADER,
-      [STEP_STARTS_FEATURE, LEASE_HOLDER_FEATURE, AUTHORIZE_ONLY_FEATURE]
-        .join(","),
+      [
+        STEP_STARTS_FEATURE,
+        LEASE_HOLDER_FEATURE,
+        AUTHORIZE_ONLY_FEATURE,
+        COMMIT_BATCH_FEATURE,
+      ].join(","),
     ]];
   }
   return [
@@ -500,6 +507,7 @@ export function callerReplyHeaders(
         RUN_INITIATOR_FEATURE,
         LEASE_HOLDER_FEATURE,
         AUTHORIZE_ONLY_FEATURE,
+        COMMIT_BATCH_FEATURE,
       ].join(","),
     ],
     [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
@@ -678,6 +686,10 @@ async function answerDatastoreRequest(
         if (req.method === "PUT") return await api.putChunk(req, route.sha256);
         if (req.method === "GET") return await api.getChunk(req, route.sha256);
         return methodNotAllowed("GET, PUT");
+      case "batch":
+        return req.method === "POST"
+          ? await api.commitBatch(req)
+          : methodNotAllowed("POST");
       case "commits":
         if (req.method === "POST") {
           return await api.commit(req, route.partition);
@@ -987,7 +999,209 @@ class DatastoreApi {
     const reader = new FramedReader(req.body ?? ReadableStream.from([]), {
       maxBytes: MAX_COMMIT_BODY_BYTES,
     });
-    const envelopeLength = await reader.readUint32BE(req.signal);
+    const landed = await this.#commitOne(reader, partition, req.signal, true);
+    if (landed instanceof Response) return landed;
+    const unconfirmed = await this.#confirmLanded([landed]);
+    if (unconfirmed !== undefined) {
+      return Response.json({ ...unconfirmed, seq: landed.result.seq }, {
+        status: 503,
+      });
+    }
+    return Response.json(await this.#landedReply(req, landed));
+  }
+
+  /**
+   * `POST commits`: commits to several partitions in one request, applied in
+   * order through the single route's own checks, stopping at the first that
+   * does not land, and confirmed as replicated once for all of them
+   */
+  async commitBatch(req: Request): Promise<Response> {
+    const reader = new FramedReader(req.body ?? ReadableStream.from([]), {
+      maxBytes: MAX_COMMIT_BODY_BYTES,
+    });
+    let header: BatchHeader;
+    try {
+      const headerLength = await reader.readUint32BE(req.signal);
+      if (headerLength > MAX_ENVELOPE_BYTES) {
+        await reader.cancel();
+        return failure(
+          413,
+          "envelope_too_large",
+          `The batch header exceeds ${MAX_ENVELOPE_BYTES} bytes`,
+        );
+      }
+      header = parseBatchHeader(
+        JSON.parse(
+          new TextDecoder().decode(
+            await reader.readExactly(headerLength, req.signal),
+          ),
+        ),
+      );
+    } catch (error) {
+      await reader.cancel();
+      if (error instanceof ChunkIngestError) throw error;
+      return failure(
+        400,
+        "invalid_request",
+        `Malformed batch: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    const landed: LandedCommit[] = [];
+    let refused: BatchItemReply | undefined;
+    for (const [index, item] of header.items.entries()) {
+      const partition = parsePartition(item.partition);
+      let outcome: Response | LandedCommit;
+      try {
+        outcome = partition === undefined
+          ? failure(400, "invalid_request", "Not a partition key")
+          : await this.#commitOne(
+            reader,
+            partition,
+            req.signal,
+            index === header.items.length - 1,
+          );
+      } catch (error) {
+        outcome = datastoreErrorResponse(error);
+      }
+      if (outcome instanceof Response) {
+        await reader.cancel();
+        refused = await batchItemReplyOf(outcome);
+        break;
+      }
+      landed.push(outcome);
+    }
+    const unconfirmed = landed.length === 0
+      ? undefined
+      : await this.#confirmLanded(landed);
+    const results: BatchItemReply[] = [];
+    for (const commit of landed) {
+      results.push(
+        unconfirmed === undefined
+          ? { status: 200, body: await this.#landedReply(req, commit) }
+          : {
+            status: 503,
+            body: { ...unconfirmed, seq: commit.result.seq },
+          },
+      );
+    }
+    if (refused !== undefined) results.push(refused);
+    // A command's own lease ends with the commits it guarded, once all of them
+    // are confirmed; an explicit lease outlives the command and is never ended
+    // here.
+    let released = false;
+    if (
+      header.release !== undefined && unconfirmed === undefined &&
+      landed.length === header.items.length
+    ) {
+      const held = this.#deps.locks.lease(
+        this.#caller.principal,
+        header.release,
+      );
+      if (held !== undefined && held.view.holdMs === undefined) {
+        released = await this.#deps.locks.release(
+          this.#caller.principal,
+          header.release,
+        );
+      }
+    }
+    return Response.json({
+      results,
+      ...(released ? { released: true } : {}),
+    });
+  }
+
+  /** what the reply to a landed commit says, the commit included if readable */
+  async #landedReply(
+    req: Request,
+    landed: LandedCommit,
+  ): Promise<Record<string, unknown>> {
+    const { result, warning, partition } = landed;
+    // Checked as a read of the partition is, so a reply never shows a commit
+    // the caller could not read back.
+    const readable = await this.#mayRead(
+      await partitionReadAccessOf(partition, this.#resolver),
+    ) && await this.#mayReadCommit(result.commit.partition, result.commit.ops);
+    const commit = readable
+      ? commitJSONFor(result.commit, readerFeatures(req))
+      : undefined;
+    const parentTxnId = commit === undefined
+      ? undefined
+      : await this.#readableParentTxnId(result.commit);
+    return {
+      seq: result.seq,
+      ...(result.duplicate ? { duplicate: true } : {}),
+      ...(warning === undefined ? {} : { warning }),
+      ...(commit === undefined ? {} : { commit }),
+      ...(parentTxnId === undefined ? {} : { parentTxnId }),
+    };
+  }
+
+  /**
+   * the txnId at the seq before `commit`, which a copy checks its own head
+   * against before taking the commit; undefined when compacted or unreadable
+   */
+  async #readableParentTxnId(commit: Commit): Promise<string | undefined> {
+    if (commit.seq <= 1) return undefined;
+    let parent: Commit | undefined;
+    try {
+      [parent] = (await this.#v3.commitStore.readPartition(
+        this.#namespace,
+        commit.partition,
+        commit.seq - 1,
+        1,
+      )).map((change) => change.commit);
+    } catch (error) {
+      if (error instanceof CommitsCompactedError) return undefined;
+      throw error;
+    }
+    if (
+      parent === undefined || parent.seq !== commit.seq - 1 ||
+      !(await this.#mayReadCommit(parent.partition, parent.ops))
+    ) {
+      return undefined;
+    }
+    return parent.txnId;
+  }
+
+  /** undefined once every commit is replicated; the client's error otherwise */
+  async #confirmLanded(
+    landed: readonly LandedCommit[],
+  ): Promise<{ code: string; message: string } | undefined> {
+    const ctx = this.#deps.ctx;
+    const confirmReplicated = ctx.confirmReplicated?.bind(ctx);
+    if (confirmReplicated === undefined) return undefined;
+    try {
+      await withSpan(
+        "swamp.serve.datastore.confirm_replicated",
+        {},
+        () => confirmReplicated(),
+      );
+      return undefined;
+    } catch (error) {
+      // Landed, and not yet replicated: a retry under the same txnId finds it.
+      const { code, message } = replicationErrorForClient(
+        error,
+        "internal_error",
+      );
+      for (const { result, partition } of landed) {
+        logger
+          .warn`Commit ${result.seq} to partition ${partition} landed but could not be confirmed as replicated (${code}): ${error}`;
+      }
+      return { code, message };
+    }
+  }
+
+  /**
+   * one commit read from `reader`: refused as a Response, or landed and caught
+   * up after, not yet confirmed as replicated
+   */
+  async #commitOne(
+    reader: FramedReader,
+    partition: PartitionKey,
+    signal: AbortSignal,
+    last: boolean,
+  ): Promise<Response | LandedCommit> {
+    const envelopeLength = await reader.readUint32BE(signal);
     if (envelopeLength > MAX_ENVELOPE_BYTES) {
       await reader.cancel();
       return failure(
@@ -1002,7 +1216,7 @@ class DatastoreApi {
       envelope = parseEnvelope(
         JSON.parse(
           new TextDecoder().decode(
-            await reader.readExactly(envelopeLength, req.signal),
+            await reader.readExactly(envelopeLength, signal),
           ),
         ),
       );
@@ -1069,7 +1283,7 @@ class DatastoreApi {
     let provided: Set<string> | Response;
     try {
       provided = await this.#withChunkSlot(() =>
-        this.#ingestCarried(reader, envelope.chunks, req.signal)
+        this.#ingestCarried(reader, envelope.chunks, signal, last)
       );
     } catch (error) {
       await reader.cancel();
@@ -1123,7 +1337,7 @@ class DatastoreApi {
           (!refused.has(hash) &&
             await this.#mayReference(hash, possession, resolver) ===
               "vouched"),
-        signal: req.signal,
+        signal: signal,
       });
       const checked = await authorizeCommit(
         partition,
@@ -1191,8 +1405,12 @@ class DatastoreApi {
       if (lease === "lost") return { leaseLost: true as const };
       const result = await commitForwarded(
         this.#v3,
-        lease === undefined ? request : { ...request, lease },
-        req.signal,
+        {
+          ...request,
+          ...(lease === undefined ? {} : { lease }),
+          stored: carried,
+        },
+        signal,
       );
       return { result };
     });
@@ -1223,34 +1441,7 @@ class DatastoreApi {
       {},
       () => this.#afterCommit(partition),
     );
-    const ctx = this.#deps.ctx;
-    const confirmReplicated = ctx.confirmReplicated?.bind(ctx);
-    if (confirmReplicated !== undefined) {
-      try {
-        await withSpan(
-          "swamp.serve.datastore.confirm_replicated",
-          {},
-          () => confirmReplicated(),
-        );
-      } catch (error) {
-        // Landed, and not yet replicated: a retry under the same txnId
-        // finds it.
-        const { code, message } = replicationErrorForClient(
-          error,
-          "internal_error",
-        );
-        logger
-          .warn`Commit ${result.seq} to partition ${partition} landed but could not be confirmed as replicated (${code}): ${error}`;
-        return Response.json({ code, message, seq: result.seq }, {
-          status: 503,
-        });
-      }
-    }
-    return Response.json({
-      seq: result.seq,
-      ...(result.duplicate ? { duplicate: true } : {}),
-      ...(warning === undefined ? {} : { warning }),
-    });
+    return { partition, result, ...(warning === undefined ? {} : { warning }) };
   }
 
   /** `GET partitions/{p}/commits?after={seq}&limit=`. */
@@ -1352,15 +1543,47 @@ class DatastoreApi {
         "cursor and limit must be integers",
       );
     }
+    const anchor = parseAnchorParams(params);
+    if (anchor === "invalid") {
+      return failure(
+        400,
+        "invalid_request",
+        "anchorNamespace, anchorPartition, anchorSeq and anchorTxnId go together",
+      );
+    }
+    // checked before the page is read, as the caller checks it before applying
+    // any of it
+    const verdict = anchor === undefined
+      ? undefined
+      : await this.#anchorVerdict(anchor);
+    if (verdict instanceof Response) return verdict;
+    const page = await this.#changesPage(req, cursor, limit);
+    return Response.json({
+      ...page,
+      ...(verdict === undefined ? {} : { anchor: verdict }),
+    });
+  }
+
+  /**
+   * the changes feed after `cursor`, as the caller may read it; `maxBytes`
+   * ends a page early, with more to read
+   */
+  async #changesPage(
+    req: Request,
+    cursor: number,
+    limit: number,
+    maxBytes?: number,
+  ): Promise<{ changes: ChangeEntryJson[]; cursor: number; more: boolean }> {
     // A follower pages only to the last commit whose effects it applied:
     // a commit past it would be filtered under a policy older than it, and
     // the cursor would move past it for good (swamp-club#4207).
     const bound = this.#deps.ctx.followerGate?.role === "follower"
       ? this.#deps.ctx.commitFeed?.bound()
       : undefined;
-    const kept: { cursor: number; commit: unknown }[] = [];
+    const kept: ChangeEntryJson[] = [];
     let next = cursor;
     let scanned = 0;
+    let bytes = 0;
     let more = true;
     scan: while (kept.length < limit && scanned < MAX_CHANGES_SCAN) {
       const page = await this.#v3.commitStore.changesSince(
@@ -1376,8 +1599,6 @@ class DatastoreApi {
           more = false;
           break scan;
         }
-        scanned++;
-        next = change.cursor;
         if (
           change.commit.namespace === this.#namespace &&
           (await this.#mayReadCommit(
@@ -1387,15 +1608,118 @@ class DatastoreApi {
         ) {
           const commit = commitJSONFor(change.commit, readerFeatures(req));
           if (commit !== undefined) {
+            if (maxBytes !== undefined) {
+              const size =
+                new TextEncoder().encode(JSON.stringify(commit)).byteLength;
+              // the cursor stays before this commit, which the next read
+              // brings
+              if (kept.length > 0 && bytes + size > maxBytes) break scan;
+              bytes += size;
+            }
+            scanned++;
+            next = change.cursor;
             kept.push({ cursor: change.cursor, commit });
             if (kept.length >= limit) break;
+            continue;
           }
         }
+        scanned++;
+        next = change.cursor;
       }
     }
     // The next cursor moves past filtered rows too, so a caller who may
     // read nothing still makes progress.
-    return Response.json({ changes: kept, cursor: next, more });
+    return { changes: kept, cursor: next, more };
+  }
+
+  /**
+   * whether serve still holds the commit the caller's feed cursor follows, as
+   * the caller would read it from the anchor's partition
+   */
+  async #anchorVerdict(
+    anchor: FeedAnchorJson,
+  ): Promise<AnchorVerdict | Response> {
+    const partition = parsePartition(anchor.partition);
+    if (partition === undefined) return { verdict: "unchecked" };
+    if (
+      !(await this.#mayRead(
+        await partitionReadAccessOf(partition, this.#resolver),
+      ))
+    ) {
+      return { verdict: "unchecked" };
+    }
+    if (await this.#behindCaller(partition, anchor.seq)) {
+      return followerBehindResponse();
+    }
+    let page;
+    try {
+      page = await this.#v3.commitStore.readPartition(
+        this.#namespace,
+        partition,
+        anchor.seq,
+        1,
+      );
+    } catch (error) {
+      if (error instanceof CommitsCompactedError) {
+        return { verdict: "unchecked" };
+      }
+      throw error;
+    }
+    const head = await this.#v3.commitStore.head(this.#namespace, partition);
+    if (head.seq < anchor.seq) {
+      return { verdict: "behind", serveHead: head.seq };
+    }
+    const [change] = page;
+    if (
+      change === undefined || change.commit.seq !== anchor.seq ||
+      !(await this.#mayReadCommit(change.commit.partition, change.commit.ops))
+    ) {
+      return { verdict: "unchecked" };
+    }
+    if (
+      change.commit.txnId !== anchor.txnId ||
+      change.commit.namespace !== anchor.namespace
+    ) {
+      return { verdict: "other-commit", serveTxnId: change.commit.txnId };
+    }
+    return { verdict: "held" };
+  }
+
+  /**
+   * what the caller's copy lacks, answered with the lock it is granted; never
+   * fails the grant, which has already been made
+   */
+  async #lockCatchUp(
+    req: Request,
+    request: CatchUpRequestJson,
+  ): Promise<Record<string, unknown> | undefined> {
+    try {
+      const verdict = request.anchor === undefined
+        ? undefined
+        : await this.#anchorVerdict(request.anchor);
+      if (verdict instanceof Response) return undefined;
+      const page = await this.#changesPage(
+        req,
+        request.cursor,
+        MAX_PAGE,
+        LOCK_CATCH_UP_BYTES,
+      );
+      return {
+        requested: request,
+        ...page,
+        ...(verdict === undefined ? {} : { anchor: verdict }),
+      };
+    } catch (error) {
+      if (error instanceof CommitsCompactedError) {
+        return {
+          requested: request,
+          refused: await batchItemReplyOf(datastoreErrorResponse(error)),
+        };
+      }
+      logger
+        .debug`Answering a lock without its catch-up, which the caller reads itself: ${error}`;
+      return undefined;
+    }
   }
 
   /**
@@ -1607,6 +1931,14 @@ class DatastoreApi {
         "budgetMs must be a non-negative integer",
       );
     }
+    const catchUp = parseCatchUpRequest(fields.catchUp);
+    if (catchUp === "invalid") {
+      return failure(
+        400,
+        "invalid_request",
+        "catchUp must be {cursor, anchor?}",
+      );
+    }
     const refused = await this.#authorizeLock(target);
     if (refused !== undefined) return refused;
     // A kept lease on this key not adopted yet holds it (swamp-club#4258).
@@ -1624,8 +1956,15 @@ class DatastoreApi {
       ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
     });
     switch (outcome.kind) {
-      case "acquired":
-        return Response.json(outcome.lease, { status: 201 });
+      case "acquired": {
+        const page = catchUp === undefined
+          ? undefined
+          : await this.#lockCatchUp(req, catchUp);
+        return Response.json({
+          ...outcome.lease,
+          ...(page === undefined ? {} : { catchUp: page }),
+        }, { status: 201 });
+      }
       case "too-many":
         return failure(
           429,
@@ -3068,6 +3407,7 @@ class DatastoreApi {
     reader: FramedReader,
     declared: readonly { sha256: string; size: number }[],
     signal: AbortSignal,
+    last = true,
   ): Promise<Set<string> | Response> {
     const reservations: UploadReservation[] = [];
     const staged = new Map<string, UploadReservation>();
@@ -3094,7 +3434,8 @@ class DatastoreApi {
           staged.set(verified.sha256, admission.reservation);
         }
       }
-      await reader.assertEnd(signal);
+      // a batch's later commits follow this one's chunks
+      if (last) await reader.assertEnd(signal);
       if (staged.size === 0) return new Set();
       await batch.commit(signal);
       // Recorded once durable: a batch discarded on a later failure leaves
@@ -3223,6 +3564,165 @@ class CatchUpCoalescer {
     });
     return this.#next;
   }
+}
+
+/**
+ * the most bytes of commits a lock reply carries for the caller's catch-up;
+ * the rest is read with GET changes
+ */
+export const LOCK_CATCH_UP_BYTES = 4 * 1024 * 1024;
+
+interface ChangeEntryJson {
+  readonly cursor: number;
+  readonly commit: unknown;
+}
+
+interface FeedAnchorJson {
+  readonly namespace: string;
+  readonly partition: string;
+  readonly seq: number;
+  readonly txnId: string;
+}
+
+type AnchorVerdict =
+  | { readonly verdict: "held" | "unchecked" }
+  | { readonly verdict: "behind"; readonly serveHead: number }
+  | { readonly verdict: "other-commit"; readonly serveTxnId: string };
+
+interface CatchUpRequestJson {
+  readonly cursor: number;
+  readonly anchor?: FeedAnchorJson;
+}
+
+function parseFeedAnchor(value: unknown): FeedAnchorJson | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const { namespace, partition, seq, txnId } = value as Record<
+    string,
+    unknown
+  >;
+  if (
+    typeof namespace !== "string" || typeof partition !== "string" ||
+    typeof txnId !== "string" || typeof seq !== "number" ||
+    !Number.isSafeInteger(seq) || seq < 1
+  ) {
+    return undefined;
+  }
+  return { namespace, partition, seq, txnId };
+}
+
+function parseAnchorParams(
+  params: URLSearchParams,
+): FeedAnchorJson | "invalid" | undefined {
+  const names = [
+    "anchorNamespace",
+    "anchorPartition",
+    "anchorSeq",
+    "anchorTxnId",
+  ];
+  const present = names.filter((name) => params.has(name));
+  if (present.length === 0) return undefined;
+  if (present.length !== names.length) return "invalid";
+  return parseFeedAnchor({
+    namespace: params.get("anchorNamespace"),
+    partition: params.get("anchorPartition"),
+    seq: nonNegative(params.get("anchorSeq") ?? ""),
+    txnId: params.get("anchorTxnId"),
+  }) ?? "invalid";
+}
+
+function parseCatchUpRequest(
+  value: unknown,
+): CatchUpRequestJson | "invalid" | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return "invalid";
+  }
+  const { cursor, anchor } = value as Record<string, unknown>;
+  if (
+    typeof cursor !== "number" || !Number.isSafeInteger(cursor) || cursor < 0
+  ) {
+    return "invalid";
+  }
+  if (anchor === undefined) return { cursor };
+  const parsed = parseFeedAnchor(anchor);
+  return parsed === undefined ? "invalid" : { cursor, anchor: parsed };
+}
+
+interface LandedCommit {
+  readonly partition: PartitionKey;
+  readonly result: ForwardedCommitResult;
+  readonly warning?: string;
+}
+
+interface BatchHeader {
+  readonly items: readonly { readonly partition: string }[];
+  readonly release?: string;
+}
+
+/** one commit's answer in a batch: what the single route would have said */
+interface BatchItemReply {
+  readonly status: number;
+  readonly body: unknown;
+  readonly retryAfter?: string;
+}
+
+function parseBatchHeader(value: unknown): BatchHeader {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("the batch header must be a JSON object");
+  }
+  const json = value as Record<string, unknown>;
+  for (const field of Object.keys(json)) {
+    if (field !== "items" && field !== "release") {
+      throw new Error(`the batch header does not take the field '${field}'`);
+    }
+  }
+  const { items, release } = json;
+  if (
+    !Array.isArray(items) || items.length === 0 ||
+    items.length > MAX_BATCH_COMMITS
+  ) {
+    throw new Error(
+      `items must hold between 1 and ${MAX_BATCH_COMMITS} commits`,
+    );
+  }
+  const parsed = items.map((item) => {
+    if (
+      typeof item !== "object" || item === null || Array.isArray(item) ||
+      Object.keys(item).some((key) => key !== "partition") ||
+      typeof (item as { partition?: unknown }).partition !== "string"
+    ) {
+      throw new Error("each item names only its partition");
+    }
+    return { partition: (item as { partition: string }).partition };
+  });
+  if (
+    release !== undefined &&
+    (typeof release !== "string" || !UUID.test(release))
+  ) {
+    throw new Error("release must be a lease id: a lowercase UUID");
+  }
+  return {
+    items: parsed,
+    ...(release === undefined ? {} : { release: release as string }),
+  };
+}
+
+async function batchItemReplyOf(response: Response): Promise<BatchItemReply> {
+  const text = await response.text();
+  let body: unknown = text;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    // a plain-text refusal is passed on as text
+  }
+  const retryAfter = response.headers.get("retry-after");
+  return {
+    status: response.status,
+    body,
+    ...(retryAfter === null ? {} : { retryAfter }),
+  };
 }
 
 interface CommitEnvelope {

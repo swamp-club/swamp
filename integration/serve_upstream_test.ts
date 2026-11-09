@@ -1023,10 +1023,13 @@ Deno.test({
         );
         assertEquals(error.commit?.seq, 2);
         assertEquals(error.divergence, { kind: "behind", serveHead: 1 });
+        // by serve with the changes read, or by a read of its own
         assert(
           proxy.requests.some((request) =>
             request.method === "GET" &&
-            decodeURIComponent(request.path).includes(other)
+            (decodeURIComponent(request.path).includes(other) ||
+              new URLSearchParams(request.search).get("anchorPartition")
+                  ?.includes(other) === true)
           ),
           "the feed anchor was not checked",
         );

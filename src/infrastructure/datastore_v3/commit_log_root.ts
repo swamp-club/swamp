@@ -175,7 +175,7 @@ export async function runInCommitLogRoot<T>(
     }
     const refused = onRefused === undefined || parent !== undefined
       ? undefined
-      : await settleRefusals(root, onRefused);
+      : await settleRefusals(root, onRefused, unitOptions.endRelease);
     await root.commit();
     committed = true;
     if (refused !== undefined) {
@@ -206,13 +206,15 @@ export function wasThrownAfterCommit(error: unknown): boolean {
 async function settleRefusals(
   root: CommitLogUnitOfWork,
   onRefused: (error: PartitionsRefusedError) => Promise<void>,
+  release: string | undefined,
 ): Promise<PartitionsRefusedError | undefined> {
   // A transient failure leaves its partition pending; checkpoint again, so a
   // refusal behind it is met here, where it can be settled, rather than at
   // the commit, which would lose the held run records.
   for (let attempt = 1;; attempt++) {
     try {
-      await root.checkpoint();
+      // the root's last commits, so they may end its lease; a refusal keeps it
+      await root.checkpoint(release === undefined ? undefined : { release });
       return undefined;
     } catch (error) {
       if (error instanceof PartitionsRefusedError) {

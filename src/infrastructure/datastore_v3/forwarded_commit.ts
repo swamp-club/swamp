@@ -58,11 +58,15 @@ export interface ForwardedCommitRequest {
    * client's ops and a retry is compared without it
    */
   readonly lease?: LeaseOp;
+  /** chunks this request stored itself, whose GC grace starts now: not refreshed */
+  readonly stored?: ReadonlySet<string>;
 }
 
 export interface ForwardedCommitResult {
   readonly seq: number;
   readonly duplicate: boolean;
+  /** the commit as it landed, stamped by serve */
+  readonly commit: Commit;
 }
 
 export type ForwardedCommitTarget =
@@ -134,6 +138,7 @@ export async function commitForwarded(
     v3.namespace,
     request.ops,
     signal,
+    request.stored,
   );
   if (missing.length > 0) throw new ChunksMissingError(missing);
   try {
@@ -166,7 +171,7 @@ export async function commitForwarded(
       `Forwarded commit ${request.txnId} was appended but its seq cannot be read`,
     );
   }
-  return { seq: result.seq, duplicate: false };
+  return { ...result, duplicate: false };
 }
 
 /**
@@ -219,7 +224,7 @@ async function landedResult(
   ) {
     throw new TxnIdReusedError(request.txnId);
   }
-  return { seq, duplicate: true };
+  return { seq, duplicate: true, commit };
 }
 
 async function missingChunks(
@@ -227,11 +232,15 @@ async function missingChunks(
   namespace: string,
   ops: readonly Op[],
   signal: AbortSignal,
+  stored: ReadonlySet<string> = new Set(),
 ): Promise<string[]> {
   const ns = namespace === "" ? SOLO_NAMESPACE : restoreNamespace(namespace);
   const missing = new Set<string>();
   for (const op of ops) {
     if (op.kind !== "put" || !("blob" in op.content)) continue;
+    if (op.content.blob.chunkHashes().every((sha256) => stored.has(sha256))) {
+      continue;
+    }
     for (const sha256 of await chunks.refresh(ns, op.content.blob, signal)) {
       missing.add(sha256);
     }

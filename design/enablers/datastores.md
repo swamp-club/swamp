@@ -6700,15 +6700,26 @@ are stamped `@anonymous`.
 | `POST chunks/has` | `{hashes}` (at most 1,024): the ones serve holds that the caller may reference, touched so GC keeps them |
 | `PUT chunks/{sha256}?partition={p}` | One chunk for a commit to `{p}`, hashed as it streams in, recorded in the upload ledger; needs the partition's least write access (below), `admin` with no partition |
 | `GET chunks/{sha256}` | A chunk's bytes, with one `Range`; 404 to a caller who may not read it; 503 `chunk_access_undecided` when that could not be decided within the request's limits |
-| `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq}`, or a conflict |
+| `POST partitions/{p}/commits` | One commit and the chunks it carries: `{seq, commit?, parentTxnId?}` (the commit as serve stamped it, and the txnId before it, when the caller may read them), or a conflict |
+| `POST commits` | Several partitions' commits in one request (feature `commit-batch`): a header `{items: [{partition}], release?}`, then each commit framed as above. Applied in order through the single route's checks, stopping at the first that does not land; confirmed as replicated once; `{results: [{status, body}], released?}` with each result what the single route would have answered. `release` ends the caller's own command lease once every commit landed and is confirmed, never an explicit lease |
 | `GET partitions/{p}/commits?after=&limit=` | A partition's commits after a seq, and its head: catch-up |
-| `GET changes?cursor=&limit=` | Commits after a feed cursor in this namespace, filtered to what the caller may read |
+| `GET changes?cursor=&limit=&anchor*=` | Commits after a feed cursor in this namespace, filtered to what the caller may read; with `anchorNamespace`, `anchorPartition`, `anchorSeq` and `anchorTxnId`, also `anchor: {verdict}` (`held`, `unchecked`, `behind` with `serveHead`, `other-commit` with `serveTxnId`), checked as the caller would check it |
 | `GET base?after=&limit=` | The compacted base of this namespace, a page at a time, filtered to what the caller may read: `{point, entries, next?}` |
-| `POST locks` | `{lockKey, ttlMs?, waitMs?}`: serve's own lock on a behavior or a workflow run's claim, held for the caller: `201 {leaseId, lockKey, ttlMs, expiresAt}`, or `409 lock_held` |
+| `POST locks` | `{lockKey, ttlMs?, waitMs?, catchUp?}`: serve's own lock on a behavior or a workflow run's claim, held for the caller: `201 {leaseId, lockKey, ttlMs, expiresAt, catchUp?}`, or `409 lock_held`. With `catchUp: {cursor, anchor?}`, the grant carries the first changes page after `cursor` (up to 4 MiB, `more` when it stops early) and the anchor verdict, built as `GET changes` builds them for the caller; a compacted feed is answered as `refused`, and a page that cannot be read is left out, never failing the grant |
 | `PUT locks/{leaseId}` | `{ttlMs?}`: renews the caller's lease, authorised again; `404 lease_not_found` once it ended |
 | `DELETE locks/{leaseId}` | Releases the caller's lease; `404 lease_not_found` when it already ended |
 
 `{p}` is a canonical partition key, percent-encoded once more in the path.
+
+**Fewer round trips per write (swamp-club#4525).** A member's one-step write
+is a lock answered with the catch-up, then one `POST commits` carrying the
+write and ending the lease: two requests where it was eight. A workflow step
+is its start, its lock, and one batch of its data and run record; the run's
+opening record, evaluated workflow and snapshot share one batch, as do its
+report and final record. A serve without `commit-batch`, or whose replies lack
+the new fields, gets the requests of before: the client falls back on each
+field's absence, not only on the feature header, since a follower's forwarded
+reply carries its leader's header.
 
 **A commit request** is `application/vnd.swamp.commit+v1`: a 4-byte big-endian
 length, a JSON envelope `{expectedSeq, txnId, fence?, ops, chunks}`, then the
@@ -7493,14 +7504,36 @@ makes each commit durable until it lands.
    frame from the cache; any more go first as `PUT chunks/{sha256}?partition=`.
    No checkout upload ever omits the partition, so none needs `admin`.
 3. The envelope carries `expectedSeq`, `txnId` and `ops` only.
-4. On `{seq}`, or a duplicate's, the copy reads the partition from serve and
-   stores serve's stamped commit, never the one built locally.
+4. On `{seq}`, or a duplicate's, the copy stores serve's stamped commit,
+   never the one built locally: from the reply when its parent is the copy's
+   head commit (a different parent is divergence, as a read would find), by
+   reading the partition when the reply cannot say.
 5. On `409 stale_seq`, serve's head is recorded and the partition read, and
    the unit builds the commit again on the new head under the same txnId (up
    to `SERVE_SEQ_GAP_ATTEMPTS`).
 6. On `chunk_missing`, the named chunks are sent once more.
 
-`holdV3Writer` catches the copy up from serve before a command writes.
+7. A flush's groups go as one `POST commits` when serve takes batches: in a
+   round of distinct partitions in their order (run partitions last), each
+   group appending under its own partition lock while one batch per sink is
+   filled, so two batches never wait on each other's locks. Each commit's
+   outcome is handled as its single send's would be; one serve did not try
+   stays pending for the flush to decide, so a run commit is still held
+   behind a refusal. The flush that closes a hold (a step's lock flush, a
+   method run root's last checkpoint) names the command's lease, which serve
+   ends with the batch; the hold stops renewing first, and `ServeLock` sends
+   no `DELETE` for a lease serve ended.
+
+`holdV3Writer` catches the copy up from serve before a command writes. A
+changing `model method run` leaves it to its lock (`catchUpAtLock`), which
+serve answers with the catch-up, for a copy that has read the feed: the lock
+then applies the hold's offline rule (`goServeOfflineAt`), the run is judged
+by the offline rules again once the lock is held, the feed watch holds its own
+catch-up until the lock's applied and then reads only what is still missing,
+and the run is refused if its name now resolves to another definition than
+the locked one. A run that ends up taking no lock catches up first
+(`catchUpDeferred`). Managed-config adoption plans first and catches up only
+when it has something to commit.
 
 **Model locks.** A checkout picks a behavior's next data version from its
 own copy. Two machines' local file locks therefore let both pick the same
@@ -7512,6 +7545,11 @@ own locks, held through its lock routes (`ServeLock`,
 `src/infrastructure/datastore_v3/serve_lock.ts`; serve's side is
 `DatastoreLockLeases`, `src/serve/datastore_locks.ts`). The global datastore
 lock stays a local file lock.
+
+One HTTP client per serve and token holds every lock of the process, apart
+from the upload pool so a renewal never queues behind an upload; its pool
+opens another connection when one is busy, so a long acquire wait or a stalled
+renewal never holds up another lock's renewal.
 
 These routes are the base model leases (`p5-leases`, swamp-club#4121) extend,
 not a second mechanism beside them: a lease carries a fencing token that serve
@@ -7745,7 +7783,12 @@ own: every version lands, numbered 1 to N. With the serve lock replaced by the
 local one both fail with `version-live`, as the live test did.
 
 **Catch-up.** `ServeCatchUp` (`serve_catch_up.ts`) pages `GET changes` from
-the stored cursor and appends each commit verbatim. The cursor moves only once
+the stored cursor and appends each commit verbatim. The anchor is checked
+before any page is applied: by serve with the first page (or with a lock's
+page) where it answers a verdict, by its own partition read otherwise. A page
+a lock delivered is used only while the copy still stands where it was asked
+from. The feed watch's catch-up is aborted when the watch stops, so a
+command's exit never waits on it. The cursor moves only once
 a page is in the copy, so a crash between the two re-reads a page, whose
 commits are then duplicates. When a commit arrives past the copy's head + 1,
 the partition is read from serve first (`partitions/{p}/commits?after=`). That

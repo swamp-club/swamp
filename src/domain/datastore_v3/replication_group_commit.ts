@@ -19,7 +19,8 @@
 
 import { V3ReplicationError } from "./litestream_replication.ts";
 
-export type GroupSync = () => Promise<number | undefined>;
+/** `covering`: how many callers the sync confirms, queued behind the last one */
+export type GroupSync = (covering: number) => Promise<number | undefined>;
 
 interface Waiter {
   readonly mark: number;
@@ -57,7 +58,7 @@ export class ReplicationGroupCommit {
     this.#waiting = [];
     let sync: Promise<number | undefined>;
     try {
-      sync = this.#sync();
+      sync = this.#sync(covered.length);
     } catch (error) {
       sync = Promise.reject(error);
     }
