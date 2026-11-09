@@ -100,14 +100,14 @@ Deno.test("authenticateDelegatedToken: an ended, expired or unknown delegation a
 
 Deno.test("authenticateDelegatedToken: after a refresh both access tokens work until the old one expires", async () => {
   const issued = await issueDelegationTokens(consentedRecord(), T0);
-  const rotated = await refreshDelegation(
+  const refreshed = await refreshDelegation(
     issued.record,
     issued.tokens.refresh.value,
     T0 + 1000,
     delegationStanding(issued.record, T0, undefined),
   );
-  assert(rotated.kind === "rotated");
-  const lookup = lookupOf(rotated.record);
+  assert(refreshed.kind === "refreshed");
+  const lookup = lookupOf(refreshed.record);
   assert(
     (await authenticateDelegatedToken(
       issued.tokens.access.value,
@@ -118,7 +118,7 @@ Deno.test("authenticateDelegatedToken: after a refresh both access tokens work u
   );
   assert(
     (await authenticateDelegatedToken(
-      rotated.tokens.access.value,
+      refreshed.access.value,
       lookup,
       T0 + 2000,
     ))

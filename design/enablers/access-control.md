@@ -355,8 +355,11 @@ the request unread.
    secret, answers pending, refused (with its reason) or the tokens, once: issuing is
    a locked change from consented to issued, so racing redeems get one set and the
    rest `already_redeemed`.
-4. **Refresh**, `POST /api/v1/delegations/refresh`, rotates both tokens. Any refresh
-   token for the delegation other than the current one is a reuse and ends it.
+4. **Refresh**, `POST /api/v1/delegations/refresh`, mints a new access token and
+   keeps the refresh token. A wrong refresh token is refused with a reason and ends
+   nothing. A refused refresh answers `401 invalid_grant` with `reason`: `mismatch`,
+   `unknown`, `not_issued`, `not_admitted`, `ended`, `expired`, `superseded` or
+   `unreadable`; only `not_admitted` is a denial the link recovers from.
 5. **End**, `POST /api/v1/delegations/end`, with either token.
 
 Pending links live in the datastore, so a restart or a new leader carries them on.
@@ -368,15 +371,23 @@ link the app never redeems, serve ends after an hour.
 | Token          | Form                     | Life                                  |
 | -------------- | ------------------------ | ------------------------------------- |
 | Access         | `swda1.<delegation>.<hex>` | 1 hour, capped at the delegation's end |
-| Refresh        | `swdr1.<delegation>.<hex>` | Until used or the delegation ends     |
+| Refresh        | `swdr1.<delegation>.<hex>` | Until the delegation ends             |
 | Redeem secret  | `swdx1.<delegation>.<hex>` | Until redeemed                        |
 
 Each secret is 256 random bits. Only SHA-256 hashes are stored, compared in constant
 time. A delegation lasts 30 days from consent, never extended; the person links
-again after that. After a refresh the previous access token keeps working until it
-expires, so a follower whose copy is behind still answers. A refresh needs every
-live node to support links; if one does not, it answers 503 and neither rotates nor
-ends anything.
+again after that. The current access token and the two before it each work until
+they expire, so a follower whose copy is behind still answers and copies of an app
+that refresh at once each keep a working token. A node on an older build reads only
+the newest two. Links, redeem and refresh need every live node to advertise
+`delegation-links-2`; if one does not, they answer `team_not_ready` and nothing
+changes.
+
+The refresh token does not rotate. Every refresh already needs the integration's
+credential, so rotation adds little against a stolen refresh token, while rotation
+with reuse detection ends a link whenever two copies of an app refresh at once or a
+reply is lost, and forces every app to lock around refresh. Serve gives up
+detecting a reused refresh token; the pre-pilot security review weighs that.
 
 Tokens appear only in the redeem and refresh responses, sent `no-store`, never in
 logs, audit events, `--json` output or records;
@@ -483,7 +494,7 @@ person is used:
 
 - a login-issued server token (one with an OAuth identity, or an older one with
   a stored OAuth access token) or a delegated access token, when presented;
-- a delegated refresh token, before it is rotated;
+- a delegated refresh token, before a new access token is issued;
 - a token or delegation a run acts under, before auto-resume and on each run
   vault access check;
 - an open WebSocket session or health stream, by the session revalidation pass

@@ -200,16 +200,34 @@ export async function issueDelegationTokens(
 
 export type RefreshOutcome =
   | {
-    readonly kind: "rotated";
+    readonly kind: "refreshed";
     readonly record: DelegationRecord;
-    readonly tokens: IssuedTokens;
+    readonly access: IssuedSecret;
+    readonly accessExpiresAt: string;
   }
-  | { readonly kind: "reuse"; readonly record: DelegationRecord }
-  | { readonly kind: "refused"; readonly reason: string };
+  | { readonly kind: "refused"; readonly reason: RefreshRefusalReason };
+
+export const REFRESH_REFUSAL_REASONS = [
+  "mismatch",
+  "unknown",
+  "not_issued",
+  "not_admitted",
+  "ended",
+  "expired",
+  "superseded",
+  "unreadable",
+] as const satisfies readonly (
+  | "mismatch"
+  | "not_admitted"
+  | Exclude<DelegationStanding["kind"], "standing">
+)[];
+
+export type RefreshRefusalReason = typeof REFRESH_REFUSAL_REASONS[number];
 
 /**
- * any refresh token for this delegation that is not the current one is a
- * reuse, and ends it; only the integration's own credential gets this far
+ * the refresh token is kept for the delegation's life and needs the
+ * integration's credential, so a racing or repeated refresh is harmless and a
+ * wrong one is refused without ending anything
  */
 export async function refreshDelegation(
   record: DelegationRecord,
@@ -223,28 +241,39 @@ export async function refreshDelegation(
   if (
     !await delegatedSecretMatches(presentedRefresh, record.tokens.refreshHash)
   ) {
-    return {
-      kind: "reuse",
-      record: endDelegation(record, "refresh_reuse", nowMs),
-    };
+    return { kind: "refused", reason: "mismatch" };
   }
   if (standing.kind !== "standing") {
     return { kind: "refused", reason: standing.kind };
   }
-  const tokens = await newTokens(record.id, nowMs);
-  const accessExpiresAt = cappedExpiry(record, tokens.accessExpiresAt);
+  const access = await issueDelegatedSecret("access", record.id);
+  const accessExpiresAt = cappedExpiry(
+    record,
+    iso(nowMs + DELEGATED_ACCESS_LIFE_MS),
+  );
+  const current = record.tokens;
+  const older = current.previousAccessHash !== undefined &&
+      current.previousAccessExpiresAt !== undefined &&
+      Date.parse(current.previousAccessExpiresAt) > nowMs
+    ? [{
+      hash: current.previousAccessHash,
+      expiresAt: current.previousAccessExpiresAt,
+    }]
+    : undefined;
   return {
-    kind: "rotated",
-    tokens: { ...tokens, accessExpiresAt },
+    kind: "refreshed",
+    access,
+    accessExpiresAt,
     record: {
       ...record,
       tokens: {
-        accessHash: tokens.access.hash,
+        accessHash: access.hash,
         accessExpiresAt,
-        previousAccessHash: record.tokens.accessHash,
-        previousAccessExpiresAt: record.tokens.accessExpiresAt,
-        refreshHash: tokens.refresh.hash,
-        generation: record.tokens.generation + 1,
+        previousAccessHash: current.accessHash,
+        previousAccessExpiresAt: current.accessExpiresAt,
+        ...(older !== undefined ? { olderAccess: older } : {}),
+        refreshHash: current.refreshHash,
+        generation: current.generation + 1,
       },
       updatedAt: iso(nowMs),
     },
@@ -342,21 +371,48 @@ export function delegationStanding(
   }
 }
 
-/** the current access token, or the one before it until it expires */
+/** the newest access token first, the legacy fields before olderAccess */
+function accessSlots(
+  tokens: NonNullable<DelegationRecord["tokens"]>,
+): { hash: string; expiresAt: string }[] {
+  const slots = [{
+    hash: tokens.accessHash,
+    expiresAt: tokens.accessExpiresAt,
+  }];
+  if (
+    tokens.previousAccessHash !== undefined &&
+    tokens.previousAccessExpiresAt !== undefined
+  ) {
+    slots.push({
+      hash: tokens.previousAccessHash,
+      expiresAt: tokens.previousAccessExpiresAt,
+    });
+  }
+  return [...slots, ...(tokens.olderAccess ?? [])];
+}
+
+/** the current access token, or one of the two before it until each expires */
 export async function accessTokenMatches(
   record: DelegationRecord,
   presented: string,
   nowMs: number,
 ): Promise<boolean> {
-  const tokens = record.tokens;
-  if (tokens === undefined) return false;
-  if (
-    Date.parse(tokens.accessExpiresAt) > nowMs &&
-    await delegatedSecretMatches(presented, tokens.accessHash)
-  ) return true;
-  return tokens.previousAccessExpiresAt !== undefined &&
-    Date.parse(tokens.previousAccessExpiresAt) > nowMs &&
-    await delegatedSecretMatches(presented, tokens.previousAccessHash);
+  if (record.tokens === undefined) return false;
+  for (const slot of accessSlots(record.tokens)) {
+    if (
+      Date.parse(slot.expiresAt) > nowMs &&
+      await delegatedSecretMatches(presented, slot.hash)
+    ) return true;
+  }
+  return false;
+}
+
+/** any access token the record still holds, expired or not, for ending a link */
+export async function accessTokenHeld(
+  record: DelegationRecord,
+  presented: string,
+): Promise<boolean> {
+  return await accessTokenExpiry(record, presented) !== undefined;
 }
 
 /** the expiry of whichever access token matched, for closing its socket */
@@ -364,13 +420,11 @@ export async function accessTokenExpiry(
   record: DelegationRecord,
   presented: string,
 ): Promise<string | undefined> {
-  const tokens = record.tokens;
-  if (tokens === undefined) return undefined;
-  if (await delegatedSecretMatches(presented, tokens.accessHash)) {
-    return tokens.accessExpiresAt;
-  }
-  if (await delegatedSecretMatches(presented, tokens.previousAccessHash)) {
-    return tokens.previousAccessExpiresAt;
+  if (record.tokens === undefined) return undefined;
+  for (const slot of accessSlots(record.tokens)) {
+    if (await delegatedSecretMatches(presented, slot.hash)) {
+      return slot.expiresAt;
+    }
   }
   return undefined;
 }

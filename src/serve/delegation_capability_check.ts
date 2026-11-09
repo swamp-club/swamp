@@ -23,7 +23,8 @@ import {
   InstanceHeartbeatService,
 } from "./instance_heartbeat.ts";
 
-export const DELEGATION_LINKS_CAPABILITY = "delegation-links-1";
+// a node that rotates refresh tokens would end a link on a racing refresh
+export const DELEGATION_LINKS_CAPABILITY = "delegation-links-2";
 
 export type DelegationCapability =
   | { readonly ok: true }
