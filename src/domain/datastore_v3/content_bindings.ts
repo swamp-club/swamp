@@ -582,7 +582,8 @@ function haltMismatch(
     if (
       !steps.some((step) => step.status === "skipped" && step.settledByAbort) ||
       steps.some((step) =>
-        step.status !== "succeeded" && step.status !== "skipped"
+        step.status !== "succeeded" && step.status !== "skipped" &&
+        !(step.status === "failed" && step.allowedFailure)
       )
     ) {
       return `holds lane '${worker}', which started`;

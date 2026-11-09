@@ -225,7 +225,7 @@ const FanOutSnapshotSchema = z.object({
 
 export type FanOutSnapshot = z.infer<typeof FanOutSnapshotSchema>;
 
-// a rollout stopped by its failure budget; batch indexes the frozen plan's batches
+// a halted rollout; batch is the first frozen batch that holds a held lane
 const FanOutHaltSchema = z.object({
   batch: z.number().int().nonnegative(),
   maxFailures: z.number().int().nonnegative(),

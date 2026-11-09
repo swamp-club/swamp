@@ -3276,8 +3276,8 @@ batch and no budget runs every lane at once, as a job without `rollout` does.
   outcome is read when its stream ends. Once failed lanes exceed `maxFailures`,
   no lane starts, even in the middle of a batch; lanes already running finish,
   so a patch is never cut off halfway.
-- Every lane that never started is held. `JobRun.haltFanOut` skips its steps
-  as `job_skipped` and marks them `settledByAbort`, records the halt in
+- Every lane that never started is held. `JobRun.haltFanOut` skips its pending
+  steps as `job_skipped` and marks them `settledByAbort`, records the halt in
   `fanOutHalts`, and fails the job, all in one call, so no save in between can
   hold half a halt. The skip reason enum cannot grow without older binaries
   refusing the record, which is why held lanes reuse `job_skipped`; the halt
@@ -3289,9 +3289,12 @@ batch and no budget runs every lane at once, as a job without `rollout` does.
   `content_bindings.ts`): an entry is appended once, in the record where its
   job turns failed, and never changed or dropped after. The entry must carry
   the plan's budget and more failed lanes than it, a batch the plan holds, and
-  only lanes of the plan. Every held lane's steps must be skipped and
-  `settledByAbort`, and every failed lane must read as failed in that same
-  record. A resume orders lanes by the entry, so a forwarded record cannot
+  only lanes of the plan. A held lane must hold a step skipped as
+  `settledByAbort` and no step that is pending, running, waiting, unknown or a
+  failure that counts; steps a resumed lane finished before (succeeded,
+  skipped, or failed under `allowFailure`) stay. Every failed lane must read as
+  failed in that same record. The entry's `batch` is the first frozen batch
+  that holds a held lane. A resume orders lanes by the entry, so a forwarded record cannot
   reorder one.
 - A resume continues the rollout with a fresh budget: only failures in the
   resumed attempt count. `resumeRollout` runs the lanes the last halt failed

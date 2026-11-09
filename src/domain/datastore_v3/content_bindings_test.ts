@@ -1228,3 +1228,32 @@ Deno.test("judgeRunRecord: a held lane may keep a step it finished in an earlier
     );
   }
 });
+
+Deno.test("judgeRunRecord: a held lane may keep an allowed failure from an earlier attempt, but not a failure that counts or an unknown step", () => {
+  const before = rolloutRun("running", [
+    step("apply[w-a]", { status: "failed" }),
+    step("apply[w-b]", { status: "failed", allowedFailure: true }),
+    step("verify[w-b]"),
+    step("verify[w-c]"),
+  ]);
+  const halted = (wb: StepRunData) =>
+    judge(
+      before,
+      rolloutRun("failed", [
+        step("apply[w-a]", { status: "failed" }),
+        wb,
+        step("verify[w-b]", HELD),
+        step("verify[w-c]", HELD),
+      ], [CANARY_HALT]),
+    ).refusal;
+  assertEquals(
+    halted(step("apply[w-b]", { status: "failed", allowedFailure: true })),
+    undefined,
+  );
+  for (const kept of [{ status: "failed" }, { status: "unknown" }] as const) {
+    assertStringIncludes(
+      halted(step("apply[w-b]", kept)) ?? "",
+      "holds lane 'w-b', which started",
+    );
+  }
+});

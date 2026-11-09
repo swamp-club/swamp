@@ -5935,7 +5935,9 @@ export class WorkflowExecutionService {
         held = end.held;
         jobRun.haltFanOut(
           {
-            batch: frozen.batches.findIndex((batch) => batch.includes(held[0])),
+            batch: frozen.batches.findIndex((batch) =>
+              batch.some((worker) => held.includes(worker))
+            ),
             maxFailures: frozen.maxFailures!,
             failed,
             held,
