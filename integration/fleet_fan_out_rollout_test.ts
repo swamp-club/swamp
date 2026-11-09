@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import "../src/domain/models/models.ts";
 import type { WorkflowExecutionEvent } from "../src/domain/workflows/execution_events.ts";
+import { Workflow } from "../src/domain/workflows/workflow.ts";
 import type { WorkflowRunData } from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
@@ -529,5 +530,66 @@ Deno.test({
       counts([["w-1", 2], ["w-2", 1], ["w-3", 1]]),
     );
     assertEquals(batchLanes(events), [["w-1"], ["w-2", "w-3"]]);
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out rollout: a resume that halts again holds a failed-first lane whose earlier step already succeeded, keeping that step",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    const w = await workers(fleet, 3);
+    const failVerify = (worker: FleetWorker) => {
+      worker.behavior = {
+        kind: "fail",
+        error: "verify broke",
+        steps: [`verify[${worker.name}]`],
+      };
+    };
+    failVerify(w[0]);
+    failVerify(w[1]);
+    const steps = [{ name: "apply" }, { name: "verify", after: "apply" }];
+    const rollout = { batches: [2, "100%"], maxFailures: 0 };
+    const workflow = await fleet.saveWorkflow({
+      name: "rehalt",
+      inputs: {},
+      jobs: [rolloutJob(fleet, rollout, steps)],
+    });
+    const run = await fleet.runWorkflow("rehalt");
+    assertEquals(run.status, "failed");
+    assertEquals(
+      (await recordOf(fleet, "rehalt", run.id)).jobs[0].fanOutHalts,
+      [{ batch: 1, maxFailures: 0, failed: ["w-1", "w-2"], held: ["w-3"] }],
+    );
+
+    // one lane at a time, so w-1 fails and halts before w-2 starts
+    await fleet.repoContext.workflowRepo.save(
+      Workflow.fromData(
+        {
+          id: workflow.id,
+          name: workflow.name,
+          inputs: {},
+          jobs: [rolloutJob(fleet, rollout, steps, { concurrency: 1 })],
+        } as Parameters<typeof Workflow.fromData>[0],
+      ),
+    );
+    const retried = await fleet.retryRun("rehalt", run.id);
+
+    assertEquals(retried.status, "failed");
+    const data = await recordOf(fleet, "rehalt", run.id);
+    const statuses = stepStatuses(data);
+    assertEquals(statuses["patch/apply[w-2]"], "succeeded");
+    assertEquals(statuses["patch/verify[w-2]"], "skipped");
+    assertEquals(data.jobs[0].fanOutHalts?.[1], {
+      batch: 0,
+      maxFailures: 0,
+      failed: ["w-1"],
+      held: ["w-2", "w-3"],
+    });
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 3], ["w-2", 2], ["w-3", 0]]),
+    );
   },
 });

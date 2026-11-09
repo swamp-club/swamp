@@ -5888,6 +5888,7 @@ export class WorkflowExecutionService {
     const stepsOfLane = (worker: string) =>
       job.steps.map((step) => jobRun.getStep(laneStepName(step.name, worker))!);
     let held: string[] = [];
+    let attemptFailed: number | undefined;
     if (!rollout) {
       for await (
         const event of mergeWithConcurrency(
@@ -5926,11 +5927,12 @@ export class WorkflowExecutionService {
           lanes: [...batchLanes],
         }),
       });
+      const failed = batches.flat().filter((worker) =>
+        laneFailed(stepsOfLane(worker))
+      );
+      attemptFailed = failed.length;
       if (end.kind === "halted") {
         held = end.held;
-        const failed = batches.flat().filter((worker) =>
-          laneFailed(stepsOfLane(worker))
-        );
         jobRun.haltFanOut(
           {
             batch: frozen.batches.findIndex((batch) => batch.includes(held[0])),
@@ -5938,8 +5940,10 @@ export class WorkflowExecutionService {
             failed,
             held,
           },
+          // a resumed lane keeps the steps it finished before its failed one
           held.flatMap((worker) =>
-            job.steps.map((step) => laneStepName(step.name, worker))
+            stepsOfLane(worker).filter((step) => step.status === "pending")
+              .map((step) => step.stepName)
           ),
         );
         yield {
@@ -6006,7 +6010,12 @@ export class WorkflowExecutionService {
       failedAtPlan: membersOf(members, "failed"),
       ...(rollout ? { held } : {}),
       ...(rollout && frozen.maxFailures !== null
-        ? { budget: { used: failedLanes, allowed: frozen.maxFailures } }
+        ? {
+          budget: {
+            used: attemptFailed ?? failedLanes,
+            allowed: frozen.maxFailures,
+          },
+        }
         : {}),
     };
     if (fanOutJobFailed(members, failedLanes)) {

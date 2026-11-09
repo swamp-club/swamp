@@ -576,11 +576,14 @@ function haltMismatch(
       return `names '${worker}', not a lane of the plan`;
     }
   }
+  // a resumed lane keeps the steps it finished before its failed one
   for (const worker of halt.held) {
     const steps = records.get(worker)!;
     if (
-      steps.length === 0 ||
-      !steps.every((step) => step.status === "skipped" && step.settledByAbort)
+      !steps.some((step) => step.status === "skipped" && step.settledByAbort) ||
+      steps.some((step) =>
+        step.status !== "succeeded" && step.status !== "skipped"
+      )
     ) {
       return `holds lane '${worker}', which started`;
     }

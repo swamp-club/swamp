@@ -72,9 +72,7 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
         let starts = 0;
         const start = (lane: string) =>
           (async function* () {
-            // nothing starts once failures pass the budget
             if (maxFailures !== null) assert(failed.size <= maxFailures);
-            // every lane of an earlier batch has settled
             for (const other of lanes) {
               if (batchOf.get(other)! < batchOf.get(lane)!) {
                 assert(settled.has(other), `${lane} started before ${other}`);
@@ -127,7 +125,6 @@ Deno.test("runRolloutLanes: batches settle in order, nothing starts past the bud
         }
         assertEquals(new Set(started).size, started.length);
         for (const lane of started) assert(settled.has(lane));
-        // batch events come once each, in order, before their lanes' steps
         const announced = seen.filter((e) => e.kind === "batch")
           .map((e) => (e as { batch: number }).batch);
         assertEquals(announced, [...announced].sort((a, b) => a - b));

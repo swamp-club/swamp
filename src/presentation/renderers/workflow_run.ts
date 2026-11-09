@@ -1603,7 +1603,9 @@ function fanOutPlanLines(e: FanOutPlanned): string[] {
       } ${dim("-")} ${
         e.maxFailures === null || e.maxFailures === undefined
           ? "no failure budget"
-          : `halts past ${e.maxFailures} failed lane${
+          : e.maxFailures === 0
+          ? "halts on the first failed lane"
+          : `tolerates ${e.maxFailures} failed lane${
             e.maxFailures === 1 ? "" : "s"
           }`
       }`,
@@ -1670,7 +1672,7 @@ function fanOutSummaryText(
       ? [yellow(`${e.held.length} held (${e.held.join(", ")})`)]
       : []),
     ...(e.budget !== undefined
-      ? [`budget ${e.budget.used}/${e.budget.allowed} failed lanes`]
+      ? [`budget: ${e.budget.used} failed, ${e.budget.allowed} allowed`]
       : []),
   ].join(dim(" - "));
 }

@@ -1190,3 +1190,41 @@ Deno.test("judgeRunRecord: a resumed attempt may append a second halt after the 
     undefined,
   );
 });
+
+Deno.test("judgeRunRecord: a held lane may keep a step it finished in an earlier attempt, but not one that failed, runs or waits", () => {
+  const withW_B = (wb: StepRunData[]) =>
+    rolloutRun("failed", [
+      step("apply[w-a]", { status: "failed" }),
+      ...wb,
+      step("verify[w-c]", HELD),
+    ], [CANARY_HALT]);
+  const before = rolloutRun("running", [
+    step("apply[w-a]", { status: "failed" }),
+    step("apply[w-b]", { status: "succeeded" }),
+    step("verify[w-b]"),
+    step("verify[w-c]"),
+  ]);
+  assertEquals(
+    judge(
+      before,
+      withW_B([
+        step("apply[w-b]", { status: "succeeded" }),
+        step("verify[w-b]", HELD),
+      ]),
+    ).refusal,
+    undefined,
+  );
+  for (const other of ["failed", "running", "pending"] as const) {
+    assertStringIncludes(
+      judge(
+        before,
+        withW_B([
+          step("apply[w-b]", { status: "succeeded" }),
+          step("verify[w-b]", HELD),
+          step("check[w-b]", { status: other }),
+        ]),
+      ).refusal ?? "",
+      "holds lane 'w-b', which started",
+    );
+  }
+});

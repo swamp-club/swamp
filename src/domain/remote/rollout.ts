@@ -83,10 +83,7 @@ export function planBatches(
   return batches;
 }
 
-/**
- * a resumed attempt's batches: the lanes the last halt failed run first, then
- * the rest in the frozen plan's batches; lanes not re-run are left out
- */
+// lanes the last halt failed run first; lanes not re-run are left out
 export function resumeRollout(
   batches: readonly (readonly string[])[],
   rerun: ReadonlySet<string>,

@@ -287,11 +287,11 @@ Deno.test("ConsoleWorkflowRunRenderer: a rollout shows its batches and budget, e
     /rollout|batch |resume|fan-out - 3/.test(line)
   ).map((line) => line.replace(/^.*?│ /, ""));
   assertEquals(rollout, [
-    "rollout - batches: [w-a] [w-b, w-c] - halts past 0 failed lanes",
+    "rollout - batches: [w-a] [w-b, w-c] - halts on the first failed lane",
     "resume - re-run: w-a, w-b, w-c - kept: none - held before: w-b, w-c",
     "batch 1/2 - w-a",
     "rollout halted - 1 failed (w-a), past a budget of 0 - held: w-b, w-c",
-    "fan-out - 3 matching - 0 succeeded, 1 failed - 0 excluded - 0 skipped - 2 held (w-b, w-c) - budget 1/0 failed lanes",
+    "fan-out - 3 matching - 0 succeeded, 1 failed - 0 excluded - 0 skipped - 2 held (w-b, w-c) - budget: 1 failed, 0 allowed",
   ]);
 });
 

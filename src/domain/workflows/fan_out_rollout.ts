@@ -25,9 +25,9 @@ import {
 
 export interface RolloutLanes<T> {
   readonly rollout: PlannedRollout;
-  /** lanes that failed before they could start: counted, never started */
+  /** count against the budget and are never started */
   readonly failedBeforeStart?: Iterable<string>;
-  /** a positive limit caps the lanes in flight */
+  /** a positive limit caps the lanes in flight; otherwise there is none */
   readonly limit: number | undefined;
   readonly signal?: AbortSignal;
   start(lane: string): AsyncIterable<T>;
@@ -142,7 +142,7 @@ export async function* runRolloutLanes<T>(
       }
     }
   } finally {
-    // only reached with lanes running when the consumer stopped early
+    // drains are still running only when the consumer stopped early
     await Promise.allSettled(drains);
   }
   if (laneError !== undefined) throw laneError.cause;
