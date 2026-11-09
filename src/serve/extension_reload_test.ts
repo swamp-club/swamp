@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { z } from "zod";
 import { ensureDir } from "@std/fs";
 import { withMockedCommand } from "@swamp-club/swamp-testing";
@@ -753,6 +753,84 @@ Deno.test("performServeReload: webhookUpdater error is soft failure", async () =
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
+});
+
+async function reloadWithWebhooksYaml(
+  webhooksYaml: string,
+  configPath?: string,
+): Promise<{
+  result: Awaited<ReturnType<typeof performServeReload>>;
+  updaterCalls: number;
+  configFile: string;
+}> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const configFile = configPath === undefined
+      ? join(tmpDir, ".swamp", "serve.yaml")
+      : join(tmpDir, configPath);
+    await Deno.mkdir(dirname(configFile), { recursive: true });
+    await Deno.writeTextFile(configFile, `webhooks:${webhooksYaml}\n`);
+    let updaterCalls = 0;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        webhookUpdater: (configs) => {
+          updaterCalls++;
+          return Promise.resolve({ changed: configs.length, warnings: [] });
+        },
+        ...(configPath === undefined ? {} : { configPath: configFile }),
+      },
+    );
+    return { result, updaterCalls, configFile };
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("performServeReload: refuses webhook entries boot would refuse without calling the updater", async () => {
+  const cases: Array<[string, string]> = [
+    [
+      `\n  - route: hooks/gh\n    workflow: deploy\n    secret: s\n`,
+      "route must start with '/'",
+    ],
+    [
+      `\n  - route: /hooks/gh\n    workflow: deploy\n    secret: s\n    scheme: generic\n`,
+      "generic scheme requires a header name",
+    ],
+    [
+      `\n  - route: /hooks/gh\n    workflow: deploy\n    secret: s\n    scheme: nonsense\n`,
+      "scheme must be one of",
+    ],
+  ];
+  for (const [yaml, reason] of cases) {
+    const { result, updaterCalls } = await reloadWithWebhooksYaml(yaml);
+    assertEquals(updaterCalls, 0);
+    assertEquals(result.webhooksReloaded, 0);
+    assertEquals(result.errors.length, 1);
+    assertStringIncludes(result.errors[0], "Failed to reload webhook config");
+    assertStringIncludes(result.errors[0], "Invalid webhook at index 0");
+    assertStringIncludes(result.errors[0], reason);
+  }
+});
+
+Deno.test("performServeReload: a webhooks value that is not a list is refused rather than clearing the routes", async () => {
+  for (const yaml of [" null", "\n  route: /hooks/gh\n"]) {
+    const { result, updaterCalls } = await reloadWithWebhooksYaml(yaml);
+    assertEquals(updaterCalls, 0);
+    assertEquals(result.webhooksReloaded, 0);
+    assertStringIncludes(result.errors[0], "Failed to reload webhook config");
+    assertStringIncludes(result.errors[0], "expected array");
+  }
+});
+
+Deno.test("performServeReload: a webhook refusal names the custom config path", async () => {
+  const { result, updaterCalls, configFile } = await reloadWithWebhooksYaml(
+    `\n  - route: hooks/gh\n    workflow: deploy\n    secret: s\n`,
+    join("conf", "custom-serve.yaml"),
+  );
+  assertEquals(updaterCalls, 0);
+  assertStringIncludes(result.errors[0], configFile);
 });
 
 Deno.test("performServeReload: shares config read between triggers and webhooks", async () => {

@@ -69,7 +69,11 @@ import {
 } from "../infrastructure/persistence/paths.ts";
 import { resolveModelsDir } from "../cli/resolve_models_dir.ts";
 import type { ServeReloadResponse } from "./protocol.ts";
-import { readServeConfigFile } from "./serve_config.ts";
+import {
+  readServeConfigFile,
+  SERVE_CONFIG_PATH,
+  validateWebhookEntries,
+} from "./serve_config.ts";
 import type { TriggerOverride } from "../libswamp/workflows/scheduled_execution.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
@@ -949,9 +953,12 @@ async function runServeReload(
 
     if (options?.webhookUpdater && !configReadFailed) {
       try {
-        const webhookResult = await options.webhookUpdater(
-          config?.webhooks ?? [],
+        // a refusal skips the updater, so the previous route table stays
+        const entries = validateWebhookEntries(
+          config?.webhooks,
+          options?.configPath ?? join(repoDir, SERVE_CONFIG_PATH),
         );
+        const webhookResult = await options.webhookUpdater(entries);
         webhooksReloaded = webhookResult.changed;
         for (const warning of webhookResult.warnings) warnings.push(warning);
       } catch (err) {
