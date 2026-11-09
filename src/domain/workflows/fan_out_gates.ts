@@ -105,7 +105,11 @@ export function gateApproved(step: StepRunData | undefined): boolean {
     step.approvalDecision?.approved === true;
 }
 
-function laneResult(worker: string, steps: StepRunData[]): FanOutCanaryLane {
+function laneResult(
+  worker: string,
+  steps: StepRunData[],
+  mask: (text: string) => string,
+): FanOutCanaryLane {
   const failed = laneFailed(
     steps.map((step) => ({
       status: step.status,
@@ -119,23 +123,25 @@ function laneResult(worker: string, steps: StepRunData[]): FanOutCanaryLane {
       step.status === "failed" && !step.allowedFailure
     ).map((step) => ({
       step: step.stepName,
-      ...(step.error !== undefined ? { error: step.error } : {}),
+      ...(step.error !== undefined ? { error: mask(step.error) } : {}),
     })),
     assertions: steps.flatMap((step) =>
       step.assertResult !== undefined && !step.assertResult.passed
         ? [{
           step: step.stepName,
           severity: step.assertResult.severity,
-          message: step.assertResult.message,
+          message: mask(step.assertResult.message),
         }]
         : []
     ),
   };
 }
 
+/** step errors and assertion messages are the run's text, masked as its prompt is */
 export function fanOutGatePrompt(
   job: GateJob,
   gate: FanOutGateKind,
+  mask: (text: string) => string = (text) => text,
 ): FanOutGatePrompt | undefined {
   const plan = job.fanOutPlan;
   if (plan === undefined) return undefined;
@@ -162,7 +168,7 @@ export function fanOutGatePrompt(
   }
   const records = laneRecords(job.steps, plan.lanes);
   const lanes = (plan.batches[0] ?? []).map((worker) =>
-    laneResult(worker, records.get(worker) ?? [])
+    laneResult(worker, records.get(worker) ?? [], mask)
   );
   return {
     ...base,

@@ -22,6 +22,7 @@ import type { DataHandle } from "../models/model.ts";
 import type { EnvVarUsageDetail } from "../models/validation_service.ts";
 import type { AssertSeverity } from "./step_task.ts";
 import type { FanOutGatePrompt } from "./fan_out_gates.ts";
+import type { FanOutGateKind } from "../remote/fan_out.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { WorkflowRun } from "./workflow_run.ts";
 
@@ -84,7 +85,7 @@ export type WorkflowExecutionEvent =
     batches?: string[][];
     maxFailures?: number | null;
     /** set when the plan holds approval gates: the kinds it holds */
-    approve?: ("plan" | "canary")[];
+    approve?: FanOutGateKind[];
     /**
      * set on a resume: the lanes that run again and those whose result stands;
      * for a rollout, held names the re-run lanes the last halt held

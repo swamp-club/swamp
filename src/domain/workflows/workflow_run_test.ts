@@ -4253,7 +4253,7 @@ Deno.test("JobRun.rejectFanOutGate: records the rejection, holds every lane stil
   assertEquals(job.getStep("apply[host-a]")!.status, "succeeded");
   assertEquals(job.status, "failed");
   assertEquals(job.getStep("patch[approve-plan]")!.status, "succeeded");
-  // no schema change: the failed gate is the record of the rejection
+  // the failed gate is the record of the rejection
   assertEquals("fanOutHalts" in job.toData(), false);
 });
 

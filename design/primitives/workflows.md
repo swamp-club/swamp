@@ -3351,8 +3351,10 @@ job, named in the lane form: `patch[approve-plan]` and
   with every lane re-run, and `resumedLaneVerdict` judges each lane, so under
   `offline: skip` or `fail` a host that left during the wait fails at once.
   An approved gate is not asked again, including on a resume after a later
-  halt; a retry with `--from` that runs the job again from its start, keeping
-  no lane, asks it again.
+  halt; a retry with `--from` that resets every lane record of the job asks it
+  again. A canary that failed within the budget before its gate was approved
+  stays counted: the continuation seeds the budget with failed kept lanes,
+  and a halt names them among its failed lanes.
 - Reject calls `JobRun.rejectFanOutGate`: the decision, the failed gate, every
   lane with a step still to run held (`job_skipped`, `settledByAbort`) and the
   failed job, in one call. No `fanOutHalts` entry is written: that entry only

@@ -230,3 +230,26 @@ Deno.test("fanOutGatePrompt: none without a plan", () => {
     undefined,
   );
 });
+
+Deno.test("fanOutGatePrompt: canary errors and assertion messages pass through the run's mask", () => {
+  const prompt = fanOutGatePrompt(
+    gatedJob([
+      step("apply[a]", "failed", { error: "token s3cret refused" }),
+      step("check[a]", "succeeded", {
+        assertResult: {
+          passed: false,
+          expr: "x",
+          message: "saw s3cret",
+          severity: "high",
+        },
+      }),
+    ]),
+    "canary",
+    (text) => text.replaceAll("s3cret", "***"),
+  )!;
+  assertEquals(
+    prompt.canary!.lanes[0].failedSteps[0].error,
+    "token *** refused",
+  );
+  assertEquals(prompt.canary!.lanes[0].assertions[0].message, "saw ***");
+});

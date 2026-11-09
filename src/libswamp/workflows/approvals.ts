@@ -305,7 +305,7 @@ export async function* workflowApprovals(
 
           const gate = fanOutGateOf(waiting.jobName, waiting.stepName);
           const fanOutGate = gate !== undefined && job !== undefined
-            ? fanOutGatePrompt(job.toData(), gate)
+            ? fanOutGatePrompt(job.toData(), gate, (text) => run.mask(text))
             : undefined;
           // One unreadable parent must not fail the whole listing.
           const verdict = parentRun && parentWaiting === false

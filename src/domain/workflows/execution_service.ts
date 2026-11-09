@@ -1232,7 +1232,7 @@ function suspendedEventFor(
     const stepRun = jobRun?.getStep(waiting.stepName);
     const gate = fanOutGateOf(waiting.jobName, waiting.stepName);
     const fanOutGate = gate !== undefined && jobRun !== undefined
-      ? fanOutGatePrompt(jobRun.toData(), gate)
+      ? fanOutGatePrompt(jobRun.toData(), gate, (text) => run.mask(text))
       : undefined;
     return {
       kind: "suspended",
@@ -5991,12 +5991,17 @@ export class WorkflowExecutionService {
       );
       const canaryGate = jobRun.getStep(fanOutGateName(job.name, "canary"));
       const canary = new Set(frozen.batches[0] ?? []);
+      // a retry re-runs failed lanes, so a failed kept lane is this attempt's:
+      // a canary that failed within the budget before its gate was approved
+      const keptFailed = lanes.filter((worker) =>
+        !rerun.includes(worker) && laneFailed(stepsOfLane(worker))
+      );
       const end = yield* runRolloutLanes<WorkflowExecutionEvent>({
         rollout: { batches, maxFailures: frozen.maxFailures },
         held: (worker) =>
           canaryGate !== undefined && !canary.has(worker) &&
           !gateApproved(canaryGate.toData()),
-        failedBeforeStart,
+        failedBeforeStart: [...keptFailed, ...failedBeforeStart],
         limit: laneLimit,
         signal: options.signal,
         start: (worker) => laneStreams.get(worker)!(),
@@ -6020,9 +6025,10 @@ export class WorkflowExecutionService {
         );
         return;
       }
-      const failed = batches.flat().filter((worker) =>
-        laneFailed(stepsOfLane(worker))
-      );
+      const failed = [
+        ...keptFailed,
+        ...batches.flat().filter((worker) => laneFailed(stepsOfLane(worker))),
+      ];
       attemptFailed = failed.length;
       if (end.kind === "halted") {
         held = end.held;
@@ -6148,6 +6154,11 @@ export class WorkflowExecutionService {
   ): Generator<WorkflowExecutionEvent> {
     const stepName = fanOutGateName(job.name, gate);
     const stepRun = jobRun.getStep(stepName)!;
+    if (stepRun.status !== "pending" && stepRun.status !== "waiting_approval") {
+      throw new Error(
+        `Gate '${stepName}' of job '${job.name}' cannot open: it is ${stepRun.status}`,
+      );
+    }
     const timeout = job.fanOutPolicy?.rollout?.approveTimeout;
     const prompt = fanOutGatePromptLine(job.name, gate);
     // a gate asked again waits from a new start, as a manual_approval does
@@ -6158,7 +6169,11 @@ export class WorkflowExecutionService {
       jobId: job.name,
       stepId: stepName,
     };
-    const data = fanOutGatePrompt(jobRun.toData(), gate);
+    const data = fanOutGatePrompt(
+      jobRun.toData(),
+      gate,
+      (text) => run.mask(text),
+    );
     yield {
       kind: "approval_requested",
       runId: run.id,

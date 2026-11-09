@@ -182,7 +182,6 @@ Deno.test({
     );
     assertEquals(batchLanes(resumeEvents), [["w-1"], ["w-2", "w-3"]]);
     assertEquals(approvalRequests(resumeEvents), []);
-    // the continuation runs on the stored plan, as any resume does
     const planned = resumeEvents.find((e) => e.kind === "job_fanout_planned");
     assert(planned?.kind === "job_fanout_planned");
     assertEquals(planned.resumed?.rerun, ["w-1", "w-2", "w-3"]);
@@ -396,7 +395,6 @@ Deno.test({
     );
     const data = await recordOf(fleet, "gated", run.id);
     const statuses = stepStatuses(data);
-    // held with the lanes, never asked
     assertEquals(statuses[`patch/${CANARY}`], "skipped");
     assertEquals(
       data.jobs[0].steps.find((s) => s.stepName === CANARY)?.settledByAbort,
@@ -404,7 +402,6 @@ Deno.test({
     );
     assertEquals(data.jobs[0].fanOutHalts?.[0].held, ["w-2", "w-3"]);
 
-    // fixed and retried: the canary runs again, then the gate opens
     w[0].behavior = { kind: "succeed" };
     const retryEvents: WorkflowExecutionEvent[] = [];
     const retried = await fleet.retryRun("gated", run.id, {
@@ -476,7 +473,6 @@ Deno.test({
     });
     const run = await fleet.runWorkflow("gated");
     assertEquals(run.status, "suspended");
-    // the gate has waited past its timeout
     const data = await fleet.runRecord(workflow, run.id);
     const gate = data.jobs[0].steps.find((s) => s.stepName === PLAN)!;
     gate.startedAt = new Date(Date.now() - 120_000).toISOString();
@@ -599,7 +595,6 @@ Deno.test({
         REPORT,
       ],
     });
-    // approve both gates, halt in batch 2, fix and retry
     w[1].behavior = { kind: "fail", error: "broke" };
     const first = await fleet.runWorkflow("gated");
     await decide(first.id, PLAN, true);
@@ -611,7 +606,6 @@ Deno.test({
       (await fleet.retryRun("gated", first.id)).status,
       "succeeded",
     );
-    // a rejection at the canary gate
     const second = await fleet.runWorkflow("gated");
     await decide(second.id, PLAN, true);
     await fleet.resumeRun("gated", second.id);
@@ -665,5 +659,80 @@ Deno.test({
       PLAN,
       "apply[w-1]",
     ]);
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out approval: a canary failure within the budget still counts after the canary is approved",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    const w = await workers(fleet, 4);
+    w[0].behavior = { kind: "fail", error: "canary broke" };
+    w[1].behavior = { kind: "fail", error: "w-2 broke" };
+    await fleet.saveWorkflow({
+      name: "gated",
+      inputs: {},
+      jobs: [gatedJob(fleet, {
+        batches: [1, 1, "100%"],
+        maxFailures: 1,
+        approve: ["canary"],
+      })],
+    });
+    const run = await fleet.runWorkflow("gated");
+    assertEquals(run.status, "suspended");
+    await fleet.decideGate("gated", run.id, CANARY, true);
+    const events: WorkflowExecutionEvent[] = [];
+    const resumed = await fleet.resumeRun("gated", run.id, { events });
+
+    assertEquals(resumed.status, "failed");
+    assertEquals(
+      fleet.dispatchCounts(),
+      counts([["w-1", 1], ["w-2", 1], ["w-3", 0], ["w-4", 0]]),
+    );
+    const halted = events.find((e) => e.kind === "job_fanout_halted");
+    assert(halted?.kind === "job_fanout_halted");
+    assertEquals(halted.failed, ["w-1", "w-2"]);
+    assertEquals(halted.held, ["w-3", "w-4"]);
+    const data = await recordOf(fleet, "gated", run.id);
+    assertEquals(data.jobs[0].fanOutHalts?.[0].failed, ["w-1", "w-2"]);
+  },
+});
+
+Deno.test({
+  name:
+    "fan-out approval: --from a later step of the job keeps the approved plan gate",
+  ...SANITIZE,
+  fn: async () => {
+    await using fleet = await Fleet.start();
+    await workers(fleet, 2);
+    await fleet.saveWorkflow({
+      name: "gated",
+      inputs: {},
+      jobs: [{
+        ...gatedJob(fleet, { batches: ["100%"], approve: ["plan"] }),
+        steps: [
+          gatedJob(fleet, {}).steps[0],
+          {
+            name: "verify",
+            dependsOn: [{ step: "apply", condition: { type: "succeeded" } }],
+            task: { type: "assert", expr: "false", message: "verify failed" },
+          },
+        ],
+      }],
+    });
+    const run = await fleet.runWorkflow("gated");
+    await fleet.decideGate("gated", run.id, PLAN, true);
+    assertEquals((await fleet.resumeRun("gated", run.id)).status, "failed");
+
+    const events: WorkflowExecutionEvent[] = [];
+    const again = await fleet.retryRun("gated", run.id, {
+      fromStep: "verify",
+      events,
+    });
+    assertEquals(again.status, "failed");
+    assertEquals(approvalRequests(events), []);
+    assertEquals(fleet.dispatchCounts(), counts([["w-1", 1], ["w-2", 1]]));
   },
 });

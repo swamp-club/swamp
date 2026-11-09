@@ -306,18 +306,20 @@ function selectResetRecords(
     const job = workflowJobOf(workflow, jobRun, pairs);
     if (!job) continue;
     const kept = entryJobs.has(job.name) ? keptLanes(jobRun) : new Set();
-    let laneReset = false;
+    let laneRecordCount = 0;
+    let lanesReset = 0;
     const gates: string[] = [];
     for (const stepRun of jobRun.steps) {
       const lane = laneStepOf(stepRun.stepName, jobRun.fanOutPlan?.lanes);
       if (lane !== undefined) {
+        laneRecordCount++;
         if (
           !kept.has(lane.worker) &&
           templateKeysToReset.has(
             stepRunKey({ jobName: job.name, stepName: lane.authored }),
           )
         ) {
-          laneReset = true;
+          lanesReset++;
           selected.push({
             jobName: jobRun.jobName,
             stepName: stepRun.stepName,
@@ -344,7 +346,7 @@ function selectResetRecords(
       });
     }
     // a gate is asked again only when the job runs again from its start
-    if (resetGates && laneReset && kept.size === 0) {
+    if (resetGates && lanesReset > 0 && lanesReset === laneRecordCount) {
       for (const stepName of gates) {
         selected.push({
           jobName: jobRun.jobName,
