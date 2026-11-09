@@ -210,6 +210,7 @@ scheme: github
 
 - The route must sit under `/hooks/`, with segments of letters, digits and
   `-._~` only; the secret must be `@vault=<vault>:<key>`.
+- YAML anchors and aliases are refused in route files; write each value out.
 - `swamp serve reload` makes a new or changed file live; deleting the file
   removes the route on the next reload.
 - A bad file is refused on its own (named in the startup log or reload errors);

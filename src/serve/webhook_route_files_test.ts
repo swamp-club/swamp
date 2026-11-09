@@ -412,3 +412,30 @@ Deno.test("checkRouteFiles: a routes directory inside extension code is reported
     assertStringIncludes(check.directoryError ?? "", "holds extension code");
   });
 });
+
+Deno.test("loadWebhookRouteFiles: refuses YAML anchors and aliases", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "alias.yaml"),
+      VALID + 'scheme: "@acme/hook"\nconfig:\n  a: &a [1, 2]\n  b: *a\n',
+    );
+
+    const [refused] = (await loadWebhookRouteFiles(dir)).refused;
+
+    assertStringIncludes(refused.message, "YAML anchors and aliases");
+  });
+});
+
+Deno.test("loadWebhookRouteFiles: refuses nesting deeper than the cap", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "deep.yaml"),
+      VALID + 'scheme: "@acme/hook"\nconfig:\n  a: ' + "[".repeat(40) +
+        "]".repeat(40) + "\n",
+    );
+
+    const [refused] = (await loadWebhookRouteFiles(dir)).refused;
+
+    assertStringIncludes(refused.message, "nests deeper than");
+  });
+});

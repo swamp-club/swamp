@@ -51,6 +51,31 @@ const VAULT_SECRET_PREFIX = "@vault=";
 // one route is a few lines; the cap keeps a stray large file out of the parser
 const MAX_ROUTE_FILE_BYTES = 64 * 1024;
 
+const MAX_ROUTE_FILE_DEPTH = 32;
+
+/**
+ * a YAML alias parses to a shared node, so a few hundred bytes can expand to
+ * gigabytes when serve compares or validates the route; refuse any sharing
+ */
+function yamlShapeProblem(value: unknown): string | undefined {
+  const seen = new Set<object>();
+  const stack: { node: unknown; depth: number }[] = [{ node: value, depth: 0 }];
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop()!;
+    if (typeof node !== "object" || node === null) continue;
+    if (seen.has(node)) {
+      return "it uses YAML anchors and aliases, which route files do not allow";
+    }
+    seen.add(node);
+    if (depth >= MAX_ROUTE_FILE_DEPTH) {
+      return `it nests deeper than ${MAX_ROUTE_FILE_DEPTH} levels`;
+    }
+    const children = Array.isArray(node) ? node : Object.values(node);
+    for (const child of children) stack.push({ node: child, depth: depth + 1 });
+  }
+  return undefined;
+}
+
 export interface WebhookRouteFile {
   readonly file: string;
   readonly entry: WebhookConfigEntry;
@@ -189,6 +214,10 @@ async function readRouteFile(
       undefined,
       "it must hold one YAML mapping (one route)",
     );
+  }
+  const shapeProblem = yamlShapeProblem(parsed);
+  if (shapeProblem !== undefined) {
+    return refusal(file, undefined, shapeProblem);
   }
   const obj = parsed as Record<string, unknown>;
   const route = typeof obj.route === "string" ? obj.route : undefined;

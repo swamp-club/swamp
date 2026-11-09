@@ -261,3 +261,61 @@ Deno.test("webhook route files: a missing vault key or an uninstalled scheme ref
     }
   });
 });
+
+function aliasBomb(route: string): string {
+  const lines = [
+    `route: ${route}`,
+    "workflow: deploy",
+    'secret: "@vault=hooks:k"',
+    'scheme: "@acme/hook"',
+    "config:",
+    `  l0: &l0 [${Array(9).fill('"xxxxxxxxxx"').join(",")}]`,
+  ];
+  for (let i = 1; i < 9; i++) {
+    lines.push(`  l${i}: &l${i} [${Array(9).fill(`*l${i - 1}`).join(",")}]`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+Deno.test("webhook route files: a YAML alias bomb is refused alone, and the reload after it still applies a serve config route", async () => {
+  await withTempDir(async (dir) => {
+    const routes = join(dir, "webhook-routes");
+    await Deno.mkdir(routes);
+    await Deno.writeTextFile(
+      join(routes, "bomb.yaml"),
+      aliasBomb("/hooks/bomb"),
+    );
+    await Deno.writeTextFile(join(routes, "ok.yaml"), routeFile("/hooks/ok"));
+    const service = new WebhookService({
+      repoDir: dir,
+      syncGate: undefined,
+      repoContext: {} as RepositoryContext,
+      datastoreConfig: {} as DatastoreConfig,
+      endpoints: [],
+    });
+    // the extension scheme resolves as if its type were installed
+    const updater = createWebhookUpdater({
+      source: "config",
+      service,
+      parse: (configs) =>
+        Promise.all(configs.map((entry) => parseWebhookConfig(entry, vault))),
+      loadRouteFiles: () => loadWebhookRouteFiles(routes),
+    });
+    try {
+      const first = await updater([]);
+      const second = await updater([
+        { route: "/hooks/cfg9", workflow: "deploy", secret: "@vault=hooks:c" },
+      ]);
+
+      assertStringIncludes(first.errors.join("\n"), "bomb.yaml");
+      assertStringIncludes(second.errors.join("\n"), "bomb.yaml");
+      assertEquals(
+        service.listEndpoints().map((e) => e.route),
+        ["/hooks/cfg9", "/hooks/ok"],
+      );
+      assertEquals(await isServed(service, "/hooks/cfg9"), true);
+    } finally {
+      await service.stop();
+    }
+  });
+});

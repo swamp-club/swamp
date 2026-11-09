@@ -1440,8 +1440,10 @@ no empty, `.` or `..` segments, and every segment made of letters, digits and
 `serve.yaml` and `--webhook` have no such restriction. The secret must be
 `@vault=<vault>:<key>`; a literal, `@env=` or `@file=` secret is refused.
 Unknown keys, a symlink leaving the directory, anything but a regular file, a
-file over 64 KiB, and two files claiming one route (both are refused, each
-error naming the other file) are refused too. Each file is judged and parsed on
+file over 64 KiB, YAML anchors and aliases (a shared node can expand to
+gigabytes when serve compares routes), nesting deeper than 32 levels, and two
+files claiming one route (both are refused, each error naming the other file)
+are refused too. Each file is judged and parsed on
 its own, vault lookup and extension scheme resolution included, so a bad file is
 refused alone with an error naming the file and route, and never stops serve or
 the other routes. A routes directory that cannot be used (unreadable, or inside
