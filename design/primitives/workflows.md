@@ -4282,6 +4282,8 @@ registered run whose record already reads `suspended`, up to
 Approve and reject wait before the sync gate, which the leaving run needs for
 its push, and decide access as the handler will without auditing
 (`awaitWindingDownRun`), so a refused caller neither waits nor is audited twice.
+A resume still starting also reads `suspended`, so a decision sent then waits the
+full grace before it is refused busy.
 A local CLI resume or approve, or a second serve instance on a shared
 datastore, is not covered by the reservation.
 

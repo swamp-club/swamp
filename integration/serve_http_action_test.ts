@@ -2144,6 +2144,7 @@ class WatchedRegistry extends ActiveRunRegistry {
 interface HeldWindow {
   registry: WatchedRegistry;
   release: () => void;
+  tasks: Promise<void>[];
 }
 
 /**
@@ -2170,10 +2171,13 @@ async function withHeldWindow(
       confirmReplicated: () => replicated,
     } as ConnectionContext;
     const route = startRoute(ctx);
+    const tasks: Promise<void>[] = [];
     try {
-      await fn(route, repo, ctx, { registry, release });
+      await fn(route, repo, ctx, { registry, release, tasks });
     } finally {
       release();
+      // a started run's handler pushes and replies after it leaves the registry
+      await Promise.allSettled(tasks);
       await settled(ctx).catch(() => {});
       await route.shutdown();
     }
@@ -2187,6 +2191,7 @@ async function withHeldWindow(
 async function suspendInWindow(
   repo: ServeRepo,
   ctx: ConnectionContext,
+  held: HeldWindow,
 ): Promise<
   { name: string; runId: string; waiting: string; suspendedAt: string }
 > {
@@ -2208,7 +2213,7 @@ async function suspendInWindow(
     send() {},
     close() {},
   } as unknown as WebSocket;
-  handleMessage(
+  const task = handleMessage(
     socket,
     ctx,
     new Map(),
@@ -2221,6 +2226,7 @@ async function suspendInWindow(
     }),
     CALLER,
   );
+  if (task) held.tasks.push(task);
   let run: WorkflowRun | undefined;
   await waitFor(async () => {
     run = (await repo.repoContext.workflowRunRepo.findAllByWorkflowId(
@@ -2237,7 +2243,6 @@ async function suspendInWindow(
   return { name, runId: run!.id, waiting, suspendedAt };
 }
 
-/** sends once the run is held, and releases it once the request is waiting */
 async function decideInWindow<T>(
   held: HeldWindow,
   send: () => Promise<T>,
@@ -2269,7 +2274,7 @@ const windowDecision = (
 
 test("an approval sent while a suspended run is still leaving waits for it, then decides", async () => {
   await withHeldWindow([everyAction()], async (route, repo, ctx, held) => {
-    const target = await suspendInWindow(repo, ctx);
+    const target = await suspendInWindow(repo, ctx, held);
 
     const approved = await decideInWindow(
       held,
@@ -2287,7 +2292,7 @@ test("an approval sent while a suspended run is still leaving waits for it, then
 
 test("a step name in two jobs sent while the run is still leaving is refused as ambiguous, not busy", async () => {
   await withHeldWindow([everyAction()], async (route, repo, ctx, held) => {
-    const target = await suspendInWindow(repo, ctx);
+    const target = await suspendInWindow(repo, ctx, held);
 
     const refused = await decideInWindow(
       held,
@@ -2301,7 +2306,7 @@ test("a step name in two jobs sent while the run is still leaving is refused as 
 
 test("a rejection sent while a suspended run is still leaving waits for it, then decides", async () => {
   await withHeldWindow([everyAction()], async (route, repo, ctx, held) => {
-    const target = await suspendInWindow(repo, ctx);
+    const target = await suspendInWindow(repo, ctx, held);
 
     const rejected = await decideInWindow(
       held,
@@ -2319,7 +2324,7 @@ test("a rejection sent while a suspended run is still leaving waits for it, then
 
 test("a resume sent while a suspended run is still leaving waits for it, then gets the run's own answer instead of busy", async () => {
   await withHeldWindow([everyAction()], async (_route, repo, ctx, held) => {
-    const target = await suspendInWindow(repo, ctx);
+    const target = await suspendInWindow(repo, ctx, held);
 
     const frames = await decideInWindow(
       held,
@@ -2352,7 +2357,7 @@ test("a caller refused the decision does not wait for a run still leaving, and i
   await withHeldWindow(
     [everyAction(), readOnly],
     async (route, repo, ctx, held) => {
-      const target = await suspendInWindow(repo, ctx);
+      const target = await suspendInWindow(repo, ctx, held);
       const audit = capturingAudit(ctx);
       const before = held.registry.listed;
 

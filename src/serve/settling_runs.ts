@@ -19,10 +19,9 @@
 
 import type { ActiveRun } from "./active_run_registry.ts";
 
-/** past this a run still held is refused busy, as it was before any wait */
+/** past this a run still held is refused busy */
 export const WINDING_DOWN_GRACE_MS = 5_000;
 
-/** resolves when every run has left, the grace has passed or the signal aborts */
 export async function awaitSettlingRuns(
   runs: ReadonlyArray<Pick<ActiveRun, "completion">>,
   options: { graceMs?: number; signal?: AbortSignal } = {},
