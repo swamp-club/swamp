@@ -39,6 +39,46 @@ export interface ActionReply {
   readonly retryAfterSeconds?: number;
 }
 
+/** what a settled action answers; data is the matching WebSocket reply's */
+export interface ActionSuccessBody {
+  readonly requestId: string;
+  readonly type: string;
+  readonly data: unknown;
+}
+
+/** a started run's data, for workflow.run and workflow.resume */
+export interface ActionStartedData {
+  readonly runId: string;
+  readonly workflowName: string;
+  readonly replayed: boolean;
+}
+
+export interface ActionFailureBody {
+  readonly code: string;
+  readonly message: string;
+  readonly requestId?: string;
+  /** a refused signal's detail */
+  readonly receipt?: unknown;
+  readonly pending?: unknown;
+  readonly lastWait?: unknown;
+  readonly errors?: unknown;
+}
+
+/** codes the route answers before or around a handler, beside the tables */
+export const HTTP_ACTION_ROUTE_CODES = [
+  "method_not_allowed",
+  "unauthorized",
+  "rate_limited",
+  "unsupported_media_type",
+  "payload_too_large",
+  "invalid_request",
+  "type_not_allowed",
+  "runs_unavailable",
+  "still_working",
+  "leader_upgrade_required",
+  "run_not_started",
+] as const;
+
 /** answered once a run is accepted; the caller reads status from there */
 export const DETACHED_ACTION_TYPES: ReadonlySet<string> = new Set([
   "workflow.run",
@@ -236,7 +276,11 @@ function detail(details: unknown, name: string): unknown {
 function failed(failure: Failure, requestId: string): ActionReply {
   return {
     status: failure.status,
-    body: { code: failure.code, message: failure.message, requestId },
+    body: {
+      code: failure.code,
+      message: failure.message,
+      requestId,
+    } satisfies ActionFailureBody,
     ...(failure.retryAfterSeconds !== undefined
       ? { retryAfterSeconds: failure.retryAfterSeconds }
       : {}),
@@ -358,10 +402,10 @@ export function actionReplyForFrame(
           requestId,
           type,
           data: {
-            runId: event.runId,
-            workflowName: event.workflowName,
+            runId: event.runId!,
+            workflowName: event.workflowName!,
             replayed: event.replayed === true,
-          },
+          } satisfies ActionStartedData,
         },
       };
     }
@@ -408,7 +452,7 @@ function actionSuccess(
       requestId,
       type,
       data: type === "workflow.history.get" ? withoutServerPath(data) : data,
-    },
+    } satisfies ActionSuccessBody,
   };
 }
 

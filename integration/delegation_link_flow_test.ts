@@ -36,7 +36,7 @@ import {
 
 await initializeLogging({});
 
-Deno.test("delegation links: start, consent, redeem once, act, refresh, reuse ends the link and swamp-club is told", async () => {
+Deno.test("delegation links: start, consent, redeem once, act, refresh keeps the refresh token, racing refreshes keep the link, ending tells swamp-club", async () => {
   await withRig(async (rig) => {
     const started = await rig.post("links", START_BODY);
     assertEquals(started.status, 201);
@@ -74,31 +74,57 @@ Deno.test("delegation links: start, consent, redeem once, act, refresh, reuse en
 
     const refreshed = await rig.post("refresh", { refreshToken: refresh });
     assertEquals(refreshed.status, 200, JSON.stringify(refreshed.body));
-    const newRefresh = refreshed.body.refreshToken as string;
-    assert(newRefresh !== refresh);
+    assertEquals(refreshed.body.status, "refreshed");
+    assertEquals(refreshed.body.refreshToken, undefined);
+    assertEquals(refreshed.body.expiresIn, 3600);
 
-    const reused = await rig.post("refresh", { refreshToken: refresh });
-    assertEquals(reused.status, 401);
-    const ended = await rig.store.read(pendingId);
-    assertEquals(ended?.phase, "ended");
-    assertEquals(ended?.ended?.cause, "refresh_reuse");
-    assertEquals(ended?.club.endState, "pending");
-    assertEquals(
-      (await authenticateDelegatedToken(
-        refreshed.body.accessToken as string,
-        rig.directory,
-      )).ok,
-      false,
-    );
-    assertEquals(
-      (await rig.post("refresh", { refreshToken: newRefresh })).status,
-      401,
-    );
+    const racing = await Promise.all([
+      rig.post("refresh", { refreshToken: refresh }),
+      rig.post("refresh", { refreshToken: refresh }),
+    ]);
+    assertEquals(racing.map((r) => r.status), [200, 200]);
+    assertEquals((await rig.store.read(pendingId))?.phase, "issued");
+    for (
+      const token of [
+        refreshed.body.accessToken,
+        ...racing.map((r) => r.body.accessToken),
+      ]
+    ) {
+      assert(
+        (await authenticateDelegatedToken(token as string, rig.directory)).ok,
+      );
+    }
+    assert(rig.audit.every((e) => e.action !== "ended"));
+
+    const ended = await rig.post("end", { token: refresh });
+    assertEquals(ended.status, 200);
+    assertEquals((await rig.store.read(pendingId))?.phase, "ended");
+    const afterEnd = await rig.post("refresh", { refreshToken: refresh });
+    assertEquals(afterEnd.status, 401);
+    assertEquals(afterEnd.body.reason, "not_issued");
 
     await rig.service.tick();
     assertEquals(rig.club.ends, ["/link-1/end"]);
     assertEquals((await rig.store.read(pendingId))?.club.endState, "done");
-    assert(rig.audit.some((e) => e.action === "refresh_reuse"));
+  });
+});
+
+Deno.test("delegation links: a wrong refresh token is refused as a mismatch and ends nothing", async () => {
+  await withRig(async (rig) => {
+    const { pendingId, redeemSecret } = await startAndConsent(rig);
+    const redeemed = await rig.post("redeem", { pendingId, redeemSecret });
+    const refresh = redeemed.body.refreshToken as string;
+    const [prefix, id] = refresh.split(".");
+    const wrong = `${prefix}.${id}.${"0".repeat(64)}`;
+    const refused = await rig.post("refresh", { refreshToken: wrong });
+    assertEquals(refused.status, 401);
+    assertEquals(refused.body.code, "invalid_grant");
+    assertEquals(refused.body.reason, "mismatch");
+    assertEquals((await rig.store.read(pendingId))?.phase, "issued");
+    assertEquals(
+      (await rig.post("refresh", { refreshToken: refresh })).status,
+      200,
+    );
   });
 });
 
@@ -336,6 +362,7 @@ Deno.test("delegation links: a person no longer admitted cannot refresh, and can
     assertEquals(refused.status, 401);
     assertEquals(refused.body.code, "invalid_grant");
     assertStringIncludes(String(refused.body.message), "not_admitted");
+    assertEquals(refused.body.reason, "not_admitted");
     assertEquals((await rig.store.read(pendingId))?.phase, "issued");
 
     allowedUsers = ["person-1"];

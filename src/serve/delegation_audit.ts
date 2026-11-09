@@ -27,7 +27,7 @@ import type { DelegationAuditRecord } from "./delegation_routes.ts";
 
 const logger = getSwampLogger(["serve", "delegation-audit"]);
 
-const FAILURES = new Set(["refused", "refresh_reuse", "club_end_failed"]);
+const FAILURES = new Set(["refused", "club_end_failed"]);
 
 function outcomeOf(event: DelegationAuditRecord): AuditOutcome {
   if (FAILURES.has(event.action)) {

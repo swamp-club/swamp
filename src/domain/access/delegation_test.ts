@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  accessTokenExpiry,
   accessTokenMatches,
   canonicalExternalKey,
   DELEGATED_ACCESS_LIFE_MS,
@@ -87,7 +88,7 @@ Deno.test("issueDelegationTokens: refuses before the link is reported", async ()
   );
 });
 
-Deno.test("refreshDelegation: rotates with the current token and keeps the previous access token until it expires", async () => {
+Deno.test("refreshDelegation: keeps the refresh token and mints an access token, keeping the older one until it expires", async () => {
   const issued = await issueDelegationTokens(consentedRecord(), T0);
   const standing = delegationStanding(issued.record, T0, undefined);
   const outcome = await refreshDelegation(
@@ -96,14 +97,14 @@ Deno.test("refreshDelegation: rotates with the current token and keeps the previ
     T0 + 1000,
     standing,
   );
-  assert(outcome.kind === "rotated");
+  assert(outcome.kind === "refreshed");
   assertEquals(outcome.record.tokens?.generation, 2);
+  assertEquals(
+    outcome.record.tokens?.refreshHash,
+    issued.record.tokens?.refreshHash,
+  );
   assert(
-    await accessTokenMatches(
-      outcome.record,
-      outcome.tokens.access.value,
-      T0 + 2000,
-    ),
+    await accessTokenMatches(outcome.record, outcome.access.value, T0 + 2000),
   );
   assert(
     await accessTokenMatches(
@@ -121,30 +122,97 @@ Deno.test("refreshDelegation: rotates with the current token and keeps the previ
   );
 });
 
-Deno.test("refreshDelegation: a superseded refresh token ends the delegation", async () => {
+Deno.test("refreshDelegation: racing refreshes with the same token all succeed and leave the link standing", async () => {
+  const issued = await issueDelegationTokens(consentedRecord(), T0);
+  let record = issued.record;
+  for (let i = 1; i <= 3; i++) {
+    const out = await refreshDelegation(
+      record,
+      issued.tokens.refresh.value,
+      T0 + i,
+      delegationStanding(record, T0 + i, undefined),
+    );
+    assert(out.kind === "refreshed");
+    record = out.record;
+  }
+  assertEquals(record.phase, "issued");
+  assertEquals(delegationStanding(record, T0 + 10, undefined).kind, "standing");
+});
+
+Deno.test("refreshDelegation: the current access token and the two before it work; a fourth pushes out the oldest", async () => {
+  const issued = await issueDelegationTokens(consentedRecord(), T0);
+  const access = [issued.tokens.access.value];
+  let record = issued.record;
+  for (let i = 1; i <= 3; i++) {
+    const out = await refreshDelegation(
+      record,
+      issued.tokens.refresh.value,
+      T0 + i,
+      delegationStanding(record, T0 + i, undefined),
+    );
+    assert(out.kind === "refreshed");
+    access.push(out.access.value);
+    record = out.record;
+  }
+  const at = T0 + 10;
+  assert(!await accessTokenMatches(record, access[0], at));
+  for (const token of access.slice(1)) {
+    assert(await accessTokenMatches(record, token, at));
+    assertEquals(
+      await accessTokenExpiry(record, token),
+      new Date(
+        T0 + access.indexOf(token) + DELEGATED_ACCESS_LIFE_MS,
+      ).toISOString(),
+    );
+  }
+  assertEquals(record.tokens?.olderAccess?.length, 1);
+});
+
+Deno.test("refreshDelegation: an expired earlier access token is not carried into olderAccess", async () => {
   const issued = await issueDelegationTokens(consentedRecord(), T0);
   const first = await refreshDelegation(
     issued.record,
     issued.tokens.refresh.value,
+    T0 + 1,
+    delegationStanding(issued.record, T0 + 1, undefined),
+  );
+  assert(first.kind === "refreshed");
+  const late = T0 + DELEGATED_ACCESS_LIFE_MS + 10;
+  const second = await refreshDelegation(
+    first.record,
+    issued.tokens.refresh.value,
+    late,
+    delegationStanding(first.record, late, undefined),
+  );
+  assert(second.kind === "refreshed");
+  assertEquals(second.record.tokens?.olderAccess, undefined);
+});
+
+Deno.test("refreshDelegation: a wrong refresh token is refused and ends nothing", async () => {
+  const issued = await issueDelegationTokens(consentedRecord(), T0);
+  const other = await issueDelegationTokens(consentedRecord(), T0);
+  const outcome = await refreshDelegation(
+    issued.record,
+    other.tokens.refresh.value,
     T0 + 1000,
     delegationStanding(issued.record, T0, undefined),
   );
-  assert(first.kind === "rotated");
-  const reused = await refreshDelegation(
-    first.record,
+  assertEquals(outcome, { kind: "refused", reason: "mismatch" });
+});
+
+Deno.test("accessTokenMatches: a record written by a previous build, without olderAccess, still authenticates its two tokens", async () => {
+  const issued = await issueDelegationTokens(consentedRecord(), T0);
+  const out = await refreshDelegation(
+    issued.record,
     issued.tokens.refresh.value,
-    T0 + 2000,
-    delegationStanding(first.record, T0, undefined),
+    T0 + 1,
+    delegationStanding(issued.record, T0 + 1, undefined),
   );
-  assert(reused.kind === "reuse");
-  assertEquals(reused.record.phase, "ended");
-  assertEquals(reused.record.ended?.cause, "refresh_reuse");
-  assertEquals(reused.record.tokens, undefined);
-  assertEquals(reused.record.club.endState, "pending");
-  assertEquals(
-    delegationStanding(reused.record, T0 + 3000, undefined).kind,
-    "ended",
-  );
+  assert(out.kind === "refreshed");
+  const { olderAccess: _dropped, ...legacy } = out.record.tokens!;
+  const record = { ...out.record, tokens: legacy };
+  assert(await accessTokenMatches(record, out.access.value, T0 + 2));
+  assert(await accessTokenMatches(record, issued.tokens.access.value, T0 + 2));
 });
 
 Deno.test("refreshDelegation: a delegation without standing is refused without rotating or ending", async () => {

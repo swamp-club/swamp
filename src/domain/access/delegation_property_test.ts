@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
   delegationStanding,
@@ -41,10 +41,10 @@ type Op =
   | "refuse"
   | "issue"
   | "refresh"
-  | "reuse"
+  | "wrong_refresh"
   | "end";
 
-Deno.test("delegation lifecycle: tokens exist only while issued, and an ended delegation never stands again", async () => {
+Deno.test("delegation lifecycle: tokens exist only while issued, a refresh never ends or changes the refresh token, and an ended delegation never stands again", async () => {
   await fc.assert(
     fc.asyncProperty(
       fc.array(
@@ -54,7 +54,7 @@ Deno.test("delegation lifecycle: tokens exist only while issued, and an ended de
           "refuse",
           "issue",
           "refresh",
-          "reuse",
+          "wrong_refresh",
           "end",
         ),
         { maxLength: 12 },
@@ -62,7 +62,9 @@ Deno.test("delegation lifecycle: tokens exist only while issued, and an ended de
       async (ops) => {
         let record: DelegationRecord = startedRecord();
         let refresh: string | undefined;
-        let oldRefresh: string | undefined;
+        let refreshHash: string | undefined;
+        const stranger = (await issueDelegationTokens(consentedRecord(), T0))
+          .tokens.refresh.value;
         let wasEnded = false;
         let issuedCount = 0;
         let now = T0;
@@ -76,26 +78,26 @@ Deno.test("delegation lifecycle: tokens exist only while issued, and an ended de
               const out = await issueDelegationTokens(record, now);
               record = out.record;
               refresh = out.tokens.refresh.value;
+              refreshHash = out.record.tokens?.refreshHash;
               issuedCount++;
             }
             if (op === "end") record = endDelegation(record, "operator", now);
-            if ((op === "refresh" || op === "reuse") && refresh !== undefined) {
-              const presented = op === "reuse" && oldRefresh !== undefined
-                ? oldRefresh
-                : refresh;
+            if (
+              (op === "refresh" || op === "wrong_refresh") &&
+              refresh !== undefined
+            ) {
+              const before = record;
               const out = await refreshDelegation(
                 record,
-                presented,
+                op === "wrong_refresh" ? stranger : refresh,
                 now,
                 delegationStanding(record, now, undefined),
               );
-              if (out.kind === "rotated") {
-                oldRefresh = refresh;
-                refresh = out.tokens.refresh.value;
+              if (out.kind === "refreshed") {
+                assert(op === "refresh");
                 record = out.record;
-              } else if (out.kind === "reuse") {
-                record = out.record;
-                assert(presented !== refresh);
+              } else {
+                assert(record === before);
               }
             }
           } catch (error) {
@@ -108,6 +110,10 @@ Deno.test("delegation lifecycle: tokens exist only while issued, and an ended de
           }
           assert((record.tokens !== undefined) === (record.phase === "issued"));
           assert(issuedCount <= 1);
+          if (record.tokens !== undefined) {
+            assertEquals(record.tokens.refreshHash, refreshHash);
+            assert((record.tokens.olderAccess?.length ?? 0) <= 1);
+          }
           if (record.phase === "ended" || record.phase === "refused") {
             wasEnded = true;
           }
