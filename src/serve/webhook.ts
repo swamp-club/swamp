@@ -650,14 +650,8 @@ export class WebhookService {
     const { allowed: newEndpoints, refused } = partitionWebhookRoutes(
       requested,
     );
+    // reported once, by the caller: reload returns these as warnings
     this.skipped = skippedRoutes(refused);
-    for (const skip of this.skipped) {
-      logger.warn("Webhook route skipped: {route} → {workflow}: {reason}", {
-        route: skip.route,
-        workflow: skip.workflowIdOrName,
-        reason: skip.reason,
-      });
-    }
     const oldByRoute = new Map(this.endpoints.map((e) => [e.route, e]));
     const newByRoute = new Map(newEndpoints.map((e) => [e.route, e]));
 

@@ -2247,6 +2247,9 @@ const daemonEnableCommand = new Command()
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
       "scheme is one of github (default), jira, linear, stripe, slack, generic, " +
       "or a webhook extension type (@collective/name). " +
+      "A route under serve's own paths (/, /api, /auth, /health, /ready, " +
+      "/internal, /dashboard, /data, /bundle) is skipped with a warning; " +
+      "prefer /hooks/<name>. " +
       "Secret may use @env=VAR to read from an environment variable, " +
       "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
       "from a configured vault (avoids secrets in argv). " +
@@ -7088,14 +7091,9 @@ export const serveCommand = new Command()
           reason: skip.reason,
         }));
       } else {
-        logger.warn(
-          "Webhook route skipped: {route} → {workflow}: {reason}",
-          {
-            route: skip.route,
-            workflow: skip.workflowIdOrName,
-            reason: skip.reason,
-          },
-        );
+        logger.warn("{message}", {
+          message: skippedWebhookMessage(skip.route, skip.reason),
+        });
       }
     }
 

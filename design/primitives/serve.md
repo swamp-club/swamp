@@ -1432,8 +1432,9 @@ that is `/`, whose first non-empty segment (raw or percent-decoded) is one of
 serve's reserved roots — `health`, `ready`, `auth`, `api`, `internal`,
 `dashboard`, `data`, `bundle` — or that has a `.` or `..` segment, which no
 request path can match. Only that webhook fails: serve starts and serves its
-other routes, logs `Webhook route skipped` (`webhook_skipped` in `--json`), and
-`swamp serve check-config` lists it as a webhook warning without failing.
+other routes and logs `Skipped webhook route` (`webhook_skipped` in `--json`).
+`swamp serve check-config` lists such a `serve.yaml` route as a webhook warning
+without failing; it does not see `--webhook` flags.
 `WebhookService` applies the rule to every route table it is given, at boot
 from `serve.yaml` or `--webhook` and on reload, where the skipped route comes
 back as a reload warning and the other routes still apply. Every other operator
