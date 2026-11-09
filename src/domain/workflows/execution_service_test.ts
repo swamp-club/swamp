@@ -108,7 +108,11 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
-import { Definition, type InputsSchema } from "../definitions/definition.ts";
+import {
+  Definition,
+  type DefinitionId,
+  type InputsSchema,
+} from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import "../models/models.ts";
@@ -18625,6 +18629,7 @@ interface StepWriteProbe {
   tracker: RecordingRunTracker;
   outputCount(): Promise<number>;
   evaluatedCount(): Promise<number>;
+  removeDefinition(): Promise<void>;
 }
 
 async function runStepUnderLockHook(
@@ -18677,19 +18682,25 @@ async function runStepUnderLockHook(
 
     const outputRepo = new YamlOutputRepository(tempDir);
     const evaluatedRepo = new YamlEvaluatedDefinitionRepository(tempDir);
+    const definition = Definition.create({
+      name: "locked",
+      type: modelType.normalized,
+    });
     const probe: StepWriteProbe = {
       tracker: new RecordingRunTracker(),
       outputCount: async () => (await outputRepo.findAll(modelType)).length,
       evaluatedCount: async () =>
         (await evaluatedRepo.findAll(modelType)).length,
+      removeDefinition: () =>
+        new YamlDefinitionRepository(tempDir).delete(
+          modelType,
+          definition.id as DefinitionId,
+          definition.name,
+        ),
     };
 
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     try {
-      const definition = Definition.create({
-        name: "locked",
-        type: modelType.normalized,
-      });
       await new YamlDefinitionRepository(tempDir).save(modelType, definition);
 
       const step = Step.create({
@@ -18770,6 +18781,30 @@ Deno.test("DefaultStepExecutor: a step lock timeout leaves no output or tracker 
   assertEquals(evaluatedCount, 0);
   assertEquals(tracker.registrations.length, 0);
   assertEquals(tracker.completions, []);
+});
+
+Deno.test("DefaultStepExecutor: a definition removed while the step waited for its lock is not run", async () => {
+  let executed = false;
+  const { error, outputs, evaluatedCount } = await runStepUnderLockHook(
+    (probe) =>
+      countingLockHook(async () => {
+        await probe.removeDefinition();
+      }).hook,
+    "execute",
+    () => {
+      executed = true;
+      return Promise.resolve({});
+    },
+  );
+
+  assert(error instanceof Error, `unexpected error: ${error}`);
+  assertStringIncludes(
+    error.message,
+    "removed and created again, while this step waited for its lock",
+  );
+  assertEquals(executed, false);
+  assertEquals(outputs.length, 0);
+  assertEquals(evaluatedCount, 0);
 });
 
 Deno.test("DefaultStepExecutor: takes the step lock before the step writes anything", async () => {

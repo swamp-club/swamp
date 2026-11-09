@@ -337,3 +337,72 @@ Deno.test("createRunGcDeps: a snapshot retention removes a finished run's old sn
     );
   });
 });
+
+Deno.test("runGcInputFromPolicy: auto-definition retention comes only from its own key, override or not", () => {
+  assertEquals(
+    runGcInputFromPolicy(false, { retention: "30d" }, 1)
+      .autoDefinitionRetentionDays,
+    undefined,
+  );
+  assertEquals(
+    runGcInputFromPolicy(false, { retention: "30d" })
+      .autoDefinitionRetentionDays,
+    undefined,
+  );
+  assertEquals(
+    runGcInputFromPolicy(false, { autoDefinitions: "60d" }, 1)
+      .autoDefinitionRetentionDays,
+    60,
+  );
+});
+
+Deno.test("runGc: collects auto-definitions after the outputs, only with their retention", async () => {
+  const calls: string[] = [];
+  const deps: RunGcDeps = {
+    gcAll: () => {
+      calls.push("gcAll");
+      return Promise.resolve({
+        workflowRunsDeleted: 0,
+        workflowRunBytesReclaimed: 0,
+        outputsDeleted: 0,
+        outputBytesReclaimed: 0,
+        snapshotsDeleted: 0,
+        snapshotBytesReclaimed: 0,
+        dryRun: true,
+        more: false,
+      });
+    },
+    collectAutoDefinitions: (cutoff, dryRun) => {
+      calls.push(`auto:${dryRun}`);
+      const days = (Date.now() - cutoff.getTime()) / 86_400_000;
+      assertEquals(Math.round(days), 60);
+      return Promise.resolve([{ name: "idle", type: "command/shell" }]);
+    },
+  };
+  const collect = async (autoDefinitionRetentionDays?: number) => {
+    for await (
+      const event of runGc(createMockCtx(), deps, {
+        dryRun: true,
+        ...(autoDefinitionRetentionDays === undefined
+          ? {}
+          : { autoDefinitionRetentionDays }),
+      })
+    ) {
+      if (event.kind === "completed") return event.data;
+    }
+    throw new Error("no completed event");
+  };
+
+  const without = await collect();
+  assertEquals(without.autoDefinitionsDeleted, 0);
+  assertEquals(calls, ["gcAll"]);
+
+  calls.length = 0;
+  const withKey = await collect(60);
+  assertEquals(calls, ["gcAll", "auto:true"]);
+  assertEquals(withKey.autoDefinitionsDeleted, 1);
+  assertEquals(withKey.autoDefinitions, [
+    { name: "idle", type: "command/shell" },
+  ]);
+  assertEquals(withKey.totalBytesReclaimed, 0);
+});

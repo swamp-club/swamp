@@ -259,7 +259,7 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
 
 ```yaml
 garbageCollection:
-  retention: 30d          # default for every kind below except data and bookkeeping
+  retention: 30d          # default for every kind below except data, bookkeeping and autoDefinitions
   automatic: true         # enforce it: serve timer, CLI end of command
   workflowRuns: 14d       # run records, run logs, wait records, claims
   evaluatedSnapshots: 3d  # optional; unset, snapshots go with their runs (orphans swept)
@@ -267,6 +267,7 @@ garbageCollection:
   data: 30d               # opt-in only: every data version, the latest included
   audit: 90d              # .swamp/audit logs; default for serve audit stores (with automatic on)
   bookkeeping: 24h        # opt-in: serve worker GC grace, with automatic on (leases, dispatches, workers, enrollment tokens)
+  autoDefinitions: 60d    # opt-in only: auto-definitions left with no data and no outputs
 ```
 
 - **Units**: as `--older-than`: `m` is minutes and `mo` months, so
@@ -280,7 +281,7 @@ garbageCollection:
   refused only for a `garbageCollection` that is not a mapping, or a
   `workflowRuns`/`outputs` that is not a positive duration. A bad value in a
   key recognised since swamp-club#3473 (`retention`, `automatic`,
-  `evaluatedSnapshots`, `data`, `audit`, `bookkeeping`), and an explicit
+  `evaluatedSnapshots`, `data`, `audit`, `bookkeeping`, `autoDefinitions`), and an explicit
   `evaluatedSnapshots` longer than the run retention, is logged once and
   ignored by the policy; a value longer than `1000y` is held at `1000y`.
   The file itself keeps the user's block as written, so a command that
@@ -296,7 +297,8 @@ garbageCollection:
   `worker`, `step-lease`, `pending-dispatch`, `fleet-probe`, see
   `retention_exemptions.ts`); a data name with a deferred write not yet
   promoted. Definitions, vaults and repo config are configuration, not
-  history.
+  history; only auto-definitions are removed, and only when
+  `autoDefinitions` is set.
 - **Data**: opt-in and strict. Only an explicit `data` key turns it on; the
   shared `retention` never does, since it deletes latest versions, a
   behavior's current state included. A name whose latest version is older
@@ -306,6 +308,34 @@ garbageCollection:
   manual `swamp data gc` too. Candidates come from the catalog's
   `created_at` index, not a scan. Grants and groups are exempt in both their
   stored spellings (`swamp/grant`, `@swamp/grant`).
+- **Auto-definitions**: opt-in and strict, like `data`: only an explicit
+  `autoDefinitions` key turns it on. Direct type execution leaves one file
+  per behavior name in `.swamp/auto-definitions/`, and a workflow that gives
+  each run its own name adds one per run. An auto-definition is removed
+  (`judgeAutoDefinition`, `src/domain/retention/auto_definition_reaper.ts`)
+  only when its type is not exempt, it has no data versions and no method
+  outputs, no workflow names it literally (`modelIdOrName` or `modelName`),
+  and its file is older than the cutoff. A run rewrites the file only when
+  its global arguments change, so the missing data and outputs carry the idle
+  signal: an auto-definition that ran within the outputs retention keeps an
+  output and stays. The file age only guards one created too recently to have
+  written either; a v3 replay or a pull rewrites file times, which can delay a
+  removal by up to one cutoff but never bring it forward. The pass takes the
+  name's create lock and, on serve, tries the model lock without waiting
+  (`tryModelLock`); the CLI pass holds the datastore lock, which keeps runs off
+  their model locks. It checks data and outputs again under those locks, then
+  removes the evaluated definition and the definition. Removing one discards
+  global arguments set with `swamp behavior edit`, and the next run by name
+  creates a new definition with a new id. A step that names its behavior
+  through an expression is not seen by the reference check; its definition is
+  created again by name on the next run. A run that looked a definition up
+  before retention removed it and locked it after is refused with
+  `definition_changed_under_lock` (direct runs, serve runs and workflow steps
+  alike) and succeeds when run again. `swamp run gc` applies the key too;
+  `--older-than` never does, so a manual gc removes no definition the
+  repository did not opt in to. `swamp doctor datastores` shows the kind's
+  watermark but does not scan for it: what is removable depends on what the
+  pass removes first.
 - **Version numbers never go back after retention**: before retention
   empties a name it records the name's newest version in a file beside the
   name's directory (`<name>..version-floor`; `..` never occurs in a data
@@ -316,7 +346,8 @@ garbageCollection:
   partition's high-water mark, so retention empties a name there too, and
   `swamp data delete` cannot reuse a number either (swamp-club#3532).
 - **Automatic passes** (`runRepoRetention`, `src/libswamp/retention/`): the
-  collectors run in order (runs, snapshots, outputs, data, audit), in
+  collectors run in order (runs, snapshots, outputs, data, auto-definitions,
+  audit), in
   batches of 100. Data batches share one scan per pass, resuming where the
   last stopped, so a name retention keeps is read once per pass. Each batch is traced (`swamp.retention.batch`); an outputs batch also exports its listing, scan, orphan-log sweep, commit and gate wait as phases ([serve phase telemetry](../enablers/serve-phase-telemetry.md)).
   - `swamp serve` runs `RetentionGcService` five minutes after start and then

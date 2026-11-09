@@ -318,6 +318,8 @@ export interface RepositoryContext {
   indexService: RepoIndexService;
 
   definitionRepo: YamlDefinitionRepository;
+  /** the auto-definitions only, for code that must not touch models/ */
+  autoDefinitionRepo: YamlDefinitionRepository;
   evaluatedDefinitionRepo: YamlEvaluatedDefinitionRepository;
   unifiedDataRepo: FileSystemUnifiedDataRepository;
   outputRepo: YamlOutputRepository;
@@ -429,6 +431,14 @@ export function createRepositoryContext(
     markDirty,
     unreadableContent,
   );
+  const autoDefinitionRepo = new YamlDefinitionRepository(
+    repoDir,
+    undefined,
+    autoDefDir,
+    false,
+    markDirty,
+    unreadableContent,
+  );
   const yamlWorkflowRepo = new YamlWorkflowRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
@@ -508,6 +518,7 @@ export function createRepositoryContext(
     eventBus,
     indexService,
     definitionRepo,
+    autoDefinitionRepo,
     evaluatedDefinitionRepo,
     unifiedDataRepo,
     outputRepo,

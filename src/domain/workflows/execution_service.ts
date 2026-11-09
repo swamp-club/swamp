@@ -2384,6 +2384,19 @@ export class DefaultStepExecutor implements StepExecutor {
       // a step queued on a sibling's lock must not start its side effect once
       // the run is cancelled; inside the try so the finally still releases
       ctx.signal.throwIfAborted();
+      if (this.stepLockHook) {
+        // removed or replaced between its lookup and this lock: retention or a
+        // delete took it, and the step must not run under a lock it lost
+        const held = await definitionRepo.findByName(
+          modelType,
+          originalDefinition.name,
+        );
+        if (held?.id !== originalDefinition.id) {
+          throw new Error(
+            `Behavior ${originalDefinition.name} was renamed, or removed and created again, while this step waited for its lock: run it again`,
+          );
+        }
+      }
       // Save evaluated arguments with runtime expressions still raw and
       // sensitive values masked or referenced, without forwarded input aliases.
       const persisted = persistEvaluatedDefinition(

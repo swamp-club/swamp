@@ -1916,6 +1916,28 @@ async function ownLockAfterAdoption(
   return await create();
 }
 
+/**
+ * null when the model's lock is held or not taken within waitMs; a provider
+ * lock that ignores the signal waits at most its own timeout
+ */
+export async function tryModelLock(
+  datastoreConfig: DatastoreConfig,
+  modelType: string,
+  modelId: string,
+  waitMs: number,
+): Promise<DistributedLock | null> {
+  const lock = await createModelLock(datastoreConfig, modelType, modelId);
+  if (await lock.inspect()) return null;
+  const signal = AbortSignal.timeout(waitMs);
+  try {
+    await lock.acquire(signal);
+  } catch (error) {
+    if (signal.aborted || error instanceof LockTimeoutError) return null;
+    throw error;
+  }
+  return lock;
+}
+
 export async function createModelLock(
   datastoreConfig: DatastoreConfig,
   modelType: string,

@@ -31,6 +31,10 @@ import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persi
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { RetentionCollector } from "./pass.ts";
 import type { DataRetentionScan } from "../../domain/data/data_lifecycle_service.ts";
+import {
+  type AutoDefinitionRetentionSources,
+  createAutoDefinitionReaper,
+} from "./auto_definitions.ts";
 
 const DAY_MS = 86_400_000;
 
@@ -53,13 +57,15 @@ export interface RetentionCollectorSources {
     workflowRunRepo: YamlWorkflowRunRepository;
   };
   auditRepo?: AuditRepository;
+  /** without it the autoDefinitions kind is left alone */
+  autoDefinitions?: AutoDefinitionRetentionSources;
   now?: () => number;
 }
 
 /**
  * collectors run in order: runs first (data with a workflow or job lifetime
  * expires with its run), evaluated snapshots, method outputs and run logs,
- * model data, then the agent command log
+ * model data, auto-definitions left with neither, then the agent command log
  */
 export function createRetentionCollectors(
   sources: RetentionCollectorSources,
@@ -158,6 +164,7 @@ export function createRetentionCollectors(
         };
       },
     },
+    ...(sources.autoDefinitions ? [autoDefinitionCollector(sources)] : []),
     {
       kind: "audit",
       collectBatch: async (cutoff) => {
@@ -166,4 +173,21 @@ export function createRetentionCollectors(
       },
     },
   ];
+}
+
+function autoDefinitionCollector(
+  sources: RetentionCollectorSources,
+): RetentionCollector {
+  const reaper = createAutoDefinitionReaper(sources.autoDefinitions!);
+  return {
+    kind: "autoDefinitions",
+    collectBatch: async (cutoff, limit) => {
+      const result = await reaper.collectBatch(cutoff, limit);
+      return {
+        deleted: result.removed.length,
+        bytesReclaimed: result.bytesReclaimed,
+        more: result.more,
+      };
+    },
+  };
 }

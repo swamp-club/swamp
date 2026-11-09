@@ -577,6 +577,10 @@ export async function scanRetention(
         // Serve bookkeeping lives in serve's control plane and is reaped by
         // its worker GC; only its watermark is shown.
         return null;
+      case "autoDefinitions":
+        // removability depends on data and outputs the pass itself may remove
+        // first, so only the pass can judge it
+        return null;
     }
   };
 

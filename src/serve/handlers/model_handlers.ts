@@ -931,6 +931,11 @@ export async function handleModelMethodRun(
                       runtimeTags: payload.runtimeTags,
                       typeArg: payload.typeArg,
                       definitionName: payload.definitionName,
+                      // a definition removed and created again while the
+                      // lock was taken is refused, never run under it
+                      ...(modelLocks && preResult
+                        ? { lockedDefinitionId: preResult.definition.id }
+                        : {}),
                       expectedDefinitionId: target.run
                         ? target.run.definition?.definition.id ?? null
                         : undefined,
@@ -1272,6 +1277,11 @@ export async function handleModelMethodRun(
                       runtimeTags: payload.runtimeTags,
                       typeArg: payload.typeArg,
                       definitionName: payload.definitionName,
+                      // a definition removed and created again while the
+                      // lock was taken is refused, never run under it
+                      ...(modelLocks && preResult
+                        ? { lockedDefinitionId: preResult.definition.id }
+                        : {}),
                       expectedDefinitionId: target.run
                         ? target.run.definition?.definition.id ?? null
                         : undefined,

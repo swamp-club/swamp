@@ -80,6 +80,7 @@ Deno.test("checkRetentionConfig: accepts the full block", () => {
     data: "30d",
     audit: "90d",
     bookkeeping: "24h",
+    autoDefinitions: "60d",
   });
   assertEquals(result, { errors: [], ignored: [], unknownKeys: [] });
 });
@@ -211,4 +212,28 @@ Deno.test("RetentionPolicy.durationFor: data never follows the shared default", 
     ),
     "90d",
   );
+});
+
+Deno.test("RetentionPolicy.durationFor: autoDefinitions never follows the shared default", () => {
+  const shared = RetentionPolicy.fromConfig({
+    retention: "30d",
+    automatic: true,
+  });
+  assertEquals(shared.durationFor("autoDefinitions"), undefined);
+  assertEquals(shared.cutoff("autoDefinitions", new Date()), undefined);
+  assertEquals(
+    RetentionPolicy.fromConfig({ retention: "30d", autoDefinitions: "60d" })
+      .retentionMs("autoDefinitions"),
+    60 * DAY,
+  );
+});
+
+Deno.test("checkRetentionConfig: ignores a bad autoDefinitions without refusing the file", () => {
+  for (const value of ["0d", "never", "7", 7]) {
+    const { errors, ignored } = checkRetentionConfig({
+      autoDefinitions: value,
+    });
+    assertEquals(errors, [], `value ${String(value)}`);
+    assertEquals(ignored.map((e) => e.field), ["autoDefinitions"]);
+  }
 });

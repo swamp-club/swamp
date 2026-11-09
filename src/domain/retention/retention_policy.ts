@@ -26,14 +26,15 @@ export const RETENTION_KINDS = [
   "data",
   "audit",
   "bookkeeping",
+  "autoDefinitions",
 ] as const;
 
 export type RetentionKind = typeof RETENTION_KINDS[number];
 
 export interface RetentionConfig {
   /**
-   * Default timeframe for every kind without its own value, except `data`
-   * and `bookkeeping`, which must be set on their own.
+   * Default timeframe for every kind without its own value, except `data`,
+   * `bookkeeping` and `autoDefinitions`, which must be set on their own.
    */
   retention?: string;
   automatic?: boolean;
@@ -43,6 +44,7 @@ export interface RetentionConfig {
   data?: string;
   audit?: string;
   bookkeeping?: string;
+  autoDefinitions?: string;
 }
 
 export const RETENTION_CONFIG_KEYS: readonly string[] = [
@@ -205,6 +207,9 @@ export class RetentionPolicy {
     // Bookkeeping retention is serve's worker GC grace: a shared default
     // meant for history must not prune a worker that is merely offline.
     if (kind === "bookkeeping") return this.config.bookkeeping;
+    // Removing an auto-definition discards its edited global arguments, so it
+    // is never implied by a default meant for history.
+    if (kind === "autoDefinitions") return this.config.autoDefinitions;
     if (kind === "evaluatedSnapshots") {
       return this.config.evaluatedSnapshots ??
         this.durationFor("workflowRuns");

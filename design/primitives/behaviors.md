@@ -435,7 +435,9 @@ not appear in `swamp behavior search` results. `behavior get`, `behavior run`
 and workflow references can find them by name. `behavior get` shows
 `Auto-created: yes` for them. Saving an existing auto-definition, whether a lazy
 `typeVersion` upgrade or `behavior edit`, writes it back to
-`.swamp/auto-definitions/`; it never moves into `models/`.
+`.swamp/auto-definitions/`; it never moves into `models/`. They are kept until
+removed, unless `.swamp.yaml` sets `garbageCollection.autoDefinitions`, which
+removes the idle ones (see [repo.md](../surfaces/repo.md#retention)).
 
 ### Choosing Between the Two
 

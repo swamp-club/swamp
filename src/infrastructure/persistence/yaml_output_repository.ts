@@ -539,6 +539,43 @@ export class YamlOutputRepository implements OutputRepository {
     return all.filter((output) => output.definitionId === definitionId);
   }
 
+  /** from file names alone; an unmaterialised record counts as an output */
+  async definitionIdsWithOutputs(type: ModelType): Promise<Set<string>> {
+    const ids = new Set<string>();
+    const typeDir = this.getTypeDir(type);
+    let methodDirs: Deno.DirEntry[];
+    try {
+      methodDirs = await readDirSorted(typeDir);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      methodDirs = [];
+    }
+    for (const methodDir of methodDirs) {
+      if (!methodDir.isDirectory) continue;
+      let files: Deno.DirEntry[];
+      try {
+        files = await readDirSorted(join(typeDir, methodDir.name));
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+      for (const file of files) {
+        const name = parseOutputFileName(file.name);
+        if (name) ids.add(name.definitionId);
+      }
+    }
+    for (
+      const entry of await unreadableRecordsUnder(
+        this.unreadableContent,
+        typeDir,
+      )
+    ) {
+      const name = parseOutputFileName(entry.path);
+      if (name) ids.add(name.definitionId);
+    }
+    return ids;
+  }
+
   /**
    * a file name carries its definition and start, so an unmaterialised record
    * that started after the latest readable one fails the lookup rather than

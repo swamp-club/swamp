@@ -52,6 +52,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { RunGcResponse } from "../../serve/protocol.ts";
+import { autoDefinitionRetentionSourcesOf } from "../../libswamp/retention/auto_definitions.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -122,12 +123,15 @@ export const runGcCommand = withRemoteOptions(
 
   await runInCoordinatorRoot(repoContext, async () => {
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
+    // a removing gc holds the datastore lock, which keeps runs from taking a
+    // model lock, so none is tried
     const deps = createRunGcDeps(
       repoDir,
       datastoreResolver,
       repoContext.markDirty,
       repoContext.signalWaits,
       repoContext.continuationClaims?.store,
+      autoDefinitionRetentionSourcesOf(repoContext),
     );
 
     const gcInput = runGcInputFromPolicy(
@@ -143,7 +147,8 @@ export const runGcCommand = withRemoteOptions(
       const preview = await runGcPreview(ctx, deps, gcInput);
       if (
         preview.workflowRunsToDelete === 0 && preview.outputsToDelete === 0 &&
-        preview.evaluatedSnapshotsToDelete === 0
+        preview.evaluatedSnapshotsToDelete === 0 &&
+        preview.autoDefinitionsToDelete === 0
       ) {
         cliCtx.logger.info("Nothing to clean up.");
         return;
@@ -178,5 +183,7 @@ export function runGcDataFromServer(data: Record<string, unknown>): RunGcData {
     evaluatedSnapshotsDeleted: result.evaluatedSnapshotsDeleted ?? 0,
     evaluatedSnapshotBytesReclaimed: result.evaluatedSnapshotBytesReclaimed ??
       0,
+    autoDefinitionsDeleted: result.autoDefinitionsDeleted ?? 0,
+    autoDefinitions: result.autoDefinitions ?? [],
   };
 }

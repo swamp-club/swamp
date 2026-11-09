@@ -56,6 +56,10 @@ import {
   type RetentionConfig,
   RetentionPolicy,
 } from "../../domain/retention/retention_policy.ts";
+import {
+  type AutoDefinitionRetentionSources,
+  createAutoDefinitionReaper,
+} from "../retention/auto_definitions.ts";
 
 export interface RunGcData {
   workflowRunsDeleted: number;
@@ -64,8 +68,16 @@ export interface RunGcData {
   outputBytesReclaimed: number;
   evaluatedSnapshotsDeleted: number;
   evaluatedSnapshotBytesReclaimed: number;
+  /** auto-definition bytes are not counted in it, so its meaning is unchanged */
   totalBytesReclaimed: number;
+  autoDefinitionsDeleted: number;
+  autoDefinitions: RunGcAutoDefinition[];
   dryRun: boolean;
+}
+
+export interface RunGcAutoDefinition {
+  name: string;
+  type: string;
 }
 
 export type RunGcEvent =
@@ -78,6 +90,8 @@ export interface RunGcInput {
   workflowRunRetentionDays?: number;
   outputRetentionDays?: number;
   evaluatedSnapshotRetentionDays?: number;
+  /** only from garbageCollection.autoDefinitions: never a one-off override */
+  autoDefinitionRetentionDays?: number;
 }
 
 export type RunGcGarbageCollectionPolicy = RetentionConfig;
@@ -91,6 +105,7 @@ export function runGcRetentionFromPolicy(
   | "workflowRunRetentionDays"
   | "outputRetentionDays"
   | "evaluatedSnapshotRetentionDays"
+  | "autoDefinitionRetentionDays"
 > {
   const retention = RetentionPolicy.fromConfig(policy);
   const toDays = (ms: number | undefined): number | undefined =>
@@ -100,12 +115,16 @@ export function runGcRetentionFromPolicy(
   const snapshots = retention.isExplicit("evaluatedSnapshots")
     ? toDays(retention.retentionMs("evaluatedSnapshots"))
     : undefined;
+  const autoDefinitions = toDays(retention.retentionMs("autoDefinitions"));
   return {
     workflowRunRetentionDays: toDays(retention.retentionMs("workflowRuns")),
     outputRetentionDays: toDays(retention.retentionMs("outputs")),
     ...(snapshots === undefined
       ? {}
       : { evaluatedSnapshotRetentionDays: snapshots }),
+    ...(autoDefinitions === undefined
+      ? {}
+      : { autoDefinitionRetentionDays: autoDefinitions }),
   };
 }
 
@@ -122,10 +141,14 @@ export function runGcInputFromPolicy(
   if (overrideRetentionDays === undefined) {
     return { dryRun, ...runGcRetentionFromPolicy(policy) };
   }
+  const { autoDefinitionRetentionDays } = runGcRetentionFromPolicy(policy);
   return {
     dryRun,
     workflowRunRetentionDays: overrideRetentionDays,
     outputRetentionDays: overrideRetentionDays,
+    ...(autoDefinitionRetentionDays === undefined
+      ? {}
+      : { autoDefinitionRetentionDays }),
   };
 }
 
@@ -137,6 +160,7 @@ export interface RunGcPreview {
   evaluatedSnapshotsToDelete: number;
   evaluatedSnapshotBytesReclaimable: number;
   totalBytesReclaimable: number;
+  autoDefinitionsToDelete: number;
 }
 
 export interface RunGcDeps {
@@ -147,6 +171,11 @@ export interface RunGcDeps {
     limit?: number;
     snapshotRetentionDays?: number;
   }) => Promise<RunGcResult>;
+  /** absent where the repository's auto-definitions cannot be reached */
+  collectAutoDefinitions?: (
+    cutoff: Date,
+    dryRun: boolean,
+  ) => Promise<RunGcAutoDefinition[]>;
 }
 
 const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set([
@@ -211,6 +240,7 @@ export function createRunGcDeps(
   markDirty?: MarkDirtyHook,
   signalWaits?: SignalWaitSupport,
   continuationClaims?: Pick<ContinuationClaimStore, "removeForRun">,
+  autoDefinitions?: AutoDefinitionRetentionSources,
 ): RunGcDeps {
   const service = createRunLifecycleService(
     repoDir,
@@ -221,7 +251,51 @@ export function createRunGcDeps(
   );
   return {
     gcAll: (options) => service.gcAll(options),
+    ...(autoDefinitions === undefined ? {} : {
+      collectAutoDefinitions: (cutoff, dryRun) =>
+        drainAutoDefinitions(autoDefinitions, cutoff, dryRun),
+    }),
   };
+}
+
+const AUTO_DEFINITION_GC_BATCH = 100;
+
+async function drainAutoDefinitions(
+  sources: AutoDefinitionRetentionSources,
+  cutoff: Date,
+  dryRun: boolean,
+): Promise<RunGcAutoDefinition[]> {
+  const reaper = createAutoDefinitionReaper(sources);
+  const removed: RunGcAutoDefinition[] = [];
+  while (true) {
+    const batch = await reaper.collectBatch(cutoff, AUTO_DEFINITION_GC_BATCH, {
+      dryRun,
+    });
+    for (const candidate of batch.removed) {
+      removed.push({
+        name: candidate.definition.name,
+        type: candidate.type.normalized,
+      });
+    }
+    if (!batch.more) return removed;
+  }
+}
+
+async function collectAutoDefinitionsFor(
+  deps: RunGcDeps,
+  input: RunGcInput,
+  dryRun: boolean,
+): Promise<RunGcAutoDefinition[]> {
+  if (
+    input.autoDefinitionRetentionDays === undefined ||
+    !deps.collectAutoDefinitions
+  ) {
+    return [];
+  }
+  const cutoff = new Date(
+    Date.now() - input.autoDefinitionRetentionDays * DAY_MS,
+  );
+  return await deps.collectAutoDefinitions(cutoff, dryRun);
 }
 
 export function createRunLifecycleService(
@@ -294,6 +368,8 @@ export async function runGcPreview(
     evaluatedSnapshotBytesReclaimable: result.snapshotBytesReclaimed,
     totalBytesReclaimable: result.workflowRunBytesReclaimed +
       result.outputBytesReclaimed + result.snapshotBytesReclaimed,
+    autoDefinitionsToDelete:
+      (await collectAutoDefinitionsFor(deps, input, true)).length,
   };
 }
 
@@ -319,6 +395,12 @@ export async function* runGc(
             snapshotRetentionDays: input.evaluatedSnapshotRetentionDays,
           }),
         });
+        // after the outputs: a definition whose last output went is now idle
+        const autoDefinitions = await collectAutoDefinitionsFor(
+          deps,
+          input,
+          input.dryRun,
+        );
 
         yield {
           kind: "completed" as const,
@@ -331,6 +413,8 @@ export async function* runGc(
             evaluatedSnapshotBytesReclaimed: result.snapshotBytesReclaimed,
             totalBytesReclaimed: result.workflowRunBytesReclaimed +
               result.outputBytesReclaimed + result.snapshotBytesReclaimed,
+            autoDefinitionsDeleted: autoDefinitions.length,
+            autoDefinitions,
             dryRun: result.dryRun,
           },
         };

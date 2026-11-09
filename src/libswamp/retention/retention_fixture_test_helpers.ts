@@ -33,7 +33,11 @@ import { StepTask } from "../../domain/workflows/step_task.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../domain/definitions/definition.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { Data } from "../../domain/data/data.ts";
 import type { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
@@ -132,11 +136,13 @@ export async function saveAgedOutput(
   outputRepo: YamlOutputRepository,
   type: ModelType,
   ageMs: number,
-  options: { running?: boolean } = {},
+  options: { running?: boolean; definitionId?: string } = {},
 ): Promise<AgedOutput> {
   const startedAt = new Date(Date.now() - ageMs);
   const output = ModelOutput.create({
-    definitionId: createDefinitionId(crypto.randomUUID()),
+    definitionId: createDefinitionId(
+      options.definitionId ?? crypto.randomUUID(),
+    ),
     methodName: "run",
     status: "running",
     startedAt,
@@ -232,4 +238,28 @@ export async function pathExists(path: string): Promise<boolean> {
     if (error instanceof Deno.errors.NotFound) return false;
     throw error;
   }
+}
+
+export interface AgedAutoDefinition {
+  definition: Definition;
+  path: string;
+}
+
+/** saved the way direct type execution saves one, under its name */
+export async function saveAgedAutoDefinition(
+  repo: Pick<YamlDefinitionRepository, "save">,
+  autoDefinitionsDir: string,
+  type: ModelType,
+  name: string,
+  ageMs: number,
+): Promise<AgedAutoDefinition> {
+  const definition = Definition.create({
+    name,
+    type: type.normalized,
+    typeVersion: "2026.01.01.1",
+  });
+  await repo.save(type, definition);
+  const path = join(autoDefinitionsDir, type.normalized, `${name}.yaml`);
+  await ageFile(path, ageMs);
+  return { definition, path };
 }

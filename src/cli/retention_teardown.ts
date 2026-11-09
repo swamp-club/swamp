@@ -40,6 +40,7 @@ import {
   requireInitializedRepo,
   resolveDatastoreForRepo,
 } from "./repo_context.ts";
+import { autoDefinitionRetentionSourcesOf } from "../libswamp/retention/auto_definitions.ts";
 
 const logger = getLogger(["swamp", "cli", "retention"]);
 
@@ -168,6 +169,9 @@ export async function runRetentionAtCommandEnd(
             workflowRunRepo: repo.repoContext.workflowRunRepo,
           },
           watermarks,
+          // the datastore lock held for the pass keeps runs from taking
+          // a model lock, so no per-model lock is tried
+          autoDefinitions: autoDefinitionRetentionSourcesOf(repo.repoContext),
           // The command holds the lock for the whole pass; its root unit
           // of work pushes once at the end.
           runBatch: (fn) => fn(),

@@ -50,6 +50,7 @@ import {
   type RunGcInput,
   runGcRetentionFromPolicy,
 } from "../../libswamp/data/run_gc.ts";
+import { serveAutoDefinitionRetentionSources } from "../deps.ts";
 import {
   createSummariseDeps,
   summarise,
@@ -146,6 +147,11 @@ export function resolveRunGcInput(
     ...(evaluatedSnapshotRetentionDays === undefined
       ? {}
       : { evaluatedSnapshotRetentionDays }),
+    // serve's own setting only: a request cannot remove definitions
+    ...(configuredRetention.autoDefinitionRetentionDays === undefined ? {} : {
+      autoDefinitionRetentionDays:
+        configuredRetention.autoDefinitionRetentionDays,
+    }),
   };
 }
 
@@ -1335,6 +1341,10 @@ export async function handleRunGc(
           ctx.repoContext.markDirty,
           ctx.repoContext.signalWaits,
           ctx.repoContext.continuationClaims?.store,
+          serveAutoDefinitionRetentionSources(
+            ctx.repoContext,
+            ctx.datastoreConfig,
+          ),
         );
 
         const marker = await new RepoMarkerRepository().read(
