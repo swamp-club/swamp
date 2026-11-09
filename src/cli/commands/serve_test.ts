@@ -46,6 +46,7 @@ import {
   parseMaxSignalWaitTimeout,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
+  parseWebhookRoutesPoll,
   readBulkCancelBody,
   readCancelRequestReason,
   readTlsFile,
@@ -327,6 +328,29 @@ Deno.test("parseMaxSignalWaitTimeout: refuses zero and anything above one year",
     UserError,
     "--max-signal-wait-timeout (2y) is more than the one year",
   );
+});
+
+Deno.test("parseWebhookRoutesPoll: unset and off leave polling off", () => {
+  assertEquals(parseWebhookRoutesPoll(undefined), undefined);
+  assertEquals(parseWebhookRoutesPoll("off"), undefined);
+  assertEquals(parseWebhookRoutesPoll(" OFF "), undefined);
+});
+
+Deno.test("parseWebhookRoutesPoll: accepts seconds and larger units", () => {
+  assertEquals(parseWebhookRoutesPoll("10s"), 10_000);
+  assertEquals(parseWebhookRoutesPoll("1m"), 60_000);
+});
+
+Deno.test("parseWebhookRoutesPoll: rejects milliseconds with the 1s floor", () => {
+  assertThrows(
+    () => parseWebhookRoutesPoll("500ms"),
+    UserError,
+    "--webhook-routes-poll must be off or whole seconds or larger units",
+  );
+});
+
+Deno.test("parseWebhookRoutesPoll: rejects bad formats", () => {
+  assertThrows(() => parseWebhookRoutesPoll("soon"), UserError);
 });
 
 Deno.test("parseDatastorePollInterval: unset returns undefined", () => {
@@ -1197,6 +1221,11 @@ Deno.test("collectServeExtraArgs: forwards --max-concurrent-webhook-runs", () =>
 Deno.test("collectServeExtraArgs: forwards --webhook-routes-dir", () => {
   const args = collectServeExtraArgs({ webhookRoutesDir: "routes" });
   assertEquals(args, ["--webhook-routes-dir", "routes"]);
+});
+
+Deno.test("collectServeExtraArgs: forwards --webhook-routes-poll", () => {
+  const args = collectServeExtraArgs({ webhookRoutesPoll: "30s" });
+  assertEquals(args, ["--webhook-routes-poll", "30s"]);
 });
 
 Deno.test("collectServeExtraArgs: forwards --max-runs-per-principal", () => {

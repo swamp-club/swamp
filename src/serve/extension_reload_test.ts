@@ -653,6 +653,37 @@ Deno.test("performServeReload: calls webhookUpdater with configs from serve.yaml
   }
 });
 
+Deno.test("performServeReload: passes what started the reload to webhookUpdater", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+    await Deno.writeTextFile(join(tmpDir, ".swamp", "serve.yaml"), "{}\n");
+
+    let received: import("./webhook_reload.ts").WebhookApplyContext | undefined;
+    await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        webhookUpdater: (_configs, context) => {
+          received = context;
+          return Promise.resolve({ changed: 0, warnings: [], errors: [] });
+        },
+        webhookContext: {
+          trigger: "reload",
+          principal: { kind: "user", id: "ada" },
+        },
+      },
+    );
+
+    assertEquals(received, {
+      trigger: "reload",
+      principal: { kind: "user", id: "ada" },
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("performServeReload: hands the refreshed trust list over before the webhook routes are parsed", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

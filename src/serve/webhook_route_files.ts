@@ -105,10 +105,14 @@ export interface RouteFileLoad {
   readonly refused: readonly RefusedRouteFile[];
 }
 
-/** an unchanged file whose dependencies could not answer keeps its live endpoint */
+/**
+ * a route file that failed to load but still serves: through an outage while
+ * unchanged, or as its last good route after a refused edit
+ */
 export interface KeptRouteFile {
   readonly file: string;
   readonly route: string;
+  readonly reason: "outage" | "refused";
   readonly message: string;
 }
 
@@ -151,6 +155,14 @@ async function realOrResolved(path: string): Promise<string> {
   }
 }
 
+/** a security rule, so file routes are dropped rather than kept */
+export class WebhookRoutesDirPlacementError extends UserError {
+  constructor(message: string) {
+    super(message);
+    this.name = "WebhookRoutesDirPlacementError";
+  }
+}
+
 /**
  * refuses a routes directory that is, or sits inside, a directory holding
  * extension code, so the option can never point the loader at an extension
@@ -164,7 +176,7 @@ export async function checkWebhookRoutesDir(
     const forbidden = await realOrResolved(extensionDir);
     if (routes === forbidden || isInside(forbidden, routes)) {
       throw markErrorPaths(
-        new UserError(
+        new WebhookRoutesDirPlacementError(
           `Webhook routes directory ${dir} is or sits inside ` +
             `${extensionDir}, which holds extension code; route files must ` +
             "live in their own directory (set --webhook-routes-dir, " +
@@ -285,6 +297,64 @@ async function readRouteFile(
   return { file, entry };
 }
 
+/** the loader and the poll snapshot must agree on which files count */
+function isRouteFileCandidate(item: Deno.DirEntry): boolean {
+  return !item.name.startsWith(".") && !item.isDirectory &&
+    ROUTE_FILE_EXTENSIONS.has(extname(item.name).toLowerCase());
+}
+
+async function digestHex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * a value that changes whenever a file the loader would read changes; files
+ * over the size cap count by size alone, since the loader refuses them unread
+ */
+export async function snapshotWebhookRoutesDir(dir: string): Promise<string> {
+  let realDir: string;
+  const items: { name: string; isSymlink: boolean }[] = [];
+  try {
+    realDir = await Deno.realPath(dir);
+    for await (const item of Deno.readDir(dir)) {
+      if (isRouteFileCandidate(item)) {
+        items.push({ name: item.name, isSymlink: item.isSymlink });
+      }
+    }
+  } catch (cause) {
+    if (cause instanceof Deno.errors.NotFound) return "missing";
+    throw cause;
+  }
+  items.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const entries: string[] = [];
+  for (const { name, isSymlink } of items) {
+    const path = join(dir, name);
+    try {
+      // like the loader, never read through a symlink that leaves the directory
+      if (isSymlink) {
+        const target = await Deno.realPath(path);
+        if (!isInside(realDir, target)) {
+          entries.push(`${name}:outside:${target}`);
+          continue;
+        }
+      }
+      const info = await Deno.stat(path);
+      if (!info.isFile || info.size > MAX_ROUTE_FILE_BYTES) {
+        entries.push(`${name}:${info.isFile ? "file" : "other"}:${info.size}`);
+        continue;
+      }
+      const bytes = await Deno.readFile(path);
+      entries.push(`${name}:${bytes.length}:${await digestHex(bytes)}`);
+    } catch (cause) {
+      entries.push(`${name}:unreadable:${cause}`);
+    }
+  }
+  return JSON.stringify([realDir, entries]);
+}
+
 /** a bad file is refused alone; only an unreadable directory throws */
 export async function loadWebhookRouteFiles(
   dir: string,
@@ -292,11 +362,7 @@ export async function loadWebhookRouteFiles(
   const names: { name: string; isSymlink: boolean }[] = [];
   try {
     for await (const item of Deno.readDir(dir)) {
-      if (item.name.startsWith(".")) continue;
-      if (!ROUTE_FILE_EXTENSIONS.has(extname(item.name).toLowerCase())) {
-        continue;
-      }
-      if (item.isDirectory) continue;
+      if (!isRouteFileCandidate(item)) continue;
       names.push({ name: item.name, isSymlink: item.isSymlink });
     }
   } catch (cause) {
@@ -415,6 +481,7 @@ export async function parseRouteFiles(
         kept.push({
           file,
           route: entry.route,
+          reason: "outage",
           message: `Kept the live endpoint for ${
             label(file, entry.route)
           }, unchanged since it last loaded: ${reason}`,
@@ -423,6 +490,132 @@ export async function parseRouteFiles(
       }
       refused.push(refusal(file, entry.route, reason));
     }
+  }
+  return { endpoints, refused, kept };
+}
+
+export interface LastGoodRouteFilesInput {
+  readonly previous: readonly WebhookEndpoint[];
+  /** the files the loader read, so a parse refusal can tell an edit apart */
+  readonly files: readonly WebhookRouteFile[];
+  readonly parsed: {
+    readonly endpoints: readonly WebhookEndpoint[];
+    readonly refused: readonly RefusedRouteFile[];
+    readonly kept: readonly KeptRouteFile[];
+  };
+  readonly loaderRefused: readonly RefusedRouteFile[];
+  /** the routes directory could not be read; never set for a placement refusal */
+  readonly directoryUnreadable: boolean;
+  /** why a kept endpoint may no longer serve, e.g. an untrusted scheme */
+  readonly keepRefusal?: (endpoint: WebhookEndpoint) => string | undefined;
+}
+
+interface KeepCandidate {
+  readonly endpoint: WebhookEndpoint;
+  readonly kept: KeptRouteFile;
+  readonly refusal: RefusedRouteFile;
+}
+
+function lastGoodEndpoint(
+  previous: readonly WebhookEndpoint[],
+  file: string,
+): WebhookEndpoint | undefined {
+  return previous.find((e) => e.source === "file" && e.file === file);
+}
+
+function lastGoodCandidate(
+  endpoint: WebhookEndpoint,
+  refused: RefusedRouteFile,
+): KeepCandidate {
+  return {
+    endpoint,
+    refusal: refused,
+    kept: {
+      file: refused.file,
+      route: endpoint.route,
+      reason: "refused",
+      message: `${refused.message}; its last good route ${endpoint.route} ` +
+        "keeps serving until the file loads",
+    },
+  };
+}
+
+/**
+ * A file that loaded before keeps its last good route when an edit or a broken
+ * directory stops it loading. An unchanged file refused by an answer (missing
+ * key, untrusted scheme) or a deleted file is dropped, so revocation still works.
+ */
+export function keepLastGoodRouteFiles(input: LastGoodRouteFilesInput): {
+  endpoints: WebhookEndpoint[];
+  refused: RefusedRouteFile[];
+  kept: KeptRouteFile[];
+} {
+  const { previous, parsed } = input;
+  const candidates: KeepCandidate[] = [];
+  const refused: RefusedRouteFile[] = [];
+
+  if (input.directoryUnreadable) {
+    for (const endpoint of previous) {
+      if (endpoint.source !== "file" || endpoint.file === undefined) continue;
+      const reason = "the routes directory could not be read";
+      candidates.push({
+        endpoint,
+        refusal: refusal(endpoint.file, endpoint.route, reason),
+        kept: {
+          file: endpoint.file,
+          route: endpoint.route,
+          reason: "outage",
+          message: `Kept the live endpoint for ${
+            label(endpoint.file, endpoint.route)
+          }: ${reason}`,
+        },
+      });
+    }
+  }
+  for (const loaderRefusal of input.loaderRefused) {
+    const live = lastGoodEndpoint(previous, loaderRefusal.file);
+    if (live) candidates.push(lastGoodCandidate(live, loaderRefusal));
+    else refused.push(loaderRefusal);
+  }
+  for (const parseRefusal of parsed.refused) {
+    const live = lastGoodEndpoint(previous, parseRefusal.file);
+    const entry = input.files.find((f) => f.file === parseRefusal.file)?.entry;
+    const edited = live !== undefined && entry !== undefined &&
+      (live.routeFileEntry === undefined ||
+        !sameValue(live.routeFileEntry, entry));
+    if (live && edited) candidates.push(lastGoodCandidate(live, parseRefusal));
+    else refused.push(parseRefusal);
+  }
+
+  const outageKept = new Set(parsed.kept.map((k) => k.file));
+  const endpoints: WebhookEndpoint[] = [];
+  const kept: KeptRouteFile[] = [];
+  for (const endpoint of parsed.endpoints) {
+    const keptEntry = outageKept.has(endpoint.file ?? "")
+      ? parsed.kept.find((k) => k.file === endpoint.file)
+      : undefined;
+    const stale = keptEntry ? input.keepRefusal?.(endpoint) : undefined;
+    if (keptEntry && stale !== undefined) {
+      refused.push(refusal(keptEntry.file, keptEntry.route, stale));
+      continue;
+    }
+    endpoints.push(endpoint);
+    if (keptEntry) kept.push(keptEntry);
+  }
+
+  const claimed = new Set(endpoints.map((e) => e.route));
+  for (const candidate of candidates) {
+    // a file that loads beats a kept route on the same path
+    if (
+      claimed.has(candidate.endpoint.route) ||
+      input.keepRefusal?.(candidate.endpoint) !== undefined
+    ) {
+      refused.push(candidate.refusal);
+      continue;
+    }
+    claimed.add(candidate.endpoint.route);
+    endpoints.push(candidate.endpoint);
+    kept.push(candidate.kept);
   }
   return { endpoints, refused, kept };
 }

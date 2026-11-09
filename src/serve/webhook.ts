@@ -249,6 +249,65 @@ export interface WebhookEndpoint {
   readonly routeFileEntry?: WebhookConfigEntry;
 }
 
+/** never holds a secret, so it can be logged and audited */
+export interface WebhookRouteChange {
+  readonly route: string;
+  readonly workflow: string;
+  readonly scheme: string;
+  readonly source: WebhookRouteSource;
+  readonly file?: string;
+}
+
+export interface WebhookEndpointDiff {
+  readonly added: readonly WebhookRouteChange[];
+  readonly changed: readonly WebhookRouteChange[];
+  readonly removed: readonly WebhookRouteChange[];
+}
+
+function routeChange(endpoint: WebhookEndpoint): WebhookRouteChange {
+  return {
+    route: endpoint.route,
+    workflow: endpoint.workflowIdOrName,
+    scheme: endpoint.verifier.scheme,
+    source: endpoint.source ?? "config",
+    ...(endpoint.file !== undefined ? { file: endpoint.file } : {}),
+  };
+}
+
+/** routes are compared by path; changed and added report the new endpoint */
+export function diffWebhookEndpoints(
+  previous: readonly WebhookEndpoint[],
+  next: readonly WebhookEndpoint[],
+): WebhookEndpointDiff {
+  const oldByRoute = new Map(previous.map((e) => [e.route, e]));
+  const newByRoute = new Map(next.map((e) => [e.route, e]));
+  const added: WebhookRouteChange[] = [];
+  const changed: WebhookRouteChange[] = [];
+  const removed: WebhookRouteChange[] = [];
+  for (const [route, ep] of newByRoute) {
+    const old = oldByRoute.get(route);
+    if (!old) {
+      added.push(routeChange(ep));
+    } else if (
+      old.workflowIdOrName !== ep.workflowIdOrName ||
+      old.secret !== ep.secret ||
+      JSON.stringify(old.verifier) !== JSON.stringify(ep.verifier) ||
+      (old.source ?? "config") !== (ep.source ?? "config") ||
+      old.file !== ep.file
+    ) {
+      changed.push(routeChange(ep));
+    }
+  }
+  for (const [route, ep] of oldByRoute) {
+    if (!newByRoute.has(route)) removed.push(routeChange(ep));
+  }
+  return { added, changed, removed };
+}
+
+export function webhookEndpointDiffSize(diff: WebhookEndpointDiff): number {
+  return diff.added.length + diff.changed.length + diff.removed.length;
+}
+
 /**
  * the scheme counts only when the fourth field is a known keyword; otherwise
  * the legacy form takes everything after the second colon as the secret, so a
@@ -690,44 +749,28 @@ export class WebhookService {
   }
 
   updateEndpoints(newEndpoints: readonly WebhookEndpoint[]): number {
-    const oldByRoute = new Map(this.endpoints.map((e) => [e.route, e]));
-    const newByRoute = new Map(newEndpoints.map((e) => [e.route, e]));
-
-    let changed = 0;
-    for (const [route, ep] of newByRoute) {
-      const old = oldByRoute.get(route);
-      if (!old) {
-        changed++;
-        logger.info("Webhook route added: {route} → {workflow} ({scheme})", {
-          route,
-          workflow: ep.workflowIdOrName,
-          scheme: ep.verifier.scheme,
-        });
-      } else if (
-        old.workflowIdOrName !== ep.workflowIdOrName ||
-        old.secret !== ep.secret ||
-        JSON.stringify(old.verifier) !== JSON.stringify(ep.verifier) ||
-        (old.source ?? "config") !== (ep.source ?? "config") ||
-        old.file !== ep.file
-      ) {
-        changed++;
-        logger.info("Webhook route updated: {route} → {workflow} ({scheme})", {
-          route,
-          workflow: ep.workflowIdOrName,
-          scheme: ep.verifier.scheme,
-        });
-      }
+    const diff = diffWebhookEndpoints(this.endpoints, newEndpoints);
+    for (const ep of diff.added) {
+      logger.info("Webhook route added: {route} → {workflow} ({scheme})", {
+        route: ep.route,
+        workflow: ep.workflow,
+        scheme: ep.scheme,
+      });
     }
-    for (const route of oldByRoute.keys()) {
-      if (!newByRoute.has(route)) {
-        changed++;
-        this.lastQueueDelayMs.delete(route);
-        logger.info("Webhook route removed: {route}", { route });
-      }
+    for (const ep of diff.changed) {
+      logger.info("Webhook route updated: {route} → {workflow} ({scheme})", {
+        route: ep.route,
+        workflow: ep.workflow,
+        scheme: ep.scheme,
+      });
+    }
+    for (const ep of diff.removed) {
+      this.lastQueueDelayMs.delete(ep.route);
+      logger.info("Webhook route removed: {route}", { route: ep.route });
     }
 
     this.endpoints = [...newEndpoints];
-    return changed;
+    return webhookEndpointDiffSize(diff);
   }
 
   /** holds resolved secrets: for the route table builder only */

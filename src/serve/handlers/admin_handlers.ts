@@ -238,6 +238,7 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { webhookTypeRegistry } from "../../domain/webhooks/webhook_type_registry.ts";
 import type { Principal } from "../../domain/access/principal.ts";
 import {
+  accessCallerOf,
   authorizeOrReject,
   authorizeVaultOrReject,
   type ConnectionContext,
@@ -2564,6 +2565,15 @@ export async function handleServeReload(
       ctx.repoDir,
       ctx.datastoreResolver,
     );
+    const caller = accessCallerOf(socket, principal);
+    const webhookContext: NonNullable<ServeReloadOptions["webhookContext"]> = {
+      trigger: "reload",
+      sourceIp: caller.sourceIp,
+      ...(principal
+        ? { principal: { kind: principal.kind, id: principal.id } }
+        : {}),
+      ...(caller.client !== undefined ? { client: caller.client } : {}),
+    };
     const reloadOptions: ServeReloadOptions = {
       triggerOverrideUpdater: ctx.scheduledExecution
         ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
@@ -2571,6 +2581,7 @@ export async function handleServeReload(
         : undefined,
       workflowReloader: ctx.workflowReloader,
       webhookUpdater: ctx.webhookUpdater,
+      webhookContext,
       trustedCollectivesUpdater: ctx.trustedCollectivesUpdater,
       configPath: ctx.serveConfigPath,
     };
@@ -3221,6 +3232,7 @@ export function redactServeOptions(
       scheme: wh.scheme ?? "github",
     })),
     webhookRoutesDir: opts.webhookRoutesDir ?? null,
+    webhookRoutesPoll: opts.webhookRoutesPoll ?? null,
     maxConcurrentRuns: opts.maxConcurrentRuns ?? null,
     maxConcurrentWebhookRuns: opts.maxConcurrentWebhookRuns ?? null,
     maxRunsPerPrincipal: opts.maxRunsPerPrincipal ?? null,

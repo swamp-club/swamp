@@ -214,12 +214,23 @@ scheme: github
   route files; write each value out.
 - `swamp serve reload` makes a new or changed file live; deleting the file
   removes the route on the next reload.
+- With `webhook-routes-poll: 30s` in `.swamp/serve.yaml` (or
+  `--webhook-routes-poll`, `SWAMP_WEBHOOK_ROUTES_POLL`), serve polls the
+  directory and a deploy alone makes the change live, once two polls agree (one
+  to two intervals). It needs no `--hot-reload`; every serve node polls its own
+  checkout.
 - A bad file is refused on its own (named in the startup log or reload errors);
   two files claiming one route are both refused. A `serve.yaml` or `--webhook`
   route on the same path wins, and the file route is reported as shadowed.
-- If a reload cannot reach a file's vault or extension scheme (backend down,
-  timeout), an unchanged file keeps its live route and the reload lists it as
-  kept. A missing key, an edited file, or an outage at startup still refuses it.
+- On a reload or poll, a file that loaded before keeps its last good route when
+  an edit breaks it (bad YAML, a clash, a refused edit) or the directory cannot
+  be read; the error lists it as kept. An unchanged file whose vault key is gone
+  or whose scheme is no longer trusted is dropped, and so is a deleted file. If
+  a vault or scheme lookup is down, an unchanged file keeps its live route; at
+  startup there is nothing to keep, so it is refused.
+- Each reload or poll that changes routes writes a `webhook.routes.applied`
+  audit event with `file:<name>` sources; admin health shows refused and kept
+  files and the poll state under `webhookRouteFiles`.
 - Run `swamp serve check-config` in CI on the PR to catch a bad file before it
   reaches serve. It does not look up vault keys or resolve extension schemes.
 - Health and the dashboard show such a route with source `file` and its file

@@ -94,6 +94,39 @@ export interface RetentionHealthProvider {
   retention(): Promise<HealthSnapshotRetention | null>;
 }
 
+/** names files, routes and vault keys: admins only */
+export interface HealthSnapshotWebhookRouteFiles {
+  readonly directory: string;
+  /** null when webhook-routes-poll is off */
+  readonly poll: {
+    readonly intervalMs: number;
+    readonly lastCheckedAt: string | null;
+    readonly lastAppliedAt: string | null;
+    readonly lastError: string | null;
+  } | null;
+  readonly lastApplied: {
+    readonly at: string;
+    readonly trigger: string;
+  } | null;
+  readonly refused: ReadonlyArray<{
+    readonly file: string;
+    readonly route?: string;
+    readonly message: string;
+  }>;
+  readonly kept: ReadonlyArray<{
+    readonly file: string;
+    readonly route: string;
+    readonly reason: string;
+    readonly message: string;
+  }>;
+  readonly shadowed: ReadonlyArray<{
+    readonly file: string;
+    readonly route: string;
+    readonly by: string;
+  }>;
+  readonly directoryError?: string;
+}
+
 export interface HealthSnapshot {
   readonly instanceId: string;
   readonly deploymentMode: string;
@@ -112,6 +145,7 @@ export interface HealthSnapshot {
   readonly components: ComponentHealth[];
   /** Present when serve was given a retention provider. */
   readonly retention?: HealthSnapshotRetention;
+  readonly webhookRouteFiles?: HealthSnapshotWebhookRouteFiles;
 }
 
 export interface ScheduleProvider {
@@ -169,6 +203,9 @@ export interface HealthCollectorDeps {
   readonly webhookProvider: WebhookProvider | null;
   readonly remoteOnly: boolean;
   readonly retentionProvider?: RetentionHealthProvider | null;
+  readonly webhookRouteFilesProvider?:
+    | (() => HealthSnapshotWebhookRouteFiles)
+    | null;
   /**
    * How long, in milliseconds, one collected snapshot is served to every
    * caller before the next call collects again. Defaults to 0: every call
@@ -329,6 +366,9 @@ export class HealthCollector {
       webhooks,
       components,
       ...(retention ? { retention } : {}),
+      ...(this.#deps.webhookRouteFilesProvider
+        ? { webhookRouteFiles: this.#deps.webhookRouteFilesProvider() }
+        : {}),
     };
   }
 }

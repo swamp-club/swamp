@@ -181,8 +181,13 @@ export async function healthSnapshotFor(
     keep(snapshot.webhooks, (webhook) => reads("workflow", webhook.workflow)),
   ]);
 
-  // Retention describes the deployment, like components: admins only.
-  const { retention: _retention, ...shared } = snapshot;
+  // Retention and route files describe the deployment, like components:
+  // admins only.
+  const {
+    retention: _retention,
+    webhookRouteFiles: _webhookRouteFiles,
+    ...shared
+  } = snapshot;
   return {
     ...shared,
     activeRuns: activeRuns.map((run) => ({ ...run, principalId: null })),

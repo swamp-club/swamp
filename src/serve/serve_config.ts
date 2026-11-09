@@ -98,6 +98,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   caCert: "SWAMP_CA_CERT",
   grantsDir: "SWAMP_GRANTS_DIR",
   webhookRoutesDir: "SWAMP_WEBHOOK_ROUTES_DIR",
+  webhookRoutesPoll: "SWAMP_WEBHOOK_ROUTES_POLL",
   wsIdleTimeout: "SWAMP_WS_IDLE_TIMEOUT",
   queueTimeout: "SWAMP_QUEUE_TIMEOUT",
   verifyOnEnroll: "SWAMP_VERIFY_ON_ENROLL",
@@ -185,6 +186,7 @@ export interface ServeConfigFile {
   "advertise-address"?: string;
   "grants-dir"?: string;
   "webhook-routes-dir"?: string;
+  "webhook-routes-poll"?: string;
   "grant-reload"?: string;
   "ws-idle-timeout"?: string;
   "queue-timeout"?: string;
@@ -311,6 +313,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "grants-file",
   "grants-dir",
   "webhook-routes-dir",
+  "webhook-routes-poll",
   "grant-reload",
   "address",
   "advertise-address",
@@ -593,6 +596,7 @@ function validateConfigValues(
     ["advertise-address", raw["advertise-address"]],
     ["grants-dir", raw["grants-dir"]],
     ["webhook-routes-dir", raw["webhook-routes-dir"]],
+    ["webhook-routes-poll", raw["webhook-routes-poll"]],
     ["grant-reload", raw["grant-reload"]],
     ["ws-idle-timeout", raw["ws-idle-timeout"]],
     ["queue-timeout", raw["queue-timeout"]],
@@ -1028,6 +1032,8 @@ export interface MergedServeOptions {
   grantsDir?: string;
   /** relative paths resolve against the repository */
   webhookRoutesDir: string;
+  /** a duration; unset or "off" leaves the routes directory unpolled */
+  webhookRoutesPoll?: string;
   grantReload: string;
   address?: string;
   advertiseAddress?: string;
@@ -1273,6 +1279,13 @@ export function mergeServeOptions(
     config?.["webhook-routes-dir"],
     undefined,
   ) || DEFAULT_WEBHOOK_ROUTES_DIR;
+
+  const webhookRoutesPoll = resolveString(
+    "webhook-routes-poll",
+    cliOptions.webhookRoutesPoll as string | undefined,
+    config?.["webhook-routes-poll"],
+    undefined,
+  ) || undefined;
 
   const grantReload = resolveString(
     "grant-reload",
@@ -1599,6 +1612,7 @@ export function mergeServeOptions(
     grantsFile,
     grantsDir,
     webhookRoutesDir,
+    ...(webhookRoutesPoll !== undefined ? { webhookRoutesPoll } : {}),
     grantReload,
     ...(address !== undefined ? { address } : {}),
     ...(advertiseAddress !== undefined ? { advertiseAddress } : {}),
