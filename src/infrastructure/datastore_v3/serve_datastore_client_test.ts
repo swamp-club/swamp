@@ -60,6 +60,7 @@ import {
   MAX_HAS_HASHES,
   MAX_PUT_OP_REPLY_BYTES,
   MAX_WRITTEN_COMMIT_REPLY_BYTES,
+  resetHeardServeRepliesForTesting,
   routeTemplate,
   SERVE_DATASTORE_ACCESS_HEADER,
   SERVE_DATASTORE_LOG_HEADER,
@@ -1408,6 +1409,8 @@ Deno.test("ServeDatastoreClient: a dedicated HTTP client is made once, on first 
 });
 
 Deno.test("ServeDatastoreClient.initiatorMode: read from serve's replies that carry its log, decoded, and never from a reply without", async () => {
+  // what other clients of this process heard is shared; this one starts fresh
+  resetHeardServeRepliesForTesting();
   let reply: () => Response = () => Response.json({ head: 0, commits: [] });
   const { client } = clientWith(() => reply());
   assertEquals(client.initiatorMode(), undefined);
@@ -1450,6 +1453,7 @@ Deno.test("ServeDatastoreClient.initiatorMode: read from serve's replies that ca
 
 Deno.test("ServeDatastoreClient.initiatorMode: a 401 or 403 reply never names the principal, even with serve's log and principal headers (swamp-club#4512)", async () => {
   for (const status of [401, 403]) {
+    resetHeardServeRepliesForTesting();
     const { client } = clientWith(() =>
       Response.json({ code: "refused", message: "no" }, {
         status,
@@ -1551,4 +1555,110 @@ Deno.test("ServeDatastoreClient.authorizeRemovals: reads a verdict per commit, a
   assertEquals(requests[0].url, `${PREFIX}/authorize`);
   const older = clientWith(() => new Response("no", { status: 404 })).client;
   assertEquals(await older.authorizeRemovals([commit], signal()), undefined);
+});
+
+Deno.test("ServeDatastoreClient.postCommits: maps each result as its single reply would be, and pads what serve did not try", async () => {
+  const commit = {
+    partition: modelPartition(),
+    envelope: { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+    chunks: [],
+  };
+  const { client, requests } = clientWith(() =>
+    Response.json({
+      results: [
+        { status: 200, body: { seq: 1, commit: { seq: 1 }, parentTxnId: "p" } },
+        { status: 409, body: { code: "stale_seq", seq: 4, message: "stale" } },
+      ],
+      released: false,
+    })
+  );
+  const reply = await client.postCommits(
+    [commit, commit, commit],
+    "lease-1",
+    signal(),
+  );
+  assertEquals(new URL(requests[0].url).pathname.endsWith("/commits"), true);
+  assertEquals(reply.released, false);
+  assertEquals(reply.outcomes.map((outcome) => outcome.kind), [
+    "landed",
+    "refused",
+    "not-tried",
+  ]);
+  const landed = reply.outcomes[0];
+  assertEquals(
+    landed.kind === "landed" ? landed.reply.parentTxnId : undefined,
+    "p",
+  );
+  const refused = reply.outcomes[1];
+  assertEquals(
+    refused.kind === "refused" ? refused.error.constructor.name : "",
+    "ServeStaleSeqError",
+  );
+});
+
+Deno.test("ServeDatastoreClient.postCommits: a reply naming more results than commits sent, or one without a status, is refused", async () => {
+  const commit = {
+    partition: modelPartition(),
+    envelope: { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+    chunks: [],
+  };
+  for (
+    const results of [[{ status: 200, body: { seq: 1 } }, {
+      status: 200,
+      body: { seq: 2 },
+    }], [{ body: {} }]]
+  ) {
+    const { client } = clientWith(() => Response.json({ results }));
+    await assertRejects(() =>
+      client.postCommits([commit], undefined, signal())
+    );
+  }
+});
+
+Deno.test("ServeDatastoreClient: a lock's catch-up and a changes page's anchor verdict are read when well formed and dropped when not", async () => {
+  const requested = { cursor: 3 };
+  for (
+    const [catchUp, expected] of [
+      [
+        {
+          requested,
+          changes: [],
+          cursor: 5,
+          more: false,
+          anchor: { verdict: "behind", serveHead: 2 },
+        },
+        { verdict: "behind", serveHead: 2 },
+      ],
+      [{ requested, changes: "not a list", cursor: 5, more: false }, undefined],
+      [{ changes: [], cursor: 5, more: false }, undefined],
+    ] as const
+  ) {
+    const { client } = clientWith(() =>
+      Response.json({
+        leaseId: "l",
+        lockKey: "k",
+        ttlMs: 1000,
+        expiresAt: new Date().toISOString(),
+        catchUp,
+      }, { status: 201 })
+    );
+    const reply = await client.acquireLock("k", 1000, 0, signal(), {
+      catchUp: requested,
+    });
+    assert(reply.acquired);
+    assertEquals(
+      reply.acquired ? reply.catchUp?.page?.anchor : "unacquired",
+      expected,
+    );
+  }
+  const { client } = clientWith(() =>
+    Response.json({
+      changes: [],
+      cursor: 1,
+      more: false,
+      anchor: { verdict: "other-commit" },
+    })
+  );
+  // an other-commit verdict naming no txnId is not trusted
+  assertEquals((await client.changes(0, signal())).anchor, undefined);
 });

@@ -199,6 +199,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#4195: a serve-mode checkout's status lists the explicit
   // leases it holds, from its own record of them.
   "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/explicit_model_leases.ts",
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/bucket_write_retry.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/control_plane_lease_store.ts",
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",

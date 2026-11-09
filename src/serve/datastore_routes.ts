@@ -26,6 +26,7 @@ export type DatastoreRoute =
     readonly namespace: string;
     readonly sha256: string;
   }
+  | { readonly kind: "batch"; readonly namespace: string }
   | {
     readonly kind: "commits";
     readonly namespace: string;
@@ -84,6 +85,9 @@ export function matchDatastoreRoute(
   if (rest.length === 3 && rest[0] === "partitions" && rest[2] === "commits") {
     return { kind: "commits", namespace, partition: rest[1] };
   }
+  if (rest.length === 1 && rest[0] === "commits") {
+    return { kind: "batch", namespace };
+  }
   if (rest.length === 1 && rest[0] === "changes") {
     return { kind: "changes", namespace };
   }
@@ -124,6 +128,8 @@ export function datastoreRouteTemplate(route: DatastoreRoute): string {
       return "/api/v1/datastore/{namespace}/chunks/has";
     case "chunk":
       return "/api/v1/datastore/{namespace}/chunks/{sha256}";
+    case "batch":
+      return "/api/v1/datastore/{namespace}/commits";
     case "commits":
       return "/api/v1/datastore/{namespace}/partitions/{partition}/commits";
     case "changes":

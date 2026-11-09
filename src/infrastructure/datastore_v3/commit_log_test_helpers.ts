@@ -40,10 +40,12 @@ import type {
   OutboxPreparation,
   SweepState,
 } from "../../domain/datastore_v3/commit_outbox.ts";
-import type {
-  CommitLogUnitOptions,
-  CommitSink,
-  SinkOutbox,
+import {
+  type CommitLogUnitOptions,
+  CommitNotTriedError,
+  type CommitSink,
+  type SinkBatch,
+  type SinkOutbox,
 } from "./commit_log_unit_of_work.ts";
 
 export const WRITER = { host: "host-a", pid: 4242, instance: "cli-1" } as const;
@@ -91,6 +93,85 @@ export class MemorySink implements CommitSink {
   commitsOf(partition: PartitionKey): Commit[] {
     return this.landed.filter((commit) => commit.partition.equals(partition));
   }
+}
+
+interface BatchEntry {
+  readonly commit: Commit;
+  readonly resolve: (result: CommitStoreAppendResult) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+/**
+ * takes batches as serve does: in slot order, stopping at the first commit that
+ * does not land; the ones after it are not tried
+ */
+export class BatchMemorySink extends MemorySink {
+  readonly batches: { partitions: string[]; release?: string }[] = [];
+  refuse: (commit: Commit) => Error | undefined = () => undefined;
+  batchLimit: number | undefined;
+
+  override async append(commit: Commit): Promise<CommitStoreAppendResult> {
+    const refusal = this.refuse(commit);
+    if (refusal !== undefined) {
+      this.appendCalls.push(commit.partition.toString());
+      throw refusal;
+    }
+    return await super.append(commit);
+  }
+
+  beginBatch = (
+    slots: number,
+    options?: { readonly release?: string },
+  ): Promise<SinkBatch | undefined> => {
+    if (slots === 1 && options?.release === undefined) {
+      return Promise.resolve(undefined);
+    }
+    const entries: (BatchEntry | "skipped" | undefined)[] = new Array(slots);
+    let settled = 0;
+    const send = async () => {
+      const items = entries.filter((entry): entry is BatchEntry =>
+        entry !== undefined && entry !== "skipped"
+      );
+      if (items.length === 0) return;
+      this.batches.push({
+        partitions: items.map((item) => item.commit.partition.toString()),
+        ...(options?.release === undefined ? {} : { release: options.release }),
+      });
+      let stopped = false;
+      for (const item of items) {
+        if (stopped) {
+          item.reject(
+            new CommitNotTriedError(item.commit.partition.toString()),
+          );
+          continue;
+        }
+        try {
+          item.resolve(await this.append(item.commit));
+        } catch (error) {
+          stopped = true;
+          item.reject(error);
+        }
+      }
+    };
+    const settle = async () => {
+      if (++settled === slots) await send();
+    };
+    return Promise.resolve({
+      append: async (slot, commit) => {
+        const result = new Promise<CommitStoreAppendResult>(
+          (resolve, reject) => {
+            entries[slot] = { commit, resolve, reject };
+          },
+        );
+        await settle();
+        return await result;
+      },
+      skip: async (slot) => {
+        entries[slot] = "skipped";
+        await settle();
+      },
+    });
+  };
 }
 
 export class OutboxMemorySink extends MemorySink {

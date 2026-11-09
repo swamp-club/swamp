@@ -301,8 +301,12 @@ import { decideOfflineWork } from "../domain/datastore_v3/offline_write_policy.t
 import { partitionOf } from "../domain/datastore_v3/partition_key.ts";
 import type { MethodKind } from "../domain/models/model.ts";
 import {
+  catchUpDeferredAt,
+  catchUpDeferredTo,
   catchUpV3HandlesAt,
+  goServeOfflineAt,
   holdV3Writer,
+  serveCatchUpRequestAt,
   v3BucketNamespacedStoreAt,
   type V3DatastoreConfig,
   v3DatastoreConfigOf,
@@ -486,6 +490,12 @@ export interface RequireRepoOptions {
    * (serve's team mode); the result's v3Role says which this process became
    */
   followV3Lease?: boolean;
+  /**
+   * in team mode, leave the writer hold's catch-up to the command's lock at
+   * serve, which answers with it; a command that ends up taking no lock calls
+   * catchUpDeferredAt before it reads
+   */
+  catchUpAtLock?: boolean;
   /**
    * on v3, how the lease hold meets a claim on it: a direct writer's is refused
    * once serve owns the datastore, unless set; serve passes its address,
@@ -1201,6 +1211,18 @@ async function adoptManagedConfigOnV3(
     logger.debug`Serve is unreachable: existing config is adopted later`;
     return;
   }
+  // a copy whose catch-up waits for the lock can only list more to adopt than
+  // a current one: with nothing listed there is nothing to commit, and with
+  // anything listed the copy is caught up first, as without the wait
+  if (catchUpDeferredTo(config.path)) {
+    const pending = await planV3ConfigAdoption(repoDir, config, configBase, {
+      lockfileSource: repoLocalLockfilePath(repoDir, marker),
+    });
+    if (pending.adoptions.length === 0 && pending.lockfile === undefined) {
+      return;
+    }
+    await catchUpDeferredAt(config.path);
+  }
   try {
     const plan = await adoptV3Config({
       repoContext,
@@ -1565,8 +1587,10 @@ export async function requireInitializedRepoUnlocked(
       ...(options.v3OwnerCheck !== undefined
         ? { ownerCheck: options.v3OwnerCheck }
         : {}),
+      ...(options.catchUpAtLock === true ? { catchUpAtLock: true } : {}),
     });
-    // the hold caught up from serve, which named the caller's principal
+    // the principal serve named at the hold's catch-up, or that the checkout
+    // stored; a lock's catch-up names it again
     nameLockHolder(datastoreRootOf(datastoreConfig));
   }
 
@@ -1765,11 +1789,19 @@ function serveLockOf(
     lockKey: serveKey,
     displayKey,
     maxWaitMs,
-    onAcquired: () =>
-      catchUpV3HandlesAt(
+    onAcquired: async (delivered) => {
+      await catchUpV3HandlesAt(
         root,
         options?.ignoresStop === true ? { ignoresStop: true } : undefined,
-      ),
+        delivered,
+      );
+      nameLockHolder(root);
+    },
+    // a lock that is a deferred hold's first contact goes offline as the
+    // hold's catch-up would have
+    onUnreachable: (error) => goServeOfflineAt(root, error),
+    // serve answers the lock with what the copy lacks, sparing a catch-up
+    catchUpRequest: () => serveCatchUpRequestAt(root),
     // registered while held, so the checkout's commits to the partition name
     // the lease
     root,
@@ -1799,6 +1831,15 @@ function serveLockOf(
         maxBackoffMs: MODEL_LOCK_MAX_BACKOFF_MS,
       }),
   });
+}
+
+/**
+ * a command that left its writer hold's catch-up to a lock, and takes none,
+ * catches up before it reads; nothing for a hold that caught up itself
+ */
+export async function catchUpDeferred(config: DatastoreConfig): Promise<void> {
+  const root = datastoreRootOf(config);
+  if (root !== undefined) await catchUpDeferredAt(root);
 }
 
 /** the datastore root a serve-mode checkout's state is kept under, if local */
@@ -2607,6 +2648,8 @@ export interface ModelLockResult {
    */
   pushWritten: (written: readonly WrittenVersion[]) => Promise<void>;
   release: () => Promise<void>;
+  /** the command's own lease at serve, which a commit ending the hold may end */
+  releasableLease: () => string | undefined;
   /**
    * false when every pull reported 0 files, which spares a full catalog
    * backfill while the lock is held
@@ -2627,10 +2670,14 @@ export interface ModelLockResult {
  */
 async function checkpointStepUnderLease(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  release: string | undefined,
 ): Promise<void> {
   let outcome: Awaited<ReturnType<typeof checkpointOpenUnitOfWork>>;
   try {
-    outcome = await checkpointOpenUnitOfWork(repoContext);
+    outcome = await checkpointOpenUnitOfWork(
+      repoContext,
+      release === undefined ? undefined : { release },
+    );
   } catch (error) {
     getSwampLogger(["cli", "lock"])
       .warn`Could not commit this step's writes before releasing its lock at serve; the run's end commit tries again: ${error}`;
@@ -4112,10 +4159,22 @@ export async function acquireModelLocks(
   // locks are released; under a lease at serve they commit before release, so
   // they reach serve naming the lease
   const atServe = heldLocks.some((lock) => lock instanceof ServeLock);
+  // the one lease at serve a command holds here, which its last commit ends
+  const releasableLease = (): string | undefined => {
+    const leases = heldLocks.flatMap((lock) =>
+      lock instanceof ServeLock && lock.lease !== undefined
+        ? [lock.lease.leaseId]
+        : []
+    );
+    return leases.length === 1 ? leases[0] : undefined;
+  };
   const flush = async (written?: readonly WrittenVersion[]) => {
     try {
       if (atServe && options?.repoContext !== undefined) {
-        await checkpointStepUnderLease(options.repoContext);
+        await checkpointStepUnderLease(
+          options.repoContext,
+          releasableLease(),
+        );
       }
       await push(written);
     } finally {
@@ -4145,6 +4204,7 @@ export async function acquireModelLocks(
     push: () => push(),
     pushWritten: push,
     release,
+    releasableLease,
     synced,
     heldLockIds: lockIds(),
     lentLocks,

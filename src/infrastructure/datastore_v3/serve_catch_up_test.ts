@@ -414,7 +414,36 @@ Deno.test("ServeCatchUp.catchUp: a serve without the feed anchor is refused befo
     assertEquals(error.serveUrl, SERVE_URL);
     assertEquals(error.copyDir, dir);
     assertEquals(error.divergence, { kind: "behind", serveHead: 0 });
-    assertEquals(swapped.requests.changes, 0, "the feed was never read");
+    // a serve that does not check the anchor with the page is asked on its
+    // own, before the page it sent is applied
+    assertEquals(swapped.requests.partitionCommits, 1);
+    assertEquals(appends, [1, 2, 3]);
+    assertEquals(await copySeqs(store, OTHER), []);
+    assertEquals(state.feedCursor(), 3);
+    assertEquals(state.feedAnchor(), anchor);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a serve that checks the anchor with the page refuses it in that one read, before anything is applied", async () => {
+  await withCheckout(async (checkout) => {
+    const { store, state, serve, catchUp, appends } = checkout;
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    await catchUp.catchUp(signal());
+    const anchor = state.feedAnchor();
+
+    const swapped = new FakeServe();
+    swapped.checksAnchors = true;
+    swapped.land(await another(1, OTHER));
+    swapped.land(await another(2, OTHER));
+    const error = await assertRejects(
+      () => through(swapped, checkout).catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+
+    assertEquals(error.divergence, { kind: "behind", serveHead: 0 });
+    assertEquals(swapped.anchorsAsked, [anchor!]);
+    assertEquals(swapped.requests.changes, 1);
+    assertEquals(swapped.requests.partitionCommits, 0, "no read of its own");
     assertEquals(appends, [1, 2, 3]);
     assertEquals(await copySeqs(store, OTHER), []);
     assertEquals(state.feedCursor(), 3);
@@ -1260,5 +1289,76 @@ Deno.test("ServeCatchUp.catchUp: a reset of the copy by another command while th
     } finally {
       reset.close();
     }
+  });
+});
+
+Deno.test("ServeCatchUp.applyStamped: a commit serve stamped is taken only on the copy's head, when serve names that head as its parent", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    serve.land(await other(1));
+    await catchUp.catchUp(signal());
+    const second = await other(2);
+
+    // serve could not name the parent: the caller reads the partition
+    assertEquals(
+      await catchUp.applyStamped("", MODEL, second.toJSON(), undefined),
+      false,
+    );
+    // not the next commit on the copy's head
+    assertEquals(
+      await catchUp.applyStamped(
+        "",
+        MODEL,
+        (await other(3)).toJSON(),
+        "other-2",
+      ),
+      false,
+    );
+    assertEquals(await copySeqs(store, MODEL), [1]);
+
+    const error = await assertRejects(
+      () => catchUp.applyStamped("", MODEL, second.toJSON(), "another-1"),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(error.divergence, {
+      kind: "other-commit",
+      serveTxnId: "another-1",
+    });
+    assertEquals(await copySeqs(store, MODEL), [1]);
+
+    assertEquals(
+      await catchUp.applyStamped("", MODEL, second.toJSON(), "other-1"),
+      true,
+    );
+    assertEquals(await copySeqs(store, MODEL), [1, 2]);
+    assertEquals(serve.requests.partitionCommits, 0);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a page sent with a lock is applied without reading it again, and one with more to come is read on from its cursor", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    const asked = catchUp.request();
+    const first = await serve.changes(asked.cursor, signal(), 2);
+    assertEquals(first.more, true);
+    const reads = serve.requests.changes;
+
+    await catchUp.catchUp(signal(), { requested: asked, page: first });
+
+    assertEquals(await copySeqs(store, MODEL), [1, 2, 3]);
+    // one read for what the lock's page left, from where it ended
+    assertEquals(serve.requests.changes, reads + 1);
+    assertEquals(serve.changesReads.at(-1)?.cursor, first.cursor);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a page asked for where the copy no longer stands is not used", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    serve.land(await other(1));
+    const stale = { cursor: 99 };
+    const page = { changes: [], cursor: 120, more: false };
+    await catchUp.catchUp(signal(), { requested: stale, page });
+    // read from the copy's own cursor instead
+    assertEquals(serve.changesReads.at(-1)?.cursor, 0);
+    assertEquals(await copySeqs(store, MODEL), [1]);
   });
 });

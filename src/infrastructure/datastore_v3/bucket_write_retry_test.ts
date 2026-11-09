@@ -28,6 +28,7 @@ import {
   BUCKET_WRITE_RETRY_BUDGET_MS,
   bucketWriteRefusal,
   type BucketWriteRetryDeps,
+  logBucketWriteRetriesAt,
   retryingControlPlane,
   retryingStorage,
   withBucketWriteScope,
@@ -145,7 +146,18 @@ Deno.test("bucketWriteRefusal: reads the status from the provider error or its c
   assertEquals(bucketWriteRefusal(new Error("socket hang up")), undefined);
 });
 
-Deno.test("retryingControlPlane: a 429 then success writes the record and logs the retry at info", async () => {
+Deno.test("retryingControlPlane: a 429 then success writes the record and logs the retry at debug in a CLI, at info in serve", async () => {
+  for (const level of ["debug", "info"] as const) {
+    if (level === "info") logBucketWriteRetriesAt("info");
+    try {
+      await retriedOnce(level);
+    } finally {
+      logBucketWriteRetriesAt("debug");
+    }
+  }
+});
+
+async function retriedOnce(level: "debug" | "info"): Promise<void> {
   await withLogs(async (messages) => {
     const { clock, deps } = fakeClock();
     const inner = memoryStore();
@@ -157,13 +169,13 @@ Deno.test("retryingControlPlane: a 429 then success writes the record and logs t
     assertEquals(await inner.get("lineage/head.json"), encode("a"));
     assertEquals(clock.sleeps.length, 1);
     const logged = messages();
-    assertEquals(logged.map(([level]) => level), ["info", "info"]);
+    assertEquals(logged.map(([logLevel]) => logLevel), [level, level]);
     assertStringIncludes(logged[0][1], "bucket_write_rate_limited");
     assertStringIncludes(logged[0][1], "lineage/head.json");
     assertStringIncludes(logged[0][1], "attempt 1");
     assertStringIncludes(logged[1][1], "succeeded on attempt 2");
   });
-});
+}
 
 Deno.test("retryingControlPlane: a 429 that outlasts the budget rethrows the provider's error and logs a warning", async () => {
   await withLogs(async (messages) => {

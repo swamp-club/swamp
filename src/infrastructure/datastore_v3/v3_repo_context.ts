@@ -149,6 +149,11 @@ import {
 } from "../../domain/datastore_v3/litestream_replication.ts";
 import { ReplicationGroupCommit } from "../../domain/datastore_v3/replication_group_commit.ts";
 import { HeadPublishPacer } from "../../domain/datastore_v3/head_publish_pacer.ts";
+import { closeServeLockClients } from "./serve_lock.ts";
+import type {
+  CatchUpRequest,
+  DeliveredCatchUp,
+} from "./serve_datastore_client.ts";
 import { abortableSleep } from "../http/rate_limit.ts";
 import {
   type BucketWriteRefusal,
@@ -651,6 +656,11 @@ export async function holdV3Writer(
      * this process reading its own current copy and holding nothing
      */
     readonly follow?: boolean;
+    /**
+     * the command's lock catches the copy up, or catchUpDeferredAt does; only
+     * for a copy that has read serve's feed, so it can go offline at the lock
+     */
+    readonly catchUpAtLock?: boolean;
   } = {},
 ): Promise<"writer" | "follower"> {
   let role: "writer" | "follower";
@@ -667,10 +677,79 @@ export async function holdV3Writer(
   // before it writes, or goes offline if serve is unreachable
   if (role === "writer" && serveUpstreamAt(config.path) !== undefined) {
     const handle = v3DatastoreFor(repoDir, config);
-    await handle.catchUpForWrite?.(undefined, { mayGoOffline: true });
+    if (
+      options.catchUpAtLock === true && handle.serveHasReadFeed?.() === true
+    ) {
+      deferTo(handle);
+    } else {
+      await handle.catchUpForWrite?.(undefined, { mayGoOffline: true });
+    }
     caughtUpFromServe.add(handle);
   }
   return role;
+}
+
+/**
+ * handles whose writer hold left serve's catch-up to the command's lock; their
+ * feed watch waits for it, so it neither adds requests nor applies commits
+ * alongside the lock's page
+ */
+const deferredCatchUps = new Map<V3Datastore, PromiseWithResolvers<void>>();
+
+function deferTo(handle: V3Datastore): void {
+  if (!deferredCatchUps.has(handle)) {
+    deferredCatchUps.set(handle, Promise.withResolvers<void>());
+  }
+}
+
+function endDeferral(handle: V3Datastore): void {
+  deferredCatchUps.get(handle)?.resolve();
+  deferredCatchUps.delete(handle);
+}
+
+/** whether a writer hold at `datastorePath` left its catch-up to a lock */
+export function catchUpDeferredTo(datastorePath: string): boolean {
+  const path = resolve(datastorePath);
+  return [...deferredCatchUps.keys()].some((handle) =>
+    resolve(handle.datastorePath) === path
+  );
+}
+
+/**
+ * the catch-up a deferred writer hold left undone, for a command that takes no
+ * lock after all; it may go offline as the hold's would have
+ */
+export async function catchUpDeferredAt(datastorePath: string): Promise<void> {
+  const path = resolve(datastorePath);
+  for (const [handle] of [...deferredCatchUps]) {
+    if (resolve(handle.datastorePath) !== path) continue;
+    try {
+      await handle.catchUpForWrite?.(undefined, { mayGoOffline: true });
+      await handle.catchUpReadModel?.();
+    } finally {
+      endDeferral(handle);
+    }
+  }
+}
+
+/**
+ * a lock at serve found it unreachable before a deferred catch-up made any
+ * contact: the hold's offline rule applies; true when the checkout went offline
+ */
+export function goServeOfflineAt(
+  datastorePath: string,
+  error: unknown,
+): boolean {
+  const path = resolve(datastorePath);
+  let offline = false;
+  for (const [handle] of [...deferredCatchUps]) {
+    if (resolve(handle.datastorePath) !== path) continue;
+    if (handle.goOfflineOnUnreachable?.(error) === true) {
+      offline = true;
+      endDeferral(handle);
+    }
+  }
+  return offline;
 }
 
 /**
@@ -690,7 +769,22 @@ export function watchV3ServeFeeds(): void {
     if (binding === undefined) continue;
     feedWatches.push(watchServeFeed({
       target: binding.target,
-      catchUp: () => handle.catchUp(),
+      catchUp: (signal) => handle.catchUp(signal),
+      // a writer hold that left its catch-up to the lock holds the feed's
+      // until the lock's has applied
+      ready: async (signal) => {
+        const deferred = deferredCatchUps.get(handle);
+        if (deferred === undefined) return;
+        signal.throwIfAborted();
+        await Promise.race([
+          deferred.promise,
+          new Promise<void>((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+          }),
+        ]);
+      },
       ...(handle.serveFeedCursor !== undefined
         ? { appliedCursor: () => handle.serveFeedCursor!() }
         : {}),
@@ -698,13 +792,27 @@ export function watchV3ServeFeeds(): void {
         ? { sentHere: (txnId: string) => handle.sentToServe!(txnId) }
         : {}),
       ...(handle.catchUpReadModel !== undefined
-        ? { catchUpLocally: () => handle.catchUpReadModel!() }
+        ? { catchUpLocally: (signal) => handle.catchUpReadModel!(signal) }
         : {}),
     }));
   }
 }
 
 const feedWatches: ServeFeedWatch[] = [];
+
+/**
+ * where the one copy read through serve at `datastorePath` stands, which a
+ * lock asks serve to answer with what the copy lacks
+ */
+export function serveCatchUpRequestAt(
+  datastorePath: string,
+): CatchUpRequest | undefined {
+  const path = resolve(datastorePath);
+  const handles = [...opened.values()].filter((handle) =>
+    resolve(handle.datastorePath) === path
+  );
+  return handles.length === 1 ? handles[0].serveCatchUpRequest?.() : undefined;
+}
 
 /**
  * a serve-mode checkout calls it once it holds a lock at serve, so the work
@@ -714,12 +822,25 @@ const feedWatches: ServeFeedWatch[] = [];
 export async function catchUpV3HandlesAt(
   datastorePath: string,
   options?: CatchUpOptions,
+  delivered?: DeliveredCatchUp,
 ): Promise<void> {
   const path = resolve(datastorePath);
-  for (const handle of [...opened.values()]) {
-    if (resolve(handle.datastorePath) !== path) continue;
+  const handles = [...opened.values()].filter((handle) =>
+    resolve(handle.datastorePath) === path
+  );
+  for (const handle of handles) {
     if (handle.catchUpForWrite !== undefined) {
-      await handle.catchUpForWrite();
+      // a page asked for one copy is that copy's alone
+      try {
+        await handle.catchUpForWrite(
+          undefined,
+          delivered !== undefined && handles.length === 1
+            ? { delivered }
+            : undefined,
+        );
+      } finally {
+        endDeferral(handle);
+      }
       await (handle.catchUpReadModel?.(undefined, options) ??
         handle.catchUp(undefined, options));
     } else {
@@ -1748,6 +1869,7 @@ export async function closeV3Datastores(
   options: { readonly storageUnreachable?: boolean } = {},
 ): Promise<void> {
   await Promise.all(feedWatches.splice(0).map((watch) => watch.stop()));
+  closeServeLockClients();
   let unreachable = options.storageUnreachable === true;
   // Serve's shutdown deadline, kept for the release once the sync's turn
   // has cleared it.
@@ -2198,7 +2320,9 @@ export async function confirmV3Replicated(
   if (mark <= (publishedMarks.get(datastore) ?? -1)) return;
   let group = groupCommits.get(datastore);
   if (group === undefined) {
-    group = new ReplicationGroupCommit(() => syncForRequests(datastore));
+    group = new ReplicationGroupCommit((covering) =>
+      syncForRequests(datastore, covering)
+    );
     groupCommits.set(datastore, group);
   }
   await group.confirm(mark);
@@ -2259,7 +2383,7 @@ export function v3ClaimCommitLog(
   };
   const confirm = async (): Promise<void> => {
     if (options.confirmReplicated === true && v3ReplicatesAt(config.path)) {
-      await syncForRequests(resolve(config.path));
+      await syncForRequests(resolve(config.path), 1);
     }
   };
   const changed = async (): Promise<void> => {
@@ -2288,6 +2412,7 @@ export function v3ClaimCommitLog(
 
 async function syncForRequests(
   datastore: string,
+  covering: number,
 ): Promise<number | undefined> {
   const use = replications.get(datastore)?.[0];
   if (use === undefined) {
@@ -2296,6 +2421,22 @@ async function syncForRequests(
     throw new V3ReplicationError(
       `no Litestream sidecar is held for the v3 datastore at ${datastore}`,
     );
+  }
+  // Requests queued behind a running sync mean several writers at once: pace
+  // the head before the bucket refuses its rewrites, which a provider's own
+  // retries otherwise hide.
+  if (covering > 1) {
+    const handle = [...opened.values()].find((h) =>
+      resolve(h.datastorePath) === datastore
+    );
+    const writerFence = handle === undefined
+      ? undefined
+      : v3WriterFence(handle.datastorePath);
+    if (writerFence !== undefined) {
+      headPacerFor(datastore, use.lineageFence, writerFence)?.contended(
+        Date.now(),
+      );
+    }
   }
   return await syncAndPublish(
     datastore,

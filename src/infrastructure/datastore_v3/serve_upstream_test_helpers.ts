@@ -24,10 +24,15 @@ import type {
 } from "../../domain/datastore_v3/observed_base.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
+  type AnchorVerdict,
+  type BatchedCommit,
+  type BatchedCommitOutcome,
   type ChangesPage,
+  type CommitBatchReply,
   type CommitChunk,
   type CommitEnvelope,
   type CommitReply,
+  type FeedAnchor,
   type PartitionCommitsPage,
   SERVE_PAGE_MAX_BYTES,
   type ServeDatastoreClient,
@@ -172,13 +177,24 @@ export class FakeServe implements Client {
     }
   }
 
+  /**
+   * answers an anchor asked with a changes read, as a serve that takes them
+   * does; off, it ignores the anchor, as an older serve does
+   */
+  checksAnchors = false;
+  readonly anchorsAsked: FeedAnchor[] = [];
+
   async changes(
     cursor: number,
     signal: AbortSignal,
     limit?: number,
+    anchor?: FeedAnchor,
   ): Promise<ChangesPage> {
     this.requests.changes++;
     this.changesReads.push({ cursor, limit });
+    const verdict = anchor !== undefined && this.checksAnchors
+      ? this.#anchorVerdict(anchor)
+      : undefined;
     if (this.changesGate !== undefined) await this.changesGate;
     signal.throwIfAborted();
     if (this.changesFault !== undefined) throw this.changesFault;
@@ -201,7 +217,32 @@ export class FakeServe implements Client {
         changes.push({ cursor: i + 1, commit: entry.json });
       }
     }
-    return { changes, cursor: next, more: next < this.feed.length };
+    return {
+      changes,
+      cursor: next,
+      more: next < this.feed.length,
+      ...(verdict === undefined ? {} : { anchor: verdict }),
+    };
+  }
+
+  #anchorVerdict(anchor: FeedAnchor): AnchorVerdict {
+    this.anchorsAsked.push(anchor);
+    if (this.unreadablePartitions.has(anchor.partition)) {
+      return { verdict: "unchecked" };
+    }
+    if ((this.compactedThrough.get(anchor.partition) ?? 0) >= anchor.seq) {
+      return { verdict: "unchecked" };
+    }
+    const log = this.#log(anchor.partition);
+    if (log.length < anchor.seq) {
+      return { verdict: "behind", serveHead: log.length };
+    }
+    const entry = log[anchor.seq - 1];
+    if (!this.#visible(entry)) return { verdict: "unchecked" };
+    return entry.txnId === anchor.txnId &&
+        entry.json?.namespace === anchor.namespace
+      ? { verdict: "held" }
+      : { verdict: "other-commit", serveTxnId: entry.txnId };
   }
 
   compactedBase(
@@ -287,6 +328,53 @@ export class FakeServe implements Client {
     return Promise.resolve({ head: log.length, commits });
   }
 
+  /** takes POST commits, as a serve with the commit-batch feature does */
+  takesBatches = false;
+  /** answers each commit with the commit as stamped and its parent */
+  stampsReplies = false;
+  readonly batches: { partitions: string[]; release?: string }[] = [];
+  readonly releasedByBatch: string[] = [];
+
+  takesCommitBatches(): boolean {
+    return this.takesBatches;
+  }
+
+  async postCommits(
+    commits: readonly BatchedCommit[],
+    release: string | undefined,
+    signal: AbortSignal,
+  ): Promise<CommitBatchReply> {
+    this.batches.push({
+      partitions: commits.map((commit) => commit.partition.toString()),
+      ...(release === undefined ? {} : { release }),
+    });
+    const outcomes: BatchedCommitOutcome[] = [];
+    for (const commit of commits) {
+      try {
+        outcomes.push({
+          kind: "landed",
+          reply: await this.postCommit(
+            commit.partition,
+            commit.envelope,
+            commit.chunks,
+            signal,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof ServeUnreachableError) throw error;
+        outcomes.push({ kind: "refused", error: error as Error });
+        break;
+      }
+    }
+    while (outcomes.length < commits.length) {
+      outcomes.push({ kind: "not-tried" });
+    }
+    const released = release !== undefined &&
+      outcomes.every((outcome) => outcome.kind === "landed");
+    if (released) this.releasedByBatch.push(release);
+    return { outcomes, released };
+  }
+
   async postCommit(
     partition: PartitionKey,
     envelope: CommitEnvelope,
@@ -334,7 +422,17 @@ export class FakeServe implements Client {
       json,
     });
     if (fault?.kind === "maybe") throw this.#unreachable("maybe");
-    return { seq: commit.seq, duplicate: false };
+    const parent = log[commit.seq - 2];
+    return {
+      seq: commit.seq,
+      duplicate: false,
+      ...(this.stampsReplies
+        ? {
+          commit: json,
+          ...(parent === undefined ? {} : { parentTxnId: parent.txnId }),
+        }
+        : {}),
+    };
   }
 
   hasChunks(

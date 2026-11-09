@@ -29,7 +29,12 @@ import { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { getSwampLogger } from "../logging/logger.ts";
-import type { ServeDatastoreClient } from "./serve_datastore_client.ts";
+import type {
+  AnchorVerdict,
+  CatchUpRequest,
+  DeliveredCatchUp,
+  ServeDatastoreClient,
+} from "./serve_datastore_client.ts";
 import {
   ServeCommitsCompactedError,
   type ServeDivergedCommit,
@@ -204,12 +209,28 @@ export class ServeCatchUp {
    * The cursor moves only once a page's commits are in the copy: a crash
    * between the two reads the page again, and its commits are duplicates.
    */
-  catchUp(signal: AbortSignal): Promise<ServeCatchUpReport> {
+  /** where the copy's feed stands, for serve to answer with what it lacks */
+  request(): CatchUpRequest {
+    const anchor = this.#state.feedAnchor();
+    return {
+      cursor: this.#state.feedCursor(),
+      ...(anchor === undefined ? {} : { anchor }),
+    };
+  }
+
+  /**
+   * `delivered` is a first page serve sent with another reply; it is used only
+   * while the copy still stands where it was asked from
+   */
+  catchUp(
+    signal: AbortSignal,
+    delivered?: DeliveredCatchUp,
+  ): Promise<ServeCatchUpReport> {
     this.#feed ??= withSpan(
       "swamp.datastore.v3.serve.catchup",
       {},
       async (span) => {
-        const report = await this.#catchUpFeed(signal);
+        const report = await this.#catchUpFeed(signal, delivered);
         span.setAttribute("swamp.datastore.v3.commits", report.applied);
         return report;
       },
@@ -219,8 +240,18 @@ export class ServeCatchUp {
     return this.#feed;
   }
 
-  async #catchUpFeed(signal: AbortSignal): Promise<ServeCatchUpReport> {
-    await this.#checkAnchor(signal);
+  async #catchUpFeed(
+    signal: AbortSignal,
+    delivered: DeliveredCatchUp | undefined,
+  ): Promise<ServeCatchUpReport> {
+    const anchor = this.#state.feedAnchor();
+    let first = delivered !== undefined &&
+        sameRequest(delivered.requested, this.request())
+      ? delivered
+      : undefined;
+    // The anchor is checked before any page is applied: by serve with the
+    // first page where it can, by a read of its own otherwise.
+    let anchorChecked = anchor === undefined;
     let applied = 0;
     let limit = SERVE_PARTITION_PAGE;
     let loads = 0;
@@ -230,12 +261,23 @@ export class ServeCatchUp {
       const basePoint = this.#state.basePoint();
       let read;
       try {
-        read = await pageAtMost(
-          "changes",
-          cursor,
-          limit,
-          (at) => this.#client.changes(cursor, signal, at),
-        );
+        const given = first;
+        first = undefined;
+        if (given?.refused !== undefined) throw given.refused;
+        read = given?.page !== undefined
+          ? { page: given.page, limit }
+          : await pageAtMost(
+            "changes",
+            cursor,
+            limit,
+            (at) =>
+              this.#client.changes(
+                cursor,
+                signal,
+                at,
+                anchorChecked ? undefined : anchor,
+              ),
+          );
       } catch (error) {
         // Serve compacted past the cursor: load its base, then read on.
         if (
@@ -244,8 +286,20 @@ export class ServeCatchUp {
         ) {
           throw error;
         }
+        if (!anchorChecked) {
+          await this.#checkAnchor(signal);
+          anchorChecked = true;
+        }
         await this.#loadBase(error, signal);
         continue;
+      }
+      if (!anchorChecked) {
+        if (read.page.anchor !== undefined) {
+          this.#applyVerdict(anchor!, read.page.anchor);
+        } else {
+          await this.#checkAnchor(signal);
+        }
+        anchorChecked = true;
       }
       limit = read.limit;
       const page = read.page;
@@ -468,6 +522,22 @@ export class ServeCatchUp {
     }
   }
 
+  /** serve's check of the anchor, refused as #checkAnchor refuses it */
+  #applyVerdict(anchor: ServeFeedAnchor, verdict: AnchorVerdict): void {
+    if (verdict.verdict === "behind") {
+      throw this.#diverged(anchor, {
+        kind: "behind",
+        serveHead: verdict.serveHead,
+      });
+    }
+    if (verdict.verdict === "other-commit") {
+      throw this.#diverged(anchor, {
+        kind: "other-commit",
+        serveTxnId: verdict.serveTxnId,
+      });
+    }
+  }
+
   catchUpPartition(
     namespace: string,
     partition: PartitionKey,
@@ -539,6 +609,45 @@ export class ServeCatchUp {
         signal,
       );
     }
+  }
+
+  /**
+   * takes the commit serve's reply stamped, only on the copy's head and with
+   * that head as serve's parent; false when it cannot tell
+   * @throws ServeUpstreamDivergedError when serve's parent is another commit
+   */
+  async applyStamped(
+    namespace: string,
+    partition: PartitionKey,
+    raw: unknown,
+    parentTxnId: string | undefined,
+  ): Promise<boolean> {
+    const commit = await Commit.fromJSON(raw);
+    if (
+      commit.namespace !== namespace || !commit.partition.equals(partition)
+    ) {
+      return false;
+    }
+    const local = await this.#commitStore.headIdentity(namespace, partition);
+    // already held only if it is the copy's own head; a read checks the rest
+    if (commit.seq <= local.seq) {
+      return commit.seq === local.seq && commit.txnId === local.txnId;
+    }
+    if (commit.seq !== local.seq + 1) return false;
+    if (local.seq > 0) {
+      if (parentTxnId === undefined || local.txnId === undefined) return false;
+      if (parentTxnId !== local.txnId) {
+        throw this.#diverged({
+          namespace,
+          partition: partition.toString(),
+          seq: local.seq,
+          txnId: local.txnId,
+        }, { kind: "other-commit", serveTxnId: parentTxnId });
+      }
+    }
+    await this.#append(commit);
+    this.#state.recordServeHead(namespace, partition.toString(), commit.seq);
+    return true;
   }
 
   async headOf(namespace: string, partition: PartitionKey): Promise<number> {
@@ -733,6 +842,14 @@ function removeStagingFiles(copyDir: string): void {
       Deno.removeSync(join(copyDir, entry.name));
     }
   }
+}
+
+function sameRequest(a: CatchUpRequest, b: CatchUpRequest): boolean {
+  return a.cursor === b.cursor &&
+    a.anchor?.namespace === b.anchor?.namespace &&
+    a.anchor?.partition === b.anchor?.partition &&
+    a.anchor?.seq === b.anchor?.seq &&
+    a.anchor?.txnId === b.anchor?.txnId;
 }
 
 function anchorOf(commit: Commit): ServeFeedAnchor {

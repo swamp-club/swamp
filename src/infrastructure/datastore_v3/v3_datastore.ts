@@ -92,6 +92,10 @@ import {
   createServeCommitSink,
   type ServeUpstreamCommitStore,
 } from "./serve_commit_sink.ts";
+import type {
+  CatchUpRequest,
+  DeliveredCatchUp,
+} from "./serve_datastore_client.ts";
 import {
   CachedServeStorage,
   ServeChunkStorage,
@@ -572,8 +576,21 @@ export interface V3Datastore {
    */
   catchUpForWrite?(
     signal?: AbortSignal,
-    options?: { readonly mayGoOffline?: boolean },
+    options?: {
+      readonly mayGoOffline?: boolean;
+      /** a first page serve sent with a lock, used while still current */
+      readonly delivered?: DeliveredCatchUp;
+    },
   ): Promise<void>;
+  /** where the copy's feed stands, for serve to answer with what it lacks */
+  serveCatchUpRequest?(): CatchUpRequest;
+  /**
+   * the writer hold's offline rule, for a write whose first contact with serve
+   * is its lock; true when the checkout went offline
+   */
+  goOfflineOnUnreachable?(error: unknown): boolean;
+  /** whether the copy has read serve's feed, so it may go offline */
+  serveHasReadFeed?(): boolean;
   /** the read model alone, for a copy just caught up with catchUpForWrite */
   catchUpReadModel?(
     signal?: AbortSignal,
@@ -1104,17 +1121,33 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
   // noted before it is sent: serve's feed can bring the commit to a catch-up
   // before its reply does. One that never lands never comes back in the feed
   const forwarded = new Set<string>();
+  const noteSending = (commit: Commit): void => {
+    units.sent.add(commit.txnId);
+    forwarded.add(commit.txnId);
+    // a long-lived process keeps only its recent sends
+    if (forwarded.size > MAX_FORWARDED_REMEMBERED) {
+      forwarded.delete(forwarded.values().next().value!);
+    }
+  };
+  const batchOf = faultedSink.beginBatch;
   const sink: OutboxCommitSink = serveSink === undefined ? faultedSink : {
     ...faultedSink,
     append: (commit) => {
-      units.sent.add(commit.txnId);
-      forwarded.add(commit.txnId);
-      // a long-lived process keeps only its recent sends
-      if (forwarded.size > MAX_FORWARDED_REMEMBERED) {
-        forwarded.delete(forwarded.values().next().value!);
-      }
+      noteSending(commit);
       return faultedSink.append(commit);
     },
+    ...(batchOf === undefined ? {} : {
+      beginBatch: async (slots, batchOptions) => {
+        const batch = await batchOf(slots, batchOptions);
+        return batch === undefined ? undefined : {
+          append: (slot, commit) => {
+            noteSending(commit);
+            return batch.append(slot, commit);
+          },
+          skip: (slot) => batch.skip(slot),
+        };
+      },
+    }),
   };
   /**
    * a read that cannot reach serve goes on with what the copy holds and says
@@ -1122,17 +1155,44 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
    */
   let contactRecorded = false;
   let reachedServe = false;
+  /**
+   * a copy that has read serve's feed goes offline for the rest of the command
+   * when serve cannot be reached before a write; false when it may not
+   */
+  const goOfflineOn = (error: unknown): boolean => {
+    if (
+      !(error instanceof ServeUnreachableError) || serveState === undefined ||
+      !serveState.hasReadFeed()
+    ) {
+      return false;
+    }
+    const contact = serveState.lastContact();
+    enterServeOffline(
+      options.datastorePath,
+      {
+        serveUrl: error.serveUrl,
+        since: clock().getTime(),
+        ...(contact !== undefined ? { lastContactAt: contact.at } : {}),
+        ...(contact?.clockOffsetMs !== undefined
+          ? { clockOffsetMs: contact.clockOffsetMs }
+          : {}),
+      },
+      error.cause instanceof Error ? error.cause.message : String(error.cause),
+    );
+    return true;
+  };
   const catchUpFromServe = async (
     signal: AbortSignal,
     mode: "read" | "write",
     mayGoOffline = false,
+    delivered?: DeliveredCatchUp,
   ): Promise<void> => {
     if (serveCatchUp === undefined) return;
     // offline for the rest of the command: the copy is read as it is, and
     // nothing waits on a serve it could not reach
     if (serveOfflineAt(options.datastorePath) !== undefined) return;
     try {
-      await serveCatchUp.catchUp(signal);
+      await serveCatchUp.catchUp(signal, delivered);
       reachedServe = true;
       // a catch-up that read serve's feed heard serve, whatever its features
       const initiator = serveClient!.initiatorMode() ?? { kind: "not-checked" };
@@ -1158,28 +1218,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         }
       }
     } catch (error) {
-      if (
-        mode === "write" && mayGoOffline &&
-        error instanceof ServeUnreachableError &&
-        serveState !== undefined && serveState.hasReadFeed()
-      ) {
-        const contact = serveState.lastContact();
-        enterServeOffline(
-          options.datastorePath,
-          {
-            serveUrl: error.serveUrl,
-            since: clock().getTime(),
-            ...(contact !== undefined ? { lastContactAt: contact.at } : {}),
-            ...(contact?.clockOffsetMs !== undefined
-              ? { clockOffsetMs: contact.clockOffsetMs }
-              : {}),
-          },
-          error.cause instanceof Error
-            ? error.cause.message
-            : String(error.cause),
-        );
-        return;
-      }
+      if (mode === "write" && mayGoOffline && goOfflineOn(error)) return;
       if (mode === "read" && error instanceof ServeUnreachableError) {
         // A copy that never read serve's feed holds nothing: an empty answer
         // would pass for an empty datastore.
@@ -1309,15 +1348,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       ? {
         async catchUpForWrite(
           signal?: AbortSignal,
-          catchUpOptions?: { readonly mayGoOffline?: boolean },
+          catchUpOptions?: {
+            readonly mayGoOffline?: boolean;
+            readonly delivered?: DeliveredCatchUp;
+          },
         ) {
           // a write under way lands after a stop: it never follows commandStopSignal
           await catchUpFromServe(
             signal ?? lifetime.signal,
             "write",
             catchUpOptions?.mayGoOffline === true,
+            catchUpOptions?.delivered,
           );
         },
+        serveCatchUpRequest: () => serveCatchUp.request(),
+        goOfflineOnUnreachable: (error: unknown) => goOfflineOn(error),
+        serveHasReadFeed: () => serveState?.hasReadFeed() === true,
         async catchUpReadModel(
           signal?: AbortSignal,
           catchUpOptions?: CatchUpOptions,
@@ -1467,18 +1513,22 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           return commitLogParentFor(markDirty, currentUnitOfWork()) !==
             undefined;
         },
-        async checkpointOpenUnit(): Promise<OpenUnitCheckpoint> {
+        async checkpointOpenUnit(
+          checkpointOptions?: { readonly release?: string },
+        ): Promise<OpenUnitCheckpoint> {
           const unit = commitLogParentFor(markDirty, currentUnitOfWork());
           if (unit === undefined) return "no-unit";
           try {
-            return await checkpointFrom(unit) ? "committed" : "no-unit";
+            return await checkpointFrom(unit, checkpointOptions)
+              ? "committed"
+              : "no-unit";
           } catch (error) {
             if (error instanceof PartitionsRefusedError) return "refused";
             throw error;
           }
         },
         forwardsToServe: serveSink !== undefined,
-        async appendToOpenUnit(changes) {
+        async appendToOpenUnit(changes, appendOptions) {
           const unit = commitLogParentFor(markDirty, currentUnitOfWork());
           if (unit === undefined) return "no-unit";
           if (
@@ -1489,9 +1539,11 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           }
           for (let attempt = 1;; attempt++) {
             try {
-              return await appendNowFrom(unit, changes) ?? "no-unit";
+              return await appendNowFrom(unit, changes, appendOptions) ??
+                "no-unit";
             } catch (error) {
               const refused = error instanceof ServeCommitRefusedError ||
+                error instanceof PartitionsRefusedError ||
                 (error instanceof CommitRejectedError &&
                   error.reason !== "seq-gap");
               if (
@@ -1580,6 +1632,9 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
               : {}),
             ...(rootOptions.onEnded !== undefined
               ? { onEnded: rootOptions.onEnded }
+              : {}),
+            ...(rootOptions.releaseWithEnd !== undefined
+              ? { endRelease: rootOptions.releaseWithEnd }
               : {}),
           }, (root) => fn(root));
         },

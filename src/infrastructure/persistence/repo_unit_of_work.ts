@@ -27,7 +27,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import type { PutExpect } from "../../domain/datastore_v3/op.ts";
-import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import type {
+  DirectAppendOptions,
+  TypedChange,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { ConfigEditConflictError } from "../../domain/datastore_v3/config_edit_conflict.ts";
 import {
   type DefinitionKind,
@@ -50,13 +53,16 @@ import { currentUnitOfWork, runInUnitOfWork } from "./unit_of_work_scope.ts";
 export interface CommitLogEngine {
   openUnit(): UnitOfWork;
   hasOpenUnit(): boolean;
-  checkpointOpenUnit(): Promise<OpenUnitCheckpoint>;
+  checkpointOpenUnit(
+    options?: { readonly release?: string },
+  ): Promise<OpenUnitCheckpoint>;
   /**
    * commits the changes at once as their own commit, leaving what the open
    * unit has staged; throws when the commit fails or is refused
    */
   appendToOpenUnit?(
     changes: readonly TypedChange[],
+    options?: DirectAppendOptions,
   ): Promise<OpenUnitAppend>;
   committedBeforeThrowing(error: unknown): boolean;
   runRoot<T>(
@@ -101,6 +107,8 @@ export interface CommitLogRootRunOptions<T> {
   disposition?: (outcome: CommitLogRunOutcome<T>) => "commit" | "discard";
   reconcileRuns?: boolean;
   onEnded?: (committed: boolean) => void;
+  /** a lease the root's final commits end, once they all land */
+  releaseWithEnd?: string;
 }
 
 /**
@@ -420,10 +428,11 @@ export function commitsThroughCommitLog(
 export async function appendToOpenUnitOfWork(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
   changes: readonly TypedChange[],
+  options?: DirectAppendOptions,
 ): Promise<OpenUnitAppend> {
   const engine = commitLogOf(repoContext);
   if (engine?.appendToOpenUnit === undefined) return "no-unit";
-  return await engine.appendToOpenUnit(changes);
+  return await engine.appendToOpenUnit(changes, options);
 }
 
 export function forwardsToServe(markDirty: MarkDirtyHook | undefined): boolean {
@@ -442,8 +451,10 @@ export async function storedVersionOf(
 
 export async function checkpointOpenUnitOfWork(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  options?: { readonly release?: string },
 ): Promise<OpenUnitCheckpoint> {
-  return await commitLogOf(repoContext)?.checkpointOpenUnit() ?? "no-unit";
+  return await commitLogOf(repoContext)?.checkpointOpenUnit(options) ??
+    "no-unit";
 }
 
 /**

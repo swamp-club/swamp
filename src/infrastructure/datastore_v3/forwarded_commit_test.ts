@@ -91,7 +91,10 @@ Deno.test("commitForwarded: lands at the next seq, stamped with the caller and s
       request(await saveOps("vpc", 1)),
       signal(),
     );
-    assertEquals(result, { seq: 1, duplicate: false });
+    assertEquals({ seq: result.seq, duplicate: result.duplicate }, {
+      seq: 1,
+      duplicate: false,
+    });
     const [{ commit }] = await v3.commitStore.readPartition(
       v3.namespace,
       modelPartition(),
@@ -100,6 +103,8 @@ Deno.test("commitForwarded: lands at the next seq, stamped with the caller and s
     );
     assertEquals(commit.principal, "user:alice");
     assertEquals(commit.writer, v3.writer);
+    // the result carries the commit as it landed, stamps included
+    assertEquals(result.commit.toJSON(), commit.toJSON());
   });
 });
 
@@ -112,10 +117,12 @@ Deno.test("commitForwarded: a retry under the same txnId answers with the landed
       request(await saveOps("vpc", 2), { expectedSeq: 1 }),
       signal(),
     );
-    assertEquals(await commitForwarded(v3, first, signal()), {
+    const retried = await commitForwarded(v3, first, signal());
+    assertEquals({ seq: retried.seq, duplicate: retried.duplicate }, {
       seq: 1,
       duplicate: true,
     });
+    assertEquals(retried.commit.txnId, first.txnId);
   });
 });
 
@@ -191,6 +198,41 @@ Deno.test("commitForwarded: a chunk the store does not hold is refused before an
       (await v3.commitStore.head(v3.namespace, modelPartition())).seq,
       0,
     );
+  });
+});
+
+Deno.test("commitForwarded: chunks the request itself stored are not refreshed again; others named are", async () => {
+  await withHandle(async (v3) => {
+    const refreshed: (readonly string[])[] = [];
+    const refresh = v3.chunkStore.refresh.bind(v3.chunkStore);
+    v3.chunkStore.refresh = (namespace, ref, signal) => {
+      refreshed.push(ref.chunkHashes());
+      return refresh(namespace, ref, signal);
+    };
+    const blobPut = async (name: string, sha256: string) =>
+      await putOp({
+        intent: modelIntent({ kind: "data.save", name, version: 1 }),
+        key: dataKey(name, 1),
+        blob: BlobRef.create({ sha256, size: 10 }),
+      });
+    const stored = "b".repeat(64);
+    const named = "c".repeat(64);
+    // neither is in the store: only the one named and not stored is asked for
+    const ops = [
+      await blobPut("stored", stored),
+      await blobPut("named", named),
+    ];
+    const error = await assertRejects(
+      () =>
+        commitForwarded(
+          v3,
+          request(ops, { stored: new Set([stored]) }),
+          signal(),
+        ),
+      ChunksMissingError,
+    );
+    assertEquals(error.missing, [named]);
+    assertEquals(refreshed, [[named]]);
   });
 });
 

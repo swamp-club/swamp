@@ -23,6 +23,7 @@
  * dropped socket reopens with backoff
  */
 
+import { maxOf } from "../../domain/array_extrema.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
 
@@ -39,11 +40,19 @@ export interface ServeFeedWatchOptions {
     ServeUpstreamTarget,
     "serverUrl" | "token" | "caCerts" | "extraHeaders"
   >;
-  /** Runs the checkout's catch-up; called again only once it settled. */
-  catchUp(): Promise<unknown>;
+  /**
+   * Runs the checkout's catch-up; called again only once it settled. Stopping
+   * the watch aborts `signal`, so a command's exit never waits on it.
+   */
+  catchUp(signal: AbortSignal): Promise<unknown>;
   readonly appliedCursor?: () => number;
   readonly sentHere?: (txnId: string) => boolean;
-  readonly catchUpLocally?: () => Promise<unknown>;
+  readonly catchUpLocally?: (signal: AbortSignal) => Promise<unknown>;
+  /**
+   * a serve catch-up waits for it, then runs only if the copy is still short
+   * of the cursor that asked for it: the command's own catch-up is under way
+   */
+  readonly ready?: (signal: AbortSignal) => Promise<void>;
   readonly openSocket?: (url: string, headers: Headers) => WebSocket;
 }
 
@@ -66,16 +75,29 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
     return typeof txnId === "string" && options.sentHere(txnId);
   };
 
+  const stopping = new AbortController();
+  const serveCatchUp = async (wanted: number | undefined) => {
+    if (options.ready !== undefined) {
+      await options.ready(stopping.signal);
+      if (
+        wanted !== undefined && options.appliedCursor !== undefined &&
+        options.appliedCursor() >= wanted
+      ) {
+        return;
+      }
+    }
+    return await options.catchUp(stopping.signal);
+  };
   // a serve catch-up includes the local one, so a pending one is never downgraded
-  const catchUp = (kind: "serve" | "local" = "serve") => {
+  const catchUp = (kind: "serve" | "local" = "serve", wanted?: number) => {
     if (kind === "local" && options.catchUpLocally === undefined) return;
     if (running !== undefined) {
       if (again !== "serve") again = kind;
       return;
     }
     const run = kind === "serve"
-      ? options.catchUp()
-      : options.catchUpLocally!();
+      ? serveCatchUp(wanted)
+      : options.catchUpLocally!(stopping.signal);
     running = run.catch((error) => {
       logger.debug`Catching up from serve's commit feed failed: ${error}`;
     }).finally(() => {
@@ -138,7 +160,7 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
           options.appliedCursor === undefined ||
           cursor > options.appliedCursor()
         ) {
-          catchUp();
+          catchUp("serve", cursor);
         }
         backoff = 1_000;
         return;
@@ -152,7 +174,17 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
       if (!Array.isArray(changes) || changes.length === 0) return;
       // the copy holds this process's own commits already: only its read
       // model is brought up, without asking serve
-      catchUp(changes.every((change) => sentHere(change)) ? "local" : "serve");
+      const wanted = maxOf(
+        changes.map((change) =>
+          typeof (change as { cursor?: unknown } | null)?.cursor === "number"
+            ? (change as { cursor: number }).cursor
+            : Number.POSITIVE_INFINITY
+        ),
+      );
+      catchUp(
+        changes.every((change) => sentHere(change)) ? "local" : "serve",
+        wanted,
+      );
     };
     current.onerror = () => {};
     current.onclose = () => {
@@ -172,6 +204,7 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
   return {
     async stop() {
       stopped = true;
+      stopping.abort();
       if (timer !== undefined) clearTimeout(timer);
       if (socket !== undefined && socket.readyState <= WebSocket.OPEN) {
         try {

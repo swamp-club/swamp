@@ -33,12 +33,23 @@ import {
 import { withSpan } from "../tracing/tracer.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type {
+  CatchUpRequest,
+  DeliveredCatchUp,
   LockLease,
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
 import type { ExplicitLease } from "./explicit_model_leases.ts";
-import { dropServeLease, holdServeLease } from "./serve_lease_registry.ts";
-import { ServeUpstreamError } from "./serve_upstream_errors.ts";
+import {
+  dropServeLease,
+  holdServeLease,
+  offerServeLeaseRelease,
+  serveLeaseReleasedByCommit,
+  withdrawServeLeaseRelease,
+} from "./serve_lease_registry.ts";
+import {
+  ServeUnreachableError,
+  ServeUpstreamError,
+} from "./serve_upstream_errors.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
 import {
@@ -88,10 +99,19 @@ export interface ServeLockOptions {
   readonly requestWaitMs?: number;
   readonly retryIntervalMs?: number;
   /**
-   * Runs once the lease is taken, before `acquire` resolves; a failure
-   * releases the lease and rejects `acquire`.
+   * Runs once the lease is taken, before `acquire` resolves, with the
+   * catch-up serve answered with the lease, if any; a failure releases the
+   * lease and rejects `acquire`.
    */
-  readonly onAcquired?: () => Promise<void>;
+  readonly onAcquired?: (delivered?: DeliveredCatchUp) => Promise<void>;
+  /** where the checkout's copy stands, for serve to answer with the lease */
+  readonly catchUpRequest?: () => CatchUpRequest | undefined;
+  /**
+   * serve could not be reached by the lock that was the command's first
+   * contact; true when that put the checkout offline, and the hold then takes
+   * the offline path
+   */
+  readonly onUnreachable?: (error: ServeUnreachableError) => boolean;
   readonly root?: string;
   readonly onLost?: (error: ServeLeaseLapsedError) => void;
   /**
@@ -172,9 +192,23 @@ export class ServeLock implements DistributedLock {
       await this.#acquireOffline(offline);
       return;
     }
+    try {
+      await this.#acquireOnline(signal);
+    } catch (error) {
+      const goneOffline = error instanceof ServeUnreachableError &&
+        this.#lease === undefined &&
+        this.#options.onUnreachable?.(error) === true;
+      const now = goneOffline ? this.#options.offline?.() : undefined;
+      if (now === undefined) throw error;
+      await this.#acquireOffline(now);
+    }
+  }
+
+  async #acquireOnline(signal: AbortSignal | undefined): Promise<void> {
     if (await this.#adoptExplicit()) return;
     const client = this.#options.client();
     const hold = new AbortController();
+    let delivered: DeliveredCatchUp | undefined;
     const started = this.#now();
     let backoff = this.#options.retryIntervalMs ?? RETRY_INTERVAL_MS;
     let heldBy = "another caller";
@@ -198,17 +232,22 @@ export class ServeLock implements DistributedLock {
         );
         const asked = this.#now();
         const askedMonotonic = this.#monotonic();
+        const catchUp = this.#options.catchUpRequest?.();
         const reply = await client.acquireLock(
           this.#options.lockKey,
           this.#ttlMs,
           waitMs,
           hold.signal,
-          { budgetMs: remaining },
+          {
+            budgetMs: remaining,
+            ...(catchUp === undefined ? {} : { catchUp }),
+          },
         );
         if (reply.acquired) {
           this.#client = client;
           this.#hold = hold;
           this.#lease = reply.lease;
+          delivered = reply.catchUp;
           this.#acquiredAt = this.#now();
           this.#lost = false;
           // Measured from when the request was sent: serve's TTL started
@@ -244,7 +283,7 @@ export class ServeLock implements DistributedLock {
       if (this.#lease === undefined) client.close?.();
       throw error;
     }
-    await this.#settleAcquired();
+    await this.#settleAcquired(delivered);
   }
 
   async #adoptExplicit(): Promise<boolean> {
@@ -370,9 +409,9 @@ export class ServeLock implements DistributedLock {
     }
   }
 
-  async #settleAcquired(): Promise<void> {
+  async #settleAcquired(delivered?: DeliveredCatchUp): Promise<void> {
     try {
-      await this.#options.onAcquired?.();
+      await this.#options.onAcquired?.(delivered);
     } catch (error) {
       await this.release();
       throw error;
@@ -391,6 +430,28 @@ export class ServeLock implements DistributedLock {
         floor: lease.floor ?? [],
       });
     }
+    // only the command's own lease; an adopted explicit one outlives it
+    if (lease !== undefined && !this.#adopted && this.#client !== undefined) {
+      offerServeLeaseRelease(
+        lease.leaseId,
+        () => this.#quiet(),
+        () => this.#resume(),
+      );
+    }
+  }
+
+  #resume(): void {
+    if (this.#lease === undefined || this.#lost || !this.#releasing) return;
+    this.#releasing = false;
+    if (this.#heartbeat === undefined) this.#startHeartbeat();
+  }
+
+  /** no renewal from here on: the commit closing the hold may end the lease */
+  async #quiet(): Promise<void> {
+    this.#releasing = true;
+    this.#stopHeartbeat();
+    const renewing = this.#renewing;
+    if (renewing !== undefined) await renewing;
   }
 
   release(): Promise<void> {
@@ -448,6 +509,12 @@ export class ServeLock implements DistributedLock {
       return;
     }
     if (lease === undefined || client === undefined) return;
+    const releasedByCommit = serveLeaseReleasedByCommit(lease.leaseId);
+    withdrawServeLeaseRelease(lease.leaseId);
+    if (releasedByCommit) {
+      client.close?.();
+      return;
+    }
     try {
       await client.releaseLock(
         lease.leaseId,
@@ -652,6 +719,46 @@ export class ServeLock implements DistributedLock {
 
 export type ServeLockFactoryOptions = Omit<ServeLockOptions, "client">;
 
+/**
+ * one client per serve and caller for all of a process's locks, off the upload
+ * pool; it opens another connection when one is busy, so no renewal waits
+ */
+const lockClients = new Map<string, ServeLockClient & { close(): void }>();
+
+function lockClientFor(
+  binding: NonNullable<ReturnType<typeof serveUpstreamAt>>,
+): ServeLockClient {
+  const key = JSON.stringify([
+    binding.target.serverUrl,
+    binding.namespace,
+    binding.target.token ?? "",
+    binding.target.extraHeaders ?? {},
+    binding.target.caCerts ?? [],
+  ]);
+  let client = lockClients.get(key);
+  if (client === undefined) {
+    client = serveDatastoreClientFor(binding.target, binding.namespace, {
+      ownConnection: true,
+    });
+    lockClients.set(key, client);
+  }
+  const shared = client;
+  // no close: a hold that ends leaves the connection for the next lock
+  return {
+    acquireLock: (...args) => shared.acquireLock(...args),
+    renewLock: (...args) => shared.renewLock(...args),
+    releaseLock: (...args) => shared.releaseLock(...args),
+    baseUrl: shared.baseUrl,
+    timeoutMs: shared.timeoutMs,
+  };
+}
+
+/** once the process's holds have ended */
+export function closeServeLockClients(): void {
+  for (const client of lockClients.values()) client.close();
+  lockClients.clear();
+}
+
 export function createServeLock(
   datastorePath: string,
   options: ServeLockFactoryOptions,
@@ -660,11 +767,7 @@ export function createServeLock(
   if (binding === undefined) return undefined;
   return new ServeLock({
     ...options,
-    // a renewal on the pool an upload is using could queue behind it
-    client: () =>
-      serveDatastoreClientFor(binding.target, binding.namespace, {
-        ownConnection: true,
-      }),
+    client: () => lockClientFor(binding),
   });
 }
 

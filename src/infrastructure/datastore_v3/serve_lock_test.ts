@@ -29,17 +29,28 @@ import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { initializeLogging } from "../logging/logger.ts";
 import type { LockAcquireReply, LockLease } from "./serve_datastore_client.ts";
 import {
+  closeServeLockClients,
+  createServeLock,
   ServeLeaseLapsedError,
   ServeLock,
   type ServeLockClient,
 } from "./serve_lock.ts";
+import {
+  registerServeUpstream,
+  resetServeUpstreamBindingsForTesting,
+} from "./serve_upstream_registry.ts";
+import { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
 import {
   ServeUnreachableError,
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
 import {
   heldServeLeaseOf,
+  noteServeLeaseReleased,
+  quietServeLeaseForRelease,
   resetServeLeasesForTesting,
+  resumeServeLease,
+  serveLeaseReleasedByCommit,
 } from "./serve_lease_registry.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -746,4 +757,241 @@ Deno.test("ServeLock.acquire: each ask tells serve what is left of the whole wai
   await subject.release();
   const budget = serve.budgets[0];
   assert(budget !== undefined && budget > 50_000 && budget <= 60_000);
+});
+
+/**
+ * a serve whose answers the test holds back: `stall` names the lock keys whose
+ * acquire, and the lease ids whose renewal, wait until `go` is called
+ */
+function stallingServe(stall: { acquire?: string; renew?: string }) {
+  const answered: string[] = [];
+  const remotePorts = new Set<number>();
+  let go!: () => void;
+  const released = new Promise<void>((resolve) => go = resolve);
+  const lease = (leaseId: string, lockKey: string, ttlMs: number) => ({
+    leaseId,
+    lockKey,
+    ttlMs,
+    expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+    fence: 1,
+  });
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    async (request, info) => {
+      remotePorts.add((info.remoteAddr as Deno.NetAddr).port);
+      const path = new URL(request.url).pathname;
+      if (request.method === "POST" && path.endsWith("/locks")) {
+        const body = await request.json() as {
+          lockKey: string;
+          ttlMs: number;
+        };
+        if (body.lockKey === stall.acquire) await released;
+        answered.push(`acquire:${body.lockKey}`);
+        return Response.json(
+          lease(`lease-${body.lockKey}`, body.lockKey, body.ttlMs),
+          { status: 201 },
+        );
+      }
+      const leaseId = decodeURIComponent(path.split("/").pop() ?? "");
+      if (request.method === "PUT") {
+        const body = await request.json() as { ttlMs: number };
+        if (leaseId === stall.renew) await released;
+        answered.push(`renew:${leaseId}`);
+        return Response.json(lease(leaseId, leaseId, body.ttlMs));
+      }
+      if (request.method === "DELETE") {
+        answered.push(`release:${leaseId}`);
+        return Response.json({ released: true });
+      }
+      return new Response("no", { status: 404 });
+    },
+  );
+  return {
+    origin: `http://127.0.0.1:${server.addr.port}`,
+    answered,
+    remotePorts,
+    go: () => go(),
+    close: async () => {
+      go();
+      await server.shutdown();
+    },
+  };
+}
+
+async function withLockBinding(
+  origin: string,
+  fn: (root: string) => Promise<void>,
+): Promise<void> {
+  const root = await Deno.makeTempDir({ prefix: "swamp-serve-lock-" });
+  registerServeUpstream({
+    root,
+    target: ServeUpstreamTarget.create({ serverUrl: origin }),
+    namespace: "_default",
+    client: () => {
+      throw new Error("a lock uses its own client");
+    },
+  });
+  try {
+    await fn(root);
+  } finally {
+    closeServeLockClients();
+    resetServeUpstreamBindingsForTesting();
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("createServeLock: a lock waiting long at serve never holds up another lock's renewal on the shared client", async () => {
+  const serve = stallingServe({ acquire: "a/.lock" });
+  try {
+    await withLockBinding(serve.origin, async (root) => {
+      const b = createServeLock(root, {
+        lockKey: "b/.lock",
+        maxWaitMs: 5_000,
+        ttlMs: 300,
+      })!;
+      await b.acquire();
+      const a = createServeLock(root, {
+        lockKey: "a/.lock",
+        maxWaitMs: 5_000,
+      })!;
+      const waiting = a.acquire();
+      await waitFor(
+        () => serve.answered.includes("renew:lease-b/.lock"),
+        "b's renewal answered while a waits",
+      );
+      assertEquals(serve.answered.includes("acquire:a/.lock"), false);
+      serve.go();
+      await waiting;
+      await a.release();
+      await b.release();
+    });
+  } finally {
+    await serve.close();
+  }
+});
+
+Deno.test("createServeLock: a lock's stalled renewal never holds up another lock's renewal on the shared client", async () => {
+  const serve = stallingServe({ renew: "lease-a/.lock" });
+  try {
+    await withLockBinding(serve.origin, async (root) => {
+      const a = createServeLock(root, {
+        lockKey: "a/.lock",
+        maxWaitMs: 5_000,
+        ttlMs: 300,
+      })!;
+      const b = createServeLock(root, {
+        lockKey: "b/.lock",
+        maxWaitMs: 5_000,
+        ttlMs: 300,
+      })!;
+      await a.acquire();
+      await b.acquire();
+      await waitFor(
+        () => serve.answered.includes("renew:lease-b/.lock"),
+        "b's renewal answered while a's stalls",
+      );
+      assertEquals(serve.answered.includes("renew:lease-a/.lock"), false);
+      serve.go();
+      await a.release();
+      await b.release();
+    });
+  } finally {
+    await serve.close();
+  }
+});
+
+Deno.test("createServeLock: a command's locks one after another reuse one kept connection", async () => {
+  const serve = stallingServe({});
+  try {
+    await withLockBinding(serve.origin, async (root) => {
+      for (const key of ["a/.lock", "b/.lock", "c/.lock"]) {
+        const lock = createServeLock(root, { lockKey: key, maxWaitMs: 5_000 })!;
+        await lock.acquire();
+        await lock.release();
+      }
+      assertEquals(serve.remotePorts.size, 1);
+    });
+  } finally {
+    await serve.close();
+  }
+});
+
+Deno.test("ServeLock.release: a lease the closing commit ended is not released again, and the quieted hold never renews or lapses", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 1;
+  // a renewal answered after serve ended the lease reads as expired
+  serve.renewal = "expired";
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    ttlMs: 30,
+    root: "/tmp/swamp-lock-release-test",
+    onLost: (error) => lost.push(error),
+  });
+  try {
+    await subject.acquire();
+    const leaseId = subject.lease!.leaseId;
+    assertEquals(await quietServeLeaseForRelease(leaseId), true);
+    noteServeLeaseReleased(leaseId);
+    const renewals = serve.calls.filter((call) => call.startsWith("renew"));
+    // longer than the lease and its renewal interval
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assertEquals(
+      serve.calls.filter((call) => call.startsWith("renew")),
+      renewals,
+      "no renewal once quieted",
+    );
+    await subject.release();
+    assertEquals(lost, []);
+    assertEquals(
+      serve.calls.filter((call) => call.startsWith("release")),
+      [],
+      "serve already ended it",
+    );
+    assertEquals(serveLeaseReleasedByCommit(leaseId), false, "withdrawn");
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("ServeLock.release: a lease the closing commit did not end is released as before", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  const subject = lock(serve);
+  try {
+    await subject.acquire();
+    const leaseId = subject.lease!.leaseId;
+    assertEquals(await quietServeLeaseForRelease(leaseId), true);
+    await subject.release();
+    assertEquals(
+      serve.calls.filter((call) => call.startsWith("release")),
+      [`release ${leaseId}`],
+    );
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("ServeLock: a hold quieted for a release serve did not make renews again", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  const subject = lock(serve, { ttlMs: 30 });
+  try {
+    await subject.acquire();
+    const leaseId = subject.lease!.leaseId;
+    await quietServeLeaseForRelease(leaseId);
+    const quieted = serve.calls.filter((c) => c.startsWith("renew")).length;
+    resumeServeLease(leaseId);
+    await waitFor(
+      () => serve.calls.filter((c) => c.startsWith("renew")).length > quieted,
+      "a renewal after the resume",
+    );
+    await subject.release();
+    assertEquals(
+      serve.calls.filter((c) => c.startsWith("release")),
+      [`release ${leaseId}`],
+    );
+  } finally {
+    resetServeLeasesForTesting();
+  }
 });

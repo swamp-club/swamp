@@ -31,30 +31,55 @@ import type { CommitStoreAppendResult } from "../../domain/datastore_v3/commit_s
 import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
-import { CommitQueuedOfflineError } from "./commit_log_unit_of_work.ts";
+import {
+  CommitNotTriedError,
+  CommitQueuedOfflineError,
+  type SinkBatch,
+} from "./commit_log_unit_of_work.ts";
 import {
   createOutboxCommitSink,
   type OutboxCommitSink,
 } from "./outbox_commit_sink.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import type { ServeCatchUp } from "./serve_catch_up.ts";
-import type { HeldServeLease, LandedVersion } from "./serve_lease_registry.ts";
+import {
+  type HeldServeLease,
+  type LandedVersion,
+  noteServeLeaseReleased,
+  quietServeLeaseForRelease,
+  resumeServeLease,
+} from "./serve_lease_registry.ts";
 import { storageNamespaceOf } from "./serve_datastore_storage.ts";
-import type {
-  CommitChunk,
-  ServeDatastoreClient,
+import {
+  type BatchedCommit,
+  type CommitBatchReply,
+  type CommitChunk,
+  type CommitReply,
+  MAX_BATCH_COMMITS,
+  type ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
+
 import {
   ChunkNotCachedError,
   ServeChunksMissingError,
   ServeStaleSeqError,
   ServeUnreachableError,
   ServeUpstreamDivergedError,
+  ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { withSpan } from "../tracing/tracer.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
+
+/** chunks one batch carries at most; past it each commit goes alone */
+export const MAX_BATCH_CARRIED_BYTES = 64 * 1024 * 1024;
+
+/**
+ * chunks a batch that ends the lease may carry: its hold stops renewing for the
+ * request, so a larger one keeps renewing and the lease is released after
+ */
+export const MAX_RELEASE_CARRIED_BYTES = 1024 * 1024;
 
 export const MAX_CARRIED_CHUNKS = 1024;
 
@@ -70,15 +95,19 @@ export interface ServeCommitSinkOptions {
       ServeDatastoreClient,
       "hasChunks" | "putChunk" | "postCommit" | "baseUrl"
     >
-    & Partial<Pick<ServeDatastoreClient, "takesStepStarts">>;
+    & Partial<
+      Pick<
+        ServeDatastoreClient,
+        "takesStepStarts" | "postCommits" | "takesCommitBatches"
+      >
+    >;
   readonly commitStore: Pick<
     SqliteCommitStore,
     "head" | "headIdentity" | "dataHighWater" | "landedSeq"
   >;
-  readonly catchUp: Pick<
-    ServeCatchUp,
-    "catchUpPartition" | "headOf" | "recordServeHead"
-  >;
+  readonly catchUp:
+    & Pick<ServeCatchUp, "catchUpPartition" | "headOf" | "recordServeHead">
+    & Partial<Pick<ServeCatchUp, "applyStamped">>;
   readonly chunkCache: Pick<DatastoreStorage, "get">;
   readonly outbox: CommitOutbox;
   readonly sweepBatch?: () => Promise<void>;
@@ -214,24 +243,112 @@ export function createServeCommitSink(
       },
     );
 
-  const forwardIn = async (
-    commit: Commit,
-    leaseId: string | undefined,
-  ): Promise<CommitStoreAppendResult> => {
-    const signal = options.signal();
+  const envelopeOf = (commit: Commit, leaseId: string | undefined) => {
     const json = commit.toJSON() as { readonly ops: readonly unknown[] };
     // serve stamps the principal, writer and fence, so the envelope names none;
     // a commit under a fenced lease names only the lease id and serve stamps
     // the fence from its own record
-    const envelope = {
+    return {
       expectedSeq: commit.seq - 1,
       txnId: commit.txnId,
       ...(leaseId === undefined ? {} : { lease: leaseId }),
       ops: json.ops,
     };
+  };
+
+  /** what a refused or failed send means for the copy, then the error to throw */
+  const refusedWith = async (
+    commit: Commit,
+    error: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown> => {
+    if (error instanceof ServeStaleSeqError) {
+      catchUp.recordServeHead(commit.namespace, commit.partition, error.seq);
+      try {
+        await catchUp.catchUpPartition(
+          commit.namespace,
+          commit.partition,
+          signal,
+        );
+      } catch (caught) {
+        // serve refused the commit, so it never landed: a recovery must not
+        // ask the serve that refused it
+        if (caught instanceof ServeUpstreamDivergedError) {
+          neverSent.add(commit.txnId);
+        }
+        return caught;
+      }
+      return new CommitRejectedError(
+        "seq-gap",
+        `Serve's partition ${commit.partition} is at seq ${error.seq}, ` +
+          `past the ${commit.seq - 1} this commit was built on`,
+      );
+    }
+    if (error instanceof ServeUnreachableError && error.sent === "never") {
+      neverSent.add(commit.txnId);
+    }
+    return error;
+  };
+
+  /** brings the landed commit into the copy as serve stamped it */
+  const landedWith = async (
+    commit: Commit,
+    leaseId: string | undefined,
+    reply: CommitReply,
+    signal: AbortSignal,
+  ): Promise<CommitStoreAppendResult> => {
+    neverSent.delete(commit.txnId);
+    if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
+      const landed = commit.ops.flatMap((op) =>
+        op.kind === "data-version"
+          ? [{ name: op.metadata.name, version: op.metadata.version }]
+          : []
+      );
+      await options.onLeasedCommit(commit.partition, leaseId, landed);
+    }
+    // The copy stores serve's commit as serve stamped it: from the reply when
+    // it can, read back otherwise. A failure here leaves the copy behind; the
+    // next catch-up brings it.
+    try {
+      const applied = reply.commit !== undefined &&
+        catchUp.applyStamped !== undefined &&
+        await catchUp.applyStamped(
+          commit.namespace,
+          commit.partition,
+          reply.commit,
+          reply.parentTxnId,
+        );
+      if (!applied) {
+        await catchUp.catchUpPartition(
+          commit.namespace,
+          commit.partition,
+          signal,
+        );
+      }
+    } catch (error) {
+      // the commit is in serve's log either way, so it is not failed; a serve
+      // that does not hold the copy's head is warned about now, and the next
+      // command refuses it
+      if (error instanceof ServeUpstreamDivergedError) {
+        logger
+          .warn`This change was saved to serve, but serve no longer holds the commits this checkout's copy follows: ${error.message}`;
+      }
+      catchUp.recordServeHead(commit.namespace, commit.partition, reply.seq);
+    }
+    return reply.duplicate
+      ? { kind: "duplicate", seq: reply.seq }
+      : { kind: "appended", seq: reply.seq };
+  };
+
+  const forwardIn = async (
+    commit: Commit,
+    leaseId: string | undefined,
+  ): Promise<CommitStoreAppendResult> => {
+    const signal = options.signal();
+    const envelope = envelopeOf(commit, leaseId);
     const refs = [...new Set(commit.chunkRefs())];
     let chunks = await carried(commit, refs);
-    let reply;
+    let reply: CommitReply;
     try {
       try {
         reply = await client.postCommit(
@@ -254,63 +371,286 @@ export function createServeCommitSink(
         );
       }
     } catch (error) {
-      if (error instanceof ServeStaleSeqError) {
-        catchUp.recordServeHead(commit.namespace, commit.partition, error.seq);
-        try {
-          await catchUp.catchUpPartition(
-            commit.namespace,
-            commit.partition,
-            signal,
-          );
-        } catch (caught) {
-          // serve refused the commit, so it never landed: a recovery must not
-          // ask the serve that refused it
-          if (caught instanceof ServeUpstreamDivergedError) {
-            neverSent.add(commit.txnId);
-          }
-          throw caught;
-        }
-        throw new CommitRejectedError(
-          "seq-gap",
-          `Serve's partition ${commit.partition} is at seq ${error.seq}, ` +
-            `past the ${commit.seq - 1} this commit was built on`,
+      throw await refusedWith(commit, error, signal);
+    }
+    return await landedWith(commit, leaseId, reply, signal);
+  };
+
+  /**
+   * the lease the commit is sent under, and how a refusal of an unconfirmed one
+   * is handled, as `append` does for a commit sent alone
+   */
+  const underLease = async (
+    commit: Commit,
+    lease: HeldServeLease | undefined,
+    send: () => Promise<CommitStoreAppendResult>,
+  ): Promise<CommitStoreAppendResult> => {
+    try {
+      return await send();
+    } catch (error) {
+      // An unconfirmed lease may have ended with a restarted serve, which
+      // refused before writing, so resend under no lease. A confirmed lease
+      // is kept.
+      if (
+        lease?.unconfirmed !== true ||
+        !(error instanceof CommitRejectedError) ||
+        error.reason !== "lease-lost"
+      ) {
+        throw error;
+      }
+      options.dropUnconfirmedLease?.(commit.partition, lease.leaseId);
+      return await forward(commit, undefined);
+    }
+  };
+
+  /** one carried-chunk check for every commit of a batch */
+  const carriedTogether = async (
+    commits: readonly Commit[],
+    signal: AbortSignal,
+  ): Promise<CommitChunk[][]> => {
+    const refsOf = commits.map((commit) => [...new Set(commit.chunkRefs())]);
+    const all = [...new Set(refsOf.flat())];
+    const held = all.length === 0
+      ? new Set<string>()
+      : await client.hasChunks(all, signal);
+    const framed: CommitChunk[][] = [];
+    for (const [index, commit] of commits.entries()) {
+      const missing = refsOf[index].filter((hash) => !held.has(hash));
+      const inFrame = missing.slice(0, MAX_CARRIED_CHUNKS);
+      for (
+        const chunk of await chunksOf(commit, missing.slice(inFrame.length))
+      ) {
+        await client.putChunk(
+          chunk.sha256,
+          chunk.bytes,
+          signal,
+          commit.partition,
         );
       }
-      if (error instanceof ServeUnreachableError && error.sent === "never") {
-        neverSent.add(commit.txnId);
+      framed.push(await chunksOf(commit, inFrame));
+    }
+    return framed;
+  };
+
+  interface Waiting {
+    readonly commit: Commit;
+    readonly lease: HeldServeLease | undefined;
+    readonly resolve: (result: CommitStoreAppendResult) => void;
+    readonly reject: (error: unknown) => void;
+  }
+
+  /** in order, each alone; a commit after one that did not land is not tried */
+  const sendAlone = async (waiting: readonly Waiting[]): Promise<void> => {
+    let stopped = false;
+    for (const entry of waiting) {
+      if (stopped) {
+        neverSent.add(entry.commit.txnId);
+        entry.reject(
+          new CommitNotTriedError(entry.commit.partition.toString()),
+        );
+        continue;
       }
-      throw error;
+      try {
+        entry.resolve(
+          await underLease(
+            entry.commit,
+            entry.lease,
+            () => forward(entry.commit, entry.lease?.leaseId),
+          ),
+        );
+      } catch (error) {
+        stopped = true;
+        entry.reject(error);
+      }
     }
-    neverSent.delete(commit.txnId);
-    if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
-      const landed = commit.ops.flatMap((op) =>
-        op.kind === "data-version"
-          ? [{ name: op.metadata.name, version: op.metadata.version }]
-          : []
-      );
-      await options.onLeasedCommit(commit.partition, leaseId, landed);
+  };
+
+  const sendBatch = async (
+    waiting: readonly Waiting[],
+    release: string | undefined,
+  ): Promise<void> => {
+    if (waiting.length === 0) return;
+    // one commit and nothing to end goes on the single route
+    if (waiting.length === 1 && release === undefined) {
+      await sendAlone(waiting);
+      return;
     }
-    // The copy stores serve's commit as serve stamped it. A read that fails
-    // here leaves the copy behind; the next catch-up brings it.
+    const signal = options.signal();
+    let batch: CommitBatchReply | undefined;
+    let quieted: string | undefined;
     try {
-      await catchUp.catchUpPartition(
-        commit.namespace,
-        commit.partition,
-        signal,
+      batch = await withSpan(
+        "swamp.datastore.v3.serve.forward_batch",
+        { "swamp.datastore.v3.commits": waiting.length },
+        async () => {
+          const chunks = await carriedTogether(
+            waiting.map((entry) => entry.commit),
+            signal,
+          );
+          const carriedBytes = chunks.flat().reduce(
+            (total, chunk) => total + chunk.bytes.byteLength,
+            0,
+          );
+          if (carriedBytes > MAX_BATCH_CARRIED_BYTES) return undefined;
+          // the hold renews through every upload: it is quieted only for a
+          // small request, just before it goes, since serve may end the lease
+          if (
+            release !== undefined &&
+            carriedBytes <= MAX_RELEASE_CARRIED_BYTES &&
+            await quietServeLeaseForRelease(release)
+          ) {
+            quieted = release;
+          }
+          if (waiting.length === 1 && quieted === undefined) return undefined;
+          const commits: BatchedCommit[] = waiting.map((entry, index) => ({
+            partition: entry.commit.partition,
+            envelope: envelopeOf(entry.commit, entry.lease?.leaseId),
+            chunks: chunks[index],
+          }));
+          return await client.postCommits!(commits, quieted, signal);
+        },
       );
     } catch (error) {
-      // the commit is in serve's log either way, so it is not failed; a serve
-      // that does not hold the copy's head is warned about now, and the next
-      // command refuses it
-      if (error instanceof ServeUpstreamDivergedError) {
-        logger
-          .warn`This change was saved to serve, but serve no longer holds the commits this checkout's copy follows: ${error.message}`;
+      // a release that may have reached serve is not renewed again
+      const mayHaveEnded = error instanceof ServeUnreachableError &&
+        error.sent === "maybe";
+      if (quieted !== undefined && !mayHaveEnded) resumeServeLease(quieted);
+      // a follower older than its leader has no batch route
+      if (
+        error instanceof ServeUpstreamError &&
+        (error.status === 404 || error.status === 405)
+      ) {
+        await sendAlone(waiting);
+        return;
       }
-      catchUp.recordServeHead(commit.namespace, commit.partition, reply.seq);
+      if (error instanceof ServeUnreachableError) {
+        latchServeUnreachable(client.baseUrl, error);
+      }
+      for (const entry of waiting) {
+        if (mayHaveEnded) {
+          noteCommandLanded(
+            entry.commit.partition,
+            entry.commit.ops.flatMap((op) =>
+              "intent" in op ? [op.intent.kind] : []
+            ),
+          );
+        }
+        entry.reject(await refusedWith(entry.commit, error, signal));
+      }
+      return;
     }
-    return reply.duplicate
-      ? { kind: "duplicate", seq: reply.seq }
-      : { kind: "appended", seq: reply.seq };
+    if (quieted !== undefined) {
+      if (batch?.released === true) noteServeLeaseReleased(quieted);
+      else resumeServeLease(quieted);
+    }
+    if (batch === undefined) {
+      await sendAlone(waiting);
+      return;
+    }
+    // In order, as each would have been sent alone: a commit's landing is in
+    // the copy before the next is looked at.
+    for (const [index, entry] of waiting.entries()) {
+      const outcome = batch.outcomes[index];
+      try {
+        if (outcome.kind === "landed") {
+          entry.resolve(
+            await landedWith(
+              entry.commit,
+              entry.lease?.leaseId,
+              outcome.reply,
+              signal,
+            ),
+          );
+        } else if (outcome.kind === "not-tried") {
+          neverSent.add(entry.commit.txnId);
+          entry.reject(
+            new CommitNotTriedError(entry.commit.partition.toString()),
+          );
+        } else if (outcome.error instanceof ServeChunksMissingError) {
+          // as the single route resends them: alone, once
+          entry.resolve(
+            await underLease(
+              entry.commit,
+              entry.lease,
+              () => forward(entry.commit, entry.lease?.leaseId),
+            ),
+          );
+        } else {
+          const error = outcome.error;
+          entry.resolve(
+            await underLease(entry.commit, entry.lease, async () => {
+              throw await refusedWith(entry.commit, error, signal);
+            }),
+          );
+        }
+      } catch (error) {
+        entry.reject(error);
+      }
+    }
+  };
+
+  // One batch at a time: each of its commits holds its partition's lock until
+  // the batch is sent, so two filling at once could each wait on the other.
+  let batchGate: Promise<void> = Promise.resolve();
+
+  const beginBatch = async (
+    slots: number,
+    batchOptions?: { readonly release?: string },
+  ): Promise<SinkBatch | undefined> => {
+    if (
+      slots < 1 || slots > MAX_BATCH_COMMITS ||
+      client.postCommits === undefined ||
+      client.takesCommitBatches?.() !== true ||
+      options.offline?.() !== undefined ||
+      (slots === 1 && batchOptions?.release === undefined)
+    ) {
+      return undefined;
+    }
+    const previous = batchGate;
+    let open!: () => void;
+    batchGate = new Promise<void>((resolve) => open = resolve);
+    await previous;
+    const entries: (Waiting | "skipped" | undefined)[] = new Array(slots);
+    let settled = 0;
+    const settle = async () => {
+      if (++settled < slots) return;
+      try {
+        await sendBatch(
+          entries.filter((entry): entry is Waiting =>
+            entry !== undefined && entry !== "skipped"
+          ),
+          batchOptions?.release,
+        );
+      } finally {
+        open();
+      }
+    };
+    return {
+      async append(slot, commit) {
+        // offline, a commit is only queued, never sent: alone
+        if (options.offline?.() !== undefined) {
+          entries[slot] = "skipped";
+          await settle();
+          return await upstream.append(commit);
+        }
+        const result = new Promise<CommitStoreAppendResult>(
+          (resolve, reject) => {
+            entries[slot] = {
+              commit,
+              lease: leaseOf(commit.partition),
+              resolve,
+              reject,
+            };
+          },
+        );
+        await settle();
+        return await result;
+      },
+      async skip(slot) {
+        entries[slot] = "skipped";
+        await settle();
+      },
+    };
   };
 
   const head = async (namespace: string, partition: PartitionKey) => {
@@ -364,22 +704,11 @@ export function createServeCommitSink(
         throw new CommitQueuedOfflineError(commit.partition);
       }
       const lease = leaseOf(commit.partition);
-      try {
-        return await forward(commit, lease?.leaseId);
-      } catch (error) {
-        // An unconfirmed lease may have ended with a restarted serve, which
-        // refused before writing, so resend under no lease. A confirmed lease
-        // is kept.
-        if (
-          lease?.unconfirmed !== true ||
-          !(error instanceof CommitRejectedError) ||
-          error.reason !== "lease-lost"
-        ) {
-          throw error;
-        }
-        options.dropUnconfirmedLease?.(commit.partition, lease.leaseId);
-        return await forward(commit, undefined);
-      }
+      return await underLease(
+        commit,
+        lease,
+        () => forward(commit, lease?.leaseId),
+      );
     },
     appendUnderLease: forward,
   };
@@ -408,6 +737,8 @@ export function createServeCommitSink(
       },
     },
     seqGapAttempts: SERVE_SEQ_GAP_ATTEMPTS,
+    beginBatch,
+    batchLimit: MAX_BATCH_COMMITS,
     takesStepStarts: () => client.takesStepStarts?.() ?? false,
     queuesOffline: async (partition) => {
       const offline = options.offline?.();

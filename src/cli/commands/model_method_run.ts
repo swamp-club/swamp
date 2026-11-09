@@ -36,6 +36,7 @@ import {
   acquirePublishLocksOrDefer,
   assertOfflineRunAllowed,
   cancelOnLeaseLost,
+  catchUpDeferred,
   datastoreRootOf,
   libSwampContextForRepo,
   type ModelLockResult,
@@ -413,6 +414,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
         } = await requireInitializedRepoUnlocked({
           repoDir: resolveRepoDir(options.repoDir),
           outputMode: ctx.outputMode,
+          // in team mode a changing run's lock answers with the catch-up;
+          // --last-evaluated judges what it evaluated before any lock
+          catchUpAtLock: options.lastEvaluated !== true,
         });
 
         // a run against a serve-mode checkout sees what other callers commit
@@ -605,11 +609,21 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             : baseLibCtx;
 
           // Pre-lookup for per-model lock acquisition (reads YAML — no lock needed)
-          const preResult = await findDefinitionByIdOrName(
+          let preResult = await findDefinitionByIdOrName(
             repoContext.definitionRepo,
             modelIdOrName,
           );
+          // not in a copy whose catch-up waits for the lock: it may be new
+          if (preResult === undefined) {
+            await catchUpDeferred(datastoreConfig);
+            preResult = await findDefinitionByIdOrName(
+              repoContext.definitionRepo,
+              modelIdOrName,
+            );
+          }
           let modelLocks: ModelLockResult | undefined;
+          // the definition the lock was taken for, which the run must execute
+          let lockedDefinitionId: string | undefined;
           // set when a read or list run takes its model's lock only to publish
           // what it wrote.
           let publishModel: { modelType: string; modelId: string } | undefined;
@@ -618,14 +632,12 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               modelType: preResult.type.normalized,
               modelId: preResult.definition.id,
             };
-            // a serve-mode checkout working offline judges the run before it
-            // starts: one that changes things needs the behavior's lease.
-            await assertOfflineRunAllowed(datastoreConfig, {
+            const offlineRun = {
               ...model,
               behaviorName: preResult.definition.name,
               methodName,
               methodKind: await methodKindOf(model.modelType, methodName),
-            });
+            };
             const lockMode = await methodRunLockMode({
               modelType: model.modelType,
               methodName,
@@ -633,6 +645,12 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               syncService,
               repoContext,
             });
+            // only a lock answers with the catch-up; a run taking none reads
+            // a copy caught up first
+            if (lockMode !== "run") await catchUpDeferred(datastoreConfig);
+            // a serve-mode checkout working offline judges the run before it
+            // starts: one that changes things needs the behavior's lease.
+            await assertOfflineRunAllowed(datastoreConfig, offlineRun);
             if (lockMode === "run") {
               const lockResult = await acquireModelLocks(
                 datastoreConfig,
@@ -643,8 +661,17 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 undefined,
                 { repoContext },
               );
+              // a lock that found serve unreachable may have put the checkout
+              // offline: judged again, as an offline command is from the start
+              try {
+                await assertOfflineRunAllowed(datastoreConfig, offlineRun);
+              } catch (error) {
+                await lockResult.release();
+                throw error;
+              }
               if (lockResult.synced) repoContext.catalogStore.invalidate();
               modelLocks = lockResult;
+              lockedDefinitionId = model.modelId;
               // a lapsed lease at serve cancels the run, as a signal would; its
               // cause names the lapse.
               cancelOnLeaseLost(lockResult.leaseLost, abort);
@@ -860,6 +887,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 }
                 : undefined,
               release: modelLocks?.release,
+              ...(modelLocks?.releasableLease() === undefined
+                ? {}
+                : { releaseWithEnd: modelLocks.releasableLease() }),
               onCleanupError: (releaseError) => {
                 if (releaseError === publishFailure?.error) {
                   // A run that succeeded fails below instead.
@@ -913,6 +943,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     consumeStream(
                       modelMethodRun(libCtx, runDeps, {
                         modelIdOrName,
+                        ...(lockedDefinitionId === undefined
+                          ? {}
+                          : { lockedDefinitionId }),
                         methodName,
                         inputs: inputSets[i],
                         literalInputs: options.literalInputs === true,

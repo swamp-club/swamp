@@ -381,6 +381,12 @@ export interface ModelMethodRunInput {
    */
   expectedDefinitionId?: string | null;
   /**
+   * the id of the definition whose lock the caller holds: the run is refused
+   * when the name now resolves to another (renamed, or removed and created
+   * again, while it waited), never run under the wrong lock
+   */
+  lockedDefinitionId?: string;
+  /**
    * called when expectedDefinitionId is null (no definition had the name) and a
    * concurrent run has since created one; the run proceeds on it only if this
    * allows it, so the caller authorizes what actually runs
@@ -639,6 +645,16 @@ export async function* modelMethodRun(
               }
               definition = lookupResult.definition;
               modelType = lookupResult.type;
+              if (
+                input.lockedDefinitionId !== undefined &&
+                definition.id !== input.lockedDefinitionId
+              ) {
+                yield prepareFailed({
+                  kind: "error",
+                  error: definitionChangedUnderLock(input.modelIdOrName),
+                });
+                return;
+              }
 
               const resolvedModelDef = await resolveModelDef(modelType);
               if (!resolvedModelDef) {
@@ -1992,6 +2008,16 @@ export function modelNotFound(idOrName: string): SwampError {
   return wordedSwampError(
     "model_not_found",
     wordedText((w) => `${w.Noun} not found: ${idOrName}`),
+  );
+}
+
+export function definitionChangedUnderLock(idOrName: string): SwampError {
+  return wordedSwampError(
+    "definition_changed_under_lock",
+    wordedText((w) =>
+      `${w.Noun} ${idOrName} was renamed, or removed and created again, ` +
+      `while this run waited for its lock: run it again`
+    ),
   );
 }
 

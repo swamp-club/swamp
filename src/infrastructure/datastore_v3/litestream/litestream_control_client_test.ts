@@ -29,7 +29,8 @@ import {
 const UNIX = Deno.build.os !== "windows";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await Deno.makeTempDir({ prefix: "swamp-ls-ctl-" });
+  // short: macOS caps a socket path at 104 bytes, and TMPDIR can be long
+  const dir = await Deno.makeTempDir({ prefix: "l" });
   try {
     await fn(dir);
   } finally {

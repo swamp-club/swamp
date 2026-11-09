@@ -33,7 +33,12 @@ import {
   sha256Of,
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
-import { contextHook, unitOptions } from "./commit_log_test_helpers.ts";
+import {
+  contextHook,
+  runPartition,
+  runPut,
+  unitOptions,
+} from "./commit_log_test_helpers.ts";
 import { createCommitLogUnitOfWork } from "./commit_log_unit_of_work.ts";
 import type { OutboxCommitSink } from "./outbox_commit_sink.ts";
 import { ServeCatchUp } from "./serve_catch_up.ts";
@@ -50,10 +55,17 @@ import {
   ServeChunksMissingError,
   ServeUnreachableError,
   ServeUpstreamDivergedError,
+  ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { ServeUpstreamState } from "./serve_upstream_state.ts";
-import type { HeldServeLease } from "./serve_lease_registry.ts";
+import {
+  type HeldServeLease,
+  offerServeLeaseRelease,
+  resetServeLeasesForTesting,
+  serveLeaseReleasedByCommit,
+} from "./serve_lease_registry.ts";
+import { PartitionsRefusedError } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   FakeServe,
   removeTempDir,
@@ -719,4 +731,201 @@ Deno.test("createServeCommitSink: a commit landed under a lease reports the data
     await store.close();
     await removeTempDir(dir);
   }
+});
+
+Deno.test("createServeCommitSink: a unit's commits to two partitions travel in one batch with one chunks/has, and land in the copy as serve stamped them, unread", async () => {
+  await withCheckout(async ({ store, serve, cache, sink }) => {
+    serve.takesBatches = true;
+    serve.stampsReplies = true;
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, cache),
+    );
+    await uow.stageOp(blobChange("a"));
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    await uow.commit();
+
+    assertEquals(serve.batches, [{
+      partitions: [MODEL.toString(), runPartition().toString()],
+    }]);
+    assertEquals(serve.requests.hasChunks, 1);
+    assertEquals(serve.requests.partitionCommits, 0, "nothing read back");
+    const local = await copyCommit(store, 1);
+    assertEquals(local.principal, SERVE_PRINCIPAL);
+    assertEquals(local.writer, SERVE_WRITER);
+  });
+});
+
+Deno.test("createServeCommitSink: a batch commit serve did not try is left to the unit, which holds a run commit behind a refusal", async () => {
+  await withCheckout(
+    async ({ serve, cache, sink }) => {
+      serve.takesBatches = true;
+      serve.leaseLost = (lease) => lease === "lease-model";
+      const uow = createCommitLogUnitOfWork(
+        contextHook(),
+        unitOptions(sink, cache),
+      );
+      await uow.stageOp(blobChange("a"));
+      await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+      await assertRejects(() => uow.commit(), PartitionsRefusedError);
+      assertEquals(
+        serve.posted.map((posted) => posted.partition),
+        [MODEL.toString()],
+        "the run commit was never sent",
+      );
+      assertEquals(serve.head(runPartition()), 0);
+    },
+    (partition) =>
+      partition.equals(MODEL)
+        ? { leaseId: "lease-model", fence: 1, floor: [] }
+        : undefined,
+  );
+});
+
+Deno.test("createServeCommitSink: the final batch ends only a lease its hold offered, quieting the hold first", async () => {
+  resetServeLeasesForTesting();
+  try {
+    await withCheckout(async ({ serve, cache, sink }) => {
+      serve.takesBatches = true;
+      const quieted: string[] = [];
+      offerServeLeaseRelease("lease-1", () => {
+        quieted.push("lease-1");
+        return Promise.resolve();
+      }, () => {});
+      const uow = createCommitLogUnitOfWork(
+        contextHook(),
+        unitOptions(sink, cache),
+      );
+      await uow.stageOp(blobChange("a"));
+      await uow.checkpoint({ release: "lease-1" });
+      assertEquals(quieted, ["lease-1"]);
+      assertEquals(serve.releasedByBatch, ["lease-1"]);
+      assertEquals(serveLeaseReleasedByCommit("lease-1"), true);
+
+      // a lease no hold here offered is never named to serve: the one commit
+      // goes alone, as one with nothing to end does
+      await uow.stageOp(blobChange("b"));
+      await uow.checkpoint({ release: "lease-unknown" });
+      assertEquals(serve.batches.length, 1);
+      assertEquals(serve.releasedByBatch, ["lease-1"]);
+      assertEquals(serve.posted.length, 2);
+      await uow.commit();
+    });
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("createServeCommitSink: a batch waits until the one before it was sent", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    serve.takesBatches = true;
+    const first = await sink.beginBatch!(2);
+    let secondReady = false;
+    const second = sink.beginBatch!(1, { release: "lease-2" }).then(
+      (batch) => {
+        secondReady = true;
+        return batch;
+      },
+    );
+    await Promise.resolve();
+    assertEquals(secondReady, false);
+    await first!.skip(0);
+    assertEquals(secondReady, false);
+    await first!.skip(1);
+    const batch = await second;
+    assertEquals(secondReady, true);
+    await batch!.skip(0);
+    assertEquals(serve.batches, [], "nothing to send, so no request");
+    void cache;
+  });
+});
+
+Deno.test("createServeCommitSink: a hold quieted for a release serve did not make renews again", async () => {
+  resetServeLeasesForTesting();
+  try {
+    await withCheckout(
+      async ({ serve, cache, sink }) => {
+        serve.takesBatches = true;
+        serve.leaseLost = () => true;
+        const events: string[] = [];
+        offerServeLeaseRelease(
+          "lease-1",
+          () => {
+            events.push("quiet");
+            return Promise.resolve();
+          },
+          () => events.push("resume"),
+        );
+        const uow = createCommitLogUnitOfWork(
+          contextHook(),
+          unitOptions(sink, cache),
+        );
+        await uow.stageOp(blobChange("a"));
+        await assertRejects(() => uow.checkpoint({ release: "lease-1" }));
+        assertEquals(events, ["quiet", "resume"]);
+        assertEquals(serve.releasedByBatch, []);
+      },
+      () => ({ leaseId: "lease-1", fence: 1, floor: [] }),
+    );
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("createServeCommitSink: a final batch carrying much keeps its hold renewing and names no release; a small one quiets it and ends the lease", async () => {
+  resetServeLeasesForTesting();
+  try {
+    await withCheckout(async ({ serve, cache, sink }) => {
+      serve.takesBatches = true;
+      const quieted: string[] = [];
+      for (const id of ["big", "small"]) {
+        offerServeLeaseRelease(id, () => {
+          quieted.push(id);
+          return Promise.resolve();
+        }, () => {});
+      }
+      const uow = createCommitLogUnitOfWork(
+        contextHook(),
+        unitOptions(sink, cache),
+      );
+      const large = blobChange("large");
+      await uow.stageOp({
+        ...large,
+        put: { ...large.put, content: bytesOf(2 * 1024 * 1024) },
+      });
+      await uow.stageOp({ partition: runPartition(), op: await runPut("r1") });
+      await uow.checkpoint({ release: "big" });
+      await uow.stageOp(blobChange("b"));
+      await uow.stageOp({ partition: runPartition(), op: await runPut("r2") });
+      await uow.checkpoint({ release: "small" });
+      assertEquals(quieted, ["small"]);
+      assertEquals(serve.batches.map((batch) => batch.release), [
+        undefined,
+        "small",
+      ]);
+      assertEquals(serve.releasedByBatch, ["small"]);
+      await uow.commit();
+    });
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("createServeCommitSink: a serve whose route refuses batches as unknown gets each commit alone", async () => {
+  await withCheckout(async ({ serve, cache, sink }) => {
+    serve.takesBatches = true;
+    serve.postCommits = () =>
+      Promise.reject(new ServeUpstreamError(404, "not_found", "no route"));
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, cache),
+    );
+    await uow.stageOp(blobChange("a"));
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    await uow.commit();
+    assertEquals(serve.posted.map((p) => p.partition), [
+      MODEL.toString(),
+      runPartition().toString(),
+    ]);
+  });
 });

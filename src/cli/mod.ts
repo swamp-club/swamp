@@ -2728,13 +2728,26 @@ async function runInvocation(
     if (hookMode || isDispatchRunnerCommand(commandInfo)) return;
 
     await withSpan("swamp.cli.teardown", {}, async () => {
-      await flushDatastoreSync();
+      // each part spanned, so a teardown that holds the exit names which
+      await withSpan("swamp.cli.teardown.sync", {}, () => flushDatastoreSync());
       // after the command's locks are released, before the v3 writer hold ends:
       // the pass takes the lock itself and compacts v3 history as the writer.
       // never fails the run
-      await runRetentionAtCommandEnd();
-      await closeV3DatastoresAfterSuccess();
-      await runGateRefresh(gateOutcome);
+      await withSpan(
+        "swamp.cli.teardown.retention",
+        {},
+        () => runRetentionAtCommandEnd(),
+      );
+      await withSpan(
+        "swamp.cli.teardown.datastores",
+        {},
+        () => closeV3DatastoresAfterSuccess(),
+      );
+      await withSpan(
+        "swamp.cli.teardown.gate_refresh",
+        {},
+        () => runGateRefresh(gateOutcome),
+      );
 
       if (telemetryCtx) {
         try {
@@ -2771,18 +2784,19 @@ async function runInvocation(
 
       // The inbox notice prints after the command's output, before the
       // update banner.
-      await finishInboxNotice({
-        poll: inboxPoll,
-        notice: inbox.notice,
-        outputMode: getOutputModeFromArgs(args),
-        quiet: quietRequested,
-        // `workflow run` and `behavior run` report a failed run through the
-        // exit code and return normally, so a clean return alone is not a
-        // success.
-        succeeded: commandSucceeded(Deno.exitCode),
-        show: () =>
-          inboxDeps ? showInboxNotice(inboxDeps) : Promise.resolve(null),
-      });
+      await withSpan("swamp.cli.teardown.inbox", {}, () =>
+        finishInboxNotice({
+          poll: inboxPoll,
+          notice: inbox.notice,
+          outputMode: getOutputModeFromArgs(args),
+          quiet: quietRequested,
+          // `workflow run` and `behavior run` report a failed run through the
+          // exit code and return normally, so a clean return alone is not a
+          // success.
+          succeeded: commandSucceeded(Deno.exitCode),
+          show: () =>
+            inboxDeps ? showInboxNotice(inboxDeps) : Promise.resolve(null),
+        }));
 
       if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
         const outputMode = getOutputModeFromArgs(args);

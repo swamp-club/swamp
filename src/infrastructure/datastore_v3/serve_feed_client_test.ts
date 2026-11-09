@@ -235,3 +235,73 @@ Deno.test("watchServeFeed: a frame holding only commits this process sent brings
     2,
   );
 });
+
+Deno.test("watchServeFeed: stopping the watch cuts short a catch-up still under way, so a command's exit never waits on it", async () => {
+  await withServe([], async (url) => {
+    let started = false;
+    let aborted = false;
+    const watch = watchServeFeed({
+      target: {
+        serverUrl: url,
+        token: undefined,
+        caCerts: undefined,
+        extraHeaders: {},
+      },
+      // a catch-up whose request serve never answers
+      catchUp: (signal) => {
+        started = true;
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            reject(signal.reason);
+          }, { once: true });
+        });
+      },
+    });
+    await waitFor(() => started, "the head's catch-up under way");
+    await watch.stop();
+    assertEquals(aborted, true);
+  });
+});
+
+Deno.test("watchServeFeed: with a ready gate, a head's catch-up waits for it, then runs only if the copy is still short of that head", async () => {
+  for (const reached of [true, false]) {
+    await withServe([], async (url) => {
+      let catchUps = 0;
+      let applied = 0;
+      const gate = Promise.withResolvers<void>();
+      let waiting = false;
+      const watch = watchServeFeed({
+        target: {
+          serverUrl: url,
+          token: undefined,
+          caCerts: undefined,
+          extraHeaders: {},
+        },
+        appliedCursor: () => applied,
+        ready: async () => {
+          waiting = true;
+          await gate.promise;
+        },
+        catchUp: () => {
+          catchUps++;
+          return Promise.resolve();
+        },
+      });
+      try {
+        await waitFor(() => waiting, "the head's catch-up held");
+        assertEquals(catchUps, 0);
+        // the command's own catch-up brought the copy to serve's head, or not
+        applied = reached ? 41 : 40;
+        gate.resolve();
+        await waitFor(
+          () => reached || catchUps === 1,
+          "the held catch-up decided",
+        );
+      } finally {
+        await watch.stop();
+      }
+      assertEquals(catchUps, reached ? 0 : 1);
+    });
+  }
+});

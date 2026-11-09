@@ -1550,7 +1550,8 @@ writer fence, and GCS refuses (HTTP 429) more than about one mutation a second
 of one object. Back-to-back syncs rewrote it at whatever rate they finished, so
 a team committing faster than once a second had member writes fail.
 `HeadPublishPacer` (`src/domain/datastore_v3/head_publish_pacer.ts`) paces
-the head writes of a bucket datastore, but only once the bucket has pushed back:
+the head writes of a bucket datastore, but only once the bucket has pushed
+back or writers queue:
 
 - Until a head write is refused, every head goes out at once. A member's
   back-to-back commits, such as the steps of one workflow run, never wait. An
@@ -1560,6 +1561,12 @@ the head writes of a bucket datastore, but only once the bucket has pushed back:
   `SlowDown`) is retried by the bucket write retry. The refusal reaches the
   pacer through the sync's write scope (`withBucketWriteScope`), and the pacer
   then paces that head for 30 s after the last refusal.
+- A sync that covers more than one request queued behind the last one, which
+  group commit tells it, paces that head for 5 s after the last such sync
+  (swamp-club#4525). A provider's own retries absorb most 429s before core
+  sees one, so the head was otherwise refused about once a second under
+  moderate load. One member's sequential commits never queue, so they still
+  never wait, and members that collide once do not pace each other for long.
 - While pacing, `syncAndPublishNow` waits out the rest of the 1.2 s interval
   before it reads the high-water mark. The head it then publishes covers every
   commit that landed during the wait, and the group commit resolves the
@@ -1584,8 +1591,9 @@ lease, lease records, quarantine and serve stores all inherit them.
 - They retry 429 and 503 with jittered backoff for up to 5 s, which is under
   the writer lease heartbeat interval. Inside a sync, they stop at the
   confirm's deadline instead (`withBucketWriteDeadline`).
-- Each retry is logged at info with a code (`bucket_write_rate_limited` or
-  `bucket_write_unavailable`), the object and the attempt.
+- Each retry is logged with a code (`bucket_write_rate_limited` or
+  `bucket_write_unavailable`), the object and the attempt: at info in serve,
+  which operators watch, and at debug in a member's CLI.
 - A write that still fails is logged as a warning and throws the provider's
   error unchanged, so the member sees the same coded error as before.
 - A `putIfAbsent` answered with a 503 may have landed. Its later false, or its
