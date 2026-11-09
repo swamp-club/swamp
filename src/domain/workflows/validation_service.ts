@@ -55,6 +55,7 @@ import {
 import type { SecretMisuseFinding } from "../models/validation_service.ts";
 import { literalCallTexts } from "../expressions/cel_grammar.ts";
 import {
+  isForeignExpression,
   refusedOccurrenceLine,
   storedTextRefusal,
 } from "../expressions/swamp_namespaces.ts";
@@ -153,6 +154,49 @@ export interface WorkflowValidationService {
 const PROSE_DESCRIPTION_PATH =
   /^(?:jobs\[\d+\](?:\.steps\[\d+\])?\.)?description$/;
 
+/** guards and assert exprs written without ${{ }} are CEL all the same */
+function bareStepExpressions(
+  workflow: Workflow,
+): { celExpression: string; path: string }[] {
+  const expressions: { celExpression: string; path: string }[] = [];
+  for (const [jobIndex, job] of workflow.jobs.entries()) {
+    for (const [stepIndex, step] of job.steps.entries()) {
+      const path = `jobs[${jobIndex}].steps[${stepIndex}]`;
+      if (step.guard && !containsExpression(step.guard)) {
+        expressions.push({
+          celExpression: step.guard,
+          path: `${path}.guard`,
+        });
+      }
+      const task = step.task.toData();
+      if (task.type === "assert" && !containsExpression(task.expr)) {
+        expressions.push({
+          celExpression: task.expr,
+          path: `${path}.task.expr`,
+        });
+      }
+    }
+  }
+  return expressions;
+}
+
+function expressionLocation(
+  workflow: Workflow,
+  path: string,
+): { name: string; path: string } {
+  const match = /^jobs\[(\d+)\](?:\.steps\[(\d+)\])?\.?/.exec(path);
+  const job = match ? workflow.jobs[Number(match[1])] : undefined;
+  if (!match || !job) return { name: "Task expressions", path };
+  const relative = path.slice(match[0].length);
+  const step = match[2] === undefined ? undefined : job.steps[Number(match[2])];
+  return step
+    ? {
+      name: `Task expressions in job '${job.name}' step '${step.name}'`,
+      path: relative,
+    }
+    : { name: `Expressions in job '${job.name}'`, path: relative };
+}
+
 export class DefaultWorkflowValidationService
   implements WorkflowValidationService {
   private readonly sortService = new TopologicalSortService();
@@ -168,6 +212,9 @@ export class DefaultWorkflowValidationService
       workflow: Workflow,
       embedded?: boolean,
     ) => readonly SecretMisuseFinding[],
+    private readonly checkExpressionTypes?: (
+      expression: string,
+    ) => string | undefined,
   ) {}
 
   async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
@@ -225,6 +272,10 @@ export class DefaultWorkflowValidationService
     }
 
     for (const result of this.validateSecretUsage(workflow)) {
+      results.push(result);
+    }
+
+    for (const result of this.validateExpressionTypes(workflow)) {
       results.push(result);
     }
 
@@ -294,24 +345,7 @@ export class DefaultWorkflowValidationService
       (path) =>
         PROSE_DESCRIPTION_PATH.test(path) || inputDescriptions.has(path),
     );
-    for (const [jobIndex, job] of workflow.jobs.entries()) {
-      for (const [stepIndex, step] of job.steps.entries()) {
-        const path = `jobs[${jobIndex}].steps[${stepIndex}]`;
-        if (step.guard && !containsExpression(step.guard)) {
-          expressions.push({
-            celExpression: step.guard,
-            path: `${path}.guard`,
-          });
-        }
-        const task = step.task.toData();
-        if (task.type === "assert" && !containsExpression(task.expr)) {
-          expressions.push({
-            celExpression: task.expr,
-            path: `${path}.task.expr`,
-          });
-        }
-      }
-    }
+    expressions.push(...bareStepExpressions(workflow));
     return expressions.flatMap(({ celExpression, path, embedded }) =>
       this.diagnoseSecrets!(celExpression, path, workflow, embedded).map((
         finding,
@@ -323,6 +357,44 @@ export class DefaultWorkflowValidationService
         )
       )
     );
+  }
+
+  /**
+   * only jobs are read: workflow input values and schema defaults are inert,
+   * and trigger.inputs are evaluated only when a webhook route fires the run
+   */
+  private validateExpressionTypes(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    if (!this.checkExpressionTypes) return [];
+    const expressions: { celExpression: string; path: string; raw?: string }[] =
+      [];
+    for (const [jobIndex, job] of workflow.toData().jobs.entries()) {
+      expressions.push(
+        ...extractExpressions(
+          job,
+          `jobs[${jobIndex}]`,
+          (path) => PROSE_DESCRIPTION_PATH.test(path),
+        ),
+      );
+    }
+    expressions.push(...bareStepExpressions(workflow));
+    const results: WorkflowValidationResult[] = [];
+    for (const { celExpression, path, raw } of expressions) {
+      if (isForeignExpression(celExpression)) continue;
+      const reason = this.checkExpressionTypes(celExpression);
+      if (reason === undefined) continue;
+      const location = expressionLocation(workflow, path);
+      results.push(
+        WorkflowValidationResult.fail(
+          location.name,
+          `${location.path} holds ${
+            raw ?? celExpression
+          }, which a run refuses: ${reason}`,
+        ),
+      );
+    }
+    return results;
   }
 
   private async validateReservedTags(

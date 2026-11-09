@@ -5,6 +5,11 @@
 Steps can iterate over arrays or objects using `forEach`. Each iteration creates
 a separate step instance.
 
+swamp's CEL has no `range()` or other list generator: build the list from a
+literal (`${{ ["a", "b"] }}`), a workflow input, or data (`data.latest`,
+`data.query`). `swamp workflow validate` refuses a call to a function swamp does
+not provide.
+
 ### Iterate Over Array
 
 ```yaml

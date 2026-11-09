@@ -63,6 +63,7 @@ import {
 import { isUuid } from "../../domain/models/model_lookup.ts";
 
 import { diagnoseSecretMisuse } from "../../infrastructure/cel/secret_diagnostics.ts";
+import { checkExpressionTypes } from "../../infrastructure/cel/expression_type_check.ts";
 
 export { isUuid };
 
@@ -324,6 +325,7 @@ export function createWorkflowValidateDeps(
         `${workflowRepo.getPath(workflow.id)} ${location}`,
         embedded,
       ),
+    checkExpressionTypes,
   );
   return {
     findWorkflowById: (id) => workflowRepo.findById(createWorkflowId(id)),

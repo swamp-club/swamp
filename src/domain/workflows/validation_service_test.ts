@@ -3884,3 +3884,118 @@ Deno.test("validate: fails a reserved tag inside a nested workflow, naming the p
     "Step 'deep' in job 'inner': Tag '_swamp.sensitiveFields' from the data output override for spec 'result' is reserved",
   );
 });
+
+function typeCheckingService(
+  checked: string[],
+): DefaultWorkflowValidationService {
+  return new DefaultWorkflowValidationService(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    (expression) => {
+      checked.push(expression);
+      return expression.includes("range(")
+        ? "found no matching overload for 'range(int, int)'"
+        : undefined;
+    },
+  );
+}
+
+Deno.test("validateExpressionTypes: a refused expression in forEach.in, a guard, an assert or a task input fails at its step", async () => {
+  const workflow = Workflow.create({
+    name: "typed",
+    jobs: [Job.create({
+      name: "main",
+      steps: [
+        Step.create({
+          name: "fan",
+          forEach: { item: "n", in: "${{ range(1, 9) }}" },
+          guard: "range(1, 2) == []",
+          task: StepTask.model("echoer", "run", {
+            cmd: "echo ${{ range(1, 3) }}",
+          }),
+        }),
+        Step.create({
+          name: "check",
+          task: StepTask.assert("range(1, 4) == []", "never"),
+        }),
+      ],
+    })],
+  });
+  const results = await typeCheckingService([]).validate(workflow);
+  const failures = results.filter((r) => !r.passed);
+  assertEquals(failures.map((r) => [r.name, r.error]), [
+    [
+      "Task expressions in job 'main' step 'fan'",
+      "task.inputs.cmd holds ${{ range(1, 3) }}, which a run refuses: found no matching overload for 'range(int, int)'",
+    ],
+    [
+      "Task expressions in job 'main' step 'fan'",
+      "forEach.in holds ${{ range(1, 9) }}, which a run refuses: found no matching overload for 'range(int, int)'",
+    ],
+    [
+      "Task expressions in job 'main' step 'fan'",
+      "guard holds range(1, 2) == [], which a run refuses: found no matching overload for 'range(int, int)'",
+    ],
+    [
+      "Task expressions in job 'main' step 'check'",
+      "task.expr holds range(1, 4) == [], which a run refuses: found no matching overload for 'range(int, int)'",
+    ],
+  ]);
+});
+
+Deno.test("validateExpressionTypes: input schema defaults, trigger.inputs, descriptions and foreign text are not checked", async () => {
+  const checked: string[] = [];
+  const workflow = Workflow.create({
+    name: "inert",
+    trigger: { inputs: { start: "${{ range(1, 9) }}" } },
+    inputs: {
+      properties: {
+        list: { type: "string", default: "${{ range(1, 9) }}" },
+      },
+    },
+    jobs: [Job.create({
+      name: "main",
+      description: "uses ${{ range(1, 9) }}",
+      steps: [Step.create({
+        name: "emit",
+        description: "documents ${{ range(1, 9) }}",
+        task: StepTask.directExecution("command/shell", "emit", "execute", {
+          sha: "${{ github.sha }}",
+          n: "${{ inputs.n }}",
+        }),
+      })],
+    })],
+  });
+  const results = await typeCheckingService(checked).validate(workflow);
+  assertEquals(checked, ["inputs.n"]);
+  assertEquals(
+    results.filter((r) => r.name.includes("expressions")).map((r) => r.passed),
+    [],
+  );
+});
+
+Deno.test("validateExpressionTypes: without a checker nothing is reported", async () => {
+  const workflow = Workflow.create({
+    name: "unchecked",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "fan",
+        forEach: { item: "n", in: "${{ range(1, 9) }}" },
+        task: StepTask.model("echoer", "run"),
+      })],
+    })],
+  });
+  const results = await service.validate(workflow);
+  assertEquals(results.filter((r) => !r.passed), []);
+});
+
+Deno.test("validateExpressionTypes: a workflow whose expressions check gains no rows", async () => {
+  const workflow = createSimpleWorkflow();
+  const plain = await service.validate(workflow);
+  const checked = await typeCheckingService([]).validate(workflow);
+  assertEquals(checked.map((r) => r.name), plain.map((r) => r.name));
+});
