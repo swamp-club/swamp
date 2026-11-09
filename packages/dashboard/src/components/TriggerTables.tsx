@@ -222,7 +222,7 @@ export interface WebhookRow {
   route: string;
   workflowName: string;
   scheme?: string;
-  source?: "config" | "flag";
+  source?: "config" | "flag" | "file";
   /** Other routes that start the same workflow. */
   sharedWith: string[];
   recent: RecentRun[];

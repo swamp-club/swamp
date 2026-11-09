@@ -386,6 +386,19 @@ Deno.test("redactServeOptions: reports the webhook run limit", () => {
   );
 });
 
+Deno.test("redactServeOptions: reports the webhook routes directory", () => {
+  const opts = {
+    port: 9090,
+    host: "0.0.0.0",
+    authMode: "none",
+    webhookRoutesDir: "webhook-routes",
+  };
+  assertEquals(
+    redactServeOptions(opts as unknown as MergedServeOptions).webhookRoutesDir,
+    "webhook-routes",
+  );
+});
+
 Deno.test("redactServeOptions: omits TLS key file", () => {
   const opts = {
     port: 443,

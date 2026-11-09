@@ -245,7 +245,9 @@ export interface WebhookEntry {
   /** Signature verification scheme, on servers that report it. */
   scheme?: string;
   /** Where the route is defined, on servers that report it. */
-  source?: "config" | "flag";
+  source?: "config" | "flag" | "file";
+  /** The route file's name, for a route defined in a route file. */
+  file?: string;
 }
 
 /**

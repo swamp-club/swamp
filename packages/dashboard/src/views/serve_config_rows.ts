@@ -59,6 +59,9 @@ export function serveConfigRows(payload: unknown): ServeConfigRow[] | null {
       ok: false,
     });
   }
+  if (typeof config.webhookRoutesDir === "string") {
+    rows.push(text("Webhook Routes Dir", config.webhookRoutesDir));
+  }
 
   return rows;
 }
