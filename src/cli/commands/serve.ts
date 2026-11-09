@@ -22,6 +22,7 @@ import {
   delegationSessionName,
   registerDelegationLookup,
 } from "../../serve/delegated_token_auth.ts";
+import { RESERVED_TOKEN_NAMES } from "../../domain/access/delegated_token.ts";
 import { DelegationStore } from "../../serve/delegation_store.ts";
 import { createRecordLock } from "../../serve/deps.ts";
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
@@ -5155,6 +5156,20 @@ export const serveCommand = new Command()
     });
     await integrationDirectory.reload();
     await delegationDirectory.reload();
+    // an older node answers a delegated token by looking up a server token of
+    // its prefix's name, so one existing would authenticate there
+    for (const reserved of RESERVED_TOKEN_NAMES) {
+      const found = await readServerTokenRecord(repoContext, reserved).then(
+        () => true,
+        () => false,
+      );
+      if (found) {
+        logger.warn(
+          "A server token is named {name}, which delegated credentials use; revoke it before linking anyone",
+          { name: reserved },
+        );
+      }
+    }
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
       mode: grantReloadMode,
