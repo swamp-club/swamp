@@ -58,6 +58,15 @@ export const V3_STORAGE_UNREACHABLE_CODE = "datastore_v3_storage_unreachable";
 export const V3_SERVE_UNREACHABLE_CODE = "datastore_v3_serve_unreachable";
 
 /**
+ * a request this command's own lapsed lease stopped: it exits as serve being
+ * unreachable does, though its code names the lapse
+ */
+export function isLapsedServeRequest(error: unknown): boolean {
+  return (error as { lapsedServeRequest?: unknown } | undefined)
+    ?.lapsedServeRequest === true;
+}
+
+/**
  * raised before the command changed anything: a temporary failure, so it exits
  * 75 and can be run again once the storage is reachable
  */

@@ -41,9 +41,14 @@ import {
 } from "./serve_upstream_registry.ts";
 import { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
 import {
+  ServeLeaseLapsedRequestError,
   ServeUnreachableError,
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
+import {
+  clearServeUnreachableLatches,
+  ServeDatastoreClient,
+} from "./serve_datastore_client.ts";
 import {
   heldServeLeaseOf,
   noteServeLeaseReleased,
@@ -433,6 +438,19 @@ Deno.test("ServeLock: a fenced lease that cannot be renewed before its local dea
   await waitFor(() => lost.length > 0, "the lapse");
   assertStringIncludes(lost[0].message, "could not be renewed in time");
   assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+  try {
+    const next = new ServeDatastoreClient({
+      baseUrl: serve.baseUrl,
+      fetch: () => Promise.reject(new Error("never sent")),
+    });
+    const error = await assertRejects(
+      () => next.changes(0, new AbortController().signal),
+      ServeLeaseLapsedRequestError,
+    );
+    assertEquals(error.sent, "never");
+  } finally {
+    clearServeUnreachableLatches();
+  }
   await subject.release();
 });
 

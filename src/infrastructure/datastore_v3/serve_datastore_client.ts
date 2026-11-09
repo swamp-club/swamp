@@ -53,6 +53,8 @@ import { isNetworkFailure } from "./network_failure.ts";
 import { recordServeClock } from "./serve_offline.ts";
 import {
   serveErrorFromReply,
+  ServeLeaseLapsedLatch,
+  ServeLeaseLapsedRequestError,
   ServeReplyTooLargeError,
   ServeUnreachableError,
   ServeUpstreamError,
@@ -61,6 +63,22 @@ import {
 export const MAX_HAS_HASHES = 1024;
 
 export const DEFAULT_SERVE_TIMEOUT_MS = 30_000;
+
+/** the slowest upload a request's deadline allows for, past its flat timeout */
+export const MIN_SERVE_UPLOAD_BYTES_PER_SECOND = 256 * 1024;
+
+function bodyBytesOf(body: RequestSpec["body"]): number {
+  if (body === undefined) return 0;
+  return typeof body === "string" ? body.length : body.byteLength;
+}
+
+export function serveRequestDeadlineMs(
+  timeoutMs: number,
+  bodyBytes: number,
+): number {
+  return timeoutMs +
+    Math.ceil(bodyBytes * 1000 / MIN_SERVE_UPLOAD_BYTES_PER_SECOND);
+}
 
 /**
  * once a write found serve unreachable, the rest of the command fails at once
@@ -215,6 +233,7 @@ export interface ServeDatastoreClientOptions {
   readonly timeoutMs?: number;
   readonly extraHeaders?: Readonly<Record<string, string>>;
   readonly fetch?: typeof fetch;
+  readonly timeoutSignal?: (ms: number) => AbortSignal;
   readonly maxAttempts?: number;
   readonly maxRetryDelayMs?: number;
 }
@@ -389,6 +408,7 @@ export class ServeDatastoreClient {
   readonly #timeoutMs: number;
   readonly #extraHeaders: Readonly<Record<string, string>>;
   readonly #fetch: typeof fetch;
+  readonly #timeoutSignal: (ms: number) => AbortSignal;
   readonly #maxAttempts: number;
   readonly #maxRetryDelayMs: number;
   #logCheck: ((logId: string | undefined) => void) | undefined;
@@ -410,6 +430,8 @@ export class ServeDatastoreClient {
     this.#extraHeaders = options.extraHeaders ?? {};
     this.#fetch = options.fetch ??
       ((input, init) => globalThis.fetch(input, init));
+    this.#timeoutSignal = options.timeoutSignal ??
+      ((ms) => AbortSignal.timeout(ms));
     this.#maxAttempts = Math.max(
       1,
       options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
@@ -1190,11 +1212,16 @@ export class ServeDatastoreClient {
       signal.throwIfAborted();
       const latch = unreachableLatchOf(this.baseUrl);
       if (latch.aborted) {
-        throw new ServeUnreachableError(this.baseUrl, "never", latch.reason);
+        throw this.#latched("never", latch.reason, spec);
       }
       const timed = AbortSignal.any([
         signal,
-        AbortSignal.timeout(this.#timeoutMs),
+        this.#timeoutSignal(
+          serveRequestDeadlineMs(
+            this.#timeoutMs,
+            bodyBytesOf(spec.body),
+          ),
+        ),
         latch,
       ]);
       let response: Response;
@@ -1209,7 +1236,7 @@ export class ServeDatastoreClient {
         });
       } catch (error) {
         if (latch.aborted && !signal.aborted) {
-          throw new ServeUnreachableError(this.baseUrl, "maybe", latch.reason);
+          throw this.#latched("maybe", latch.reason, spec);
         }
         throw this.#unreachable(error, signal, sentOf(error), true);
       }
@@ -1271,11 +1298,24 @@ export class ServeDatastoreClient {
         // The request reached serve: a failure reading its reply may have
         // come after serve acted on it.
         if (latch.aborted && !signal.aborted) {
-          throw new ServeUnreachableError(this.baseUrl, "maybe", latch.reason);
+          throw this.#latched("maybe", latch.reason, spec);
         }
         throw this.#unreachable(error, signal, "maybe");
       }
     }
+  }
+
+  #latched(
+    sent: "never" | "maybe",
+    reason: unknown,
+    spec: RequestSpec,
+  ): ServeUnreachableError {
+    return reason instanceof ServeLeaseLapsedLatch
+      ? new ServeLeaseLapsedRequestError(this.baseUrl, sent, reason, {
+        route: `${spec.method} ${routeTemplate(spec.path)}`,
+        bodyBytes: bodyBytesOf(spec.body),
+      })
+      : new ServeUnreachableError(this.baseUrl, sent, reason);
   }
 
   async #refusal(response: Response, route: string): Promise<Error> {

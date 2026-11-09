@@ -122,6 +122,8 @@ export class FakeServe implements Client {
     ) => boolean)
     | undefined;
   readonly postFaults: PostFault[] = [];
+  /** answers every commit that carries chunks with this, as a bucket write failing at serve does */
+  failsCarried: Error | undefined;
   beforePost: (() => Promise<void>) | undefined;
   leaseLost: ((lease: string | undefined) => boolean) | undefined;
   changesFault: Error | undefined;
@@ -395,6 +397,9 @@ export class FakeServe implements Client {
         "commit_lease-lost",
         "This commit's model lease is not held: take the lock again and retry",
       );
+    }
+    if (this.failsCarried !== undefined && chunks.length > 0) {
+      throw this.failsCarried;
     }
     const fault = this.postFaults.shift();
     if (fault?.kind === "never") throw this.#unreachable("never");

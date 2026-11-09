@@ -44,6 +44,7 @@ import {
 } from "../../domain/datastore_v3/serve_leader.ts";
 import { V3_COPY_SETUP_RACED_CODE } from "../../domain/datastore_v3/copy_setup_raced_error.ts";
 import {
+  isLapsedServeRequest,
   V3_SERVE_UNREACHABLE_CODE,
   V3_STORAGE_UNREACHABLE_CODE,
   V3_WRITER_BUSY_CODE,
@@ -207,6 +208,9 @@ export function exitCodeForError(
   context: ErrorPresentationContext = {},
 ): number {
   const nothingLanded = context.commandLanded === false;
+  if (isLapsedServeRequest(error)) {
+    return context.commandLanded === true ? 1 : 75;
+  }
   // refused or cancelled before writing: a retry is safe only if nothing
   // else of the command landed
   if (leaseErrorOf(error) !== undefined) return nothingLanded ? 75 : 1;
@@ -337,8 +341,11 @@ export function renderError(
   // A certificate-store failure is an environment problem the user can fix,
   // not a swamp bug, so it gets no stack trace even when it arrives raw.
   const certStoreHint = platformCertStoreHint(err.message);
+  // a lapsed request's message already says what landed and what to run
   const hint = tlsErrorHint(err.message) ?? certStoreHint ??
-    (leaseError !== undefined ? leaseHint(context) : undefined);
+    (leaseError !== undefined && !isLapsedServeRequest(error)
+      ? leaseHint(context)
+      : undefined);
 
   if (outputMode === "json") {
     const json = buildErrorJson(err, surface);
