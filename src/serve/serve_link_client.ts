@@ -99,7 +99,6 @@ export type ReportOutcome =
     readonly code: "not_approved" | "person_unavailable" | "already_recorded";
   };
 
-// control, zero-width, bidi and line-separator characters, by code point
 const UNSAFE_RANGES: readonly (readonly [number, number])[] = [
   [0x00, 0x1f],
   [0x7f, 0x9f],

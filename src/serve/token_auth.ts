@@ -316,7 +316,6 @@ export type ServerTokenAuthResult =
     oauthIdentity?: ActorIdentity;
     /** how serve issued the token; absent when the token records none */
     client?: string;
-    /** the delegation a delegated access token acts under */
     delegation?: string;
     /** a delegated access token's expiry: a session it opened closes then */
     sessionExpiresAt?: string;

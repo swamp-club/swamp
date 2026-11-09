@@ -40,7 +40,7 @@ export interface IntegrationView {
   readonly createdAt: string;
   readonly ceilingChangedAt?: string;
   readonly revokedAt?: string;
-  /** present only when set, so records from before links read the same */
+  /** present only when set, so a record without it reads unchanged */
   readonly requireEmailMatch?: true;
 }
 

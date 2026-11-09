@@ -74,7 +74,6 @@ export function clientToString(client: Client): string {
   return `${client.kind}:${client.id}`;
 }
 
-/** the client a delegated token acts through */
 export function integrationClient(id: string): string {
   return clientToString({ kind: "integration", id });
 }

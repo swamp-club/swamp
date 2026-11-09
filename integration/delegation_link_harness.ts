@@ -52,7 +52,6 @@ export const IDENTITY = {
   groups: [],
 };
 
-/** a swamp-club that speaks the link contract, with knobs for each test */
 export class MockClub {
   status: string = "pending";
   identity: typeof IDENTITY | undefined = IDENTITY;

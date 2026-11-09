@@ -531,8 +531,15 @@ async function refresh(
     return httpFailure(400, "invalid_request", "refreshToken is required");
   }
   const id = secret.delegationId;
-  const known = await deps.store.read(id);
-  if (known === null || known.integrationId !== integrationId) {
+  const guarded = await limitFailedAttempts(
+    `delegation-refresh:${integrationId}|address:${sourceIp}`,
+    async () => {
+      const known = await deps.store.read(id);
+      return { ok: known !== null && known.integrationId === integrationId };
+    },
+  );
+  if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
+  if (!guarded.result.ok) {
     return httpFailure(401, "invalid_grant", "The refresh token was refused");
   }
   const team = await deps.capability().catch(() => null);

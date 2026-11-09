@@ -52,7 +52,7 @@ export const IntegrationSchema = z.object({
   createdAt: z.string().datetime(),
   ceilingChangedAt: z.string().datetime().optional(),
   revokedAt: z.string().datetime().optional(),
-  // absent on records written before links existed, which means false
+  // absent means false
   requireEmailMatch: z.boolean().optional(),
 });
 

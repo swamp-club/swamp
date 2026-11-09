@@ -29,10 +29,7 @@ import {
 } from "./arch_fitness_helpers.ts";
 
 const PINNED = [
-  // Seven v2 sync callbacks (managed-config boot pull, cache hydration, the
-  // config, access-data, integration-data, delegation-data and runtime-data
-  // pollers) and the token GC pull: each needs a sync service, which a v3 serve
-  // does not have.
+  // v2 sync callbacks and the token GC pull: each needs a sync service, which a v3 serve lacks.
   "src/cli/commands/serve.ts :: serveCommand (x8)",
   // Calls its callback only after a pull, and is built only with a sync service.
   "src/serve/access_data_poller.ts :: AccessDataPoller",
@@ -42,7 +39,6 @@ const PINNED = [
   "src/serve/config_poller.ts :: ConfigPoller",
   // Only when the lock pulled: acquireModelLocks syncs a v2 custom datastore only.
   "src/serve/delegation_store.ts :: DelegationStore",
-  // Only when the lock pulled: acquireModelLocks syncs a v2 custom datastore only.
   "src/serve/deps.ts :: createStepLockHook",
   // Inside the sync-service branch of the mint.
   "src/serve/device_auth_handler.ts :: mintServerTokenImpl",

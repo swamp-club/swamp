@@ -183,7 +183,6 @@ export const CONSENTED_TO_EVERYTHING: DelegationLookup = {
   recordOf: (id) => ({ integrationId: id }) as DelegationRecord,
 };
 
-/** the delegation id a test pairs with an integration client */
 export function testDelegationOf(client: string): string {
   return client.slice("integration:".length);
 }

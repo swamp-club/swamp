@@ -34,7 +34,7 @@ export const STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS = 5_000;
 
 /**
  * what this build can do, read by peers before a feature every node must
- * honour; a record without the list is a build from before the list existed
+ * honour; a record without the list has none
  */
 export const SERVE_INSTANCE_CAPABILITIES: readonly string[] = [
   "delegation-links-1",
