@@ -243,6 +243,18 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", async () => {
   );
 });
 
+Deno.test("parseWebhookFlag: passes a reserved route through for the service to skip", async () => {
+  const endpoint = await parseWebhookFlag("/api/github:my-workflow:secret");
+  assertEquals(endpoint.route, "/api/github");
+});
+
+Deno.test("parseWebhookFlag: accepts legacy routes outside the reserved roots", async () => {
+  for (const route of ["/deploy", "/deploy/", "/apiary", "/hooks/github"]) {
+    const endpoint = await parseWebhookFlag(`${route}:my-workflow:secret`);
+    assertEquals(endpoint.route, route);
+  }
+});
+
 Deno.test("resolveSecret: returns a literal string unchanged", async () => {
   assertEquals(await resolveSecret("mysecretvalue"), "mysecretvalue");
 });
@@ -491,6 +503,78 @@ Deno.test("WebhookService.drain: matched routes get 503 with Retry-After while u
     new Request("http://localhost/hooks/other", { method: "POST" }),
   );
   assertEquals(unmatched, null);
+  await service.stop();
+});
+
+function serviceWith(endpoints: WebhookEndpoint[]): WebhookService {
+  return new WebhookService({
+    repoDir: "/tmp/fake",
+    syncGate: undefined,
+    repoContext: {} as RepositoryContext,
+    datastoreConfig: {} as DatastoreConfig,
+    endpoints,
+  });
+}
+
+function endpointAt(route: string): WebhookEndpoint {
+  return {
+    route,
+    workflowIdOrName: "deploy",
+    secret: "secret",
+    verifier: { scheme: "github" },
+  };
+}
+
+Deno.test("WebhookService: skips a route under a reserved serve root and keeps the rest", async () => {
+  const service = serviceWith([
+    endpointAt("/hooks/ok"),
+    endpointAt("/api/v1/cancel"),
+  ]);
+  assertEquals(service.listEndpoints().map((e) => e.route), ["/hooks/ok"]);
+  const skipped = service.skippedRoutes();
+  assertEquals(skipped.map((s) => s.route), ["/api/v1/cancel"]);
+  assertEquals(skipped[0].workflowIdOrName, "deploy");
+  assertStringIncludes(skipped[0].reason, "under '/api'");
+  assertEquals(
+    await service.handleRequest(
+      new Request("http://localhost/api/v1/cancel", {
+        method: "POST",
+        body: "{}",
+      }),
+    ),
+    null,
+  );
+  await service.stop();
+});
+
+Deno.test("WebhookService.updateEndpoints: applies the allowed routes and skips the reserved one", async () => {
+  const service = serviceWith([endpointAt("/hooks/ok")]);
+  service.updateEndpoints([
+    endpointAt("/hooks/ok"),
+    endpointAt("/hooks/new"),
+    endpointAt("/internal/runs"),
+  ]);
+  assertEquals(service.listEndpoints().map((e) => e.route), [
+    "/hooks/ok",
+    "/hooks/new",
+  ]);
+  assertEquals(service.skippedRoutes().map((s) => s.route), ["/internal/runs"]);
+  const response = await service.handleRequest(
+    new Request("http://localhost/hooks/new", { method: "POST", body: "{}" }),
+  );
+  assertEquals(response?.status, 401);
+
+  service.updateEndpoints([endpointAt("/hooks/ok")]);
+  assertEquals(service.skippedRoutes(), []);
+  await service.stop();
+});
+
+Deno.test("WebhookService.updateEndpoints: accepts legacy and prefixed routes", async () => {
+  const service = serviceWith([]);
+  assertEquals(
+    service.updateEndpoints([endpointAt("/deploy"), endpointAt("/hooks/gh")]),
+    2,
+  );
   await service.stop();
 });
 

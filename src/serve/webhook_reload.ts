@@ -23,6 +23,7 @@ import type {
   WebhookRouteSource,
   WebhookService,
 } from "./webhook.ts";
+import { skippedWebhookMessage } from "./webhook_route.ts";
 
 export interface WebhookReloadResult {
   readonly changed: number;
@@ -40,7 +41,7 @@ export const FLAG_ROUTES_WARNING =
 
 export interface WebhookUpdaterDeps {
   readonly source: WebhookRouteSource;
-  readonly service: Pick<WebhookService, "updateEndpoints">;
+  readonly service: Pick<WebhookService, "updateEndpoints" | "skippedRoutes">;
   readonly parse: (
     configs: readonly WebhookConfigEntry[],
   ) => Promise<WebhookEndpoint[]>;
@@ -55,6 +56,10 @@ export function createWebhookUpdater(deps: WebhookUpdaterDeps): WebhookUpdater {
       };
     }
     const endpoints = configs.length > 0 ? await deps.parse(configs) : [];
-    return { changed: deps.service.updateEndpoints(endpoints), warnings: [] };
+    const changed = deps.service.updateEndpoints(endpoints);
+    const warnings = deps.service.skippedRoutes().map((skip) =>
+      skippedWebhookMessage(skip.route, skip.reason)
+    );
+    return { changed, warnings };
   };
 }
