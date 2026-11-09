@@ -132,6 +132,19 @@ Deno.test("delegation links: the oldest access token still held ends the link, a
   });
 });
 
+Deno.test("delegation links: refreshing ended links never locks out the integration's other refreshes", async () => {
+  await withRig(async (rig) => {
+    const { pendingId, redeemSecret } = await startAndConsent(rig);
+    const redeemed = await rig.post("redeem", { pendingId, redeemSecret });
+    const refresh = redeemed.body.refreshToken as string;
+    await rig.post("end", { token: refresh });
+    for (let i = 0; i < 8; i++) {
+      const out = await rig.post("refresh", { refreshToken: refresh });
+      assertEquals([out.status, out.body.reason], [401, "not_issued"]);
+    }
+  });
+});
+
 Deno.test("delegation links: a wrong refresh token is refused as a mismatch and ends nothing", async () => {
   await withRig(async (rig) => {
     const { pendingId, redeemSecret } = await startAndConsent(rig);

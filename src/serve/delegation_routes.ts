@@ -648,23 +648,25 @@ async function refresh(
     async () => {
       const known = await deps.store.readOrNull(id);
       if (known === null || known.integrationId !== integrationId) {
-        return { ok: false, reason: "unknown" as const };
+        return { ok: false, refusal: "unknown" as const };
       }
-      const matches = known.tokens !== undefined &&
-        await delegatedSecretMatches(
-          parsed.data.refreshToken,
-          known.tokens.refreshHash,
-        );
+      // an ended link is an answer, not a guess, so it is no failed attempt
       if (known.tokens === undefined) {
-        return { ok: false, reason: "not_issued" as const };
+        return { ok: true, refusal: "not_issued" as const };
       }
+      const matches = await delegatedSecretMatches(
+        parsed.data.refreshToken,
+        known.tokens.refreshHash,
+      );
       return matches
         ? { ok: true }
-        : { ok: false, reason: "mismatch" as const };
+        : { ok: false, refusal: "mismatch" as const };
     },
   );
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
-  if (!guarded.result.ok) return refreshRefused(guarded.result.reason);
+  if (guarded.result.refusal !== undefined) {
+    return refreshRefused(guarded.result.refusal);
+  }
   const team = await deps.capability().catch(() => null);
   if (team === null || !team.ok) {
     // nothing changes: the app retries the same token

@@ -153,6 +153,8 @@ export class DelegatedTokens implements TokenSource {
 
   /** the refresh is shared, so it runs without any one caller's signal */
   #refresh(options: CallOptions): Promise<string> {
+    // before any shared work starts, so no refresh is left without a handler
+    if (options.signal?.aborted) return Promise.reject(options.signal.reason);
     let byDelegation = inFlight.get(this.#store);
     if (!byDelegation) {
       byDelegation = new Map();

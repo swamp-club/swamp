@@ -198,6 +198,20 @@ Deno.test("DelegatedTokens: one caller's abort leaves a shared refresh running f
   assertEquals(route.sent.length, 1);
 });
 
+Deno.test("DelegatedTokens: a caller already aborted starts no refresh, so none is left unhandled", async () => {
+  const store = memoryTokenStore();
+  await store.save("d1", tokenSet({ accessTokenDeadlineMs: NOW }));
+  const { fetch, sent } = scriptedFetch(["network_error"]);
+  const controller = new AbortController();
+  controller.abort(new Error("deadline"));
+  await assertRejects(
+    () => holder(store, fetch).accessToken({ signal: controller.signal }),
+    Error,
+    "deadline",
+  );
+  assertEquals(sent.length, 0);
+});
+
 Deno.test("DelegatedTokens: a store that fails to save is reported, and the new token is still used", async () => {
   const backing = memoryTokenStore();
   await backing.save("d1", tokenSet({ accessTokenDeadlineMs: NOW }));
