@@ -25,7 +25,12 @@ import {
   resolveMaxFailures,
   type RolloutBatchSize,
 } from "./fan_out.ts";
-import { nextBatch, planBatches, type PlannedRollout } from "./rollout.ts";
+import {
+  nextBatch,
+  planBatches,
+  type PlannedRollout,
+  resumeRollout,
+} from "./rollout.ts";
 
 const membersArb: fc.Arbitrary<FanOutMember[]> = fc.uniqueArray(
   fc.record({
@@ -258,5 +263,45 @@ Deno.test("nextBatch: no budget never halts", () => {
         assertEquals(coverage.complete, 1);
       },
     ),
+  );
+});
+
+Deno.test("resumeRollout: runs every re-run lane once, failed-first lanes before the rest, the rest in frozen batch order", () => {
+  fc.assert(
+    fc.property(
+      membersArb,
+      batchesArb,
+      fc.func(fc.boolean()),
+      fc.func(fc.boolean()),
+      (members, sizes, rerunOf, failedOf) => {
+        const batches = planBatches(members, { batches: sizes });
+        const lanes = batches.flat();
+        const rerun = new Set(lanes.filter((lane) => rerunOf(lane)));
+        const failed = new Set(lanes.filter((lane) => failedOf(lane)));
+        const resumed = resumeRollout(batches, rerun, failed);
+        const flat = resumed.flat();
+        assertEquals(new Set(flat), rerun);
+        assertEquals(flat.length, rerun.size);
+        assert(resumed.every((batch) => batch.length > 0));
+        const first = lanes.filter((lane) =>
+          rerun.has(lane) && failed.has(lane)
+        );
+        if (first.length > 0) assertEquals(resumed[0], first);
+        const rest = resumed.slice(first.length > 0 ? 1 : 0);
+        const batchOf = new Map(
+          batches.flatMap((batch, index) => batch.map((lane) => [lane, index])),
+        );
+        // each remaining batch is one frozen batch's lanes, in plan order
+        for (const batch of rest) {
+          assert(batch.every((lane) => !failed.has(lane)));
+          assertEquals(new Set(batch.map((lane) => batchOf.get(lane))).size, 1);
+        }
+        assertEquals(
+          rest.flat(),
+          lanes.filter((l) => rerun.has(l) && !failed.has(l)),
+        );
+      },
+    ),
+    { numRuns: 500 },
   );
 });

@@ -536,3 +536,126 @@ Deno.test("planFailedRunResume: a fan-out retry or --from resets only lanes that
     { numRuns: 200 },
   );
 });
+
+Deno.test("planFailedRunResume: a rollout's held lanes are reopened whole by a retry or any --from, and a lane that succeeded is never reset", () => {
+  fc.assert(
+    fc.property(
+      fc.array(fc.constantFrom("succeeded", "failed", "held"), {
+        minLength: 1,
+        maxLength: 5,
+      }),
+      fc.constantFrom(undefined, "apply", "verify"),
+      (lanes, from) => {
+        fc.pre(lanes.includes("failed") && lanes.includes("held"));
+        const workers = lanes.map((_, i) => `w-${i}`);
+        const task = {
+          type: "model_method",
+          modelType: "m",
+          modelName: "host",
+          methodName: "run",
+        };
+        const workflow = Workflow.fromData(
+          {
+            id: crypto.randomUUID(),
+            name: "fleet",
+            jobs: [{
+              name: "patch",
+              fanOut: { rollout: { batches: [1, "100%"], maxFailures: 0 } },
+              labels: { fleet: "web" },
+              steps: [
+                { name: "apply", task },
+                {
+                  name: "verify",
+                  dependsOn: [{
+                    step: "apply",
+                    condition: { type: "succeeded" },
+                  }],
+                  task,
+                },
+              ],
+            }],
+          } as Parameters<typeof Workflow.fromData>[0],
+        );
+        const at = "2026-01-01T00:00:00.000Z";
+        const record = (name: string, lane: string) =>
+          lane === "held"
+            ? {
+              stepName: name,
+              status: "skipped",
+              skipReason: { kind: "job_skipped" },
+              settledByAbort: true,
+            }
+            : {
+              stepName: name,
+              status: lane === "failed" && name.startsWith("apply")
+                ? "failed"
+                : lane === "failed"
+                ? "skipped"
+                : "succeeded",
+            };
+        const run = WorkflowRun.fromData(
+          {
+            id: crypto.randomUUID(),
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            status: "failed",
+            startedAt: at,
+            completedAt: at,
+            jobs: [{
+              jobName: "patch",
+              status: "failed",
+              startedAt: at,
+              completedAt: at,
+              steps: lanes.flatMap((lane, i) => [
+                record(`apply[w-${i}]`, lane),
+                record(`verify[w-${i}]`, lane),
+              ]),
+              fanOutPlan: {
+                members: workers.map((worker) => ({
+                  worker,
+                  instanceUuid: `u-${worker}`,
+                  disposition: "dispatch",
+                  batch: 0,
+                })),
+                plannedLanes: workers.length,
+                maxFailures: 0,
+                batches: [workers],
+                lanes: workers.map((worker) => ({
+                  name: `patch[${worker}]`,
+                  worker,
+                  instanceUuid: `u-${worker}`,
+                  steps: [],
+                })),
+              },
+              fanOutSnapshot: {
+                selector: { labels: { fleet: "web" } },
+                workers: [],
+              },
+            }],
+          } as Parameters<typeof WorkflowRun.fromData>[0],
+        );
+
+        const plan = planFailedRunResume(
+          workflow,
+          run,
+          from !== undefined ? { step: from } : undefined,
+        );
+        const selected = new Set([
+          ...plan.steps.map((ref) => ref.stepName),
+          ...plan.tracked.map((ref) => ref.stepName),
+        ]);
+        lanes.forEach((lane, i) => {
+          const names = [`apply[w-${i}]`, `verify[w-${i}]`];
+          if (lane === "held") {
+            assert(names.every((name) => selected.has(name)), names.join());
+          } else if (lane === "succeeded") {
+            assert(!names.some((name) => selected.has(name)), names.join());
+          } else {
+            assert(names.some((name) => selected.has(name)), names.join());
+          }
+        });
+      },
+    ),
+    { numRuns: 200 },
+  );
+});

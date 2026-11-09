@@ -19,7 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import type { FanOutMember } from "./fan_out.ts";
-import { nextBatch, planBatches, type RolloutProgress } from "./rollout.ts";
+import {
+  nextBatch,
+  planBatches,
+  resumeRollout,
+  type RolloutProgress,
+} from "./rollout.ts";
 
 function members(
   dispatch: string[],
@@ -162,4 +167,31 @@ Deno.test("nextBatch: complete only when every lane has settled", () => {
   assertEquals(nextBatch(progress([]), { batches: [], maxFailures: 0 }), {
     kind: "complete",
   });
+});
+
+Deno.test("resumeRollout: the lanes the halt failed run first, then the rest in the frozen batches", () => {
+  const batches = [["a"], ["b", "c"], ["d", "e"]];
+  assertEquals(
+    resumeRollout(batches, new Set(["a", "b", "c", "d", "e"]), new Set(["a"])),
+    [["a"], ["b", "c"], ["d", "e"]],
+  );
+  assertEquals(
+    resumeRollout(batches, new Set(["b", "c", "d", "e"]), new Set(["b"])),
+    [["b"], ["c"], ["d", "e"]],
+  );
+});
+
+Deno.test("resumeRollout: lanes that are not re-run are left out and empty batches dropped", () => {
+  assertEquals(
+    resumeRollout([["a"], ["b", "c"], ["d"]], new Set(["c", "d"]), new Set()),
+    [["c"], ["d"]],
+  );
+  assertEquals(resumeRollout([["a"], ["b"]], new Set(), new Set(["a"])), []);
+});
+
+Deno.test("resumeRollout: a failed lane the resume does not re-run is not put first", () => {
+  assertEquals(
+    resumeRollout([["a"], ["b"]], new Set(["b"]), new Set(["a"])),
+    [["b"]],
+  );
 });

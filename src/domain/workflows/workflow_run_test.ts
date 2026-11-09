@@ -4133,3 +4133,67 @@ Deno.test("JobRun: a stored lane record holding step records is refused", () => 
   data.fanOutPlan.lanes[0].steps = [{ stepName: "apply", status: "succeeded" }];
   assertThrows(() => JobRun.fromData(data));
 });
+
+function haltedJob(): JobRun {
+  const job = JobRun.pending("patch", ["apply"]);
+  job.recordFanOutPlan(plannedFanOut(), [["host-a"], ["host-b"]]);
+  job.expandLanes(["apply[host-a]", "apply[host-b]"]);
+  job.start();
+  job.getStep("apply[host-a]")!.start();
+  job.getStep("apply[host-a]")!.fail("boom");
+  return job;
+}
+
+Deno.test("JobRun.haltFanOut: holds the unstarted lanes, records the halt and fails the job together", () => {
+  const job = haltedJob();
+  const halt = {
+    batch: 1,
+    maxFailures: 0,
+    failed: ["host-a"],
+    held: ["host-b"],
+  };
+  job.haltFanOut(halt, ["apply[host-b]"]);
+  const held = job.getStep("apply[host-b]")!;
+  assertEquals(held.status, "skipped");
+  assertEquals(held.skipReason, { kind: "job_skipped" });
+  assertEquals(held.settledByAbort, true);
+  assertEquals(job.status, "failed");
+  assertEquals(job.fanOutHalts, [halt]);
+  const data = job.toData();
+  assertEquals(data.fanOutHalts, [halt]);
+  assertEquals(JobRun.fromData(data).fanOutHalts, [halt]);
+});
+
+Deno.test("JobRun.haltFanOut: refuses to hold a step that started, and changes nothing", () => {
+  const job = haltedJob();
+  assertThrows(
+    () =>
+      job.haltFanOut(
+        { batch: 1, maxFailures: 0, failed: ["host-a"], held: ["host-a"] },
+        ["apply[host-b]", "apply[host-a]"],
+      ),
+    Error,
+    "cannot hold step 'apply[host-a]'",
+  );
+  assertEquals(job.getStep("apply[host-b]")!.status, "pending");
+  assertEquals(job.fanOutHalts, []);
+  assertEquals(job.status, "running");
+});
+
+Deno.test("JobRun.haltFanOut: a job without a fan-out plan cannot halt", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  assertThrows(
+    () =>
+      job.haltFanOut(
+        { batch: 0, maxFailures: 0, failed: [], held: ["host-a"] },
+        [],
+      ),
+    Error,
+    "has no fan-out plan",
+  );
+});
+
+Deno.test("JobRun.toData: a job that never halted writes no fanOutHalts key", () => {
+  const job = haltedJob();
+  assertEquals("fanOutHalts" in job.toData(), false);
+});

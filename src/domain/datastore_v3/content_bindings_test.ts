@@ -1010,3 +1010,250 @@ Deno.test("judgeRunRecord: a plan recorded without a snapshot, saved again uncha
     undefined,
   );
 });
+
+const ROLLOUT_PLAN = {
+  members: ["w-a", "w-b", "w-c"].map((worker, index) => ({
+    worker,
+    instanceUuid: `u-${worker}`,
+    disposition: "dispatch" as const,
+    batch: index === 0 ? 0 : 1,
+  })),
+  plannedLanes: 3,
+  maxFailures: 0,
+  batches: [["w-a"], ["w-b", "w-c"]],
+  lanes: ["w-a", "w-b", "w-c"].map((worker) => ({
+    name: `patch[${worker}]`,
+    worker,
+    instanceUuid: `u-${worker}`,
+    steps: [],
+  })),
+};
+
+const CANARY_HALT = {
+  batch: 1,
+  maxFailures: 0,
+  failed: ["w-a"],
+  held: ["w-b", "w-c"],
+};
+
+const HELD = { status: "skipped" as const, settledByAbort: true };
+
+function rolloutRun(
+  status: "running" | "failed",
+  steps: StepRunData[],
+  halts?: unknown[],
+): WorkflowRunData {
+  return run([], {
+    jobs: [{
+      jobName: "patch",
+      status,
+      steps,
+      fanOutPlan: ROLLOUT_PLAN,
+      ...(halts ? { fanOutHalts: halts } : {}),
+    }],
+  } as Partial<WorkflowRunData>);
+}
+
+const CANARY_FAILED = [
+  step("apply[w-a]", { status: "failed" }),
+  step("apply[w-b]"),
+  step("apply[w-c]"),
+];
+
+const CANARY_HALTED = [
+  step("apply[w-a]", { status: "failed" }),
+  step("apply[w-b]", HELD),
+  step("apply[w-c]", HELD),
+];
+
+Deno.test("judgeRunRecord: a fan-out halt is accepted once, in the record where its job fails", () => {
+  const halted = rolloutRun("failed", CANARY_HALTED, [CANARY_HALT]);
+  assertEquals(
+    judge(rolloutRun("running", CANARY_FAILED), halted).refusal,
+    undefined,
+  );
+  assertEquals(judge(halted, halted).refusal, undefined);
+});
+
+Deno.test("judgeRunRecord: a fan-out halt added while the job runs, or to a job that already ended, is refused", () => {
+  assertStringIncludes(
+    judge(
+      rolloutRun("running", CANARY_FAILED),
+      rolloutRun("running", CANARY_HALTED, [CANARY_HALT]),
+    ).refusal ?? "",
+    "other than in the record where the job fails",
+  );
+  assertStringIncludes(
+    judge(
+      rolloutRun("failed", CANARY_HALTED),
+      rolloutRun("failed", CANARY_HALTED, [CANARY_HALT]),
+    ).refusal ?? "",
+    "other than in the record where the job fails",
+  );
+});
+
+Deno.test("judgeRunRecord: a recorded fan-out halt cannot be changed or dropped, and only one is added at a time", () => {
+  const halted = rolloutRun("failed", CANARY_HALTED, [CANARY_HALT]);
+  for (
+    const halts of [[{ ...CANARY_HALT, held: ["w-b"] }], [], undefined]
+  ) {
+    assertStringIncludes(
+      judge(halted, rolloutRun("failed", CANARY_HALTED, halts)).refusal ?? "",
+      "changes or drops a fan-out halt of job 'patch'",
+    );
+  }
+  assertStringIncludes(
+    judge(
+      rolloutRun("running", CANARY_FAILED),
+      rolloutRun("failed", CANARY_HALTED, [CANARY_HALT, CANARY_HALT]),
+    ).refusal ?? "",
+    "adds more than one fan-out halt",
+  );
+});
+
+Deno.test("judgeRunRecord: a fan-out halt that does not match the plan or the lanes is refused", () => {
+  const cases: [unknown, StepRunData[], string][] = [
+    [{ ...CANARY_HALT, maxFailures: 1 }, CANARY_HALTED, "failure budget"],
+    [
+      { ...CANARY_HALT, failed: [] },
+      CANARY_HALTED,
+      "no more failed lanes than the budget",
+    ],
+    [
+      { ...CANARY_HALT, batch: 2 },
+      CANARY_HALTED,
+      "names a batch the plan lacks",
+    ],
+    [
+      { ...CANARY_HALT, held: ["w-b", "w-a"] },
+      CANARY_HALTED,
+      "names a lane more than once",
+    ],
+    [
+      { ...CANARY_HALT, held: ["w-b", "w-z"] },
+      CANARY_HALTED,
+      "'w-z', not a lane of the plan",
+    ],
+    [
+      CANARY_HALT,
+      [
+        step("apply[w-a]", { status: "failed" }),
+        step("apply[w-b]", { status: "succeeded" }),
+        step("apply[w-c]", HELD),
+      ],
+      "holds lane 'w-b', which started",
+    ],
+    [
+      CANARY_HALT,
+      [
+        step("apply[w-a]", { status: "failed", allowedFailure: true }),
+        step("apply[w-b]", HELD),
+        step("apply[w-c]", HELD),
+      ],
+      "names lane 'w-a' as failed, and it did not fail",
+    ],
+  ];
+  for (const [halt, steps, refusal] of cases) {
+    assertStringIncludes(
+      judge(
+        rolloutRun("running", CANARY_FAILED),
+        rolloutRun("failed", steps, [halt]),
+      ).refusal ?? "",
+      refusal,
+    );
+  }
+});
+
+Deno.test("judgeRunRecord: a fan-out halt on a job without a plan is refused", () => {
+  const plain = (status: string, halts?: unknown[]) =>
+    run([], {
+      jobs: [{
+        jobName: "patch",
+        status,
+        steps: [step("apply", { status: "failed" })],
+        ...(halts ? { fanOutHalts: halts } : {}),
+      }],
+    } as Partial<WorkflowRunData>);
+  assertStringIncludes(
+    judge(plain("running"), plain("failed", [CANARY_HALT])).refusal ?? "",
+    "has no fan-out plan",
+  );
+});
+
+Deno.test("judgeRunRecord: a resumed attempt may append a second halt after the first", () => {
+  const second = { ...CANARY_HALT, failed: ["w-a"], held: ["w-b", "w-c"] };
+  assertEquals(
+    judge(
+      rolloutRun("running", CANARY_FAILED, [CANARY_HALT]),
+      rolloutRun("failed", CANARY_HALTED, [CANARY_HALT, second]),
+    ).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a held lane may keep a step it finished in an earlier attempt, but not one that failed, runs or waits", () => {
+  const withW_B = (wb: StepRunData[]) =>
+    rolloutRun("failed", [
+      step("apply[w-a]", { status: "failed" }),
+      ...wb,
+      step("verify[w-c]", HELD),
+    ], [CANARY_HALT]);
+  const before = rolloutRun("running", [
+    step("apply[w-a]", { status: "failed" }),
+    step("apply[w-b]", { status: "succeeded" }),
+    step("verify[w-b]"),
+    step("verify[w-c]"),
+  ]);
+  assertEquals(
+    judge(
+      before,
+      withW_B([
+        step("apply[w-b]", { status: "succeeded" }),
+        step("verify[w-b]", HELD),
+      ]),
+    ).refusal,
+    undefined,
+  );
+  for (const other of ["failed", "running", "pending"] as const) {
+    assertStringIncludes(
+      judge(
+        before,
+        withW_B([
+          step("apply[w-b]", { status: "succeeded" }),
+          step("verify[w-b]", HELD),
+          step("check[w-b]", { status: other }),
+        ]),
+      ).refusal ?? "",
+      "holds lane 'w-b', which started",
+    );
+  }
+});
+
+Deno.test("judgeRunRecord: a held lane may keep an allowed failure from an earlier attempt, but not a failure that counts or an unknown step", () => {
+  const before = rolloutRun("running", [
+    step("apply[w-a]", { status: "failed" }),
+    step("apply[w-b]", { status: "failed", allowedFailure: true }),
+    step("verify[w-b]"),
+    step("verify[w-c]"),
+  ]);
+  const halted = (wb: StepRunData) =>
+    judge(
+      before,
+      rolloutRun("failed", [
+        step("apply[w-a]", { status: "failed" }),
+        wb,
+        step("verify[w-b]", HELD),
+        step("verify[w-c]", HELD),
+      ], [CANARY_HALT]),
+    ).refusal;
+  assertEquals(
+    halted(step("apply[w-b]", { status: "failed", allowedFailure: true })),
+    undefined,
+  );
+  for (const kept of [{ status: "failed" }, { status: "unknown" }] as const) {
+    assertStringIncludes(
+      halted(step("apply[w-b]", kept)) ?? "",
+      "holds lane 'w-b', which started",
+    );
+  }
+});

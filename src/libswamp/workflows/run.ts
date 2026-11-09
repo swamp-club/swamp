@@ -137,7 +137,9 @@ export type WorkflowRunEvent =
       kind:
         | "job_fanout_planned"
         | "job_fanout_waiting"
-        | "job_fanout_summary";
+        | "job_fanout_summary"
+        | "job_fanout_batch_started"
+        | "job_fanout_halted";
     }
   >
   | {
@@ -1009,6 +1011,8 @@ export function mapWorkflowExecutionEvent(
     case "job_fanout_planned":
     case "job_fanout_waiting":
     case "job_fanout_summary":
+    case "job_fanout_batch_started":
+    case "job_fanout_halted":
     case "step_started":
     case "step_skipped":
     case "approval_requested":

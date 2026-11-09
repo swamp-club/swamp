@@ -27,9 +27,11 @@ import { canonicalJson } from "../expressions/expression_references.ts";
 import {
   type ApprovalDecisionData,
   isServeDrivenRun,
+  type JobRunData,
   type StepRunData,
   type WorkflowRunData,
 } from "../workflows/workflow_run.ts";
+import { laneFailed, laneRecords } from "../workflows/fan_out_lanes.ts";
 import type { Intent } from "./intent.ts";
 import { StepStart, type StepStartData } from "../workflows/step_start.ts";
 
@@ -278,7 +280,8 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
     }
   }
 
-  const fanOut = fanOutPlanRefusal(before, after);
+  const fanOut = fanOutPlanRefusal(before, after) ??
+    fanOutHaltRefusal(before, after);
   if (fanOut !== undefined) return refuse(fanOut);
 
   const seen = new Set<string>();
@@ -501,6 +504,98 @@ function fanOutPlanRefusal(
     if (prior.fanOutPlan === undefined) continue;
     if (!after.jobs.some((job) => job.jobName === prior.jobName)) {
       return `it drops job '${prior.jobName}', which holds a fan-out plan`;
+    }
+  }
+  return undefined;
+}
+
+const ENDED_JOB_STATUSES: ReadonlySet<string> = new Set([
+  "succeeded",
+  "failed",
+  "skipped",
+]);
+
+/**
+ * a halt is appended once, in the record where its job fails, and never changed
+ * or dropped; resume orders lanes by it, so it must match the plan and lanes
+ */
+function fanOutHaltRefusal(
+  before: WorkflowRunData | undefined,
+  after: WorkflowRunData,
+): string | undefined {
+  for (const job of after.jobs) {
+    const halts = job.fanOutHalts ?? [];
+    const prior = before?.jobs.find((candidate) =>
+      candidate.jobName === job.jobName
+    );
+    const priorHalts = prior?.fanOutHalts ?? [];
+    if (
+      halts.length < priorHalts.length ||
+      !same(halts.slice(0, priorHalts.length), priorHalts)
+    ) {
+      return `it changes or drops a fan-out halt of job '${job.jobName}'`;
+    }
+    if (halts.length === priorHalts.length) continue;
+    if (halts.length > priorHalts.length + 1) {
+      return `it adds more than one fan-out halt to job '${job.jobName}'`;
+    }
+    if (
+      prior === undefined || ENDED_JOB_STATUSES.has(prior.status) ||
+      job.status !== "failed"
+    ) {
+      return `it adds a fan-out halt to job '${job.jobName}' other than in the record where the job fails`;
+    }
+    const mismatch = haltMismatch(job, halts[halts.length - 1]);
+    if (mismatch !== undefined) {
+      return `its fan-out halt of job '${job.jobName}' ${mismatch}`;
+    }
+  }
+  return undefined;
+}
+
+function haltMismatch(
+  job: JobRunData,
+  halt: NonNullable<JobRunData["fanOutHalts"]>[number],
+): string | undefined {
+  const plan = job.fanOutPlan;
+  if (plan === undefined) return "has no fan-out plan";
+  if (plan.maxFailures === null || halt.maxFailures !== plan.maxFailures) {
+    return "does not carry the plan's failure budget";
+  }
+  if (halt.failed.length <= halt.maxFailures) {
+    return "names no more failed lanes than the budget allows";
+  }
+  if (halt.batch >= plan.batches.length) return "names a batch the plan lacks";
+  const named = [...halt.failed, ...halt.held];
+  if (new Set(named).size !== named.length) {
+    return "names a lane more than once";
+  }
+  const records = laneRecords(job.steps, plan.lanes);
+  for (const worker of named) {
+    if (!records.has(worker)) {
+      return `names '${worker}', not a lane of the plan`;
+    }
+  }
+  // a resumed lane keeps the steps it finished before its failed one
+  for (const worker of halt.held) {
+    const steps = records.get(worker)!;
+    if (
+      !steps.some((step) => step.status === "skipped" && step.settledByAbort) ||
+      steps.some((step) =>
+        step.status !== "succeeded" && step.status !== "skipped" &&
+        !(step.status === "failed" && step.allowedFailure)
+      )
+    ) {
+      return `holds lane '${worker}', which started`;
+    }
+  }
+  for (const worker of halt.failed) {
+    const steps = records.get(worker)!.map((step) => ({
+      status: step.status,
+      allowedFailure: step.allowedFailure ?? false,
+    }));
+    if (!laneFailed(steps)) {
+      return `names lane '${worker}' as failed, and it did not fail`;
     }
   }
   return undefined;

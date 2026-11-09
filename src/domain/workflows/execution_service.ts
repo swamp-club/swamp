@@ -154,7 +154,8 @@ import {
 } from "./fan_out_lanes.ts";
 import { getWorkerPoolReader } from "../remote/worker_pool.ts";
 import { planFanOut } from "../remote/scheduler.ts";
-import { planBatches } from "../remote/rollout.ts";
+import { planBatches, resumeRollout } from "../remote/rollout.ts";
+import { runRolloutLanes } from "./fan_out_rollout.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
   FROM_JOB_WITHOUT_FROM,
@@ -5731,7 +5732,7 @@ export class WorkflowExecutionService {
         plan.minWorkers,
       );
     } else if (plan !== undefined) {
-      const batches = planBatches(plan.members, undefined);
+      const batches = planBatches(plan.members, policy.rollout);
       lanes = batches.flat();
       try {
         laneSteps = planLaneSteps(
@@ -5785,7 +5786,11 @@ export class WorkflowExecutionService {
       return;
     }
     const members = plan?.kind === "planned" ? plan.members : stored?.members;
-    if (members === undefined) return;
+    const frozen = jobRun.fanOutPlan;
+    if (members === undefined || frozen === undefined) return;
+    // one batch and no budget: every lane starts at once, as without rollout
+    const rollout = frozen.batches.length > 1 || frozen.maxFailures !== null;
+    const lastHalt = jobRun.fanOutHalts[jobRun.fanOutHalts.length - 1];
 
     const laneRerun = (worker: string) =>
       job.steps.some((step) =>
@@ -5806,11 +5811,24 @@ export class WorkflowExecutionService {
       plannedLanes: stored?.plannedLanes ??
         (plan?.kind === "planned" ? plan.plannedLanes : lanes.length),
       members: members.map(fanOutEventMember),
+      ...(rollout
+        ? {
+          batches: frozen.batches.map((batch) => [...batch]),
+          maxFailures: frozen.maxFailures,
+        }
+        : {}),
       ...(stored !== undefined
         ? {
           resumed: {
             rerun,
             kept: lanes.filter((worker) => !rerun.includes(worker)),
+            ...(rollout
+              ? {
+                held: rerun.filter((worker) =>
+                  lastHalt?.held.includes(worker) ?? false
+                ),
+              }
+              : {}),
           },
         }
         : {}),
@@ -5846,7 +5864,11 @@ export class WorkflowExecutionService {
     const hostSlots = globalLimit && globalLimit > 0
       ? sharedGate(globalLimit)
       : undefined;
-    const laneStreams: AsyncIterable<WorkflowExecutionEvent>[] = [];
+    const laneStreams = new Map<
+      string,
+      () => AsyncIterable<WorkflowExecutionEvent>
+    >();
+    const failedBeforeStart: string[] = [];
     for (const worker of lanes) {
       const stepOf = (authored: string) => laneStepName(authored, worker);
       const live = poolByName.get(worker);
@@ -5878,9 +5900,10 @@ export class WorkflowExecutionService {
             error,
           };
         }
+        if (rerun.includes(worker)) failedBeforeStart.push(worker);
         continue;
       }
-      laneStreams.push(
+      laneStreams.set(worker, () =>
         this.runFanOutLane(
           workflow,
           run,
@@ -5891,22 +5914,83 @@ export class WorkflowExecutionService {
           expressionContext,
           options,
           hostSlots,
-        ),
-      );
+        ));
     }
     const laneLimit = resolveEffectiveConcurrency(
       job.concurrency ?? workflow.concurrency,
       globalLimit,
     );
-    for await (
-      const event of mergeWithConcurrency(
-        laneStreams,
-        laneLimit,
-        options.signal,
-        { finishStartedOnAbort: true },
-      )
-    ) {
-      yield event;
+    const stepsOfLane = (worker: string) =>
+      job.steps.map((step) => jobRun.getStep(laneStepName(step.name, worker))!);
+    let held: string[] = [];
+    let attemptFailed: number | undefined;
+    if (!rollout) {
+      for await (
+        const event of mergeWithConcurrency(
+          [...laneStreams.values()].map((stream) => stream()),
+          laneLimit,
+          options.signal,
+          { finishStartedOnAbort: true },
+        )
+      ) {
+        yield event;
+      }
+    } else {
+      // kept lanes send nothing; they replay their results before the rollout
+      for (const worker of lanes) {
+        if (rerun.includes(worker)) continue;
+        const stream = laneStreams.get(worker);
+        if (stream !== undefined) yield* stream();
+      }
+      const batches = resumeRollout(
+        frozen.batches,
+        new Set(rerun),
+        new Set(lastHalt?.failed ?? []),
+      );
+      const end = yield* runRolloutLanes<WorkflowExecutionEvent>({
+        rollout: { batches, maxFailures: frozen.maxFailures },
+        failedBeforeStart,
+        limit: laneLimit,
+        signal: options.signal,
+        start: (worker) => laneStreams.get(worker)!(),
+        failed: (worker) => laneFailed(stepsOfLane(worker)),
+        batchStarted: (batch, batchLanes) => ({
+          kind: "job_fanout_batch_started",
+          jobId: job.name,
+          batch,
+          batches: batches.length,
+          lanes: [...batchLanes],
+        }),
+      });
+      const failed = batches.flat().filter((worker) =>
+        laneFailed(stepsOfLane(worker))
+      );
+      attemptFailed = failed.length;
+      if (end.kind === "halted") {
+        held = end.held;
+        jobRun.haltFanOut(
+          {
+            batch: frozen.batches.findIndex((batch) =>
+              batch.some((worker) => held.includes(worker))
+            ),
+            maxFailures: frozen.maxFailures!,
+            failed,
+            held,
+          },
+          // a resumed lane keeps the steps it finished before its failed one
+          held.flatMap((worker) =>
+            stepsOfLane(worker).filter((step) => step.status === "pending")
+              .map((step) => step.stepName)
+          ),
+        );
+        yield {
+          kind: "job_fanout_halted",
+          jobId: job.name,
+          failed,
+          maxFailures: frozen.maxFailures!,
+          held,
+        };
+      }
     }
 
     // steps the abort left running are failed, as runJobInSpan does; a lane
@@ -5961,6 +6045,15 @@ export class WorkflowExecutionService {
       excluded: membersOf(members, "excluded"),
       skipped: membersOf(members, "skipped"),
       failedAtPlan: membersOf(members, "failed"),
+      ...(rollout ? { held } : {}),
+      ...(rollout && frozen.maxFailures !== null
+        ? {
+          budget: {
+            used: attemptFailed ?? failedLanes,
+            allowed: frozen.maxFailures,
+          },
+        }
+        : {}),
     };
     if (fanOutJobFailed(members, failedLanes)) {
       jobRun.fail();

@@ -540,7 +540,12 @@ export class Fleet implements AsyncDisposable {
   /** Runs a saved workflow through serve's run entry; returns it finished or suspended. */
   async runWorkflow(
     name: string,
-    options: { signal?: AbortSignal; lastEvaluated?: boolean } = {},
+    options: {
+      signal?: AbortSignal;
+      lastEvaluated?: boolean;
+      /** collects the run's events, for checks on what a client is sent */
+      events?: WorkflowRunEvent[];
+    } = {},
   ): Promise<WorkflowRunView> {
     let run: WorkflowRunView | undefined;
     let error: unknown;
@@ -551,6 +556,7 @@ export class Fleet implements AsyncDisposable {
       { workflowIdOrName: name, lastEvaluated: options.lastEvaluated },
       options.signal ?? new AbortController().signal,
       (event: WorkflowRunEvent) => {
+        options.events?.push(event);
         if (event.kind === "completed" || event.kind === "suspended") {
           run = event.run;
         }

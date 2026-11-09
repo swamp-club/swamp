@@ -51,6 +51,8 @@ export const FAN_OUT_EVENT_KINDS = [
   "job_fanout_planned",
   "job_fanout_waiting",
   "job_fanout_summary",
+  "job_fanout_batch_started",
+  "job_fanout_halted",
 ] as const;
 
 export type WorkflowExecutionEvent =
@@ -77,8 +79,14 @@ export type WorkflowExecutionEvent =
     minWorkers: number;
     plannedLanes: number;
     members: FanOutEventMember[];
-    /** set on a resume: the lanes that run again and those whose result stands */
-    resumed?: { rerun: string[]; kept: string[] };
+    /** set for a rollout: the frozen plan's batches and its budget, null for none */
+    batches?: string[][];
+    maxFailures?: number | null;
+    /**
+     * set on a resume: the lanes that run again and those whose result stands;
+     * for a rollout, held names the re-run lanes the last halt held
+     */
+    resumed?: { rerun: string[]; kept: string[]; held?: string[] };
   }
   | {
     kind: "job_fanout_waiting";
@@ -96,6 +104,25 @@ export type WorkflowExecutionEvent =
     excluded: FanOutEventMember[];
     skipped: FanOutEventMember[];
     failedAtPlan: FanOutEventMember[];
+    /** set for a rollout: the lanes a halt left unstarted */
+    held?: string[];
+    /** set for a rollout with a budget; used counts this attempt's failed lanes */
+    budget?: { used: number; allowed: number };
+  }
+  | {
+    kind: "job_fanout_batch_started";
+    jobId: string;
+    /** indexes this attempt's batches; a resume runs failed lanes first */
+    batch: number;
+    batches: number;
+    lanes: string[];
+  }
+  | {
+    kind: "job_fanout_halted";
+    jobId: string;
+    failed: string[];
+    maxFailures: number;
+    held: string[];
   }
   | {
     kind: "step_started";

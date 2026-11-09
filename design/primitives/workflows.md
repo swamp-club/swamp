@@ -3141,9 +3141,6 @@ again on the cached workflow a `--last-evaluated` run swaps in:
 
 - `refuseFanOutRun` refuses a run with no registered pool (a local run):
   "fanOut needs the worker pool of swamp serve; run it with --server".
-- It also refuses, for this release, a fan-out job that sets `rollout`:
-  batches and the failure budget are not acted on yet, and running every lane
-  at once would silently drop the canary the author asked for.
 - `resume` and `recover` run the same check before they touch the record, so a
   resume without serve is refused before a fan-out job it has yet to reach
   would plan.
@@ -3156,9 +3153,8 @@ fan-out job itself.
 `FanOutPolicySchema` (`src/domain/remote/fan_out.ts`): `offline`
 (`wait` | `skip` | `fail`, default `wait`), `minWorkers` (default 1, never 0)
 and an optional `rollout` (`batches`, `maxFailures`). `all` is stored as
-written and means the defaults. The rollout half is accepted, validated and
-stored now, but a run of a job that sets it is refused until rollouts act on
-it.
+written and means the defaults. "Rollouts" below says how a run acts on
+`rollout`.
 
 The selector is the job's placement after inheritance: `labels` and `platform`
 merged from the workflow and the job. `fanOut` itself is job-level only. It is
@@ -3208,11 +3204,14 @@ fanOutPlan:
       worker: host-a
       instanceUuid: …
       steps: [] # always empty: lane steps are the job's own steps
+fanOutHalts: # beside the plan; one per attempt a failure budget halted
+  - { batch: 1, maxFailures: 0, failed: [host-a], held: [host-b] }
 ```
 
 **Running a fan-out job.** At job start the execution service reads the pool
 through the registered `WorkerPoolReader`, plans with `planFanOut` and
-`planBatches` (one batch until rollouts arrive), records the plan, replaces
+`planBatches` (with the job's `rollout`, or one batch without it), records
+the plan, replaces
 the job's authored step records with one record per lane step, and saves the
 run before any lane starts. A lane step is named `step[worker]`, for example
 `apply[web-01]`, and is an ordinary step of the job with no forEach template,
@@ -3254,6 +3253,59 @@ collide (step and worker names may both hold brackets).
   since the pool reader is module-level and reaches the child's execution
   service. A `workflow` step inside a fan-out job stays refused.
 
+**Rollouts.** A plan with more than one batch, or with a failure budget, runs
+its lanes through `runRolloutLanes` (`fan_out_rollout.ts`). A plan with one
+batch and no budget runs every lane at once, as a job without `rollout` does.
+
+- Batches settle. A batch starts only when every lane of the batches before it
+  has finished, succeeded or failed, its assertions included. Inside a batch
+  the job's `concurrency` caps lanes in flight, and `SWAMP_MAX_CONCURRENT_STEPS`
+  stays the one host ceiling. Lanes are ordered as `planBatches` orders them:
+  connected hosts by name, then waiting hosts last, so the canary is a host
+  that is up. Batch percentages round up, and the last batch is `100%`. There
+  is no pause or bake time between batches.
+- The budget is a fixed number made at plan time: `maxFailures` as a count, or
+  a percentage of `plannedLanes` rounded down (`resolveMaxFailures`). It is
+  not a live rate, and without `maxFailures` there is no budget. A resumed
+  attempt of 2 lanes out of 100 under `maxFailures: 10%` still allows 10.
+- A lane counts as failed when it fails as a lane does (an unallowed failed
+  step, a failed assertion, a `queueTimeout`, `worker_ineligible`). Members
+  excluded, skipped or failed at plan time never had a lane and never count.
+- `nextBatch` (`rollout.ts`) is the one place the budget is decided, and the
+  driver consults it before every lane start, not once per batch. A lane's
+  outcome is read when its stream ends. Once failed lanes exceed `maxFailures`,
+  no lane starts, even in the middle of a batch; lanes already running finish,
+  so a patch is never cut off halfway.
+- Every lane that never started is held. `JobRun.haltFanOut` skips its pending
+  steps as `job_skipped` and marks them `settledByAbort`, records the halt in
+  `fanOutHalts`, and fails the job, all in one call, so no save in between can
+  hold half a halt. The skip reason enum cannot grow without older binaries
+  refusing the record, which is why held lanes reuse `job_skipped`; the halt
+  record and the events carry the meaning. Downstream jobs that need
+  `succeeded` are skipped. A budget spent by the last lanes, with nothing left
+  to hold, fails the job without a halt. A cancel holds no lanes: it settles
+  them as above.
+- The run-record judge freezes `fanOutHalts` (`fanOutHaltRefusal` in
+  `content_bindings.ts`): an entry is appended once, in the record where its
+  job turns failed, and never changed or dropped after. The entry must carry
+  the plan's budget and more failed lanes than it, a batch the plan holds, and
+  only lanes of the plan. A held lane must hold a step skipped as
+  `settledByAbort` and no step that is pending, running, waiting, unknown or a
+  failure that counts; steps a resumed lane finished before (succeeded,
+  skipped, or failed under `allowFailure`) stay. Every failed lane must read as
+  failed in that same record. The entry's `batch` is the first frozen batch
+  that holds a held lane. A resume orders lanes by the entry, so a forwarded record cannot
+  reorder one.
+- A resume continues the rollout with a fresh budget: only failures in the
+  resumed attempt count. `resumeRollout` runs the lanes the last halt failed
+  first, as one batch, then the other re-run lanes in the frozen plan's
+  batches. A batch's membership is read from the plan, never stored twice.
+  Held lanes are reopened through `settledByAbort`, so a `--from` aimed at a
+  later job still runs a fan-out job's held lanes, as it does work an abort
+  settled. Without a halt record (an older swamp dropped it on save, or the
+  run was interrupted and recovered) the re-run lanes walk the frozen batches
+  in plan order.
+
 **Resume, retry and recover.** A resumed fan-out job runs on its stored plan:
 `runFanOutJob` skips planning, takes its lanes from the plan's batches and its
 members from the plan, and never adds a worker that enrolled since.
@@ -3294,7 +3346,14 @@ and again on every resume (selector, offline policy, `minWorkers`,
 on a resume the lanes re-run and kept), a `job_fanout_waiting` per waiting
 member or resumed lane whose worker is not connected (with the job's queue
 timeout, or serve's through `WorkerPoolReader.queueTimeoutMs`), and
-`job_fanout_summary` before `job_completed`. Instance UUIDs stay in the record.
+`job_fanout_summary` before `job_completed`. A rollout also emits
+`job_fanout_batch_started` as each of the attempt's batches starts (its index,
+the batch count and its lanes) and `job_fanout_halted` on a halt (the failed
+lanes, the budget and the held lanes). Its `job_fanout_planned` carries the
+frozen `batches` and `maxFailures`, and on a resume `resumed.held` names the
+re-run lanes the last halt held. Its `job_fanout_summary` carries `held` and,
+with a budget, `budget: { used, allowed }`. A job without `rollout` sends none
+of these. Instance UUIDs stay in the record.
 The log renderer prints them in the job's column; JSON mode writes one stderr
 record each. Serve sends these kinds only to a subscriber that lists them in
 `eventKinds` on `workflow.run`, `workflow.resume` or `run.attach`
