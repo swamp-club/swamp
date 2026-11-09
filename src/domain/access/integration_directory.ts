@@ -48,6 +48,12 @@ export interface IntegrationLookup {
   standingOf(id: string): IntegrationStanding;
 }
 
+/** what an app proves itself against; read only for an active integration */
+export interface IntegrationCredentialRecord {
+  readonly credentialHash: string;
+  readonly requireEmailMatch: boolean;
+}
+
 /** an integration lost rights, so sessions opened under the old ones must go */
 export interface IntegrationNarrowed {
   readonly id: string;
@@ -60,18 +66,25 @@ const UNKNOWN: IntegrationStanding = { kind: "unknown" };
 
 const REVOKED: IntegrationStanding = { kind: "revoked" };
 
-function combined(
-  a: IntegrationStanding,
-  b: IntegrationStanding,
-): IntegrationStanding {
-  if (a.kind === "revoked" || b.kind === "revoked") return REVOKED;
+interface Entry {
+  readonly standing: IntegrationStanding;
+  readonly credential?: IntegrationCredentialRecord;
+}
+
+function combined(a: Entry, b: Entry): Entry {
+  if (a.standing.kind === "revoked" || b.standing.kind === "revoked") {
+    return { standing: REVOKED };
+  }
   if (
-    a.kind === "active" && b.kind === "active" && a.ceiling.equals(b.ceiling)
+    a.standing.kind === "active" && b.standing.kind === "active" &&
+    a.standing.ceiling.equals(b.standing.ceiling) &&
+    a.credential?.credentialHash === b.credential?.credentialHash &&
+    a.credential?.requireEmailMatch === b.credential?.requireEmailMatch
   ) {
     return a;
   }
-  // copies that disagree may be hiding a revoke
-  return UNKNOWN;
+  // copies that disagree may be hiding a revoke, or a second registration
+  return { standing: UNKNOWN };
 }
 
 /** fails closed: until a load has read every record, every integration is unknown */
@@ -80,9 +93,9 @@ export class IntegrationDirectory implements IntegrationLookup {
   readonly #listeners = new Set<Listener>();
   readonly #unsubscribers: (() => void)[] = [];
   readonly #retryMs: number;
-  #entries: ReadonlyMap<string, IntegrationStanding> = new Map();
+  #entries: ReadonlyMap<string, Entry> = new Map();
   #whole = false;
-  #lastGood: ReadonlyMap<string, IntegrationStanding> | undefined;
+  #lastGood: ReadonlyMap<string, Entry> | undefined;
   #reloads: Promise<void> = Promise.resolve();
   #retry: ReturnType<typeof setTimeout> | undefined;
   #disposed = false;
@@ -115,7 +128,13 @@ export class IntegrationDirectory implements IntegrationLookup {
 
   standingOf(id: string): IntegrationStanding {
     if (!this.#whole) return UNKNOWN;
-    return this.#entries.get(id) ?? UNKNOWN;
+    return this.#entries.get(id)?.standing ?? UNKNOWN;
+  }
+
+  credentialOf(id: string): IntegrationCredentialRecord | undefined {
+    if (!this.#whole) return undefined;
+    const entry = this.#entries.get(id);
+    return entry?.standing.kind === "active" ? entry.credential : undefined;
   }
 
   onNarrowed(listener: Listener): () => void {
@@ -150,7 +169,7 @@ export class IntegrationDirectory implements IntegrationLookup {
     if (this.#disposed) return;
     clearTimeout(this.#retry);
     this.#retry = undefined;
-    let entries: Map<string, IntegrationStanding>;
+    let entries: Map<string, Entry>;
     try {
       entries = await this.#read();
     } catch (error) {
@@ -185,14 +204,15 @@ export class IntegrationDirectory implements IntegrationLookup {
   }
 
   #narrowedSince(
-    entries: ReadonlyMap<string, IntegrationStanding>,
+    entries: ReadonlyMap<string, Entry>,
   ): IntegrationNarrowed[] {
     const previous = this.#lastGood;
     if (previous === undefined) return [];
     const narrowed: IntegrationNarrowed[] = [];
-    for (const [id, was] of previous) {
+    for (const [id, wasEntry] of previous) {
+      const was = wasEntry.standing;
       if (was.kind !== "active") continue;
-      const now = entries.get(id) ?? UNKNOWN;
+      const now = entries.get(id)?.standing ?? UNKNOWN;
       if (now.kind === "revoked") {
         narrowed.push({ id, reason: "revoked" });
       } else if (now.kind !== "active") {
@@ -205,7 +225,7 @@ export class IntegrationDirectory implements IntegrationLookup {
     return narrowed;
   }
 
-  async #read(): Promise<Map<string, IntegrationStanding>> {
+  async #read(): Promise<Map<string, Entry>> {
     const unreadable: UnreadableModelRecord[] = [];
     const type = INTEGRATION_MODEL_TYPE;
     const items = [
@@ -221,7 +241,7 @@ export class IntegrationDirectory implements IntegrationLookup {
         `${failed.length} integration record(s) could not be read`,
       );
     }
-    const entries = new Map<string, IntegrationStanding>();
+    const entries = new Map<string, Entry>();
     for (const { data, modelType, modelId } of items) {
       if (data.name !== INTEGRATION_DATA_NAME) continue;
       const content = await this.#dataRepo.getContent(
@@ -233,9 +253,9 @@ export class IntegrationDirectory implements IntegrationLookup {
       if (!content) {
         throw new Error(`Integration record ${modelId} has no content`);
       }
-      const { id, standing } = this.#parse(content, modelId);
+      const { id, entry } = this.#parse(content, modelId);
       const seen = entries.get(id);
-      entries.set(id, seen ? combined(seen, standing) : standing);
+      entries.set(id, seen ? combined(seen, entry) : entry);
     }
     return entries;
   }
@@ -256,7 +276,7 @@ export class IntegrationDirectory implements IntegrationLookup {
   #parse(
     content: Uint8Array,
     modelId: string,
-  ): { id: string; standing: IntegrationStanding } {
+  ): { id: string; entry: Entry } {
     const attrs: unknown = JSON.parse(new TextDecoder().decode(content));
     const parsed = IntegrationSchema.safeParse(attrs);
     if (!parsed.success) {
@@ -266,23 +286,29 @@ export class IntegrationDirectory implements IntegrationLookup {
       }
       logger
         .error`Integration record ${modelId} is invalid, so ${claimed} is refused`;
-      return { id: claimed, standing: UNKNOWN };
+      return { id: claimed, entry: { standing: UNKNOWN } };
     }
     if (parsed.data.state === "revoked") {
-      return { id: parsed.data.id, standing: REVOKED };
+      return { id: parsed.data.id, entry: { standing: REVOKED } };
     }
     try {
       return {
         id: parsed.data.id,
-        standing: {
-          kind: "active",
-          ceiling: Ceiling.parse(parsed.data.ceiling),
+        entry: {
+          standing: {
+            kind: "active",
+            ceiling: Ceiling.parse(parsed.data.ceiling),
+          },
+          credential: {
+            credentialHash: parsed.data.credentialHash,
+            requireEmailMatch: parsed.data.requireEmailMatch === true,
+          },
         },
       };
     } catch (error) {
       logger
         .error`Integration ${parsed.data.id} has a ceiling this build can't read, so it is refused: ${error}`;
-      return { id: parsed.data.id, standing: UNKNOWN };
+      return { id: parsed.data.id, entry: { standing: UNKNOWN } };
     }
   }
 }

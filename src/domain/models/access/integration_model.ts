@@ -52,6 +52,8 @@ export const IntegrationSchema = z.object({
   createdAt: z.string().datetime(),
   ceilingChangedAt: z.string().datetime().optional(),
   revokedAt: z.string().datetime().optional(),
+  // absent on records written before links existed, which means false
+  requireEmailMatch: z.boolean().optional(),
 });
 
 export type Integration = z.infer<typeof IntegrationSchema>;
@@ -108,6 +110,7 @@ const RegisterArgsSchema = z.object({
     INTEGRATION_CREDENTIAL_HASH_PATTERN,
     "Expected the credential's sha256 hash, never the credential",
   ),
+  requireEmailMatch: z.boolean().optional(),
 });
 
 export function integrationIdTakenMessage(id: string, state: string): string {
@@ -140,6 +143,7 @@ async function register(
     ceilingDigest: await ceiling.digest(),
     state: "active",
     createdAt: new Date().toISOString(),
+    ...(args.requireEmailMatch ? { requireEmailMatch: true } : {}),
   };
   const handle = await context.writeResource!(
     "integration",

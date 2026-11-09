@@ -19,6 +19,8 @@
 
 import {
   INTEGRATION_DATA_NAME,
+  INTEGRATION_MODEL_TYPE,
+  integrationDefinitionId,
   IntegrationSchema,
 } from "../../domain/models/access/integration_model.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -413,6 +415,25 @@ function executedDefinition(
   target: MethodRunTarget,
 ): DefinitionLookupResult | null {
   return target.run ? target.run.definition : target.definition;
+}
+
+/**
+ * a first register has no definition to lock, so it locks the id's deterministic
+ * record: two registers of one id then serialize and the second is refused
+ */
+async function firstIntegrationRegisterLock(
+  payload: ModelMethodRunPayload,
+): Promise<{ modelType: string; modelId: string } | undefined> {
+  if (
+    payload.methodName !== "register" ||
+    payload.typeArg === undefined ||
+    payload.definitionName === undefined ||
+    !isIntegrationModelType(payload.typeArg)
+  ) return undefined;
+  return {
+    modelType: INTEGRATION_MODEL_TYPE.normalized,
+    modelId: await integrationDefinitionId(payload.definitionName),
+  };
 }
 
 /**
@@ -846,6 +867,28 @@ export async function handleModelMethodRun(
                 }
                 modelLocks = lockResult;
               }
+            } else {
+              const firstRegister = await firstIntegrationRegisterLock(payload);
+              if (firstRegister) {
+                mutating = true;
+                const lockResult = await acquireModelLocks(
+                  ctx.datastoreConfig,
+                  [firstRegister],
+                  ctx.repoDir,
+                  ctx.syncService,
+                  ctx.repoContext.catalogStore,
+                  undefined,
+                  {
+                    wrapSync: (fn, kind) =>
+                      withRunSyncGate(ctx.syncGate, fn, kind),
+                    repoContext: ctx.repoContext,
+                  },
+                );
+                if (lockResult.synced) {
+                  ctx.repoContext.catalogStore.invalidate();
+                }
+                modelLocks = lockResult;
+              }
             }
 
             const isDirectExecution = payload.typeArg !== undefined;
@@ -1169,13 +1212,16 @@ export async function handleModelMethodRun(
               await pullBeforeUnlockedRun(ctx, model);
               publishModel = model;
             }
-            if (preResult && detachedMutating) {
+            const lockModel = preResult
+              ? {
+                modelType: preResult.type.normalized,
+                modelId: preResult.definition.id,
+              }
+              : await firstIntegrationRegisterLock(payload);
+            if (lockModel && detachedMutating) {
               const lockResult = await acquireModelLocks(
                 ctx.datastoreConfig,
-                [{
-                  modelType: preResult.type.normalized,
-                  modelId: preResult.definition.id,
-                }],
+                [lockModel],
                 ctx.repoDir,
                 ctx.syncService,
                 ctx.repoContext.catalogStore,
