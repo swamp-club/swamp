@@ -19,6 +19,8 @@
 
 import { parse as parseYaml } from "@std/yaml";
 import {
+  basename,
+  dirname,
   extname,
   isAbsolute,
   join,
@@ -149,11 +151,20 @@ function isInside(root: string, path: string): boolean {
     !isAbsolute(rel);
 }
 
+// a missing path takes its nearest existing ancestor's real spelling, so it
+// compares equal to real paths through the same symlinks (macOS /var)
 async function realOrResolved(path: string): Promise<string> {
-  try {
-    return await Deno.realPath(path);
-  } catch {
-    return resolve(path);
+  let current = resolve(path);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return join(await Deno.realPath(current), ...missing);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return resolve(path);
+      missing.unshift(basename(current));
+      current = parent;
+    }
   }
 }
 
