@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { TokenAdmissionChecker } from "./token_admission.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type {
   AccessResource,
@@ -40,6 +41,7 @@ import type { UsernamesResolved } from "./known_usernames.ts";
 
 export interface AdminAuthDeps {
   readonly authMode: string;
+  readonly tokenAdmission: TokenAdmissionChecker | null;
   readonly repoDir: string;
   readonly repoContext: RepositoryContext;
   readonly policySnapshotLoader: PolicySnapshotLoader | null;
@@ -154,6 +156,7 @@ export async function authenticateToken(
         token,
         deps.repoDir,
         deps.repoContext,
+        deps.tokenAdmission,
         {
           emitter: deps.auditEmitter,
           instanceId: deps.instanceId,
@@ -210,6 +213,7 @@ export async function authenticateDashboardSessionToken(
       authenticateDashboardSession(
         session,
         deps.repoContext,
+        deps.tokenAdmission,
         {
           emitter: deps.auditEmitter,
           instanceId: deps.instanceId,

@@ -206,6 +206,7 @@ Deno.test("server token name lock: a mint waits for the writer holding the name,
       `${name}.${secret}`,
       repoDir,
       repoContext,
+      null,
     );
     assertEquals(auth.ok, true);
     if (auth.ok) assertEquals(auth.principalId, "user:alice");
@@ -238,6 +239,7 @@ Deno.test("server token fingerprint: a record beside another mint's secret is re
       `${name}.${otherSecret}`,
       repoDir,
       repoContext,
+      null,
     );
     assertEquals(auth.ok, false);
     if (!auth.ok) assertEquals(auth.reason, "mispaired-secret");
@@ -279,6 +281,7 @@ Deno.test("server token fingerprint: a record beside another mint's secret is re
       `${name}.${rotatedSecret}`,
       repoDir,
       repoContext,
+      null,
     );
     assertEquals(repaired.ok, true);
     if (repaired.ok) assertEquals(repaired.principalId, "user:alice");

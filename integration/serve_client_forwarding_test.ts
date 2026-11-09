@@ -95,6 +95,7 @@ function authenticator(client: string | undefined) {
       token,
       "/nonexistent",
       {} as RepositoryContext,
+      null,
       undefined,
       {
         readToken: () => Promise.resolve(tokenRecord(client)),

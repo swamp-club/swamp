@@ -352,6 +352,8 @@ export { MAX_QUERY_RESULTS } from "../../domain/data/query_sort.ts";
 export const DEFAULT_QUERY_LIMIT = 1000;
 
 export interface ConnectionContext {
+  /** null outside OAuth mode; absent only in contexts built without serve */
+  tokenAdmission?: import("../token_admission.ts").TokenAdmissionChecker | null;
   integrationDirectory?: IntegrationDirectory;
   delegationDirectory?: DelegationDirectory;
   /** the leader's locked writer of delegation records, for an operator's end */
@@ -651,7 +653,8 @@ export type TokenSessionTerminationCause =
   | "invalid"
   | "integration-revoked"
   | "integration-narrowed"
-  | "delegation-ended";
+  | "delegation-ended"
+  | "not-admitted";
 
 // each close reason names its cause so a client can tell a revoked token from a
 // principal losing access; keep under the close-frame size limit
@@ -660,6 +663,8 @@ export const ACCESS_CHANGED_CLOSE_CODE = 4004;
 export const STREAM_ACCESS_CHANGED_REASON =
   "Session ended: access changed, reconnect";
 export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
+export const NOT_ADMITTED_REASON =
+  "Session ended: no longer admitted to this server";
 export const DELEGATION_ENDED_REASON = "Session ended: the link has ended";
 export const DELEGATION_EXPIRED_REASON =
   "Session ended: access token expired, refresh and reconnect";
@@ -1263,6 +1268,12 @@ export async function decideSubjectAccess(
   ) {
     return false;
   }
+  if (
+    ctx.tokenAdmission &&
+    !(await ctx.tokenAdmission.serverToken(record)).admitted
+  ) {
+    return false;
+  }
   const subjectPrincipal: AccessPrincipal = {
     principal,
     collectives: record.collectives,
@@ -1297,7 +1308,8 @@ function decideDelegatedSubject(
     directory === undefined || record === undefined || person === undefined ||
     directory.standingOf(delegationId).kind !== "standing" ||
     `user:${person.sub}` !== subject.token?.principalId ||
-    `user:${person.sub}` !== principalToString(subject.principal!)
+    `user:${person.sub}` !== principalToString(subject.principal!) ||
+    (ctx.tokenAdmission && !ctx.tokenAdmission.delegation(person).admitted)
   ) return false;
   const service = ctx.policySnapshotLoader!.decisionService;
   const decision = service.decide(

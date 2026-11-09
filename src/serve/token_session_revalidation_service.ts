@@ -22,6 +22,7 @@
  * rotated) wherever that happened: here, on an HA peer, or from the CLI
  */
 
+import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { z } from "zod";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -30,6 +31,7 @@ import { ServerTokenNotFoundError } from "./token_auth.ts";
 import { delegationOfSessionName } from "./delegated_token_auth.ts";
 import {
   DELEGATION_ENDED_REASON,
+  NOT_ADMITTED_REASON,
   TOKEN_EXPIRED_REASON,
   TOKEN_GONE_REASON,
   TOKEN_INVALID_REASON,
@@ -123,6 +125,13 @@ export interface TokenSessionRevalidationDeps {
   terminateSessions(name: string, options: TokenSessionCloseOptions): number;
   /** a delegation's sessions are checked against the directory, never a token record */
   delegationStanding?(id: string): string;
+  delegationPerson?(
+    id: string,
+  ):
+    | { readonly sub: string; readonly collectives: readonly string[] }
+    | undefined;
+  /** null or absent: no admission check, as outside OAuth mode */
+  readonly admission?: TokenAdmissionChecker | null;
   now?(): number;
 }
 
@@ -196,7 +205,15 @@ export class TokenSessionRevalidationService {
       if (delegationId !== undefined) {
         const standing = this.#deps.delegationStanding?.(delegationId) ??
           "unknown";
-        if (standing === "standing") continue;
+        if (standing === "standing") {
+          const person = this.#deps.delegationPerson?.(delegationId);
+          if (
+            !this.#deps.admission || person === undefined ||
+            this.#deps.admission.delegation(person).admitted
+          ) continue;
+          closed += this.#closeNotAdmitted(name, mints);
+          continue;
+        }
         for (const createdAt of mints) {
           closed += this.#deps.terminateSessions(name, {
             onlyCreatedAt: createdAt,
@@ -240,9 +257,14 @@ export class TokenSessionRevalidationService {
       }
 
       const nowMs = this.#deps.now?.() ?? Date.now();
+      const admitted = token === null || !this.#deps.admission ||
+        (await this.#deps.admission.serverToken(token)).admitted;
       for (const createdAt of mints) {
         const verdict = tokenSessionVerdict(token, createdAt, nowMs);
-        if (verdict.keep) continue;
+        if (verdict.keep) {
+          if (!admitted) closed += this.#closeNotAdmitted(name, [createdAt]);
+          continue;
+        }
         closed += this.#deps.terminateSessions(name, {
           onlyCreatedAt: createdAt,
           code: verdict.code,
@@ -250,6 +272,19 @@ export class TokenSessionRevalidationService {
           cause: verdict.cause,
         });
       }
+    }
+    return closed;
+  }
+
+  #closeNotAdmitted(name: string, mints: readonly string[]): number {
+    let closed = 0;
+    for (const createdAt of mints) {
+      closed += this.#deps.terminateSessions(name, {
+        onlyCreatedAt: createdAt,
+        code: REVOKED_CLOSE_CODE,
+        reason: NOT_ADMITTED_REASON,
+        cause: "not-admitted",
+      });
     }
     return closed;
   }

@@ -381,7 +381,12 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       null,
     );
     assertEquals(
-      (await authenticateServerToken(reused.credential, repoDir, repoContext))
+      (await authenticateServerToken(
+        reused.credential,
+        repoDir,
+        repoContext,
+        null,
+      ))
         .ok,
       true,
     );
@@ -406,12 +411,14 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       revoked.credential,
       repoDir,
       repoContext,
+      null,
     );
     assertEquals(revokedAuth.ok, false);
     const tamperedAuth = await authenticateServerToken(
       tampered.credential,
       repoDir,
       repoContext,
+      null,
     );
     assertEquals(tamperedAuth.ok, false);
 
@@ -430,6 +437,7 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       active.credential,
       repoDir,
       repoContext,
+      null,
     );
     assertEquals(activeAuth.ok, true);
 
@@ -447,7 +455,12 @@ Deno.test("server token GC: collects revoked and past-grace expired tokens acros
       "reused-tok",
     ]);
     assertEquals(
-      (await authenticateServerToken(active.credential, repoDir, repoContext))
+      (await authenticateServerToken(
+        active.credential,
+        repoDir,
+        repoContext,
+        null,
+      ))
         .ok,
       true,
     );
@@ -526,7 +539,12 @@ Deno.test("server token GC: on a filesystem datastore, waits for a writer holdin
     assertEquals(await gc.runOnce(), 1);
     assertEquals(await tokenMain(repoContext, "ci"), null);
     assertEquals(
-      (await authenticateServerToken(token.credential, repoDir, repoContext))
+      (await authenticateServerToken(
+        token.credential,
+        repoDir,
+        repoContext,
+        null,
+      ))
         .ok,
       false,
     );

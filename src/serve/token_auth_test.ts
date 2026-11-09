@@ -29,6 +29,7 @@ import {
   type ServerTokenAuthDeps,
   ServerTokenNotFoundError,
   setTokenRefusalNodeState,
+  shouldInvalidateDashboardSession,
   splitServerToken,
 } from "./token_auth.ts";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
@@ -39,6 +40,8 @@ import {
   serverTokenSecretFingerprint,
 } from "../domain/models/access/server_token_model.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
+import { createTokenAdmissionChecker } from "./token_admission.ts";
+import type { AdmissionLists } from "../domain/access/admission.ts";
 
 Deno.test("splitServerToken: splits valid name.secret", () => {
   const result = splitServerToken("adam-token.abc123def456");
@@ -303,6 +306,7 @@ function authenticateWithDeps(
     token,
     "/tmp/nonexistent",
     unusedRepoContext,
+    null,
     events
       ? {
         emitter: { emit: (event) => events.push(event) },
@@ -398,10 +402,14 @@ Deno.test("authenticateDashboardSession: accepts the server-token mint that crea
     new TextEncoder().encode(JSON.stringify(token)),
   );
 
-  const result = await authenticateDashboardSession({
-    tokenName: token.name,
-    tokenCreatedAt: token.createdAt,
-  }, repoContext);
+  const result = await authenticateDashboardSession(
+    {
+      tokenName: token.name,
+      tokenCreatedAt: token.createdAt,
+    },
+    repoContext,
+    null,
+  );
 
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.principalId, "user:test-user");
@@ -414,10 +422,14 @@ Deno.test("authenticateDashboardSession: rejects a session for a rotated token m
     new TextEncoder().encode(JSON.stringify(token)),
   );
 
-  const result = await authenticateDashboardSession({
-    tokenName: token.name,
-    tokenCreatedAt: "2026-01-01T00:00:00.000Z",
-  }, repoContext);
+  const result = await authenticateDashboardSession(
+    {
+      tokenName: token.name,
+      tokenCreatedAt: "2026-01-01T00:00:00.000Z",
+    },
+    repoContext,
+    null,
+  );
 
   assertEquals(result, {
     ok: false,
@@ -552,6 +564,7 @@ Deno.test("authenticateServerToken: ignores audit-emitter errors", async () => {
     "test-token.secret-value",
     "/tmp/nonexistent",
     unusedRepoContext,
+    null,
     {
       emitter: {
         emit: () => {
@@ -571,6 +584,7 @@ Deno.test("authenticateServerToken: rejects token exceeding MAX_TOKEN_LENGTH", a
     longToken,
     "/tmp/nonexistent",
     {} as RepositoryContext,
+    null,
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
@@ -686,6 +700,7 @@ Deno.test("authenticateServerToken: the token-use event falls back to the config
     "test-token.secret-value",
     "/tmp/nonexistent",
     unusedRepoContext,
+    null,
     {
       emitter: { emit: (event) => events.push(event) },
       resolvedUserNames: { "test-user": "configured-admin" },
@@ -708,6 +723,7 @@ Deno.test("authenticateDashboardSession: carries the OAuth login identity like a
   const result = await authenticateDashboardSession(
     { tokenName: token.name, tokenCreatedAt: token.createdAt },
     repoContext,
+    null,
     { emitter: { emit: (event) => events.push(event) } },
   );
 
@@ -723,6 +739,7 @@ Deno.test("authenticateServerToken: passes on the user name an OAuth login recor
     "test-token.secret-value",
     "/tmp/nonexistent",
     unusedRepoContext,
+    null,
     {
       emitter: { emit: (event) => events.push(event) },
       resolvedUserNames: names,
@@ -746,6 +763,7 @@ Deno.test("authenticateServerToken: a manually minted token passes on no user na
     "test-token.secret-value",
     "/tmp/nonexistent",
     unusedRepoContext,
+    null,
     { onUsernamesResolved: (names) => learned.push({ ...names }) },
     makeAuthDeps({
       readToken: () =>
@@ -763,6 +781,7 @@ Deno.test("authenticateServerToken: the token-use event names a user whose name 
     "test-token.secret-value",
     "/tmp/nonexistent",
     unusedRepoContext,
+    null,
     {
       emitter: { emit: (event) => events.push(event) },
       resolvedUserNames: { "test-user": "bob" },
@@ -788,6 +807,7 @@ Deno.test("authenticateDashboardSession: passes on the user name an OAuth login 
   const result = await authenticateDashboardSession(
     { tokenName: token.name, tokenCreatedAt: token.createdAt },
     repoContext,
+    null,
     { onUsernamesResolved: (learned) => Object.assign(names, learned) },
   );
 
@@ -812,6 +832,7 @@ function cachingAuth(deps: ServerTokenAuthDeps) {
       presented,
       repoDir,
       unusedRepoContext,
+      null,
       undefined,
       deps,
     );
@@ -1060,6 +1081,7 @@ Deno.test("authenticateDashboardSession: returns the client its token records, a
         { id: "token-id" },
         new TextEncoder().encode(JSON.stringify(token)),
       ),
+      null,
     );
   };
   const accepted = await session("direct:dashboard");
@@ -1069,4 +1091,80 @@ Deno.test("authenticateDashboardSession: returns the client its token records, a
     !refused.ok && refused.reason,
     "invalid-client",
   );
+});
+
+function admissionOf(lists: () => AdmissionLists) {
+  return createTokenAdmissionChecker({
+    lists,
+    hasStoredLogin: () => Promise.resolve(false),
+  });
+}
+
+const ADMITS_ALICE = { allowedCollectives: [], allowedUsers: ["sub-alice"] };
+const ADMITS_NOBODY_LISTED = {
+  allowedCollectives: ["other"],
+  allowedUsers: ["sub-bob"],
+};
+const loginToken = activeToken({
+  principalId: "user:sub-alice",
+  collectives: [],
+  oauthIdentity,
+});
+
+Deno.test("authenticateServerToken: a removed person's login token is refused, audited, and works again once re-admitted", async () => {
+  let lists: AdmissionLists = ADMITS_NOBODY_LISTED;
+  const events: AuditEvent[] = [];
+  const authenticate = () =>
+    authenticateServerToken(
+      "test-token.secret-value",
+      "/tmp/nonexistent",
+      unusedRepoContext,
+      admissionOf(() => lists),
+      { emitter: { emit: (event) => events.push(event) } },
+      makeAuthDeps({ readToken: () => Promise.resolve(loginToken) }),
+    );
+
+  const refused = await authenticate();
+  assertEquals(refused, {
+    ok: false,
+    error: "Authentication failed",
+    reason: "not-admitted",
+  });
+  assertEquals(events.map((e) => [e.action, e.outcome]), [
+    ["auth.token.not_admitted", "denied"],
+  ]);
+
+  lists = ADMITS_ALICE;
+  assertEquals((await authenticate()).ok, true);
+});
+
+Deno.test("authenticateServerToken: a manually minted token is outside admission", async () => {
+  const result = await authenticateServerToken(
+    "test-token.secret-value",
+    "/tmp/nonexistent",
+    unusedRepoContext,
+    admissionOf(() => ADMITS_NOBODY_LISTED),
+    undefined,
+    makeAuthDeps({
+      readToken: () =>
+        Promise.resolve(activeToken({ principalId: "user:sub-alice" })),
+    }),
+  );
+  assertEquals(result.ok, true);
+});
+
+Deno.test("authenticateDashboardSession: a removed person's session is refused without being invalidated", async () => {
+  const repoContext = fakeTokenRepoContext(
+    { id: "token-id" },
+    new TextEncoder().encode(JSON.stringify(loginToken)),
+  );
+  const result = await authenticateDashboardSession(
+    { tokenName: loginToken.name, tokenCreatedAt: loginToken.createdAt },
+    repoContext,
+    admissionOf(() => ADMITS_NOBODY_LISTED),
+  );
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(result.reason, "not-admitted");
+  assertEquals(shouldInvalidateDashboardSession(result.reason), false);
 });

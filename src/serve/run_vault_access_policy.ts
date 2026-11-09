@@ -23,6 +23,7 @@
  * allow scopes the principal; data grants play no part
  */
 
+import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { delegationOfSessionName } from "./delegated_token_auth.ts";
 import type { AccessPrincipal } from "../domain/access/access_decision_service.ts";
 import { ActionSchema } from "../domain/access/action.ts";
@@ -301,6 +302,8 @@ export interface RunVaultPolicyDeps {
    * token record, so rotating its tokens does not cut the run off
    */
   readonly delegationPrincipal?: (id: string) => string | undefined;
+  /** null or absent: no admission check, as outside OAuth mode */
+  readonly admission?: TokenAdmissionChecker | null;
   readonly now?: () => number;
   readonly tokenTtlMs?: number;
 }
@@ -448,6 +451,12 @@ export class ServeRunVaultPolicy implements VaultPrincipalPolicy {
     ) {
       return null;
     }
+    if (
+      this.#deps.admission &&
+      !(await this.#deps.admission.serverToken(record)).admitted
+    ) {
+      return null;
+    }
     return inputs.source === "token"
       ? {
         principal: inputs.principal,
@@ -482,17 +491,25 @@ export function runVaultScopeContext(
     | "instanceId"
     | "resolvedUserNames"
     | "delegationDirectory"
+    | "tokenAdmission"
   >,
 ): RunVaultScopeContext {
   return {
     authMode: ctx.authConfig.mode,
     policySnapshotLoader: ctx.policySnapshotLoader,
     readTokenRecord: (name) => readServerTokenRecord(ctx.repoContext, name),
+    admission: ctx.tokenAdmission ?? null,
     delegationPrincipal: (id) => {
       const directory = ctx.delegationDirectory;
       if (directory?.standingOf(id).kind !== "standing") return undefined;
-      const sub = directory.recordOf(id)?.person?.sub;
-      return sub === undefined ? undefined : `user:${sub}`;
+      const person = directory.recordOf(id)?.person;
+      if (person === undefined) return undefined;
+      if (
+        ctx.tokenAdmission && !ctx.tokenAdmission.delegation(person).admitted
+      ) {
+        return undefined;
+      }
+      return `user:${person.sub}`;
     },
     auditEmitter: ctx.auditEmitter,
     instanceId: ctx.instanceId,

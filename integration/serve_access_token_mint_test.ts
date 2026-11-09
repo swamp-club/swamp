@@ -137,6 +137,7 @@ Deno.test("handleAccessTokenMint: mints into the control-plane vault when a user
       `remote-minted.${secret}`,
       repoDir,
       repoContext,
+      null,
     );
     assertEquals(auth.ok, true);
     if (auth.ok) assertEquals(auth.principalId, "user:probe");

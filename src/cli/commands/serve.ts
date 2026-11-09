@@ -132,6 +132,12 @@ import {
 } from "../../serve/trigger_audit.ts";
 import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
 import { createWebhookUpdater } from "../../serve/webhook_reload.ts";
+import {
+  cachedUnlessRejected,
+  createTokenAdmissionChecker,
+} from "../../serve/token_admission.ts";
+import { hasOAuthAccessToken } from "../../serve/oauth_access_token_lookup.ts";
+import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { principalToString } from "../../domain/access/principal.ts";
 import {
   SCHEDULER_PRINCIPAL,
@@ -5739,8 +5745,24 @@ export const serveCommand = new Command()
     const datastoreQuarantine = new ControlPlaneQuarantineStore(
       controlPlaneStore,
     );
+    const admissionVaults = cachedUnlessRejected(() =>
+      VaultService.fromRepository(resolvedRepoDir, {
+        defaultVaultName: repoMarker?.defaultVault,
+      })
+    );
+    // read at call time from the shared auth config, so later list changes apply
+    const tokenAdmission = authConfig.mode === "oauth"
+      ? createTokenAdmissionChecker({
+        lists: () => authConfig,
+        hasStoredLogin: (token) =>
+          withoutVaultAccess(async () =>
+            await hasOAuthAccessToken(await admissionVaults(), token)
+          ),
+      })
+      : null;
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
+        tokenAdmission,
         integrationDirectory,
         delegationDirectory,
         repoDir: resolvedRepoDir,
@@ -6790,6 +6812,8 @@ export const serveCommand = new Command()
         listTokenSessions,
         readToken: (name) => readServerTokenRecord(repoContext, name),
         delegationStanding: (id) => delegationDirectory.standingOf(id).kind,
+        delegationPerson: (id) => delegationDirectory.recordOf(id)?.person,
+        admission: tokenAdmission,
         terminateSessions: (name, options) =>
           terminateTokenSessions(name, {
             ...options,
@@ -6830,6 +6854,7 @@ export const serveCommand = new Command()
     connectionCtx.delegationStore = delegationStore;
     connectionCtx.delegationAudit = delegationAudit;
     const delegationRouteDeps: DelegationRouteDeps = {
+      admission: tokenAdmission,
       integrations: integrationDirectory,
       directory: delegationDirectory,
       store: delegationStore,
@@ -7148,6 +7173,7 @@ export const serveCommand = new Command()
 
     const adminAuthDeps: AdminAuthDeps = {
       authMode: authConfig.mode,
+      tokenAdmission,
       repoDir: resolvedRepoDir,
       repoContext,
       policySnapshotLoader,
@@ -7429,11 +7455,13 @@ export const serveCommand = new Command()
                     extracted.token,
                     resolvedRepoDir,
                     repoContext,
+                    tokenAdmission,
                     auditContext,
                   )
                   : authenticateDashboardSession(
                     dashboardSession!,
                     repoContext,
+                    tokenAdmission,
                     auditContext,
                   ),
             );
@@ -7592,14 +7620,20 @@ export const serveCommand = new Command()
                 ? { quarantine: datastoreQuarantine }
                 : {}),
               authenticate: (token, sourceIp) =>
-                authenticateServerToken(token, resolvedRepoDir, repoContext, {
-                  emitter: connectionCtx.auditEmitter,
-                  instanceId: connectionCtx.instanceId,
-                  sourceIp,
-                  ingress: "http-datastore",
-                  resolvedUserNames: connectionCtx.resolvedUserNames,
-                  onUsernamesResolved: rememberTokenUsernames,
-                }),
+                authenticateServerToken(
+                  token,
+                  resolvedRepoDir,
+                  repoContext,
+                  tokenAdmission,
+                  {
+                    emitter: connectionCtx.auditEmitter,
+                    instanceId: connectionCtx.instanceId,
+                    sourceIp,
+                    ingress: "http-datastore",
+                    resolvedUserNames: connectionCtx.resolvedUserNames,
+                    onUsernamesResolved: rememberTokenUsernames,
+                  },
+                ),
             },
           );
         }
@@ -7618,14 +7652,20 @@ export const serveCommand = new Command()
           return await handleHttpActionRequest(req, clientAddress(), {
             ctx: connectionCtx,
             authenticate: (token, sourceIp) =>
-              authenticateServerToken(token, resolvedRepoDir, repoContext, {
-                emitter: connectionCtx.auditEmitter,
-                instanceId: connectionCtx.instanceId,
-                sourceIp,
-                ingress: "http-action",
-                resolvedUserNames: connectionCtx.resolvedUserNames,
-                onUsernamesResolved: rememberTokenUsernames,
-              }),
+              authenticateServerToken(
+                token,
+                resolvedRepoDir,
+                repoContext,
+                tokenAdmission,
+                {
+                  emitter: connectionCtx.auditEmitter,
+                  instanceId: connectionCtx.instanceId,
+                  sourceIp,
+                  ingress: "http-action",
+                  resolvedUserNames: connectionCtx.resolvedUserNames,
+                  onUsernamesResolved: rememberTokenUsernames,
+                },
+              ),
           });
         }
 
@@ -7633,25 +7673,36 @@ export const serveCommand = new Command()
           return await handleHttpRequest(req, clientAddress(), {
             ctx: connectionCtx,
             authenticate: (token, sourceIp) =>
-              authenticateServerToken(token, resolvedRepoDir, repoContext, {
-                emitter: connectionCtx.auditEmitter,
-                instanceId: connectionCtx.instanceId,
-                sourceIp,
-                ingress: "http-request",
-                resolvedUserNames: connectionCtx.resolvedUserNames,
-                onUsernamesResolved: rememberTokenUsernames,
-              }),
-            dashboardSession: {
-              sessions: dashboardSessions,
-              authenticate: (session, sourceIp) =>
-                authenticateDashboardSession(session, repoContext, {
+              authenticateServerToken(
+                token,
+                resolvedRepoDir,
+                repoContext,
+                tokenAdmission,
+                {
                   emitter: connectionCtx.auditEmitter,
                   instanceId: connectionCtx.instanceId,
                   sourceIp,
-                  ingress: "http-request:cookie",
+                  ingress: "http-request",
                   resolvedUserNames: connectionCtx.resolvedUserNames,
                   onUsernamesResolved: rememberTokenUsernames,
-                }),
+                },
+              ),
+            dashboardSession: {
+              sessions: dashboardSessions,
+              authenticate: (session, sourceIp) =>
+                authenticateDashboardSession(
+                  session,
+                  repoContext,
+                  tokenAdmission,
+                  {
+                    emitter: connectionCtx.auditEmitter,
+                    instanceId: connectionCtx.instanceId,
+                    sourceIp,
+                    ingress: "http-request:cookie",
+                    resolvedUserNames: connectionCtx.resolvedUserNames,
+                    onUsernamesResolved: rememberTokenUsernames,
+                  },
+                ),
             },
           });
         }
@@ -7688,6 +7739,7 @@ export const serveCommand = new Command()
                     token,
                     resolvedRepoDir,
                     repoContext,
+                    tokenAdmission,
                     {
                       emitter: connectionCtx.auditEmitter,
                       instanceId: connectionCtx.instanceId,
@@ -7727,6 +7779,7 @@ export const serveCommand = new Command()
                     token,
                     resolvedRepoDir,
                     repoContext,
+                    tokenAdmission,
                     {
                       emitter: connectionCtx.auditEmitter,
                       instanceId: connectionCtx.instanceId,
@@ -8118,6 +8171,7 @@ export const serveCommand = new Command()
                     token,
                     resolvedRepoDir,
                     repoContext,
+                    tokenAdmission,
                     {
                       emitter: connectionCtx.auditEmitter,
                       instanceId: connectionCtx.instanceId,
@@ -8184,6 +8238,7 @@ export const serveCommand = new Command()
                   authenticateDashboardSession(
                     session,
                     repoContext,
+                    tokenAdmission,
                     {
                       emitter: connectionCtx.auditEmitter,
                       instanceId: connectionCtx.instanceId,

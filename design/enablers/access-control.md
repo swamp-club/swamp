@@ -474,11 +474,32 @@ OAuth mode the operator must configure at least one of:
   checked against the IdP's group claims.
 - `--allowed-users`: the user's OAuth sub must be in this list.
 
-If neither is set, the server refuses to start rather than admit anyone. A user
-who fails admission is disconnected before any request is evaluated; one who
-passes moves on to per-request authorization.
+If neither is set, the server refuses to start rather than admit anyone.
 
-Implementation: `src/domain/access/admission.ts`.
+Admission is checked when a person signs in with device login and when they
+consent to an integration link. It is checked again, against the lists in force
+and the credential's recorded collectives, every time a credential issued to a
+person is used:
+
+- a login-issued server token (one with an OAuth identity, or an older one with
+  a stored OAuth access token) or a delegated access token, when presented;
+- a delegated refresh token, before it is rotated;
+- a token or delegation a run acts under, before auto-resume and on each run
+  vault access check;
+- an open WebSocket session or health stream, by the session revalidation pass
+  every 30 s, which closes it with code 4003 and cause `not-admitted`.
+
+A credential that fails is refused with reason `not-admitted` and audited as
+`auth.token.not_admitted`. This is a denial, not a revocation: nothing is
+written, each serve instance applies its own lists, and adding the person back
+restores the same credential without a new login or consent. Tokens minted with
+`swamp access token create` are outside admission. A delegation's collectives
+are those recorded at consent, so leaving a collective upstream reaches a
+delegation only when the person re-links; removing them from the lists takes
+effect at once.
+
+Implementation: `src/domain/access/admission.ts`,
+`src/serve/token_admission.ts`.
 
 ## Subjects
 
@@ -1482,9 +1503,9 @@ changes.
    puller's own writes. Anything else, including a local CLI write, is a peer
    change. A v3 datastore has one writer at a time and runs no poller.
 4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
-   logged-in user's collectives every `--group-refresh-interval` and closes
-   connections whose admission lapsed
-   (`src/serve/collective_refresh_service.ts`). It applies a userinfo answer
+   logged-in user's collectives every `--group-refresh-interval`
+   (`src/serve/collective_refresh_service.ts`); the next session revalidation
+   pass closes connections whose admission lapsed (see [Admission](#admission)). It applies a userinfo answer
    only when its subject matches the token's principal; otherwise it keeps the
    token's snapshot and logs a warning.
 5. **Unreadable records** (swamp-club#3386): a grant or group record that exists

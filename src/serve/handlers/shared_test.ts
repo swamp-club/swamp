@@ -102,6 +102,8 @@ import {
   withCommittedUnknownSteps,
 } from "./shared.ts";
 import type { ServerMessage } from "../protocol.ts";
+import { delegationSessionName } from "../delegated_token_auth.ts";
+import type { TokenAdmissionChecker } from "../token_admission.ts";
 import type { AuditEvent } from "../../domain/serve_audit/audit_event.ts";
 import { createConditionEvaluator } from "../../domain/access/policy_snapshot_loader.ts";
 import {
@@ -2979,4 +2981,59 @@ Deno.test("terminateIntegrationSessions: closes only that integration's sessions
   unregister?.();
   terminate(other);
   terminate(direct);
+});
+
+function admissionStub(admitted: boolean): TokenAdmissionChecker {
+  const result = { admitted, reason: admitted ? "listed" : "not listed" };
+  return {
+    serverToken: () => Promise.resolve(result),
+    delegation: () => result,
+  };
+}
+
+Deno.test("decideSubjectAccess: refuses a token whose person is no longer admitted", async () => {
+  const ctx = withTokenRecord(makeCtx([approveDeploy]), {});
+  ctx.tokenAdmission = admissionStub(false);
+  assertEquals(
+    await decideSubjectAccess(ctx, subjectOn(), "approve", deployWorkflow),
+    false,
+  );
+  ctx.tokenAdmission = admissionStub(true);
+  assertEquals(
+    await decideSubjectAccess(ctx, subjectOn(), "approve", deployWorkflow),
+    true,
+  );
+});
+
+Deno.test("decideSubjectAccess: refuses a delegation whose person is no longer admitted", async () => {
+  const ctx = makeCtx([approveDeploy]);
+  ctx.delegationDirectory = {
+    recordOf: () => ({
+      integrationId: "slack-bot",
+      person: { sub: "adam", collectives: [], groups: [] },
+    }),
+    standingOf: () => ({ kind: "standing" }),
+  } as unknown as ConnectionContext["delegationDirectory"];
+  // grant evaluation is not under test: the stub allows whatever reaches it
+  ctx.policySnapshotLoader = {
+    decisionService: { decide: () => ({ effect: "allow" }) },
+  } as unknown as ConnectionContext["policySnapshotLoader"];
+  const socket = makeSocket();
+  setConnectionToken(socket, {
+    name: delegationSessionName("d-1"),
+    createdAt: "2026-01-01T00:00:00.000Z",
+    principalId: "user:adam",
+  });
+  const subject = captureDecisionSubject(socket, makePrincipal("adam"));
+
+  ctx.tokenAdmission = admissionStub(true);
+  assertEquals(
+    await decideSubjectAccess(ctx, subject, "approve", deployWorkflow),
+    true,
+  );
+  ctx.tokenAdmission = admissionStub(false);
+  assertEquals(
+    await decideSubjectAccess(ctx, subject, "approve", deployWorkflow),
+    false,
+  );
 });

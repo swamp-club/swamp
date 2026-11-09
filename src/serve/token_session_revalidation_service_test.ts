@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { assert, assertEquals } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -386,4 +387,59 @@ Deno.test("runOnce: a delegation's sessions are checked against the directory an
     assertEquals(close.options.cause, "delegation-ended");
     assertEquals(close.options.code, 4003);
   }
+});
+
+function admitting(admitted: () => boolean): TokenAdmissionChecker {
+  const result = () => ({ admitted: admitted(), reason: "test" });
+  return {
+    serverToken: () => Promise.resolve(result()),
+    delegation: () => result(),
+  };
+}
+
+Deno.test("runOnce: closes a valid token's sessions once its person is no longer admitted", async () => {
+  let admitted = true;
+  const h = harness(
+    [
+      { name: "tok", createdAt: MINT_1 },
+      { name: "tok", createdAt: MINT_2 },
+    ],
+    () => Promise.resolve(token({ createdAt: MINT_2 })),
+  );
+  const service = new TokenSessionRevalidationService({
+    ...h.deps,
+    admission: admitting(() => admitted),
+  });
+
+  await service.runOnce();
+  assertEquals(h.closes.map((c) => c.options.cause), ["rotated"]);
+
+  admitted = false;
+  h.closes.length = 0;
+  await service.runOnce();
+  assertEquals(
+    h.closes.map((c) => [c.options.onlyCreatedAt, c.options.cause]),
+    [[MINT_1, "rotated"], [MINT_2, "not-admitted"]],
+  );
+  assertEquals(h.closes[1].options.code, 4003);
+});
+
+Deno.test("runOnce: closes a standing delegation's sessions once its person is no longer admitted", async () => {
+  let admitted = true;
+  const h = harness(
+    [{ name: "delegation:d-live", createdAt: MINT_1 }],
+    () => Promise.reject(new Error("never read")),
+  );
+  const service = new TokenSessionRevalidationService({
+    ...h.deps,
+    delegationStanding: () => "standing",
+    delegationPerson: () => ({ sub: "sub-1", collectives: [] }),
+    admission: admitting(() => admitted),
+  });
+
+  assertEquals(await service.runOnce(), 0);
+  admitted = false;
+  assertEquals(await service.runOnce(), 1);
+  assertEquals(h.closes[0].options.cause, "not-admitted");
+  assertEquals(h.reads, []);
 });

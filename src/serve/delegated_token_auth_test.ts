@@ -37,6 +37,7 @@ import {
   delegationSessionName,
 } from "./delegated_token_auth.ts";
 import { authenticateServerToken } from "./token_auth.ts";
+import { createTokenAdmissionChecker } from "./token_admission.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 
 function lookupOf(record: DelegationRecord): DelegationLookup {
@@ -141,6 +142,7 @@ Deno.test("authenticateServerToken: a delegated token never reaches a server-tok
     tokens.access.value,
     "/nonexistent",
     {} as RepositoryContext,
+    null,
     undefined,
     deps,
   );
@@ -151,6 +153,7 @@ Deno.test("authenticateServerToken: a delegated token never reaches a server-tok
     tokens.refresh.value,
     "/nonexistent",
     {} as RepositoryContext,
+    null,
     undefined,
     deps,
   );
@@ -162,4 +165,36 @@ Deno.test("delegationSessionName: round-trips, and a server token name is not a 
   const id = crypto.randomUUID();
   assertEquals(delegationOfSessionName(delegationSessionName(id)), id);
   assertEquals(delegationOfSessionName("oauth-12345678"), undefined);
+});
+
+Deno.test("authenticateServerToken: a delegated token is refused once its person is no longer admitted", async () => {
+  const { record, tokens } = await issueDelegationTokens(consentedRecord(), T0);
+  let allowedUsers = ["sub-1"];
+  const admission = createTokenAdmissionChecker({
+    lists: () => ({ allowedCollectives: [], allowedUsers }),
+    hasStoredLogin: () => Promise.resolve(false),
+  });
+  const deps = {
+    readToken: () => Promise.reject(new Error("no server token")),
+    readSecret: () => Promise.reject(new Error("no secret")),
+    now: () => T0 + 1000,
+    delegations: lookupOf(record),
+  };
+  const authenticate = () =>
+    authenticateServerToken(
+      tokens.access.value,
+      "/nonexistent",
+      {} as RepositoryContext,
+      admission,
+      undefined,
+      deps,
+    );
+
+  assert((await authenticate()).ok);
+  allowedUsers = ["sub-other"];
+  const refused = await authenticate();
+  assertEquals(refused.ok, false);
+  assertEquals(!refused.ok && refused.reason, "not-admitted");
+  allowedUsers = ["sub-1"];
+  assert((await authenticate()).ok);
 });

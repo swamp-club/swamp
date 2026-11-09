@@ -43,6 +43,7 @@ import type {
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import { parsePrincipal, type Principal } from "../domain/access/principal.ts";
+import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { parseClient } from "../domain/access/client.ts";
 import { assertAuthenticatablePrincipal } from "../domain/access/service_principal.ts";
 import {
@@ -292,6 +293,7 @@ export type TokenAuthRejectionReason =
   | "mispaired-secret"
   | "invalid-principal"
   | "invalid-client"
+  | "not-admitted"
   | "no-definition"
   | "invalid-format"
   | "vault-error"
@@ -361,6 +363,7 @@ export async function authenticateServerToken(
   presented: string,
   repoDir: string,
   repoContext: RepositoryContext,
+  admission: TokenAdmissionChecker | null,
   auditContext?: TokenAuthAuditContext,
   authDeps?: ServerTokenAuthDeps,
 ): Promise<ServerTokenAuthResult> {
@@ -379,6 +382,21 @@ export async function authenticateServerToken(
       authDeps?.now?.() ?? Date.now(),
     );
     if (!delegated.ok) return delegated;
+    if (admission !== null) {
+      const result = admission.delegation({
+        sub: delegated.principalId.slice("user:".length),
+        collectives: delegated.collectives,
+      });
+      if (!result.admitted) {
+        return refuseNotAdmitted(
+          auditContext,
+          delegated.tokenName,
+          delegated.principalId,
+          delegated.client,
+          result.reason,
+        );
+      }
+    }
     const { accessExpiresAt, ...rest } = delegated;
     return { ...rest, sessionExpiresAt: accessExpiresAt };
   }
@@ -460,6 +478,14 @@ export async function authenticateServerToken(
       };
     }
 
+    const refused = await admissionRefusal(
+      admission,
+      auditContext,
+      split.name,
+      token,
+    );
+    if (refused) return refused;
+
     rememberTokenUsername(auditContext, token);
     emitTokenUseAuditEvent(auditContext, split.name, principal, token);
     logger.info("Authenticated token {name} as {principal}", {
@@ -495,6 +521,7 @@ export async function authenticateServerToken(
 export async function authenticateDashboardSession(
   binding: DashboardSessionTokenBinding,
   repoContext: RepositoryContext,
+  admission: TokenAdmissionChecker | null,
   auditContext?: TokenAuthAuditContext,
 ): Promise<ServerTokenAuthResult> {
   try {
@@ -537,6 +564,13 @@ export async function authenticateDashboardSession(
         reason: "invalid-client",
       };
     }
+    const refused = await admissionRefusal(
+      admission,
+      auditContext,
+      binding.tokenName,
+      token,
+    );
+    if (refused) return refused;
     rememberTokenUsername(auditContext, token);
     emitTokenUseAuditEvent(auditContext, binding.tokenName, principal, token);
     return {
@@ -626,4 +660,65 @@ function emitTokenUseAuditEvent(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+async function admissionRefusal(
+  admission: TokenAdmissionChecker | null,
+  auditContext: TokenAuthAuditContext | undefined,
+  tokenName: string,
+  token: ServerToken,
+): Promise<ServerTokenAuthResult | undefined> {
+  if (admission === null) return undefined;
+  const result = await admission.serverToken(token);
+  if (result.admitted) return undefined;
+  return refuseNotAdmitted(
+    auditContext,
+    tokenName,
+    token.principalId,
+    token.client,
+    result.reason,
+  );
+}
+
+/** a denial, not a revocation: re-admitting the person makes it work again */
+function refuseNotAdmitted(
+  auditContext: TokenAuthAuditContext | undefined,
+  tokenName: string,
+  principalId: string,
+  client: string | undefined,
+  reason: string,
+): ServerTokenAuthResult {
+  logger.warn(
+    "Token authentication refused for {name} (not-admitted): {reason}",
+    { name: tokenName, reason },
+  );
+  if (auditContext?.emitter) {
+    try {
+      const principal = parsePrincipal(principalId);
+      auditContext.emitter.emit(buildAuditEvent({
+        instanceId: auditContext.instanceId ?? "unknown",
+        category: "auth",
+        stage: "response",
+        outcome: "denied",
+        action: "auth.token.not_admitted",
+        resourceKind: "server-token",
+        resourceName: tokenName,
+        principalKind: principal.kind,
+        principalId: principal.id,
+        initiatedBy: displayPrincipal(
+          principal,
+          auditContext.resolvedUserNames,
+        ),
+        client,
+        sourceIp: auditContext.sourceIp ?? "unknown",
+        requestId: auditContext.requestId ?? crypto.randomUUID(),
+        detail: reason,
+      }));
+    } catch (error) {
+      logger.warn("Failed to emit token admission audit event: {error}", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { ok: false, error: "Authentication failed", reason: "not-admitted" };
 }

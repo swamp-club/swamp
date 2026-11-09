@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { TokenAdmissionChecker } from "../src/serve/token_admission.ts";
 import "../src/domain/models/models.ts";
 import { assertEquals } from "@std/assert";
 import { Ceiling } from "../src/domain/access/ceiling.ts";
@@ -141,7 +142,10 @@ export interface Rig {
 
 export async function withRig(
   fn: (rig: Rig) => Promise<void>,
-  options: { requireEmailMatch?: boolean } = {},
+  options: {
+    requireEmailMatch?: boolean;
+    admission?: TokenAdmissionChecker | null;
+  } = {},
 ): Promise<void> {
   resetRateLimitState();
   await withServeRepo(async (repo) => {
@@ -217,6 +221,7 @@ export async function withRig(
           client: () => client,
           capability: () => Promise.resolve(team.capability),
           audit: (event) => audit.push(event),
+          admission: options.admission ?? null,
         },
       );
       return {
