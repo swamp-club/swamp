@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { assertCompletes, assertErrors, collect } from "../testing.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -203,6 +203,30 @@ Deno.test("extensionPromote: yields error when API call fails", async () => {
   await assertErrors<ExtensionPromoteEvent>(
     extensionPromote(ctx, deps, input),
     "validation_failed",
+  );
+});
+
+Deno.test("extensionPromote: a version the registry does not have says where to look", async () => {
+  const ctx = createLibSwampContext();
+  const deps = fakeDeps({
+    promoteExtension: () =>
+      Promise.reject(new UserError("Extension version not found")),
+  });
+  const error = await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(ctx, deps, {
+      extensionName: "@test/ext",
+      version: "2026.06.10.99",
+      toChannel: "rc",
+    }),
+    "not_found",
+  );
+  assertStringIncludes(
+    error.message,
+    "extension version not found: @test/ext@2026.06.10.99",
+  );
+  assertStringIncludes(
+    error.message,
+    "Run `swamp extension info @test/ext` to see",
   );
 });
 

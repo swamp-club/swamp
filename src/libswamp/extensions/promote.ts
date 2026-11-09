@@ -264,11 +264,10 @@ export async function* extensionPromote(
           (message.includes("not found") || message.includes("Not Found"));
         yield {
           kind: "error" as const,
-          error: isAuth ? notAuthenticated() : is404
-            ? notFound(
-              "extension version",
-              `${input.extensionName}@${input.version}`,
-            )
+          error: isAuth
+            ? notAuthenticated()
+            : is404
+            ? versionNotFound(input.extensionName, input.version)
             : validationFailed(message),
         };
         return;
@@ -289,4 +288,13 @@ export async function* extensionPromote(
       };
     })(),
   );
+}
+
+function versionNotFound(extensionName: string, version: string): SwampError {
+  const error = notFound("extension version", `${extensionName}@${version}`);
+  return {
+    ...error,
+    message:
+      `${error.message}\nRun \`swamp extension info ${extensionName}\` to see its latest published version.`,
+  };
 }

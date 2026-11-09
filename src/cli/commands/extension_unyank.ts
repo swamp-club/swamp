@@ -31,7 +31,7 @@ import {
 } from "../../presentation/renderers/extension_unyank.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { parseExtensionRef } from "./extension_pull.ts";
+import { parseExtensionVersionArgument } from "../../domain/extensions/extension_version_argument.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
@@ -50,7 +50,7 @@ export const extensionUnyankCommand = new Command()
   )
   .example(
     "Unyank specific version",
-    `swamp extension unyank @stack72/aws-ec2 2026.3.1`,
+    `swamp extension unyank @stack72/aws-ec2 2026.03.01.1`,
   )
   .example(
     "Unyank only the stable channel",
@@ -75,8 +75,7 @@ export const extensionUnyankCommand = new Command()
     ]);
     cliCtx.logger.debug`Starting extension unyank`;
 
-    const ref = parseExtensionRef(extension);
-    const resolvedVersion = version ?? ref.version ?? null;
+    const ref = parseExtensionVersionArgument(extension, version);
 
     const channel = (options.channel as string | undefined) ?? null;
     if (
@@ -93,7 +92,7 @@ export const extensionUnyankCommand = new Command()
     const deps = createExtensionUnyankDeps(identity);
     const input = {
       extensionName: ref.name,
-      version: resolvedVersion,
+      version: ref.version,
       channel,
       reason: (options.reason as string | undefined) ?? null,
     };

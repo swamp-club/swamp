@@ -373,7 +373,18 @@ and version from the manifest, asks the registry which channel the version is
 on, and promotes from there, or fails with "Nothing to promote" when no channel
 below the target carries it. `--from-channel` is refused with a manifest, since
 the registry reports the source channel. An argument matching `@collective/name`
-is always the name form.
+is always the name form, and so is `@collective/name@version`.
+
+Version arguments to `promote`, `yank`, `unyank` and `pull` accept every
+spelling swamp prints: a leading `v`, `name@version`, a channel tag or label
+(`[beta]`, `rc:`) and a trailing `(pulled …)` note. They are normalized to the
+registry's exact CalVer form before any request, by
+`parseExtensionVersionArgument` (`src/domain/extensions/`), which `serve` also
+runs on an `extension.pull` payload. An unpadded month or day is padded; a
+three-segment version is refused with the expected shape, since the missing
+segment cannot be inferred. A version constraint (`^…`, `>=…`) is passed through
+trimmed, and a micro with leading zeros is kept as typed, since a hand-written
+manifest can publish one.
 
 Promotion changes registry metadata only; the archive is not uploaded again.
 The server then recalculates the latest version per channel. The CLI checks the

@@ -60,6 +60,7 @@ import {
   handleDoctorWorkflows,
   handleExtensionInstall,
   handleExtensionList,
+  handleExtensionPull,
   handleExtensionRm,
   handleExtensionUpdate,
   handleRunDoctor,
@@ -893,6 +894,37 @@ Deno.test("handleExtensionInstall: a --hot-reload serve reloads after the instal
       assertEquals(response.type, "extension.install");
       assertEquals(reloads, 1);
       assertEquals(response.payload.serveReload.status, "ok");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleExtensionPull: a version that is not CalVer is refused before any install work", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, {});
+      let reloads = 0;
+      ctx.extensionChangeReloader = () => {
+        reloads++;
+        return Promise.resolve({ success: true, reloadedCount: 0, errors: [] });
+      };
+      const socket = createMockSocket();
+
+      await handleExtensionPull(
+        socket,
+        ctx,
+        "req-pull",
+        { extensionName: "@test/ext@2026.3.1" },
+        new AbortController(),
+        null,
+      );
+
+      const frame = JSON.parse(socket.sent[0]);
+      assertEquals(frame.error.code, "extension_pull_failed");
+      assertStringIncludes(frame.error.message, "YYYY.MM.DD.MICRO");
+      assertEquals(reloads, 0);
     } finally {
       cleanup();
     }

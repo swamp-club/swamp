@@ -40,6 +40,46 @@ Deno.test("resolvePromoteTarget: a scoped name without a version asks for one", 
   );
 });
 
+Deno.test("resolvePromoteTarget: a single name@version argument is the name form", () => {
+  assertEquals(resolvePromoteTarget("@myorg/ext@2026.06.10.1", undefined), {
+    kind: "name",
+    name: "@myorg/ext",
+    version: "2026.06.10.1",
+  });
+});
+
+Deno.test("resolvePromoteTarget: a version as swamp prints it is normalized", () => {
+  assertEquals(resolvePromoteTarget("@myorg/ext", "v2026.06.10.1 [beta]"), {
+    kind: "name",
+    name: "@myorg/ext",
+    version: "2026.06.10.1",
+  });
+  assertEquals(resolvePromoteTarget("@myorg/ext@v2026.06.10.1", undefined), {
+    kind: "name",
+    name: "@myorg/ext",
+    version: "2026.06.10.1",
+  });
+});
+
+Deno.test("resolvePromoteTarget: a version that is not CalVer names the expected shape", () => {
+  assertThrows(
+    () => resolvePromoteTarget("@stack72/aws-ec2", "2026.3.1"),
+    UserError,
+    "YYYY.MM.DD.MICRO",
+  );
+});
+
+Deno.test("resolvePromoteTarget: a path containing @ is still a manifest", () => {
+  assertEquals(
+    resolvePromoteTarget("extensions/@myorg/ext/manifest.yaml", undefined),
+    { kind: "manifest", path: "extensions/@myorg/ext/manifest.yaml" },
+  );
+  assertEquals(
+    resolvePromoteTarget("@myorg/ext/manifest.yaml", undefined),
+    { kind: "manifest", path: "@myorg/ext/manifest.yaml" },
+  );
+});
+
 Deno.test("resolvePromoteTarget: a path or directory is a manifest", () => {
   assertEquals(
     resolvePromoteTarget("extensions/models/my-ext/manifest.yaml", undefined),
