@@ -62,6 +62,8 @@ import {
 import {
   ChunkNotCachedError,
   ServeChunksMissingError,
+  ServeCommitMayLandError,
+  ServeRateLimitedError,
   ServeStaleSeqError,
   ServeUnreachableError,
   ServeUpstreamDivergedError,
@@ -214,10 +216,12 @@ export function createServeCommitSink(
     chunks: readonly CommitChunk[],
     error: unknown,
   ): void => {
-    // a stale seq is another writer moving the head: rebuilt, never capped
+    // a stale seq, a rate limit or a may-land clears on its own: never capped
     if (
       chunks.length === 0 || !(error instanceof ServeUpstreamError) ||
-      error instanceof ServeStaleSeqError
+      error instanceof ServeStaleSeqError ||
+      error instanceof ServeRateLimitedError ||
+      error instanceof ServeCommitMayLandError
     ) {
       return;
     }
@@ -330,6 +334,7 @@ export function createServeCommitSink(
     signal: AbortSignal,
   ): Promise<CommitStoreAppendResult> => {
     neverSent.delete(commit.txnId);
+    carriedFailures.delete(commit.txnId);
     if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
       const landed = commit.ops.flatMap((op) =>
         op.kind === "data-version"

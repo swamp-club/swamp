@@ -64,7 +64,7 @@ export class ServeUnreachableError extends UserError {
     readonly serveUrl: string,
     readonly sent: ServeRequestSent,
     cause: unknown,
-    lapsed?: { readonly request: string },
+    lapsed?: { readonly lease: string; readonly request: string },
   ) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     const kept = `The change is kept: the next command that ` +
@@ -72,11 +72,12 @@ export class ServeUnreachableError extends UserError {
       `whether or not it already landed.`;
     const outcome = lapsed !== undefined
       ? sent === "never"
-        ? `This command's lease at serve lapsed (${reason}), so ` +
-          `${lapsed.request} was not sent and the datastore was not changed.`
-        : `This command's lease at serve lapsed (${reason}) while ` +
-          `${lapsed.request} was in flight, so serve may or may not have ` +
-          `made the change. ${kept}`
+        ? `This command's lease on ${lapsed.lease} at serve lapsed ` +
+          `unrenewed, so ${lapsed.request} was not sent and the datastore ` +
+          `was not changed.`
+        : `This command's lease on ${lapsed.lease} at serve lapsed ` +
+          `unrenewed while ${lapsed.request} was in flight, so serve may or ` +
+          `may not have made the change. ${kept}`
       : sent === "never"
       ? `Swamp could not reach serve at ${serveUrl} (${reason}), so the ` +
         `datastore was not changed.`
@@ -120,9 +121,12 @@ export class ServeLeaseLapsedRequestError extends ServeUnreachableError {
     request: { readonly route: string; readonly bodyBytes: number },
   ) {
     super(serveUrl, sent, latch, {
-      request: `the ${request.route} request (${
-        formatRequestBytes(request.bodyBytes)
-      })`,
+      lease: latch.lockKey,
+      request: request.bodyBytes > 0
+        ? `an upload of ${
+          formatRequestBytes(request.bodyBytes)
+        } (${request.route})`
+        : `a request (${request.route})`,
     });
     this.name = "ServeLeaseLapsedRequestError";
   }

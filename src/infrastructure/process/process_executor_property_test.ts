@@ -115,7 +115,7 @@ Deno.test("streamLines: normalizeCrlf output equals the LF form of the input", a
   );
 });
 
-/** the re-splitting collector streamLines replaced, kept as the oracle */
+/** reference collector that streamLines must match */
 async function referenceLines(
   pieces: readonly Uint8Array[],
   normalizeCrlf: boolean,

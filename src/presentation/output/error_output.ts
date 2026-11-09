@@ -341,8 +341,11 @@ export function renderError(
   // A certificate-store failure is an environment problem the user can fix,
   // not a swamp bug, so it gets no stack trace even when it arrives raw.
   const certStoreHint = platformCertStoreHint(err.message);
+  // a lapsed request's message already says what landed and what to run
   const hint = tlsErrorHint(err.message) ?? certStoreHint ??
-    (leaseError !== undefined ? leaseHint(context) : undefined);
+    (leaseError !== undefined && !isLapsedServeRequest(error)
+      ? leaseHint(context)
+      : undefined);
 
   if (outputMode === "json") {
     const json = buildErrorJson(err, surface);

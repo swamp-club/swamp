@@ -145,7 +145,6 @@ import {
   ingestChunk,
   isSha256Hex,
   parseRange,
-  type VerifiedChunk,
 } from "../infrastructure/datastore_v3/chunk_ingest.ts";
 import { CarriedBytesBudget } from "./carried_bytes_budget.ts";
 import {
@@ -305,10 +304,9 @@ export class VouchBudget {
 /** The most chunk requests one principal has in flight. */
 export const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
 
-/** The most of one request's carried chunks being stored at once. */
 export const CARRIED_PUT_CONCURRENCY = 4;
 
-/** what one principal's chunk requests held when each read one at a time */
+/** read chunks waiting on storage, across every request: a slow bucket stalls reads */
 export const CARRIED_BYTES_IN_FLIGHT_BUDGET = 128 * 1024 * 1024;
 
 const carriedBytesBudget = new CarriedBytesBudget(
@@ -319,11 +317,8 @@ export function carriedBytesInFlightForTesting(): number {
   return carriedBytesBudget.used;
 }
 
-// a declared size ingestChunk will refuse still waits no longer than the budget
 function budgetedBytesOf(size: number): number {
-  return Number.isSafeInteger(size) && size > 0
-    ? Math.min(size, CARRIED_BYTES_IN_FLIGHT_BUDGET)
-    : 0;
+  return Math.min(size, CARRIED_BYTES_IN_FLIGHT_BUDGET);
 }
 
 /**
@@ -3420,10 +3415,8 @@ class DatastoreApi {
   }
 
   /**
-   * Reads and verifies a commit's carried chunks in order, storing each while
-   * the next is read, then makes them durable together and records them.
-   * Each is reserved in the upload ledger before it is read. Resolves with
-   * their hashes, or a 429 once the caller's quota or entry cap is spent.
+   * Reads carried chunks in order, storing each while the next is read; each is
+   * reserved in the upload ledger first. Resolves with their hashes, or a 429.
    */
   async #ingestCarried(
     reader: FramedReader,
@@ -3453,22 +3446,17 @@ class DatastoreApi {
           await Promise.race(inFlight);
         }
         failed.signal.throwIfAborted();
-        const release = await carriedBytesBudget.acquire(
-          budgetedBytesOf(chunk.size),
+        const verified = await ingestChunk(
+          reader,
+          chunk,
+          { maxChunkBytes: this.#maxChunkBytes() },
           puts,
         );
-        let verified: VerifiedChunk;
-        try {
-          verified = await ingestChunk(
-            reader,
-            chunk,
-            { maxChunkBytes: this.#maxChunkBytes() },
-            puts,
-          );
-        } catch (error) {
-          release();
-          throw error;
-        }
+        // taken once read, so a slow sender holds no room others wait on
+        const release = await carriedBytesBudget.acquire(
+          budgetedBytesOf(verified.bytes.byteLength),
+          puts,
+        );
         const reservation = admission.reservation;
         const put: Promise<void> = batch.put(
           verified.sha256,

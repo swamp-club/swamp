@@ -1448,9 +1448,10 @@ Deno.test("ServeDatastoreClient: a lease that lapsed unrenewed ends a request in
     assertEquals(lapsed.code, LEASE_LAPSED_CODE);
     assertEquals(lapsed.sent, "maybe");
     assert(isLapsedServeRequest(lapsed));
-    assertStringIncludes(lapsed.message, "the lease on model aws/vpc prod");
-    assertStringIncludes(lapsed.message, "PUT chunks/{sha256}");
-    assertStringIncludes(lapsed.message, "2.0 MiB");
+    assertStringIncludes(
+      lapsed.message,
+      "lease on model aws/vpc prod at serve lapsed unrenewed while an upload of 2.0 MiB (PUT chunks/{sha256})",
+    );
     assertStringIncludes(lapsed.message, "The change is kept");
 
     const next = await assertRejects(
@@ -1458,7 +1459,7 @@ Deno.test("ServeDatastoreClient: a lease that lapsed unrenewed ends a request in
       ServeLeaseLapsedRequestError,
     );
     assertEquals(next.sent, "never");
-    assertStringIncludes(next.message, "was not sent");
+    assertStringIncludes(next.message, "a request (GET changes) was not sent");
     assertEquals(requests.length, 1, "nothing more was sent");
   } finally {
     clearServeUnreachableLatches();

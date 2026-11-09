@@ -44,6 +44,7 @@ import {
   CachedServeStorage,
   ServeChunkStorage,
 } from "../src/infrastructure/datastore_v3/serve_datastore_storage.ts";
+import { removeTempDir } from "../src/infrastructure/datastore_v3/serve_upstream_test_helpers.ts";
 import { ServeUpstreamState } from "../src/infrastructure/datastore_v3/serve_upstream_state.ts";
 import { SqliteCommitOutbox } from "../src/infrastructure/datastore_v3/sqlite_commit_outbox.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
@@ -209,7 +210,7 @@ for (const staged of [true, false]) {
           state.close();
           await outbox.close();
           await store.close();
-          await Deno.remove(dir, { recursive: true }).catch(() => {});
+          await removeTempDir(dir);
         }
       });
     },

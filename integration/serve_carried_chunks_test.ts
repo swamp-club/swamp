@@ -186,3 +186,44 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore API: a sender stalled mid-chunk holds none of the carried-bytes budget, so another commit still lands",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const stalled = await fourBlobCommit(server);
+      const pipe = new TransformStream<Uint8Array, Uint8Array>();
+      const controller = new AbortController();
+      const sent = fetch(partitionPath(server), {
+        method: "POST",
+        headers: {
+          authorization: "Bearer alice-token",
+          "content-type": "application/vnd.swamp.commit+v1",
+        },
+        body: pipe.readable,
+        duplex: "half",
+        signal: controller.signal,
+      } as RequestInit).then((response) => response.body?.cancel(), () => {});
+      const writer = pipe.writable.getWriter();
+      // all but the last bytes: serve is left reading the final chunk
+      await writer.write(stalled.subarray(0, stalled.length - 4));
+      try {
+        assertEquals(carriedBytesInFlightForTesting(), 0);
+        const other = await post(
+          partitionPath(server),
+          "alice-token",
+          await fourBlobCommit(server),
+        );
+        assertEquals(other.status, 200, JSON.stringify(other.json));
+        assertEquals(carriedBytesInFlightForTesting(), 0);
+      } finally {
+        controller.abort();
+        await writer.abort().catch(() => {});
+        await sent;
+      }
+    });
+  },
+});
