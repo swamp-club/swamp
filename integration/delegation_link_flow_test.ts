@@ -50,7 +50,7 @@ Deno.test("delegation links: start, consent, redeem once, act, refresh, reuse en
     assertEquals((await rig.store.read(pendingId))?.phase, "awaiting_consent");
 
     rig.club.status = "approved";
-    await rig.service.tick();
+    await rig.pass();
     const consented = await rig.store.read(pendingId);
     assertEquals(consented?.phase, "consented");
     assertEquals(consented?.club.linkId, "link-1");
@@ -304,5 +304,16 @@ Deno.test("delegation links: a second start for the same person replaces the pen
       (await rig.store.read(second.body.pendingId as string))?.phase,
       "awaiting_consent",
     );
+  });
+});
+
+Deno.test("delegation links: a pending link is polled at swamp-club's interval, not on every pass", async () => {
+  await withRig(async (rig) => {
+    const started = await rig.post("links", START_BODY);
+    assertEquals(started.status, 201);
+    await rig.service.tick();
+    await rig.service.tick();
+    await rig.service.tick();
+    assertEquals(rig.club.statusPolls, 1);
   });
 });

@@ -58,6 +58,7 @@ export class MockClub {
   identity: typeof IDENTITY | undefined = IDENTITY;
   digest = "digest-1";
   reports = 0;
+  statusPolls = 0;
   recordedLinks = new Set<string>();
   ends: string[] = [];
   failNextReportAfterRecording = false;
@@ -83,6 +84,7 @@ export class MockClub {
           });
         }
         if (path === "/request-1" && req.method === "GET") {
+          this.statusPolls++;
           return Response.json(
             this.status === "approved"
               ? {
@@ -127,6 +129,8 @@ export interface Rig {
   directory: DelegationDirectory;
   store: DelegationStore;
   service: DelegationLinkService;
+  /** moves the link service's clock past any poll wait, then runs a pass */
+  pass: () => Promise<void>;
   audit: DelegationAuditRecord[];
   team: { capability: DelegationCapability };
   post: (
@@ -179,7 +183,9 @@ export async function withRig(
     });
     const audit: DelegationAuditRecord[] = [];
     const team = { capability: { ok: true } as DelegationCapability };
+    let offsetMs = 0;
     const service = new DelegationLinkService({
+      now: () => Date.now() + offsetMs,
       store,
       directory,
       integrations,
@@ -227,6 +233,10 @@ export async function withRig(
         directory,
         store,
         service,
+        pass: async () => {
+          offsetMs += 120_000;
+          await service.tick();
+        },
         audit,
         team,
         post,

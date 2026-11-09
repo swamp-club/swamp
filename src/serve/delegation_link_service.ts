@@ -110,9 +110,13 @@ export class DelegationLinkService {
     for (const record of this.#deps.directory.all()) {
       if (this.#stopped) return;
       if (!this.#due(record.id, now)) continue;
+      const before = this.#backoff.get(record.id);
       try {
         await this.#step(record, now);
-        this.#backoff.delete(record.id);
+        // a step that chose its own wait (a pending poll) keeps it
+        if (this.#backoff.get(record.id) === before) {
+          this.#backoff.delete(record.id);
+        }
       } catch (error) {
         this.#failed(record, now, error);
       }
