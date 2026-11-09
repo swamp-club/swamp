@@ -315,6 +315,7 @@ Deno.test("IntegrationDirectory: credentialOf answers only for an active integra
   assertEquals(directory.credentialOf("a"), undefined);
   await directory.reload();
   assertEquals(directory.credentialOf("a"), {
+    name: "a",
     credentialHash: `sha256:${"0".repeat(64)}`,
     requireEmailMatch: true,
   });

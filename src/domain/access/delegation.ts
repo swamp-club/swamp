@@ -63,6 +63,7 @@ export interface StartDelegationInput {
   readonly ceilingDigest: string;
   readonly redeemHash: string;
   readonly requestId: string;
+  readonly digest: string;
   readonly consentExpiresAt: string;
   readonly pollIntervalSeconds: number;
 }
@@ -88,6 +89,7 @@ export function startDelegation(
     redeemHash: input.redeemHash,
     club: {
       requestId: input.requestId,
+      digest: input.digest,
       consentExpiresAt: input.consentExpiresAt,
       pollIntervalSeconds: input.pollIntervalSeconds,
       endState: "none",

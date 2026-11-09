@@ -22,6 +22,16 @@ import {
   delegationSessionName,
   registerDelegationLookup,
 } from "../../serve/delegated_token_auth.ts";
+import { DelegationStore } from "../../serve/delegation_store.ts";
+import { ServeLinkClient } from "../../serve/serve_link_client.ts";
+import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
+import {
+  type DelegationRouteDeps,
+  handleDelegationRequest,
+  matchDelegationRoute,
+} from "../../serve/delegation_routes.ts";
+import { checkDelegationCapability } from "../../serve/delegation_capability_check.ts";
+import { createDelegationAuditor } from "../../serve/delegation_audit.ts";
 import { DelegationDirectory } from "../../domain/access/delegation_directory.ts";
 import {
   DELEGATION_DATA_NAME,
@@ -6767,6 +6777,57 @@ export const serveCommand = new Command()
       });
       tokenSessionRevalidationService.start();
     }
+
+    // links need swamp-club's consent page, so only an oauth-mode serve with
+    // its own client credentials offers them
+    const delegationStore = new DelegationStore({
+      repoDir: resolvedRepoDir,
+      repoContext,
+      datastoreConfig,
+      syncService,
+      syncGate,
+      confirmReplicated,
+      directory: delegationDirectory,
+    });
+    const serveLinkClient = authConfig.mode === "oauth" &&
+        authConfig.oauthClientId !== undefined && oauthClientSecret !== ""
+      ? new ServeLinkClient({
+        baseUrl: authConfig.oauthProvider,
+        clientId: authConfig.oauthClientId,
+        clientSecret: oauthClientSecret,
+      })
+      : undefined;
+    const delegationAudit = createDelegationAuditor(connectionCtx);
+    const delegationRouteDeps: DelegationRouteDeps = {
+      integrations: integrationDirectory,
+      directory: delegationDirectory,
+      store: delegationStore,
+      client: () => serveLinkClient,
+      capability: () =>
+        checkDelegationCapability(
+          hasRemoteControlPlane ? controlPlaneStore : undefined,
+          { staleTtlMs },
+        ),
+      get followerGate() {
+        return connectionCtx.followerGate;
+      },
+      leaderLink,
+      audit: delegationAudit,
+    };
+    const delegationLinkService = new DelegationLinkService({
+      store: delegationStore,
+      directory: delegationDirectory,
+      integrations: integrationDirectory,
+      client: () => serveLinkClient,
+      admission: {
+        allowedCollectives: authConfig.allowedCollectives,
+        allowedUsers: authConfig.allowedUsers,
+      },
+      isLeader: () => connectionCtx.followerGate?.role !== "follower",
+      audit: delegationAudit,
+    });
+    delegationLinkService.start();
+
     integrationDirectory.onNarrowed((changes) => {
       for (const { id, reason } of changes) {
         terminateIntegrationSessions(id, {
@@ -7509,6 +7570,16 @@ export const serveCommand = new Command()
                   onUsernamesResolved: rememberTokenUsernames,
                 }),
             },
+          );
+        }
+
+        const delegationRoute = matchDelegationRoute(apiUrl.pathname);
+        if (delegationRoute !== undefined) {
+          return await handleDelegationRequest(
+            req,
+            delegationRoute,
+            clientAddress(),
+            delegationRouteDeps,
           );
         }
 
@@ -8431,6 +8502,10 @@ export const serveCommand = new Command()
         const service = tokenSessionRevalidationService;
         await stages.run("token session revalidation", () => service.dispose());
       }
+      await stages.run(
+        "delegation links",
+        () => delegationLinkService.stop(),
+      );
       if (clubHeartbeatService) {
         clubHeartbeatService.stop();
       }

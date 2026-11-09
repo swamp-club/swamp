@@ -50,6 +50,7 @@ export interface IntegrationLookup {
 
 /** what an app proves itself against; read only for an active integration */
 export interface IntegrationCredentialRecord {
+  readonly name: string;
   readonly credentialHash: string;
   readonly requireEmailMatch: boolean;
 }
@@ -300,6 +301,7 @@ export class IntegrationDirectory implements IntegrationLookup {
             ceiling: Ceiling.parse(parsed.data.ceiling),
           },
           credential: {
+            name: parsed.data.name,
             credentialHash: parsed.data.credentialHash,
             requireEmailMatch: parsed.data.requireEmailMatch === true,
           },

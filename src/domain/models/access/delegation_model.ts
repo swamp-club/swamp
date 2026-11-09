@@ -44,13 +44,14 @@ export const DelegationPhaseSchema = z.enum([
 
 export type DelegationPhase = z.infer<typeof DelegationPhaseSchema>;
 
+// swamp-club's own limits, so a request it would refuse is refused here first
 export const ExternalIdentitySchema = z.object({
-  platform: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/),
+  platform: z.string().regex(/^[a-z0-9_-]{1,32}$/),
   teamId: z.string().min(1).max(128),
   userId: z.string().min(1).max(128),
-  display: z.string().min(1).max(200),
-  workspace: z.string().min(1).max(200),
-  email: z.string().min(3).max(320).optional(),
+  display: z.string().min(1).max(80),
+  workspace: z.string().min(1).max(80),
+  email: z.string().regex(/^[^\s@]+@[^\s@]+$/).max(254).optional(),
 });
 
 export type ExternalIdentity = z.infer<typeof ExternalIdentitySchema>;
@@ -90,6 +91,8 @@ export const DelegationSchema = z.object({
   redeemHash: HASH,
   club: z.object({
     requestId: z.string().min(1).max(200),
+    // what swamp-club bound the consent to; an approval must carry the same
+    digest: z.string().min(1).max(200),
     consentExpiresAt: z.string().datetime(),
     pollIntervalSeconds: z.number().int().min(1).max(3600),
     linkId: z.string().min(1).max(200).optional(),

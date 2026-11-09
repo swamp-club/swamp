@@ -65,6 +65,8 @@ export interface AuditEvent {
   readonly principalUsername?: string;
   readonly principalEmail?: string;
   readonly client?: string;
+  /** the delegation a linked person acted under; never a token */
+  readonly delegation?: string;
   readonly sourceIp: string;
   readonly requestId: string;
   readonly methodName?: string;

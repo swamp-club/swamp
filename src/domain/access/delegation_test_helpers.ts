@@ -48,6 +48,7 @@ export function startedRecord(
     ceilingDigest: "sha256:digest",
     redeemHash: HASH,
     requestId: "req-1",
+    digest: "link-digest",
     consentExpiresAt: new Date(T0 + 600_000).toISOString(),
     pollIntervalSeconds: 5,
   }, T0);
