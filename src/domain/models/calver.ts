@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../errors.ts";
+
 export class CalVer {
   private static readonly PATTERN = /^\d{4}\.\d{2}\.\d{2}\.\d+$/;
 
@@ -29,6 +31,28 @@ export class CalVer {
       );
     }
     return new CalVer(version);
+  }
+
+  /**
+   * reads a version as a person types it: one leading v and unpadded month or
+   * day are accepted, but a three-segment value is refused because the missing
+   * segment could be the day or the micro.
+   */
+  static fromUserInput(input: string): CalVer {
+    const bare = input.startsWith("v") || input.startsWith("V")
+      ? input.slice(1)
+      : input;
+    const parts = bare.split(".");
+    if (parts.length === 4 && parts.every((part) => /^\d+$/.test(part))) {
+      const [year, month, day, micro] = parts;
+      const padded = `${year}.${month.padStart(2, "0")}.${
+        day.padStart(2, "0")
+      }.${micro}`;
+      if (CalVer.isValid(padded)) return new CalVer(padded);
+    }
+    throw new UserError(
+      `Invalid version: "${input}". Extension versions are YYYY.MM.DD.MICRO, for example 2026.10.26.1.`,
+    );
   }
 
   static isValid(version: string): boolean {

@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { CalVer } from "./calver.ts";
+import { UserError } from "../errors.ts";
 
 Deno.test("CalVer.isValid accepts valid CalVer strings", () => {
   assertEquals(CalVer.isValid("2025.01.15.1"), true);
@@ -237,4 +238,40 @@ Deno.test("CalVer.toString returns the raw string", () => {
   const cv = CalVer.create("2025.06.01.3");
   assertEquals(cv.toString(), "2025.06.01.3");
   assertEquals(`${cv}`, "2025.06.01.3");
+});
+
+Deno.test("CalVer.fromUserInput: accepts the bare and v-prefixed forms", () => {
+  assertEquals(CalVer.fromUserInput("2026.10.26.1").value, "2026.10.26.1");
+  assertEquals(CalVer.fromUserInput("v2026.10.26.1").value, "2026.10.26.1");
+  assertEquals(CalVer.fromUserInput("V2026.10.26.1").value, "2026.10.26.1");
+});
+
+Deno.test("CalVer.fromUserInput: pads an unpadded month and day", () => {
+  assertEquals(CalVer.fromUserInput("2026.3.1.2").value, "2026.03.01.2");
+  assertEquals(CalVer.fromUserInput("v2026.3.15.1").value, "2026.03.15.1");
+});
+
+Deno.test("CalVer.fromUserInput: refuses a three-segment version and names the shape", () => {
+  const error = assertThrows(
+    () => CalVer.fromUserInput("2026.3.1"),
+    UserError,
+  );
+  assertStringIncludes(error.message, '"2026.3.1"');
+  assertStringIncludes(error.message, "YYYY.MM.DD.MICRO");
+});
+
+Deno.test("CalVer.fromUserInput: refuses impossible dates and stray text", () => {
+  for (
+    const input of [
+      "2026.02.30.1",
+      "2026.13.01.1",
+      "vv2026.10.26.1",
+      "2026.10.26.1-beta",
+      "2026.010.26.1",
+      "",
+      "v",
+    ]
+  ) {
+    assertThrows(() => CalVer.fromUserInput(input), UserError);
+  }
 });

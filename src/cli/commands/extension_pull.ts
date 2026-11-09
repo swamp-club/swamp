@@ -39,6 +39,7 @@ import {
 import { createExtensionRegistryLookup } from "../extension_registry_lookup.ts";
 import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseExtensionVersionArgument } from "../../domain/extensions/extension_version_argument.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { loadIdentity } from "../load_identity.ts";
 import {
@@ -48,7 +49,6 @@ import {
   type ExtensionPullDeps,
   type ExtensionRegistryInfo,
   type InstallResult,
-  parseExtensionRef,
   resolveServerUrl,
   validateExtensionName,
 } from "../../libswamp/extensions/pull.ts";
@@ -261,6 +261,8 @@ export const extensionPullCommand = withRemoteOptions(
   const ctx = createContext(options as GlobalOptions, ["extension", "pull"]);
   ctx.logger.debug`Starting extension pull`;
 
+  const ref = parseExtensionVersionArgument(extension);
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(
@@ -272,7 +274,9 @@ export const extensionPullCommand = withRemoteOptions(
       {
         type: "extension.pull",
         payload: {
-          extensionName: extension,
+          extensionName: ref.version === null
+            ? ref.name
+            : `${ref.name}@${ref.version}`,
           force: options.yes ?? options.force ?? false,
           channel,
         },
@@ -300,8 +304,6 @@ export const extensionPullCommand = withRemoteOptions(
   const { repoDir, marker } = await requireRepoMarker(
     resolveRepoDir(options.repoDir),
   );
-
-  const ref = parseExtensionRef(extension);
 
   validateExtensionName(ref.name);
   const serverUrl = resolveServerUrl();

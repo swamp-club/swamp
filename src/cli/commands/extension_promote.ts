@@ -27,6 +27,7 @@ import {
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseExtensionVersionArgument } from "../../domain/extensions/extension_version_argument.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createExtensionPromoteDeps,
@@ -48,22 +49,28 @@ export type PromoteTarget =
   | { kind: "manifest"; path: string };
 
 /**
- * an @collective/name argument is the name and needs a version; anything else
- * is a manifest path or directory whose manifest supplies the version, so
- * --from-channel does not apply.
+ * an @collective/name argument, alone or as name@version, is the name and needs
+ * a version; anything else is a manifest path or directory whose manifest
+ * supplies the version, so --from-channel does not apply.
  */
 export function resolvePromoteTarget(
   target: string,
   versionArgument: string | undefined,
   fromChannel?: string,
 ): PromoteTarget {
-  if (isScopedExtensionName(target)) {
-    if (versionArgument === undefined) {
+  const separator = target.indexOf("@", 1);
+  const namePart = separator === -1 ? target : target.slice(0, separator);
+  if (isScopedExtensionName(namePart)) {
+    const { name, version } = parseExtensionVersionArgument(
+      target,
+      versionArgument,
+    );
+    if (version === null) {
       throw new UserError(
         "Missing version: pass <extension> <version>, or a manifest path.",
       );
     }
-    return { kind: "name", name: target, version: versionArgument };
+    return { kind: "name", name, version };
   }
   if (versionArgument !== undefined) {
     // two arguments mean the name form, so a name that does not match keeps the

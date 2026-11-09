@@ -20,6 +20,7 @@
 import { runGeneratorWithoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import { runProgressSnapshots } from "../../domain/remote/run_progress.ts";
+import { parseExtensionVersionArgument } from "../../domain/extensions/extension_version_argument.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   InstanceHeartbeatService,
@@ -72,7 +73,6 @@ import {
   createExtensionPullDeps,
   createInstallContext,
   extensionPull,
-  parseExtensionRef,
   resolveServerUrl,
   validateExtensionName,
 } from "../../libswamp/extensions/pull.ts";
@@ -1197,7 +1197,7 @@ export async function handleExtensionPull(
   let catalog: ExtensionCatalogStore | undefined;
   try {
     const repoDir = ctx.repoDir;
-    const ref = parseExtensionRef(payload.extensionName);
+    const ref = parseExtensionVersionArgument(payload.extensionName);
     validateExtensionName(ref.name);
 
     const markerRepo = new RepoMarkerRepository();
