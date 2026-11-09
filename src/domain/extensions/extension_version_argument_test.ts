@@ -80,7 +80,7 @@ Deno.test("parseExtensionVersionArgument: an inline and a positional version tha
   assertStringIncludes(error.message, "Two different versions");
 });
 
-Deno.test("parseExtensionVersionArgument: a version constraint passes through unchanged", () => {
+Deno.test("parseExtensionVersionArgument: a version constraint passes through, trimmed", () => {
   assertEquals(
     parseExtensionVersionArgument(`${NAME}@^2026.10.26.1`).version,
     "^2026.10.26.1",
@@ -88,6 +88,10 @@ Deno.test("parseExtensionVersionArgument: a version constraint passes through un
   assertEquals(
     parseExtensionVersionArgument(NAME, ">=2026.1").version,
     ">=2026.1",
+  );
+  assertEquals(
+    parseExtensionVersionArgument(NAME, " ^2026.10.26.1 ").version,
+    "^2026.10.26.1",
   );
 });
 

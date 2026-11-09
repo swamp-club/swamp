@@ -295,6 +295,6 @@ function versionNotFound(extensionName: string, version: string): SwampError {
   return {
     ...error,
     message:
-      `${error.message}\nRun swamp extension info ${extensionName} --json to see the latest version on each channel.`,
+      `${error.message}\nRun \`swamp extension info ${extensionName}\` to see its latest published version.`,
   };
 }

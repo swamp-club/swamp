@@ -74,8 +74,9 @@ export function parseExtensionVersionArgument(
 }
 
 function normalizeVersion(raw: string): string {
-  if (VERSION_CONSTRAINT_PREFIX.test(raw.trim())) return raw;
-  return CalVer.fromUserInput(stripDisplayDecorations(raw)).value;
+  const trimmed = raw.trim();
+  if (VERSION_CONSTRAINT_PREFIX.test(trimmed)) return trimmed;
+  return CalVer.fromUserInput(stripDisplayDecorations(trimmed)).value;
 }
 
 // String scans rather than regexes: serve runs this on client-supplied input.

@@ -124,6 +124,10 @@ export const extensionPromoteCommand = new Command()
     "swamp extension promote @myorg/ext 2026.06.10.1 --channel stable",
   )
   .example(
+    "Promote using the name@version form push prints",
+    "swamp extension promote @myorg/ext@2026.06.10.1 --channel rc",
+  )
+  .example(
     "Promote the version a manifest names",
     "swamp extension promote extensions/behaviors/my-behavior/manifest.yaml --channel stable",
   )

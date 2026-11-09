@@ -382,7 +382,9 @@ registry's exact CalVer form before any request, by
 `parseExtensionVersionArgument` (`src/domain/extensions/`), which `serve` also
 runs on an `extension.pull` payload. An unpadded month or day is padded; a
 three-segment version is refused with the expected shape, since the missing
-segment cannot be inferred.
+segment cannot be inferred. A version constraint (`^…`, `>=…`) is passed through
+trimmed, and a micro with leading zeros is kept as typed, since a hand-written
+manifest can publish one.
 
 Promotion changes registry metadata only; the archive is not uploaded again.
 The server then recalculates the latest version per channel. The CLI checks the

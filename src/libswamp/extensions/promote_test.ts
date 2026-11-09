@@ -226,7 +226,7 @@ Deno.test("extensionPromote: a version the registry does not have says where to 
   );
   assertStringIncludes(
     error.message,
-    "swamp extension info @test/ext --json",
+    "Run `swamp extension info @test/ext` to see",
   );
 });
 
