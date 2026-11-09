@@ -397,6 +397,14 @@ run from a refused one, since no record exists to decide on. The WebSocket keeps
 its existing text. `run_active` is not final: a decision on a gate of a run that is
 walking again gets a retryable `busy`.
 
+A decision on a run another operation holds gets `busy` unless the stored gate
+already answers as a retry would, whatever the holder does
+(`gateStateSettled` in `src/domain/workflows/gate_state.ts`): `already_decided`,
+`ambiguous_gate`, a nested wait's `gate_not_open` and an expired gate's
+`gate_closed` always, and `not_found` or `gate_closed` once the run is no longer
+walking, since a walking run can still add a step or open one. An open gate, a
+walking run and a step not reached yet stay `busy`.
+
 **Starting and resuming** answer 202 at the run's own `started` event, which comes
 after the record is saved, so status can read it at once. Input validation and
 evaluation come first, so there is no fixed time to that reply. Closing the reply

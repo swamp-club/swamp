@@ -75,6 +75,32 @@ export function classifyGate(
   return "closed";
 }
 
+/**
+ * whether a gate state read while another operation holds the run is the
+ * answer a retry would get, whatever that operation does
+ */
+export function gateStateSettled(
+  state: GateState,
+  runStatus: WorkflowRun["status"],
+): boolean {
+  switch (state) {
+    case "decided":
+    case "ambiguous":
+    case "nested":
+    // a decision refuses an expired gate, so it can only end closed
+    case "expired":
+      return true;
+    // a walking run can still add the step through forEach or open it
+    case "absent":
+    case "closed":
+      return runStatus !== "running" && runStatus !== "pending";
+    case "waiting":
+    case "run_active":
+    case "not_reached":
+      return false;
+  }
+}
+
 /** names one attempt of a gate: a re-opened gate waits from a new start time */
 export function gateAttemptMatches(
   step: Pick<StepRun, "startedAt">,

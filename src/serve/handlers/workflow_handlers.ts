@@ -162,6 +162,7 @@ import {
 import {
   classifyGate,
   type GateState,
+  gateStateSettled,
 } from "../../domain/workflows/gate_state.ts";
 import { RunStartKey } from "../../domain/workflows/run_start_key.ts";
 import { type RunStartClaim, runStartClaims } from "../run_start_claims.ts";
@@ -213,7 +214,12 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
-import { RegistryCapacityError } from "../active_run_registry.ts";
+import {
+  type ActiveRun,
+  type ActiveRunRegistry,
+  RegistryCapacityError,
+} from "../active_run_registry.ts";
+import { awaitSettlingRuns } from "../settling_runs.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import {
   type NamedWorkflow,
@@ -289,6 +295,7 @@ import {
   subscribeUntilDetach,
   wasRequestErrored,
   withCommittedUnknownSteps,
+  wouldAuthorize,
 } from "./shared.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -1831,12 +1838,14 @@ function gateTargetOf(payload: GateTargetPayload): GateTarget {
  * decided on this record first, so a refused caller cannot tell a decided gate
  * from a waiting one
  */
-async function storedGateState(
+async function storedGate(
   ctx: ConnectionContext,
   workflow: { idOrName: string; byId: boolean; expectedName?: string },
   payload: GateTargetPayload & { runId?: string },
   authorizeRun: (run: WorkflowRun) => boolean,
-): Promise<GateState | undefined> {
+): Promise<
+  { state: GateState; runStatus?: WorkflowRun["status"] } | undefined
+> {
   if (payload.runId === undefined) return undefined;
   try {
     const found = await lookupWorkflow(
@@ -1844,16 +1853,19 @@ async function storedGateState(
       workflow.idOrName,
       workflow,
     );
-    if (!found) return "absent";
+    if (!found) return { state: "absent" };
     const run = await ctx.repoContext.workflowRunRepo.findById(
       found.id,
       createWorkflowRunId(payload.runId),
     );
-    if (!run) return "absent";
+    if (!run) return { state: "absent" };
     if (!authorizeRun(run)) return undefined;
-    return classifyGate(run, found, payload.stepName, {
-      jobName: payload.jobName,
-    });
+    return {
+      state: classifyGate(run, found, payload.stepName, {
+        jobName: payload.jobName,
+      }),
+      runStatus: run.status,
+    };
   } catch (error) {
     logger.warn("Could not classify a refused decision: {error}", {
       error: error instanceof Error ? error.message : String(error),
@@ -1862,15 +1874,29 @@ async function storedGateState(
   }
 }
 
-/** a run held elsewhere is busy, unless its gate was already decided */
+async function storedGateState(
+  ctx: ConnectionContext,
+  workflow: { idOrName: string; byId: boolean; expectedName?: string },
+  payload: GateTargetPayload & { runId?: string },
+  authorizeRun: (run: WorkflowRun) => boolean,
+): Promise<GateState | undefined> {
+  return (await storedGate(ctx, workflow, payload, authorizeRun))?.state;
+}
+
+/** a run held elsewhere is busy, unless its gate already reads as a retry would */
 async function busyGateState(
   ctx: ConnectionContext,
   workflow: { idOrName: string; byId: boolean; expectedName?: string },
   payload: GateTargetPayload & { runId?: string },
   authorizeRun: (run: WorkflowRun) => boolean,
 ): Promise<GateState | "busy"> {
-  const state = await storedGateState(ctx, workflow, payload, authorizeRun);
-  return state === "decided" ? state : "busy";
+  const stored = await storedGate(ctx, workflow, payload, authorizeRun);
+  if (stored === undefined) return "busy";
+  // a missing run has no status and cannot appear while held
+  if (stored.runStatus === undefined) return stored.state;
+  return gateStateSettled(stored.state, stored.runStatus)
+    ? stored.state
+    : "busy";
 }
 
 async function refusedDecisionDetails(
@@ -2547,6 +2573,111 @@ export async function handleWorkflowReject(
   }
 }
 
+/**
+ * waits, outside the sync gate a winding-down run needs for its last push, for
+ * registered runs of the workflow whose record already reads suspended; reserves
+ * nothing
+ */
+export async function awaitWindingDownRun(
+  ctx: ConnectionContext,
+  socket: WebSocket,
+  principal: Principal | null,
+  target: { workflowIdOrName: string; runId?: string },
+  signal: AbortSignal,
+): Promise<void> {
+  try {
+    const runs = await windingDownDecisionRuns(ctx, socket, principal, target);
+    await awaitSettlingRuns(runs, { signal });
+  } catch (error) {
+    logger.warn("Could not wait for a run winding down: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** decides access as approve and reject do, but audits nothing */
+export async function windingDownDecisionRuns(
+  ctx: ConnectionContext,
+  socket: WebSocket,
+  principal: Principal | null,
+  target: { workflowIdOrName: string; runId?: string },
+): Promise<ActiveRun[]> {
+  const registry = ctx.activeRunRegistry;
+  if (!registry) return [];
+  const resolved = await resolveWorkflowRequest(ctx, target.workflowIdOrName);
+  if (resolved.status !== "found") return [];
+  if (
+    !wouldAuthorize(
+      socket,
+      principal,
+      "approve",
+      withRunPending(resolved.resource),
+      ctx,
+    )
+  ) return [];
+  return await windingDownRuns(
+    ctx,
+    registry,
+    resolved.id,
+    target.runId,
+    (run) =>
+      wouldAuthorize(
+        socket,
+        principal,
+        "approve",
+        withRunCondition(resolved.resource, conditionRunOf(run)),
+        ctx,
+      ),
+  );
+}
+
+/** for a resume its handler has already authorized */
+async function awaitWindingDownResume(
+  ctx: ConnectionContext,
+  registry: ActiveRunRegistry,
+  target: SettledResolution,
+  runId: string | undefined,
+  signal: AbortSignal,
+): Promise<void> {
+  if (target.status !== "found") return;
+  try {
+    const runs = await windingDownRuns(
+      ctx,
+      registry,
+      target.id,
+      runId,
+      () => true,
+    );
+    await awaitSettlingRuns(runs, { signal });
+  } catch (error) {
+    logger.warn("Could not wait for a run winding down: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function windingDownRuns(
+  ctx: ConnectionContext,
+  registry: ActiveRunRegistry,
+  workflowId: string,
+  runId: string | undefined,
+  mayWait: (run: WorkflowRun) => boolean,
+): Promise<ActiveRun[]> {
+  const runs: ActiveRun[] = [];
+  for (const entry of registry.list()) {
+    if (entry.kind === "method-run" || entry.resourceId !== workflowId) {
+      continue;
+    }
+    if (runId !== undefined && entry.runId !== runId) continue;
+    const stored = await ctx.repoContext.workflowRunRepo.findById(
+      createWorkflowId(workflowId),
+      createWorkflowRunId(entry.runId),
+    );
+    if (stored?.status === "suspended" && mayWait(stored)) runs.push(entry);
+  }
+  return runs;
+}
+
 type ReservedSuspendedRun =
   | { ok: true; runId: string; release: (() => void) | undefined }
   | { ok: false; message: string };
@@ -2988,6 +3119,13 @@ export async function handleWorkflowResume(
     return;
   }
 
+  await awaitWindingDownResume(
+    ctx,
+    registry,
+    target,
+    payload.runId,
+    controller.signal,
+  );
   const launched = await startDetachedResume(ctx, registry, {
     workflowIdOrName: workflow.idOrName,
     byId: workflow.byId,

@@ -4275,6 +4275,13 @@ the run before the cancel re-reads it, finds it cancelled, and refuses.
 Approve and reject reserve the run they resolved, so an approval cannot put a
 cancelled run back to `suspended` and auto-resume it. An operation refused by
 a reservation gets "Another operation on this run is in progress; try again".
+A run saves `suspended` before it leaves the registry: it still commits, pushes
+and confirms replication. Approve, reject and resume therefore first wait for a
+registered run whose record already reads `suspended`, up to
+`WINDING_DOWN_GRACE_MS` (`src/serve/settling_runs.ts`), then reserve as before.
+Approve and reject wait before the sync gate, which the leaving run needs for
+its push, and decide access as the handler will without auditing
+(`awaitWindingDownRun`), so a refused caller neither waits nor is audited twice.
 A local CLI resume or approve, or a second serve instance on a shared
 datastore, is not covered by the reservation.
 

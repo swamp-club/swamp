@@ -110,6 +110,7 @@ import {
   handleModelValidate,
 } from "./handlers/model_handlers.ts";
 import {
+  awaitWindingDownRun,
   handleWorkflowApprovals,
   handleWorkflowApprove,
   handleWorkflowCancel,
@@ -3383,33 +3384,51 @@ export function handleMessage(
       );
       break;
     case "workflow.approve":
+      // waits before the gate: a run winding down needs it for its last push
       task = audited(
         confirmed(() =>
-          withSyncGate(ctx.syncGate, () =>
-            handleWorkflowApprove(
-              socket,
-              ctx,
-              request.id,
-              request.payload,
-              controller,
-              principal,
-            ))
+          awaitWindingDownRun(
+            ctx,
+            socket,
+            principal,
+            request.payload,
+            controller.signal,
+          ).then(() =>
+            withSyncGate(ctx.syncGate, () =>
+              handleWorkflowApprove(
+                socket,
+                ctx,
+                request.id,
+                request.payload,
+                controller,
+                principal,
+              ))
+          )
         ),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );
       break;
     case "workflow.reject":
+      // waits before the gate: a run winding down needs it for its last push
       task = audited(
         confirmed(() =>
-          withSyncGate(ctx.syncGate, () =>
-            handleWorkflowReject(
-              socket,
-              ctx,
-              request.id,
-              request.payload,
-              controller,
-              principal,
-            ))
+          awaitWindingDownRun(
+            ctx,
+            socket,
+            principal,
+            request.payload,
+            controller.signal,
+          ).then(() =>
+            withSyncGate(ctx.syncGate, () =>
+              handleWorkflowReject(
+                socket,
+                ctx,
+                request.id,
+                request.payload,
+                controller,
+                principal,
+              ))
+          )
         ),
         auditOpts("execution", "workflow", request.payload?.runId ?? "*"),
       );

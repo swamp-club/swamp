@@ -42,6 +42,7 @@ import {
   handleWorkflowTriggerGet,
   handleWorkflowTriggerSet,
   handleWorkflowValidate,
+  windingDownDecisionRuns,
   WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
 import "../../domain/models/models.ts";
@@ -3617,5 +3618,129 @@ Deno.test("runStreamFor: a read that failed for one client is tried again for th
     } finally {
       close();
     }
+  });
+});
+
+function heldEntry(
+  runId: string,
+  resource: { id?: string; name: string },
+): ActiveRun {
+  return {
+    runId,
+    kind: "workflow-run",
+    resourceName: resource.name,
+    resourceId: resource.id,
+    buffer: new RunEventBuffer(10),
+    controller: new AbortController(),
+    startedAt: new Date(),
+    completion: new Promise<void>(() => {}),
+    principalId: null,
+  };
+}
+
+function gatedDeploy(): Workflow {
+  return Workflow.create({
+    name: "deploy",
+    jobs: [Job.create({
+      name: "main",
+      steps: [Step.create({
+        name: "gate",
+        task: StepTask.manualApproval("ok?"),
+      })],
+    })],
+  });
+}
+
+function storedRunOf(
+  workflow: Workflow,
+  status: "suspended" | "running",
+): WorkflowRun {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  if (status === "suspended") run.suspend();
+  return run;
+}
+
+async function windingDownSelection(
+  fn: (
+    workflow: Workflow,
+    stored: Map<string, WorkflowRun>,
+    registry: ActiveRunRegistry,
+    select: (target: { workflowIdOrName: string; runId?: string }) => Promise<
+      string[]
+    >,
+  ) => Promise<void>,
+): Promise<void> {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = gatedDeploy();
+    await repo.save(workflow);
+    const stored = new Map<string, WorkflowRun>();
+    const registry = new ActiveRunRegistry();
+    const ctx = {
+      repoDir: dir,
+      authConfig: { ...searchAuthBase, mode: "none" },
+      activeRunRegistry: registry,
+      repoContext: {
+        workflowRepo: repo,
+        workflowRunRepo: {
+          findById: (_workflowId: WorkflowId, runId: string) =>
+            Promise.resolve(stored.get(runId) ?? null),
+        },
+      },
+    } as unknown as ConnectionContext;
+    const socket = { readyState: WebSocket.OPEN, send: () => {} };
+    await fn(
+      workflow,
+      stored,
+      registry,
+      async (target) =>
+        (await windingDownDecisionRuns(
+          ctx,
+          socket as unknown as WebSocket,
+          null,
+          target,
+        )).map((run) => run.runId),
+    );
+  });
+}
+
+Deno.test("windingDownDecisionRuns: picks a registered run whose record already reads suspended", async () => {
+  await windingDownSelection(async (workflow, stored, registry, select) => {
+    const suspended = storedRunOf(workflow, "suspended");
+    const running = storedRunOf(workflow, "running");
+    stored.set(suspended.id, suspended);
+    stored.set(running.id, running);
+    registry.register(heldEntry(suspended.id, workflow));
+    registry.register(heldEntry(running.id, workflow));
+
+    assertEquals(await select({ workflowIdOrName: "deploy" }), [suspended.id]);
+    assertEquals(
+      await select({ workflowIdOrName: workflow.id, runId: running.id }),
+      [],
+    );
+  });
+});
+
+Deno.test("windingDownDecisionRuns: never picks a run of another workflow that has the same name", async () => {
+  await windingDownSelection(async (workflow, stored, registry, select) => {
+    const other = gatedDeploy();
+    const run = storedRunOf(other, "suspended");
+    stored.set(run.id, run);
+    registry.register(heldEntry(run.id, other));
+    const unnamed = storedRunOf(workflow, "suspended");
+    stored.set(unnamed.id, unnamed);
+    registry.register(heldEntry(unnamed.id, { name: "deploy" }));
+
+    assertEquals(await select({ workflowIdOrName: "deploy" }), []);
+  });
+});
+
+Deno.test("windingDownDecisionRuns: picks nothing for a workflow that does not resolve", async () => {
+  await windingDownSelection(async (workflow, stored, registry, select) => {
+    const run = storedRunOf(workflow, "suspended");
+    stored.set(run.id, run);
+    registry.register(heldEntry(run.id, workflow));
+
+    assertEquals(await select({ workflowIdOrName: "no-such-workflow" }), []);
   });
 });

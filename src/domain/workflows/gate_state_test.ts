@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { classifyGate, gateAttemptMatches } from "./gate_state.ts";
+import {
+  classifyGate,
+  gateAttemptMatches,
+  type GateState,
+  gateStateSettled,
+} from "./gate_state.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -177,4 +182,40 @@ Deno.test("WorkflowRun: a start key survives its record, and clears", () => {
   assertEquals(read.startKey, key);
   read.clearStartKey();
   assertEquals(read.toData().startKey, undefined);
+});
+
+Deno.test("gateStateSettled: passes through only states the holder cannot change", () => {
+  const statuses: WorkflowRun["status"][] = [
+    "pending",
+    "running",
+    "suspended",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ];
+  const walking = new Set<WorkflowRun["status"]>(["pending", "running"]);
+  const expected: Record<
+    GateState,
+    (status: WorkflowRun["status"]) => boolean
+  > = {
+    decided: () => true,
+    ambiguous: () => true,
+    nested: () => true,
+    expired: () => true,
+    absent: (status) => !walking.has(status),
+    closed: (status) => !walking.has(status),
+    waiting: () => false,
+    run_active: () => false,
+    not_reached: () => false,
+  };
+  for (const [state, settled] of Object.entries(expected)) {
+    for (const status of statuses) {
+      assertEquals(
+        gateStateSettled(state as GateState, status),
+        settled(status),
+        `${state} while ${status}`,
+      );
+    }
+  }
 });
