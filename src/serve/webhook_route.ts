@@ -54,23 +54,42 @@ export function isReservedServePath(path: string): boolean {
   return reservedRootOf(path) !== undefined;
 }
 
-/** why a webhook route may not be registered, or undefined when it may */
+/** why serve will not serve a webhook route, or undefined when it will */
 export function webhookRouteProblem(route: string): string | undefined {
-  if (!route.startsWith("/")) {
-    return `route must start with '/', got '${route}'`;
-  }
+  if (!route.startsWith("/")) return "does not start with '/'";
   const dotSegment = route.split("/").some((segment) => {
     const decoded = decodeSegment(segment);
     return decoded === "." || decoded === "..";
   });
   if (dotSegment) {
-    return `route '${route}' has a '.' or '..' segment, which no request ` +
-      `path can match`;
+    return "has a '.' or '..' segment, which no request path can match";
   }
   const root = reservedRootOf(route);
   if (root !== undefined) {
-    return `route '${route}' is under '${root}', which serve reserves for ` +
-      `its own API; use a route under ${WEBHOOK_ROUTE_PREFIX} instead`;
+    return `is under '${root}', which serve reserves for its own API; use a ` +
+      `route under ${WEBHOOK_ROUTE_PREFIX} instead`;
   }
   return undefined;
+}
+
+export function skippedWebhookMessage(route: string, reason: string): string {
+  return `Skipped webhook route '${route}': it ${reason}`;
+}
+
+export interface RouteCheck<T> {
+  readonly allowed: T[];
+  readonly refused: { readonly item: T; readonly reason: string }[];
+}
+
+export function partitionWebhookRoutes<T extends { readonly route: string }>(
+  items: readonly T[],
+): RouteCheck<T> {
+  const allowed: T[] = [];
+  const refused: { item: T; reason: string }[] = [];
+  for (const item of items) {
+    const reason = webhookRouteProblem(item.route);
+    if (reason === undefined) allowed.push(item);
+    else refused.push({ item, reason });
+  }
+  return { allowed, refused };
 }

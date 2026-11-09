@@ -20,7 +20,9 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   isReservedServePath,
+  partitionWebhookRoutes,
   SERVE_RESERVED_ROOTS,
+  skippedWebhookMessage,
   WEBHOOK_ROUTE_PREFIX,
   webhookRouteProblem,
 } from "./webhook_route.ts";
@@ -51,7 +53,7 @@ Deno.test("webhookRouteProblem: accepts legacy routes outside the reserved roots
 Deno.test("webhookRouteProblem: refuses a route without a leading slash", () => {
   assertStringIncludes(
     webhookRouteProblem("hooks/ci") ?? "",
-    "must start with '/'",
+    "does not start with '/'",
   );
 });
 
@@ -123,4 +125,28 @@ Deno.test("isReservedServePath: matches whole first segments only", () => {
   assertEquals(isReservedServePath("/apiary"), false);
   assertEquals(isReservedServePath("/hooks/x"), false);
   assertEquals(isReservedServePath("/HEALTH"), false);
+});
+
+Deno.test("partitionWebhookRoutes: keeps allowed routes in order and gives each refused one its reason", () => {
+  const { allowed, refused } = partitionWebhookRoutes([
+    { route: "/hooks/a" },
+    { route: "/api/github" },
+    { route: "/deploy" },
+    { route: "/hooks/../x" },
+  ]);
+  assertEquals(allowed.map((r) => r.route), ["/hooks/a", "/deploy"]);
+  assertEquals(refused.map((r) => r.item.route), [
+    "/api/github",
+    "/hooks/../x",
+  ]);
+  assertStringIncludes(refused[0].reason, "under '/api'");
+  assertStringIncludes(refused[1].reason, "'.' or '..' segment");
+});
+
+Deno.test("skippedWebhookMessage: names the route and the reason", () => {
+  assertEquals(
+    skippedWebhookMessage("/api/github", webhookRouteProblem("/api/github")!),
+    "Skipped webhook route '/api/github': it is under '/api', which serve " +
+      "reserves for its own API; use a route under /hooks/ instead",
+  );
 });

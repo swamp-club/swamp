@@ -319,3 +319,28 @@ Deno.test("renderServeCheckConfig: a clean grant check says how many files it re
     data,
   );
 });
+
+Deno.test("renderServeCheckConfig: webhook warnings are shown and do not fail the check", () => {
+  const warning =
+    "Skipped webhook route '/api/github': it is under '/api', which serve reserves for its own API; use a route under /hooks/ instead";
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig(
+        { ...tokenMode, webhookWarnings: [warning] },
+        "log",
+      )
+    ),
+  );
+  assertStringIncludes(output, "Webhook warnings:");
+  assertStringIncludes(output, `! ${warning}`);
+  assertStringIncludes(output, "Result: PASSED");
+  const json = JSON.parse(
+    captureLogs(() =>
+      renderServeCheckConfig(
+        { ...tokenMode, webhookWarnings: [warning] },
+        "json",
+      )
+    ),
+  );
+  assertEquals(json.webhookWarnings, [warning]);
+});

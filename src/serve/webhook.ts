@@ -43,7 +43,7 @@ import {
 } from "../libswamp/workflows/workflow_run_view.ts";
 import type { WebhookResponse } from "../domain/webhooks/webhook_handler.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
-import { webhookRouteProblem } from "./webhook_route.ts";
+import { partitionWebhookRoutes } from "./webhook_route.ts";
 import {
   isExtensionWebhookScheme,
   isWebhookScheme,
@@ -277,9 +277,10 @@ export async function parseWebhookFlag(
     );
   }
 
-  const routeProblem = webhookRouteProblem(route);
-  if (routeProblem !== undefined) {
-    throw new UserError(`Invalid --webhook route: ${routeProblem}`);
+  if (!route.startsWith("/")) {
+    throw new UserError(
+      `Invalid --webhook route: must start with '/', got '${route}'`,
+    );
   }
 
   return { route, workflowIdOrName, secret, verifier };
@@ -566,15 +567,20 @@ export interface WebhookEndpointInfo {
   readonly source: WebhookRouteSource;
 }
 
-// Every route source reaches the table through here, including reload, which
-// reads serve.yaml without validating it.
-function assertRoutesAllowed(endpoints: readonly WebhookEndpoint[]): void {
-  for (const endpoint of endpoints) {
-    const problem = webhookRouteProblem(endpoint.route);
-    if (problem !== undefined) {
-      throw new UserError(`Invalid webhook ${endpoint.route}: ${problem}`);
-    }
-  }
+export interface SkippedWebhookRoute {
+  readonly route: string;
+  readonly workflowIdOrName: string;
+  readonly reason: string;
+}
+
+function skippedRoutes(
+  refused: readonly { item: WebhookEndpoint; reason: string }[],
+): SkippedWebhookRoute[] {
+  return refused.map(({ item, reason }) => ({
+    route: item.route,
+    workflowIdOrName: item.workflowIdOrName,
+    reason,
+  }));
 }
 
 /**
@@ -599,10 +605,14 @@ export class WebhookService {
   private draining = false;
   private stopped = false;
   private endpoints: WebhookEndpoint[];
+  private skipped: SkippedWebhookRoute[];
 
+  // Every route source reaches the table through here, including reload, which
+  // reads serve.yaml without validating it; a refused route is skipped alone.
   constructor(private readonly deps: WebhookServiceDeps) {
-    assertRoutesAllowed(deps.endpoints);
-    this.endpoints = [...deps.endpoints];
+    const { allowed, refused } = partitionWebhookRoutes(deps.endpoints);
+    this.endpoints = allowed;
+    this.skipped = skippedRoutes(refused);
     this.maxConcurrentRuns = Math.max(1, deps.maxConcurrentRuns ?? 1);
     this.now = deps.now ?? Date.now;
   }
@@ -636,8 +646,18 @@ export class WebhookService {
     });
   }
 
-  updateEndpoints(newEndpoints: readonly WebhookEndpoint[]): number {
-    assertRoutesAllowed(newEndpoints);
+  updateEndpoints(requested: readonly WebhookEndpoint[]): number {
+    const { allowed: newEndpoints, refused } = partitionWebhookRoutes(
+      requested,
+    );
+    this.skipped = skippedRoutes(refused);
+    for (const skip of this.skipped) {
+      logger.warn("Webhook route skipped: {route} → {workflow}: {reason}", {
+        route: skip.route,
+        workflow: skip.workflowIdOrName,
+        reason: skip.reason,
+      });
+    }
     const oldByRoute = new Map(this.endpoints.map((e) => [e.route, e]));
     const newByRoute = new Map(newEndpoints.map((e) => [e.route, e]));
 
@@ -674,6 +694,10 @@ export class WebhookService {
 
     this.endpoints = [...newEndpoints];
     return changed;
+  }
+
+  skippedRoutes(): ReadonlyArray<SkippedWebhookRoute> {
+    return this.skipped;
   }
 
   listEndpoints(): ReadonlyArray<WebhookEndpointInfo> {

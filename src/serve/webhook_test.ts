@@ -24,12 +24,7 @@ import {
   runWithVaultAccess,
 } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
-import {
-  assertEquals,
-  assertRejects,
-  assertStringIncludes,
-  assertThrows,
-} from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { propagation, type Span, trace } from "@opentelemetry/api";
@@ -248,22 +243,9 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", async () => {
   );
 });
 
-Deno.test("parseWebhookFlag: rejects a route under a reserved serve root", async () => {
-  for (const route of ["/api/v1/cancel", "/health", "/", "/%61pi/x"]) {
-    await assertRejects(
-      () => parseWebhookFlag(`${route}:my-workflow:secret`),
-      UserError,
-      "which serve reserves for its own API",
-    );
-  }
-});
-
-Deno.test("parseWebhookFlag: rejects a route with a dot-dot segment", async () => {
-  await assertRejects(
-    () => parseWebhookFlag("/hooks/../x:my-workflow:secret"),
-    UserError,
-    "'.' or '..' segment",
-  );
+Deno.test("parseWebhookFlag: passes a reserved route through for the service to skip", async () => {
+  const endpoint = await parseWebhookFlag("/api/github:my-workflow:secret");
+  assertEquals(endpoint.route, "/api/github");
 });
 
 Deno.test("parseWebhookFlag: accepts legacy routes outside the reserved roots", async () => {
@@ -543,30 +525,47 @@ function endpointAt(route: string): WebhookEndpoint {
   };
 }
 
-Deno.test("WebhookService: refuses construction with a route under a reserved serve root", () => {
-  assertThrows(
-    () => serviceWith([endpointAt("/hooks/ok"), endpointAt("/api/v1/cancel")]),
-    UserError,
-    "under '/api'",
+Deno.test("WebhookService: skips a route under a reserved serve root and keeps the rest", async () => {
+  const service = serviceWith([
+    endpointAt("/hooks/ok"),
+    endpointAt("/api/v1/cancel"),
+  ]);
+  assertEquals(service.listEndpoints().map((e) => e.route), ["/hooks/ok"]);
+  const skipped = service.skippedRoutes();
+  assertEquals(skipped.map((s) => s.route), ["/api/v1/cancel"]);
+  assertEquals(skipped[0].workflowIdOrName, "deploy");
+  assertStringIncludes(skipped[0].reason, "under '/api'");
+  assertEquals(
+    await service.handleRequest(
+      new Request("http://localhost/api/v1/cancel", {
+        method: "POST",
+        body: "{}",
+      }),
+    ),
+    null,
   );
+  await service.stop();
 });
 
-Deno.test("WebhookService.updateEndpoints: a refused route leaves the previous table in place", async () => {
+Deno.test("WebhookService.updateEndpoints: applies the allowed routes and skips the reserved one", async () => {
   const service = serviceWith([endpointAt("/hooks/ok")]);
-  assertThrows(
-    () =>
-      service.updateEndpoints([
-        endpointAt("/hooks/new"),
-        endpointAt("/internal/runs"),
-      ]),
-    UserError,
-    "under '/internal'",
-  );
-  assertEquals(service.listEndpoints().map((e) => e.route), ["/hooks/ok"]);
+  service.updateEndpoints([
+    endpointAt("/hooks/ok"),
+    endpointAt("/hooks/new"),
+    endpointAt("/internal/runs"),
+  ]);
+  assertEquals(service.listEndpoints().map((e) => e.route), [
+    "/hooks/ok",
+    "/hooks/new",
+  ]);
+  assertEquals(service.skippedRoutes().map((s) => s.route), ["/internal/runs"]);
   const response = await service.handleRequest(
-    new Request("http://localhost/hooks/ok", { method: "POST", body: "{}" }),
+    new Request("http://localhost/hooks/new", { method: "POST", body: "{}" }),
   );
   assertEquals(response?.status, 401);
+
+  service.updateEndpoints([endpointAt("/hooks/ok")]);
+  assertEquals(service.skippedRoutes(), []);
   await service.stop();
 });
 

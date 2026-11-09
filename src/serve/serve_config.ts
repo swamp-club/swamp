@@ -38,7 +38,6 @@ import {
   type WebhookScheme,
 } from "./webhook_verifiers.ts";
 import type { VerifierConfig } from "./webhook_verifiers.ts";
-import { webhookRouteProblem } from "./webhook_route.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { TokenSecretsKeyRef } from "../domain/vaults/token_secrets_key.ts";
 import { validateSinkFilter } from "../domain/serve_audit/mod.ts";
@@ -807,11 +806,10 @@ function validateWebhookEntry(
       `Invalid webhook at index ${index} in ${path}: route is required and must be a string`,
     );
   }
-  const routeProblem = webhookRouteProblem(obj.route);
-  if (routeProblem !== undefined) {
+  if (!obj.route.startsWith("/")) {
     throw configError(
       path,
-      `Invalid webhook at index ${index} in ${path}: ${routeProblem}`,
+      `Invalid webhook at index ${index} in ${path}: route must start with '/', got '${obj.route}'`,
     );
   }
   if (typeof obj.workflow !== "string" || !obj.workflow) {
@@ -952,10 +950,6 @@ export async function parseWebhookConfig(
   entry: WebhookConfigEntry,
   vault?: VaultSecretResolver,
 ): Promise<WebhookEndpoint> {
-  const routeProblem = webhookRouteProblem(entry.route);
-  if (routeProblem !== undefined) {
-    throw new UserError(`Invalid webhook ${entry.route}: ${routeProblem}`);
-  }
   const secret = await resolveSecret(entry.secret, vault);
   const extensionScheme = entry.scheme?.toLowerCase() ?? "";
   const scheme = (entry.scheme ?? "github") as WebhookScheme;

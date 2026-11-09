@@ -55,6 +55,8 @@ export interface ServeCheckConfigData {
    * sources absent where the check ran; they do not fail the check
    */
   readonly grantWarnings?: readonly GrantFileCheckIssue[];
+  /** advisory: webhook routes serve would skip; serve starts without them */
+  readonly webhookWarnings?: readonly string[];
 }
 
 /** Whether the external token secrets key resolves. Never holds the key. */
@@ -138,6 +140,15 @@ export function renderServeCheckConfig(
     lines.push(cyan("Restriction warnings:"));
     for (const warning of warnings) {
       lines.push(`  ${yellow("!")} ${warning.message}`);
+    }
+  }
+
+  const webhookWarnings = data.webhookWarnings ?? [];
+  if (webhookWarnings.length > 0) {
+    lines.push("");
+    lines.push(cyan("Webhook warnings:"));
+    for (const warning of webhookWarnings) {
+      lines.push(`  ${yellow("!")} ${warning}`);
     }
   }
 

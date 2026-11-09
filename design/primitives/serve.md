@@ -86,7 +86,7 @@ without it the default file is optional.
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
 | `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
-| `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely and are fixed until restart; only the file list reloads. A route may not be `/`, sit under a reserved serve root or hold a `.` or `..` segment (see Webhooks) |
+| `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely and are fixed until restart; only the file list reloads. Serve skips a route that is `/`, sits under a reserved serve root or holds a `.` or `..` segment, and serves the rest (see Webhooks) |
 | `--max-concurrent-webhook-runs` / `max-concurrent-webhook-runs` | `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS` | `1` | Webhook runs in flight at once, across all routes; deliveries to the same route may overlap. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
@@ -1427,21 +1427,23 @@ either:
   `configSchema`.
 
 Webhook routes are matched before serve's own HTTP API, so a route may not
-claim a path serve answers (`src/serve/webhook_route.ts`). A route is refused
-when it is `/`, when its first non-empty segment (raw or percent-decoded) is one
-of serve's reserved roots — `health`, `ready`, `auth`, `api`, `internal`,
-`dashboard`, `data`, `bundle` — or when any segment is `.` or `..`, which no
-request path can match. Every other operator route is valid, including legacy
-routes outside `/hooks/` such as `/deploy`. The check runs at boot, in
-`swamp serve check-config`, on every `--webhook` flag and on reload, and
-`WebhookService` enforces it on every route table it is given, so a refused
-reload keeps the previous routes. Serve adds HTTP routes only under its reserved
-roots and never under `/hooks/`, which is reserved for webhooks
-(`integration/serve_webhook_route_rules_test.ts`). Routes created by anyone
-other than the operator (stored routes, planned in swamp-club#3434) are to be
-held to a stricter rule when that design lands: under `/hooks/` in canonical
-form, with no empty, `.` or `..` segments, and not the bare prefix. Nothing
-creates such routes yet.
+claim a path serve answers (`src/serve/webhook_route.ts`). Serve skips a route
+that is `/`, whose first non-empty segment (raw or percent-decoded) is one of
+serve's reserved roots — `health`, `ready`, `auth`, `api`, `internal`,
+`dashboard`, `data`, `bundle` — or that has a `.` or `..` segment, which no
+request path can match. Only that webhook fails: serve starts and serves its
+other routes, logs `Webhook route skipped` (`webhook_skipped` in `--json`), and
+`swamp serve check-config` lists it as a webhook warning without failing.
+`WebhookService` applies the rule to every route table it is given, at boot
+from `serve.yaml` or `--webhook` and on reload, where the skipped route comes
+back as a reload warning and the other routes still apply. Every other operator
+route is valid, including legacy routes outside `/hooks/` such as `/deploy`.
+Serve adds HTTP routes only under its reserved roots and never under `/hooks/`,
+which is reserved for webhooks (`integration/serve_webhook_route_rules_test.ts`).
+Routes created by anyone other than the operator (stored routes, planned in
+swamp-club#3434) are to be held to a stricter rule when that design lands: under
+`/hooks/` in canonical form, with no empty, `.` or `..` segments, and not the
+bare prefix. Nothing creates such routes yet.
 
 An extension handler may also `transform` the payload body and `respond` with a
 custom HTTP response, optionally without starting a run. Core keeps every
