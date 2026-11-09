@@ -61,6 +61,9 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
   "access.token.reveal",
   // so an operator never reads a copy behind a revoke they just made
   "access.integration.list",
+  "access.delegation.list",
+  // only the leader holds the delegation store, which confirms its own writes
+  "access.delegation.end",
 ]);
 
 export const FOLLOWER_READ_REQUESTS: ReadonlySet<string> = new Set([

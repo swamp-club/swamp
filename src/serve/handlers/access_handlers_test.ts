@@ -35,6 +35,8 @@ import { useUnscopedChangeReporterForTesting } from "../../infrastructure/persis
 import {
   handleAccessCanI,
   handleAccessCheck,
+  handleAccessDelegationEnd,
+  handleAccessDelegationList,
   handleAccessGrantList,
   handleAccessReload,
   handleAccessTokenRevoke,
@@ -49,6 +51,9 @@ import {
   terminateTokenSessions,
 } from "./shared.ts";
 import type { AccessCheckPayload } from "../protocol.ts";
+import type { DelegationRecord } from "../../domain/models/access/delegation_model.ts";
+import type { DelegationStore } from "../delegation_store.ts";
+import type { DelegationAuditRecord } from "../delegation_routes.ts";
 import type {
   AccessDecisionService,
   AccessPrincipal,
@@ -1678,4 +1683,195 @@ Deno.test("handleAccessGrantList: a grant record the datastore cannot materialis
     response.payload.grants.map((grant: Grant) => grant.id),
     [readable.id],
   );
+});
+
+function denyingService(): AccessDecisionService {
+  const deny = {
+    effect: "deny" as const,
+    grantId: "deny-all",
+    subject: { kind: "user" as const, name: "*" },
+  };
+  return {
+    decide: () => deny,
+    explain: () => [],
+    hasAnyGrantForKind: () => true,
+    decideAll: () => deny,
+  };
+}
+
+function delegationRecord(
+  overrides: Partial<DelegationRecord> = {},
+): DelegationRecord {
+  const hash = (c: string) => `sha256:${c.repeat(64)}`;
+  return {
+    id: crypto.randomUUID(),
+    integrationId: "slack-bot",
+    external: {
+      platform: "slack",
+      teamId: "T1",
+      userId: "U1",
+      display: "Adam",
+      workspace: "Acme",
+    },
+    ceiling: { version: 1, ceiling: [] },
+    ceilingDigest: "sha256:digest",
+    phase: "issued",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+    redeemHash: hash("a"),
+    club: {
+      requestId: "req-1",
+      digest: "club-digest",
+      consentExpiresAt: new Date(0).toISOString(),
+      pollIntervalSeconds: 5,
+      linkId: "link-1",
+      endState: "none",
+      endAttempts: 0,
+    },
+    consentedAt: new Date(0).toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    tokens: {
+      accessHash: hash("b"),
+      accessExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      refreshHash: hash("c"),
+      generation: 1,
+    },
+    ...overrides,
+  };
+}
+
+function fakeDelegationStore(current: DelegationRecord | null) {
+  const writes: DelegationRecord[] = [];
+  const store = {
+    transition: async <T>(
+      _id: string,
+      change: (
+        record: DelegationRecord | null,
+      ) => Promise<{ write: DelegationRecord | null; value: T }>,
+    ): Promise<T> => {
+      const result = await change(current);
+      if (result.write !== null) writes.push(result.write);
+      return result.value;
+    },
+  } as unknown as DelegationStore;
+  return { store, writes };
+}
+
+const ADMIN: Principal = { kind: "user", id: "admin" };
+
+Deno.test("handleAccessDelegationList and handleAccessDelegationEnd: a caller who is not an admin is refused, and nothing is ended", async () => {
+  const ctx = createCtx(denyingService());
+  const { store, writes } = fakeDelegationStore(delegationRecord());
+  ctx.delegationStore = store;
+  const listCaller = createMockSocket();
+  await handleAccessDelegationList(
+    listCaller,
+    ctx,
+    "req-1",
+    {},
+    new AbortController(),
+    { kind: "user", id: "bob" },
+  );
+  assertEquals(JSON.parse(listCaller.sent[0]).error.code, "unauthorized");
+
+  const endCaller = createMockSocket();
+  await handleAccessDelegationEnd(
+    endCaller,
+    ctx,
+    "req-2",
+    { id: crypto.randomUUID() },
+    { kind: "user", id: "bob" },
+  );
+  assertEquals(JSON.parse(endCaller.sent[0]).error.code, "unauthorized");
+  assertEquals(writes, []);
+});
+
+Deno.test("handleAccessDelegationEnd: ends through the delegation store as the operator, audits it, and answers the view with no hash", async () => {
+  const record = delegationRecord();
+  const ctx = createCtx(createMockDecisionService().service);
+  const { store, writes } = fakeDelegationStore(record);
+  const audited: DelegationAuditRecord[] = [];
+  ctx.delegationStore = store;
+  ctx.delegationAudit = (event) => audited.push(event);
+  const caller = createMockSocket();
+
+  await handleAccessDelegationEnd(
+    caller,
+    ctx,
+    "req-1",
+    { id: record.id },
+    ADMIN,
+  );
+
+  assertEquals(writes.length, 1);
+  assertEquals(writes[0].phase, "ended");
+  assertEquals(writes[0].ended?.cause, "operator");
+  assertEquals(audited.map((e) => [e.action, e.outcome]), [[
+    "ended",
+    "operator",
+  ]]);
+  const reply = JSON.parse(caller.sent[0]);
+  assertEquals(reply.type, "access.delegation.end");
+  assertEquals(reply.payload.data.alreadyEnded, false);
+  assertEquals(reply.payload.data.delegation.state, "ended");
+  assertEquals(reply.payload.data.delegation.club.endState, "pending");
+  for (
+    const hash of [
+      record.redeemHash,
+      record.tokens!.accessHash,
+      record.tokens!.refreshHash,
+    ]
+  ) {
+    assert(!caller.sent[0].includes(hash), caller.sent[0]);
+  }
+});
+
+Deno.test("handleAccessDelegationEnd: an ended delegation is answered as already ended, with nothing written", async () => {
+  const record = delegationRecord({
+    phase: "ended",
+    tokens: undefined,
+    ended: { cause: "refresh_reuse", at: new Date(0).toISOString() },
+  });
+  const ctx = createCtx(createMockDecisionService().service);
+  const { store, writes } = fakeDelegationStore(record);
+  ctx.delegationStore = store;
+  const caller = createMockSocket();
+
+  await handleAccessDelegationEnd(
+    caller,
+    ctx,
+    "req-1",
+    { id: record.id },
+    ADMIN,
+  );
+
+  assertEquals(writes, []);
+  assertEquals(JSON.parse(caller.sent[0]).payload.data.alreadyEnded, true);
+});
+
+Deno.test("handleAccessDelegationEnd: an unknown id, and a node with no delegation store, are errors", async () => {
+  const ctx = createCtx(createMockDecisionService().service);
+  const unavailable = createMockSocket();
+  await handleAccessDelegationEnd(
+    unavailable,
+    ctx,
+    "req-1",
+    { id: crypto.randomUUID() },
+    ADMIN,
+  );
+  assertEquals(
+    JSON.parse(unavailable.sent[0]).error.code,
+    "delegations_unavailable",
+  );
+
+  ctx.delegationStore = fakeDelegationStore(null).store;
+  const missing = createMockSocket();
+  await handleAccessDelegationEnd(
+    missing,
+    ctx,
+    "req-2",
+    { id: crypto.randomUUID() },
+    ADMIN,
+  );
+  assertEquals(JSON.parse(missing.sent[0]).error.code, "delegation_not_found");
 });

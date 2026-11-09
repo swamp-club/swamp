@@ -1155,6 +1155,16 @@ export type ServerRequest =
     payload?: Record<string, never>;
   }
   | {
+    type: "access.delegation.list";
+    id: string;
+    payload?: AccessDelegationListPayload;
+  }
+  | {
+    type: "access.delegation.end";
+    id: string;
+    payload: AccessDelegationEndPayload;
+  }
+  | {
     type: "access.token.list";
     id: string;
     payload?: AccessTokenListPayload;
@@ -1956,6 +1966,23 @@ export interface AccessIntegrationListResponse {
   data: Record<string, unknown>;
 }
 
+export interface AccessDelegationListPayload {
+  integrationId?: string;
+  state?: string;
+}
+
+export interface AccessDelegationListResponse {
+  data: Record<string, unknown>;
+}
+
+export interface AccessDelegationEndPayload {
+  id: string;
+}
+
+export interface AccessDelegationEndResponse {
+  data: Record<string, unknown>;
+}
+
 export interface AccessTokenListResponse {
   data: Record<string, unknown>;
 }
@@ -2386,6 +2413,16 @@ export type ServerMessage =
     type: "access.integration.list";
     id: string;
     payload: AccessIntegrationListResponse;
+  }
+  | {
+    type: "access.delegation.list";
+    id: string;
+    payload: AccessDelegationListResponse;
+  }
+  | {
+    type: "access.delegation.end";
+    id: string;
+    payload: AccessDelegationEndResponse;
   }
   | {
     type: "access.token.list";

@@ -25,6 +25,7 @@ import { accessCanICommand } from "./access_can_i.ts";
 import { accessCheckCommand } from "./access_check.ts";
 import { accessReloadCommand } from "./access_reload.ts";
 import { accessIntegrationCommand } from "./access_integration.ts";
+import { accessDelegationCommand } from "./access_delegation.ts";
 import { accessTokenMintCommand } from "./access_token_mint.ts";
 import { accessTokenListCommand } from "./access_token_list.ts";
 import { accessTokenRevealCommand } from "./access_token_reveal.ts";
@@ -52,6 +53,7 @@ export const accessCommand = new Command()
   .action(groupCommandAction)
   .command("token", accessTokenCommand)
   .command("integration", accessIntegrationCommand)
+  .command("delegation", accessDelegationCommand)
   .command("grant", accessGrantCommand)
   .command("group", accessGroupCommand)
   .command("can-i", accessCanICommand)

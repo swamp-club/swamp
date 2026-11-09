@@ -672,6 +672,7 @@ const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [
 // in a unit of work; read-only ones and those writing only secrets, lockfiles,
 // credentials or raw files are not wrapped
 const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
+  "src/libswamp/access/delegation_end.ts: delegationEnd",
   "src/libswamp/access/token_create.ts: serverTokenCreate",
   "src/libswamp/access/token_revoke.ts: serverTokenRevoke",
   "src/libswamp/access/token_rotate.ts: serverTokenRotate",
@@ -724,6 +725,7 @@ const PINNED_HOOK_MISUSES: readonly string[] = [];
 // on the global lock run in runInCoordinatorRoot, whose flush is the
 // coordinator's push
 const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
+  "src/cli/commands/access_delegation.ts: endInRepo",
   "src/cli/commands/access_integration.ts: runIntegrationChange",
   "src/cli/commands/access_grant.ts: accessGrantCreateCommand",
   "src/cli/commands/access_grant.ts: accessGrantRevokeCommand",
