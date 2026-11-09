@@ -46,7 +46,6 @@ export interface ActionSuccessBody {
   readonly data: unknown;
 }
 
-/** a started run's data, for workflow.run and workflow.resume */
 export interface ActionStartedData {
   readonly runId: string;
   readonly workflowName: string;
@@ -57,7 +56,7 @@ export interface ActionFailureBody {
   readonly code: string;
   readonly message: string;
   readonly requestId?: string;
-  /** a refused signal's detail */
+  // a refused signal's detail
   readonly receipt?: unknown;
   readonly pending?: unknown;
   readonly lastWait?: unknown;
@@ -395,15 +394,18 @@ export function actionReplyForFrame(
     if (event.kind === "error" && event.error) {
       return actionFailure(type, event.error, requestId);
     }
-    if (event.kind === "started" && event.parentRunId === undefined) {
+    if (
+      event.kind === "started" && event.parentRunId === undefined &&
+      event.runId !== undefined && event.workflowName !== undefined
+    ) {
       return {
         status: 202,
         body: {
           requestId,
           type,
           data: {
-            runId: event.runId!,
-            workflowName: event.workflowName!,
+            runId: event.runId,
+            workflowName: event.workflowName,
             replayed: event.replayed === true,
           } satisfies ActionStartedData,
         },

@@ -21,6 +21,7 @@ import type { TokenAdmissionChecker } from "./token_admission.ts";
 import { z } from "zod";
 import { Ceiling } from "../domain/access/ceiling.ts";
 import {
+  accessTokenHeld,
   canonicalExternalKey,
   DELEGATED_ACCESS_LIFE_MS,
   delegationStanding,
@@ -654,15 +655,16 @@ async function refresh(
           parsed.data.refreshToken,
           known.tokens.refreshHash,
         );
+      if (known.tokens === undefined) {
+        return { ok: false, reason: "not_issued" as const };
+      }
       return matches
         ? { ok: true }
-        : { ok: false, reason: known.tokens ? "mismatch" as const : undefined };
+        : { ok: false, reason: "mismatch" as const };
     },
   );
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
-  if (!guarded.result.ok && guarded.result.reason !== undefined) {
-    return refreshRefused(guarded.result.reason);
-  }
+  if (!guarded.result.ok) return refreshRefused(guarded.result.reason);
   const team = await deps.capability().catch(() => null);
   if (team === null || !team.ok) {
     // nothing changes: the app retries the same token
@@ -756,13 +758,13 @@ async function end(
     );
   }
   const record = await deps.store.readOrNull(secret.delegationId);
-  const hash = secret.kind === "access"
-    ? [record?.tokens?.accessHash, record?.tokens?.previousAccessHash]
-    : [record?.tokens?.refreshHash];
-  let matches = false;
-  for (const stored of hash) {
-    if (await delegatedSecretMatches(parsed.data.token, stored)) matches = true;
-  }
+  const matches = record !== null &&
+    (secret.kind === "access"
+      ? await accessTokenHeld(record, parsed.data.token)
+      : await delegatedSecretMatches(
+        parsed.data.token,
+        record.tokens?.refreshHash,
+      ));
   if (record === null || record.integrationId !== integrationId || !matches) {
     return httpFailure(401, "invalid_grant", "The token was refused");
   }

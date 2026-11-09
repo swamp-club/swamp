@@ -135,7 +135,6 @@ export interface Rig {
   pass: () => Promise<void>;
   audit: DelegationAuditRecord[];
   team: { capability: DelegationCapability };
-  /** serve's clock for the routes and for tokens it checks */
   serveClock: { offsetMs: number; now: () => number };
   routeDeps: DelegationRouteDeps;
   integrations: Pick<IntegrationDirectory, "credentialOf" | "standingOf">;

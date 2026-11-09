@@ -109,6 +109,29 @@ Deno.test("delegation links: start, consent, redeem once, act, refresh keeps the
   });
 });
 
+Deno.test("delegation links: the oldest access token still held ends the link, and an ended link's refresh answers not_issued even mid-upgrade", async () => {
+  await withRig(async (rig) => {
+    const { pendingId, redeemSecret } = await startAndConsent(rig);
+    const redeemed = await rig.post("redeem", { pendingId, redeemSecret });
+    const refresh = redeemed.body.refreshToken as string;
+    const access: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const out = await rig.post("refresh", { refreshToken: refresh });
+      access.push(out.body.accessToken as string);
+    }
+    await rig.post("refresh", { refreshToken: refresh });
+    // access[0] now sits in the third slot
+    assert((await authenticateDelegatedToken(access[0], rig.directory)).ok);
+    const ended = await rig.post("end", { token: access[0] });
+    assertEquals(ended.status, 200, JSON.stringify(ended.body));
+    assertEquals((await rig.store.read(pendingId))?.phase, "ended");
+
+    rig.team.capability = { ok: false, instances: ["old"] };
+    const afterEnd = await rig.post("refresh", { refreshToken: refresh });
+    assertEquals([afterEnd.status, afterEnd.body.reason], [401, "not_issued"]);
+  });
+});
+
 Deno.test("delegation links: a wrong refresh token is refused as a mismatch and ends nothing", async () => {
   await withRig(async (rig) => {
     const { pendingId, redeemSecret } = await startAndConsent(rig);

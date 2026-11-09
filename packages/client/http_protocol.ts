@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Wire types for serve's bearer-only HTTP routes, copied from serve and kept in
-// step by protocol_test.ts.
+// step by http_protocol_test.ts.
 
 import type { WorkflowRunView } from "./protocol.ts";
 
@@ -36,8 +36,6 @@ export const HTTP_ACTION_TYPES = [
 ] as const;
 
 export type HttpActionType = typeof HTTP_ACTION_TYPES[number];
-
-// ---- action requests ----
 
 interface TraceFields {
   traceparent?: string;
@@ -80,8 +78,6 @@ export type SignalActionPayload =
     payload: unknown;
     idempotencyKey?: string;
   };
-
-// ---- action replies ----
 
 export interface ActionSuccessBody {
   readonly requestId: string;
@@ -201,8 +197,6 @@ export interface SignalAcceptedData {
 }
 
 export type HistoryData = WorkflowRunView;
-
-// ---- delegation routes ----
 
 export interface LinkExternalIdentity {
   platform: string;

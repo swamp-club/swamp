@@ -352,7 +352,8 @@ export class SwampActionClient {
     const bearer = await this.#tokens.accessToken(options);
     const reply = await post(bearer);
     if (reply.status !== 401) return reply;
-    return await post(await this.#tokens.unauthorized(bearer, options));
+    const next = await this.#tokens.unauthorized(bearer, options);
+    return next === null ? reply : await post(next);
   }
 
   toJSON(): Record<string, unknown> {

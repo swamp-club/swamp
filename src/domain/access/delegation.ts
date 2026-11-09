@@ -407,6 +407,14 @@ export async function accessTokenMatches(
   return false;
 }
 
+/** any access token the record still holds, expired or not, for ending a link */
+export async function accessTokenHeld(
+  record: DelegationRecord,
+  presented: string,
+): Promise<boolean> {
+  return await accessTokenExpiry(record, presented) !== undefined;
+}
+
 /** the expiry of whichever access token matched, for closing its socket */
 export async function accessTokenExpiry(
   record: DelegationRecord,

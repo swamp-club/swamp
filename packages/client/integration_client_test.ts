@@ -150,16 +150,18 @@ Deno.test("SwampIntegrationClient.refresh: a refusal says whether the link ended
   });
   const { fetch } = scriptedFetch([
     refused("not_admitted"),
+    refused("mismatch"),
     refused("expired"),
     refused(),
   ]);
   const c = client(fetch);
   assertEquals(await c.refresh("r"), { kind: "not_admitted" });
+  assertEquals(await c.refresh("r"), { kind: "mismatch" });
   assertEquals(await c.refresh("r"), { kind: "link_ended", reason: "expired" });
   assertEquals(await c.refresh("r"), { kind: "link_ended", reason: "unknown" });
 });
 
-Deno.test("SwampIntegrationClient.refresh: a lost reply is sent again, and team_not_ready throws for later", async () => {
+Deno.test("SwampIntegrationClient.refresh: a lost reply is sent again only once serve has shown it keeps the token, and team_not_ready throws for later", async () => {
   const ok = {
     status: 200,
     body: {
@@ -168,9 +170,15 @@ Deno.test("SwampIntegrationClient.refresh: a lost reply is sent again, and team_
       accessTokenExpiresAt: LATER,
     },
   };
-  const lost = scriptedFetch(["network_error", ok]);
-  assertEquals((await client(lost.fetch).refresh("r")).kind, "refreshed");
-  assertEquals(lost.sent.map((s) => s.body.refreshToken), ["r", "r"]);
+  const fresh = scriptedFetch(["network_error"]);
+  await assertRejects(() => client(fresh.fetch).refresh("r"), SwampHttpError);
+  assertEquals(fresh.sent.length, 1);
+
+  const lost = scriptedFetch([ok, "network_error", ok]);
+  const c = client(lost.fetch);
+  await c.refresh("r");
+  assertEquals((await c.refresh("r")).kind, "refreshed");
+  assertEquals(lost.sent.map((s) => s.body.refreshToken), ["r", "r", "r"]);
 
   const waiting = scriptedFetch([
     { status: 503, body: { code: "team_not_ready", message: "upgrade" } },

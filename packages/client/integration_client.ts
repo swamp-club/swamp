@@ -90,8 +90,13 @@ export type RefreshOutcome =
     refreshToken?: string;
     expiresAt?: string;
   }
-  | { kind: "link_ended"; reason: RefreshRefusalReason | "unknown" }
-  | { kind: "not_admitted" };
+  | {
+    kind: "link_ended";
+    reason: Exclude<RefreshRefusalReason, "mismatch" | "not_admitted">;
+  }
+  | { kind: "not_admitted" }
+  /** the refresh token isn't this link's current one; the link is untouched */
+  | { kind: "mismatch" };
 
 /**
  * measures the token's life against serve's own clock, so a skewed clock here
@@ -108,7 +113,8 @@ export function accessTokenTiming(
     : expiresInSeconds !== undefined
     ? expiresInSeconds * 1000
     : expires - reply.receivedAtMs;
-  const bounded = Math.max(0, lifetimeMs);
+  // an unreadable expiry counts as already due
+  const bounded = Number.isFinite(lifetimeMs) ? Math.max(0, lifetimeMs) : 0;
   return { lifetimeMs: bounded, deadlineMs: reply.receivedAtMs + bounded };
 }
 
@@ -123,9 +129,9 @@ const ROUTE = {
 export class SwampIntegrationClient {
   readonly #credential: string;
   readonly #transport: HttpTransport;
-  // an older serve rotates refresh tokens, so resending one after a lost reply
-  // could present a token it already replaced and end the link
-  #serveRotates = false;
+  // a lost refresh reply is resent only once serve has shown it keeps the
+  // refresh token: an older serve that rotates would end the link on a resend
+  #serveKeepsToken = false;
 
   constructor(url: string, options: SwampIntegrationClientOptions) {
     refuseInBrowser("SwampIntegrationClient");
@@ -222,12 +228,12 @@ export class SwampIntegrationClient {
       { refreshToken },
       options,
       (r) =>
-        (r.status === 0 && !this.#serveRotates) || r.code === "not_saved" ||
+        (r.status === 0 && this.#serveKeepsToken) || r.code === "not_saved" ||
         refusedBeforeActing(r),
     );
     const body = reply.body;
     if (reply.status === 200) {
-      if (typeof body.refreshToken === "string") this.#serveRotates = true;
+      this.#serveKeepsToken = typeof body.refreshToken !== "string";
       const expiresAt = String(body.accessTokenExpiresAt);
       const timing = accessTokenTiming(
         reply,
@@ -249,12 +255,14 @@ export class SwampIntegrationClient {
       };
     }
     if (reply.status === 401 && reply.code === "invalid_grant") {
-      const reason = typeof body.reason === "string"
-        ? body.reason as RefreshRefusalReason
-        : "unknown";
-      return reason === "not_admitted"
-        ? { kind: "not_admitted" }
-        : { kind: "link_ended", reason };
+      if (typeof body.reason !== "string") {
+        return { kind: "link_ended", reason: "unknown" };
+      }
+      this.#serveKeepsToken = true;
+      const reason = body.reason as RefreshRefusalReason;
+      if (reason === "not_admitted") return { kind: "not_admitted" };
+      if (reason === "mismatch") return { kind: "mismatch" };
+      return { kind: "link_ended", reason };
     }
     throw errorFrom(reply, ROUTE.refresh);
   }

@@ -245,6 +245,13 @@ Deno.test("SwampActionClient: a 401 asks the token source once for another token
   assertEquals(error.code, "unauthorized");
 });
 
+Deno.test("SwampActionClient: a fixed token refused with 401 is not sent again", async () => {
+  const { client, sent } = actions([failure(401, "unauthorized")], "fixed");
+  const error = await assertRejects(() => client.approvals(), SwampHttpError);
+  assertEquals(error.code, "unauthorized");
+  assertEquals(sent.length, 1);
+});
+
 Deno.test("SwampActionClient: rate limits are retried after Retry-After; a type serve lacks is action_unavailable", async () => {
   const { client, sent } = actions([
     failure(429, "rate_limited", { "retry-after": "0" }),

@@ -75,7 +75,6 @@ interface Serve {
   ctx: ConnectionContext;
   url: string;
   integration: SwampIntegrationClient;
-  /** links the person through the library and returns their token holder */
   link: (store?: TokenStore) => Promise<{
     tokens: DelegatedTokens;
     store: TokenStore;
@@ -230,7 +229,6 @@ Deno.test("swamp-lib over HTTP: link, redeem, then every action type acting as t
     assertEquals(approved.decision.decidedBy, "user:person-1");
     assertEquals(approved.decision.client, "integration:slack-bot");
 
-    // the same button again records nothing new
     const again = await actions.approve(decision);
     assertEquals(again.kind, "already_decided");
     await settled(ctx);

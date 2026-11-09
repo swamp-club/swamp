@@ -157,10 +157,11 @@ Deno.test("DelegatedTokens.unauthorized: takes a token another call already refr
 
 Deno.test("DelegatedTokens: a refused refresh throws link_ended or not_admitted", async () => {
   for (
-    const [reason, code] of [["expired", "link_ended"], [
-      "not_admitted",
-      "not_admitted",
-    ]]
+    const [reason, code] of [
+      ["expired", "link_ended"],
+      ["not_admitted", "not_admitted"],
+      ["mismatch", "token_mismatch"],
+    ]
   ) {
     const store = memoryTokenStore();
     await store.save("d1", tokenSet({ accessTokenDeadlineMs: NOW }));
@@ -174,6 +175,27 @@ Deno.test("DelegatedTokens: a refused refresh throws link_ended or not_admitted"
     assertEquals(error.code, code);
     assertEquals(error.reason, reason);
   }
+});
+
+Deno.test("DelegatedTokens: one caller's abort leaves a shared refresh running for the others", async () => {
+  const store = memoryTokenStore();
+  await store.save("d1", tokenSet({ accessTokenDeadlineMs: NOW }));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => release = r);
+  const route = refreshRoute();
+  const slowFetch: typeof fetch = async (input, init) => {
+    await gate;
+    return await route.fetch(input, init);
+  };
+  const h = holder(store, slowFetch);
+  const controller = new AbortController();
+  const aborted = h.accessToken({ signal: controller.signal });
+  const patient = h.accessToken();
+  controller.abort(new Error("caller gave up"));
+  await assertRejects(() => aborted, Error, "caller gave up");
+  release();
+  assertEquals(await patient, "access-1");
+  assertEquals(route.sent.length, 1);
 });
 
 Deno.test("DelegatedTokens: a store that fails to save is reported, and the new token is still used", async () => {

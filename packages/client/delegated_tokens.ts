@@ -28,15 +28,15 @@ import type { TokenStore } from "./token_store.ts";
 /** what an action client asks for the bearer of each call */
 export interface TokenSource {
   accessToken(options?: CallOptions): Promise<string>;
-  /** serve refused this token; answer one to try once more */
-  unauthorized(refused: string, options?: CallOptions): Promise<string>;
+  /** serve refused this token; answer another to try once more, or null */
+  unauthorized(refused: string, options?: CallOptions): Promise<string | null>;
 }
 
 /** a token that never changes, such as a personal API token for a script */
 export function fixedToken(token: string): TokenSource {
   return {
     accessToken: () => Promise.resolve(token),
-    unauthorized: () => Promise.resolve(token),
+    unauthorized: () => Promise.resolve(null),
   };
 }
 
@@ -64,6 +64,25 @@ const MIN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 // one refresh at a time per delegation and store in this process; a racing one
 // would be harmless, only wasted
 const inFlight = new WeakMap<TokenStore, Map<string, Promise<string>>>();
+
+function raceSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 function refreshDue(tokens: DelegatedTokenSet, nowMs: number): boolean {
   const margin = Math.max(
@@ -132,28 +151,27 @@ export class DelegatedTokens implements TokenSource {
     return tokens;
   }
 
+  /** the refresh is shared, so it runs without any one caller's signal */
   #refresh(options: CallOptions): Promise<string> {
     let byDelegation = inFlight.get(this.#store);
     if (!byDelegation) {
       byDelegation = new Map();
       inFlight.set(this.#store, byDelegation);
     }
-    const running = byDelegation.get(this.#delegationId);
-    if (running) return running;
     const map = byDelegation;
-    const work = this.#refreshOnce(options).finally(() => {
-      map.delete(this.#delegationId);
-    });
-    map.set(this.#delegationId, work);
-    return work;
+    let work = map.get(this.#delegationId);
+    if (!work) {
+      work = this.#refreshOnce().finally(() => {
+        map.delete(this.#delegationId);
+      });
+      map.set(this.#delegationId, work);
+    }
+    return raceSignal(work, options.signal);
   }
 
-  async #refreshOnce(options: CallOptions): Promise<string> {
+  async #refreshOnce(): Promise<string> {
     const tokens = await this.#current();
-    const outcome = await this.#integration.refresh(
-      tokens.refreshToken,
-      options,
-    );
+    const outcome = await this.#integration.refresh(tokens.refreshToken);
     if (outcome.kind === "not_admitted") {
       throw new SwampHttpError({
         status: 401,
@@ -162,6 +180,16 @@ export class DelegatedTokens implements TokenSource {
           "Serve does not admit this person right now; the link refreshes again once they are admitted",
         route: "delegations/refresh",
         reason: "not_admitted",
+      });
+    }
+    if (outcome.kind === "mismatch") {
+      throw new SwampHttpError({
+        status: 401,
+        code: "token_mismatch",
+        message:
+          "The stored refresh token is not this link's; the link itself is untouched",
+        route: "delegations/refresh",
+        reason: "mismatch",
       });
     }
     if (outcome.kind === "link_ended") {
