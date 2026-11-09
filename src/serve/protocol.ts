@@ -1400,6 +1400,8 @@ export interface ServeReloadResponse {
   triggerOverridesChanged?: number;
   workflowsReloaded?: number;
   webhooksReloaded?: number;
+  /** changes the reload left unapplied, with the reason and the fix */
+  warnings?: string[];
   errors: string[];
 }
 

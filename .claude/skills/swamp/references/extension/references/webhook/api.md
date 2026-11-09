@@ -62,6 +62,8 @@ interface WebhookResponse {
   body and the **redacted** headers only; the result must be JSON-serializable.
 - `respond` receives the final payload. Return `undefined` for the default
   `200 {"status":"queued"}`.
+- Every response that queues a run, yours included when `enqueue` is true,
+  carries the run's id in an `X-Swamp-Run-Id` header.
 
 ## Request order and failure handling
 

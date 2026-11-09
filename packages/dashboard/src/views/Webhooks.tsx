@@ -86,6 +86,11 @@ const LAST_RUN_LABELS: Record<string, string> = {
   never: "No runs in range",
 };
 
+const SOURCE_LABELS: Record<string, string> = {
+  config: "Serve config",
+  flag: "--webhook flag",
+};
+
 /** What the webhook table can be filtered by, beyond free text. */
 const WEBHOOK_FACETS: readonly RowFacetSpec<WebhookRow>[] = [
   {
@@ -108,6 +113,13 @@ const WEBHOOK_FACETS: readonly RowFacetSpec<WebhookRow>[] = [
     description: "How the request signature is checked",
     valueOf: (r) => r.scheme ?? "none",
     labelOf: (v) => (v === "none" ? "Not reported" : v),
+  },
+  {
+    key: "source",
+    label: "Defined in",
+    description: "Where the route is defined",
+    valueOf: (r) => r.source ?? "unknown",
+    labelOf: (v) => SOURCE_LABELS[v] ?? "Not reported",
   },
   {
     key: "prefix",
@@ -150,6 +162,7 @@ export function Webhooks(
         route: w.route,
         workflowName: w.workflowName,
         scheme: w.scheme,
+        source: w.source,
         sharedWith: (shared.get(w.workflowName) ?? []).filter((r) =>
           r !== w.route
         ),

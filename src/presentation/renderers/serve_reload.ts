@@ -47,6 +47,17 @@ class LogServeReloadRenderer implements ServeReloadRenderer {
       );
     }
 
+    if (result.webhooksReloaded && result.webhooksReloaded > 0) {
+      logger.info(
+        "Applied {count} webhook route change(s) from serve.yaml",
+        { count: result.webhooksReloaded },
+      );
+    }
+
+    for (const warning of result.warnings ?? []) {
+      logger.warn`${warning}`;
+    }
+
     if (result.errors.length > 0) {
       for (const error of result.errors) {
         logger.warn`${error}`;

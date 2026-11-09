@@ -86,7 +86,7 @@ without it the default file is optional.
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
 | `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
-| `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely |
+| `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely and are fixed until restart; only the file list reloads |
 | `--max-concurrent-webhook-runs` / `max-concurrent-webhook-runs` | `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS` | `1` | Webhook runs in flight at once, across all routes; deliveries to the same route may overlap. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
@@ -1464,7 +1464,14 @@ state is per route, so the per-token health view filters it with its webhook.
 The admin serve config reports the limit as `maxConcurrentWebhookRuns`.
 
 A verified request becomes a pending run before it executes, so a crash between
-receipt and completion is replayed at next boot (`src/serve/webhook.ts`). Each
+receipt and completion is replayed at next boot (`src/serve/webhook.ts`). The
+delivery's receipt id is the pending-run id and the run id: every queued
+response, including an extension `respond` that also enqueues, carries it in
+an `X-Swamp-Run-Id` header, and a replay starts the run under the same id. The
+id is a correlation id, not proof a run exists: a refused run creates no
+record, and `webhook_denied` and its audit entry name the id instead. If a run
+with that id already exists, the run starts under a fresh id. The JSON body
+stays `{"status":"queued","workflow":…}`. Each
 run acts as the built-in `service:webhook` principal, recorded as its
 `initiatedBy`, and is authorized when it starts executing. The sender's
 response does not change: a refused run was already acknowledged as queued, and
@@ -1773,9 +1780,13 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   resolved `--config` path, carried as `ConnectionContext.serveConfigPath`, or
   `.swamp/serve.yaml`). Webhook route changes (added, removed or modified
   bindings) apply on the next request; in-flight runs finish against the
-  endpoint they matched. Webhook reload is skipped if `--webhook`
-  CLI flags were used at startup, since flags are process arguments, not
-  hot-reloadable config.
+  endpoint they matched. The webhook service exists even when serve starts
+  with no routes, so a reload can add the first one. Routes from `--webhook`
+  flags are process arguments and never reload; when the config file also
+  lists `webhooks`, the reload response carries a `warnings` entry saying the
+  list was ignored (`src/serve/webhook_reload.ts`). The admin health snapshot
+  and the dashboard show each route's `source` (`config` or `flag`). The
+  config poller's extension reload does not re-read webhooks.
 
   `workflow.trigger.set` and `workflow.trigger.remove` over WebSocket apply
   trigger overrides directly: the handlers call `updateTriggerOverrides` on the

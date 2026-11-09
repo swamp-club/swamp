@@ -67,6 +67,8 @@ export interface HealthSnapshotWebhook {
   readonly route: string;
   readonly workflow: string;
   readonly scheme: string;
+  /** serve config routes change with a reload; flag routes need a restart */
+  readonly source: "config" | "flag";
   readonly active: number;
   readonly queued: number;
   readonly oldestQueuedAt: string | null;
@@ -135,6 +137,7 @@ export interface WebhookProvider {
     readonly route: string;
     readonly workflowIdOrName: string;
     readonly scheme: string;
+    readonly source?: "config" | "flag";
   }>;
   queueStatus(route: string): {
     readonly active: number;
@@ -277,6 +280,7 @@ export class HealthCollector {
         route: ep.route,
         workflow: ep.workflowIdOrName,
         scheme: ep.scheme,
+        source: ep.source ?? "config",
         ...this.#deps.webhookProvider!.queueStatus(ep.route),
       }))
       : [];

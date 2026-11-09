@@ -130,6 +130,7 @@ import {
   createWebhookRunAuthorizer,
 } from "../../serve/trigger_audit.ts";
 import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.ts";
+import { createWebhookUpdater } from "../../serve/webhook_reload.ts";
 import { principalToString } from "../../domain/access/principal.ts";
 import {
   SCHEDULER_PRINCIPAL,
@@ -385,7 +386,6 @@ import {
   resolveServePath,
   resolveServeTlsPaths,
   SERVE_CONFIG_PATH,
-  type WebhookConfigEntry,
 } from "../../serve/serve_config.ts";
 import {
   OAUTH_CLIENT_SECRET_FILE_FLAG,
@@ -590,6 +590,7 @@ import {
   sweepStaleRecords,
   sweepTokenConsistency,
   teamModeRunLiveness,
+  webhookReplayTargets,
 } from "../../serve/boot_reconciliation.ts";
 import {
   type AccessDataPoller,
@@ -2237,7 +2238,10 @@ const daemonEnableCommand = new Command()
       "or a webhook extension type (@collective/name). " +
       "Secret may use @env=VAR to read from an environment variable, " +
       "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
-      "from a configured vault (avoids secrets in argv)",
+      "from a configured vault (avoids secrets in argv). " +
+      "Flag routes replace the serve config's webhooks list and stay fixed " +
+      "until serve restarts; list routes under webhooks in serve.yaml to " +
+      "change them with 'swamp serve reload'",
     { collect: true },
   )
   .option(
@@ -3092,7 +3096,10 @@ export const serveCommand = new Command()
       "generic requires a header name and accepts an optional value prefix. " +
       "Secret may use @env=VAR to read from an environment variable, " +
       "@file=/path to read from a file, or @vault=<vault>:<key> to read " +
-      "from a configured vault (avoids secrets in argv)",
+      "from a configured vault (avoids secrets in argv). " +
+      "Flag routes replace the serve config's webhooks list and stay fixed " +
+      "until serve restarts; list routes under webhooks in serve.yaml to " +
+      "change them with 'swamp serve reload'",
     { collect: true },
   )
   .option(
@@ -6908,7 +6915,6 @@ export const serveCommand = new Command()
       clubHeartbeatService.start();
     }
 
-    let webhookService: WebhookService | null = null;
     const webhookSourceIsCliFlags = webhookFlags.length > 0;
     const hasWebhooks = webhookSourceIsCliFlags ||
       (merged.webhookConfigs && merged.webhookConfigs.length > 0);
@@ -6932,125 +6938,126 @@ export const serveCommand = new Command()
         (type) => resolveWebhookType(type, getAutoResolver()),
       );
     }
-    if (webhookEndpoints.length > 0) {
-      const endpoints = webhookEndpoints;
-      webhookService = new WebhookService({
-        acceptsRuns: () => !isFollowing(),
-        ...(leaderLink !== undefined ? { leaderLink } : {}),
-        repoDir: resolvedRepoDir,
-        repoContext,
-        datastoreConfig,
-        endpoints,
-        syncService,
-        syncGate,
-        runTracker,
-        instanceId,
-        controlPlaneStore,
-        initiatedBy: principalToString(WEBHOOK_PRINCIPAL),
-        defaultVault: repoMarker?.defaultVault,
-        runWriteFence,
-        authorizeRun: createWebhookRunAuthorizer(
-          triggerAuthorizer,
-          connectionCtx,
+    const endpoints = webhookEndpoints;
+    // built with no routes too, so a reload can add the first one
+    const webhookService = new WebhookService({
+      routeSource: webhookSourceIsCliFlags ? "flag" : "config",
+      acceptsRuns: () => !isFollowing(),
+      ...(leaderLink !== undefined ? { leaderLink } : {}),
+      repoDir: resolvedRepoDir,
+      repoContext,
+      datastoreConfig,
+      endpoints,
+      syncService,
+      syncGate,
+      runTracker,
+      instanceId,
+      controlPlaneStore,
+      initiatedBy: principalToString(WEBHOOK_PRINCIPAL),
+      defaultVault: repoMarker?.defaultVault,
+      runWriteFence,
+      authorizeRun: createWebhookRunAuthorizer(
+        triggerAuthorizer,
+        connectionCtx,
+      ),
+      createVaultAccess: () =>
+        serviceRunVaultScope(
+          runVaultScopeContext(connectionCtx),
+          WEBHOOK_PRINCIPAL,
         ),
-        createVaultAccess: () =>
-          serviceRunVaultScope(
-            runVaultScopeContext(connectionCtx),
-            WEBHOOK_PRINCIPAL,
-          ),
-        maxConcurrentRuns: maxConcurrentWebhookRuns,
-      });
+      maxConcurrentRuns: maxConcurrentWebhookRuns,
+    });
 
-      const webhookRejections = new WebhookRejectionCoalescer();
-      connectionCtx.webhookRuns = webhookService;
-      webhookService.setEventHandler((event) => {
-        // Audit before the output branch so --json mode audits too.
-        auditWebhookEvent(connectionCtx, event, webhookRejections);
-        if (isJson) {
-          console.log(JSON.stringify(event));
-        } else {
-          switch (event.kind) {
-            case "webhook_received":
-              logger.info(
-                "Webhook received on {route} for workflow {workflow}",
-                { route: event.route, workflow: event.workflowName },
-              );
-              break;
-            case "webhook_rejected":
-              logger.warn(
-                "Webhook rejected on {route}: {reason}",
-                { route: event.route, reason: event.reason },
-              );
-              break;
-            case "webhook_queued":
-              logger.info(
-                "Webhook queued workflow {workflow}",
-                { workflow: event.workflowName },
-              );
-              break;
-            case "webhook_completed": {
-              logger.info(
-                "Webhook workflow {workflow} completed (run: {runId})",
-                { workflow: event.workflowName, runId: event.runId },
-              );
-              const whRun = runTracker.findById(event.runId);
-              const whDuration = whRun
-                ? Date.now() - whRun.startedAt.getTime()
-                : 0;
-              runMetricsTracker.record("completed", whDuration);
-              break;
-            }
-            case "webhook_failed":
-              logger.error(
-                "Webhook workflow {workflow} failed: {error}",
-                { workflow: event.workflowName, error: event.error },
-              );
-              runMetricsTracker.record("failed", 0);
-              break;
+    const webhookRejections = new WebhookRejectionCoalescer();
+    connectionCtx.webhookRuns = webhookService;
+    webhookService.setEventHandler((event) => {
+      // Audit before the output branch so --json mode audits too.
+      auditWebhookEvent(connectionCtx, event, webhookRejections);
+      if (isJson) {
+        console.log(JSON.stringify(event));
+      } else {
+        switch (event.kind) {
+          case "webhook_received":
+            logger.info(
+              "Webhook received on {route} for workflow {workflow}",
+              { route: event.route, workflow: event.workflowName },
+            );
+            break;
+          case "webhook_rejected":
+            logger.warn(
+              "Webhook rejected on {route}: {reason}",
+              { route: event.route, reason: event.reason },
+            );
+            break;
+          case "webhook_queued":
+            logger.info(
+              "Webhook queued workflow {workflow} (run: {runId})",
+              { workflow: event.workflowName, runId: event.runId },
+            );
+            break;
+          case "webhook_completed": {
+            logger.info(
+              "Webhook workflow {workflow} completed (run: {runId})",
+              { workflow: event.workflowName, runId: event.runId },
+            );
+            const whRun = runTracker.findById(event.runId);
+            const whDuration = whRun
+              ? Date.now() - whRun.startedAt.getTime()
+              : 0;
+            runMetricsTracker.record("completed", whDuration);
+            break;
           }
+          case "webhook_failed":
+            logger.error(
+              "Webhook workflow {workflow} failed: {error}",
+              { workflow: event.workflowName, error: event.error },
+            );
+            runMetricsTracker.record("failed", 0);
+            break;
         }
-      });
+      }
+    });
 
-      for (const ep of endpoints) {
-        if (isJson) {
-          console.log(JSON.stringify({
-            kind: "webhook_registered",
+    for (const ep of endpoints) {
+      if (isJson) {
+        console.log(JSON.stringify({
+          kind: "webhook_registered",
+          route: ep.route,
+          workflow: ep.workflowIdOrName,
+          scheme: ep.verifier.scheme,
+        }));
+      } else {
+        logger.info(
+          "Webhook registered: {route} → {workflow} (scheme: {scheme})",
+          {
             route: ep.route,
             workflow: ep.workflowIdOrName,
             scheme: ep.verifier.scheme,
-          }));
-        } else {
-          logger.info(
-            "Webhook registered: {route} → {workflow} (scheme: {scheme})",
-            {
-              route: ep.route,
-              workflow: ep.workflowIdOrName,
-              scheme: ep.verifier.scheme,
-            },
-          );
-        }
+          },
+        );
       }
     }
 
-    const webhookUpdater = (!webhookSourceIsCliFlags && webhookService)
-      ? async (configs: readonly WebhookConfigEntry[]): Promise<number> => {
+    const webhookUpdater = createWebhookUpdater({
+      source: webhookSourceIsCliFlags ? "flag" : "config",
+      service: webhookService,
+      parse: async (configs) => {
         const vaultService = await VaultService.fromRepository(
           resolvedRepoDir,
           { defaultVaultName: repoMarker?.defaultVault },
         );
-        let parsed = await Promise.all(
+        const parsed = await Promise.all(
           configs.map((e) => parseWebhookConfig(e, vaultService)),
         );
-        parsed = await resolveExtensionWebhookEndpoints(
+        return await resolveExtensionWebhookEndpoints(
           parsed,
           (type) => resolveWebhookType(type, getAutoResolver()),
         );
-        return webhookService!.updateEndpoints(parsed);
-      }
-      : undefined;
+      },
+    });
     connectionCtx.webhookUpdater = webhookUpdater;
     connectionCtx.webhookAdmissionSnapshots = () =>
-      webhookService?.admissionSnapshots() ?? [];
+      webhookService.admissionSnapshots();
 
     const wsUpgradeOpts: Deno.UpgradeWebSocketOptions = {};
     if (wsIdleTimeoutSeconds !== undefined) {
@@ -7107,7 +7114,7 @@ export const serveCommand = new Command()
       workerProvider: workerGateway,
       scheduleProvider: scheduledExecution,
       scheduleEnabled: enableSchedule,
-      webhookProvider: webhookService ?? null,
+      webhookProvider: webhookService,
       remoteOnly: merged.remoteOnly,
       // read at most once a minute: the watermarks may live on a remote control
       // plane
@@ -7536,7 +7543,7 @@ export const serveCommand = new Command()
         const dataPlaneResponse = await dataPlane.handle(req, clientAddress());
         if (dataPlaneResponse) return dataPlaneResponse;
 
-        if (webhookService && req.method === "POST") {
+        if (req.method === "POST") {
           const webhookResponse = await webhookService.handleRequest(
             req,
             clientAddress(),
@@ -7840,9 +7847,7 @@ export const serveCommand = new Command()
                 scheduledCancelAll: scheduledExecution
                   ? (r) => scheduledExecution.cancelAllRuns(r)
                   : undefined,
-                webhookCancelAll: webhookService
-                  ? (r) => webhookService!.cancelAllRuns(r)
-                  : undefined,
+                webhookCancelAll: (r) => webhookService.cancelAllRuns(r),
               },
               typeFilter as ExecutionType | undefined,
               reason,
@@ -8341,9 +8346,12 @@ export const serveCommand = new Command()
                 result.webhooksReloaded > 0
               ) {
                 logger.info(
-                  "Reloaded {count} webhook route(s) from serve.yaml",
+                  "Applied {count} webhook route change(s) from serve.yaml",
                   { count: result.webhooksReloaded },
                 );
+              }
+              for (const warning of result.warnings ?? []) {
+                logger.warn`${warning}`;
               }
               if (result.errors.length > 0) {
                 for (const err of result.errors) {
@@ -8706,24 +8714,20 @@ export const serveCommand = new Command()
       );
     }
 
-    const configuredWebhookWorkflows = new Set(
-      webhookEndpoints.map((e) => e.workflowIdOrName),
-    );
-    const configuredWebhookRoutes = new Set(
-      webhookEndpoints.map((e) => e.route),
-    );
     const allWorkflows = await repoContext.workflowRepo.findAll();
     const configuredCronWorkflows = new Set(
       allWorkflows.filter((w) => w.schedule).map((w) => w.name),
     );
     const replayPendingAtLead = async (): Promise<void> => {
+      // read at replay time: a reload may have changed the routes since boot
+      const webhookTargets = webhookReplayTargets(webhookService);
       const replayed = await replayPendingRuns({
         runTracker,
-        webhookService: webhookService ?? undefined,
+        webhookService,
         scheduledExecution: scheduledExecution ?? undefined,
         controlPlaneStore,
-        configuredWebhookWorkflows,
-        configuredWebhookRoutes,
+        configuredWebhookWorkflows: webhookTargets.workflows,
+        configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
       });
       if (replayed > 0) {

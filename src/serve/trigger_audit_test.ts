@@ -394,6 +394,7 @@ Deno.test("auditWebhookEvent: queued and completed deliveries are not audited", 
     kind: "webhook_queued",
     route: "/hooks/gh",
     workflowName: "deploy",
+    runId: "run-1",
   }, coalescer);
   auditWebhookEvent({ auditEmitter: emitter }, {
     kind: "webhook_completed",
@@ -434,4 +435,30 @@ Deno.test("createWebhookRunAuthorizer: decides as the webhook principal and audi
   assertEquals(events[0].category, "access");
   assertEquals(events[0].sourceIp, "203.0.113.9");
   assertEquals(events[0].detail, "route=/hooks/gh reason=denied");
+});
+
+Deno.test("createWebhookRunAuthorizer: a refusal audit names the run id the sender was told", async () => {
+  const { events, emitter } = recorder();
+  const authorize: TriggerAuthorizer = (_principal, workflow) =>
+    Promise.resolve({
+      allowed: false,
+      workflowIdOrName: workflow,
+      resource: {
+        kind: "workflow",
+        name: workflow,
+        fields: { name: workflow },
+      },
+      decision: null,
+      reason: "denied",
+    });
+  await createWebhookRunAuthorizer(authorize, { auditEmitter: emitter })({
+    workflowIdOrName: "deploy",
+    route: "/hooks/gh",
+    replayed: false,
+    runId: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  });
+  assertEquals(
+    events[0].detail,
+    "route=/hooks/gh run=7c9e6679-7425-40de-944b-e07fc1f90ae7 reason=denied",
+  );
 });

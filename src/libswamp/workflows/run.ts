@@ -434,6 +434,8 @@ export interface WorkflowRunInput {
   initiatedBy?: string;
   client?: string;
   startKey?: RunStartKeyData;
+  /** serve-internal: the id a webhook delivery was told; never set from a client */
+  runId?: string;
   instanceId?: string;
   triggerSource?: string;
   noSupersede?: boolean;
@@ -1224,6 +1226,7 @@ export async function* workflowRun(
                   initiatedBy: resolvedInput.initiatedBy,
                   client: resolvedInput.client,
                   startKey: resolvedInput.startKey,
+                  runId: resolvedInput.runId,
                   instanceId: resolvedInput.instanceId,
                   triggerSource: resolvedInput.triggerSource,
                 }),
