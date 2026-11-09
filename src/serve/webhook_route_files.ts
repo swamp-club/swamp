@@ -348,20 +348,33 @@ export async function loadWebhookRouteFiles(
   return { files, refused };
 }
 
-// route files are bounded in size and depth by the loader, so recursion is safe
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(
-    Object.keys(value).sort().map((key) => [
-      key,
-      canonical((value as Record<string, unknown>)[key]),
-    ]),
-  );
-}
-
-function sameEntry(a: WebhookConfigEntry, b: WebhookConfigEntry): boolean {
-  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+// YAML yields Date and Uint8Array beside plain data; key order never counts.
+// Route files are bounded in size and depth by the loader, so recursion is safe
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date &&
+      Object.is(a.getTime(), b.getTime());
+  }
+  if (a instanceof Uint8Array || b instanceof Uint8Array) {
+    return a instanceof Uint8Array && b instanceof Uint8Array &&
+      a.length === b.length && a.every((byte, i) => byte === b[i]);
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+      a.every((item, i) => sameValue(item, b[i]));
+  }
+  if (
+    typeof a !== "object" || a === null || typeof b !== "object" || b === null
+  ) {
+    return Object.is(a, b);
+  }
+  const aKeys = Object.keys(a);
+  const bRecord = b as Record<string, unknown>;
+  return aKeys.length === Object.keys(b).length &&
+    aKeys.every((key) =>
+      Object.hasOwn(bRecord, key) &&
+      sameValue((a as Record<string, unknown>)[key], bRecord[key])
+    );
 }
 
 /**
@@ -394,7 +407,7 @@ export async function parseRouteFiles(
       const live = error instanceof WebhookEnvironmentError
         ? previous.find((e) =>
           e.source === "file" && e.file === file && e.route === entry.route &&
-          e.routeFileEntry !== undefined && sameEntry(e.routeFileEntry, entry)
+          e.routeFileEntry !== undefined && sameValue(e.routeFileEntry, entry)
         )
         : undefined;
       if (live) {

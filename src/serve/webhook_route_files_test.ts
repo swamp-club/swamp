@@ -368,6 +368,42 @@ Deno.test("parseRouteFiles: an outage refuses a file that changed since it loade
   }
 });
 
+Deno.test("parseRouteFiles: YAML timestamps and binary values count toward an unchanged file", async () => {
+  const withValues = (since: string, bytes: number[]) =>
+    outageEntry({
+      config: { since: new Date(since), key: new Uint8Array(bytes) },
+    });
+  const live = liveFileEndpoint(
+    "a.yaml",
+    withValues("2024-01-01T00:00:00Z", [1, 2]),
+  );
+
+  const same = await parseRouteFiles(
+    [{ file: "a.yaml", entry: withValues("2024-01-01T00:00:00Z", [1, 2]) }],
+    outage,
+    [live],
+  );
+  assertEquals(same.endpoints, [live]);
+
+  for (
+    const changed of [
+      withValues("2025-06-01T00:00:00Z", [1, 2]),
+      withValues("2024-01-01T00:00:00Z", [1, 3]),
+      outageEntry({
+        config: { since: "2024-01-01T00:00:00.000Z", key: [1, 2] },
+      }),
+    ]
+  ) {
+    const result = await parseRouteFiles(
+      [{ file: "a.yaml", entry: changed }],
+      outage,
+      [live],
+    );
+    assertEquals(result.endpoints, []);
+    assertEquals(result.refused.length, 1);
+  }
+});
+
 Deno.test("parseRouteFiles: an outage refuses a file with no live endpoint of its own", async () => {
   const entry = outageEntry();
   for (
