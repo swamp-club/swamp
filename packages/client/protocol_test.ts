@@ -538,7 +538,9 @@ type NotSentByDefault =
   | "signal_wait_requested"
   | "job_fanout_planned"
   | "job_fanout_waiting"
-  | "job_fanout_summary";
+  | "job_fanout_summary"
+  | "job_fanout_batch_started"
+  | "job_fanout_halted";
 
 type ServeWorkflowEvent = Exclude<
   libswampWorkflows.WorkflowRunEvent,
