@@ -53,8 +53,23 @@ export interface WebhookRoutesAppliedAudit {
   readonly outcome: "success" | "failure";
 }
 
+// a repo file name may hold spaces, separators or newlines that would forge a
+// field in the key=value detail
+function esc(value: string): string {
+  let out = "";
+  for (const c of value) {
+    const code = c.codePointAt(0)!;
+    out += code <= 0x20 || code === 0x7f || "%=,()".includes(c)
+      ? `%${code.toString(16).padStart(2, "0").toUpperCase()}`
+      : c;
+  }
+  return out;
+}
+
 function sourceLabel(change: WebhookRouteChange): string {
-  return change.source === "file" ? `file:${change.file ?? ""}` : change.source;
+  return change.source === "file"
+    ? `file:${esc(change.file ?? "")}`
+    : change.source;
 }
 
 function list(items: readonly string[]): string | undefined {
@@ -69,7 +84,7 @@ export function webhookRoutesAppliedDetail(
   audit: WebhookRoutesAppliedAudit,
 ): string {
   const changes = (items: readonly WebhookRouteChange[]) =>
-    list(items.map((c) => `${c.route}(${sourceLabel(c)})`));
+    list(items.map((c) => `${esc(c.route)}(${sourceLabel(c)})`));
   const fields: [string, string | undefined][] = [
     ["trigger", audit.context.trigger],
     ["added", changes(audit.diff.added)],
@@ -77,15 +92,19 @@ export function webhookRoutesAppliedDetail(
     ["removed", changes(audit.diff.removed)],
     [
       "kept",
-      list(audit.kept.map((k) => `${k.route}(file:${k.file},${k.reason})`)),
+      list(
+        audit.kept.map((k) =>
+          `${esc(k.route)}(file:${esc(k.file)},${k.reason})`
+        ),
+      ),
     ],
     [
       "refused",
       list(
         audit.refused.map((r) =>
           r.route !== undefined
-            ? `${r.route}(file:${r.file})`
-            : `file:${r.file}`
+            ? `${esc(r.route)}(file:${esc(r.file)})`
+            : `file:${esc(r.file)}`
         ),
       ),
     ],

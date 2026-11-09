@@ -112,6 +112,7 @@ export interface HealthSnapshotWebhookRouteFiles {
     readonly file: string;
     readonly route?: string;
     readonly message: string;
+    readonly outage?: boolean;
   }>;
   readonly kept: ReadonlyArray<{
     readonly file: string;

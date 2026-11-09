@@ -115,8 +115,23 @@ export class WebhookRoutesPoller {
     this.#running = true;
     try {
       await this.#check();
+    } catch (error) {
+      // a rejected tick would stop every later poll and reject stop()
+      this.#lastError = `Webhook route poll failed: ${message(error)}`;
+      logger.warn`${this.#lastError}`;
     } finally {
       this.#running = false;
+    }
+  }
+
+  /** a deploy landing during the load may have applied a half-written set */
+  async #unchangedSince(snapshot: string): Promise<boolean> {
+    try {
+      const after = await this.#options.snapshot();
+      this.#previous = after;
+      return after === snapshot;
+    } catch {
+      return false;
     }
   }
 
@@ -169,7 +184,9 @@ export class WebhookRoutesPoller {
 
     // the snapshot read before applying, so an edit made during it is seen;
     // an outage leaves it unapplied so every poll tries again until it clears
-    if (!result.retryable) this.#applied = snapshot;
+    if (!result.retryable && await this.#unchangedSince(snapshot)) {
+      this.#applied = snapshot;
+    }
     this.#failedSnapshot = undefined;
     this.#failures = 0;
     this.#lastError = result.retryable

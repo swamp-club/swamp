@@ -1502,7 +1502,8 @@ too.
 **Polling route files.** With `webhook-routes-poll` set, a `WebhookRoutesPoller`
 (`src/serve/webhook_routes_poller.ts`) hashes the files the loader would read on
 each tick (`snapshotWebhookRoutesDir`) and applies a change once two ticks see
-the same snapshot, so a deploy caught mid-write waits a tick. Its first settled
+the same snapshot, so a deploy caught mid-write waits a tick; it snapshots
+again after applying and applies once more if a deploy landed during the load. Its first settled
 snapshot is always applied, which catches an edit made between startup and the
 first poll. It applies through the same updater as `swamp serve reload`
 (`createWebhookRouteApplier`), keeping the live `serve.yaml` and `--webhook`

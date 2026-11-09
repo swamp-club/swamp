@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   MAX_FAILED_ROUTE_APPLIES,
+  type WebhookRoutesApplyResult,
   WebhookRoutesPoller,
 } from "./webhook_routes_poller.ts";
 
@@ -225,4 +226,54 @@ Deno.test("WebhookRoutesPoller: a snapshot error clears once the directory reads
   await poller.pollNow();
   assertEquals(poller.status().lastError, null);
   assertEquals(state.applies, 1);
+});
+
+Deno.test("WebhookRoutesPoller: a deploy landing during an apply is applied again once it settles", async () => {
+  const snapshots = ["s1", "s1", "s2", "s2", "s2"];
+  let applies = 0;
+  const poller = new WebhookRoutesPoller({
+    intervalMs: 60_000,
+    snapshot: () => Promise.resolve(snapshots.shift() ?? "s2"),
+    apply: () => {
+      applies++;
+      return Promise.resolve({ changed: 1, errors: [] });
+    },
+  });
+
+  await poller.pollNow();
+  await poller.pollNow();
+  assertEquals(applies, 1);
+  await poller.pollNow();
+  assertEquals(applies, 2);
+  await poller.pollNow();
+  assertEquals(applies, 2);
+});
+
+Deno.test("WebhookRoutesPoller: an unexpected failure in a check keeps later polls running", async () => {
+  let calls = 0;
+  let snapshots = 0;
+  const poller = new WebhookRoutesPoller({
+    intervalMs: 60_000,
+    // two checks and the post-apply recheck see v1, later checks see v2
+    snapshot: () => Promise.resolve(++snapshots <= 3 ? "v1" : "v2"),
+    apply: () => {
+      calls++;
+      return Promise.resolve(
+        (calls === 1
+          ? { changed: 0 }
+          : { changed: 1, errors: [] }) as unknown as WebhookRoutesApplyResult,
+      );
+    },
+  });
+
+  await poller.pollNow();
+  await poller.pollNow();
+  assertEquals(
+    poller.status().lastError?.startsWith("Webhook route poll failed"),
+    true,
+  );
+  await poller.pollNow();
+  await poller.pollNow();
+  assertEquals(calls, 2);
+  await poller.stop();
 });

@@ -154,3 +154,14 @@ Deno.test("emitWebhookRoutesApplied: an emitter failure is swallowed", () => {
 Deno.test("emitWebhookRoutesApplied: without an emitter nothing happens", () => {
   emitWebhookRoutesApplied({}, audit());
 });
+
+Deno.test("webhookRoutesAppliedDetail: a file name cannot forge a detail field", () => {
+  const detail = webhookRoutesAppliedDetail(audit({
+    diff: { added: [], changed: [], removed: [] },
+    refused: [{ file: "x added=/hooks/admin(file:y)\n.yaml" }],
+  }));
+  assertEquals(
+    detail,
+    "trigger=poll refused=file:x%20added%3D/hooks/admin%28file:y%29%0A.yaml",
+  );
+});
