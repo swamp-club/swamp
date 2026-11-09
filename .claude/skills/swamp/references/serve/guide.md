@@ -242,10 +242,12 @@ An app acts as a person only after they link: the app calls
 the person swamp-club's consent URL, then redeems
 `POST
 /api/v1/delegations/redeem` for a 1-hour access token and a refresh token
-(`/refresh` rotates both; reusing an old refresh token ends the link). Rights
-are the person's grants within the integration's ceiling and what they consented
-to. A link lasts 30 days. Links need an oauth-mode serve registered with
-swamp-club, and every serve node upgraded.
+(`/refresh` mints a new access token and keeps the refresh token, so racing
+refreshes are harmless; swamp-lib's `SwampIntegrationClient`, `DelegatedTokens`
+and `SwampActionClient` wrap these routes). Rights are the person's grants
+within the integration's ceiling and what they consented to. A link lasts 30
+days. Links need an oauth-mode serve registered with swamp-club, and every serve
+node upgraded.
 
 ```bash
 swamp access delegation list [--integration slack-bot] [--state issued]
