@@ -42,6 +42,7 @@ import {
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
 import { BundleRegistry, hashAssetBytes } from "./bundle_registry.ts";
 import { join } from "@std/path";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import {
   WorkerGateway,
   WorkerNotDispatchableError,
@@ -431,8 +432,11 @@ Deno.test("DispatchService: an edited asset ships under a new fingerprint with t
       ...builtinModelDef,
       bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
       extensionFilesRoot: filesRoot,
-      readExtensionAdditionalFiles: () =>
-        Promise.resolve(["a.txt", "missing.txt"]),
+      readExtensionDeclaredAssets: () =>
+        Promise.resolve({
+          additionalFiles: ["a.txt", "missing.txt"],
+          binaries: [],
+        }),
     };
     await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
     await Deno.writeTextFile(join(filesRoot, "a.txt"), "v2");
@@ -474,7 +478,8 @@ Deno.test("DispatchService: a file newly declared in the manifest ships on the n
       ...builtinModelDef,
       bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
       extensionFilesRoot: filesRoot,
-      readExtensionAdditionalFiles: () => Promise.resolve(declared),
+      readExtensionDeclaredAssets: () =>
+        Promise.resolve({ additionalFiles: declared, binaries: [] }),
     };
     await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
     declared = ["a.py", "b.py"];
@@ -506,10 +511,11 @@ Deno.test("DispatchService: a manifest that declares nothing now still dispatche
     ...builtinModelDef,
     bundleSourceFactory: () => Promise.resolve(js),
     extensionFilesRoot: "/ext/files",
-    readExtensionAdditionalFiles: () => Promise.resolve([]),
+    readExtensionDeclaredAssets: () =>
+      Promise.resolve({ additionalFiles: [], binaries: [] }),
   };
   await h.service.executeRemote(stepRequest({
-    modelDef: { ...extensionDef, readExtensionAdditionalFiles: undefined },
+    modelDef: { ...extensionDef, readExtensionDeclaredAssets: undefined },
   }));
   await h.service.executeRemote(stepRequest({ modelDef: extensionDef }));
   const [jsOnly, declaredNothing] = h.dispatchCalls.map((c) =>
@@ -517,6 +523,168 @@ Deno.test("DispatchService: a manifest that declares nothing now still dispatche
   );
   assertEquals(declaredNothing, jsOnly);
   assertEquals(h.bundles.get(declaredNothing)?.assetHashes, undefined);
+});
+
+async function textSha256(text: string): Promise<string> {
+  return await hashAssetBytes(new TextEncoder().encode(text));
+}
+
+function assetDef(
+  filesRoot: string,
+  declared: () => { additionalFiles: string[]; binaries: string[] },
+): ModelDefinition {
+  return {
+    ...builtinModelDef,
+    bundleSourceFactory: () => Promise.resolve("export const model = 1;"),
+    extensionFilesRoot: filesRoot,
+    readExtensionDeclaredAssets: () => Promise.resolve(declared()),
+  };
+}
+
+Deno.test("DispatchService: a binaries-only extension is hashed and registered with its binaries, and a binary-only edit ships under a new fingerprint", async () => {
+  const filesRoot = await Deno.makeTempDir();
+  try {
+    await Deno.writeFile(join(filesRoot, "thing.bin"), new Uint8Array([0xff]));
+    const h = createHarness();
+    const def = assetDef(
+      filesRoot,
+      () => ({ additionalFiles: [], binaries: ["thing.bin"] }),
+    );
+    await h.service.executeRemote(stepRequest({ modelDef: def }));
+    await Deno.writeFile(join(filesRoot, "thing.bin"), new Uint8Array([0xfe]));
+    await h.service.executeRemote(stepRequest({ modelDef: def }));
+
+    const [first, second] = h.dispatchCalls.map((c) =>
+      c.params.bundleFingerprint
+    );
+    assertEquals(second === first, false);
+    const bundle = h.bundles.get(first);
+    assertEquals(bundle?.binaries, ["thing.bin"]);
+    assertEquals(
+      bundle?.assetHashes,
+      new Map([["thing.bin", await hashAssetBytes(new Uint8Array([0xff]))]]),
+    );
+  } finally {
+    await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("DispatchService: moving a file from additionalFiles to binaries ships under a new fingerprint", async () => {
+  const filesRoot = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(join(filesRoot, "tool"), "#!/bin/sh");
+    let declared = { additionalFiles: ["tool"], binaries: [] as string[] };
+    const h = createHarness();
+    const def = assetDef(filesRoot, () => declared);
+    await h.service.executeRemote(stepRequest({ modelDef: def }));
+    declared = { additionalFiles: [], binaries: ["tool"] };
+    await h.service.executeRemote(stepRequest({ modelDef: def }));
+    const [first, second] = h.dispatchCalls.map((c) =>
+      c.params.bundleFingerprint
+    );
+    assertEquals(second === first, false);
+  } finally {
+    await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("DispatchService: a bundle without binaries keeps the fingerprint of JS plus relPath:hash parts", async () => {
+  const filesRoot = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(join(filesRoot, "a.txt"), "v1");
+    const h = createHarness();
+    await h.service.executeRemote(stepRequest({
+      modelDef: assetDef(
+        filesRoot,
+        () => ({ additionalFiles: ["a.txt", "gone.txt"], binaries: [] }),
+      ),
+    }));
+    const expected = await textSha256(
+      [
+        "export const model = 1;",
+        `a.txt:${await textSha256("v1")}`,
+        "gone.txt:missing",
+      ].join("\0"),
+    );
+    assertEquals(h.dispatchCalls[0].params.bundleFingerprint, expected);
+  } finally {
+    await Deno.remove(filesRoot, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test({
+  name:
+    "DispatchService: a declared asset that is a symlink, under a symlinked directory, a directory, or outside the files root is not shipped, and is warned about once per fingerprint",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const base = await Deno.makeTempDir();
+    const records: LogRecord[] = [];
+    await configure({
+      sinks: { capture: (record: LogRecord) => records.push(record) },
+      loggers: [
+        {
+          category: ["serve", "dispatch"],
+          lowestLevel: "warning",
+          sinks: ["capture"],
+        },
+        { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+      ],
+      reset: true,
+    });
+    try {
+      const filesRoot = join(base, "ext");
+      const outside = join(base, "outside");
+      const sibling = join(base, "ext-other");
+      await Deno.mkdir(join(filesRoot, "dir"), { recursive: true });
+      await Deno.mkdir(outside);
+      await Deno.mkdir(sibling);
+      await Deno.writeTextFile(join(outside, "secret"), "secret");
+      await Deno.writeTextFile(join(sibling, "secret"), "secret");
+      await Deno.writeTextFile(join(filesRoot, "ok.txt"), "ok");
+      await Deno.symlink(join(outside, "secret"), join(filesRoot, "link"), {
+        type: "file",
+      });
+      await Deno.symlink(outside, join(filesRoot, "linked-dir"), {
+        type: "dir",
+      });
+      const h = createHarness();
+      const def = assetDef(filesRoot, () => ({
+        additionalFiles: ["ok.txt", "link", "dir"],
+        binaries: ["linked-dir/secret", "../ext-other/secret"],
+      }));
+      await h.service.executeRemote(stepRequest({ modelDef: def }));
+      await h.service.executeRemote(stepRequest({ modelDef: def }));
+
+      const fingerprint = h.dispatchCalls[0].params.bundleFingerprint;
+      assertEquals(
+        [...h.bundles.get(fingerprint)!.assetHashes!.keys()],
+        ["ok.txt"],
+      );
+      assertEquals(
+        h.bundles.get(fingerprint)!.withheld!.map((a) =>
+          `${a.field} ${a.relPath} ${a.reason}`
+        ).sort(),
+        [
+          "additionalFiles dir not a regular file",
+          "additionalFiles link a symlink",
+          "binaries ../ext-other/secret outside the extension directory",
+          "binaries linked-dir/secret outside the extension directory",
+        ],
+      );
+      const reasons = records.map((r) =>
+        `${r.properties.relPath} ${r.properties.reason}`
+      ).sort();
+      assertEquals(reasons, [
+        "../ext-other/secret outside the extension directory",
+        "dir not a regular file",
+        "link a symlink",
+        "linked-dir/secret outside the extension directory",
+      ]);
+    } finally {
+      await reset();
+      await Deno.remove(base, { recursive: true }).catch(() => {});
+    }
+  },
 });
 
 Deno.test("DispatchService: a bundle that cannot be built fails the step and is retried by the next dispatch (swamp-club#3594)", async () => {

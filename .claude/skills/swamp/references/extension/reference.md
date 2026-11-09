@@ -344,6 +344,10 @@ via the `binaries` manifest field. Files listed in `binaries` are:
   on POSIX systems.
 - **Warned at pull time** — `swamp extension pull` alerts users to inspect
   binaries before use.
+- **Shipped to remote workers** — a step placed on a worker gets them beside
+  `additionalFiles`, executable, so `context.extensionFile()` resolves them
+  there too. Only regular files inside the extension ship; a symlinked entry is
+  left on the orchestrator.
 
 ```yaml
 # manifest.yaml

@@ -53,11 +53,14 @@ import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { VaultSecretBag } from "../domain/vaults/vault_secret_bag.ts";
 import { createExtensionCelEnvironment } from "../infrastructure/cel/cel_evaluator.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
+import { markErrorPaths, UserError } from "../domain/errors.ts";
+import { resolveExtensionFile } from "../domain/extensions/extension_file_resolver.ts";
 import {
   type DispatchParams,
   type GetDataResult,
   RemoteMethod,
   shipsReferencesOnly,
+  type WithheldAsset,
 } from "../domain/remote/protocol.ts";
 import { SecretLoader, secretReadKey } from "../domain/vaults/secret_loader.ts";
 import {
@@ -111,6 +114,7 @@ export interface RemoteContextOptions {
   /** Per-dispatch scratch directory; doubles as the spool location. */
   scratchDir: string;
   extensionFilesDir?: string;
+  withheldAssets?: readonly WithheldAsset[];
   /**
    * the verified bundle's resource specs; the dispatch's own resourceSpecs
    * carry descriptions only, so they cannot resolve sensitive fields
@@ -753,6 +757,20 @@ export function createRemoteMethodContext(
     createFileWriter: writers.createFileWriter,
     onEvent,
     extensionFile: (relPath: string) => {
+      const withheld = options.withheldAssets?.find((a) =>
+        a.relPath === relPath
+      );
+      if (withheld !== undefined) {
+        throw markErrorPaths(
+          new UserError(
+            `Extension file "${relPath}" is declared in ${withheld.field} ` +
+              `but was not shipped to this worker: on the orchestrator it is ` +
+              `${withheld.reason}. Only regular files inside the extension ` +
+              `directory reach workers.`,
+          ),
+          [relPath],
+        );
+      }
       if (extensionFilesDir === undefined) {
         throw wordedError(
           wordedText((w) =>
@@ -760,7 +778,7 @@ export function createRemoteMethodContext(
           ),
         );
       }
-      return join(extensionFilesDir, ...relPath.split("/"));
+      return resolveExtensionFile(extensionFilesDir, relPath);
     },
     createCelEnvironment: createExtensionCelEnvironment,
     runModel: () =>

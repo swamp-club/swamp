@@ -201,7 +201,7 @@ export async function runDispatchRunner(
     });
     const bundleCache = new WorkerBundleCache(params.cacheDirPath, client);
 
-    const { modelDef, filesDir } = await observeExecutionWork(
+    const { modelDef, filesDir, withheldAssets } = await observeExecutionWork(
       "worker.prepare",
       {
         "swamp.dispatch.id": dispatch.dispatchId,
@@ -234,6 +234,7 @@ export async function runDispatchRunner(
       dispatch,
       scratchDir,
       extensionFilesDir: filesDir ?? modelDef.extensionFilesRoot,
+      withheldAssets,
       resourceSpecs: modelDef.resources,
       signal,
       redactor,

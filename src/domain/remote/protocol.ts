@@ -664,3 +664,14 @@ export const ResolveModelParamsSchema = z.object({
 });
 
 export type ResolveModelParams = z.infer<typeof ResolveModelParamsSchema>;
+
+/** a declared extension asset the orchestrator did not ship, and why */
+export interface WithheldAsset {
+  relPath: string;
+  field: "additionalFiles" | "binaries";
+  reason:
+    | "missing"
+    | "a symlink"
+    | "not a regular file"
+    | "outside the extension directory";
+}

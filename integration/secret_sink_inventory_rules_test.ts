@@ -517,7 +517,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/extension_reload.ts: reloadPulledExtensions": CONFIG_WRITE,
     "src/serve/serve_config.ts: writeServeConfigFile": CONFIG_WRITE,
     "src/serve/unpushed_interrupts.ts: recordUnpushedInterrupts": CONFIG_WRITE,
-    "src/worker/bundle_cache.ts: WorkerBundleCache": CONFIG_WRITE,
+    "src/worker/bundle_cache.ts: writeAtomically": CONFIG_WRITE,
     "src/worker/connect.ts: loadOrCreateMachineId": CONFIG_WRITE,
   },
 };

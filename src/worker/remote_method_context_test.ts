@@ -47,7 +47,9 @@ import {
   LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  type WithheldAsset,
 } from "../domain/remote/protocol.ts";
+import { UserError } from "../domain/errors.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import {
   type DataPlaneClient,
@@ -101,6 +103,7 @@ function harness(
   dataTags?: Record<string, string>,
   resourceSpecs?: Record<string, ResourceOutputSpec>,
   redactor?: SecretRedactor,
+  withheldAssets?: readonly WithheldAsset[],
 ) {
   const calls: StubCall[] = [];
   const worker: RpcChannel = new RpcChannel({
@@ -292,6 +295,7 @@ function harness(
     dispatch: overrideDispatch ?? dispatch(),
     scratchDir,
     extensionFilesDir,
+    withheldAssets,
     resourceSpecs,
     signal: new AbortController().signal,
     onEvent,
@@ -697,7 +701,12 @@ Deno.test("remote context: unsupported members fail loudly with guidance", async
 });
 
 Deno.test("remote context: extensionFile resolves under the prefetched assets dir", async () => {
-  await withScratch((dir) => {
+  await withScratch(async (dir) => {
+    await Deno.mkdir(join(dir, "assets", "templates"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "assets", "templates", "report.html"),
+      "<html>",
+    );
     const withAssets = harness(dir, join(dir, "assets"));
     assertEquals(
       withAssets.context.extensionFile("templates/report.html"),
@@ -708,6 +717,64 @@ Deno.test("remote context: extensionFile resolves under the prefetched assets di
       () => withoutAssets.context.extensionFile("x"),
       Error,
       "no co-located extension files",
+    );
+  });
+});
+
+Deno.test("remote context: extensionFile names the manifest field and the reason for an asset serve withheld, and points at the manifest for one never declared", async () => {
+  await withScratch(async (dir) => {
+    await Deno.mkdir(join(dir, "assets"), { recursive: true });
+    const { context } = harness(
+      dir,
+      join(dir, "assets"),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ relPath: "bin/link", field: "binaries", reason: "a symlink" }],
+    );
+    const withheld = assertThrows(
+      () => context.extensionFile("bin/link"),
+      UserError,
+    );
+    assertEquals(
+      withheld.message,
+      'Extension file "bin/link" is declared in binaries but was not ' +
+        "shipped to this worker: on the orchestrator it is a symlink. Only " +
+        "regular files inside the extension directory reach workers.",
+    );
+    assertThrows(
+      () => context.extensionFile("layouts/absent.svg"),
+      UserError,
+      "matches the manifest's additionalFiles or binaries entry",
+    );
+    assertThrows(
+      () => context.extensionFile("../escape"),
+      UserError,
+      "Unsafe relative path",
+    );
+  });
+});
+
+Deno.test("remote context: extensionFile explains a withheld asset even when nothing else shipped", async () => {
+  await withScratch((dir) => {
+    const { context } = harness(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ relPath: "assets/thing.bin", field: "binaries", reason: "missing" }],
+    );
+    assertThrows(
+      () => context.extensionFile("assets/thing.bin"),
+      UserError,
+      "on the orchestrator it is missing",
     );
     return Promise.resolve();
   });
