@@ -51,23 +51,27 @@ export const CONTAINER_COMPARISON_REASON =
 
 let environment: Environment | undefined;
 
-function checkEnvironment(): Environment {
+export function checkEnvironment(): Environment {
   return environment ??= createSecretCheckEnvironment();
 }
 
-function firstLine(error: unknown): string {
+export function firstLine(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.split("\n")[0];
 }
 
 const NAMES_SECRET = new RegExp(`\\b${SECRET_TYPE_NAME}\\b`);
 
+export function namesSecret(reason: string): boolean {
+  return NAMES_SECRET.test(reason);
+}
+
 /**
  * each checked vault.get is bound as dyn at run time, so a ternary with a
  * Secret branch keeps its meaning; the check cannot type it, so what follows is
  * refused only at run time
  */
-function isTernaryUnification(error: unknown): boolean {
+export function isTernaryUnification(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code;
   return code === "incompatible_ternary_branches" ||
     firstLine(error).startsWith("Ternary branches must have the same type");

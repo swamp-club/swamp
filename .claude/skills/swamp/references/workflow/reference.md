@@ -299,6 +299,11 @@ inputs match required method/workflow arguments.
    that default. Other dynamic CEL references (`${{ ... }}`) in behavior names
    pass with the note `(target resolved at run time, not checked)`, and those in
    workflow names are skipped.
+9. Expressions in jobs type-check against swamp's CEL — a call to a function
+   swamp does not provide, or with arguments no overload accepts
+   (`${{ range(1, 9) }}`, `${{ 'a' + 1 }}`), fails validation, since every run
+   of it would. Variables check as `dyn`, so a type error that depends on a
+   runtime value is still caught only by the run.
 
 ```bash
 swamp workflow validate my-workflow --json
@@ -890,7 +895,7 @@ expanded iteration evaluates its own guard independently:
 - name: read-plate
   forEach:
     item: well
-    in: ${{ range(1, 97) }}
+    in: ${{ ["A1", "A2", "A3"] }}
   guard: ${{ data.latest("plate-reader", self.well) }}
   task:
     type: behavior

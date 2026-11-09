@@ -1392,3 +1392,61 @@ Deno.test("pulledExtensionWorkflowScope: without an extension repository only th
   assertEquals((await scope.findAllWorkflows()).map((w) => w.name), ["own"]);
   assertEquals(await scope.findSkippedWorkflows!(), []);
 });
+
+Deno.test("createWorkflowValidateDeps: a forEach over a function swamp does not provide fails validation", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    const workflowsDir = join(dir, "workflows");
+    await Deno.mkdir(workflowsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(workflowsDir, "workflow-fan.yaml"),
+      stringifyYaml(JSON.parse(JSON.stringify(
+        Workflow.create({
+          name: "fan",
+          jobs: [Job.create({
+            name: "main",
+            steps: [Step.create({
+              name: "each",
+              forEach: { item: "n", in: "${{ range(1, 9) }}" },
+              task: StepTask.model("example-behavior", "run"),
+            })],
+          })],
+        }).toData(),
+      ))),
+    );
+    const deps = createWorkflowValidateDeps(
+      new YamlWorkflowRepository(dir),
+      undefined,
+      workflowsDir,
+    );
+
+    const events = await collect<WorkflowValidateEvent>(
+      workflowValidate(createLibSwampContext(), deps, {
+        workflowIdOrName: "fan",
+      }),
+    );
+
+    const completed = events.at(-1) as Extract<
+      WorkflowValidateEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    const report = completed.data as WorkflowValidateData;
+    assertEquals(report.passed, false);
+    const failures = report.validations.filter((v) => !v.passed);
+    assertEquals(failures.map((v) => v.name), [
+      "Task expressions in job 'main' step 'each'",
+    ]);
+    assertStringIncludes(
+      failures[0].error ?? "",
+      "forEach.in holds ${{ range(1, 9) }}, which a run refuses: " +
+        "found no matching overload for 'range(int, int)'",
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
