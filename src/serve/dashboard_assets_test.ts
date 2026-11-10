@@ -21,8 +21,8 @@ import { assert, assertEquals } from "@std/assert";
 import { join, resolve } from "@std/path";
 import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 import {
-  DASHBOARD_DIST_DIR,
   dashboardBundleExists,
+  getDashboardDistDir,
   serveDashboardFile,
   serveDashboardRoute,
 } from "./dashboard_assets.ts";
@@ -43,14 +43,15 @@ async function withDist(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-Deno.test("DASHBOARD_DIST_DIR: resolves to packages/dashboard/dist at the repo root", () => {
+Deno.test("getDashboardDistDir: resolves to packages/dashboard/dist at the repo root", () => {
+  const distDir = getDashboardDistDir();
   assertPathEquals(
-    DASHBOARD_DIST_DIR,
+    distDir,
     resolve(import.meta.dirname!, "..", "..", "packages", "dashboard", "dist"),
   );
-  assert(Deno.statSync(join(DASHBOARD_DIST_DIR, "..", "package.json")).isFile);
+  assert(Deno.statSync(join(distDir, "..", "package.json")).isFile);
   assert(
-    Deno.statSync(join(DASHBOARD_DIST_DIR, "..", "..", "..", "deno.json"))
+    Deno.statSync(join(distDir, "..", "..", "..", "deno.json"))
       .isFile,
   );
 });

@@ -24,6 +24,7 @@ import type {
   UnitOfWork,
 } from "../../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { resourceRootUrl } from "../runtime/resource_root.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { legacyUnitOfWorkTarget } from "./legacy_unit_of_work.ts";
 import {
@@ -324,7 +325,6 @@ export type UnscopedChangeReporter = (report: UnscopedChange) => void;
 let reporterForTesting: UnscopedChangeReporter | undefined;
 const warnedCallSites = new Set<string>();
 
-const SOURCE_ROOT = new URL("../../../", import.meta.url).href;
 const PERSISTENCE_DIR = "src/infrastructure/persistence/";
 // Diagnostic phases wrap a repository's work without being its caller.
 const DIAGNOSTICS_DIR = "src/domain/diagnostics/";
@@ -383,7 +383,14 @@ function callerOfThisWrite(): UnscopedCaller | undefined {
   Error.stackTraceLimit = 50;
   const stack = new Error().stack ?? "";
   Error.stackTraceLimit = limit;
-  return unscopedCallerFrom(stack, SOURCE_ROOT);
+  let root: string;
+  try {
+    root = resourceRootUrl();
+  } catch {
+    // a diagnostic on the write path must never fail the write
+    return undefined;
+  }
+  return unscopedCallerFrom(stack, root);
 }
 
 function reportUnscopedChange(change: StagedChange): void {

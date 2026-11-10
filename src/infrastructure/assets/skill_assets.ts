@@ -19,6 +19,7 @@
 
 import { join } from "@std/path";
 import { markErrorPaths } from "../../domain/errors.ts";
+import { resourcePath } from "../runtime/resource_root.ts";
 
 export interface SkillInfo {
   relativePath: string;
@@ -390,15 +391,8 @@ const BUNDLED_SKILLS: SkillInfo[] = [
 ];
 
 export class SkillAssets {
-  private readonly skillsDir: string;
-
-  constructor() {
-    const currentDir = import.meta.dirname ?? ".";
-    this.skillsDir = join(currentDir, "..", "..", "..", ".claude", "skills");
-  }
-
   getSkillsDir(): string {
-    return this.skillsDir;
+    return resourcePath(".claude", "skills");
   }
 
   listSkills(): SkillInfo[] {
@@ -411,7 +405,7 @@ export class SkillAssets {
   }
 
   async readSkill(relativePath: string): Promise<string | null> {
-    const path = join(this.skillsDir, relativePath);
+    const path = join(this.getSkillsDir(), relativePath);
     try {
       return await Deno.readTextFile(path);
     } catch (error) {
@@ -423,7 +417,7 @@ export class SkillAssets {
   }
 
   getSkillPath(relativePath: string): string {
-    return join(this.skillsDir, relativePath);
+    return join(this.getSkillsDir(), relativePath);
   }
 
   async copySkillsTo(targetDir: string): Promise<void> {
@@ -437,7 +431,7 @@ export class SkillAssets {
         );
       }
 
-      const sourcePath = join(this.skillsDir, skill.relativePath);
+      const sourcePath = join(this.getSkillsDir(), skill.relativePath);
       const targetPath = join(targetDir, skill.relativePath);
 
       const content = await Deno.readTextFile(sourcePath);
