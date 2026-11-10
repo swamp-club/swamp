@@ -61,8 +61,8 @@ import {
 import { resolveFixedRepo } from "../../serve/local/fixed_repo.ts";
 import { TrustedHosts } from "../../serve/local/trusted_hosts.ts";
 import {
-  DASHBOARD_DIST_DIR,
   dashboardBundleExists,
+  getDashboardDistDir,
 } from "../../serve/dashboard_assets.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -257,7 +257,7 @@ export async function runStart(
   const deps = await buildDeps(true);
   const openBrowserEnabled = options.browser !== false;
 
-  if (!await dashboardBundleExists(DASHBOARD_DIST_DIR)) {
+  if (!await dashboardBundleExists(getDashboardDistDir())) {
     throw new UserError(
       "The start page isn't in this build. If you installed a release, reinstall swamp; from source, run `deno run build-dashboard`, then rebuild.",
     );
@@ -288,7 +288,7 @@ export async function runStart(
     ctx,
     deps,
     token,
-    distDir: DASHBOARD_DIST_DIR,
+    distDir: getDashboardDistDir(),
     // `swamp dashboard` serves no start page, so its token can't change
     // the swamp start workspaces.
     startPage: fixed === null,

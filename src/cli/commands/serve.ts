@@ -50,7 +50,7 @@ import { EventLoopLagMonitor } from "../../serve/event_loop_lag.ts";
 import { RUN_INDEX_CACHE_MAX_RUNS } from "../../infrastructure/persistence/run_index_cache.ts";
 import { listWorkflows } from "../../domain/workflows/workflow_listing.ts";
 import {
-  DASHBOARD_DIST_DIR,
+  getDashboardDistDir,
   serveDashboardRoute,
 } from "../../serve/dashboard_assets.ts";
 import {
@@ -7636,7 +7636,7 @@ export const serveCommand = new Command()
     };
 
     const dashboardEnabled = merged.dashboard;
-    let dashboardDistDir = dashboardEnabled ? DASHBOARD_DIST_DIR : null;
+    let dashboardDistDir = dashboardEnabled ? getDashboardDistDir() : null;
 
     if (dashboardEnabled && !isJson) {
       const scheme = tlsEnabled ? "https" : "http";
@@ -7651,7 +7651,7 @@ export const serveCommand = new Command()
       nextMerged: MergedServeOptions,
       next: ServeStartupSettings,
     ) => {
-      dashboardDistDir = nextMerged.dashboard ? DASHBOARD_DIST_DIR : null;
+      dashboardDistDir = nextMerged.dashboard ? getDashboardDistDir() : null;
       enableInternalApi = nextMerged.enableInternalApi;
       if (next.wsIdleTimeoutSeconds === undefined) {
         delete wsUpgradeOpts.idleTimeout;

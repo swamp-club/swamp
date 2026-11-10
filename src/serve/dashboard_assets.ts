@@ -25,15 +25,11 @@ import {
   normalize,
   resolve,
 } from "@std/path";
+import { resourcePath } from "../infrastructure/runtime/resource_root.ts";
 
-export const DASHBOARD_DIST_DIR = resolve(
-  import.meta.dirname ?? ".",
-  "..",
-  "..",
-  "packages",
-  "dashboard",
-  "dist",
-);
+export function getDashboardDistDir(): string {
+  return resourcePath("packages", "dashboard", "dist");
+}
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -49,7 +45,7 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 export async function dashboardBundleExists(
-  distDir: string = DASHBOARD_DIST_DIR,
+  distDir: string = getDashboardDistDir(),
 ): Promise<boolean> {
   try {
     return (await Deno.stat(join(distDir, "index.html"))).isFile;

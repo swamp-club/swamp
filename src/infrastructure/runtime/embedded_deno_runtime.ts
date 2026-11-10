@@ -27,6 +27,7 @@ import {
 } from "../process/resolve_command.ts";
 import { getSwampDataDir } from "../persistence/paths.ts";
 import { removeAbandonedTempFiles } from "../persistence/abandoned_temp_files.ts";
+import { resourcePath } from "./resource_root.ts";
 
 const logger = getLogger(["swamp", "runtime", "deno"]);
 
@@ -210,8 +211,7 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
   }
 
   private getEmbeddedResourcePath(filename: string): string {
-    const currentDir = import.meta.dirname ?? ".";
-    return join(currentDir, "..", "..", "..", "resources", "deno", filename);
+    return resourcePath("resources", "deno", filename);
   }
 
   private getSwampDenoDir(): string {
