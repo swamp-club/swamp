@@ -18,24 +18,28 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { DATA_ROUTES } from "./data_routes.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 import "../../domain/models/models.ts";
 
 await initializeLogging({});
 
-Deno.test("dataCommand module loads", async () => {
-  const { dataCommand } = await import("./data.ts");
+Deno.test("createDataCommand: module loads", async () => {
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   assertEquals(dataCommand.getName(), "data");
 });
 
-Deno.test("dataCommand has correct description", async () => {
-  const { dataCommand } = await import("./data.ts");
+Deno.test("createDataCommand: has correct description", async () => {
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   assertEquals(dataCommand.getDescription(), "Manage behavior data");
 });
 
-Deno.test("dataCommand has all subcommands registered", async () => {
-  const { dataCommand } = await import("./data.ts");
+Deno.test("createDataCommand: has all subcommands registered", async () => {
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   const commands = dataCommand.getCommands();
   const commandNames = commands.map((c) => c.getName());
 
@@ -45,7 +49,33 @@ Deno.test("dataCommand has all subcommands registered", async () => {
   assertEquals(commandNames.includes("versions"), true);
 });
 
-Deno.test("dataCommand is registered in CLI mod", async () => {
+Deno.test("createDataCommand: no rest registers every subcommand in table order", async () => {
+  const { createDataCommand } = await import("./data.ts");
+  const names = (await createDataCommand()).getCommands(true).map((c) =>
+    c.getName()
+  );
+  assertEquals(names, DATA_ROUTES.map((route) => route.name));
+});
+
+Deno.test("createDataCommand: a subcommand word registers only that subcommand", async () => {
+  const { createDataCommand } = await import("./data.ts");
+  const names = (await createDataCommand(["--json", "get", "m", "x"]))
+    .getCommands(true).map((c) => c.getName());
+  assertEquals(names, ["get"]);
+});
+
+Deno.test("createDataCommand: an unknown word or help registers every subcommand", async () => {
+  const { createDataCommand } = await import("./data.ts");
+  for (const rest of [["gte"], ["help", "get"], ["--help", "get"]]) {
+    assertEquals(
+      (await createDataCommand(rest)).getCommands(true).length,
+      DATA_ROUTES.length,
+      rest.join(" "),
+    );
+  }
+});
+
+Deno.test("createDataCommand: is registered in CLI mod", async () => {
   const mod = await import("../mod.ts");
   assertEquals(typeof mod.runCli, "function");
 });

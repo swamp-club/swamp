@@ -38,7 +38,8 @@ Deno.test("dataListCommand has correct description", async () => {
 });
 
 Deno.test("dataListCommand is registered as subcommand of dataCommand", async () => {
-  const { dataCommand } = await import("./data.ts");
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   const commands = dataCommand.getCommands();
   const listCmd = commands.find((c) => c.getName() === "list");
   assertEquals(listCmd !== undefined, true);

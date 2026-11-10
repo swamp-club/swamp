@@ -36,7 +36,8 @@ Deno.test("workflowDeleteCommand has correct description", async () => {
 });
 
 Deno.test("workflowDeleteCommand is registered as subcommand of workflowCommand", async () => {
-  const { workflowCommand } = await import("./workflow.ts");
+  const { createWorkflowCommand } = await import("./workflow.ts");
+  const workflowCommand = await createWorkflowCommand();
   const commands = workflowCommand.getCommands();
   const deleteCmd = commands.find((c) => c.getName() === "delete");
   assertEquals(deleteCmd !== undefined, true);

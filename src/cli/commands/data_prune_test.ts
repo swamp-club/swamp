@@ -69,7 +69,8 @@ Deno.test("dataPruneCommand - help text includes a --json non-interactive exampl
 
 Deno.test("data command registers the prune subcommand", async () => {
   await import("../../domain/models/models.ts");
-  const { dataCommand } = await import("./data.ts");
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   const prune = dataCommand.getCommand("prune");
   assertEquals(prune !== undefined, true);
 });

@@ -50,7 +50,8 @@ Deno.test("workflowTriggerCommand: has all subcommands", async () => {
 });
 
 Deno.test("workflowCommand: has trigger subcommand", async () => {
-  const { workflowCommand } = await import("./workflow.ts");
+  const { createWorkflowCommand } = await import("./workflow.ts");
+  const workflowCommand = await createWorkflowCommand();
   const commands = workflowCommand.getCommands();
   const trigger = commands.find((c) => c.getName() === "trigger");
   assertEquals(trigger !== undefined, true);

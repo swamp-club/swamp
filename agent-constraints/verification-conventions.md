@@ -469,7 +469,10 @@ How to read it:
   `startupPath`, not in the list. The index of root commands is read from that
   table. `integration/ddd_layer_rules_test.ts` fails if a file under `src/`
   imports `mod.ts`, or any file but `mod.ts` imports the table, which would
-  put the whole CLI in that file's closure.
+  put the whole CLI in that file's closure. A group table (`data_routes.ts`,
+  `workflow_routes.ts`) is imported only by its group module, so an edit to it
+  selects that group; `data.ts` and `workflow.ts` import
+  `src/cli/command_routes.ts`, so an edit to it selects both groups as well.
 
 The rule table is `classifyOutsideGraph` in `scripts/affected_commands.ts`. A
 new top-level directory needs a rule there;

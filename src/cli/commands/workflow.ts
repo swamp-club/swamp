@@ -18,51 +18,22 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { AnyCommand } from "../cli_schema.ts";
+import { loadGroupRoutes } from "../command_routes.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { workflowCreateCommand } from "./workflow_create.ts";
-import { workflowDeleteCommand } from "./workflow_delete.ts";
-import { workflowEditCommand } from "./workflow_edit.ts";
-import { workflowEvaluateCommand } from "./workflow_evaluate.ts";
-import { workflowGetCommand } from "./workflow_get.ts";
-import { workflowHistoryCommand } from "./workflow_history.ts";
-import { workflowValidateCommand } from "./workflow_validate.ts";
-import { workflowSearchCommand } from "./workflow_search.ts";
-import { workflowRunCommand } from "./workflow_run.ts";
-import { workflowSchemaCommand } from "./workflow_schema.ts";
-import { workflowApproveCommand } from "./workflow_approve.ts";
-import { workflowRejectCommand } from "./workflow_reject.ts";
-import { workflowResumeCommand } from "./workflow_resume.ts";
-import { workflowApprovalsCommand } from "./workflow_approvals.ts";
-import { workflowSignalCommand } from "./workflow_signal.ts";
-import { workflowWaitsCommand } from "./workflow_waits.ts";
-import { workflowCancelCommand } from "./workflow_cancel.ts";
-import { workflowRecoverCommand } from "./workflow_recover.ts";
-import { workflowTriggerCommand } from "./workflow_trigger.ts";
-import { workflowScheduleCommand } from "./workflow_schedule.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import { WORKFLOW_ROUTES } from "./workflow_routes.ts";
 
-export const workflowCommand = new Command()
-  .name("workflow")
-  .description("Manage workflows")
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("create", workflowCreateCommand)
-  .command("delete", workflowDeleteCommand)
-  .command("edit", workflowEditCommand)
-  .command("evaluate", workflowEvaluateCommand)
-  .command("get", workflowGetCommand)
-  .command("history", workflowHistoryCommand)
-  .command("validate", workflowValidateCommand)
-  .command("search", workflowSearchCommand)
-  .command("run", workflowRunCommand)
-  .command("approve", workflowApproveCommand)
-  .command("cancel", workflowCancelCommand)
-  .command("reject", workflowRejectCommand)
-  .command("recover", workflowRecoverCommand)
-  .command("resume", workflowResumeCommand)
-  .command("approvals", workflowApprovalsCommand)
-  .command("signal", workflowSignalCommand)
-  .command("waits", workflowWaitsCommand)
-  .command("schema", workflowSchemaCommand)
-  .command("trigger", workflowTriggerCommand)
-  .command("schedule", workflowScheduleCommand);
+/** rest, the argv after the group word, narrows the group to one subcommand */
+export async function createWorkflowCommand(
+  rest: readonly string[] = [],
+): Promise<AnyCommand> {
+  const group: AnyCommand = new Command()
+    .name("workflow")
+    .description("Manage workflows")
+    .error(unknownCommandErrorHandler)
+    .action(groupCommandAction);
+  const loaded = await loadGroupRoutes("workflow", WORKFLOW_ROUTES, rest);
+  for (const { name, command } of loaded) group.command(name, command);
+  return group;
+}

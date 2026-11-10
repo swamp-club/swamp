@@ -128,7 +128,10 @@ every read and run command works the same with `--server`
 
 Each invocation loads only the top-level command it runs, through its row in
 `src/cli/root_routes.ts`; a new top-level command gets a row there, and
-startup code never imports a command module statically.
+startup code never imports a command module statically. The `data` and
+`workflow` groups load only the subcommand argv names, through their own tables
+(`data_routes.ts`, `workflow_routes.ts`); a new subcommand of either gets a row
+there.
 
 The dependency rule is `cli → libswamp → domain ← infrastructure`, never the
 reverse. `integration/ddd_layer_rules_test.ts` enforces it for new code and
