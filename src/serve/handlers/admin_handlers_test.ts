@@ -1819,3 +1819,76 @@ Deno.test("handleRunDoctor: reports an unreadable record, and settles it only wi
   assertEquals(fixed.reply.unreadableReaped, 1);
   assertEquals(fixed.saved, ["failed"]);
 });
+
+Deno.test("handleServeReload: reloads a serve started without --hot-reload", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, {});
+      ctx.hotReload = false;
+      const socket = createMockSocket();
+
+      await handleServeReload(socket, ctx, "req-reload", null);
+
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.type, "serve.reload");
+      assertEquals(response.payload.success, true);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleServeReload: refuses a principal without the admin access grant", async () => {
+  const socket = createMockSocket();
+  let built = 0;
+  const ctx = leaseListCtx([leaseGrant({})], []);
+  ctx.serveReloadOptions = () => {
+    built++;
+    return {};
+  };
+
+  await handleServeReload(socket, ctx, "req-reload", LEASE_VIEWER);
+
+  const frame = JSON.parse(socket.sent[0]);
+  assertEquals(frame.type, "error");
+  assertEquals(frame.error.code, "unauthorized");
+  assertEquals(built, 0);
+});
+
+Deno.test("handleServeReload: uses the serve's shared reload options, tagged with who asked", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await writeLocalLockfile(repoDir, {});
+      const triggers: string[] = [];
+      let settingsReloads = 0;
+      ctx.serveReloadOptions = (context) => {
+        triggers.push(context.trigger);
+        return {
+          settingsReloader: () => {
+            settingsReloads++;
+            return Promise.resolve({
+              config: null,
+              report: {
+                applied: ["dashboard"],
+                needsRestart: [],
+                overridden: [],
+              },
+            });
+          },
+        };
+      };
+      const socket = createMockSocket();
+
+      await handleServeReload(socket, ctx, "req-reload", null);
+
+      assertEquals(triggers, ["reload"]);
+      assertEquals(settingsReloads, 1);
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.payload.settings.applied, ["dashboard"]);
+    } finally {
+      cleanup();
+    }
+  });
+});

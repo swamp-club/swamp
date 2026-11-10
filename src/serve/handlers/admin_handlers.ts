@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { summarizeServeReload } from "../serve_reload_summary.ts";
 import { runGeneratorWithoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import { runProgressSnapshots } from "../../domain/remote/run_progress.ts";
@@ -2556,8 +2557,6 @@ export async function handleAuditTimeline(
   }
 }
 
-let auditReloadInProgress = false;
-
 export async function handleServeReload(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -2572,19 +2571,9 @@ export async function handleServeReload(
     }, ctx).allowed
   ) return;
 
-  if (!ctx.hotReload) {
-    sendError(
-      socket,
-      requestId,
-      "hot_reload_disabled",
-      "Extension reload is not available — the server was not started with --hot-reload",
-    );
-    return;
-  }
-
   const logger = getSwampLogger(["serve", "reload"]);
   const who = principal ? `${principal.kind}:${principal.id}` : "anonymous";
-  logger.info`Extension reload requested by ${who}`;
+  logger.info`Reload requested by ${who}`;
 
   try {
     const lockfilePath = await resolveLockfilePath(
@@ -2600,86 +2589,42 @@ export async function handleServeReload(
         : {}),
       ...(caller.client !== undefined ? { client: caller.client } : {}),
     };
-    const reloadOptions: ServeReloadOptions = {
-      triggerOverrideUpdater: ctx.scheduledExecution
-        ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
-          ctx.scheduledExecution!.updateTriggerOverrides(overrides)
-        : undefined,
-      workflowReloader: ctx.workflowReloader,
-      webhookUpdater: ctx.webhookUpdater,
-      webhookContext,
-      trustedCollectivesUpdater: ctx.trustedCollectivesUpdater,
-      configPath: ctx.serveConfigPath,
-    };
+    const reloadOptions: ServeReloadOptions =
+      ctx.serveReloadOptions?.(webhookContext) ?? {
+        triggerOverrideUpdater: ctx.scheduledExecution
+          ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
+            ctx.scheduledExecution!.updateTriggerOverrides(overrides)
+          : undefined,
+        workflowReloader: ctx.workflowReloader,
+        webhookUpdater: ctx.webhookUpdater,
+        webhookContext,
+        trustedCollectivesUpdater: ctx.trustedCollectivesUpdater,
+        configPath: ctx.serveConfigPath,
+        ...(ctx.auditEmitter && ctx.auditSinkRebuilder
+          ? {
+            auditSinkReloader: async () => {
+              const sinks = await ctx.auditSinkRebuilder!();
+              ctx.auditEmitter!.replaceSinks(sinks);
+              return sinks.length;
+            },
+          }
+          : {}),
+      };
     const result = await performServeReload(
       ctx.repoDir,
       lockfilePath,
       reloadOptions,
     );
 
-    if (result.success) {
-      logger
-        .info`Extension reload completed: ${result.reloadedCount} type(s) reloaded (requested by ${who})`;
-      if (result.workflowsReloaded && result.workflowsReloaded > 0) {
-        logger.info(
-          "Refreshed {count} extension workflow dir(s) (requested by {who})",
-          { count: result.workflowsReloaded, who },
-        );
-      }
-      if (
-        result.triggerOverridesChanged &&
-        result.triggerOverridesChanged > 0
-      ) {
-        logger.info(
-          "Reloaded {count} trigger override(s) from serve.yaml (requested by {who})",
-          { count: result.triggerOverridesChanged, who },
-        );
-      }
-      if (
-        result.webhooksReloaded &&
-        result.webhooksReloaded > 0
-      ) {
-        logger.info(
-          "Applied {count} webhook route change(s) from serve.yaml (requested by {who})",
-          { count: result.webhooksReloaded, who },
-        );
-      }
-      for (const warning of result.warnings ?? []) {
-        logger.warn`${warning} (requested by ${who})`;
-      }
+    const summary = summarizeServeReload(result);
+    for (const line of summary.info) {
+      logger.info`${line} (requested by ${who})`;
     }
-
-    // a local behavior failure does not make the separate audit configuration
-    // stale, and the reload finished every configuration stage before reporting
-    // it
-    if (result.success || result.localRefreshFailed) {
-      if (ctx.auditEmitter && ctx.auditSinkRebuilder) {
-        if (auditReloadInProgress) {
-          logger.warn(
-            "Audit sink reload already in progress, skipping (requested by {who})",
-            { who },
-          );
-        } else {
-          auditReloadInProgress = true;
-          try {
-            const newSinks = await ctx.auditSinkRebuilder();
-            ctx.auditEmitter.replaceSinks(newSinks);
-            logger.info(
-              "Audit sinks reloaded: {count} sink(s) (requested by {who})",
-              { count: newSinks.length, who },
-            );
-          } catch (error: unknown) {
-            logger.warn(
-              "Audit sink hot-reload failed, keeping existing sinks: {error}",
-              {
-                error: error instanceof Error ? error.message : String(error),
-              },
-            );
-          } finally {
-            auditReloadInProgress = false;
-          }
-        }
-      }
+    for (const line of summary.warn) {
+      logger.warn`${line} (requested by ${who})`;
+    }
+    for (const line of summary.error) {
+      logger.error`${line} (requested by ${who})`;
     }
 
     send(socket, {
@@ -2688,7 +2633,7 @@ export async function handleServeReload(
       payload: result,
     });
   } catch (error) {
-    logger.error`Extension reload failed (requested by ${who}): ${error}`;
+    logger.error`Reload failed (requested by ${who}): ${error}`;
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "serve_reload_failed", message);
   }

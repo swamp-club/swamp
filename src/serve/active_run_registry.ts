@@ -82,9 +82,9 @@ export interface ActiveRunRegistryOptions {
 
 export class ActiveRunRegistry {
   readonly #runs = new Map<string, ActiveRun>();
-  readonly #maxConcurrent: number;
-  readonly #maxPerPrincipal: number | undefined;
-  readonly #maxRunDurationMs: number | undefined;
+  #maxConcurrent: number;
+  #maxPerPrincipal: number | undefined;
+  #maxRunDurationMs: number | undefined;
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #reserved = new Set<string>();
   readonly #nested = new Map<string, string>();
@@ -96,6 +96,18 @@ export class ActiveRunRegistry {
       ? Math.max(1, options.maxPerPrincipal)
       : undefined;
     this.#maxRunDurationMs = options?.maxRunDurationMs;
+  }
+
+  /**
+   * new limits govern runs registered from now on; a run already over a
+   * lowered cap keeps running, and its duration timer keeps the old limit
+   */
+  setLimits(options: ActiveRunRegistryOptions): void {
+    this.#maxConcurrent = Math.max(1, options.maxConcurrent ?? 100);
+    this.#maxPerPrincipal = options.maxPerPrincipal !== undefined
+      ? Math.max(1, options.maxPerPrincipal)
+      : undefined;
+    this.#maxRunDurationMs = options.maxRunDurationMs;
   }
 
   register(run: ActiveRun): void {

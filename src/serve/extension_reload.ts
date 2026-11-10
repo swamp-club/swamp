@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { SettingsReloadReport } from "./serve_settings_reload.ts";
 import { dirname, isAbsolute, join, resolve } from "@std/path";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { modelRegistry } from "../domain/models/model.ts";
@@ -72,6 +73,7 @@ import type { ServeReloadResponse } from "./protocol.ts";
 import {
   readServeConfigFile,
   SERVE_CONFIG_PATH,
+  type ServeConfigFile,
   validateWebhookEntries,
 } from "./serve_config.ts";
 import type { TriggerOverride } from "../libswamp/workflows/scheduled_execution.ts";
@@ -786,6 +788,16 @@ export interface ServeReloadOptions {
   /** receives the refreshed trust list before the webhook routes are parsed */
   trustedCollectivesUpdater?: (collectives: readonly string[]) => void;
   configPath?: string;
+  /**
+   * validates the file as startup does and applies the settings reload can;
+   * a throw leaves every setting, trigger and webhook as it was
+   */
+  settingsReloader?: () => Promise<{
+    readonly config: ServeConfigFile | null;
+    readonly report: SettingsReloadReport;
+  }>;
+  /** rebuilds the audit sinks from the file; returns how many are in force */
+  auditSinkReloader?: () => Promise<number>;
 }
 
 export const RELOAD_IN_PROGRESS_ERROR = "Reload already in progress";
@@ -931,11 +943,25 @@ async function runServeReload(
       }
     }
 
-    const needsConfigRead = options?.triggerOverrideUpdater ||
-      options?.webhookUpdater;
     let configReadFailed = false;
-    const config = needsConfigRead
-      ? await readServeConfigFile(repoDir, options?.configPath).catch(
+    let configRejected = false;
+    let settings: SettingsReloadReport | undefined;
+    let config: ServeConfigFile | null = null;
+    if (options?.settingsReloader) {
+      try {
+        const reloaded = await options.settingsReloader();
+        config = reloaded.config;
+        settings = reloaded.report;
+      } catch (err) {
+        errors.push(
+          "Serve config not applied, nothing changed: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        configReadFailed = true;
+        configRejected = true;
+      }
+    } else if (options?.triggerOverrideUpdater || options?.webhookUpdater) {
+      config = await readServeConfigFile(repoDir, options?.configPath).catch(
         (err: unknown) => {
           errors.push(
             "Failed to read serve config: " +
@@ -944,8 +970,8 @@ async function runServeReload(
           configReadFailed = true;
           return null;
         },
-      )
-      : null;
+      );
+    }
 
     if (options?.triggerOverrideUpdater && !configReadFailed) {
       try {
@@ -985,6 +1011,18 @@ async function runServeReload(
       }
     }
 
+    let auditSinks: number | undefined;
+    if (options?.auditSinkReloader && !configReadFailed) {
+      try {
+        auditSinks = await options.auditSinkReloader();
+      } catch (err) {
+        errors.push(
+          "Audit sinks not reloaded, keeping the existing ones: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+    }
+
     return {
       success: !localRefreshFailed,
       ...(localRefreshFailed ? { localRefreshFailed: true } : {}),
@@ -992,6 +1030,9 @@ async function runServeReload(
       triggerOverridesChanged,
       workflowsReloaded,
       webhooksReloaded,
+      ...(auditSinks !== undefined ? { auditSinks } : {}),
+      ...(settings ? { settings } : {}),
+      ...(configRejected ? { configRejected: true } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
       errors,
     };

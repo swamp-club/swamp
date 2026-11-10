@@ -2496,3 +2496,101 @@ Deno.test("performServeReload: a failed local source refresh refuses acceptance"
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("performServeReload: the settings reloader's validated config drives triggers, and its report is returned", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const seen: string[] = [];
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        settingsReloader: () =>
+          Promise.resolve({
+            config: { triggers: { sweep: { schedule: "0 3 * * *" } } },
+            report: {
+              applied: ["max-concurrent-runs"],
+              needsRestart: [{
+                setting: "port",
+                reason: "needs a new process",
+              }],
+              overridden: [],
+            },
+          }),
+        triggerOverrideUpdater: (overrides) => {
+          seen.push(...overrides.keys());
+          return Promise.resolve(overrides.size);
+        },
+      },
+    );
+    assertEquals(result.success, true);
+    assertEquals(seen, ["sweep"]);
+    assertEquals(result.triggerOverridesChanged, 1);
+    assertEquals(result.settings?.applied, ["max-concurrent-runs"]);
+    assertEquals(result.settings?.needsRestart[0].setting, "port");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: a refused config file changes no setting, trigger, webhook or audit sink", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    let triggers = 0, webhooks = 0, audit = 0;
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        settingsReloader: () =>
+          Promise.reject(
+            new Error(
+              "--max-concurrent-runs must be a positive integer, got 0",
+            ),
+          ),
+        triggerOverrideUpdater: () => {
+          triggers++;
+          return Promise.resolve(0);
+        },
+        webhookUpdater: () => {
+          webhooks++;
+          return Promise.resolve({ changed: 0, warnings: [], errors: [] });
+        },
+        auditSinkReloader: () => {
+          audit++;
+          return Promise.resolve(1);
+        },
+      },
+    );
+    assertEquals([triggers, webhooks, audit], [0, 0, 0]);
+    assertEquals(result.settings, undefined);
+    assertEquals(result.configRejected, true);
+    assertStringIncludes(
+      result.errors[0],
+      "Serve config not applied, nothing changed",
+    );
+    assertStringIncludes(result.errors[0], "positive integer");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: audit sinks reload on every path that passes them, and a failure keeps the old sinks", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const ok = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      { auditSinkReloader: () => Promise.resolve(2) },
+    );
+    assertEquals(ok.auditSinks, 2);
+    const failed = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      { auditSinkReloader: () => Promise.reject(new Error("bad sink url")) },
+    );
+    assertEquals(failed.auditSinks, undefined);
+    assertStringIncludes(failed.errors.join("\n"), "keeping the existing ones");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});

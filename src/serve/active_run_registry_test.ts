@@ -900,3 +900,29 @@ Deno.test("ActiveRunRegistry: drainAll begins draining", async () => {
   await reg.drainAll(5_000);
   assertEquals(reg.draining, true);
 });
+
+Deno.test("ActiveRunRegistry.setLimits: a raised cap admits the next run, a lowered one refuses it without touching running runs", () => {
+  const registry = new ActiveRunRegistry({ maxConcurrent: 1 });
+  registry.register(makeRun("r1"));
+  assertThrows(() => registry.register(makeRun("r2")), RegistryCapacityError);
+
+  registry.setLimits({ maxConcurrent: 2 });
+  registry.register(makeRun("r2"));
+  assertEquals(registry.size, 2);
+
+  registry.setLimits({ maxConcurrent: 1 });
+  assertThrows(() => registry.register(makeRun("r3")), RegistryCapacityError);
+  assertEquals(registry.size, 2);
+});
+
+Deno.test("ActiveRunRegistry.setLimits: a per-principal cap applies to the next run", () => {
+  const registry = new ActiveRunRegistry({ maxConcurrent: 10 });
+  registry.register(makeRun("a1", { principalId: "user:a" }));
+  registry.register(makeRun("a2", { principalId: "user:a" }));
+  registry.setLimits({ maxConcurrent: 10, maxPerPrincipal: 2 });
+  assertThrows(
+    () => registry.register(makeRun("a3", { principalId: "user:a" })),
+    RegistryCapacityError,
+  );
+  registry.register(makeRun("b1", { principalId: "user:b" }));
+});

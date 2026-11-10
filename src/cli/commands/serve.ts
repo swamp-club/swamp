@@ -135,8 +135,16 @@ import { WebhookRejectionCoalescer } from "../../serve/webhook_audit_coalescer.t
 import {
   buildWebhookRouteTable,
   createWebhookRouteApplier,
+  type WebhookApplyContext,
   type WebhookRouteTableDeps,
 } from "../../serve/webhook_reload.ts";
+import {
+  diffServeSettings,
+  overlayAppliedSettings,
+  reloadsOnHangup,
+} from "../../serve/serve_settings_reload.ts";
+import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
+import { removePidFileIfOurs } from "../../serve/serve_pid_file.ts";
 import {
   checkRouteFiles,
   checkWebhookRoutesDir,
@@ -524,6 +532,7 @@ import {
   performServeReload,
   reloadAfterExtensionChange,
   seedPulledTypeSnapshot,
+  type ServeReloadOptions,
   serveReloadStatus,
   withExtensionMutation,
 } from "../../serve/extension_reload.ts";
@@ -2737,10 +2746,9 @@ const daemonStatusCommand = new Command()
 const reloadCommand = new Command()
   .name("reload")
   .description(
-    "Reload pulled extension bundles and refresh the trust list on a running serve process.\n\n" +
-      "With --server, sends a reload request to the running server over WebSocket. " +
-      "Without --server, reads .swamp/serve.pid and sends SIGHUP locally. " +
-      "Requires the serve process to be running with --hot-reload.",
+    "Reload a running serve process: extensions, the trust list, and every serve.yaml setting that can change without a restart, reported setting by setting.\n\n" +
+      "With --server, sends a reload request to the running server over WebSocket (admin only). " +
+      "Without --server, reads .swamp/serve.pid and sends SIGHUP locally; a serve writes that file when it is not attached to a terminal (a daemon, container or service) or was started with --hot-reload.",
   )
   .example(
     "Reload on a remote server",
@@ -2796,6 +2804,12 @@ const reloadCommand = new Command()
       }
 
       renderer.render(response);
+      // a CI step that edits serve.yaml and reloads must see the refusal
+      if (response.configRejected) {
+        throw new UserError(
+          "The server refused serve.yaml, so nothing in it was applied",
+        );
+      }
       return;
     }
 
@@ -2809,7 +2823,7 @@ const reloadCommand = new Command()
       throw markErrorPaths(
         new UserError(
           "No PID file found at " + pidPath + ". " +
-            "Is swamp serve running with --hot-reload?",
+            "A serve running in a terminal reloads only over --server, or when started with --hot-reload.",
         ),
         [pidPath],
       );
@@ -2829,13 +2843,15 @@ const reloadCommand = new Command()
       throw markErrorPaths(
         new UserError(
           "Process " + pid + " not found — stale PID file. " +
-            "Remove " + pidPath + " and restart serve with --hot-reload.",
+            "Remove " + pidPath + ", or reload with --server.",
         ),
         [pidPath],
       );
     }
 
     logger.info`Sent SIGHUP to serve process ${pid}`;
+    logger
+      .info`The serve log lists what the reload applied; reload with --server to see it here`;
   });
 
 async function checkTokenSecretsKey(
@@ -3667,7 +3683,7 @@ export const serveCommand = new Command()
       heartbeatIntervalMs,
       staleTtlMs,
       reconciliationIntervalMs,
-      shutdownDrainTimeoutMs,
+      shutdownDrainTimeoutMs: startupShutdownDrainTimeoutMs,
       shutdownListenerGraceMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
@@ -3684,6 +3700,9 @@ export const serveCommand = new Command()
       ownerAddress,
       advertiseAddress,
     } = resolveServeStartupSettings(merged);
+    // reload replaces these; everything that reads them reads them when used
+    let shutdownDrainTimeoutMs = startupShutdownDrainTimeoutMs;
+    let liveConfigFile = configFile;
     if (
       advertiseAddress !== undefined &&
       advertiseAddressInCleartext(advertiseAddress)
@@ -4457,6 +4476,11 @@ export const serveCommand = new Command()
       trustedCollectives = next;
     };
 
+    // set once serve is listening; declared here so the poller never reads it
+    // before it exists
+    let sharedServeReloadOptions:
+      | ((context: WebhookApplyContext) => ServeReloadOptions)
+      | undefined = undefined;
     if (repoMarker?.datastore?.managedConfig) {
       const extensionDiscoverer = createExtensionDiscoverer({
         lockfilePath: extensionLockfilePath,
@@ -4471,10 +4495,12 @@ export const serveCommand = new Command()
           computeFileContentHashIfExists(extensionLockfilePath),
         baselineLockfileHash: bootLockfileHash,
         extensionReloader: async () => {
+          // the shared options exist once serve is listening; a poll before
+          // then reloads extensions only
           const result = await performServeReload(
             resolvedRepoDir,
             extensionLockfilePath,
-            {
+            sharedServeReloadOptions?.({ trigger: "poll" }) ?? {
               extensionDiscoverer,
               workflowReloader: reloadExtensionWorkflows,
               trustedCollectivesUpdater,
@@ -7515,7 +7541,7 @@ export const serveCommand = new Command()
     // Set when SIGTERM/SIGINT starts the shutdown; /ready reports 503 from
     // then on so load balancers stop routing here while runs drain.
     let shuttingDown = false;
-    const enableInternalApi = merged.enableInternalApi;
+    let enableInternalApi = merged.enableInternalApi;
     const serverStartedAt = Date.now();
     setTokenRefusalNodeState(() => ({
       uptimeSeconds: Math.round((Date.now() - serverStartedAt) / 1000),
@@ -7610,7 +7636,7 @@ export const serveCommand = new Command()
     };
 
     const dashboardEnabled = merged.dashboard;
-    const dashboardDistDir = dashboardEnabled ? DASHBOARD_DIST_DIR : null;
+    let dashboardDistDir = dashboardEnabled ? DASHBOARD_DIST_DIR : null;
 
     if (dashboardEnabled && !isJson) {
       const scheme = tlsEnabled ? "https" : "http";
@@ -7618,6 +7644,93 @@ export const serveCommand = new Command()
         url: `${scheme}://${host}:${port}/dashboard`,
       });
     }
+
+    // each value is read where it is used, so new runs, requests and sockets
+    // take it; nothing already running is changed
+    const applyLiveSettings = (
+      nextMerged: MergedServeOptions,
+      next: ServeStartupSettings,
+    ) => {
+      dashboardDistDir = nextMerged.dashboard ? DASHBOARD_DIST_DIR : null;
+      enableInternalApi = nextMerged.enableInternalApi;
+      if (next.wsIdleTimeoutSeconds === undefined) {
+        delete wsUpgradeOpts.idleTimeout;
+      } else {
+        wsUpgradeOpts.idleTimeout = next.wsIdleTimeoutSeconds;
+      }
+      shutdownDrainTimeoutMs = next.shutdownDrainTimeoutMs;
+      activeRunRegistry.setLimits({
+        maxConcurrent: next.maxConcurrentRuns,
+        maxPerPrincipal: next.maxRunsPerPrincipal,
+        maxRunDurationMs: next.maxRunDurationMs,
+      });
+      dispatchService.setQueueTimeoutMs(next.queueTimeoutMs);
+      const signalWaits = repoContext.signalWaits;
+      if (signalWaits?.supported) {
+        repoContext.signalWaits = {
+          ...signalWaits,
+          maxTimeoutSeconds: next.maxSignalWaitTimeoutSeconds,
+        };
+      }
+      // only what was applied, so the config and health views never show a
+      // value this process has not adopted
+      connectionCtx.serveOptions = overlayAppliedSettings(
+        connectionCtx.serveOptions ?? merged,
+        nextMerged,
+      );
+    };
+    // validated exactly as startup validates, so a file startup would refuse
+    // changes nothing
+    const settingsReloader = () =>
+      Promise.resolve().then(() => {
+        const nextFile = loadServeConfig(
+          options.config as string | undefined,
+          repoDir,
+        );
+        const nextMerged = resolveServeTlsPaths(
+          repoDir,
+          mergeServeOptions(nextFile, options, explicitFlags),
+        );
+        const next = resolveServeStartupSettings(nextMerged);
+        const report = diffServeSettings({
+          before: liveConfigFile,
+          after: nextFile,
+          explicitFlags,
+          envLookup: (name) => Deno.env.get(name),
+        });
+        applyLiveSettings(nextMerged, next);
+        liveConfigFile = nextFile;
+        return { config: nextFile, report };
+      });
+    const buildServeReloadOptions = (
+      webhookContext: WebhookApplyContext,
+    ): ServeReloadOptions => ({
+      triggerOverrideUpdater: scheduledExecution
+        ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
+          scheduledExecution!.updateTriggerOverrides(overrides)
+        : undefined,
+      workflowReloader: connectionCtx.workflowReloader,
+      extensionDiscoverer: createExtensionDiscoverer({
+        lockfilePath: extensionLockfilePath,
+        repoDir: resolvedRepoDir,
+      }),
+      webhookUpdater,
+      webhookContext,
+      trustedCollectivesUpdater,
+      configPath: serveConfigPath,
+      settingsReloader,
+      ...(connectionCtx.auditEmitter && connectionCtx.auditSinkRebuilder
+        ? {
+          auditSinkReloader: async () => {
+            const sinks = await connectionCtx.auditSinkRebuilder!();
+            connectionCtx.auditEmitter!.replaceSinks(sinks);
+            return sinks.length;
+          },
+        }
+        : {}),
+    });
+    connectionCtx.serveReloadOptions = buildServeReloadOptions;
+    sharedServeReloadOptions = buildServeReloadOptions;
 
     const wsScheme = tlsEnabled ? "wss" : "ws";
     const dashboardSessions = new ControlPlaneDashboardSessionStore(
@@ -8441,7 +8554,7 @@ export const serveCommand = new Command()
               healthCollector,
               instanceId,
               staleTtlMs,
-              serveOptions: merged,
+              serveOptions: connectionCtx.serveOptions ?? merged,
               signal: listenerAc.signal,
             });
 
@@ -8457,7 +8570,7 @@ export const serveCommand = new Command()
             if (!auth.ok) return auth.response;
 
             return Response.json({
-              config: redactServeOptions(merged),
+              config: redactServeOptions(connectionCtx.serveOptions ?? merged),
             });
           }
 
@@ -8795,89 +8908,52 @@ export const serveCommand = new Command()
     let server = merged.reusePort ? undefined : listen();
 
     const hotReload = merged.hotReload;
-    const pidPath = hotReload ? swampPath(resolvedRepoDir, "serve.pid") : null;
+    if (hotReload && Deno.build.os === "windows") {
+      throw new UserError(
+        "--hot-reload is not supported on Windows (SIGHUP is unavailable). " +
+          "Use 'swamp serve reload --server' instead.",
+      );
+    }
+    const reloadOnHangup = reloadsOnHangup({
+      os: Deno.build.os,
+      hotReload,
+      stdinIsTerminal: Deno.stdin.isTerminal(),
+    });
+    const pidPath = reloadOnHangup
+      ? swampPath(resolvedRepoDir, "serve.pid")
+      : null;
 
-    if (hotReload && pidPath) {
-      if (Deno.build.os === "windows") {
-        throw new UserError(
-          "--hot-reload is not supported on Windows (SIGHUP is unavailable). " +
-            "Restart the serve process to pick up extension changes.",
-        );
+    if (reloadOnHangup && pidPath) {
+      try {
+        await Deno.writeTextFile(pidPath, String(Deno.pid));
+        logger.info`SIGHUP reloads this serve, PID file written to ${pidPath}`;
+      } catch (err) {
+        // --hot-reload asked for the local reload; without it a read-only repo
+        // must not stop a serve that only gained the option
+        if (hotReload) throw err;
+        logger
+          .warn`Could not write ${pidPath}, so swamp serve reload works here only with --server: ${err}`;
       }
-      await Deno.writeTextFile(pidPath, String(Deno.pid));
-      logger.info`Hot-reload enabled, PID file written to ${pidPath}`;
 
       Deno.addSignalListener("SIGHUP", () => {
         if (isReloading()) {
-          logger.warn("Hot-reload already in progress, ignoring SIGHUP");
+          logger.warn("Reload already in progress, ignoring SIGHUP");
           return;
         }
-        logger.info("SIGHUP received, reloading pulled extensions...");
-        const sighupDiscoverer = createExtensionDiscoverer({
-          lockfilePath: extensionLockfilePath,
-          repoDir: resolvedRepoDir,
-        });
-        const reloadOptions:
-          import("../../serve/extension_reload.ts").ServeReloadOptions = {
-            triggerOverrideUpdater: scheduledExecution
-              ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
-                scheduledExecution!.updateTriggerOverrides(overrides)
-              : undefined,
-            workflowReloader: connectionCtx.workflowReloader,
-            extensionDiscoverer: sighupDiscoverer,
-            webhookUpdater,
-            webhookContext: { trigger: "signal" },
-            trustedCollectivesUpdater,
-            configPath: serveConfigPath,
-          };
+        logger.info("SIGHUP received, reloading...");
         performServeReload(
           resolvedRepoDir,
           extensionLockfilePath,
-          reloadOptions,
+          buildServeReloadOptions({ trigger: "signal" }),
         )
           .then((result) => {
-            if (result.success) {
-              logger.info`Hot-reloaded ${result.reloadedCount} type(s)`;
-              if (result.workflowsReloaded && result.workflowsReloaded > 0) {
-                logger.info(
-                  "Refreshed {count} extension workflow dir(s)",
-                  { count: result.workflowsReloaded },
-                );
-              }
-              if (
-                result.triggerOverridesChanged &&
-                result.triggerOverridesChanged > 0
-              ) {
-                logger.info(
-                  "Reloaded {count} trigger override(s) from serve.yaml",
-                  { count: result.triggerOverridesChanged },
-                );
-              }
-              if (
-                result.webhooksReloaded &&
-                result.webhooksReloaded > 0
-              ) {
-                logger.info(
-                  "Applied {count} webhook route change(s) from serve.yaml",
-                  { count: result.webhooksReloaded },
-                );
-              }
-              for (const warning of result.warnings ?? []) {
-                logger.warn`${warning}`;
-              }
-              if (result.errors.length > 0) {
-                for (const err of result.errors) {
-                  logger.warn`${err}`;
-                }
-              }
-            } else {
-              for (const err of result.errors) {
-                logger.error`${err}`;
-              }
-            }
+            const summary = summarizeServeReload(result);
+            for (const line of summary.info) logger.info`${line}`;
+            for (const line of summary.warn) logger.warn`${line}`;
+            for (const line of summary.error) logger.error`${line}`;
           })
           .catch((err) => {
-            logger.error`Unexpected error during hot-reload: ${err}`;
+            logger.error`Unexpected error during reload: ${err}`;
           });
       });
     }
@@ -8886,6 +8962,9 @@ export const serveCommand = new Command()
       if (shuttingDown) return;
       shuttingDown = true;
       isReady = false;
+      // a stale file would point swamp serve reload at whatever process
+      // reuses this pid
+      if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
       admission.beginDraining();
       // its pass in flight is waited on below, within the shutdown deadline
       pendingReplaySweep.halt();
@@ -8945,7 +9024,7 @@ export const serveCommand = new Command()
       // the stages below run meanwhile, so the grace never lengthens shutdown
       const listenerClosed = listenerGraceElapsed(
         drainStarted,
-        shutdownListenerGraceMs,
+        Math.min(shutdownListenerGraceMs, shutdownDrainTimeoutMs),
       ).then(() => listenerAc.abort());
       // before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does
@@ -9187,11 +9266,10 @@ export const serveCommand = new Command()
           })
         );
       },
-      includePosixSignals: !hotReload,
+      includePosixSignals: !reloadOnHangup,
     });
-    if (hotReload) {
-      // SIGHUP is handled by the hot-reload handler above, but
-      // SIGTERM still needs to trigger shutdown on POSIX.
+    if (reloadOnHangup) {
+      // SIGHUP reloads (above); SIGTERM still shuts down
       if (Deno.build.os !== "windows") {
         Deno.addSignalListener("SIGTERM", () => {
           startShutdown().catch((e) =>

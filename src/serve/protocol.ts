@@ -1402,9 +1402,22 @@ export interface ServeReloadResponse {
   triggerOverridesChanged?: number;
   workflowsReloaded?: number;
   webhooksReloaded?: number;
+  /** audit sinks in force after the reload, when serve has an audit pipeline */
+  auditSinks?: number;
+  /** what the serve.yaml edit changed, setting by setting */
+  settings?: ServeReloadSettingsReport;
+  /** serve.yaml failed the startup checks, so nothing in it was applied */
+  configRejected?: boolean;
   /** changes the reload left unapplied, with the reason and the fix */
   warnings?: string[];
   errors: string[];
+}
+
+export interface ServeReloadSettingsReport {
+  readonly applied: readonly string[];
+  readonly needsRestart: readonly { setting: string; reason: string }[];
+  /** a setting a startup flag or environment variable keeps pinned */
+  readonly overridden: readonly { setting: string; by: string }[];
 }
 
 export interface DataGetResponse {
