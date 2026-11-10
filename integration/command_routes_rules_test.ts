@@ -157,12 +157,25 @@ Deno.test("command routes: the tree built for a path has the full tree's schema 
   }
 });
 
+// a worker that exits or stalls without answering would otherwise hold the
+// test, and with it the whole run, until an outer cap with no route named
+const WORKER_DEADLINE_MS = 120_000;
+
 function inWorker(request: RouteWorkerRequest): Promise<RouteWorkerResponse> {
   const worker = new Worker(
     new URL("./command_route_worker.ts", import.meta.url).href,
     { type: "module" },
   );
+  let timer: ReturnType<typeof setTimeout> | undefined;
   return new Promise<RouteWorkerResponse>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve({
+          ok: false,
+          error: `no answer within ${WORKER_DEADLINE_MS}ms`,
+        }),
+      WORKER_DEADLINE_MS,
+    );
     worker.onmessage = (event: MessageEvent<RouteWorkerResponse>) =>
       resolve(event.data);
     worker.onerror = (event) => {
@@ -170,7 +183,10 @@ function inWorker(request: RouteWorkerRequest): Promise<RouteWorkerResponse> {
       resolve({ ok: false, error: event.message });
     };
     worker.postMessage(request);
-  }).finally(() => worker.terminate());
+  }).finally(() => {
+    clearTimeout(timer);
+    worker.terminate();
+  });
 }
 
 async function inBatches<T, R>(
