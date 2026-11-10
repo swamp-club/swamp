@@ -35,6 +35,13 @@ import {
   assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { WorkflowRunCheckpointer } from "../persistence/workflow_run_checkpointer.ts";
+import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
 import {
   AutoDefinitionChanges,
   recordKeyOf,
@@ -1918,4 +1925,123 @@ Deno.test("openV3Datastore: a step start serve refuses is unrecorded as refused 
     },
   );
   assertEquals(attempts, 1);
+});
+
+Deno.test("openV3Datastore: a run's paced checkpoint is timed from its own unit's flushes, so another run flushing on the same engine never pushes it back (swamp-club#4574)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await Deno.mkdir(dir);
+    await initializeV3Datastore(dir, "test");
+    const handle = openV3Datastore({
+      repoDir: join(root, "repo"),
+      datastorePath: dir,
+    });
+    try {
+      const markDirty = () => Promise.resolve();
+      const engine = handle.engineFor(markDirty, () => {
+        throw new Error("no run repository needed");
+      });
+      const stage = async (unit: CommitLogUnitOfWork, name: string) =>
+        await unit.stageOps([
+          new AutoDefinitionChanges(crypto.randomUUID()).write(
+            recordKeyOf(["auto-definitions", `${name}.yaml`]),
+            new TextEncoder().encode(crypto.randomUUID()),
+          ),
+        ]);
+      let xCheckpoints = 0;
+      let yFlushing = true;
+      const checkpointer = new WorkflowRunCheckpointer({
+        markDirty,
+        commitLog: {
+          ...engine,
+          checkpointOpenUnit: (options) => {
+            xCheckpoints++;
+            return engine.checkpointOpenUnit(options);
+          },
+        },
+      }, { intervalMs: 50 });
+      const run = WorkflowRun.create(Workflow.create({
+        name: "x",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({ name: "a", task: StepTask.model("w", "m") })],
+        })],
+      }));
+      const runX = engine.runRoot({}, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await runInUnitOfWork(unit, async () => {
+          await stage(unit, "x");
+          await checkpointer.checkpoint(run);
+          // inside the interval: one trailing checkpoint is due 50 ms on
+          await stage(unit, "x");
+          await checkpointer.checkpoint(run);
+          await waitFor(
+            () => xCheckpoints >= 2,
+            "run X's trailing checkpoint",
+            {
+              timeoutMs: 3_000,
+            },
+          ).finally(() => {
+            yFlushing = false;
+          });
+        });
+        await checkpointer.close();
+        await unit.commit();
+      });
+      const runY = engine.runRoot({}, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await runInUnitOfWork(unit, async () => {
+          while (yFlushing) {
+            await stage(unit, "y");
+            await engine.checkpointOpenUnit();
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        });
+        await unit.commit();
+      });
+      await Promise.all([runX, runY]);
+      assertEquals(xCheckpoints, 2);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+Deno.test("openV3Datastore: a flush made from a nested unit, as a step's batch is, counts for its run's root (swamp-club#4574)", async () => {
+  await withTempDir(async (root) => {
+    const dir = join(root, "datastore");
+    await Deno.mkdir(dir);
+    await initializeV3Datastore(dir, "test");
+    const handle = openV3Datastore({
+      repoDir: join(root, "repo"),
+      datastorePath: dir,
+    });
+    try {
+      const markDirty = () => Promise.resolve();
+      const engine = handle.engineFor(markDirty, () => {
+        throw new Error("no run repository needed");
+      });
+      await engine.runRoot({}, async () => {
+        const run = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await runInUnitOfWork(run, async () => {
+          assertEquals(engine.lastCheckpointAt?.(), undefined);
+          const step = engine.openUnit() as unknown as CommitLogUnitOfWork;
+          await runInUnitOfWork(step, async () => {
+            await step.stageOps([
+              new AutoDefinitionChanges(crypto.randomUUID()).write(
+                recordKeyOf(["auto-definitions", "step.yaml"]),
+                new TextEncoder().encode("step"),
+              ),
+            ]);
+            assertEquals(await engine.checkpointOpenUnit(), "committed");
+          });
+          await step.commit();
+          assert(engine.lastCheckpointAt?.() !== undefined);
+        });
+        await run.commit();
+      });
+    } finally {
+      await handle.close();
+    }
+  });
 });

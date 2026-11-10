@@ -157,6 +157,7 @@ import {
   appendNowFrom,
   checkpointFrom,
   commitLogParentFor,
+  commitLogRootFor,
   createCommitLogUnitOfWork,
   type ForwardedCommit,
   type UnitTracker,
@@ -1491,6 +1492,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           }
           : {}),
       };
+      // by root: in serve one engine flushes every run's own root
+      const checkpointedAt = new WeakMap<UnitOfWork, number>();
       return {
         openUnit(): UnitOfWork {
           const parent = currentUnitOfWork();
@@ -1519,13 +1522,20 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           const unit = commitLogParentFor(markDirty, currentUnitOfWork());
           if (unit === undefined) return "no-unit";
           try {
-            return await checkpointFrom(unit, checkpointOptions)
-              ? "committed"
-              : "no-unit";
+            if (!await checkpointFrom(unit, checkpointOptions)) {
+              return "no-unit";
+            }
+            const root = commitLogRootFor(markDirty, unit);
+            if (root !== undefined) checkpointedAt.set(root, Date.now());
+            return "committed";
           } catch (error) {
             if (error instanceof PartitionsRefusedError) return "refused";
             throw error;
           }
+        },
+        lastCheckpointAt: () => {
+          const root = commitLogRootFor(markDirty, currentUnitOfWork());
+          return root === undefined ? undefined : checkpointedAt.get(root);
         },
         forwardsToServe: serveSink !== undefined,
         async appendToOpenUnit(changes, appendOptions) {
