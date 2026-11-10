@@ -201,7 +201,7 @@ async function inBatches<T, R>(
   return results;
 }
 
-Deno.test("command routes: each route loads alone in a fresh module graph with the full tree's schema", async () => {
+Deno.test("command routes: each route loads alone in a fresh module graph with the full tree's schema and error handlers", async () => {
   const full = await buildCommandTree();
   const requests: Array<RouteWorkerRequest & { expected: string }> = [
     ...ROOT_ROUTES.map((route) => ({
@@ -221,5 +221,21 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
   for (const { label, expected, response } of results) {
     assert(response.ok, `${label}: ${response.ok ? "" : response.error}`);
     assertEquals(response.schema, expected, label);
+  }
+
+  // in a fresh graph, as in the binary: a command shared between two parents
+  // keeps the parent its own module gave it unless the full tree re-parents it
+  const fullTree = results[results.length - 1].response;
+  assert(fullTree.ok);
+  for (const { label, response } of results.slice(0, -1)) {
+    assert(response.ok);
+    for (const [path, handler] of Object.entries(response.errorHandlers)) {
+      assertEquals(
+        handler,
+        fullTree.errorHandlers[path],
+        `swamp ${path} (loading ${label}) reports refused input through a ` +
+          "different error handler than with the full tree",
+      );
+    }
   }
 });

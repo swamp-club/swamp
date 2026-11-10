@@ -19,6 +19,7 @@
 
 // a fresh module graph per route, so a cycle entered from a new side shows up
 
+import type { ErrorHandler } from "@cliffy/command";
 import { type AnyCommand, buildCliSchema } from "../src/cli/cli_schema.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 
@@ -29,7 +30,12 @@ export interface RouteWorkerRequest {
 }
 
 export type RouteWorkerResponse =
-  | { ok: true; schema: string | null }
+  | {
+    ok: true;
+    schema: string | null;
+    /** for every command path at and under the requested one */
+    errorHandlers: Record<string, string>;
+  }
   | { ok: false; error: string };
 
 declare const self: Worker;
@@ -38,13 +44,23 @@ interface CliEntry {
   buildCommandTree(args?: string[]): Promise<AnyCommand>;
 }
 
+interface ErrorHandlerEntry {
+  unknownCommandErrorHandler: ErrorHandler;
+}
+
 // specifiers held in variables: the worker type library has no window globals
 // such as prompt, which the CLI graph uses, so it must not be type-checked here
 const entryPoint = new URL("../main.ts", import.meta.url).href;
 const compositionRoot = new URL("../src/cli/mod.ts", import.meta.url).href;
-async function loadCli(): Promise<CliEntry> {
+const errorHandlerModule =
+  new URL("../src/cli/unknown_command_handler.ts", import.meta.url).href;
+async function loadCli(): Promise<CliEntry & ErrorHandlerEntry> {
   await import(entryPoint);
-  return await import(compositionRoot) as CliEntry;
+  const { buildCommandTree } = await import(compositionRoot) as CliEntry;
+  const { unknownCommandErrorHandler } = await import(
+    errorHandlerModule
+  ) as ErrorHandlerEntry;
+  return { buildCommandTree, unknownCommandErrorHandler };
 }
 
 // started before the handler is set, so no message waits on it unheard; a
@@ -58,14 +74,39 @@ function resolvePath(root: AnyCommand, path: string[]): AnyCommand | undefined {
   return current;
 }
 
+// Cliffy asks only the command and its parent, so a command shared between two
+// parents answers with whichever parent registered it last
+function errorHandlers(
+  node: AnyCommand,
+  path: string[],
+): Record<string, string> {
+  const found: Record<string, string> = {};
+  const visit = (command: AnyCommand, at: string[]) => {
+    const handler = command.settings.errorHandler ??
+      command.getParent()?.settings.errorHandler;
+    found[at.join(" ")] = handler === undefined ? "none" : handler.name;
+    for (const child of command.getCommands(true)) {
+      visit(child, [...at, child.getName()]);
+    }
+  };
+  visit(node, path);
+  return found;
+}
+
 self.onmessage = async (event: MessageEvent<RouteWorkerRequest>) => {
   const { args, path } = event.data;
   let response: RouteWorkerResponse;
   try {
-    const { buildCommandTree } = await cli;
-    const node = resolvePath(await buildCommandTree(args), path);
+    const { buildCommandTree, unknownCommandErrorHandler } = await cli;
+    // the handler runInvocation gives its root; buildCommandTree's has none
+    // reset() first: Cliffy applies a setting to the last registered command
+    const tree = (await buildCommandTree(args)).reset().error(
+      unknownCommandErrorHandler,
+    );
+    const node = resolvePath(tree, path);
     response = {
       ok: true,
+      errorHandlers: node === undefined ? {} : errorHandlers(node, path),
       schema: node === undefined ? null : JSON.stringify(
         buildCliSchema(node, VERSION, {
           stripGlobalOptions: path.length > 0,

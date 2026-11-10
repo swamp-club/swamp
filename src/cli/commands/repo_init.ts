@@ -19,6 +19,7 @@
 
 import { type ArgumentValue, Command, StringType } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -241,6 +242,7 @@ export const repoUpgradeCommand = new Command()
 export const repoCommand = new Command()
   .name("repo")
   .description("Manage swamp repositories")
+  .error(unknownCommandErrorHandler)
   .action(groupCommandAction)
   .command("init", repoInitCommand)
   .command("upgrade", repoUpgradeCommand)
