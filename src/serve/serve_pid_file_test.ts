@@ -19,7 +19,14 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { removePidFileIfOurs } from "./serve_pid_file.ts";
+import {
+  probeServePid,
+  readServePidSidecar,
+  removePidFileIfOurs,
+  type ServePidProbeDeps,
+  servePidSidecarPath,
+  writeServePidFiles,
+} from "./serve_pid_file.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>) {
   const dir = await Deno.makeTempDir({ prefix: "pid-" });
@@ -55,4 +62,88 @@ Deno.test("removePidFileIfOurs: a missing file is not an error", async () => {
       false,
     );
   });
+});
+
+const exists = (started?: string): ServePidProbeDeps => ({
+  processExists: () => true,
+  startTime: () => Promise.resolve(started),
+});
+
+Deno.test("writeServePidFiles: serve.pid stays a bare PID and the sidecar records the start time", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "serve.pid");
+    await writeServePidFiles(path, { pid: 4242, startTime: "Tue Nov 10" });
+    assertEquals(await Deno.readTextFile(path), "4242");
+    assertEquals(await readServePidSidecar(path), {
+      pid: 4242,
+      startTime: "Tue Nov 10",
+    });
+  });
+});
+
+Deno.test("readServePidSidecar: a missing or malformed sidecar reads as none", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "serve.pid");
+    assertEquals(await readServePidSidecar(path), undefined);
+    await Deno.writeTextFile(servePidSidecarPath(path), "not json");
+    assertEquals(await readServePidSidecar(path), undefined);
+    await Deno.writeTextFile(servePidSidecarPath(path), '{"pid":"4242"}');
+    assertEquals(await readServePidSidecar(path), undefined);
+  });
+});
+
+Deno.test("removePidFileIfOurs: removes this serve's sidecar and keeps a later serve's", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "serve.pid");
+    await writeServePidFiles(path, { pid: 4242, startTime: "t" });
+    assertEquals(await removePidFileIfOurs(path, 4242), true);
+    assertEquals(await readServePidSidecar(path), undefined);
+
+    await writeServePidFiles(path, { pid: 5151, startTime: "t" });
+    assertEquals(await removePidFileIfOurs(path, 4242), false);
+    assertEquals(await readServePidSidecar(path), {
+      pid: 5151,
+      startTime: "t",
+    });
+  });
+});
+
+Deno.test("probeServePid: the same start time is the serve that wrote the files", async () => {
+  assertEquals(
+    await probeServePid(4242, { pid: 4242, startTime: "t1" }, exists("t1")),
+    "match",
+  );
+});
+
+Deno.test("probeServePid: a reused pid or a vanished process is a stale file", async () => {
+  assertEquals(
+    await probeServePid(4242, { pid: 4242, startTime: "t1" }, exists("t2")),
+    "mismatch",
+  );
+  assertEquals(
+    await probeServePid(4242, { pid: 4242, startTime: "t1" }, {
+      processExists: () => false,
+      startTime: () => Promise.resolve(undefined),
+    }),
+    "mismatch",
+  );
+});
+
+Deno.test("probeServePid: what this machine cannot tell is unknown, never stale", async () => {
+  // ps missing or busybox: no start time
+  assertEquals(
+    await probeServePid(4242, { pid: 4242, startTime: "t1" }, exists()),
+    "unknown",
+  );
+  // a serve started before the sidecar existed
+  assertEquals(await probeServePid(4242, undefined, exists("t1")), "unknown");
+  // a sidecar naming another pid, or written without a start time
+  assertEquals(
+    await probeServePid(4242, { pid: 5151, startTime: "t1" }, exists("t1")),
+    "unknown",
+  );
+  assertEquals(
+    await probeServePid(4242, { pid: 4242 }, exists("t1")),
+    "unknown",
+  );
 });

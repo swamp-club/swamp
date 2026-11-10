@@ -272,6 +272,8 @@ export interface SettingsDiffInput {
   /** flags given explicitly at startup; they win over the file */
   readonly explicitFlags: ReadonlySet<string>;
   readonly envLookup: (name: string) => string | undefined;
+  /** applied settings whose consumer is not running here, with the reason */
+  readonly notRunning?: Partial<Record<keyof MergedServeOptions, string>>;
 }
 
 /**
@@ -299,12 +301,14 @@ export function diffServeSettings(
     const by = overriddenBy(key, entry, input);
     if (by !== undefined) {
       overridden.push({ setting: entry.setting, by });
-    } else if (entry.reloadClass === "applied") {
+    } else if (
+      entry.reloadClass === "applied" && input.notRunning?.[key] === undefined
+    ) {
       appliedSettings.push(entry.setting);
     } else {
       needsRestart.push({
         setting: entry.setting,
-        reason: entry.reason ?? NOT_YET,
+        reason: input.notRunning?.[key] ?? entry.reason ?? NOT_YET,
       });
     }
   }

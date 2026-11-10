@@ -112,6 +112,20 @@ Deno.test("diffServeSettings: --webhook flags override the file's webhooks list"
   assertEquals(report.overridden, [{ setting: "webhooks", by: "--webhook" }]);
 });
 
+Deno.test("diffServeSettings: an applied setting whose consumer is not running needs a restart, with that reason", () => {
+  const report = diffServeSettings({
+    before: { triggers: {} },
+    after: { triggers: { nightly: { schedule: "0 3 * * *" } } },
+    explicitFlags: new Set(),
+    envLookup: () => undefined,
+    notRunning: { triggerOverrides: "no scheduler runs on this serve" },
+  });
+  assertEquals(report.applied, []);
+  assertEquals(report.needsRestart, [
+    { setting: "triggers", reason: "no scheduler runs on this serve" },
+  ]);
+});
+
 Deno.test("diffServeSettings: a startup-only setting is not reported", () => {
   const report = diff({ "hydration-timeout": "60s" }, {
     "hydration-timeout": "90s",

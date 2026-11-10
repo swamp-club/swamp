@@ -35,7 +35,8 @@ import { workerGcListPredicate } from "./worker_gc_service.ts";
 
 export interface ServeWorkerPoolReaderDeps {
   liveWorkers(): readonly WorkerSnapshot[];
-  queueTimeoutMs?: number;
+  // a function reads serve's live value, so a reload reaches fan-out lanes
+  queueTimeoutMs?: number | (() => number);
   readTokenRecords(): Promise<ReadonlyMap<string, EnrollmentToken>>;
   readWorkerRecords(): Promise<readonly WorkerState[]>;
   now(): number;
@@ -68,7 +69,8 @@ export class ServeWorkerPoolReader implements WorkerPoolReader {
   }
 
   get queueTimeoutMs(): number | undefined {
-    return this.#deps.queueTimeoutMs;
+    const timeout = this.#deps.queueTimeoutMs;
+    return typeof timeout === "function" ? timeout() : timeout;
   }
 
   async readPool(): Promise<PoolWorker[]> {
@@ -131,7 +133,7 @@ export function createServeWorkerPoolReader(options: {
   // scopes the record query so another namespace's workers never join
   namespace: string;
   now?: () => number;
-  queueTimeoutMs?: number;
+  queueTimeoutMs?: number | (() => number);
 }): ServeWorkerPoolReader {
   return new ServeWorkerPoolReader({
     liveWorkers: () => options.gateway.workers(),

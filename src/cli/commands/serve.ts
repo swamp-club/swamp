@@ -144,7 +144,14 @@ import {
   reloadsOnHangup,
 } from "../../serve/serve_settings_reload.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
-import { removePidFileIfOurs } from "../../serve/serve_pid_file.ts";
+import { readProcessStartTime } from "../../infrastructure/process/process_kill.ts";
+import {
+  probeServePid,
+  processExists,
+  readServePidSidecar,
+  removePidFileIfOurs,
+  writeServePidFiles,
+} from "../../serve/serve_pid_file.ts";
 import {
   checkRouteFiles,
   checkWebhookRoutesDir,
@@ -317,10 +324,7 @@ import {
   createServerTokenGcRepos,
 } from "../../serve/server_token_gc_deps.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
-import {
-  DEFAULT_QUEUE_TIMEOUT_MS,
-  DispatchService,
-} from "../../serve/dispatch_service.ts";
+import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
 import { BundleRegistry } from "../../serve/bundle_registry.ts";
 import {
@@ -2024,6 +2028,14 @@ export function parseShutdownListenerGrace(
   return parseTimerDuration(raw, "--shutdown-listener-grace");
 }
 
+/** an operator who bounds the drain also bounds how long shutdown lingers */
+export function boundedListenerGraceMs(
+  graceMs: number,
+  drainTimeoutMs: number,
+): number {
+  return Math.min(graceMs, drainTimeoutMs);
+}
+
 export function listenerGraceElapsed(
   startedAt: number,
   graceMs: number,
@@ -2239,10 +2251,9 @@ export function resolveServeStartupSettings(
   const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
     merged.shutdownDrainTimeout,
   );
-  // an operator who bounds the drain also bounds how long shutdown lingers
-  const shutdownListenerGraceMs = Math.min(
-    parseShutdownListenerGrace(merged.shutdownListenerGrace, merged.reusePort),
-    shutdownDrainTimeoutMs,
+  const shutdownListenerGraceMs = parseShutdownListenerGrace(
+    merged.shutdownListenerGrace,
+    merged.reusePort,
   );
 
   const hydrationTimeoutMs = merged.hydrationTimeout !== undefined
@@ -2836,6 +2847,25 @@ const reloadCommand = new Command()
         new UserError("Invalid PID in " + pidPath + ": " + pidStr.trim()),
         [pidPath],
       );
+    }
+
+    const verdict = await probeServePid(
+      pid,
+      await readServePidSidecar(pidPath),
+      { processExists, startTime: (p) => readProcessStartTime(p) },
+    );
+    if (verdict === "mismatch") {
+      throw markErrorPaths(
+        new UserError(
+          "Process " + pid + " is not the serve that wrote " + pidPath +
+            " — stale PID file. Remove it, or reload with --server.",
+        ),
+        [pidPath],
+      );
+    }
+    if (verdict === "unknown") {
+      logger
+        .warn`Could not confirm process ${pid} is the serve that wrote ${pidPath}; sending SIGHUP anyway`;
     }
 
     try {
@@ -4067,7 +4097,7 @@ export const serveCommand = new Command()
       query: (predicate, options) =>
         repoContext.dataQueryService.query(predicate, options),
       namespace: repoContext.unifiedDataRepo.namespace,
-      queueTimeoutMs: queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
+      queueTimeoutMs: () => dispatchService.queueTimeoutMs,
     }));
     if (merged.remoteOnly) {
       setRemoteOnlyMode(true);
@@ -7704,6 +7734,10 @@ export const serveCommand = new Command()
           after: nextFile,
           explicitFlags,
           envLookup: (name) => Deno.env.get(name),
+          notRunning: scheduledExecution ? {} : {
+            triggerOverrides:
+              "no scheduler runs on this serve; restart serve with schedule on to change it",
+          },
         });
         applyLiveSettings(nextMerged, next);
         liveConfigFile = nextFile;
@@ -8932,7 +8966,10 @@ export const serveCommand = new Command()
 
     if (reloadOnHangup && pidPath) {
       try {
-        await Deno.writeTextFile(pidPath, String(Deno.pid));
+        await writeServePidFiles(pidPath, {
+          pid: Deno.pid,
+          startTime: await readProcessStartTime(Deno.pid),
+        });
         logger.info`SIGHUP reloads this serve, PID file written to ${pidPath}`;
       } catch (err) {
         // --hot-reload asked for the local reload; without it a read-only repo
@@ -9031,7 +9068,7 @@ export const serveCommand = new Command()
       // the stages below run meanwhile, so the grace never lengthens shutdown
       const listenerClosed = listenerGraceElapsed(
         drainStarted,
-        Math.min(shutdownListenerGraceMs, shutdownDrainTimeoutMs),
+        boundedListenerGraceMs(shutdownListenerGraceMs, shutdownDrainTimeoutMs),
       ).then(() => listenerAc.abort());
       // before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does
@@ -9246,17 +9283,7 @@ export const serveCommand = new Command()
       setRemoteOnlyMode(false);
       await stages.run("listener", () => listenerClosed, "awaited");
       ac.abort();
-      if (pidPath) {
-        try {
-          // an overlapping serve that started after this one owns it now
-          const pidOwner = await Deno.readTextFile(pidPath);
-          if (pidOwner.trim() === String(Deno.pid)) {
-            await Deno.remove(pidPath);
-          }
-        } catch {
-          // PID file may already be gone
-        }
-      }
+      if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
       if (isJson) {
         console.log(JSON.stringify({ status: "stopped" }));
       }
@@ -10003,7 +10030,7 @@ export const serveCommand = new Command()
             // mutex. The next pass continues.
             shouldBackOff: () =>
               control.manualGcWaiting() ||
-              activeRunRegistry.size >= (maxConcurrentRuns ?? 100),
+              activeRunRegistry.size >= activeRunRegistry.maxConcurrent,
           },
         ),
       onPass: (result) => {

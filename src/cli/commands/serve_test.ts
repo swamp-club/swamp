@@ -31,6 +31,7 @@ import { WRITER_LEASE_PREFIX } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   assertOffLoopbackSecurity,
   authorizeCancelRequest,
+  boundedListenerGraceMs,
   cancelAllExecutions,
   type CancelAuthorizationRequest,
   cancelExecution,
@@ -272,6 +273,12 @@ Deno.test("parseShutdownListenerGrace: unset is 1s, or 0 with reuse-port", () =>
 Deno.test("parseShutdownListenerGrace: an explicit value wins over the reuse-port default", () => {
   assertEquals(parseShutdownListenerGrace("20s", true), 20_000);
   assertEquals(parseShutdownListenerGrace("0s", false), 0);
+});
+
+Deno.test("boundedListenerGraceMs: the drain timeout in force bounds the grace, raised or lowered", () => {
+  assertEquals(boundedListenerGraceMs(10_000, 5_000), 5_000);
+  assertEquals(boundedListenerGraceMs(10_000, 30_000), 10_000);
+  assertEquals(boundedListenerGraceMs(0, 30_000), 0);
 });
 
 Deno.test("listenerGraceElapsed: resolves at once when the grace has passed", async () => {

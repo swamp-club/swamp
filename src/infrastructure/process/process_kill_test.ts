@@ -23,6 +23,8 @@ import {
   isProcessAlive,
   killChildGroups,
   killProcessTree,
+  type PsRunner,
+  readProcessStartTime,
   sendGracefulStop,
   snapshotChildrenToKill,
   withoutReusedPids,
@@ -241,4 +243,46 @@ Deno.test("sendGracefulStop: a process gone before SIGTERM is not an error", () 
       throw new Deno.errors.NotFound("no such process");
     },
   });
+});
+
+Deno.test({
+  name:
+    "readProcessStartTime: asks ps for one pid's start time in UTC and the C locale",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const calls: { args: readonly string[]; env: Record<string, string> }[] =
+      [];
+    const run: PsRunner = (args, env) => {
+      calls.push({ args, env: { ...env } });
+      return Promise.resolve({
+        success: true,
+        stdout: "Tue Nov 10 19:46:27 2026    \n",
+      });
+    };
+    assertEquals(
+      await readProcessStartTime(4242, run),
+      "Tue Nov 10 19:46:27 2026",
+    );
+    assertEquals(calls, [{
+      args: ["-o", "lstart=", "-p", "4242"],
+      env: { TZ: "UTC", LC_ALL: "C" },
+    }]);
+  },
+});
+
+Deno.test({
+  name:
+    "readProcessStartTime: says nothing when ps fails, prints nothing, or cannot run",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const failed: PsRunner = () =>
+      Promise.resolve({ success: false, stdout: "" });
+    const empty: PsRunner = () =>
+      Promise.resolve({ success: true, stdout: "  \n" });
+    const missing: PsRunner = () =>
+      Promise.reject(new Deno.errors.NotFound("ps"));
+    assertEquals(await readProcessStartTime(1, failed), undefined);
+    assertEquals(await readProcessStartTime(1, empty), undefined);
+    assertEquals(await readProcessStartTime(1, missing), undefined);
+  },
 });

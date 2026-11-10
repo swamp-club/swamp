@@ -62,3 +62,18 @@ Deno.test("summarizeServeReload: a failed reload reports only its errors", () =>
     error: ["Reload already in progress"],
   });
 });
+
+Deno.test("summarizeServeReload: a refused serve.yaml is an error even when the extension refresh succeeded", () => {
+  const summary = summarizeServeReload({
+    success: true,
+    reloadedCount: 2,
+    configRejected: true,
+    warnings: ["an extension warning"],
+    errors: ["Serve config not applied, nothing changed: bad value"],
+  });
+  assertEquals(summary.info, ["Reloaded 2 extension type(s)"]);
+  assertEquals(summary.warn, ["an extension warning"]);
+  assertEquals(summary.error, [
+    "Serve config not applied, nothing changed: bad value",
+  ]);
+});

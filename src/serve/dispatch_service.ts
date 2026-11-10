@@ -380,6 +380,10 @@ export class DispatchService {
     }, () => this.#executeRemote(request));
   }
 
+  get queueTimeoutMs(): number {
+    return this.#queueTimeoutMs;
+  }
+
   /** a dispatch already waiting keeps the deadline it started with */
   setQueueTimeoutMs(queueTimeoutMs: number | undefined): void {
     this.#queueTimeoutMs = queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;

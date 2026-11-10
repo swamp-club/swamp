@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   type ActiveRun,
   ActiveRunRegistry,
@@ -925,4 +928,44 @@ Deno.test("ActiveRunRegistry.setLimits: a per-principal cap applies to the next 
     RegistryCapacityError,
   );
   registry.register(makeRun("b1", { principalId: "user:b" }));
+});
+
+Deno.test("ActiveRunRegistry.maxConcurrent: reports the cap setLimits put in force", () => {
+  const registry = new ActiveRunRegistry({ maxConcurrent: 3 });
+  assertEquals(registry.maxConcurrent, 3);
+  registry.setLimits({ maxConcurrent: 7 });
+  assertEquals(registry.maxConcurrent, 7);
+  registry.setLimits({});
+  assertEquals(registry.maxConcurrent, 100);
+});
+
+Deno.test("ActiveRunRegistry.setLimits: a run aborted for its duration logs the limit it registered under, not the reloaded one", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "active-run-registry"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  const registry = new ActiveRunRegistry({ maxRunDurationMs: 20 });
+  const run = makeRun("r1");
+  try {
+    registry.register(run);
+    registry.setLimits({});
+    await waitFor(
+      () => run.controller.signal.aborted,
+      "the run to be aborted for its duration",
+    );
+  } finally {
+    registry.deregister("r1");
+    await reset();
+    await initializeLogging({});
+  }
+  assertEquals(records.map((r) => r.properties.durationMs), [20]);
 });
