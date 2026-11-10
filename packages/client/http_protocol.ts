@@ -225,6 +225,7 @@ export const DELEGATION_ROUTE_CODES = [
   "invalid_grant",
   "invalid_request",
   "links_not_enabled",
+  "links_require_plan",
   "links_unavailable",
   "method_not_allowed",
   "no_instance",

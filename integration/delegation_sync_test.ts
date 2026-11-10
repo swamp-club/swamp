@@ -377,3 +377,83 @@ Deno.test("relink: a folded link not redeemed within the hour answers ended, and
     assertEquals((await rig.store.read(id))?.pendingRedeem, undefined);
   });
 });
+
+Deno.test("sync: a link ended because the plan lapsed ends as plan_lapsed, is audited, refused and reaches a follower, and swamp-club isn't told back", async () => {
+  await withRig(async (rig) => {
+    const issued = await redeem(rig, await startAndConsent(rig));
+    const id = issued.delegationId as string;
+    const clock = { now: Date.now() };
+    const sync = syncFor(rig, clock);
+    rig.club.people.set("link-1", { state: "active", identity: IDENTITY });
+    await sync.tick();
+
+    rig.club.endedFeed.push("link-1");
+    rig.club.people.set("link-1", {
+      state: "ended",
+      endedReason: "plan_lapsed",
+    });
+    clock.now += 30_000;
+    await sync.tick();
+    assertEquals((await rig.store.read(id))?.ended?.cause, "plan_lapsed");
+    assertEquals(
+      rig.audit.filter((e) => e.action === "ended").map((e) => e.outcome),
+      ["plan_lapsed"],
+    );
+    assert(
+      !(await authenticateDelegatedToken(
+        issued.accessToken as string,
+        rig.directory,
+      )).ok,
+    );
+    const refresh = await rig.post("refresh", {
+      refreshToken: issued.refreshToken,
+    });
+    assertEquals(refresh.status, 401);
+    const followerDirectory = await follower(rig);
+    assertEquals(followerDirectory.standingOf(id).kind, "ended");
+    await followerDirectory.dispose();
+
+    await rig.pass();
+    assertEquals(rig.club.ends, []);
+  });
+});
+
+Deno.test("sync: the people read ends a lapsed plan's link as plan_lapsed, and a reason serve doesn't know as club_ended", async () => {
+  await withRig(async (rig) => {
+    const lapsed = await redeem(rig, await link(rig, "U1"));
+    const other = await redeem(rig, await link(rig, "U2"));
+    const clock = { now: Date.now() };
+    rig.club.people.set("link-1", {
+      state: "ended",
+      endedReason: "plan_lapsed",
+    });
+    rig.club.people.set("link-2", { state: "ended", endedReason: "other" });
+    await syncFor(rig, clock).tick();
+    assertEquals(
+      (await rig.store.read(lapsed.delegationId as string))?.ended?.cause,
+      "plan_lapsed",
+    );
+    assertEquals(
+      (await rig.store.read(other.delegationId as string))?.ended?.cause,
+      "club_ended",
+    );
+  });
+});
+
+Deno.test("sync: a lapsed plan listed for a link a relink replaced leaves the delegation standing", async () => {
+  await withRig(async (rig) => {
+    const first = await redeem(rig, await link(rig, "U1"));
+    const id = first.delegationId as string;
+    await redeem(rig, await link(rig, "U1"));
+    assertEquals((await rig.store.read(id))?.club.linkId, "link-2");
+    const clock = { now: Date.now() };
+    rig.club.people.set("link-2", { state: "active", identity: IDENTITY });
+    rig.club.endedFeed.push("link-1");
+    rig.club.people.set("link-1", {
+      state: "ended",
+      endedReason: "plan_lapsed",
+    });
+    await syncFor(rig, clock).tick();
+    assertEquals((await rig.store.read(id))?.phase, "issued");
+  });
+});

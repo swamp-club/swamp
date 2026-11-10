@@ -23,6 +23,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { Ceiling } from "../src/domain/access/ceiling.ts";
 import {
+  endDelegation,
   issueDelegationTokens,
   recordApproval,
   recordReported,
@@ -180,6 +181,41 @@ Deno.test("access delegation: list, show and end a delegation in the repo, with 
       const text = JSON.stringify(reply);
       for (const hash of hashes) assert(!text.includes(hash), text);
     }
+  });
+});
+
+Deno.test("access delegation: a link ended because the plan lapsed shows plan_lapsed in list and show, in json and log", async () => {
+  await withRepo(async (dir) => {
+    const now = Date.now();
+    const record = endDelegation(await issuedRecord(now), "plan_lapsed", now);
+    await seed(dir, record);
+    const listed = await cli([
+      "access",
+      "delegation",
+      "list",
+      "--state",
+      "ended",
+      "--repo-dir",
+      dir,
+    ]) as Record<string, unknown>[];
+    assertEquals(listed.map((v) => [v.id, v.endCause]), [[
+      record.id,
+      "plan_lapsed",
+    ]]);
+    const shown = await cli([
+      "access",
+      "delegation",
+      "show",
+      record.id,
+      "--repo-dir",
+      dir,
+    ]) as Record<string, unknown>;
+    assertEquals(shown.endCause, "plan_lapsed");
+    const logged = await runCliCapturing({
+      args: ["access", "delegation", "show", record.id, "--repo-dir", dir],
+    });
+    if (logged.error) throw logged.error;
+    assertStringIncludes(logged.stdout.join("\n"), "plan_lapsed");
   });
 });
 

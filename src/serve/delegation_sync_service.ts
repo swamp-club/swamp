@@ -87,6 +87,15 @@ function isClientRefusal(error: unknown): error is ServeLinkError {
     error.code !== undefined && CLIENT_REFUSAL_CODES.has(error.code);
 }
 
+/** a reason serve doesn't know yet still ends the delegation, as club_ended */
+function endCauseOf(
+  endedReason: string | undefined,
+): "disowned" | "plan_lapsed" | "club_ended" {
+  return endedReason === "disowned" || endedReason === "plan_lapsed"
+    ? endedReason
+    : "club_ended";
+}
+
 /**
  * a link's end ends the delegation it is still the link of; a link a relink
  * replaced ends it only when the person disowns it
@@ -281,14 +290,15 @@ export class DelegationSyncService {
     const reasons = await this.#endedReasons(client, relevant);
     const now = this.#now();
     for (const linkId of relevant) {
-      const disowned = reasons.get(linkId) === "disowned";
+      const cause = endCauseOf(reasons.get(linkId));
+      const disowned = cause === "disowned";
       const target = current.get(linkId) ??
         (disowned ? retired.get(linkId) : undefined);
       if (target === undefined) continue;
       await endLocally(
         this.#deps.store,
         target.id,
-        disowned ? "disowned" : "club_ended",
+        cause,
         now,
         this.#deps.audit,
         (fresh) => endsWith(fresh, linkId, disowned),
@@ -339,14 +349,14 @@ export class DelegationSyncService {
     const now = this.#now();
     const linkId = record.club.linkId!;
     if (view?.state === "ended") {
-      const disowned = view.endedReason === "disowned";
+      const cause = endCauseOf(view.endedReason);
       await endLocally(
         this.#deps.store,
         record.id,
-        disowned ? "disowned" : "club_ended",
+        cause,
         now,
         this.#deps.audit,
-        (fresh) => endsWith(fresh, linkId, disowned),
+        (fresh) => endsWith(fresh, linkId, cause === "disowned"),
       );
       return;
     }

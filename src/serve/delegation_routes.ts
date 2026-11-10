@@ -158,6 +158,7 @@ export const DELEGATION_ROUTE_CODES = [
   "invalid_grant",
   "invalid_request",
   "links_not_enabled",
+  "links_require_plan",
   "links_unavailable",
   "method_not_allowed",
   "no_instance",
@@ -329,6 +330,8 @@ function clubFailure(error: ServeLinkError): Response {
         "links_not_enabled",
         "swamp-club does not offer links to this serve's collective",
       );
+    case "requires_plan":
+      return httpFailure(409, "links_require_plan", error.message);
     case "no_instance":
       return httpFailure(
         409,
