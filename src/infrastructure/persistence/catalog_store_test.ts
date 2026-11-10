@@ -2581,3 +2581,212 @@ Deno.test("CatalogStore.upsertNewVersion: sees a higher version another connecti
     store.close();
   }
 });
+
+const NAME_A = {
+  namespace: "",
+  type_normalized: "test-model",
+  model_id: "model-001",
+  data_name: "a",
+};
+
+function dirtyOf(store: CatalogStore): string[] {
+  return store.dirtyNames().map((name) => name.data_name);
+}
+
+Deno.test("CatalogStore.ensureDirtyTracking: any connection's insert, update or delete of a name's rows or forwards marks it, from the time tracking started (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  const other = new CatalogStore(tempDb.path);
+  try {
+    assertEquals(store.dirtyTrackingSince(), undefined);
+    store.ensureDirtyTracking(1_000);
+    store.ensureDirtyTracking(2_000);
+    assertEquals(store.dirtyTrackingSince(), 1_000);
+    other.upsertNewVersion(makeRow({ data_name: "a" }));
+    other.recordRename({ ...NAME_A, data_name: "b", renamed_to: "c" });
+    assertEquals(dirtyOf(store), ["a", "b"]);
+    store.forgetDirty([NAME_A, { ...NAME_A, data_name: "b" }]);
+    other.removeVersion(
+      "",
+      "test-model",
+      "model-001",
+      "a",
+      1,
+      computeLatestFlags,
+    );
+    other.removeRename("", "test-model", "model-001", "b");
+    assertEquals(dirtyOf(store), ["a", "b"]);
+  } finally {
+    other.close();
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.ensureDirtyTracking: a migration that drops the catalog drops the triggers, so tracking reads as missing until it starts again (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  let store = new CatalogStore(tempDb.path);
+  store.ensureDirtyTracking(1_000);
+  store.close();
+  const db = new DatabaseSync(tempDb.path);
+  try {
+    db.prepare(
+      "UPDATE catalog_meta SET value = 'stale' WHERE key = 'schema_version'",
+    ).run();
+  } finally {
+    db.close();
+  }
+  store = new CatalogStore(tempDb.path);
+  try {
+    assertEquals(store.dirtyTrackingSince(), undefined);
+    store.ensureDirtyTracking(5_000);
+    assertEquals(store.dirtyTrackingSince(), 5_000);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.applyInTransaction: committed work marks no name and leaves a dirty name dirty, and the next write of any connection marks again (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  const other = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    store.upsertNewVersion(makeRow({ data_name: "dirty" }));
+    store.applyInTransaction((writer) => {
+      writer.upsertNewVersion(makeRow({ data_name: "dirty", version: 2 }));
+      writer.upsertNewVersion(makeRow({ data_name: "clean", version: 1 }));
+      writer.removeVersion(
+        "",
+        "test-model",
+        "model-001",
+        "clean",
+        1,
+        computeLatestFlags,
+      );
+      writer.recordRename({ ...NAME_A, data_name: "moved", renamed_to: "z" });
+    }, { committed: true });
+    assertEquals(dirtyOf(store), ["dirty"]);
+    other.upsertNewVersion(makeRow({ data_name: "later" }));
+    store.upsertNewVersion(makeRow({ data_name: "own" }));
+    assertEquals(dirtyOf(store), ["dirty", "later", "own"]);
+    store.applyInTransaction((writer) => {
+      writer.clearNames([{ ...NAME_A, data_name: "dirty" }], () => true);
+      writer.forgetDirty([{ ...NAME_A, data_name: "dirty" }]);
+    }, { committed: true });
+    assertEquals(dirtyOf(store), ["later", "own"]);
+    const db = new DatabaseSync(tempDb.path, { readOnly: true });
+    try {
+      assertEquals(
+        db.prepare(
+          "SELECT key FROM catalog_meta WHERE key = 'dirty_suppressed'",
+        ).all(),
+        [],
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    other.close();
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.applyInTransaction: committed work that fails leaves no suppression behind (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    assertThrows(() =>
+      store.applyInTransaction(() => {
+        throw new Error("failed part way");
+      }, { committed: true })
+    );
+    store.upsertNewVersion(makeRow({ data_name: "after" }));
+    assertEquals(dirtyOf(store), ["after"]);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.clearNames: removes only the rows and forwards clears picks, of the names given (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.upsertNewVersion(makeRow({ data_name: "a", version: 1 }));
+    store.upsertNewVersion(makeRow({ data_name: "a", version: 2 }));
+    store.upsertNewVersion(makeRow({ data_name: "b", version: 1 }));
+    store.recordRename({ ...NAME_A, renamed_to: "z" });
+    store.applyInTransaction((writer) =>
+      writer.clearNames([NAME_A], (row) => row.version !== 1)
+    );
+    assertEquals(
+      [...store.iterate()].map((row) => `${row.data_name}@${row.version}`),
+      ["a@1", "b@1"],
+    );
+    assertEquals(
+      store.findRenameTarget("", "test-model", "model-001", "a"),
+      null,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.releaseDirty: a clean end forgets every name no unlanded commit pins, and a pin stays until its commit is found landed (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    for (const name of ["a", "b", "c"]) {
+      store.upsertNewVersion(makeRow({ data_name: name }));
+    }
+    const pin = { ...NAME_A, partition: "p", txn_id: "t1" };
+    store.releaseDirty([pin], []);
+    assertEquals(dirtyOf(store), ["a"]);
+    // the entry left the outbox without landing: its pin stays
+    store.releaseDirty([], []);
+    assertEquals(dirtyOf(store), ["a"]);
+    assertEquals(store.dirtyPins().length, 1);
+    store.releaseDirty([], [{ partition: "p", txn_id: "t1" }]);
+    assertEquals(dirtyOf(store), []);
+    assertEquals(store.dirtyPins(), []);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.forgetAllDirty: forgets every name and pin and the owed full recovery (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    store.upsertNewVersion(makeRow({ data_name: "a" }));
+    store.releaseDirty([{ ...NAME_A, partition: "p", txn_id: "t" }], []);
+    store.markFullRecoveryRequired();
+    assert(store.fullRecoveryRequired());
+    store.forgetAllDirty();
+    assertEquals(dirtyOf(store), []);
+    assertEquals(store.dirtyPins(), []);
+    assertEquals(store.fullRecoveryRequired(), false);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.vacuum: keeps the dirty-name triggers and marks no name by copying the rows (swamp-club#4581)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    store.upsertNewVersion(makeRow({ data_name: "a" }));
+    store.upsertNewVersion(makeRow({ data_name: "b" }));
+    store.forgetDirty([{ ...NAME_A, data_name: "b" }]);
+    assertEquals(store.vacuum(), true);
+    assertEquals(dirtyOf(store), ["a"]);
+    assertEquals(store.dirtyTrackingSince(), 1_000);
+    store.upsertNewVersion(makeRow({ data_name: "c" }));
+    assertEquals(dirtyOf(store), ["a", "c"]);
+  } finally {
+    store.close();
+  }
+});

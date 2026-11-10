@@ -74,6 +74,7 @@ import {
   mergeDirInto,
   removeCatalogFiles,
 } from "../../infrastructure/persistence/directory_merge.ts";
+import { requireFullV3Recovery } from "../../infrastructure/datastore_v3/v3_catalog.ts";
 import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -401,14 +402,19 @@ function buildMigrateDeps(
     },
     dirContents: (path: string) => dirContents(path),
     dirSize,
-    renameDir: (source: string, destination: string) =>
-      Deno.rename(source, destination),
+    renameDir: async (source: string, destination: string) => {
+      await Deno.rename(source, destination);
+      requireFullV3Recovery(repoDir);
+    },
     findFileCollisions: (source: string, destination: string) =>
       findFileCollisions(source, destination),
     compareFiles: (a: string, b: string) => compareFiles(a, b),
     removeFile: (path: string) => Deno.remove(path),
-    mergeDirInto: (source: string, destination: string) =>
-      mergeDirInto(source, destination),
+    mergeDirInto: async (source: string, destination: string) => {
+      const result = await mergeDirInto(source, destination);
+      if (result.moved > 0) requireFullV3Recovery(repoDir);
+      return result;
+    },
     ensureDir: (path: string) => ensureDir(path),
     removeOrphanedCatalogFiles: (namespaceDataDir: string) =>
       removeCatalogFiles(namespaceDataDir, dirname(catalogDbPath(repoDir))),

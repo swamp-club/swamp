@@ -62,6 +62,7 @@ import { DEFAULT_CHUNK_GRACE_MS } from "../../domain/datastore_v3/chunk_collecto
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { HeadIdentity } from "../../domain/datastore_v3/commit_outbox.ts";
 import {
+  type BaseDataName,
   type CommitChange,
   CommitsCompactedError,
   type CommitStore,
@@ -75,6 +76,7 @@ import {
   type DataNameMarks,
   InvalidBasePageTokenError,
   type ObservedCopyRepair,
+  type PartitionBase,
   type PartitionHead,
   type PartitionLeaseMarks,
 } from "../../domain/datastore_v3/commit_store.ts";
@@ -2267,6 +2269,80 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         const page = this.#base.readPage(after, limit);
         return { point: this.#point(), ...page };
       }));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  readPartitionBase(
+    namespace: string,
+    partition: PartitionKey,
+    names: readonly string[],
+  ): Promise<PartitionBase> {
+    if (this.#closed) return Promise.reject(closedError());
+    try {
+      return Promise.resolve(
+        this.#readTransaction(() =>
+          this.#partitionBase(namespace, partition.toString(), names)
+        ),
+      );
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  #partitionBase(
+    namespace: string,
+    partition: string,
+    names: readonly string[],
+  ): PartitionBase {
+    const seq = (this.#db.prepare(
+      "SELECT seq FROM compacted_partitions WHERE namespace = ? AND partition = ?",
+    ).get(namespace, partition) as { seq: number } | undefined)?.seq ?? 0;
+    const versions = this.#db.prepare(
+      "SELECT metadata FROM base_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    );
+    const catalog = this.#db.prepare(
+      "SELECT v.metadata FROM base_catalog AS c JOIN base_versions AS v " +
+        "ON v.namespace = c.namespace AND v.partition = c.partition AND v.name = c.name AND v.version = c.version " +
+        "WHERE c.namespace = ? AND c.partition = ? AND c.name = ? ORDER BY c.version",
+    );
+    const forward = this.#db.prepare(
+      "SELECT renamed_to FROM base_forwards WHERE namespace = ? AND partition = ? AND name = ?",
+    );
+    const found = new Map<string, BaseDataName>();
+    for (const name of new Set(names)) {
+      const live = (versions.all(namespace, partition, name) as {
+        metadata: string;
+      }[]).map((row) => {
+        const metadata = parseMetadata(row.metadata);
+        return { version: metadata.version, metadata };
+      });
+      const rows = (catalog.all(namespace, partition, name) as {
+        metadata: string;
+      }[]).map((row) => parseMetadata(row.metadata));
+      const to = (forward.get(namespace, partition, name) as
+        | { renamed_to: string }
+        | undefined)?.renamed_to;
+      if (live.length === 0 && rows.length === 0 && to === undefined) continue;
+      found.set(name, { versions: live, catalogRows: rows, forward: to });
+    }
+    return { compactedSeq: seq, names: found };
+  }
+
+  readBaseRecord(
+    namespace: string,
+    partition: PartitionKey,
+    key: string,
+  ): Promise<BaseRecord | undefined> {
+    if (this.#closed) return Promise.reject(closedError());
+    try {
+      const row = this.#db.prepare(
+        "SELECT sha256, inline, blob, access FROM base_records WHERE namespace = ? AND partition = ? AND record_key = ?",
+      ).get(namespace, partition.toString(), key) as
+        | Record<string, unknown>
+        | undefined;
+      return Promise.resolve(row === undefined ? undefined : baseRecordOf(row));
     } catch (error) {
       return Promise.reject(error);
     }

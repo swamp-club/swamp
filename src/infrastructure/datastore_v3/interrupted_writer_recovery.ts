@@ -126,6 +126,11 @@ export async function writeWriterMarker(
   );
 }
 
+export async function holdsOwnWriterMarker(repoDir: string): Promise<boolean> {
+  const file = await readWriterMarkerFile(repoDir);
+  return file.kind === "marker" && isOwn(file.marker);
+}
+
 export async function removeOwnWriterMarker(repoDir: string): Promise<void> {
   const marker = await readWriterMarker(repoDir);
   if (marker === undefined || !isOwn(marker)) return;

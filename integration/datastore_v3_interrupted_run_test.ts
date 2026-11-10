@@ -59,6 +59,14 @@ import {
 } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { v3CatalogPath } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
+import { catalogRow } from "../src/infrastructure/datastore_v3/v3_catalog.ts";
+import { Commit } from "../src/domain/datastore_v3/commit.ts";
+import { dataVersionOp } from "../src/domain/datastore_v3/op.ts";
+import { partitionOf } from "../src/domain/datastore_v3/partition_key.ts";
+import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
+import { DataMetadataSchema } from "../src/domain/data/data_metadata.ts";
 import { RUNS_INDEX_FILENAME } from "../src/infrastructure/persistence/workflow_run_index.ts";
 import { libSwampContextForRepo } from "../src/cli/repo_context.ts";
 import { modelMethodRun } from "../src/libswamp/models/run.ts";
@@ -509,6 +517,71 @@ Deno.test("v3 interrupted run: a writer that tears down, after a clean run or an
     );
     await closeV3Datastores();
     assertEquals(await readWriterMarker(repos.repoA), undefined);
+  });
+});
+
+Deno.test("v3 interrupted run: a writer that ends cleanly forgets the catalog names its committed work left dirty, but keeps those of an outbox entry not landed (swamp-club#4581)", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    const model = await inRoot(repos, () => saveModel(repos.serveRepo, "m1"));
+    await inRoot(repos, () => saveData(repos.serveRepo, model, "committed"));
+    const dirtyNames = () => {
+      const catalog = new CatalogStore(v3CatalogPath(repos.repoA));
+      try {
+        return catalog.dirtyNames().map((name) => name.data_name);
+      } finally {
+        catalog.close();
+      }
+    };
+    assert(dirtyNames().includes("committed"), "the writer's rows are dirty");
+    // an entry queued offline, whose rows the writer wrote before staging
+    const partition = partitionOf({
+      kind: "model",
+      type: repos.serveRepo.modelType,
+      id: model.id,
+    });
+    const key =
+      `data/${repos.serveRepo.modelType.normalized}/${model.id}/queued/1/metadata.yaml`;
+    const metadata = DataMetadataSchema.parse({
+      name: "queued",
+      id: crypto.randomUUID(),
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+      createdAt: new Date().toISOString(),
+    });
+    const handle = v3DatastoreFor(repos.repoA, filesystemConfig(repos));
+    await handle.outbox.prepare({
+      commit: Commit.create({
+        seq: 99,
+        partition,
+        namespace: "",
+        txnId: "queued-offline",
+        writer: handle.writer,
+        at: new Date().toISOString(),
+        ops: [dataVersionOp({ key: RecordKey.create(key), metadata })],
+      }),
+      unitId: "queued-unit",
+      base: { seq: 98, txnId: undefined },
+    });
+    const catalog = new CatalogStore(v3CatalogPath(repos.repoA));
+    try {
+      catalog.upsertNewVersion(
+        catalogRow(
+          "",
+          repos.serveRepo.modelType.normalized,
+          model.id,
+          metadata,
+        ),
+      );
+    } finally {
+      catalog.close();
+    }
+    await closeV3Datastores();
+    assertEquals(await readWriterMarker(repos.repoA), undefined);
+    assertEquals(dirtyNames(), ["queued"]);
   });
 });
 

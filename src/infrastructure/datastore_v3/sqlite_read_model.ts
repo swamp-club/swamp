@@ -28,6 +28,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
 import {
   type CatalogProjection,
+  type LiveDataVersion,
   projectCatalog,
 } from "../../domain/datastore_v3/catalog_projection.ts";
 import {
@@ -45,7 +46,16 @@ import {
   type CommitChange,
   CommitsCompactedError,
   type CommitStore,
+  type PartitionBase,
 } from "../../domain/datastore_v3/commit_store.ts";
+import { catalogActionsForNames } from "../../domain/datastore_v3/name_history_replay.ts";
+import {
+  type CatalogNameKey,
+  dataNameOfKey,
+  dataNamePrefix,
+  RecoveryScope,
+  type ScopedPartition,
+} from "../../domain/datastore_v3/recovery_scope.ts";
 import {
   MAX_INLINE_BYTES,
   type PutExpect,
@@ -120,10 +130,13 @@ import {
   spellingFoldingOf,
 } from "./spelling_folding.ts";
 import {
+  type CatalogDirtyTracking,
+  type DirtyNamePin,
   ProjectedCatalog,
   type ReadModelCatalog,
   V3Catalog,
 } from "./v3_catalog.ts";
+import { isNetworkFailure } from "./network_failure.ts";
 
 export const UNSYNCED_SYNC_BATCH = 500;
 
@@ -273,6 +286,8 @@ export interface SqliteReadModelOptions {
    * replays but in a recovery; the caller of holdsOwnWork forgets it then
    */
   readonly ownWorkApplied?: (commit: Commit) => void;
+  /** MAX_TARGETED_SHARE by default; a benchmark lifts it to compare */
+  readonly targetedShare?: number;
 }
 
 interface ChangeSource {
@@ -288,6 +303,71 @@ export type RecoveryEntry =
   | "rebuilt"
   | "interrupted_writer"
   | "dropped_work";
+
+/** a tracking start this close to the writer's may have missed its first rows */
+const DIRTY_TRACKING_MARGIN_MS = 2_000;
+
+const BASE_READ_ATTEMPTS = 3;
+
+/** past this share of owned files touched, a full replay is the cheaper path */
+export const MAX_TARGETED_SHARE = 0.25;
+
+/** below this many such files the choice between the paths does not matter */
+export const TARGETED_FILES_FLOOR = 500;
+
+/** below this many touched names the share cap does not apply */
+export const TARGETED_NAMES_FLOOR = 100;
+
+/** below this many history commits the share cap does not apply */
+export const TARGETED_COMMITS_FLOOR = 1_000;
+
+/** why a recovery ran in full rather than targeted, recorded on its span */
+export type RecoveryFallback =
+  | "not_requested"
+  | "entry"
+  | "rebuild_in_progress"
+  | "dirty_tracking_missing"
+  | "dirty_tracking_recent"
+  | "full_recovery_required"
+  | "state_reset"
+  | "behind_compaction"
+  | "unknown_name"
+  | "base_compacted"
+  | "seq_not_reached"
+  | "versions_mismatch"
+  | "restore_failed"
+  | "scope_too_large"
+  | "error";
+
+class TargetedRecoveryFallback extends Error {
+  constructor(readonly reason: RecoveryFallback, detail: string) {
+    super(detail);
+    this.name = "TargetedRecoveryFallback";
+  }
+}
+
+export interface RecoverOptions {
+  readonly since: number;
+  readonly admits: (key: string) => boolean;
+  readonly signal: AbortSignal;
+  readonly droppedDirs?: readonly string[];
+  readonly entry?: RecoveryEntry;
+  /** repair only what the dead writer could have touched, when that can be judged */
+  readonly targeted?: boolean;
+}
+
+interface NameHistory {
+  readonly base: PartitionBase;
+  readonly commits: readonly Commit[];
+}
+
+interface ScanResult {
+  /** files no commit owns that the sweep removes */
+  readonly unowned: readonly { readonly key: string; readonly path: string }[];
+  readonly changed: readonly string[];
+  /** every listed key, in both spellings */
+  readonly listed: ReadonlySet<string>;
+}
 
 export class SqliteReadModel implements ReadModel {
   readonly #commitStore: CommitStore;
@@ -315,6 +395,7 @@ export class SqliteReadModel implements ReadModel {
   readonly #writerInstance: string | undefined;
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
   readonly #ownWorkApplied: ((commit: Commit) => void) | undefined;
+  readonly #targetedShare: number;
   /**
    * set while recover replays: it puts back every file, so no commit is taken
    * for work the files hold; a root waiting on the recovery counts as open
@@ -358,6 +439,10 @@ export class SqliteReadModel implements ReadModel {
    */
   #netBase = false;
   readonly #paths = new PathCache();
+  /** set when this section reset the state, which a targeted recovery cannot build on */
+  #resetInSection = false;
+  /** set while a targeted recovery catches up: a compacted base sends it to full */
+  #forbidBase = false;
   #queue: Promise<unknown> = Promise.resolve();
   #closed = false;
 
@@ -406,6 +491,7 @@ export class SqliteReadModel implements ReadModel {
     this.#holdsOwnWork = options.holdsOwnWork;
     this.#ownWorkApplied = options.ownWorkApplied;
     this.#forcedFolding = options.spellingFolding;
+    this.#targetedShare = options.targetedShare ?? MAX_TARGETED_SHARE;
   }
 
   static open(options: SqliteReadModelOptions): SqliteReadModel {
@@ -524,18 +610,11 @@ export class SqliteReadModel implements ReadModel {
   /**
    * replays every commit, then removes files no commit owns that the writer may
    * have written; names are judged as listed and NFC-composed since HFS+ lists
-   * decomposed; run only under the writer lock
+   * decomposed; run only under the writer lock. Targeted, it repairs only the
+   * names and files the writer could have touched, and falls back to that full
+   * replay whenever it cannot judge them
    */
-  recover(
-    namespace: string,
-    options: {
-      readonly since: number;
-      readonly admits: (key: string) => boolean;
-      readonly signal: AbortSignal;
-      readonly droppedDirs?: readonly string[];
-      readonly entry?: RecoveryEntry;
-    },
-  ): Promise<string[]> {
+  recover(namespace: string, options: RecoverOptions): Promise<string[]> {
     return this.#exclusive(
       () =>
         this.#counted("swamp.datastore.v3.readmodel.recover", async (span) => {
@@ -544,48 +623,546 @@ export class SqliteReadModel implements ReadModel {
           const rebuild = this.#state.rebuildInProgress();
           const resuming = rebuild?.resumable === true &&
             options.entry === "interrupted_writer";
-          // the earlier start, so the sweep still reaches what the first
-          // interrupted writer left
-          const since = resuming
-            ? Math.min(rebuild!.since, options.since)
-            : options.since;
           span.setAttributes({
             "swamp.datastore.v3.readmodel.recover.entry": options.entry ??
               "unknown",
             "swamp.datastore.v3.readmodel.boot_named": this.#boot !== undefined,
-            "swamp.datastore.v3.readmodel.recover.path": resuming
-              ? "resumed"
-              : "full",
           });
-          if (!resuming) {
-            // Every namespace's rows are judged by this checkout's filter: the
-            // replay below rebuilds every namespace, and a checkout writes one.
-            const generation = this.#catalog.clear(options.admits);
-            this.#reset(generation);
-            this.#catalog.markPopulated(generation);
-            this.#state.markRebuildStarted(
-              options.entry === "interrupted_writer",
-              options.since,
-            );
+          let fallback: RecoveryFallback | undefined = rebuild !== undefined
+            ? (options.targeted === true ? "rebuild_in_progress" : undefined)
+            : await this.#targetedFallback(options);
+          if (rebuild === undefined && fallback === undefined) {
+            try {
+              const removed = await this.#recoverTargeted(
+                namespace,
+                options,
+                span,
+              );
+              span.setAttributes({
+                "swamp.datastore.v3.readmodel.recover.path": "targeted",
+              });
+              return removed;
+            } catch (error) {
+              if (!(error instanceof TargetedRecoveryFallback)) {
+                if (options.signal.aborted) throw options.signal.reason;
+                if (!fallsBackToFull(error)) throw error;
+              }
+              fallback = error instanceof TargetedRecoveryFallback
+                ? error.reason
+                : "error";
+              logger
+                .info`A targeted recovery could not finish (${
+                errorMessage(error)
+              }); rebuilding the whole read model instead`;
+            }
           }
-          // a resumed rebuild replays as the run it continues did
-          if (resuming) this.#replaying = true;
-          await this.#retryAtRiskCopies(options.signal);
-          this.#recovering = true;
-          try {
-            await this.#catchUpFeed(options.signal);
-          } finally {
-            this.#recovering = false;
-          }
-          const removed = await this.#sweepUnowned(namespace, {
-            ...options,
-            since,
-          });
-          this.#state.clearRebuild();
-          return removed;
+          return await this.#recoverFull(
+            namespace,
+            options,
+            span,
+            rebuild,
+            resuming,
+            fallback,
+          );
         }),
       options.signal,
     );
+  }
+
+  async #recoverFull(
+    namespace: string,
+    options: RecoverOptions,
+    span: Span,
+    rebuild:
+      | { readonly resumable: boolean; readonly since: number }
+      | undefined,
+    resuming: boolean,
+    fallback: RecoveryFallback | undefined,
+  ): Promise<string[]> {
+    // a targeted attempt stopped just now must not clear the catalog
+    options.signal.throwIfAborted();
+    // the earlier start, so the sweep still reaches what the first
+    // interrupted writer left
+    const since = resuming
+      ? Math.min(rebuild!.since, options.since)
+      : options.since;
+    span.setAttributes({
+      "swamp.datastore.v3.readmodel.recover.path": resuming
+        ? "resumed"
+        : "full",
+      ...(fallback === undefined
+        ? {}
+        : { "swamp.datastore.v3.readmodel.recover.fallback": fallback }),
+    });
+    if (!resuming) {
+      // Every namespace's rows are judged by this checkout's filter: the
+      // replay below rebuilds every namespace, and a checkout writes one.
+      const generation = this.#catalog.clear(options.admits);
+      this.#reset(generation);
+      this.#catalog.markPopulated(generation);
+      this.#state.markRebuildStarted(
+        options.entry === "interrupted_writer",
+        options.since,
+      );
+    }
+    // a resumed rebuild replays as the run it continues did
+    if (resuming) this.#replaying = true;
+    await this.#retryAtRiskCopies(options.signal);
+    this.#recovering = true;
+    try {
+      await this.#catchUpFeed(options.signal);
+    } finally {
+      this.#recovering = false;
+    }
+    const removed = await this.#sweepUnowned(namespace, {
+      ...options,
+      since,
+    });
+    this.#catalog.dirtyTracking?.()?.forgetAllDirty();
+    this.#state.clearRebuild();
+    return removed;
+  }
+
+  /** undefined when a targeted recovery can be judged safe to run */
+  async #targetedFallback(
+    options: RecoverOptions,
+  ): Promise<RecoveryFallback | undefined> {
+    if (options.targeted !== true) return "not_requested";
+    if (options.entry === "view_change" || options.entry === "rebuilt") {
+      return "entry";
+    }
+    const tracking = this.#catalog.dirtyTracking?.();
+    const trackedSince = tracking?.dirtyTrackingSince();
+    if (tracking === undefined || trackedSince === undefined) {
+      return "dirty_tracking_missing";
+    }
+    if (trackedSince >= options.since - DIRTY_TRACKING_MARGIN_MS) {
+      return "dirty_tracking_recent";
+    }
+    if (tracking.fullRecoveryRequired()) return "full_recovery_required";
+    // a state never loaded resets in this section too
+    if (this.#resetInSection) {
+      return "state_reset";
+    }
+    if (await this.#commitStore.compactionPoint() > this.#state.cursor()) {
+      return "behind_compaction";
+    }
+    return undefined;
+  }
+
+  /**
+   * idempotent and writes no rebuild marker: stopped part way, finished
+   * partitions are whole with their dirty names forgotten, and running it
+   * again repairs the rest
+   */
+  async #recoverTargeted(
+    namespace: string,
+    options: RecoverOptions,
+    span: Span,
+  ): Promise<string[]> {
+    const tracking = this.#catalog.dirtyTracking?.();
+    if (tracking === undefined) {
+      throw new TargetedRecoveryFallback(
+        "dirty_tracking_missing",
+        "the catalog keeps no dirty names",
+      );
+    }
+    const signal = options.signal;
+    await this.#retryAtRiskCopies(signal);
+    this.#recovering = true;
+    this.#forbidBase = true;
+    try {
+      await this.#catchUpFeed(signal);
+    } finally {
+      this.#recovering = false;
+      this.#forbidBase = false;
+    }
+    const scanStarted = performance.now();
+    const scope = new RecoveryScope();
+    const dirty = tracking.dirtyNames();
+    const scanned = await withSpan(
+      "swamp.datastore.v3.readmodel.recover.scan",
+      {},
+      async (scanSpan) => {
+        const scan = await this.#scanSince(namespace, {
+          ...options,
+          owned: true,
+        });
+        for (const name of dirty) scope.addName(name);
+        for (const dir of options.droppedDirs ?? []) {
+          const name = dataNameOfKey(dir);
+          if (name !== undefined) scope.addName({ namespace, ...name });
+        }
+        for (const { key, path } of scan.unowned) {
+          scope.addRemoval(namespace, key, path);
+        }
+        for (const key of scan.changed) scope.addKeyToCheck(namespace, key);
+        const missing = await this.#missingKeys(namespace, scan, options);
+        for (const key of missing) scope.addKeyToCheck(namespace, key);
+        // checked first, as rewriting files one by one is what costs
+        const suspect = scan.changed.length + scan.unowned.length +
+          missing.length;
+        const present = this.#state.presentKeys(namespace).size;
+        if (
+          suspect > TARGETED_FILES_FLOOR &&
+          suspect > this.#targetedShare * Math.max(present, 1)
+        ) {
+          throw new TargetedRecoveryFallback(
+            "scope_too_large",
+            `${suspect} files changed, appeared or went missing against ${present} the read model owns`,
+          );
+        }
+        if (scope.unscopable !== undefined) {
+          throw new TargetedRecoveryFallback(
+            "unknown_name",
+            `a touched name has no model partition: ${scope.unscopable}`,
+          );
+        }
+        // every file of a touched name a commit decided, whatever its mtime
+        for (const name of scope.names()) {
+          for (
+            const key of this.#state.decidedKeysUnder(
+              name.namespace,
+              dataNamePrefix(name),
+            )
+          ) {
+            scope.addKeyToCheck(name.namespace, key);
+          }
+        }
+        const liveNames = this.#state.liveNameCount();
+        if (
+          scope.nameCount > TARGETED_NAMES_FLOOR &&
+          scope.nameCount > this.#targetedShare * Math.max(liveNames, 1)
+        ) {
+          throw new TargetedRecoveryFallback(
+            "scope_too_large",
+            `${scope.nameCount} data names touched against ${liveNames} the read model holds`,
+          );
+        }
+        scanSpan.setAttributes({
+          "swamp.datastore.v3.readmodel.recover.files_listed": scan.listed.size,
+        });
+        return scan;
+      },
+    );
+    const histories = await withSpan(
+      "swamp.datastore.v3.readmodel.recover.history",
+      {},
+      async () => {
+        const histories: {
+          scoped: ScopedPartition;
+          history: NameHistory;
+        }[] = [];
+        for (const scoped of scope.partitions()) {
+          signal.throwIfAborted();
+          const history = await this.#readHistory(scoped, signal);
+          histories.push({ scoped, history });
+          // a tombstone of a key no commit owned yet leaves no state row, and
+          // a replay removes whatever file sits there
+          const names = new Set(scoped.names);
+          for (const commit of history.commits) {
+            for (const op of commit.ops) {
+              if (op.kind !== "tombstone") continue;
+              const key = op.key.toString();
+              const name = dataNameOfKey(key)?.name;
+              if (name !== undefined && names.has(name)) {
+                scope.addKeyToCheck(scoped.namespace, key);
+              }
+            }
+          }
+        }
+        const commits = histories.reduce(
+          (total, { history }) => total + history.commits.length,
+          0,
+        );
+        const applied = this.#state.cursor();
+        if (
+          commits > TARGETED_COMMITS_FLOOR &&
+          commits > this.#targetedShare * Math.max(applied, 1)
+        ) {
+          throw new TargetedRecoveryFallback(
+            "scope_too_large",
+            `${commits} history commits to read against ${applied} the read model applied`,
+          );
+        }
+        return histories;
+      },
+    );
+    const scanMs = Math.round(performance.now() - scanStarted);
+    const removed = await withSpan(
+      "swamp.datastore.v3.readmodel.recover.restore",
+      {},
+      async (restoreSpan) => {
+        const removed: string[] = [];
+        const batch = new DurableWriteBatch();
+        try {
+          for (const removal of scope.removals()) {
+            await this.#removeRecord(
+              removal.namespace,
+              removal.key,
+              removal.path,
+              batch,
+              signal,
+              NO_COMMIT,
+            );
+            removed.push(removal.key);
+          }
+          await batch.barrier();
+        } finally {
+          batch.discard();
+        }
+        const counts = { restored: 0 };
+        for (const { namespace: ns, keys } of scope.keysToCheck()) {
+          if (
+            !await this.#restoreFiles(
+              this.#state.expectedFiles(ns, keys),
+              { syncMatching: false, rethrowRefusals: true, counts },
+              signal,
+            )
+          ) {
+            throw new TargetedRecoveryFallback(
+              "restore_failed",
+              "a file could not be put back to what the read model applied",
+            );
+          }
+        }
+        restoreSpan.setAttributes({
+          "swamp.datastore.v3.readmodel.recover.files_restored":
+            counts.restored,
+        });
+        span.setAttributes({
+          "swamp.datastore.v3.readmodel.recover.files_restored":
+            counts.restored,
+        });
+        return removed;
+      },
+    );
+    const reprojected = await withSpan(
+      "swamp.datastore.v3.readmodel.recover.reproject",
+      {},
+      () => {
+        let historyCommits = 0;
+        let baseNames = 0;
+        for (const { scoped, history } of histories) {
+          signal.throwIfAborted();
+          const counted = this.#reprojectNames(
+            scoped,
+            history,
+            tracking,
+            options.admits,
+          );
+          historyCommits += counted.commits;
+          baseNames += counted.baseNames;
+        }
+        return Promise.resolve({ historyCommits, baseNames });
+      },
+    );
+    span.setAttributes({
+      "swamp.datastore.v3.readmodel.recover.dirty_names": dirty.length,
+      "swamp.datastore.v3.readmodel.recover.touched_names": scope.nameCount,
+      "swamp.datastore.v3.readmodel.recover.touched_partitions":
+        scope.partitionCount,
+      "swamp.datastore.v3.readmodel.recover.history_commits":
+        reprojected.historyCommits,
+      "swamp.datastore.v3.readmodel.recover.base_names": reprojected.baseNames,
+      "swamp.datastore.v3.readmodel.recover.files_checked":
+        scope.keysToCheckCount,
+      "swamp.datastore.v3.readmodel.recover.files_removed": removed.length,
+      "swamp.datastore.v3.readmodel.recover.scan_ms": scanMs,
+      "swamp.datastore.v3.readmodel.recover.files_listed": scanned.listed.size,
+    });
+    return removed;
+  }
+
+  async #missingKeys(
+    namespace: string,
+    scan: ScanResult,
+    options: RecoverOptions,
+  ): Promise<string[]> {
+    const missing: string[] = [];
+    const root = this.#cacheRoot(namespace);
+    for (const key of this.#state.presentKeys(namespace)) {
+      if (scan.listed.has(key) || scan.listed.has(key.normalize("NFC"))) {
+        continue;
+      }
+      const segments = key.split("/");
+      if (
+        !MATERIALISED_SUBDIRS.has(segments[0]) ||
+        isCheckoutLocalKey(segments) ||
+        !options.admits(key) ||
+        unprojectedReason(namespace, key, this.#checkout) !== undefined
+      ) {
+        continue;
+      }
+      // a filesystem that folds spellings lists the file under another one
+      try {
+        await Deno.lstat(join(root, ...segments));
+        continue;
+      } catch (error) {
+        if (
+          !(error instanceof Deno.errors.NotFound) &&
+          !(error instanceof Deno.errors.NotADirectory)
+        ) {
+          throw error;
+        }
+      }
+      missing.push(key);
+    }
+    return missing;
+  }
+
+  /**
+   * one partition's names from its compacted base and later commits up to the
+   * applied seq, checked against the state, then cleared, re-projected and
+   * forgotten as dirty in one catalog transaction
+   */
+  #reprojectNames(
+    scoped: ScopedPartition,
+    { base, commits }: NameHistory,
+    tracking: CatalogDirtyTracking,
+    admits: (key: string) => boolean,
+  ): { commits: number; baseNames: number } {
+    const { namespace, partition, names } = scoped;
+    const identity = partition.identity;
+    if (identity.kind !== "model") return { commits: 0, baseNames: 0 };
+    const key = partition.toString();
+    const replay = catalogActionsForNames(base, commits, new Set(names));
+    for (const name of names) {
+      const held = this.#state.liveVersions(namespace, key, name);
+      const replayed = replay.live.get(name) ?? [];
+      if (!sameVersions(held, replayed)) {
+        throw new TargetedRecoveryFallback(
+          "versions_mismatch",
+          `the live versions of ${name} in partition ${key} replay differently from the read model's`,
+        );
+      }
+    }
+    const nameKeys: CatalogNameKey[] = names.map((name) => ({
+      namespace,
+      type: identity.type,
+      modelId: identity.id,
+      name,
+    }));
+    this.#catalog.beginBatch();
+    try {
+      tracking.clearNames(nameKeys, admits);
+      this.#catalog.apply(namespace, partition, replay.actions);
+      tracking.forgetDirty(nameKeys);
+      this.#catalog.commitBatch();
+    } finally {
+      this.#catalog.rollbackBatch();
+    }
+    return { commits: replay.commits, baseNames: base.names.size };
+  }
+
+  /** checked to reach the seq the state applied */
+  async #readHistory(
+    scoped: ScopedPartition,
+    signal: AbortSignal,
+  ): Promise<NameHistory> {
+    const key = scoped.partition.toString();
+    const applied = this.#state.appliedSeq(scoped.namespace, key);
+    const history = await this.#nameHistory(
+      scoped.namespace,
+      scoped,
+      applied,
+      signal,
+    );
+    const reached = history.commits.at(-1)?.seq ?? history.base.compactedSeq;
+    if (reached !== applied) {
+      throw new TargetedRecoveryFallback(
+        "seq_not_reached",
+        `partition ${key} reads to seq ${reached}, but the read model applied ${applied}`,
+      );
+    }
+    return history;
+  }
+
+  async #nameHistory(
+    namespace: string,
+    scoped: ScopedPartition,
+    applied: number,
+    signal: AbortSignal,
+  ): Promise<NameHistory> {
+    for (let attempt = 1;; attempt++) {
+      signal.throwIfAborted();
+      const base = await this.#commitStore.readPartitionBase(
+        namespace,
+        scoped.partition,
+        scoped.names,
+      );
+      const commits: Commit[] = [];
+      try {
+        let from = base.compactedSeq + 1;
+        while (from <= applied) {
+          signal.throwIfAborted();
+          const page = await this.#commitStore.readPartition(
+            namespace,
+            scoped.partition,
+            from,
+            this.#pageSize,
+          );
+          for (const change of page) {
+            if (change.commit.seq > applied) break;
+            commits.push(change.commit);
+          }
+          const last = page.at(-1)?.commit.seq;
+          if (page.length < this.#pageSize || last === undefined) break;
+          from = last + 1;
+        }
+        return { base, commits };
+      } catch (error) {
+        if (!(error instanceof CommitsCompactedError)) throw error;
+        if (attempt >= BASE_READ_ATTEMPTS) {
+          throw new TargetedRecoveryFallback(
+            "base_compacted",
+            `partition ${scoped.partition} kept being compacted while its history was read`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * dirty names no outbox entry still holds are forgotten once a writer ends
+   * cleanly; an entry's names stay dirty until it is found landed, so a
+   * refused or abandoned entry's rows are rebuilt by the next recovery
+   */
+  async releaseDirtyNames(
+    pending: readonly DirtyNamePin[],
+    landed: (pin: DirtyNamePin) => Promise<boolean>,
+  ): Promise<void> {
+    if (this.#closed) return;
+    const tracking = this.#catalog.dirtyTracking?.();
+    if (tracking === undefined || tracking.dirtyTrackingSince() === undefined) {
+      return;
+    }
+    const held = new Set(
+      pending.map((pin) => `${pin.partition}\0${pin.txnId}`),
+    );
+    const gone = new Map<string, DirtyNamePin>();
+    for (const pin of tracking.dirtyPins()) {
+      const id = `${pin.partition}\0${pin.txnId}`;
+      if (!held.has(id)) gone.set(id, pin);
+    }
+    const landedPins: { partition: string; txnId: string }[] = [];
+    for (const pin of gone.values()) {
+      if (await landed(pin)) {
+        landedPins.push({ partition: pin.partition, txnId: pin.txnId });
+      }
+    }
+    tracking.releaseDirty(pending, landedPins);
+  }
+
+  #ensureDirtyTracking(): void {
+    const tracking = this.#catalog.dirtyTracking?.();
+    if (tracking === undefined) return;
+    try {
+      tracking.ensureDirtyTracking(this.#clock().getTime());
+    } catch (error) {
+      // left missing, every recovery runs in full
+      logger.debug`Cannot install the catalog's dirty-name tracking: ${error}`;
+    }
   }
 
   /** a recovery is never a net replay, since it replays over files already there */
@@ -732,6 +1309,12 @@ export class SqliteReadModel implements ReadModel {
         );
       } catch (error) {
         if (!(error instanceof CommitsCompactedError)) throw error;
+        if (this.#forbidBase) {
+          throw new TargetedRecoveryFallback(
+            "behind_compaction",
+            "the commits after the read model's cursor were compacted",
+          );
+        }
         // the base reconciles files with the state, which a net replay's
         // skipped writes leave ahead of them: the rest replays in full, unless
         // nothing was applied yet, then the base is netted with the tail
@@ -766,8 +1349,49 @@ export class SqliteReadModel implements ReadModel {
       readonly droppedDirs?: readonly string[];
     },
   ): Promise<string[]> {
+    const { unowned } = await this.#scanSince(namespace, {
+      ...options,
+      owned: false,
+    });
     const removed: string[] = [];
     const batch = new DurableWriteBatch();
+    try {
+      for (const { key, path } of unowned) {
+        await this.#removeRecord(
+          namespace,
+          key,
+          path,
+          batch,
+          options.signal,
+          NO_COMMIT,
+        );
+        removed.push(key);
+      }
+      await batch.barrier();
+    } finally {
+      batch.discard();
+    }
+    return removed;
+  }
+
+  /**
+   * one walk: files no commit owns modified at or after since or in a dropped
+   * directory, and with owned, owned files modified since; the walk finishes
+   * before anything is removed
+   */
+  async #scanSince(
+    namespace: string,
+    options: {
+      readonly since: number;
+      readonly admits: (key: string) => boolean;
+      readonly signal: AbortSignal;
+      readonly droppedDirs?: readonly string[];
+      readonly owned: boolean;
+    },
+  ): Promise<ScanResult> {
+    const unowned: { key: string; path: string }[] = [];
+    const changed: string[] = [];
+    const listed = new Set<string>();
     const droppedDirs = new Set(options.droppedDirs);
     // One lookup per ancestor, so a unit that created many versions does
     // not make the walk quadratic.
@@ -777,42 +1401,35 @@ export class SqliteReadModel implements ReadModel {
       }
       return false;
     };
-    try {
-      await this.#forEachMaterialisedFile(
-        namespace,
-        options.admits,
-        options.signal,
-        async (key, path, spellings) => {
-          if (
-            spellings.some((spelling) =>
-              this.#state.fileOwnership(namespace, spelling)?.present === true
-            )
-          ) {
-            return true;
+    await this.#forEachMaterialisedFile(
+      namespace,
+      options.admits,
+      options.signal,
+      async (key, path, spellings) => {
+        for (const spelling of spellings) listed.add(spelling);
+        const owner = spellings.find((spelling) =>
+          this.#state.fileOwnership(namespace, spelling)?.present === true
+        );
+        if (owner !== undefined) {
+          // a file this section wrote or checked holds what the state says
+          if (!options.owned || this.#guarded.has(path)) return true;
+          const modified = (await Deno.lstat(path)).mtime?.getTime();
+          if (modified === undefined || modified >= options.since) {
+            changed.push(owner);
           }
-          const segments = key.split("/");
-          const composed = spellings[spellings.length - 1].split("/");
-          if (!inDroppedDir(segments) && !inDroppedDir(composed)) {
-            const modified = (await Deno.lstat(path)).mtime?.getTime();
-            if (modified === undefined || modified < options.since) return true;
-          }
-          await this.#removeRecord(
-            namespace,
-            key,
-            path,
-            batch,
-            options.signal,
-            NO_COMMIT,
-          );
-          removed.push(key);
           return true;
-        },
-      );
-      await batch.barrier();
-    } finally {
-      batch.discard();
-    }
-    return removed;
+        }
+        const segments = key.split("/");
+        const composed = spellings[spellings.length - 1].split("/");
+        if (!inDroppedDir(segments) && !inDroppedDir(composed)) {
+          const modified = (await Deno.lstat(path)).mtime?.getTime();
+          if (modified === undefined || modified < options.since) return true;
+        }
+        unowned.push({ key, path });
+        return true;
+      },
+    );
+    return { unowned, changed, listed };
   }
 
   /**
@@ -1160,6 +1777,7 @@ export class SqliteReadModel implements ReadModel {
         this.#guarded.clear();
         this.#replaying = false;
         this.#outsideReset = false;
+        this.#resetInSection = false;
         const generation = this.#catalog.generation();
         // first, so a reset below cannot drop the list unchecked
         this.#boot = await this.#bootIdentity();
@@ -1177,6 +1795,7 @@ export class SqliteReadModel implements ReadModel {
           this.#reset(generation);
           this.#catalog.markPopulated(generation);
         }
+        this.#ensureDirtyTracking();
         return await body();
       } finally {
         lock.close();
@@ -1271,6 +1890,7 @@ export class SqliteReadModel implements ReadModel {
    * keys too when written in another boot or the current one cannot be named
    */
   #reset(generation: number): void {
+    this.#resetInSection = true;
     const listed = this.#state.unsyncedBoot();
     this.#state.reset(
       generation,
@@ -1318,7 +1938,12 @@ export class SqliteReadModel implements ReadModel {
    */
   async #restoreFiles(
     files: readonly UnsyncedFile[],
-    options: { readonly syncMatching: boolean },
+    options: {
+      readonly syncMatching: boolean;
+      /** a serve refusal or lost connection fails the restore, never a reset */
+      readonly rethrowRefusals?: boolean;
+      readonly counts?: { restored: number };
+    },
     signal: AbortSignal,
   ): Promise<boolean> {
     const batch = new DurableWriteBatch();
@@ -1373,6 +1998,7 @@ export class SqliteReadModel implements ReadModel {
         }
         logger
           .info`${file.record_key} does not hold what the read model applied; rewriting it`;
+        if (options.counts !== undefined) options.counts.restored++;
         if (file.expect !== "present") {
           await this.#removeRecord(
             file.namespace,
@@ -1406,6 +2032,9 @@ export class SqliteReadModel implements ReadModel {
     } catch (error) {
       if (signal.aborted) throw signal.reason;
       if (error instanceof CheckoutCopyAtRiskError) throw error;
+      if (options.rethrowRefusals === true && !fallsBackToFull(error)) {
+        throw error;
+      }
       logger
         .warn`Cannot put files back to what the read model applied (${error}); applying every commit again`;
       return false;
@@ -1420,7 +2049,13 @@ export class SqliteReadModel implements ReadModel {
     commits: Map<number, Commit | undefined>,
   ): Promise<{ readonly inline: string } | undefined> {
     if (!commits.has(file.mark)) {
-      const page = await this.#commitStore.changesSince(file.mark - 1, 1);
+      let page: readonly CommitChange[];
+      try {
+        page = await this.#commitStore.changesSince(file.mark - 1, 1);
+      } catch (error) {
+        if (!(error instanceof CommitsCompactedError)) throw error;
+        return await this.#inlineInBase(file);
+      }
       commits.set(
         file.mark,
         page[0]?.cursor === file.mark ? page[0].commit : undefined,
@@ -1443,6 +2078,30 @@ export class SqliteReadModel implements ReadModel {
       return digest === file.sha256 ? { inline: content.inline } : undefined;
     }
     return undefined;
+  }
+
+  /** a compacted put is the base's record of the key, when its digest agrees */
+  async #inlineInBase(
+    file: UnsyncedFile & { readonly expect: "present" },
+  ): Promise<{ readonly inline: string } | undefined> {
+    let partition: PartitionKey;
+    try {
+      partition = PartitionKey.parse(file.owner);
+    } catch {
+      return undefined;
+    }
+    const record = await this.#commitStore.readBaseRecord(
+      file.namespace,
+      partition,
+      file.record_key,
+    );
+    if (record === undefined || !("inline" in record.content)) return undefined;
+    const digest = createHash("sha256")
+      .update(decodeBase64(record.content.inline))
+      .digest("hex");
+    return digest === file.sha256 && record.sha256 === file.sha256
+      ? { inline: record.content.inline }
+      : undefined;
   }
 
   async #prefetchBaseChunks(
@@ -3878,6 +4537,47 @@ function decodeBase64(inline: string): Uint8Array {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+/**
+ * a serve refusal, a lost connection or an at-risk copy would fail a full
+ * rebuild the same way, after it cleared the catalog
+ */
+function fallsBackToFull(error: unknown): boolean {
+  return !(error instanceof ReadModelApplyRefusedError) &&
+    retryableServeRefusal(error) === undefined &&
+    !(error instanceof CheckoutCopyAtRiskError) && !isNetworkFailure(error);
+}
+
+function sameVersions(
+  a: readonly LiveDataVersion[],
+  b: readonly LiveDataVersion[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (
+      a[i].version !== b[i].version ||
+      canonicalJson(a[i].metadata) !== canonicalJson(b[i].metadata)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** key order differs between a parsed op and a parsed row */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_key, held: unknown) =>
+      held !== null && typeof held === "object" && !Array.isArray(held)
+        ? Object.fromEntries(
+          Object.entries(held as Record<string, unknown>).sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0
+          ),
+        )
+        : held,
+  );
 }
 
 function closedError(): Error {

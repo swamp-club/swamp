@@ -31,12 +31,46 @@ import {
   garbageCollectionToColumn,
 } from "../../domain/data/data_metadata.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
+import type { CatalogNameKey } from "../../domain/datastore_v3/recovery_scope.ts";
+import { v3CatalogPath } from "./record_path_guard.ts";
 import {
+  type CatalogDataName,
+  type CatalogDirtyPin,
   type CatalogRow,
   type CatalogRowKey,
   CatalogStore,
   type CatalogWriter,
 } from "../persistence/catalog_store.ts";
+
+/** a dirty name a commit not known to have landed holds */
+export interface DirtyNamePin extends CatalogNameKey {
+  readonly partition: string;
+  readonly txnId: string;
+}
+
+/**
+ * which catalog names a writer changed outside committed work, kept by
+ * triggers; clearNames and forgetDirty join an open batch
+ */
+export interface CatalogDirtyTracking {
+  ensureDirtyTracking(now: number): void;
+  /** undefined when the triggers are missing */
+  dirtyTrackingSince(): number | undefined;
+  fullRecoveryRequired(): boolean;
+  dirtyNames(): CatalogNameKey[];
+  dirtyPins(): DirtyNamePin[];
+  clearNames(
+    names: readonly CatalogNameKey[],
+    admits: (key: string) => boolean,
+  ): void;
+  forgetDirty(names: readonly CatalogNameKey[]): void;
+  forgetAllDirty(): void;
+  /** forgets every dirty name but those `pins` hold or held and did not land */
+  releaseDirty(
+    pins: readonly DirtyNamePin[],
+    landed: readonly { readonly partition: string; readonly txnId: string }[],
+  ): void;
+}
 
 export interface ReadModelCatalog {
   generation(): number;
@@ -67,17 +101,30 @@ export interface ReadModelCatalog {
   commitBatch(): void;
   rollbackBatch(): void;
   close(): void;
+  /** undefined for a catalog that keeps no record of uncommitted rows */
+  dirtyTracking?(): CatalogDirtyTracking | undefined;
 }
 
-interface HeldActions {
-  readonly namespace: string;
-  readonly partition: PartitionKey;
-  readonly actions: readonly CatalogAction[];
-}
+type HeldStep =
+  | {
+    readonly kind: "actions";
+    readonly namespace: string;
+    readonly partition: PartitionKey;
+    readonly actions: readonly CatalogAction[];
+  }
+  | {
+    readonly kind: "clear-names";
+    readonly names: readonly CatalogNameKey[];
+    readonly admits: (key: string) => boolean;
+  }
+  | {
+    readonly kind: "forget-dirty";
+    readonly names: readonly CatalogNameKey[];
+  };
 
-export class V3Catalog implements ReadModelCatalog {
+export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
   readonly #store: CatalogStore;
-  #held: HeldActions[] | undefined;
+  #held: HeldStep[] | undefined;
 
   constructor(store: CatalogStore) {
     this.#store = store;
@@ -118,11 +165,95 @@ export class V3Catalog implements ReadModelCatalog {
         `Catalog actions need a model partition, not ${partition}`,
       );
     }
+    this.#hold({ kind: "actions", namespace, partition, actions });
+  }
+
+  #hold(step: HeldStep): void {
     if (this.#held !== undefined) {
-      this.#held.push({ namespace, partition, actions });
+      this.#held.push(step);
       return;
     }
-    applyActions(this.#store, namespace, partition, actions);
+    this.#applySteps([step]);
+  }
+
+  #applySteps(steps: readonly HeldStep[]): void {
+    this.#store.applyInTransaction((writer) => {
+      for (const step of steps) {
+        switch (step.kind) {
+          case "actions":
+            applyActions(writer, step.namespace, step.partition, step.actions);
+            break;
+          case "clear-names":
+            writer.clearNames(
+              step.names.map(catalogDataName),
+              (row) => step.admits(catalogRowRecordKey(row)),
+            );
+            break;
+          case "forget-dirty":
+            writer.forgetDirty(step.names.map(catalogDataName));
+            break;
+        }
+      }
+    }, { committed: true });
+  }
+
+  dirtyTracking(): CatalogDirtyTracking {
+    return this;
+  }
+
+  ensureDirtyTracking(now: number): void {
+    this.#store.ensureDirtyTracking(now);
+  }
+
+  dirtyTrackingSince(): number | undefined {
+    return this.#store.dirtyTrackingSince();
+  }
+
+  fullRecoveryRequired(): boolean {
+    return this.#store.fullRecoveryRequired();
+  }
+
+  dirtyNames(): CatalogNameKey[] {
+    return this.#store.dirtyNames().map(catalogNameKey);
+  }
+
+  dirtyPins(): DirtyNamePin[] {
+    return this.#store.dirtyPins().map((pin) => ({
+      ...catalogNameKey(pin),
+      partition: pin.partition,
+      txnId: pin.txn_id,
+    }));
+  }
+
+  clearNames(
+    names: readonly CatalogNameKey[],
+    admits: (key: string) => boolean,
+  ): void {
+    if (names.length === 0) return;
+    this.#hold({ kind: "clear-names", names, admits });
+  }
+
+  forgetDirty(names: readonly CatalogNameKey[]): void {
+    if (names.length === 0) return;
+    this.#hold({ kind: "forget-dirty", names });
+  }
+
+  forgetAllDirty(): void {
+    this.#store.forgetAllDirty();
+  }
+
+  releaseDirty(
+    pins: readonly DirtyNamePin[],
+    landed: readonly { readonly partition: string; readonly txnId: string }[],
+  ): void {
+    this.#store.releaseDirty(
+      pins.map((pin): CatalogDirtyPin => ({
+        ...catalogDataName(pin),
+        partition: pin.partition,
+        txn_id: pin.txnId,
+      })),
+      landed.map((l) => ({ partition: l.partition, txn_id: l.txnId })),
+    );
   }
 
   beginBatch(): void {
@@ -137,11 +268,7 @@ export class V3Catalog implements ReadModelCatalog {
     if (held === undefined) throw new Error("No catalog batch is open");
     this.#held = undefined;
     if (held.length === 0) return;
-    this.#store.applyInTransaction((writer) => {
-      for (const { namespace, partition, actions } of held) {
-        applyActions(writer, namespace, partition, actions);
-      }
-    });
+    this.#applySteps(held);
   }
 
   rollbackBatch(): void {
@@ -151,6 +278,24 @@ export class V3Catalog implements ReadModelCatalog {
   close(): void {
     this.#store.close();
   }
+}
+
+function catalogDataName(name: CatalogNameKey): CatalogDataName {
+  return {
+    namespace: name.namespace,
+    type_normalized: name.type,
+    model_id: name.modelId,
+    data_name: name.name,
+  };
+}
+
+function catalogNameKey(name: CatalogDataName): CatalogNameKey {
+  return {
+    namespace: name.namespace,
+    type: name.type_normalized,
+    modelId: name.model_id,
+    name: name.data_name,
+  };
 }
 
 function applyActions(
@@ -274,6 +419,10 @@ export class ProjectedCatalog implements ReadModelCatalog {
   close(): void {
     this.#inner.close();
   }
+
+  dirtyTracking(): CatalogDirtyTracking | undefined {
+    return this.#inner.dirtyTracking?.();
+  }
 }
 
 function catalogActionRowKey(
@@ -341,4 +490,24 @@ export function catalogRowRecordKey(row: CatalogRowKey): string {
   return row.version === undefined
     ? `${name}/latest`
     : `${name}/${row.version}/metadata.yaml`;
+}
+
+/**
+ * a merge or rename keeps file times, so the checkout's next recovery cannot
+ * tell moved files from old ones and must replay every commit
+ */
+export function requireFullV3Recovery(repoDir: string): void {
+  const path = v3CatalogPath(repoDir);
+  try {
+    Deno.statSync(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  const catalog = V3Catalog.open(path);
+  try {
+    catalog.store.markFullRecoveryRequired();
+  } finally {
+    catalog.close();
+  }
 }

@@ -500,6 +500,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/workflow_run.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
   "src/cli/repo_context.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
+  // a namespace merge keeps file times, so it owes the checkout a full recovery
+  "src/cli/commands/datastore_namespace.ts -> src/infrastructure/datastore_v3/v3_catalog.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -550,7 +552,7 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2886",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:2962",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

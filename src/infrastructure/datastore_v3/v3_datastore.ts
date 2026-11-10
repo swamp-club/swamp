@@ -951,8 +951,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
               : {}),
           }, { fence, writer, forwarded: true, signal });
         },
-        // a full rebuild; a targeted one of the repaired partition is a later
-        // step
+        // full: the state still holds the dropped commits a targeted
+        // recovery would build on
         rebuildReadModel: async (since, signal) => {
           await readModel.recover(namespace, { since, admits, signal });
         },
@@ -1438,6 +1438,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ...(recoverOptions?.entry !== undefined
           ? { entry: recoverOptions.entry }
           : {}),
+        targeted: true,
       });
     },
     droppedWork() {
@@ -1458,6 +1459,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         signal: signal ?? lifetime.signal,
         entry: "dropped_work",
         droppedDirs: [...units.droppedDirs.get(namespace) ?? []],
+        targeted: true,
       });
       units.recovering = recovery;
       try {

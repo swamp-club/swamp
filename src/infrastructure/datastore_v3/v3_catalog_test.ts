@@ -18,8 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
-import { catalogRow } from "./v3_catalog.ts";
+import {
+  metadata,
+  MODEL_ID,
+  MODEL_TYPE,
+  modelPartition,
+} from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { catalogRow, V3Catalog } from "./v3_catalog.ts";
 
 const RUN_ID = "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b";
 
@@ -125,3 +132,60 @@ Deno.test("catalogRow: a deletion marker's row carries lifecycle deleted (swamp-
   });
   assertEquals(catalogRow("", "t", "m", metadata).lifecycle, "deleted");
 });
+
+Deno.test("V3Catalog: applying committed work, batched or not, never marks a name dirty nor hides a writer's dirty one, and a batch clears and forgets names in order (swamp-club#4581)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-v3-catalog-" });
+  try {
+    const catalog = V3Catalog.open(join(dir, "_catalog_v3.db"));
+    try {
+      catalog.ensureDirtyTracking(1_000);
+      const name = (n: string) => ({
+        namespace: "",
+        type: MODEL_TYPE.normalized,
+        modelId: MODEL_ID,
+        name: n,
+      });
+      const upsert = (n: string, version: number) => ({
+        kind: "upsert-version" as const,
+        metadata: DataMetadataSchema.parse(metadata(n, version)),
+      });
+      catalog.store.upsertNewVersion(
+        catalogRow(
+          "",
+          MODEL_TYPE.normalized,
+          MODEL_ID,
+          DataMetadataSchema.parse(metadata("w", 9)),
+        ),
+      );
+      catalog.apply("", modelPartition(), [upsert("a", 1), upsert("w", 1)]);
+      catalog.beginBatch();
+      catalog.apply("", modelPartition(), [upsert("b", 1)]);
+      catalog.commitBatch();
+      assertEquals(catalog.dirtyNames().map((n) => n.name), ["w"]);
+      catalog.beginBatch();
+      catalog.clearNames([name("w")], () => true);
+      catalog.apply("", modelPartition(), [upsert("w", 1)]);
+      catalog.forgetDirty([name("w")]);
+      catalog.commitBatch();
+      assertEquals(catalog.dirtyNames(), []);
+      assertEquals(
+        [...catalog.store.iterate()].map((r) => `${r.data_name}@${r.version}`)
+          .sort(),
+        ["a@1", "b@1", "w@1"],
+      );
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    removeTempDir(dir);
+  }
+});
+
+function removeTempDir(dir: string): void {
+  try {
+    Deno.removeSync(dir, { recursive: true });
+  } catch (error) {
+    // Windows refuses while V8 still holds the SQLite handle.
+    if (Deno.build.os !== "windows") throw error;
+  }
+}
