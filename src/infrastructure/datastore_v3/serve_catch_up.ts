@@ -320,9 +320,15 @@ export class ServeCatchUp {
       }
       let last: Commit | undefined;
       try {
-        for (const commit of commits) {
-          applied += await this.#applyInOrder(commit, signal);
-          last = commit;
+        const grouped = await this.#appendContiguous(commits, signal);
+        if (grouped !== undefined) {
+          applied += grouped;
+          last = commits.at(-1);
+        } else {
+          for (const commit of commits) {
+            applied += await this.#applyInOrder(commit, signal);
+            last = commit;
+          }
         }
       } catch (error) {
         if (
@@ -847,6 +853,39 @@ export class ServeCatchUp {
       commit,
       divergence,
     );
+  }
+
+  /**
+   * a page that follows on from every partition's head with no gap, appended
+   * back to back so the store commits it in shared transactions; undefined
+   * when a gap needs the in-order path, before anything is appended
+   */
+  async #appendContiguous(
+    commits: readonly Commit[],
+    signal: AbortSignal,
+  ): Promise<number | undefined> {
+    const heads = new Map<string, number>();
+    const appends: Commit[] = [];
+    for (const commit of commits) {
+      const key = JSON.stringify([
+        commit.namespace,
+        commit.partition.toString(),
+      ]);
+      let head = heads.get(key);
+      if (head === undefined) {
+        head =
+          (await this.#commitStore.head(commit.namespace, commit.partition))
+            .seq;
+      }
+      if (commit.seq > head + 1) return undefined;
+      if (commit.seq === head + 1) appends.push(commit);
+      heads.set(key, Math.max(head, commit.seq));
+    }
+    signal.throwIfAborted();
+    const results = await Promise.all(
+      appends.map((commit) => this.#commitStore.append(commit)),
+    );
+    return results.filter((result) => result.kind === "appended").length;
   }
 
   async #append(commit: Commit): Promise<boolean> {

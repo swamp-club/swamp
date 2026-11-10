@@ -1411,3 +1411,17 @@ Deno.test("ServeCatchUp.catchUp: an overtaken page whose entry at the copy's cur
     assertEquals(await copySeqs(store, MODEL), [1, 2]);
   });
 });
+
+Deno.test("ServeCatchUp.catchUp: a fresh copy appends a page of commits in shared transactions, not one each (swamp-club#4574)", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 200; seq++) serve.land(await other(seq));
+    const before = store.appendTransactions;
+
+    await catchUp.catchUp(signal());
+
+    assertEquals((await copySeqs(store, MODEL)).length, 200);
+    const used = store.appendTransactions - before;
+    // up to 64 commits share one transaction
+    assert(used <= Math.ceil(200 / 64), `${used} transactions for 200`);
+  });
+});
