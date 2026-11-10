@@ -69,7 +69,6 @@ const DATA_ID = "7d0c6a8e-3b1f-4c2a-9e5d-1f2a3b4c5d6e";
 /** past the inline limit, so the record is stored as a chunk */
 const LARGE = "x".repeat(20_000);
 
-/** a writer of this checkout that ended without tearing down */
 async function plantInterruptedWriter(repoDir: string): Promise<string> {
   const kernel = await thisKernelIdentity();
   const path = writerMarkerPath(repoDir);
@@ -129,11 +128,7 @@ async function notLeader(forward: () => Promise<Response>): Promise<Response> {
   );
 }
 
-/**
- * bob writes a chunked record that alice reads, then alice's checkout is left
- * with an interrupted writer, so her next writing command replays the feed and
- * reads bob's chunk from serve again
- */
+/** alice's next writing command replays the feed and reads bob's chunk again */
 async function interruptedMember(
   scratch: Scratch,
   serve: Serve,
@@ -255,6 +250,7 @@ Deno.test({
         assert(error instanceof UserError);
         assertEquals(error.code, CATCH_UP_UNREACHABLE_CODE);
         assertEquals(exitCodeForError(error), 75);
+        assert(error.message.includes("did not answer"), error.message);
         assert(await exists(writerMarkerPath(alice.repoDir)));
 
         refusing = false;

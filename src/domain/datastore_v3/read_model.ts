@@ -26,9 +26,10 @@
 import { UserError } from "../errors.ts";
 import { UNREADABLE_CONTENT_CODE } from "../datastore/unreadable_content.ts";
 import type { BlobRef } from "./blob_ref.ts";
-import type {
-  ServeFollowerBehindError,
-  ServeNotLeaderError,
+import {
+  retryableServeRefusal,
+  type ServeFollowerBehindError,
+  type ServeNotLeaderError,
 } from "./serve_leader.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";
@@ -71,11 +72,7 @@ export class ReadModelApplyError extends Error {
   }
 }
 
-/**
- * serve refused a read the commit needs as not the leader or behind: nothing
- * was applied of it, and it applies once serve answers; the code is the
- * refusal's
- */
+/** serve refused a read the commit needs; it applies once serve answers */
 export class ReadModelApplyRefusedError extends ReadModelApplyError {
   readonly code: string;
 
@@ -93,6 +90,21 @@ export class ReadModelApplyRefusedError extends ReadModelApplyError {
 
 export const CATCH_UP_UNREACHABLE_CODE = "datastore_v3_catch_up_unreachable";
 
+/** a refusal anywhere in its causes, as recovery wraps what it meets */
+export function refusedByServe(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    if (
+      current instanceof ReadModelApplyRefusedError ||
+      retryableServeRefusal(current) !== undefined
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
 /** an interrupted writer's recovery that a retry alone will not finish */
 export const RECOVERY_FAILED_CODE = "datastore_v3_recovery_failed";
 
@@ -103,10 +115,15 @@ export const RECOVERY_FAILED_CODE = "datastore_v3_recovery_failed";
 export class ReadModelCatchUpUnreachableError extends UserError {
   constructor(cause: Error) {
     super(
-      `Swamp could not reach the datastore's storage while bringing this ` +
-        `checkout up to date (${cause.message}), so nothing was changed. ` +
-        `The next command finishes bringing it up to date once the ` +
-        `datastore is reachable; run this one again then.`,
+      refusedByServe(cause)
+        ? `Swamp serve did not answer this checkout's reads while bringing it ` +
+          `up to date, as a serve node does while the datastore's leader ` +
+          `changes, so nothing was changed. The next command finishes ` +
+          `bringing it up to date once serve answers; run this one again then.`
+        : `Swamp could not reach the datastore's storage while bringing this ` +
+          `checkout up to date (${cause.message}), so nothing was changed. ` +
+          `The next command finishes bringing it up to date once the ` +
+          `datastore is reachable; run this one again then.`,
       CATCH_UP_UNREACHABLE_CODE,
     );
     this.name = "ReadModelCatchUpUnreachableError";

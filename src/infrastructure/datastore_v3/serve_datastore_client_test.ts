@@ -2369,3 +2369,84 @@ Deno.test("ServeDatastoreClient: a followed leader that does not answer, names a
     });
   }
 });
+
+Deno.test("ServeDatastoreClient: a read refused throughout ends within its own budget even while other requests keep resetting the shared streak", async () => {
+  await withRefusalState(async () => {
+    const clock = refusalClock();
+    const other = clientWith(() => Response.json({ held: [] }), clock);
+    const { client } = clientWith(() => notLeader(), {
+      ...clock,
+      readRefusalBudgetMs: 2_000,
+      delay: async (ms, waitSignal) => {
+        await clock.delay(ms, waitSignal);
+        await other.client.hasChunks(["a".repeat(64)], waitSignal);
+      },
+    });
+    await assertRejects(
+      () => client.getChunk(sha(CHUNK), signal()),
+      ServeNotLeaderError,
+    );
+    assertEquals(clock.waits.reduce((sum, ms) => sum + ms, 0), 2_000);
+  });
+});
+
+Deno.test("ServeDatastoreClient: refusal retries leave a later 429 its own retries", async () => {
+  await withRefusalState(async () => {
+    const clock = refusalClock();
+    const { client, requests } = clientWith(
+      (_req, call) =>
+        call <= 3
+          ? notLeader()
+          : call === 4
+          ? Response.json({ code: "rate_limited", message: "slow down" }, {
+            status: 429,
+            headers: { "Retry-After": "1" },
+          })
+          : chunkReply(CHUNK),
+      { ...clock, maxRetryDelayMs: 1 },
+    );
+    assertEquals(await client.getChunk(sha(CHUNK), signal()), CHUNK);
+    assertEquals(requests.length, 5);
+  });
+});
+
+Deno.test("ServeDatastoreClient: a refusal asking to retry at once still waits before the next try", async () => {
+  await withRefusalState(async () => {
+    const clock = refusalClock();
+    const { client } = clientWith(
+      (_req, call) =>
+        call === 1
+          ? Response.json({ code: SERVE_NOT_LEADER_CODE, message: "no" }, {
+            status: 503,
+            headers: { "Retry-After": "0" },
+          })
+          : chunkReply(CHUNK),
+      clock,
+    );
+    assertEquals(await client.getChunk(sha(CHUNK), signal()), CHUNK);
+    assertEquals(clock.waits, [250]);
+  });
+});
+
+Deno.test("ServeDatastoreClient: a refused read whose body is cut off is unreachable, as a cut reply always was", async () => {
+  await withRefusalState(async () => {
+    const { client } = clientWith(() =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"code":'));
+            controller.error(
+              new TypeError("error reading a body from connection"),
+            );
+          },
+        }),
+        { status: 503 },
+      )
+    );
+    const error = await assertRejects(
+      () => client.getChunk(sha(CHUNK), signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(error.sent, "maybe");
+  });
+});

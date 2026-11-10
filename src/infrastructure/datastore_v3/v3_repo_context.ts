@@ -140,11 +140,10 @@ import {
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { isNetworkFailure } from "./network_failure.ts";
 import {
-  ReadModelApplyRefusedError,
   ReadModelCatchUpUnreachableError,
   RECOVERY_FAILED_CODE,
+  refusedByServe,
 } from "../../domain/datastore_v3/read_model.ts";
-import { retryableServeRefusal } from "../../domain/datastore_v3/serve_leader.ts";
 import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
 import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
 import { storageNamespaceOf } from "../../domain/datastore_v3/chunk_store.ts";
@@ -1230,20 +1229,6 @@ async function recordWriterCheckout(
       await recordWriterCheckout(path, previous.repoDir);
     });
   }
-}
-
-function refusedByServe(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
-    if (
-      current instanceof ReadModelApplyRefusedError ||
-      retryableServeRefusal(current) !== undefined
-    ) {
-      return true;
-    }
-    current = current.cause;
-  }
-  return false;
 }
 
 /**

@@ -117,16 +117,12 @@ export function serveResponseDeadlineMs(
   );
 }
 
-/**
- * when serve began refusing reads as not the leader or behind, per serve: every
- * client of the process shares one budget, so a rebuild reading many chunks
- * waits it out once
- */
+/** when serve began refusing reads, per serve, so a rebuild waits it out once */
 const refusalStreaks = new Map<string, number>();
 
 let readRefusalBudgetForTesting: number | undefined;
 
-/** clients built by serveDatastoreClientFor wait this long; undefined restores */
+/** undefined restores the default */
 export function setServeReadRefusalBudgetForTesting(
   ms: number | undefined,
 ): void {
@@ -1406,6 +1402,10 @@ export class ServeDatastoreClient {
     let origin = this.baseUrl;
     let refusalWaitMs = FIRST_REFUSAL_RETRY_MS;
     let refusalRetries = 0;
+    // another request's reply resets the shared streak, never this request's
+    let refusedAt: number | undefined;
+    // throttle retries and fresh-connection resends share maxAttempts
+    let resends = 0;
     // a followed reply is read only when it names the log the configured serve
     // named; one that does not, or fails, ends following for this request
     let baseLogId: string | undefined;
@@ -1486,6 +1486,7 @@ export class ServeDatastoreClient {
           if (unanswered.signal.aborted && !signal.aborted) {
             if (isReadSpec(spec) && !resentOnFreshConnection) {
               resentOnFreshConnection = true;
+              resends++;
               span.setAttribute(
                 "swamp.datastore.v3.serve.resent_on_fresh_connection",
                 true,
@@ -1509,9 +1510,10 @@ export class ServeDatastoreClient {
           );
         }
         span.setAttribute("http.response.status_code", response.status);
-        if (response.status === 429 && attempt < this.#maxAttempts) {
+        if (response.status === 429 && resends + 1 < this.#maxAttempts) {
           const wait = retryAfterMs(response.headers.get("retry-after"));
           if (wait !== undefined) {
+            resends++;
             await response.body?.cancel();
             await abortableDelay(Math.min(wait, this.#maxRetryDelayMs), signal);
             continue;
@@ -1562,11 +1564,20 @@ export class ServeDatastoreClient {
         if (this.#accessCheck !== undefined && access !== null) {
           this.#accessCheck(access);
         }
-        const refusal = response.status === 503 && isReadSpec(spec)
-          ? retryableReadRefusal(
-            await this.#refusal(response.clone(), routeTemplate(spec.path)),
-          )
-          : undefined;
+        let refusal: ServeNotLeaderError | ServeFollowerBehindError | undefined;
+        if (response.status === 503 && isReadSpec(spec)) {
+          try {
+            refusal = retryableReadRefusal(
+              await this.#refusal(response.clone(), routeTemplate(spec.path)),
+            );
+          } catch (error) {
+            await response.body?.cancel().catch(() => {});
+            if (latch.aborted && !signal.aborted) {
+              throw this.#latched("maybe", latch.reason, spec);
+            }
+            throw this.#unreachable(error, signal, "maybe");
+          }
+        }
         // a write's refusal is the outbox's to handle and leaves the streak
         if (response.status !== 503) refusalStreaks.delete(this.baseUrl);
         if (refusal !== undefined) {
@@ -1574,10 +1585,17 @@ export class ServeDatastoreClient {
           if (!refusalStreaks.has(this.baseUrl)) {
             refusalStreaks.set(this.baseUrl, this.#now());
           }
-          const left = this.#refusalBudgetLeft();
+          refusedAt ??= this.#now();
+          const left = Math.min(
+            this.#refusalBudgetLeft(),
+            this.#readRefusalBudgetMs - (this.#now() - refusedAt),
+          );
           if (spec.noRefusalRetry === true || left <= 0) throw refusal;
           const hinted = retryAfterMs(response.headers.get("retry-after"));
-          const wait = Math.min(refusalWaitMs, hinted ?? Infinity, left);
+          const wait = Math.max(
+            Math.min(refusalWaitMs, hinted ?? Infinity, left),
+            Math.min(FIRST_REFUSAL_RETRY_MS, left),
+          );
           refusalWaitMs = Math.min(refusalWaitMs * 2, MAX_REFUSAL_RETRY_MS);
           refusalRetries++;
           span.setAttribute(
