@@ -5447,3 +5447,36 @@ Deno.test("YamlOutputRepository.findPages: closing the iterator early stops read
     });
   });
 });
+
+Deno.test("outputsChangedSince: false for directories untouched since, true once an output is added", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    await makeOutput(repo, new Date(Date.now() - DAY_MS));
+    const typeDir = join(dir, ".swamp", "outputs", registeredType.normalized);
+    const past = new Date(Date.now() - 60_000);
+    for (const path of [typeDir, join(typeDir, "run")]) {
+      await Deno.utime(path, past, past);
+    }
+    const listedAt = Date.now();
+    assertEquals(
+      await repo.outputsChangedSince(registeredType, listedAt),
+      false,
+    );
+
+    await makeOutput(repo, new Date());
+    assertEquals(
+      await repo.outputsChangedSince(registeredType, listedAt),
+      true,
+    );
+  });
+});
+
+Deno.test("outputsChangedSince: a type with no outputs has not changed", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    assertEquals(
+      await repo.outputsChangedSince(registeredType, Date.now()),
+      false,
+    );
+  });
+});

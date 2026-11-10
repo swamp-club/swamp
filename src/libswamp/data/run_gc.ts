@@ -68,7 +68,7 @@ export interface RunGcData {
   outputBytesReclaimed: number;
   evaluatedSnapshotsDeleted: number;
   evaluatedSnapshotBytesReclaimed: number;
-  /** auto-definition bytes are not counted in it, so its meaning is unchanged */
+  /** excludes auto-definition bytes */
   totalBytesReclaimed: number;
   autoDefinitionsDeleted: number;
   autoDefinitions: RunGcAutoDefinition[];

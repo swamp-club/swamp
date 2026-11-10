@@ -1926,7 +1926,16 @@ export async function tryModelLock(
   modelId: string,
   waitMs: number,
 ): Promise<DistributedLock | null> {
-  const lock = await createModelLock(datastoreConfig, modelType, modelId);
+  return await tryAcquireWithin(
+    await createModelLock(datastoreConfig, modelType, modelId),
+    waitMs,
+  );
+}
+
+export async function tryAcquireWithin(
+  lock: DistributedLock,
+  waitMs: number,
+): Promise<DistributedLock | null> {
   if (await lock.inspect()) return null;
   const signal = AbortSignal.timeout(waitMs);
   try {

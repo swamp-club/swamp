@@ -19,7 +19,6 @@
 
 import { isRetentionExempt } from "./retention_exemptions.ts";
 
-/** what the retention pass knows about one auto-definition when it judges it */
 export interface AutoDefinitionFacts {
   modelType: string;
   /** the file's mtime; null when it could not be read */

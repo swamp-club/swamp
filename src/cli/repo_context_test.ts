@@ -75,6 +75,7 @@ import {
   setLockProgressOutputMode,
   setLockProgressQuiet,
   signalWaitsOf,
+  tryAcquireWithin,
   waitForPerModelLocks,
 } from "./repo_context.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
@@ -140,6 +141,7 @@ import type {
 } from "../domain/datastore/datastore_sync_service.ts";
 import { CatalogStore } from "../infrastructure/persistence/catalog_store.ts";
 import {
+  type DistributedLock,
   type LockInfo,
   LockTimeoutError,
   LockWaitCycleError,
@@ -6420,4 +6422,44 @@ Deno.test("resolveSignalWaitSupport: a checkout written through serve cannot wai
     }
     return Promise.resolve();
   });
+});
+
+function stubLock(
+  acquire: (signal?: AbortSignal) => Promise<void>,
+  held: LockInfo | null = null,
+): DistributedLock {
+  return {
+    acquire,
+    release: () => Promise.resolve(),
+    withLock: (fn) => fn(),
+    inspect: () => Promise.resolve(held),
+    forceRelease: () => Promise.resolve(false),
+  } as DistributedLock;
+}
+
+Deno.test("tryAcquireWithin: gives up when the lock is not taken in time", async () => {
+  const lock = stubLock((signal) =>
+    new Promise((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason));
+    })
+  );
+  assertEquals(await tryAcquireWithin(lock, 10), null);
+});
+
+Deno.test("tryAcquireWithin: a lock timeout is busy, not an error", async () => {
+  const lock = stubLock(() =>
+    Promise.reject(new LockTimeoutError("model.lock", null, 10))
+  );
+  assertEquals(await tryAcquireWithin(lock, 1_000), null);
+});
+
+Deno.test("tryAcquireWithin: returns the lock it took, and rethrows other failures", async () => {
+  const free = stubLock(() => Promise.resolve());
+  assertEquals(await tryAcquireWithin(free, 1_000), free);
+  const broken = stubLock(() => Promise.reject(new Error("disk full")));
+  await assertRejects(
+    () => tryAcquireWithin(broken, 1_000),
+    Error,
+    "disk full",
+  );
 });

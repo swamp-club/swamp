@@ -51,7 +51,10 @@ export interface AutoDefinitionRetentionSources {
     YamlDefinitionRepository,
     "readDefinitionFile" | "delete"
   >;
-  outputRepo: Pick<YamlOutputRepository, "definitionIdsWithOutputs">;
+  outputRepo: Pick<
+    YamlOutputRepository,
+    "definitionIdsWithOutputs" | "outputsChangedSince"
+  >;
   dataRepo: {
     findAllForModel(type: ModelType, modelId: string): Promise<Data[]>;
   };
@@ -80,10 +83,7 @@ export interface AutoDefinitionBatchResult {
 }
 
 export interface AutoDefinitionReaper {
-  /**
-   * judges up to limit more candidates; removes the idle ones unless dryRun.
-   * A dry run ahead of an output gc passes the files that gc would delete
-   */
+  /** a dry run ahead of an output gc passes the files that gc would delete */
   collectBatch(
     cutoff: Date,
     limit: number,
@@ -105,6 +105,8 @@ export function createAutoDefinitionReaper(
   const repo = sources.autoDefinitionRepo;
   let scan: { files: ScannedFile[]; next: number } | undefined;
   let references: Set<string> | undefined;
+  // listed once per type per pass; relisted only after a run wrote an output
+  const listings = new Map<string, OutputListing>();
 
   const scanOnce = async (cutoff: Date) => {
     if (!scan) {
@@ -134,7 +136,6 @@ export function createAutoDefinitionReaper(
       const slice = state.files.slice(state.next, state.next + limit);
       state.next += slice.length;
       const referenced = await referencedNames();
-      const outputIds = new Map<string, Set<string>>();
       const idle: { candidate: AutoDefinitionCandidate; size: number }[] = [];
       for (const file of slice) {
         const read = await repo.readDefinitionFile(
@@ -148,8 +149,8 @@ export function createAutoDefinitionReaper(
           continue;
         }
         const candidate = { ...read, path: file.path };
-        const ids = await outputIdsOf(
-          outputIds,
+        const { ids } = await listingOf(
+          listings,
           sources,
           read.type,
           options.outputsRemoved,
@@ -177,8 +178,8 @@ export function createAutoDefinitionReaper(
       }
       const removed: AutoDefinitionCandidate[] = [];
       let bytesReclaimed = 0;
-      // the batch's locks are taken first, so the outputs are listed again
-      // once per type rather than once per definition
+      // the batch's locks are taken first, so each type is checked for new
+      // outputs once per batch rather than once per definition
       const held: {
         candidate: AutoDefinitionCandidate;
         size: number;
@@ -189,18 +190,33 @@ export function createAutoDefinitionReaper(
           const release = await lockCandidate(sources, entry.candidate);
           if (release) held.push({ ...entry, release });
         }
-        const fresh = new Map<string, Set<string>>();
+        const refreshed = new Set<string>();
+        for (const { candidate } of held) {
+          const key = candidate.type.normalized;
+          if (refreshed.has(key)) continue;
+          refreshed.add(key);
+          await refreshListing(listings, sources, candidate.type);
+        }
         for (const { candidate, size } of held) {
-          if (
-            await removeIfStillIdle(sources, repo, candidate, cutoff, fresh)
-          ) {
+          const { ids } = await listingOf(listings, sources, candidate.type);
+          if (await removeIfStillIdle(sources, repo, candidate, cutoff, ids)) {
             removed.push(candidate);
             bytesReclaimed += size;
           }
         }
-      } finally {
-        await releaseAll(held.reverse().map((h) => h.release));
+      } catch (error) {
+        // the removal's error is the one reported; a failed release is logged
+        await releaseAll(held.reverse().map((h) => h.release)).catch(
+          (releaseError) =>
+            logger.warn`Failed to release auto-definition locks: ${
+              releaseError instanceof Error
+                ? releaseError.message
+                : String(releaseError)
+            }`,
+        );
+        throw error;
       }
+      await releaseAll(held.reverse().map((h) => h.release));
       return { removed, bytesReclaimed, more };
     },
   };
@@ -224,21 +240,45 @@ async function releaseAll(
   }
 }
 
-async function outputIdsOf(
-  cache: Map<string, Set<string>>,
+interface OutputListing {
+  ids: Set<string>;
+  listedAt: number;
+}
+
+async function listingOf(
+  listings: Map<string, OutputListing>,
   sources: AutoDefinitionRetentionSources,
   type: ModelType,
   excluding?: ReadonlySet<string>,
-): Promise<Set<string>> {
-  let ids = cache.get(type.normalized);
-  if (!ids) {
-    ids = await sources.outputRepo.definitionIdsWithOutputs(
-      type,
-      excluding ? { excluding } : {},
-    );
-    cache.set(type.normalized, ids);
+): Promise<OutputListing> {
+  let listing = listings.get(type.normalized);
+  if (!listing) {
+    const listedAt = Date.now();
+    listing = {
+      ids: await sources.outputRepo.definitionIdsWithOutputs(
+        type,
+        excluding ? { excluding } : {},
+      ),
+      listedAt,
+    };
+    listings.set(type.normalized, listing);
   }
-  return ids;
+  return listing;
+}
+
+/** under the batch's locks: a run that wrote an output since the listing shows */
+async function refreshListing(
+  listings: Map<string, OutputListing>,
+  sources: AutoDefinitionRetentionSources,
+  type: ModelType,
+): Promise<void> {
+  const listing = listings.get(type.normalized);
+  if (
+    listing &&
+    !(await sources.outputRepo.outputsChangedSince(type, listing.listedAt))
+  ) return;
+  listings.delete(type.normalized);
+  await listingOf(listings, sources, type);
 }
 
 async function hasData(
@@ -291,7 +331,7 @@ async function removeIfStillIdle(
   repo: AutoDefinitionRetentionSources["autoDefinitionRepo"],
   candidate: AutoDefinitionCandidate,
   cutoff: Date,
-  freshOutputIds: Map<string, Set<string>>,
+  outputIds: ReadonlySet<string>,
 ): Promise<boolean> {
   const { type, definition } = candidate;
   try {
@@ -308,7 +348,7 @@ async function removeIfStillIdle(
     throw error;
   }
   if (
-    (await outputIdsOf(freshOutputIds, sources, type)).has(definition.id) ||
+    outputIds.has(definition.id) ||
     await hasData(sources, candidate)
   ) {
     return false;

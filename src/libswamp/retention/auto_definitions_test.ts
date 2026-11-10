@@ -425,8 +425,45 @@ Deno.test("createAutoDefinitionReaper: one failing lock release still releases t
     assert(failure instanceof Error);
     assertEquals(failure.message, "release failed");
     assertEquals(released.length, 1);
-    // the create locks went too: a second pass can take them again
-    const again = createAutoDefinitionReaper(f.sources());
-    await again.collectBatch(cutoff(), 10);
+    // the create locks went too: b, saved again, is removed by a second pass
+    const resaved = await saveAgedAutoDefinition(
+      f.autoRepo,
+      f.autoDir,
+      TYPE,
+      "b",
+      old,
+    );
+    const again = await createAutoDefinitionReaper(f.sources()).collectBatch(
+      cutoff(),
+      10,
+    );
+    assertEquals(again.removed.map((c) => c.definition.name), ["b"]);
+    assertEquals(await pathExists(resaved.path), false);
+  });
+});
+
+Deno.test("createAutoDefinitionReaper: lists a type's outputs once per pass while no run writes one", async () => {
+  await withFixture(async (f) => {
+    for (const name of ["a", "b", "c"]) {
+      await saveAgedAutoDefinition(
+        f.autoRepo,
+        f.autoDir,
+        TYPE,
+        name,
+        40 * DAY_MS,
+      );
+    }
+    let listings = 0;
+    const outputRepo = {
+      definitionIdsWithOutputs: (
+        ...args: Parameters<YamlOutputRepository["definitionIdsWithOutputs"]>
+      ) => {
+        listings++;
+        return f.outputRepo.definitionIdsWithOutputs(...args);
+      },
+      outputsChangedSince: () => Promise.resolve(false),
+    };
+    assertEquals(await drain(f.sources({ outputRepo })), ["a", "b", "c"]);
+    assertEquals(listings, 1);
   });
 });

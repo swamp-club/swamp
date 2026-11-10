@@ -192,6 +192,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 const SUMMARY_SHARD_BYTES_PER_FILE = 16 * 1024;
 
+/** FAT and some network filesystems keep directory times to 2 seconds */
+const OUTPUT_DIR_CLOCK_SLACK_MS = 2_000;
+
 const OUTPUT_FILE_NAME =
   /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.yaml$/;
 
@@ -582,6 +585,41 @@ export class YamlOutputRepository implements OutputRepository {
       if (name) ids.add(name.definitionId);
     }
     return ids;
+  }
+
+  /**
+   * true when a method directory of the type changed at or after sinceMs, less
+   * slack for coarse directory clocks, or holds an unmaterialised record
+   */
+  async outputsChangedSince(
+    type: ModelType,
+    sinceMs: number,
+  ): Promise<boolean> {
+    const threshold = sinceMs - OUTPUT_DIR_CLOCK_SLACK_MS;
+    const typeDir = this.getTypeDir(type);
+    const changed = async (dir: string): Promise<boolean> => {
+      try {
+        const mtime = (await Deno.stat(dir)).mtime;
+        return mtime === null || mtime.getTime() >= threshold;
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return false;
+        throw error;
+      }
+    };
+    if (await changed(typeDir)) return true;
+    let methodDirs: Deno.DirEntry[];
+    try {
+      methodDirs = await readDirSorted(typeDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+    for (const methodDir of methodDirs) {
+      if (!methodDir.isDirectory) continue;
+      if (await changed(join(typeDir, methodDir.name))) return true;
+    }
+    return (await unreadableRecordsUnder(this.unreadableContent, typeDir))
+      .length > 0;
   }
 
   /**

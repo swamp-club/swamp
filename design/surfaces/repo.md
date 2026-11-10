@@ -323,7 +323,8 @@ garbageCollection:
   removal by up to one cutoff but never bring it forward. The pass takes the
   name's create lock and, on serve, tries the model lock without waiting
   (`tryModelLock`); the CLI pass holds the datastore lock, which keeps runs off
-  their model locks. It checks data and outputs again under those locks, then
+  their model locks. It checks data and outputs again under those locks (a type's outputs are
+  listed once per pass and again only when its output directories changed), then
   removes the evaluated definition and the definition. Removing one discards
   global arguments set with `swamp behavior edit`, and the next run by name
   creates a new definition with a new id. A step that names its behavior
