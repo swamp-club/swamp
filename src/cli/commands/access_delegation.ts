@@ -265,7 +265,7 @@ const accessDelegationEndCommand = withRemoteOptions(
   new Command()
     .name("end")
     .description(
-      "End a delegation for good: its tokens stop working at once, and swamp-club is told afterwards",
+      "End a delegation for good: a running serve refuses its tokens within about 30 seconds, and swamp-club is told afterwards",
     )
     .example(
       "End one",
