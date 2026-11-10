@@ -2512,16 +2512,35 @@ these.
    the order of decision 7, and keeps the unit open. Later changes to the
    same partitions go into later commits. A workflow run checkpoints as it
    saves its record (`WorkflowRunCheckpointer`, swamp-club#3587): a save
-   checkpoints at once when none started in the last two seconds
-   (`RUN_CHECKPOINT_INTERVAL_MS`), and otherwise one trailing checkpoint
-   starts when that interval ends, so the latest save lands within about
-   two seconds and a crash loses at most that much of the run. A step's
+   checkpoints at once when the run's record last committed more than two
+   seconds ago (`RUN_CHECKPOINT_INTERVAL_MS`), and otherwise one trailing
+   checkpoint starts when that interval ends, so the latest save lands within
+   about two seconds and a crash loses at most that much of the run. The
+   interval runs from the later of the last checkpoint and the open unit's
+   last flush, a step's batch included (`lastCheckpointAt`, swamp-club#4574),
+   and a trailing checkpoint whose wait sees a newer flush waits on from it. A
+   step start alone does not move it: it commits the start, not the record. A step's
    start is never left to that pace (swamp-club#4295, swamp-club#4319): a
    crash must never leave a step that may have run recorded as `pending`,
    which `workflow recover` would run again without asking. So a run's move
    into running (its create, a resume, a recovery, a nested child's create)
    commits that run's own record at once, and then each step start commits a
-   `StepStart` on its own, before the step runs. Both are direct appends of
+   `StepStart` on its own, before the step runs. The run's event loop begins
+   that save and asks for the step's next event meanwhile, so a behavior's
+   step sends its lock request while its start commits; the method waits on a
+   pending-start promise (by run, job, step and `forEach` iteration) until the
+   start is recorded, and a step whose start fails releases the lock it took
+   (swamp-club#4574). Parallel steps wait the same way: the merge drives each
+   stream eagerly, so without it a parallel step could run before its start
+   landed. `step_started` is still yielded only once a save holding it landed. A
+   team-mode run saves its workflow-scope reports under the workflow's lock
+   (swamp-club#4567); a top-level run that has ended stages its final record
+   naming them before that lock's flush, so one batch carries the reports, the
+   record and the lease's end, and the record's own save after it, told those
+   bytes were committed, stages nothing when they are unchanged
+   (swamp-club#4574). Any other save stages, since a file can be ahead of its
+   last commit after a dropped unit. A flush that fails withdraws them, and the record
+   commits on its own, naming none. Both are direct appends of
    one op (`appendNow`): they never flush what the open unit has staged, so
    a start costs the same whatever the size of the run's record, and never
    waits behind a paced upload of it. Recovery reads the start journal with
@@ -7811,9 +7830,17 @@ local one both fail with `version-live`, as the live test did.
 the stored cursor and appends each commit verbatim. The anchor is checked
 before any page is applied: by serve with the first page (or with a lock's
 page) where it answers a verdict, by its own partition read otherwise. A page
-a lock delivered is used only while the copy still stands where it was asked
-from. The feed watch's catch-up is aborted when the watch stops, so a
-command's exit never waits on it. The cursor moves only once
+a lock delivered is used whole while the copy still stands where it was asked
+from; when the feed watch moved the copy meanwhile, the rest of the page is
+applied only if the page holds the copy's own anchor commit at the copy's
+cursor, which checks the anchor as serve would, and is read again otherwise
+(swamp-club#4574). A page that follows on from every partition's head with no
+gap is appended back to back, so the commit store commits it in shared
+transactions of up to 64 commits; a gap takes the in-order path. The feed
+watch's catch-up is aborted when the watch stops, and the stop waits at most
+500 ms for it, as the read model's close does for its queue: a catch-up still
+writing is left to finish, the stores close once it settles, and the next
+command catches up what it did not. The cursor moves only once
 a page is in the copy, so a crash between the two re-reads a page, whose
 commits are then duplicates. When a commit arrives past the copy's head + 1,
 the partition is read from serve first (`partitions/{p}/commits?after=`). That
