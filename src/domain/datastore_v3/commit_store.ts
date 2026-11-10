@@ -271,16 +271,6 @@ export interface CompactionReport {
 }
 
 /**
- * The commits of every partition of one datastore, all namespaces included.
- *
- * Every append applies the commit through `Partition.append`, so the store
- * keeps exactly the aggregate's rules. A refusal is the domain's
- * `CommitRejectedError` and writes nothing.
- *
- * A process holds one writer per store. Two processes writing one store is a
- * bug, which the writer lease prevents.
- */
-/**
  * a serve-mode copy's repair: it drops the commits of one partition its serve's
  * lineage does not hold, which only a follower copy may do
  */
@@ -293,6 +283,24 @@ export interface ObservedCopyRepair {
   ): Promise<readonly Commit[]>;
 }
 
+/** a drop the copy can never make: its kept state could not be rebuilt */
+export class ObservedDropRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ObservedDropRefusedError";
+  }
+}
+
+/**
+ * The commits of every partition of one datastore, all namespaces included.
+ *
+ * Every append applies the commit through `Partition.append`, so the store
+ * keeps exactly the aggregate's rules. A refusal is the domain's
+ * `CommitRejectedError` and writes nothing.
+ *
+ * A process holds one writer per store. Two processes writing one store is a
+ * bug, which the writer lease prevents.
+ */
 export interface CommitStore {
   /**
    * Appends a commit to its namespace's partition. Refuses with

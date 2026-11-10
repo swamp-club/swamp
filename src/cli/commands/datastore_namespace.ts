@@ -402,18 +402,18 @@ function buildMigrateDeps(
     },
     dirContents: (path: string) => dirContents(path),
     dirSize,
+    // flagged first, so a move never happens unflagged
     renameDir: async (source: string, destination: string) => {
-      await Deno.rename(source, destination);
       requireFullV3Recovery(repoDir);
+      await Deno.rename(source, destination);
     },
     findFileCollisions: (source: string, destination: string) =>
       findFileCollisions(source, destination),
     compareFiles: (a: string, b: string) => compareFiles(a, b),
     removeFile: (path: string) => Deno.remove(path),
-    mergeDirInto: async (source: string, destination: string) => {
-      const result = await mergeDirInto(source, destination);
-      if (result.moved > 0) requireFullV3Recovery(repoDir);
-      return result;
+    mergeDirInto: (source: string, destination: string) => {
+      requireFullV3Recovery(repoDir);
+      return mergeDirInto(source, destination);
     },
     ensureDir: (path: string) => ensureDir(path),
     removeOrphanedCatalogFiles: (namespaceDataDir: string) =>

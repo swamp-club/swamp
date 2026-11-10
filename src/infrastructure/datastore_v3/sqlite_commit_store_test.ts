@@ -52,6 +52,7 @@ import {
 import {
   CommitsCompactedError,
   InvalidBasePageTokenError,
+  ObservedDropRefusedError,
 } from "../../domain/datastore_v3/commit_store.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
 import { metadata as fixtureMetadata } from "../../domain/datastore_v3/v3_test_helpers.ts";
@@ -2041,7 +2042,7 @@ Deno.test("SqliteCommitStore.dropObservedFrom: a solo store refuses it, and a co
     await store.compactHistory(2);
     await assertRejects(
       () => store.dropObservedFrom("", modelPartition(), 2),
-      CommitsCompactedError,
+      ObservedDropRefusedError,
     );
     assertEquals((await store.head("", modelPartition())).seq, 3);
   }, { follower: true });

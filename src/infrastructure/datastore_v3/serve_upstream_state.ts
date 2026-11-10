@@ -110,10 +110,7 @@ const MIGRATIONS: readonly string[] = [
      mode TEXT NOT NULL,
      principal TEXT
    );`,
-  // the commits serve acknowledged to this checkout, which a repair never
-  // drops; a repair under way; a count of finished ones, which fences a
-  // catch-up that read before one; and since when a copy that read the feed
-  // before acknowledgements were kept has kept them (epoch ms)
+  // commits serve acknowledged to this checkout, which a repair never drops
   `CREATE TABLE IF NOT EXISTS acknowledged (
      namespace TEXT NOT NULL,
      partition TEXT NOT NULL,
@@ -121,6 +118,8 @@ const MIGRATIONS: readonly string[] = [
      landed_at INTEGER NOT NULL,
      PRIMARY KEY (namespace, partition, txn_id)
    );
+   CREATE INDEX IF NOT EXISTS acknowledged_landed_at
+     ON acknowledged (landed_at);
    CREATE TABLE IF NOT EXISTS repair (
      id INTEGER PRIMARY KEY CHECK (id = 1),
      namespace TEXT NOT NULL,
@@ -212,6 +211,7 @@ export class ServeUpstreamState {
    */
   #copyId: string;
   #closed = false;
+  #acknowledgedPruned = false;
 
   private constructor(path: string, db: DatabaseSync) {
     this.path = path;
@@ -397,9 +397,13 @@ export class ServeUpstreamState {
          VALUES (?, ?, ?, ?) ON CONFLICT (namespace, partition, txn_id)
          DO UPDATE SET landed_at = MAX(landed_at, excluded.landed_at)`,
       ).run(namespace, partition, txnId, at);
-      this.#db.prepare("DELETE FROM acknowledged WHERE landed_at < ?").run(
-        at - ACKNOWLEDGED_RETENTION_MS,
-      );
+      // once per open: a commit path never pays the prune
+      if (!this.#acknowledgedPruned) {
+        this.#acknowledgedPruned = true;
+        this.#db.prepare("DELETE FROM acknowledged WHERE landed_at < ?").run(
+          at - ACKNOWLEDGED_RETENTION_MS,
+        );
+      }
     });
   }
 
@@ -470,12 +474,7 @@ export class ServeUpstreamState {
     });
   }
 
-  /**
-   * one transaction once the copy dropped the commits: the feed reads again
-   * from the loaded base with no anchor, since the cursor may have passed
-   * commits serve's lineage holds, and serve's head for the partition is the
-   * one the repair read. The note stays until the read model is rebuilt
-   */
+  /** one transaction */
   resetFeedForRepair(): void {
     this.#assertOpen();
     this.#transaction(() => {

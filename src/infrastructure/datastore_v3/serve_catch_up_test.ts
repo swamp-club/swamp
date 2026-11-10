@@ -69,6 +69,7 @@ import {
   serveStamped,
 } from "./serve_upstream_test_helpers.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import { ObservedDropRefusedError } from "../../domain/datastore_v3/commit_store.ts";
 
 const MODEL = modelPartition();
 const OTHER = runPartition();
@@ -1534,6 +1535,44 @@ Deno.test("ServeCatchUp.catchUp: a copy holding another writer's commit serve's 
     assertEquals(state.feedCursor(), leader.feed.length);
     assertEquals(state.feedAnchor()?.txnId, "other-1");
     assertEquals(state.serveHead("", MODEL.toString()), 4);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a repair the copy's store can never make leaves the copy refused as before, not stuck rerunning it (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    const leader = await newLeader(4);
+    // as a compacted partition whose only snapshot is past the drop refuses
+    const refusing = new Proxy(store, {
+      get(target, property, receiver) {
+        if (property === "dropObservedFrom") {
+          return () =>
+            Promise.reject(new ObservedDropRefusedError("cannot drop"));
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const { catchUp, replays } = repairing(leader, {
+      dir,
+      store: refusing,
+      state,
+    });
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await assertRejects(
+        () => catchUp.catchUp(signal()),
+        ServeUpstreamDivergedError,
+      );
+      assertEquals(error.divergence.kind, "other-commit");
+      assertEquals(state.pendingRepair(), undefined);
+    }
+    assertEquals(replays.length, 0);
+    assertEquals(await copyTxnIds(store), [
+      "1:other-1",
+      "2:other-2",
+      "3:another-3",
+    ]);
   });
 });
 

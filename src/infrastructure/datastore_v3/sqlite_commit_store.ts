@@ -76,6 +76,7 @@ import {
   type DataNameMarks,
   InvalidBasePageTokenError,
   type ObservedCopyRepair,
+  ObservedDropRefusedError,
   type PartitionBase,
   type PartitionHead,
   type PartitionLeaseMarks,
@@ -2674,10 +2675,8 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const rows = this.#readTransaction(() => {
       const compacted = this.#compactedSeq(namespace, name);
       if (fromSeq <= compacted) {
-        throw new CommitsCompactedError(
-          this.#point(),
+        throw new ObservedDropRefusedError(
           `Partition ${name} is compacted through seq ${compacted}; its commits from seq ${fromSeq} cannot be dropped`,
-          compacted,
         );
       }
       return selectFrom.all(namespace, name, fromSeq) as unknown as CommitRow[];
@@ -2695,7 +2694,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       stored !== undefined && stored.seq > keep &&
       this.#compactedSeq(namespace, name) > 0
     ) {
-      throw new Error(
+      throw new ObservedDropRefusedError(
         `Partition ${name} of commits.db cannot drop its commits from seq ${fromSeq}: its only snapshot is past them and its earlier commits were compacted`,
       );
     }

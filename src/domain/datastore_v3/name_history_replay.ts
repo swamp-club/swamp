@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * exact because projectCatalog is per name: its change sets, reconcile set and
- * gc handling are keyed by name, so projecting a commit's ops filtered to some
- * names gives those names' actions of projecting all of them
- */
-
 import {
   type CatalogAction,
   greatestLiveIn,
@@ -71,9 +65,9 @@ export function catalogNamesOfCommit(commit: Commit): string[] {
 }
 
 /**
- * replays the names' history as a full rebuild does: the compacted base's
- * load, then each later commit's ops of those names; commits must be the
- * partition's after the base's compacted seq, in seq order
+ * replays the names' history as a full rebuild does, exact since projectCatalog
+ * keys every change by name; commits are the partition's after the base's
+ * compacted seq, in seq order
  */
 export function catalogActionsForNames(
   base: PartitionBase,

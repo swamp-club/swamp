@@ -55,7 +55,10 @@ import {
   type ServeFeedAnchor,
   type ServeUpstreamState,
 } from "./serve_upstream_state.ts";
-import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
+import {
+  CommitsCompactedError,
+  ObservedDropRefusedError,
+} from "../../domain/datastore_v3/commit_store.ts";
 import {
   ObservedBaseStaging,
   type SqliteCommitStore,
@@ -812,7 +815,7 @@ export class ServeCatchUp {
       try {
         const pending = this.#state.pendingRepair();
         if (pending === undefined) return;
-        await withSpan(
+        const removed = await withSpan(
           "swamp.datastore.v3.serve.repair",
           {
             ...repairAttributes(pending),
@@ -820,6 +823,7 @@ export class ServeCatchUp {
           },
           () => this.#applyRepair(pending, repair, signal),
         );
+        if (removed === undefined) return;
         logger
           .warn`Finished repairing this checkout's copy of partition ${pending.partition} at ${this.#copyDir}, cut short earlier: its commits from seq ${pending.fromSeq} were dropped, and it reads on from serve, whose head for the partition was ${pending.serveHead}.`;
       } finally {
@@ -830,12 +834,7 @@ export class ServeCatchUp {
     }
   }
 
-  /**
-   * true when the copy was repaired, or serve's answer now holds what the copy
-   * does; false keeps the refusal
-   * @throws ServeAcknowledgedCommitLostError when a repair would drop a commit
-   *   serve acknowledged to this checkout
-   */
+  /** true when repaired or serve now holds what the copy does; false refuses */
   async #repairDiverged(
     error: ServeUpstreamDivergedError,
     signal: AbortSignal,
@@ -978,6 +977,10 @@ export class ServeCatchUp {
     };
     this.#state.beginRepair(planned);
     const removed = await this.#applyRepair(planned, repair, signal);
+    if (removed === undefined) {
+      span.setAttribute("swamp.datastore.v3.repair.outcome", "store_refused");
+      return false;
+    }
     span.setAttribute("swamp.datastore.v3.repair.outcome", "repaired");
     span.setAttribute("swamp.datastore.v3.repair.from_seq", first.seq);
     span.setAttribute("swamp.datastore.v3.repair.dropped", dropped.length);
@@ -986,9 +989,13 @@ export class ServeCatchUp {
       removed - dropped.length,
     );
     logger
-      .warn`Repaired this checkout's copy at ${this.#copyDir}: serve at ${this.#client.baseUrl} does not hold ${dropped.length} commits of partition ${diverged.partition} the copy took from seq ${first.seq} (${
+      .warn`Repaired this checkout's copy at ${this.#copyDir}: serve at ${this.#client.baseUrl} does not hold ${dropped.length} ${
+      dropped.length === 1 ? "commit" : "commits"
+    } of partition ${diverged.partition} the copy took from seq ${first.seq} (${
       dropped.map((commit) => `seq ${commit.seq} ${commit.txnId}`).join(", ")
-    }), so they were dropped; serve's head for the partition is ${serve.head}, and the copy reads on from it.`;
+    }), so ${
+      dropped.length === 1 ? "it was" : "they were"
+    } dropped; serve's head for the partition is ${serve.head}, and the copy reads on from it.`;
     return true;
   }
 
@@ -1001,14 +1008,24 @@ export class ServeCatchUp {
     repair: ServeCopyRepair,
     port: ServeCopyRepairPort,
     signal: AbortSignal,
-  ): Promise<number> {
+  ): Promise<number | undefined> {
     let removed = 0;
     if (repair.dropped !== true) {
-      removed = (await this.#commitStore.dropObservedFrom(
-        repair.namespace,
-        PartitionKey.parse(repair.partition),
-        repair.fromSeq,
-      )).length;
+      try {
+        removed = (await this.#commitStore.dropObservedFrom(
+          repair.namespace,
+          PartitionKey.parse(repair.partition),
+          repair.fromSeq,
+        )).length;
+      } catch (error) {
+        // a drop the copy can never make leaves it refused, not stuck
+        // rerunning a noted repair
+        if (!(error instanceof ObservedDropRefusedError)) throw error;
+        logger
+          .warn`Cannot repair this checkout's copy of partition ${repair.partition} at ${this.#copyDir}: ${error.message}`;
+        this.#state.finishRepair();
+        return undefined;
+      }
       this.#state.resetFeedForRepair();
     }
     await port.rebuildReadModel(repair.since, signal);
