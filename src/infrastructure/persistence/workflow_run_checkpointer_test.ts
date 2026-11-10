@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { hostname as osHostname } from "node:os";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { Job } from "../../domain/workflows/job.ts";
@@ -39,6 +40,7 @@ import { StepStartUnrecordedError } from "../../domain/workflows/step_start.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import {
+  firePacedCheckpointsForTesting,
   RUN_CHECKPOINT_INTERVAL_MS,
   setRunCheckpointIntervalForTesting,
   WorkflowRunCheckpointer,
@@ -291,6 +293,92 @@ Deno.test("setRunCheckpointIntervalForTesting: an explicit interval wins over it
   } finally {
     setRunCheckpointIntervalForTesting(undefined);
   }
+});
+
+Deno.test("firePacedCheckpointsForTesting: starts an armed trailing checkpoint at once, covering every save before it, and a later save arms another", async () => {
+  const commitLog = engine(() => Promise.resolve("committed"));
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => 0,
+  });
+  const run = newRun();
+  await checkpointer.checkpoint(run);
+  await checkpointer.checkpoint(run);
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+  firePacedCheckpointsForTesting();
+  await waitFor(() => commitLog.calls() === 2, "the fired checkpoint");
+  await waitFor(() => checkpointer.committedLatest(run.id), "its commit");
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 2);
+  firePacedCheckpointsForTesting();
+  await waitFor(() => commitLog.calls() === 3, "the re-armed checkpoint");
+  await checkpointer.close();
+  assertEquals(commitLog.calls(), 3);
+});
+
+Deno.test("firePacedCheckpointsForTesting: with nothing armed it starts no checkpoint", async () => {
+  const commitLog = engine(() => Promise.resolve("committed"));
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => 0,
+  });
+  firePacedCheckpointsForTesting();
+  await checkpointer.checkpoint(newRun());
+  assertEquals(commitLog.calls(), 1);
+  firePacedCheckpointsForTesting();
+  await checkpointer.close();
+  assertEquals(commitLog.calls(), 1);
+});
+
+Deno.test("firePacedCheckpointsForTesting: does not fire a timer that an ending save or close cleared", async () => {
+  const commitLog = engine(() => Promise.resolve("committed"));
+  const ending = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => 0,
+  });
+  const run = newRun();
+  await ending.checkpoint(run);
+  await ending.checkpoint(run);
+  run.start();
+  run.endAsCancelled();
+  await ending.checkpoint(run);
+  assertEquals(commitLog.calls(), 2);
+  firePacedCheckpointsForTesting();
+  await ending.close();
+  assertEquals(commitLog.calls(), 2);
+
+  const closing = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => 0,
+  });
+  const other = newRun();
+  await closing.checkpoint(other);
+  await closing.checkpoint(other);
+  assertEquals(commitLog.calls(), 3);
+  await closing.close();
+  firePacedCheckpointsForTesting();
+  assertEquals(commitLog.calls(), 3);
+});
+
+Deno.test("firePacedCheckpointsForTesting: the fired checkpoint runs in the context its save armed it in, not the caller's", async () => {
+  const scope = new AsyncLocalStorage<string>();
+  const seen: (string | undefined)[] = [];
+  const commitLog = engine(() => {
+    seen.push(scope.getStore());
+    return Promise.resolve("committed");
+  });
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 60_000,
+    now: () => 0,
+  });
+  const run = newRun();
+  await scope.run("save", () => checkpointer.checkpoint(run));
+  await scope.run("save", () => checkpointer.checkpoint(run));
+  scope.run("caller", () => firePacedCheckpointsForTesting());
+  await waitFor(() => seen.length === 2, "the fired checkpoint");
+  await checkpointer.close();
+  assertEquals(seen, ["save", "save"]);
 });
 
 Deno.test("WorkflowRunCheckpointer: close cancels a trailing checkpoint not yet started, and a later save takes none", async () => {

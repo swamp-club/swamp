@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { hostname } from "node:os";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { RunCheckpointer } from "../../domain/workflows/run_checkpointer.ts";
@@ -53,6 +54,16 @@ export function setRunCheckpointIntervalForTesting(
   ms: number | undefined,
 ): void {
   checkpointIntervalMs = ms ?? RUN_CHECKPOINT_INTERVAL_MS;
+}
+
+const armedTrailing = new Set<() => void>();
+
+/**
+ * starts every armed trailing checkpoint now, in the context its save armed it
+ * in, without waiting out a flush that landed meanwhile
+ */
+export function firePacedCheckpointsForTesting(): void {
+  for (const fire of [...armedTrailing]) fire();
 }
 
 /**
@@ -92,6 +103,7 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   readonly #now: () => number;
   #lastStarted = Number.NEGATIVE_INFINITY;
   #trailingTimer: ReturnType<typeof setTimeout> | undefined;
+  #fireTrailing: (() => void) | undefined;
   #trailing: Promise<void> | undefined;
   #closed = false;
   #warnedFailure = false;
@@ -142,10 +154,7 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
       run.parentRun === undefined;
     const atOnce = ended || endedBesideSibling ||
       (newStart && (!journal || this.#journalRefused));
-    if (atOnce && this.#trailingTimer !== undefined) {
-      clearTimeout(this.#trailingTimer);
-      this.#trailingTimer = undefined;
-    }
+    if (atOnce && this.#trailingTimer !== undefined) this.#disarm();
     if (!atOnce && this.#trailingTimer !== undefined) return;
     const wait = this.#dueIn();
     if (atOnce || wait <= 0) {
@@ -171,8 +180,16 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
   /** a flush that lands while it waits pushes the checkpoint back */
   #armTrailing(wait: number): void {
     const armedAfter = lastOpenUnitCheckpointAt(this.#repoContext);
+    // the checkpoint finds the run's open units through the async context
+    const inSaveContext = AsyncLocalStorage.snapshot();
+    const fire = () => {
+      this.#disarm();
+      this.#trailing = inSaveContext(() => this.#schedule());
+    };
+    this.#fireTrailing = fire;
+    armedTrailing.add(fire);
     this.#trailingTimer = setTimeout(() => {
-      this.#trailingTimer = undefined;
+      this.#disarm();
       const flushed = lastOpenUnitCheckpointAt(this.#repoContext);
       const left = flushed !== undefined && flushed !== armedAfter
         ? flushed + this.#intervalMs - this.#now()
@@ -287,12 +304,18 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     );
   }
 
+  #disarm(): void {
+    if (this.#trailingTimer !== undefined) clearTimeout(this.#trailingTimer);
+    this.#trailingTimer = undefined;
+    if (this.#fireTrailing !== undefined) {
+      armedTrailing.delete(this.#fireTrailing);
+    }
+    this.#fireTrailing = undefined;
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
-    if (this.#trailingTimer !== undefined) {
-      clearTimeout(this.#trailingTimer);
-      this.#trailingTimer = undefined;
-    }
+    this.#disarm();
     await this.#trailing;
     await this.#next;
     await this.#current;
