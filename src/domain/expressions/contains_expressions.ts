@@ -17,13 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { scanExpressions } from "../expressions/expression_scanner.ts";
+import { scanExpressions } from "./expression_scanner.ts";
 
 /**
  * walks what resolveDatastoreExpressions walks and matches what it would
  * resolve; iterative, since a remote client controls the nesting depth
  */
-export function datastoreConfigHasExpressions(value: unknown): boolean {
+export function containsExpressions(value: unknown): boolean {
   const pending: unknown[] = [value];
   while (pending.length > 0) {
     const next = pending.pop();

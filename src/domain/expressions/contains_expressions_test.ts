@@ -18,29 +18,29 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { datastoreConfigHasExpressions } from "./datastore_config_expressions.ts";
+import { containsExpressions } from "./contains_expressions.ts";
 
-Deno.test("datastoreConfigHasExpressions: finds an expression nested in a record", () => {
+Deno.test("containsExpressions: finds an expression nested in a record", () => {
   assertEquals(
-    datastoreConfigHasExpressions({
+    containsExpressions({
       auth: { mode: "servicePrincipal", clientSecret: "${{ env.SECRET }}" },
     }),
     true,
   );
 });
 
-Deno.test("datastoreConfigHasExpressions: finds an expression inside an array", () => {
+Deno.test("containsExpressions: finds an expression inside an array", () => {
   assertEquals(
-    datastoreConfigHasExpressions({
+    containsExpressions({
       hosts: ["a.example.com", "https://${{ vault.get(infra, host) }}"],
     }),
     true,
   );
 });
 
-Deno.test("datastoreConfigHasExpressions: false for plain strings and scalars", () => {
+Deno.test("containsExpressions: false for plain strings and scalars", () => {
   assertEquals(
-    datastoreConfigHasExpressions({
+    containsExpressions({
       bucket: "my-bucket",
       note: "costs $5 { per } month",
       retries: 3,
@@ -52,8 +52,8 @@ Deno.test("datastoreConfigHasExpressions: false for plain strings and scalars", 
   );
 });
 
-Deno.test("datastoreConfigHasExpressions: walks deep nesting without recursion", () => {
+Deno.test("containsExpressions: walks deep nesting without recursion", () => {
   let nested: unknown = "${{ env.DEEP }}";
   for (let i = 0; i < 50_000; i++) nested = { next: nested };
-  assertEquals(datastoreConfigHasExpressions(nested), true);
+  assertEquals(containsExpressions(nested), true);
 });

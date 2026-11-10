@@ -279,7 +279,7 @@ import {
 import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner.ts";
 import type { DatastoreClaimPayload } from "../protocol.ts";
 import { UserError } from "../../domain/errors.ts";
-import { datastoreConfigHasExpressions } from "../../domain/datastore/datastore_config_expressions.ts";
+import { containsExpressions } from "../../domain/expressions/contains_expressions.ts";
 import { createDefaultExtensionArchiveCache } from "../../infrastructure/persistence/extension_archive_cache.ts";
 
 const MAX_LISTED_ACCEPTED_QUARANTINE = 50;
@@ -1573,7 +1573,7 @@ function refuseClientConfigExpressions(
   _repoDir: string,
   config: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  if (datastoreConfigHasExpressions(config)) {
+  if (containsExpressions(config)) {
     return Promise.reject(
       new UserError(
         "Datastore setup through serve does not resolve expressions in the " +
