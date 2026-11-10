@@ -295,10 +295,8 @@ export interface LingerOptions extends DrainOptions {
 }
 
 /**
- * drains the spool, then keeps the lock and drains what later commands spool
- * until a linger passes with nothing new or the lock is lost. After a failed
- * send it sends nothing more but keeps the lock for a linger, so a failing
- * ingest costs one sender per linger rather than one per command
+ * drains the spool, then lingers for later commands' entries; a failed send
+ * holds the lock for a linger without sending, so commands start no new sender
  */
 export async function drainAndLinger(options: LingerOptions): Promise<void> {
   const skipIds = options.skipIds ?? new Set<string>();
