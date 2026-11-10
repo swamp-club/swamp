@@ -1104,15 +1104,6 @@ function ownerCheckOf(
       : { as: "writer" });
 }
 
-/** serve holds this datastore and its claim names serve's address */
-function claimedByServe(
-  config: V3DatastoreConfig,
-  owner: DatastoreOwner | undefined,
-): boolean {
-  const address = serveHolds.get(resolve(config.path))?.address;
-  return address !== undefined && owner?.isAddress(address) === true;
-}
-
 /**
  * a retake or a move of the lease is the only way a claim can change under
  * serve's hold, so check again only when the fence moved since it last named
@@ -1625,8 +1616,7 @@ export async function v3RepositoryFactoryConfig(
     commitLog: (markDirty, runRepo) =>
       handle.engineFor(markDirty, runRepo, {
         readOnly: options.readOnly === true,
-        claimedByServe: () =>
-          claimedByServe(config, handle.commitStore.owner()),
+        heldByServe: () => serveHolds.has(resolve(config.path)),
       }),
     catalogStore: handle.catalogStore,
     // a read of a record the read model could not materialise fails loudly

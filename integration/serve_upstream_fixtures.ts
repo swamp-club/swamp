@@ -173,8 +173,10 @@ export interface ServeOptions {
   readonly checkpointIntervalMs?: number;
   /** serve's behavior type gains `refresh`, a read method writing `out` */
   readonly refreshMethod?: boolean;
-  /** serve holds its datastore at this address and claims it, as a team's does */
-  readonly claimedAs?: string;
+  /** serve opens its datastore as serve at this address, as `swamp serve` does */
+  readonly servedAs?: string;
+  /** and claims it under that address, as a team's serve may */
+  readonly claimed?: boolean;
 }
 
 export interface ClientOptions {
@@ -255,9 +257,10 @@ async function startServe(options: ServeOptions): Promise<Serve> {
           ? {}
           : { checkpointIntervalMs: options.checkpointIntervalMs }),
         ...(options.refreshMethod === true ? { refreshMethod: true } : {}),
-        ...(options.claimedAs === undefined
+        ...(options.servedAs === undefined
           ? {}
-          : { claimedAs: options.claimedAs }),
+          : { servedAs: options.servedAs }),
+        ...(options.claimed === true ? { claimed: true } : {}),
       } satisfies ServeWorkerRequest,
     );
     await waitFor(

@@ -640,7 +640,7 @@ export interface V3Datastore {
     runRepo: () => WorkflowRunRepository,
     options?: {
       readonly readOnly?: boolean;
-      readonly claimedByServe?: () => boolean;
+      readonly heldByServe?: () => boolean;
     },
   ): CommitLogEngine;
   /**
@@ -1546,7 +1546,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
           return root === undefined ? undefined : checkpointedAt.get(root);
         },
         forwardsToServe: serveSink !== undefined,
-        claimedByServe: () => engineOptions.claimedByServe?.() === true,
+        heldByServe: () => engineOptions.heldByServe?.() === true,
         async appendToOpenUnit(changes, appendOptions) {
           const unit = commitLogParentFor(markDirty, currentUnitOfWork());
           if (unit === undefined) return "no-unit";

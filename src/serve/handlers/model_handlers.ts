@@ -223,7 +223,7 @@ import {
 } from "./resource_resolution.ts";
 import {
   runInRootUnitOfWork,
-  servesClaimedDatastore,
+  servesV3Datastore,
 } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { TimeSlice } from "../../infrastructure/persistence/scan_permits.ts";
 import { containedLogFileReader } from "./log_file_containment.ts";
@@ -265,7 +265,7 @@ async function runLockMode(
     config: ctx.datastoreConfig,
     syncService: ctx.syncService,
     repoContext: ctx.repoContext,
-    teamMode: servesClaimedDatastore(ctx.repoContext),
+    teamMode: servesV3Datastore(ctx.repoContext),
   });
 }
 

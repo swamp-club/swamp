@@ -67,7 +67,7 @@ export async function methodRunLockMode(options: {
   syncService: DatastoreSyncService | undefined;
   repoContext: Pick<RepositoryContext, "commitLog">;
   /**
-   * a checkout writing through serve, or serve on a datastore it claimed:
+   * a checkout writing through serve, or serve on its own v3 datastore:
    * other writers hold the behavior's lease there, so a lockless save would be
    * refused under it or take the version it allocated
    */

@@ -1377,8 +1377,9 @@ async function flushStepLock(
 const WORKFLOW_MODEL_TYPE = "workflow";
 
 /**
- * a datastore refusal, a lost or lapsed lease, an unreachable serve or a lock
- * wait that timed out fails the reports; anything else is a fault and thrown
+ * a lost or lapsed lease, an unreachable serve or a timed-out lock wait fails
+ * the reports; anything else is thrown, a raw CommitRejectedError included
+ * (not importable here): refusals arrive only as CommitLeaseLostError
  */
 function isReportSaveFailure(error: unknown): boolean {
   return error instanceof UserError || isUnpublishedDataError(error);

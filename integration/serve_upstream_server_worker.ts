@@ -64,8 +64,10 @@ export type ServeWorkerRequest =
     readonly checkpointIntervalMs?: number;
     /** adds a read method writing the `out` resource, as a refreshing get does */
     readonly refreshMethod?: boolean;
-    /** serve holds its datastore at this address and claims it */
-    readonly claimedAs?: string;
+    /** serve opens its datastore as serve at this address, as `swamp serve` does */
+    readonly servedAs?: string;
+    /** and claims it under that address */
+    readonly claimed?: boolean;
   }
   | { readonly kind: "log" }
   | { readonly kind: "renewals" }
@@ -280,12 +282,12 @@ async function start(
           },
         });
       }
-      if (request.claimedAs !== undefined) {
+      if (request.servedAs !== undefined && request.claimed === true) {
         const store = server.v3.commitStore;
         await store.claimOwner(
           store.writerFence() ?? 1,
           DatastoreOwner.create({
-            address: request.claimedAs,
+            address: request.servedAs,
             claimedAt: new Date().toISOString(),
             claimedAtCursor: store.highWaterMark().cursor,
           }),
@@ -500,9 +502,9 @@ async function start(
     {
       managedConfig: request.managedConfig === true,
       locks: (createLock) => new CountingLeases({ createLock }),
-      ...(request.claimedAs === undefined
+      ...(request.servedAs === undefined
         ? {}
-        : { serveAddress: request.claimedAs }),
+        : { serveAddress: request.servedAs }),
     },
   );
 }

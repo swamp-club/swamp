@@ -283,86 +283,91 @@ Deno.test({
   },
 });
 
-Deno.test({
-  name:
-    "team-mode read run: serve's own read method run during a member's leased write waits for it, and both runs' versions are consecutive (swamp-club#4578)",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
-    await withScratch(async (scratch) => {
-      const serve = await scratch.serve({
-        grants: ALICE_ALL,
-        managedConfig: true,
-        refreshMethod: true,
-        claimedAs: "https://serve.team.test",
-      });
-      registerMethods(serve.modelType);
-      const member = await scratch.client("member", { managedConfig: true });
-      const env = serveEnv(serve, "alice-token");
-      const target = Definition.create({ name: TARGET, globalArguments: {} });
-      await writeCommand(
-        scratch,
-        member,
-        env,
-        (repos) => repos.definitionRepo.save(serve.modelType, target),
-      );
-      let release = () => {};
-      const released = new Promise<void>((resolve) => release = resolve);
-      let wrote = false;
-      holdWrite = () => {
-        wrote = true;
-        return released;
-      };
-      let memberError: unknown;
-      let served: Promise<{ errors: readonly string[] }> | undefined;
-      const exitCode = Deno.exitCode;
-      try {
-        const write = command(
+for (const claimed of [true, false]) {
+  Deno.test({
+    name:
+      `team-mode read run: serve's own read method run during a member's leased write, on a datastore serve ${
+        claimed ? "claimed" : "did not claim"
+      }, waits for it, and both runs' versions are consecutive (swamp-club#4578)`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withScratch(async (scratch) => {
+        const serve = await scratch.serve({
+          grants: ALICE_ALL,
+          managedConfig: true,
+          refreshMethod: true,
+          servedAs: "https://serve.team.test",
+          claimed,
+        });
+        registerMethods(serve.modelType);
+        const member = await scratch.client("member", { managedConfig: true });
+        const env = serveEnv(serve, "alice-token");
+        const target = Definition.create({ name: TARGET, globalArguments: {} });
+        await writeCommand(
           scratch,
           member,
           env,
-          ["model", "method", "run"],
-          (root) => {
-            root.command(
-              "cmd",
-              createModelMethodRunCommand(MODEL_METHOD_RUN_SYNTAX),
-            );
-          },
-          [TARGET, "write"],
-        ).catch((error) => {
-          memberError = error;
-        });
+          (repos) => repos.definitionRepo.save(serve.modelType, target),
+        );
+        let release = () => {};
+        const released = new Promise<void>((resolve) => release = resolve);
+        let wrote = false;
+        holdWrite = () => {
+          wrote = true;
+          return released;
+        };
+        let memberError: unknown;
+        let served: Promise<{ errors: readonly string[] }> | undefined;
+        const exitCode = Deno.exitCode;
         try {
-          // the member's version of `out` is allocated, not yet committed
-          await waitFor(() => wrote, "the member's write to allocate");
-          let settled = false;
-          served = serve.runMethod(TARGET, "refresh");
-          served.then(() => settled = true, () => settled = true);
-          // lockless, it ends at once; locking, it waits at serve's own lock
-          await waitFor(
-            async () =>
-              settled ||
-              (await serve.lockStats()).ownLockKeys.some((key) =>
-                key.includes(target.id)
-              ),
-            "serve's read run to end or wait for the lease",
-            { timeoutMs: 120_000, intervalMs: 50 },
-          );
+          const write = command(
+            scratch,
+            member,
+            env,
+            ["model", "method", "run"],
+            (root) => {
+              root.command(
+                "cmd",
+                createModelMethodRunCommand(MODEL_METHOD_RUN_SYNTAX),
+              );
+            },
+            [TARGET, "write"],
+          ).catch((error) => {
+            memberError = error;
+          });
+          try {
+            // the member's version of `out` is allocated, not yet committed
+            await waitFor(() => wrote, "the member's write to allocate");
+            let settled = false;
+            served = serve.runMethod(TARGET, "refresh");
+            served.then(() => settled = true, () => settled = true);
+            // lockless, it ends at once; locking, it waits at serve's own lock
+            await waitFor(
+              async () =>
+                settled ||
+                (await serve.lockStats()).ownLockKeys.some((key) =>
+                  key.includes(target.id)
+                ),
+              "serve's read run to end or wait for the lease",
+              { timeoutMs: 120_000, intervalMs: 50 },
+            );
+          } finally {
+            release();
+            await write;
+          }
         } finally {
-          release();
-          await write;
+          holdWrite = undefined;
+          Deno.exitCode = exitCode;
         }
-      } finally {
-        holdWrite = undefined;
-        Deno.exitCode = exitCode;
-      }
-      assertEquals(memberError, undefined);
-      assertEquals((await served)?.errors, []);
-      assertEquals(await versionsOf(serve, "out"), [1, 2]);
-      assertEquals(await versionsOf(serve, "report-swamp-method-summary"), [
-        1,
-        2,
-      ]);
-    });
-  },
-});
+        assertEquals(memberError, undefined);
+        assertEquals((await served)?.errors, []);
+        assertEquals(await versionsOf(serve, "out"), [1, 2]);
+        assertEquals(await versionsOf(serve, "report-swamp-method-summary"), [
+          1,
+          2,
+        ]);
+      });
+    },
+  });
+}
