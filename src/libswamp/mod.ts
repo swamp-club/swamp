@@ -1593,6 +1593,7 @@ export {
   DEFAULT_OUTPUT_RETENTION_DAYS,
   DEFAULT_WORKFLOW_RUN_RETENTION_DAYS,
   runGc,
+  type RunGcAutoDefinition,
   type RunGcData,
   type RunGcDeps,
   type RunGcEvent,
@@ -1605,6 +1606,11 @@ export {
 } from "./data/run_gc.ts";
 
 export { type RepoRetentionDeps, runRepoRetention } from "./retention/run.ts";
+export {
+  AUTO_DEFINITION_RETENTION_LOCK_WAIT_MS,
+  type AutoDefinitionRetentionSources,
+  autoDefinitionRetentionSourcesOf,
+} from "./retention/auto_definitions.ts";
 export {
   type RetentionKindResult,
   type RetentionPassResult,

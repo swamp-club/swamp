@@ -192,6 +192,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 const SUMMARY_SHARD_BYTES_PER_FILE = 16 * 1024;
 
+/** FAT and some network filesystems keep directory times to 2 seconds */
+const OUTPUT_DIR_CLOCK_SLACK_MS = 2_000;
+
 const OUTPUT_FILE_NAME =
   /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)\.yaml$/;
 
@@ -537,6 +540,86 @@ export class YamlOutputRepository implements OutputRepository {
       (entry) => parseOutputFileName(entry.path)?.definitionId === definitionId,
     );
     return all.filter((output) => output.definitionId === definitionId);
+  }
+
+  /**
+   * from file names alone; an unmaterialised record counts as an output;
+   * excluding leaves out the files a gc is about to remove
+   */
+  async definitionIdsWithOutputs(
+    type: ModelType,
+    options: { excluding?: ReadonlySet<string> } = {},
+  ): Promise<Set<string>> {
+    const ids = new Set<string>();
+    const typeDir = this.getTypeDir(type);
+    let methodDirs: Deno.DirEntry[];
+    try {
+      methodDirs = await readDirSorted(typeDir);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      methodDirs = [];
+    }
+    for (const methodDir of methodDirs) {
+      if (!methodDir.isDirectory) continue;
+      let files: Deno.DirEntry[];
+      try {
+        files = await readDirSorted(join(typeDir, methodDir.name));
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+      for (const file of files) {
+        const name = parseOutputFileName(file.name);
+        if (!name) continue;
+        const path = join(typeDir, methodDir.name, file.name);
+        if (!options.excluding?.has(path)) ids.add(name.definitionId);
+      }
+    }
+    for (
+      const entry of await unreadableRecordsUnder(
+        this.unreadableContent,
+        typeDir,
+      )
+    ) {
+      const name = parseOutputFileName(entry.path);
+      if (name) ids.add(name.definitionId);
+    }
+    return ids;
+  }
+
+  /**
+   * true when a method directory of the type changed at or after sinceMs, less
+   * slack for coarse directory clocks, or holds an unmaterialised record
+   */
+  async outputsChangedSince(
+    type: ModelType,
+    sinceMs: number,
+  ): Promise<boolean> {
+    const threshold = sinceMs - OUTPUT_DIR_CLOCK_SLACK_MS;
+    const typeDir = this.getTypeDir(type);
+    const changed = async (dir: string): Promise<boolean> => {
+      try {
+        const mtime = (await Deno.stat(dir)).mtime;
+        return mtime === null || mtime.getTime() >= threshold;
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return false;
+        throw error;
+      }
+    };
+    if (await changed(typeDir)) return true;
+    let methodDirs: Deno.DirEntry[];
+    try {
+      methodDirs = await readDirSorted(typeDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+    for (const methodDir of methodDirs) {
+      if (!methodDir.isDirectory) continue;
+      if (await changed(join(typeDir, methodDir.name))) return true;
+    }
+    return (await unreadableRecordsUnder(this.unreadableContent, typeDir))
+      .length > 0;
   }
 
   /**
@@ -1699,7 +1782,14 @@ export class YamlOutputRepository implements OutputRepository {
   async deleteByMethodLifetime(
     fallbackCutoff: Date,
     options?: { dryRun?: boolean; limit?: number },
-  ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
+  ): Promise<
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      more: boolean;
+      wouldDelete?: readonly string[];
+    }
+  > {
     const fallbackCutoffMs = fallbackCutoff.getTime();
     // An unrepresentable cutoff deletes nothing rather than everything.
     if (!Number.isFinite(fallbackCutoffMs)) {
@@ -1750,7 +1840,14 @@ export class YamlOutputRepository implements OutputRepository {
   private async deleteExpired(
     cutoffFor: (relativePath: string) => number,
     options?: { dryRun?: boolean; limit?: number },
-  ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
+  ): Promise<
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      more: boolean;
+      wouldDelete?: readonly string[];
+    }
+  > {
     const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
     const dryRun = options?.dryRun ?? false;
     const limit = options?.limit;
@@ -1890,7 +1987,12 @@ export class YamlOutputRepository implements OutputRepository {
       }
     }
 
-    return { deleted, bytesReclaimed, more };
+    return {
+      deleted,
+      bytesReclaimed,
+      more,
+      ...(dryRun ? { wouldDelete: [...deletedYamls] } : {}),
+    };
   }
 
   private liveSummaryKeys(

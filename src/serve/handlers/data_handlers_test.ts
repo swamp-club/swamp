@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
-import { SEPARATOR } from "@std/path";
+import { join, SEPARATOR } from "@std/path";
 import {
   handleDataDelete,
   handleDataGc,
@@ -60,6 +60,11 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { createModelLock } from "../../cli/repo_context.ts";
 
 Deno.test("resolveRunGcInput: uses repository retention when request omits it", () => {
   assertEquals(
@@ -69,6 +74,23 @@ Deno.test("resolveRunGcInput: uses repository retention when request omits it", 
       workflowRunRetentionDays: 14,
       outputRetentionDays: 1,
     },
+  );
+});
+
+Deno.test("resolveRunGcInput: auto-definition retention comes from the repository only", () => {
+  assertEquals(
+    resolveRunGcInput(
+      { workflowRunRetentionDays: 3, outputRetentionDays: 2 },
+      { autoDefinitions: "60d" },
+    ).autoDefinitionRetentionDays,
+    60,
+  );
+  assertEquals(
+    resolveRunGcInput(
+      { workflowRunRetentionDays: 3, outputRetentionDays: 2 },
+      { retention: "30d" },
+    ).autoDefinitionRetentionDays,
+    undefined,
   );
 });
 
@@ -765,4 +787,112 @@ Deno.test("handleRunGc: where members forward records, a caller's own cut-off ne
     await gcAs({ forwards: false, actions: ["write"], payload: override }),
     { type: "run.gc", kept: false },
   );
+});
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+async function createAutoDefinitionGcFixture(dir: string) {
+  await new RepoMarkerRepository().write(RepoPath.create(dir), {
+    swampVersion: "0.0.0",
+    initializedAt: new Date().toISOString(),
+    repoId: crypto.randomUUID(),
+    garbageCollection: { autoDefinitions: "30d" },
+  });
+  const autoDefinitionsDir = join(dir, ".swamp", "auto-definitions");
+  const autoDefinitionRepo = new YamlDefinitionRepository(
+    dir,
+    undefined,
+    autoDefinitionsDir,
+    false,
+  );
+  const definition = Definition.create({
+    name: "idle",
+    type: SYNC_TEST_TYPE.normalized,
+    typeVersion: "2026.01.01.1",
+  });
+  await autoDefinitionRepo.save(SYNC_TEST_TYPE, definition);
+  const path = join(
+    autoDefinitionsDir,
+    SYNC_TEST_TYPE.normalized,
+    "idle.yaml",
+  );
+  const old = new Date(Date.now() - 40 * 86_400_000);
+  await Deno.utime(path, old, old);
+  const idle = { definition, path };
+  const datastoreConfig = {
+    type: "filesystem",
+    path: join(dir, ".swamp"),
+  } as unknown as ConnectionContext["datastoreConfig"];
+  const { ctx } = await createSyncFixture(dir, { syncService: false });
+  const gcCtx = {
+    ...ctx,
+    datastoreConfig,
+    repoContext: {
+      ...ctx.repoContext,
+      autoDefinitionsDir,
+      autoDefinitionRepo,
+      outputRepo: new YamlOutputRepository(dir),
+      evaluatedDefinitionRepo: new YamlEvaluatedDefinitionRepository(dir),
+      workflowRepo: { findAll: () => Promise.resolve([]) },
+    },
+  } as unknown as ConnectionContext;
+  return { ctx: gcCtx, idle, datastoreConfig };
+}
+
+Deno.test("handleRunGc: removes idle auto-definitions when the repository sets autoDefinitions", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx, idle } = await createAutoDefinitionGcFixture(dir);
+    const socket = createMockSocket();
+
+    await handleRunGc(
+      socket,
+      ctx,
+      "req-run-gc",
+      { dryRun: false, workflowRunRetentionDays: 1, outputRetentionDays: 1 },
+      new AbortController(),
+      null,
+    );
+
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.payload.data.autoDefinitionsDeleted, 1);
+    assertEquals(await pathExists(idle.path), false);
+  });
+});
+
+Deno.test("handleRunGc: keeps an idle auto-definition whose model lock a run holds", async () => {
+  await withTempDir(async (dir) => {
+    const { ctx, idle, datastoreConfig } = await createAutoDefinitionGcFixture(
+      dir,
+    );
+    const lock = await createModelLock(
+      datastoreConfig,
+      SYNC_TEST_TYPE.normalized,
+      idle.definition.id,
+    );
+    await lock.acquire();
+    try {
+      const socket = createMockSocket();
+      await handleRunGc(
+        socket,
+        ctx,
+        "req-run-gc",
+        { dryRun: false },
+        new AbortController(),
+        null,
+      );
+      const response = JSON.parse(socket.sent[0]);
+      assertEquals(response.payload.data.autoDefinitionsDeleted, 0);
+      assertEquals(await pathExists(idle.path), true);
+    } finally {
+      await lock.release();
+    }
+  });
 });

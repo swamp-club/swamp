@@ -39,15 +39,19 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { runRepoRetention } from "./run.ts";
 import {
+  type AgedAutoDefinition,
   type AgedOutput,
   type AgedRun,
   DAY_MS,
   type FixtureRunStatus,
   fixtureWorkflow,
   pathExists,
+  saveAgedAutoDefinition,
   saveAgedDataVersions,
   saveAgedOutput,
   saveAgedRun,
@@ -90,6 +94,12 @@ const arbDataName = fc.record({
   ) => [...ages].sort((a, b) => b - a)),
 });
 
+// an auto-definition with or without its own last output
+const arbAutoDefinition = fc.record({
+  ageDays: arbAgeDays,
+  outputAgeDays: fc.option(arbAgeDays, { nil: undefined }),
+});
+
 const arbRetentionDays = fc.option(fc.integer({ min: 1, max: 12 }), {
   nil: undefined,
 });
@@ -98,10 +108,12 @@ const arbScenario = fc.record({
   runs: fc.array(arbRun, { maxLength: 6 }),
   outputs: fc.array(arbOutput, { maxLength: 5 }),
   data: fc.array(arbDataName, { maxLength: 5 }),
+  autoDefinitions: fc.array(arbAutoDefinition, { maxLength: 4 }),
   retention: fc.record({
     workflowRuns: arbRetentionDays,
     outputs: arbRetentionDays,
     data: arbRetentionDays,
+    autoDefinitions: arbRetentionDays,
   }),
   batchSize: fc.integer({ min: 1, max: 4 }),
   // Pass i stops after stops[i] batch checks; after them, passes run free.
@@ -214,7 +226,41 @@ async function checkScenario(scenario: Scenario): Promise<void> {
       ...(scenario.retention.data === undefined
         ? {}
         : { data: `${scenario.retention.data}d` }),
+      ...(scenario.retention.autoDefinitions === undefined
+        ? {}
+        : { autoDefinitions: `${scenario.retention.autoDefinitions}d` }),
     });
+
+    const autoDefinitionsDir = swampPath(repoDir, "auto-definitions");
+    const autoDefinitionRepo = new YamlDefinitionRepository(
+      repoDir,
+      undefined,
+      autoDefinitionsDir,
+      false,
+    );
+    const autoDefinitions: {
+      spec: Scenario["autoDefinitions"][number];
+      saved: AgedAutoDefinition;
+    }[] = [];
+    for (const [i, spec] of scenario.autoDefinitions.entries()) {
+      const saved = await saveAgedAutoDefinition(
+        autoDefinitionRepo,
+        autoDefinitionsDir,
+        OUTPUT_TYPE,
+        `auto-${i}`,
+        spec.ageDays * DAY_MS,
+      );
+      if (spec.outputAgeDays !== undefined) {
+        await saveAgedOutput(
+          outputRepo,
+          OUTPUT_TYPE,
+          spec.outputAgeDays * DAY_MS,
+          { definitionId: saved.definition.id },
+        );
+      }
+      autoDefinitions.push({ spec, saved });
+    }
+    const autoCatalog = new CatalogStore(":memory:");
 
     let complete = false;
     for (let pass = 0; !complete; pass++) {
@@ -222,7 +268,24 @@ async function checkScenario(scenario: Scenario): Promise<void> {
       const stopAfter = scenario.stops[pass];
       let checks = 0;
       const result = await runRepoRetention(
-        { repoDir, runBatch: (fn) => fn() },
+        {
+          repoDir,
+          runBatch: (fn) => fn(),
+          autoDefinitions: {
+            autoDefinitionsDir,
+            autoDefinitionRepo,
+            outputRepo,
+            dataRepo: new FileSystemUnifiedDataRepository(
+              repoDir,
+              undefined,
+              autoCatalog,
+            ),
+            evaluatedDefinitionRepo: new YamlEvaluatedDefinitionRepository(
+              repoDir,
+            ),
+            workflowRepo: { findAll: () => Promise.resolve([]) },
+          },
+        },
         {
           policy,
           batchSize: scenario.batchSize,
@@ -232,6 +295,23 @@ async function checkScenario(scenario: Scenario): Promise<void> {
         },
       );
       complete = result.complete;
+    }
+    autoCatalog.close();
+
+    for (const { spec, saved } of autoDefinitions) {
+      const outputGone = spec.outputAgeDays === undefined ||
+        expired(spec.outputAgeDays, scenario.retention.outputs);
+      const gone = outputGone &&
+        expired(spec.ageDays, scenario.retention.autoDefinitions);
+      assertEquals(
+        await pathExists(saved.path),
+        !gone,
+        `auto-definition ${spec.ageDays}d old, output ${
+          spec.outputAgeDays ?? "-"
+        }d, retention outputs ${scenario.retention.outputs ?? "-"} auto ${
+          scenario.retention.autoDefinitions ?? "-"
+        }`,
+      );
     }
 
     for (const { spec, saved } of runs) {

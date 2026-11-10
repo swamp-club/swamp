@@ -2223,6 +2223,60 @@ Deno.test("modelMethodRun: direct execution proceeds on a different definition t
   assertEquals(seen.every((id) => id === winner.id), true);
 });
 
+Deno.test("modelMethodRun: direct execution refuses a definition created again after its lock was taken", async () => {
+  const nsType = ModelType.create("@myorg/reaped-model");
+  let executed = false;
+  const modelDef: ModelDefinition = {
+    type: nsType,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: () => {
+          executed = true;
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+  // removed between the caller's lookup and its lock: the run creates it again
+  const saved: string[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(null, undefined),
+    lookupDefinition: () => Promise.resolve(null),
+    getModelDef: (type) => {
+      const key = typeof type === "string"
+        ? ModelType.create(type).normalized
+        : type.normalized;
+      return key === nsType.normalized ? modelDef : undefined;
+    },
+    createAndSaveDefinition: (_type, def) => {
+      saved.push(def.id);
+      return Promise.resolve();
+    },
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+  const events = await collect(
+    modelMethodRun(createLibSwampContext(), deps, {
+      modelIdOrName: "my-instance",
+      methodName: "run",
+      inputs: {},
+      lastEvaluated: false,
+      typeArg: "@myorg/reaped-model",
+      definitionName: "my-instance",
+      lockedDefinitionId: "the-reaped-id",
+    }),
+  );
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  if (last.kind === "error") {
+    assertEquals(last.error.code, "definition_changed_under_lock");
+  }
+  assertEquals(executed, false);
+  assertEquals(events.some((event) => event.kind === "executing"), false);
+});
+
 function writtenNames(
   told: readonly [readonly WrittenVersion[], string][],
 ): [string[], string][] {

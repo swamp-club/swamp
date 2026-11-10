@@ -591,6 +591,18 @@ export async function* modelMethodRun(
                 yield prepareFailed({ kind: "error", error: result.error });
                 return;
               }
+              // a definition removed between the caller's lookup and its lock
+              // comes back created under a new id the lock does not cover
+              if (
+                input.lockedDefinitionId !== undefined &&
+                result.definition.id !== input.lockedDefinitionId
+              ) {
+                yield prepareFailed({
+                  kind: "error",
+                  error: definitionChangedUnderLock(input.definitionName),
+                });
+                return;
+              }
 
               if (result.created) {
                 yield {

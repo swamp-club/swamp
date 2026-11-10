@@ -234,7 +234,10 @@ import {
 } from "../data/in_flight_data_writes.ts";
 import { CompositeUnifiedDataRepository } from "../data/composite_data_repository.ts";
 import { CompositeDataQueryService } from "../data/composite_data_query_service.ts";
-import type { ResourceOverrides } from "../definitions/definition.ts";
+import type {
+  DefinitionId,
+  ResourceOverrides,
+} from "../definitions/definition.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
 import {
   fromFileHandle,
@@ -2384,6 +2387,26 @@ export class DefaultStepExecutor implements StepExecutor {
       // a step queued on a sibling's lock must not start its side effect once
       // the run is cancelled; inside the try so the finally still releases
       ctx.signal.throwIfAborted();
+      if (this.stepLockHook) {
+        // removed or replaced between its lookup and this lock; by name first,
+        // which reads one file, by id only when that misses
+        const held = await definitionRepo.findByName(
+          modelType,
+          originalDefinition.name,
+        );
+        if (
+          held?.id !== originalDefinition.id &&
+          await definitionRepo.findById(
+              modelType,
+              originalDefinition.id as DefinitionId,
+            ) === null
+        ) {
+          throw new UserError(
+            `Behavior ${originalDefinition.name} was removed, or removed and created again, while this step waited for its lock: run it again`,
+            "definition_changed_under_lock",
+          );
+        }
+      }
       // Save evaluated arguments with runtime expressions still raw and
       // sensitive values masked or referenced, without forwarded input aliases.
       const persisted = persistEvaluatedDefinition(

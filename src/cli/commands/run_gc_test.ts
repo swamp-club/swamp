@@ -55,3 +55,17 @@ Deno.test("runGcDataFromServer: keeps evaluatedSnapshotsDeleted from a current s
   assertEquals(data.evaluatedSnapshotsDeleted, 4);
   assertEquals(data.evaluatedSnapshotBytesReclaimed, 400);
 });
+
+Deno.test("runGcDataFromServer: defaults the auto-definition fields for a server that omits them", () => {
+  const data = runGcDataFromServer({
+    workflowRunsDeleted: 0,
+    workflowRunBytesReclaimed: 0,
+    outputsDeleted: 0,
+    outputBytesReclaimed: 0,
+    totalBytesReclaimed: 0,
+    dryRun: false,
+  });
+
+  assertEquals(data.autoDefinitionsDeleted, 0);
+  assertEquals(data.autoDefinitions, []);
+});

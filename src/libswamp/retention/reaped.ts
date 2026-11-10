@@ -88,6 +88,7 @@ const REAPED_ITEMS: Record<RetentionKind, string> = {
   data: "data before {cutoff} has",
   audit: "audit records before {cutoff} have",
   bookkeeping: "records before {cutoff} have",
+  autoDefinitions: "auto-definitions idle before {cutoff} have",
 };
 
 export function reapedSuffix(

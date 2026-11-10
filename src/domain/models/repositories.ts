@@ -158,5 +158,13 @@ export interface OutputRepository {
   deleteByMethodLifetime(
     fallbackCutoff: Date,
     options?: { dryRun?: boolean; limit?: number },
-  ): Promise<{ deleted: number; bytesReclaimed: number; more?: boolean }>;
+  ): Promise<
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      more?: boolean;
+      /** on a dry run, the output files it would delete */
+      wouldDelete?: readonly string[];
+    }
+  >;
 }

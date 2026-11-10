@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { EventHandlers } from "../../libswamp/stream.ts";
-import type { RunGcEvent, RunGcPreview } from "../../libswamp/data/run_gc.ts";
+import type {
+  RunGcAutoDefinition,
+  RunGcEvent,
+  RunGcPreview,
+} from "../../libswamp/data/run_gc.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -31,6 +35,15 @@ function formatBytes(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+const LISTED_AUTO_DEFINITIONS = 20;
+
+function autoDefinitionList(removed: readonly RunGcAutoDefinition[]): string {
+  const shown = removed.slice(0, LISTED_AUTO_DEFINITIONS)
+    .map((d) => `${d.name} (${d.type})`).join(", ");
+  const rest = removed.length - LISTED_AUTO_DEFINITIONS;
+  return rest > 0 ? `${shown}, and ${rest} more` : shown;
 }
 
 class LogRunGcRenderer implements Renderer<RunGcEvent> {
@@ -51,6 +64,12 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
           }), ${e.data.evaluatedSnapshotsDeleted} run snapshot(s) (${
             formatBytes(e.data.evaluatedSnapshotBytesReclaimed)
           }), total: ${total} items (${totalBytes})`;
+          if (e.data.autoDefinitionsDeleted > 0) {
+            logger
+              .info`Run GC dry run: would remove ${e.data.autoDefinitionsDeleted} idle auto-definition(s): ${
+              autoDefinitionList(e.data.autoDefinitions)
+            }`;
+          }
           return;
         }
         logger
@@ -61,6 +80,12 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
         }), ${e.data.evaluatedSnapshotsDeleted} run snapshot(s) (${
           formatBytes(e.data.evaluatedSnapshotBytesReclaimed)
         }), total: ${total} items (${totalBytes})`;
+        if (e.data.autoDefinitionsDeleted > 0) {
+          logger
+            .info`Run GC removed ${e.data.autoDefinitionsDeleted} idle auto-definition(s): ${
+            autoDefinitionList(e.data.autoDefinitions)
+          }`;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -84,6 +109,8 @@ class JsonRunGcRenderer implements Renderer<RunGcEvent> {
             evaluatedSnapshotBytesReclaimed:
               e.data.evaluatedSnapshotBytesReclaimed,
             totalBytesReclaimed: e.data.totalBytesReclaimed,
+            autoDefinitionsDeleted: e.data.autoDefinitionsDeleted,
+            autoDefinitions: e.data.autoDefinitions,
             dryRun: e.data.dryRun,
           },
           null,
@@ -123,6 +150,8 @@ export function renderRunGcPreview(
         evaluatedSnapshotBytesReclaimable:
           preview.evaluatedSnapshotBytesReclaimable,
         totalBytesReclaimable: preview.totalBytesReclaimable,
+        autoDefinitionsToDelete: preview.autoDefinitionsToDelete,
+        autoDefinitions: preview.autoDefinitions,
       },
       null,
       2,
@@ -131,15 +160,22 @@ export function renderRunGcPreview(
     const logger = getSwampLogger(["run", "gc"]);
     const total = preview.workflowRunsToDelete + preview.outputsToDelete +
       preview.evaluatedSnapshotsToDelete;
-    if (total === 0) return;
-    logger
-      .info`Run GC preview: ${preview.workflowRunsToDelete} workflow run(s) (${
-      formatBytes(preview.workflowRunBytesReclaimable)
-    }), ${preview.outputsToDelete} output(s) (${
-      formatBytes(preview.outputBytesReclaimable)
-    }), ${preview.evaluatedSnapshotsToDelete} run snapshot(s) (${
-      formatBytes(preview.evaluatedSnapshotBytesReclaimable)
-    }), total: ${formatBytes(preview.totalBytesReclaimable)} reclaimable`;
+    if (total > 0) {
+      logger
+        .info`Run GC preview: ${preview.workflowRunsToDelete} workflow run(s) (${
+        formatBytes(preview.workflowRunBytesReclaimable)
+      }), ${preview.outputsToDelete} output(s) (${
+        formatBytes(preview.outputBytesReclaimable)
+      }), ${preview.evaluatedSnapshotsToDelete} run snapshot(s) (${
+        formatBytes(preview.evaluatedSnapshotBytesReclaimable)
+      }), total: ${formatBytes(preview.totalBytesReclaimable)} reclaimable`;
+    }
+    if (preview.autoDefinitionsToDelete > 0) {
+      logger
+        .info`Run GC preview: ${preview.autoDefinitionsToDelete} idle auto-definition(s) to remove, with their edited arguments: ${
+        autoDefinitionList(preview.autoDefinitions)
+      }`;
+    }
   }
 }
 

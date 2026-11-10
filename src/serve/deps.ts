@@ -91,7 +91,13 @@ import {
   createWorkflowRunClaims,
   type LockProgressWriter,
   type ModelLockResult,
+  tryModelLock,
 } from "../cli/repo_context.ts";
+import {
+  AUTO_DEFINITION_RETENTION_LOCK_WAIT_MS,
+  type AutoDefinitionRetentionSources,
+  autoDefinitionRetentionSourcesOf,
+} from "../libswamp/retention/auto_definitions.ts";
 import {
   extractTraceContext,
   runWithParentTrace,
@@ -746,4 +752,21 @@ async function finishRunTelemetry(
       },
     );
   }
+}
+
+/** serve takes no datastore lock for retention, so a definition a run holds is skipped */
+export function serveAutoDefinitionRetentionSources(
+  repoContext: RepositoryContext,
+  datastoreConfig: DatastoreConfig,
+): AutoDefinitionRetentionSources {
+  return autoDefinitionRetentionSourcesOf(
+    repoContext,
+    (type, id) =>
+      tryModelLock(
+        datastoreConfig,
+        type.normalized,
+        id,
+        AUTO_DEFINITION_RETENTION_LOCK_WAIT_MS,
+      ),
+  );
 }

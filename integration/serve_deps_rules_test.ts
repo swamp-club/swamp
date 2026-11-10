@@ -575,3 +575,35 @@ Deno.test("CLI workflow runs take step locks through workflowStepLockHook, which
       "Violations:\n" + violations.join("\n"),
   );
 });
+
+Deno.test("method runs under a model lock name the definition they locked", async () => {
+  const files = [
+    join(ROOT, "src", "serve", "handlers", "model_handlers.ts"),
+    join(ROOT, "src", "cli", "commands", "model_method_run.ts"),
+  ];
+  const violations: string[] = [];
+  let calls = 0;
+  for (const file of files) {
+    const content = await Deno.readTextFile(file);
+    const rel = normalise(relative(ROOT, file));
+    for (const call of content.matchAll(/(?<!function )\bmodelMethodRun\(/g)) {
+      calls++;
+      const input = callArguments(content, call.index! + call[0].length)[2];
+      if (!input?.includes("lockedDefinitionId")) {
+        violations.push(
+          `${rel}: a modelMethodRun call without lockedDefinitionId`,
+        );
+      }
+    }
+  }
+  assertGreater(calls, 0, "expected to find modelMethodRun calls");
+  assertEquals(
+    violations,
+    [],
+    "A run looks up its definition before it takes the model lock. Retention " +
+      "or a delete can remove the definition in between, and a direct run then " +
+      "creates it again under a new id. Pass the id the lock was taken for as " +
+      "lockedDefinitionId so such a run is refused.\n\nViolations:\n" +
+      violations.join("\n"),
+  );
+});

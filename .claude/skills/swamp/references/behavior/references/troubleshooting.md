@@ -501,6 +501,12 @@ and it also deletes a behavior's latest version once it is older than the
 cutoff. Running and suspended runs, and serve access state (tokens, grants,
 workers), are never removed. Check with `swamp doctor datastores --retention`.
 
+`.swamp/auto-definitions/` growing by one file per run (a workflow giving each
+run its own behavior name) is cleared by the opt-in
+`autoDefinitions: <duration>` key, also applied by `swamp run gc`. It removes an
+auto-definition with no data, no outputs and no literal workflow reference; its
+`behavior edit` arguments are lost and the next run by name gets a new id.
+
 ### Data Versions Not Visible
 
 ```bash

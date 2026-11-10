@@ -68,6 +68,8 @@ import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml
 import { YamlEvaluatedDefinitionRepository } from "../src/infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
+import { YamlOutputRepository } from "../src/infrastructure/persistence/yaml_output_repository.ts";
+import { createAutoDefinitionReaper } from "../src/libswamp/retention/auto_definitions.ts";
 import {
   catalogV3Path,
   readCatalog,
@@ -438,6 +440,57 @@ for (const namespace of ["", "infra"]) {
         await git.delete(TYPE, found.id);
       });
       assertEquals((await env.store.changesSince(0, 10_000)).length, feed);
+      await assertMatches(writer);
+    });
+  });
+
+  Deno.test(`v3 config staging: auto-definition retention commits its removal for ${label} datastore`, async () => {
+    await withAuditedV3Env(async (env) => {
+      const writer = new ConfigWriter(env, namespace);
+      const idle = definition("idle-run");
+      await writer.run(() => writer.autoDefinitions().save(TYPE, idle));
+      const path = join(
+        writer.root,
+        "auto-definitions",
+        TYPE.normalized,
+        `${idle.name}.yaml`,
+      );
+      const old = new Date(Date.now() - 40 * 86_400_000);
+      await Deno.utime(path, old, old);
+      const reaper = createAutoDefinitionReaper({
+        autoDefinitionsDir: join(writer.root, "auto-definitions"),
+        autoDefinitionRepo: writer.autoDefinitions(),
+        outputRepo: new YamlOutputRepository(
+          writer.dir,
+          join(writer.root, "outputs"),
+          writer.hook,
+        ),
+        dataRepo: { findAllForModel: () => Promise.resolve([]) },
+        evaluatedDefinitionRepo: writer.evaluatedDefinitions(),
+        workflowRepo: { findAll: () => Promise.resolve([]) },
+      });
+      const batch = await writer.run(() =>
+        reaper.collectBatch(new Date(Date.now() - 30 * 86_400_000), 10)
+      );
+      assertEquals(batch.removed.map((c) => c.definition.name), ["idle-run"]);
+      await assertMatches(writer);
+      assertEquals(
+        (await commitsOf(
+          writer,
+          partitionOf({ kind: "definition", id: idle.id }),
+        ))
+          .at(-1)?.ops.map((op) =>
+            op.kind === "tombstone" ? op.intent.kind : op.kind
+          ),
+        ["auto-definition.delete"],
+      );
+      const recreated = await writer.run(async () => {
+        const auto = writer.autoDefinitions();
+        await auto.save(TYPE, definition("idle-run"));
+        return await auto.findByName(TYPE, "idle-run");
+      });
+      assert(recreated);
+      assert(recreated.id !== idle.id);
       await assertMatches(writer);
     });
   });

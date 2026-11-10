@@ -711,6 +711,7 @@ import {
   RetentionGcService,
 } from "../../serve/retention_gc_service.ts";
 import { runRepoRetention } from "../../libswamp/retention/run.ts";
+import { serveAutoDefinitionRetentionSources } from "../../serve/deps.ts";
 import { withSharedSyncGate, withSyncGate } from "../../serve/sync_gate.ts";
 import { GcMutex } from "../../serve/gc_mutex.ts";
 import { takeRetentionCandidate } from "../retention_candidate.ts";
@@ -9631,6 +9632,10 @@ export const serveCommand = new Command()
               workflowRunRepo: repoContext.workflowRunRepo,
             },
             watermarks: repoContext.retentionWatermarks,
+            autoDefinitions: serveAutoDefinitionRetentionSources(
+              repoContext,
+              datastoreConfig,
+            ),
             // The gate is taken per batch, never for the whole pass, so
             // handler mutations and worker writes wait one batch at most.
             runBatch: (fn) =>
