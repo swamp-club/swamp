@@ -92,7 +92,11 @@ Deno.test("datastore setup migration: every file either moves intact or stays re
         assertEquals(result.errors, []);
         const verification = await verifyMigration(source, dest, config);
         assert(verification.valid, JSON.stringify(verification));
-        await createDatastoreSetupDeps(source, () => Promise.resolve(undefined))
+        await createDatastoreSetupDeps(
+          source,
+          () => Promise.resolve(undefined),
+          (_repoDir, value) => Promise.resolve(value),
+        )
           .cleanupSourceDirs(source, result.directoriesMigrated);
 
         for (const file of files) {

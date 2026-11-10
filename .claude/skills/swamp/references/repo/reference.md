@@ -508,6 +508,14 @@ work (native `local_encryption` and extension providers like `@swamp/aws-sm`).
   config stores vault configurations in the datastore tier, creating a circular
   dependency. Use environment variable expressions instead.
 
+**In setup** — `swamp datastore setup extension --config` accepts the same
+expressions. Setup resolves them to validate, verify and migrate, and writes the
+unresolved expressions to `.swamp.yaml`, so pass a secret as
+`${{ vault.get(...) }}` or `${{ env.VAR }}` rather than as a literal. An unset
+variable or unknown vault fails setup before anything changes. Setup through
+serve (`--server`) refuses a config holding expressions; run it locally on the
+repo's host instead.
+
 ### Namespaces (Multi-Repo Datastores)
 
 When multiple repos share a remote datastore, each must own a **namespace** to

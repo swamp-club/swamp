@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { hostname } from "node:os";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
@@ -71,6 +76,7 @@ import {
   serveDatastoreSetupDeps,
 } from "./admin_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { UserError } from "../../domain/errors.ts";
 
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
@@ -1607,6 +1613,28 @@ Deno.test("serveDatastoreSetupDeps: marks the open catalog for rebuild instead o
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("serveDatastoreSetupDeps: refuses expressions in a client's config instead of resolving them", async () => {
+  const deps = serveDatastoreSetupDeps("/unused", { invalidate: () => {} });
+  for (
+    const config of [
+      { auth: { clientSecret: "${{ env.AZURE_CLIENT_SECRET }}" } },
+      { endpoints: ["https://${{ vault.get(infra, host) }}/api"] },
+    ]
+  ) {
+    await assertRejects(
+      () => deps.resolveConfigExpressions("/unused", config),
+      UserError,
+      "does not resolve expressions in the config",
+    );
+  }
+});
+
+Deno.test("serveDatastoreSetupDeps: passes a config without expressions through unchanged", async () => {
+  const deps = serveDatastoreSetupDeps("/unused", { invalidate: () => {} });
+  const config = { bucket: "my-bucket", region: "us-east-1", retries: 3 };
+  assertEquals(await deps.resolveConfigExpressions("/unused", config), config);
 });
 
 const LEASE_VIEWER: Principal = { kind: "user", id: "viewer" };

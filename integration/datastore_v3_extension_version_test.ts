@@ -167,6 +167,7 @@ Deno.test("v3 bucket extension version: setup refuses a current extension the co
     const deps = createDatastoreSetupDeps(
       repo,
       () => Promise.resolve(undefined),
+      (_repoDir, value) => Promise.resolve(value),
     );
     const lockfileDir = join(repo, "extensions", "models");
     await Deno.mkdir(lockfileDir, { recursive: true });

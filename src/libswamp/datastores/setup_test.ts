@@ -72,6 +72,7 @@ function makeDeps(
 ): DatastoreSetupDeps {
   return {
     requireUpgradedRepo: () => Promise.resolve(),
+    resolveConfigExpressions: (_repoDir, config) => Promise.resolve(config),
     assertV3CacheContained: () => Promise.resolve(),
     verifyPath: () => Promise.resolve({ healthy: true, message: "ok" }),
     ensureDir: () => Promise.resolve(),
@@ -802,6 +803,86 @@ Deno.test("datastoreSetupExtension: skip-migration never marks the cache dirty",
   );
 
   assertEquals(calls, ["pullChanged"]);
+});
+
+Deno.test("datastoreSetupExtension: validates and connects with the resolved config but persists the expressions", async () => {
+  const type = `test-ext-resolve-${crypto.randomUUID()}`;
+  const providerConfigs: Record<string, unknown>[] = [];
+  datastoreTypeRegistry.register({
+    type,
+    name: `Test ${type}`,
+    description: "Test extension datastore",
+    isBuiltIn: false,
+    configSchema: z.object({ bucket: z.string().regex(/^[a-z-]+$/) }),
+    createProvider: (config) => {
+      providerConfigs.push(config);
+      return createStubProvider();
+    },
+  });
+  const persisted: Record<string, unknown>[] = [];
+  const deps = makeDeps({
+    resolveConfigExpressions: (_repoDir, config) =>
+      Promise.resolve({ ...config, bucket: "resolved-bucket" }),
+    updateRepoConfig: (_repoDir, datastoreConfig) => {
+      persisted.push(datastoreConfig);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({
+        type,
+        config: { bucket: "${{ env.BUCKET }}" },
+      }),
+    ),
+  );
+
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(providerConfigs, [{ bucket: "resolved-bucket" }]);
+  assertEquals(persisted.length, 1);
+  assertEquals(persisted[0].config, { bucket: "${{ env.BUCKET }}" });
+});
+
+Deno.test("datastoreSetupExtension: a config that does not resolve stops setup before a provider or config write", async () => {
+  const type = `test-ext-unresolved-${crypto.randomUUID()}`;
+  let providersCreated = 0;
+  datastoreTypeRegistry.register({
+    type,
+    name: `Test ${type}`,
+    description: "Test extension datastore",
+    isBuiltIn: false,
+    createProvider: () => {
+      providersCreated++;
+      return createStubProvider();
+    },
+  });
+  let configUpdated = false;
+  const deps = makeDeps({
+    resolveConfigExpressions: () =>
+      Promise.reject(new UserError("Environment variable is not set")),
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type }),
+    ),
+  );
+
+  const last = events.at(-1) as Extract<DatastoreSetupEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertEquals(last.error.message, "Environment variable is not set");
+  assertEquals(providersCreated, 0);
+  assertEquals(configUpdated, false);
 });
 
 Deno.test("datastoreSetupExtension: markDirty failure blocks the push, config update and cleanup", async () => {
@@ -1613,6 +1694,8 @@ async function readDatastoreBlock(
 }
 
 const noTier = () => Promise.resolve(undefined);
+const unresolvedConfig = (_repoDir: string, config: Record<string, unknown>) =>
+  Promise.resolve(config);
 
 Deno.test("createDatastoreSetupDeps.updateRepoConfig: keeps managedConfig and exclude for a filesystem block", async () => {
   await withSetupTempDir(async (repoDir) => {
@@ -1622,7 +1705,7 @@ Deno.test("createDatastoreSetupDeps.updateRepoConfig: keeps managedConfig and ex
       managedConfig: true,
       exclude: ["*.tmp"],
     });
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
 
     await deps.updateRepoConfig(repoDir, {
       type: "filesystem",
@@ -1646,7 +1729,7 @@ Deno.test("createDatastoreSetupDeps.updateRepoConfig: keeps managedConfig for an
       namespace: "ns",
       managedConfig: true,
     });
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
 
     await deps.updateRepoConfig(repoDir, {
       type: "@swamp/s3-datastore",
@@ -1667,7 +1750,7 @@ Deno.test("createDatastoreSetupDeps.resolveInRepoConfigRole: classifies from the
     const unmanagedDeps = createDatastoreSetupDeps(repoDir, () => {
       resolverCalls++;
       return Promise.resolve(inRepoConfig);
-    });
+    }, unresolvedConfig);
     assertEquals(
       await unmanagedDeps.resolveInRepoConfigRole(repoDir),
       "unmanaged",
@@ -1683,11 +1766,12 @@ Deno.test("createDatastoreSetupDeps.resolveInRepoConfigRole: classifies from the
       await createDatastoreSetupDeps(
         repoDir,
         () => Promise.resolve(inRepoConfig),
+        unresolvedConfig,
       ).resolveInRepoConfigRole(repoDir),
       "tier",
     );
     assertEquals(
-      await createDatastoreSetupDeps(repoDir, noTier)
+      await createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig)
         .resolveInRepoConfigRole(repoDir),
       "instance_local",
     );
@@ -1702,7 +1786,7 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: leaves a kept path inside
       "x",
     );
     await writeTestFile(join(dir, "data", "a.json"), "{}");
-    const deps = createDatastoreSetupDeps(dir, noTier);
+    const deps = createDatastoreSetupDeps(dir, noTier, unresolvedConfig);
 
     await deps.cleanupSourceDirs(dir, ["config", "data"], [
       join("config", "pulled-extensions"),
@@ -1730,7 +1814,7 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: never deletes through a s
     const source = join(dir, "source");
     await Deno.mkdir(source, { recursive: true });
     await Deno.symlink(target, join(source, "config"), { type: "dir" });
-    const deps = createDatastoreSetupDeps(source, noTier);
+    const deps = createDatastoreSetupDeps(source, noTier, unresolvedConfig);
 
     await deps.cleanupSourceDirs(source, ["config"], [
       join("config", "pulled-extensions"),
@@ -1757,7 +1841,7 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: removes only the link for
     const source = join(dir, "source");
     await Deno.mkdir(source, { recursive: true });
     await Deno.symlink(target, join(source, "data"), { type: "dir" });
-    const deps = createDatastoreSetupDeps(source, noTier);
+    const deps = createDatastoreSetupDeps(source, noTier, unresolvedConfig);
 
     await deps.cleanupSourceDirs(source, ["data"], [
       join("config", "pulled-extensions"),
@@ -1784,7 +1868,7 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: keeps run logs and remove
     );
     await writeTestFile(join(dir, "workflow-runs", "wf2", "r3.yaml"), "r");
     await writeTestFile(join(dir, "data", "notes.log"), "data");
-    const deps = createDatastoreSetupDeps(dir, noTier);
+    const deps = createDatastoreSetupDeps(dir, noTier, unresolvedConfig);
 
     await deps.cleanupSourceDirs(dir, ["outputs", "workflow-runs", "data"]);
 
@@ -1815,7 +1899,7 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: removes a symlinked dir u
     await Deno.symlink(target, join(source, "outputs", "linked"), {
       type: "dir",
     });
-    const deps = createDatastoreSetupDeps(source, noTier);
+    const deps = createDatastoreSetupDeps(source, noTier, unresolvedConfig);
 
     await deps.cleanupSourceDirs(source, ["outputs"]);
 
@@ -1891,6 +1975,7 @@ Deno.test("datastoreSetupExtension: leaves the remote config tier and the instan
     const deps = createDatastoreSetupDeps(
       repoDir,
       () => Promise.resolve(join(cacheDir, "config")),
+      unresolvedConfig,
     );
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupExtension(createLibSwampContext(), deps, {
@@ -1959,6 +2044,7 @@ Deno.test("datastoreSetupFilesystem: moves an in-repo config tier but keeps the 
     const deps = createDatastoreSetupDeps(
       repoDir,
       () => Promise.resolve(join(repoDir, ".swamp", "config")),
+      unresolvedConfig,
     );
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(createLibSwampContext(), deps, {
@@ -2016,6 +2102,7 @@ Deno.test("datastoreSetupFilesystem: leaves an instance-local config dir behind"
     const deps = createDatastoreSetupDeps(
       repoDir,
       () => Promise.resolve(join(tmp, "old", "config")),
+      unresolvedConfig,
     );
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(createLibSwampContext(), deps, {
@@ -2542,7 +2629,7 @@ Deno.test("createDatastoreSetupDeps.inspectManagedConfigTier: reads the tier .sw
     const deps = createDatastoreSetupDeps(repoDir, () => {
       resolverCalls++;
       return Promise.resolve(tierPath);
-    });
+    }, unresolvedConfig);
 
     await writeMarker(repoDir, { type: "filesystem", path: "/x" });
     assertEquals(await deps.inspectManagedConfigTier(repoDir), {
@@ -2577,7 +2664,7 @@ Deno.test("createDatastoreSetupDeps.inspectManagedConfigTier: reads the tier .sw
     });
 
     assertEquals(
-      await createDatastoreSetupDeps(repoDir, noTier)
+      await createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig)
         .inspectManagedConfigTier(repoDir),
       { managed: true, tierPath: undefined, populated: false },
     );
@@ -2648,6 +2735,7 @@ function inRepoTierDeps(repoDir: string): DatastoreSetupDeps {
   return createDatastoreSetupDeps(
     repoDir,
     () => Promise.resolve(join(repoDir, ".swamp", "config")),
+    unresolvedConfig,
   );
 }
 
@@ -2971,7 +3059,7 @@ Deno.test("createDatastoreSetupDeps.listConfigTierConflicts: lists shared files,
     await writeTestFile(join(realLocal, "dir-vs-file", "child.yaml"), "x");
     await writeTestFile(join(dest, "dir-vs-file"), "x");
 
-    const deps = createDatastoreSetupDeps(tmp, noTier);
+    const deps = createDatastoreSetupDeps(tmp, noTier, unresolvedConfig);
     const conflicts = await deps.listConfigTierConflicts(local, dest);
     conflicts.sort((a, b) => a.path.localeCompare(b.path));
 
@@ -3009,7 +3097,11 @@ for (
       // The repo is reached through a symlink; the destination names the
       // real path, so only a real-path comparison sees they are the same.
       const calls: string[] = [];
-      const deps = createDatastoreSetupDeps(linkedRepo, noTier);
+      const deps = createDatastoreSetupDeps(
+        linkedRepo,
+        noTier,
+        unresolvedConfig,
+      );
       const events = await collect<DatastoreSetupEvent>(
         datastoreSetupFilesystem(
           createLibSwampContext(),
@@ -3062,7 +3154,7 @@ Deno.test("datastoreSetupFilesystem: a destination other than .swamp still migra
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         { datastorePath, repoDir, skipMigration: false },
       ),
     );
@@ -3085,7 +3177,7 @@ Deno.test({
       await writeTestFile(join(dest, "m.yaml"), "same");
       await Deno.chmod(join(local, "m.yaml"), 0o000);
       try {
-        const deps = createDatastoreSetupDeps(tmp, noTier);
+        const deps = createDatastoreSetupDeps(tmp, noTier, unresolvedConfig);
         assertEquals(await deps.listConfigTierConflicts(local, dest), [
           { path: "m.yaml", differs: true },
         ]);
@@ -3343,7 +3435,7 @@ Deno.test("datastoreSetupFilesystem: does not warn about a local default vault",
 
 Deno.test("createDatastoreSetupDeps.findLocalDefaultVault: names a local_encryption default vault only", async () => {
   await withSetupTempDir(async (repoDir) => {
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
     const markerRepo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(repoDir);
     await markerRepo.write(repoPath, {
@@ -3393,7 +3485,7 @@ Deno.test("datastoreSetupFilesystem: moving back to .swamp copies from the exter
   await withSetupTempDir(async (tmp) => {
     const { repoDir, external } = await writeMovedOutRepo(tmp);
     const swampDir = join(repoDir, ".swamp");
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
     let catalogAtInvalidation: string | undefined;
 
     const events = await collect<DatastoreSetupEvent>(
@@ -3461,7 +3553,7 @@ Deno.test("datastoreSetupFilesystem: moving between external paths copies from t
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           datastorePath: next,
           repoDir,
@@ -3498,7 +3590,7 @@ Deno.test("datastoreSetupFilesystem: a missing external datastore stops setup wi
     await writeMarker(repoDir, { type: "filesystem", path: external });
     await writeTestFile(join(repoDir, ".swamp", "data", "_catalog.db"), "live");
     const calls: string[] = [];
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
 
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
@@ -3549,7 +3641,7 @@ Deno.test("datastoreSetupFilesystem: --skip-migration switches off a missing ext
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           datastorePath: join(repoDir, ".swamp"),
           repoDir,
@@ -3571,7 +3663,7 @@ Deno.test("datastoreSetupFilesystem: setup onto the current external datastore m
   await withSetupTempDir(async (tmp) => {
     const { repoDir, external } = await writeMovedOutRepo(tmp);
     const calls: string[] = [];
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
 
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
@@ -3618,7 +3710,7 @@ Deno.test("datastoreSetupFilesystem: refuses a destination inside a migrated sub
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           datastorePath: nested,
           repoDir,
@@ -3649,7 +3741,7 @@ Deno.test("datastoreSetupFilesystem: a destination elsewhere inside .swamp still
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         { datastorePath: store, repoDir, skipMigration: false },
       ),
     );
@@ -3685,6 +3777,7 @@ Deno.test("datastoreSetupFilesystem: moving back moves an external managed confi
         createDatastoreSetupDeps(
           repoDir,
           () => Promise.resolve(join(external, "config")),
+          unresolvedConfig,
         ),
         {
           datastorePath: swampDir,
@@ -3720,7 +3813,7 @@ Deno.test("datastoreSetupExtension: moving to an extension datastore pushes from
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupExtension(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           type,
           config: {},
@@ -3765,7 +3858,7 @@ Deno.test("datastoreSetupExtension: a missing external datastore stops setup bef
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupExtension(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           type,
           config: {},
@@ -3793,7 +3886,7 @@ Deno.test("datastoreSetupFilesystem: an empty external datastore root (an unmoun
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           datastorePath: join(repoDir, ".swamp"),
           repoDir,
@@ -3828,7 +3921,7 @@ Deno.test("datastoreSetupExtension: an empty external datastore root (an unmount
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupExtension(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           type,
           config: {},
@@ -4094,7 +4187,7 @@ Deno.test("datastoreSetupExtension: leaves the audit trail and run logs in .swam
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupExtension(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           type,
           config: {},
@@ -4159,7 +4252,7 @@ Deno.test("datastoreSetupFilesystem: format 3 after namespace set creates a name
       const events = await collect<DatastoreSetupEvent>(
         datastoreSetupFilesystem(
           createLibSwampContext(),
-          createDatastoreSetupDeps(repoDir, noTier),
+          createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
           {
             datastorePath,
             repoDir,
@@ -4193,7 +4286,7 @@ Deno.test("datastoreSetupFilesystem: format 3 after namespace set still refuses 
       const events = await collect<DatastoreSetupEvent>(
         datastoreSetupFilesystem(
           createLibSwampContext(),
-          createDatastoreSetupDeps(repoDir, noTier),
+          createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
           {
             datastorePath: join(tmp, "v3"),
             repoDir,
@@ -4227,7 +4320,7 @@ Deno.test("datastoreSetupFilesystem: v2 setup after namespace set keeps the name
       const events = await collect<DatastoreSetupEvent>(
         datastoreSetupFilesystem(
           createLibSwampContext(),
-          createDatastoreSetupDeps(repoDir, noTier),
+          createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
           {
             datastorePath,
             repoDir,
@@ -4269,7 +4362,7 @@ Deno.test("datastoreSetupFilesystem: v2 setup after namespace set refuses while 
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           datastorePath,
           repoDir,
@@ -4303,7 +4396,7 @@ Deno.test("datastoreSetupFilesystem: v2 setup after namespace set leaves instanc
       join(repoDir, ".swamp", "config", "pulled-extensions", "x", "mod.ts"),
       "export {};",
     );
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
 
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
@@ -4345,7 +4438,7 @@ Deno.test("datastoreSetupFilesystem: v2 setup after namespace set refuses a name
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           datastorePath,
           repoDir,
@@ -4383,7 +4476,7 @@ Deno.test("datastoreSetupExtension: setup after namespace set completes and keep
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupExtension(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           type,
           config: {},
@@ -4419,7 +4512,7 @@ Deno.test("datastoreSetupExtension: setup after namespace set refuses while .swa
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupExtension(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, noTier),
+        createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
         {
           type,
           config: {},
@@ -4728,7 +4821,7 @@ Deno.test("datastoreSetupFilesystem: a lost marker is refused unless setup is --
 
 Deno.test("createDatastoreSetupDeps: a lost marker beside an unrelated SQLite commits.db is refused as a v3 target (swamp-club#3617)", async () => {
   await withSetupTempDir(async (repoDir) => {
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
     const target = join(repoDir, "v3");
     await Deno.mkdir(target);
     // An SQLite file that is no commit log: user_version 0, no tables.
@@ -4742,7 +4835,7 @@ Deno.test("createDatastoreSetupDeps: a lost marker beside an unrelated SQLite co
 
 Deno.test("createDatastoreSetupDeps: a lost-marker skeleton is refused as a setup target and taken by the v3 target check (swamp-club#3617)", async () => {
   await withSetupTempDir(async (repoDir) => {
-    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const deps = createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig);
     const target = join(repoDir, "v3");
     await initializeV3Datastore(target, "test");
     await Deno.remove(join(target, "datastore-format.json"));
@@ -4848,7 +4941,7 @@ Deno.test("datastoreSetupFilesystem: format 3 refuses a checkout whose .swamp/da
     let created = false;
     const saved: unknown[] = [];
     const deps: DatastoreSetupDeps = {
-      ...createDatastoreSetupDeps(repoDir, noTier),
+      ...createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
       currentDatastore: () => Promise.resolve({ engine: "v2" }),
       createV3Datastore: () => {
         created = true;
@@ -4896,7 +4989,7 @@ Deno.test("datastoreSetupFilesystem: format 3 accepts a .swamp/data link that st
     });
     let created = false;
     const deps: DatastoreSetupDeps = {
-      ...createDatastoreSetupDeps(repoDir, noTier),
+      ...createDatastoreSetupDeps(repoDir, noTier, unresolvedConfig),
       currentDatastore: () => Promise.resolve({ engine: "v2" }),
       createV3Datastore: () => {
         created = true;

@@ -42,7 +42,10 @@ import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { registerTestDatastoreType } from "../src/infrastructure/testing/test_datastore_type.ts";
-import { resolveConfigTierPath } from "../src/cli/resolve_datastore.ts";
+import {
+  resolveConfigTierPath,
+  resolveSetupConfigExpressions,
+} from "../src/cli/resolve_datastore.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   createDatastoreSetupDeps,
@@ -262,7 +265,11 @@ Deno.test("datastore format guard: setup onto a remote datastore with a newer fo
       const events = await collect(
         datastoreSetupExtension(
           createLibSwampContext(),
-          createDatastoreSetupDeps(repos.repoA, resolveConfigTierPath),
+          createDatastoreSetupDeps(
+            repos.repoA,
+            resolveConfigTierPath,
+            resolveSetupConfigExpressions,
+          ),
           {
             type: target.typeName,
             config: { bucket: "b" },

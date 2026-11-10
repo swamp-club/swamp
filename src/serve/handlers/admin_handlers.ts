@@ -279,6 +279,7 @@ import {
 import { normalizeOwnerAddress } from "../../domain/datastore_v3/datastore_owner.ts";
 import type { DatastoreClaimPayload } from "../protocol.ts";
 import { UserError } from "../../domain/errors.ts";
+import { containsExpressions } from "../../domain/expressions/contains_expressions.ts";
 import { createDefaultExtensionArchiveCache } from "../../infrastructure/persistence/extension_archive_cache.ts";
 
 const MAX_LISTED_ACCEPTED_QUARANTINE = 50;
@@ -1565,6 +1566,27 @@ export async function handleExtensionUpdate(
 }
 
 /**
+ * the config is client text, and resolving it would read the server's env and
+ * vaults on the client's behalf without checking the client may read them
+ */
+function refuseClientConfigExpressions(
+  _repoDir: string,
+  config: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (containsExpressions(config)) {
+    return Promise.reject(
+      new UserError(
+        "Datastore setup through serve does not resolve expressions in the " +
+          "config. Run the setup locally on the host that holds the " +
+          "repository (for example, swamp datastore setup extension without " +
+          "--server). Nothing was changed.",
+      ),
+    );
+  }
+  return Promise.resolve(config);
+}
+
+/**
  * serve holds the catalog open, so setup marks it for a rebuild instead of
  * deleting files: a delete fails on Windows after .swamp.yaml is written, and
  * on POSIX the open connection would unlink the rebuilt WAL
@@ -1574,7 +1596,11 @@ export function serveDatastoreSetupDeps(
   catalogStore: Pick<CatalogStore, "invalidate">,
 ): DatastoreSetupDeps {
   return {
-    ...createDatastoreSetupDeps(repoDir, resolveConfigTierPath),
+    ...createDatastoreSetupDeps(
+      repoDir,
+      resolveConfigTierPath,
+      refuseClientConfigExpressions,
+    ),
     invalidateCatalog: () => {
       catalogStore.invalidate();
       return Promise.resolve();

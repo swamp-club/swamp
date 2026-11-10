@@ -26,7 +26,11 @@
 import { isAbsolute, join, resolve } from "@std/path";
 import { dirHasFiles } from "../infrastructure/persistence/directory_merge.ts";
 import { getLogger } from "@logtape/logtape";
-import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
+import {
+  type RepoMarkerData,
+  RepoMarkerRepository,
+} from "../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../domain/repo/repo_path.ts";
 import {
   type DatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
@@ -529,6 +533,26 @@ export async function resolveConfigTierPath(
     logger.debug`Could not resolve the current config tier: ${message}`;
     return undefined;
   }
+}
+
+/**
+ * the marker's managedConfig gates vault expressions here as it does at load;
+ * setup keeps that key, so what resolves now resolves on the next startup
+ */
+export async function resolveSetupConfigExpressions(
+  repoDir: string,
+  config: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoDir),
+  );
+  return await resolveDatastoreExpressions(config, {
+    repoDir,
+    managedConfig: await resolveManagedConfig(
+      marker?.datastore?.managedConfig,
+      repoDir,
+    ),
+  });
 }
 
 export async function checkUnmigratedNamespaceData(

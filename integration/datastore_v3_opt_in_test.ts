@@ -35,7 +35,10 @@ import {
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
 } from "../src/cli/repo_context.ts";
-import { resolveConfigTierPath } from "../src/cli/resolve_datastore.ts";
+import {
+  resolveConfigTierPath,
+  resolveSetupConfigExpressions,
+} from "../src/cli/resolve_datastore.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
 import {
@@ -110,9 +113,14 @@ function setupV3(repoDir: string, datastorePath: string) {
   return collect<DatastoreSetupEvent>(
     datastoreSetupFilesystem(
       createLibSwampContext(),
-      createDatastoreSetupDeps(repoDir, resolveConfigTierPath, {
-        swampVersion: "test-version",
-      }),
+      createDatastoreSetupDeps(
+        repoDir,
+        resolveConfigTierPath,
+        resolveSetupConfigExpressions,
+        {
+          swampVersion: "test-version",
+        },
+      ),
       {
         datastorePath,
         repoDir,
@@ -645,7 +653,11 @@ Deno.test("v3 opt-in: setup refuses to move a repo off its v3 datastore, to v2 o
     const toV2 = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, resolveConfigTierPath),
+        createDatastoreSetupDeps(
+          repoDir,
+          resolveConfigTierPath,
+          resolveSetupConfigExpressions,
+        ),
         {
           datastorePath: join(dir, "v2"),
           repoDir,
@@ -710,7 +722,11 @@ Deno.test("v3 opt-in: a v2 setup onto an existing v3 datastore is refused, chang
     const events = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, resolveConfigTierPath),
+        createDatastoreSetupDeps(
+          repoDir,
+          resolveConfigTierPath,
+          resolveSetupConfigExpressions,
+        ),
         { datastorePath, repoDir, skipMigration: false },
       ),
     );
