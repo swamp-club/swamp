@@ -129,12 +129,8 @@ function normalizeLine(line: string): string {
 export function headerStatus(content: string): HeaderStatus {
   const { rest } = splitShebang(content);
   if (rest.startsWith(HEADER)) return "ok";
-  const lines = rest.split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("//")) break;
-    if (line.includes(MARKER_TEXT)) return "malformed";
-  }
-  return "missing";
+  // Anywhere, not just the top: prepending above a displaced header stacks two.
+  return rest.includes(MARKER_TEXT) ? "malformed" : "missing";
 }
 
 export function applyHeader(content: string): HeaderResult {
@@ -167,8 +163,9 @@ export function applyHeader(content: string): HeaderResult {
   // comment; rewriting either guess risks a stacked header or a lost comment.
   const next = lines[matched];
   if (
-    matched < HEADER_LINES.length && next !== undefined &&
-    next.startsWith("//")
+    matched === 0 ||
+    (matched < HEADER_LINES.length && next !== undefined &&
+      next.startsWith("//"))
   ) {
     return { kind: "unrepairable", content };
   }
