@@ -104,9 +104,9 @@ export class AccessDataPoller {
   readonly #reloadEveryCycle: boolean;
   readonly #reloading: string;
   readonly #catalogInvalidate: () => void;
-  readonly #pollIntervalMs: number;
+  #pollIntervalMs: number;
   readonly #namespace?: string;
-  readonly #gateTiming: PollerGateTiming;
+  #gateTiming: PollerGateTiming;
   readonly #gateState: PollerGateState = { consecutiveSkips: 0 };
   #stopController = new AbortController();
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -151,6 +151,18 @@ export class AccessDataPoller {
       logger
         .info`Access data poller for the ${this.#reloading} started (interval: ${intervalSec}s)`;
     }
+  }
+
+  setPollIntervalMs(pollIntervalMs: number | undefined): void {
+    this.#pollIntervalMs = pollIntervalMs ??
+      DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS;
+    this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);
+    if (this.#timer === null) return;
+    clearInterval(this.#timer);
+    this.#timer = setInterval(() => {
+      this.#poll();
+    }, this.#pollIntervalMs);
+    Deno.unrefTimer(this.#timer);
   }
 
   async stop(): Promise<void> {

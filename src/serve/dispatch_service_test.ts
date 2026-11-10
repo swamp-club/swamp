@@ -29,6 +29,7 @@ import { z } from "zod";
 import {
   AffinityPlacementMismatchError,
   BUILTIN_BUNDLE_PREFIX,
+  DEFAULT_QUEUE_TIMEOUT_MS,
   type DispatchGateway,
   DispatchService,
   withWrittenVersions,
@@ -3625,6 +3626,15 @@ Deno.test("DispatchService: a worker gone before its frame is built sends the st
   assertEquals(h.dispatchCalls.length, 1);
 });
 
+Deno.test("DispatchService.queueTimeoutMs: reports the reloaded value, and the default when cleared", () => {
+  const h = createHarness({ queueTimeoutMs: 600_000 });
+  assertEquals(h.service.queueTimeoutMs, 600_000);
+  h.service.setQueueTimeoutMs(100);
+  assertEquals(h.service.queueTimeoutMs, 100);
+  h.service.setQueueTimeoutMs(undefined);
+  assertEquals(h.service.queueTimeoutMs, DEFAULT_QUEUE_TIMEOUT_MS);
+});
+
 Deno.test("DispatchService.setQueueTimeoutMs: a new dispatch uses the reloaded serve-level timeout", async () => {
   const h = createHarness({ queueTimeoutMs: 600_000 });
   h.service.setQueueTimeoutMs(100);
@@ -3638,4 +3648,31 @@ Deno.test("DispatchService.setQueueTimeoutMs: a new dispatch uses the reloaded s
     Error,
     "Timed out waiting for a worker matching",
   );
+});
+
+Deno.test("DispatchService.setDispatchEnvAllow: the next dispatch ships the reloaded allow list", async () => {
+  const service = new DispatchService({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    dispatches: new DispatchRegistry(),
+    bundles: new BundleRegistry(),
+    runModelMethod: () => Promise.resolve(),
+  });
+  const calls: DispatchParams[] = [];
+  service.bindGateway({
+    workers: () => [snapshot({ name: "w1" })],
+    worker: () => snapshot({ name: "w1" }),
+    dispatch: (_name, params) => {
+      calls.push(params);
+      return Promise.resolve({
+        status: "success",
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+      });
+    },
+  });
+  service.setDispatchEnvAllow([]);
+  await service.executeRemote(stepRequest());
+  assertEquals(calls[0].environmentSnapshot, {});
 });

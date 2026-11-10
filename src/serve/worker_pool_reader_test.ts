@@ -356,6 +356,22 @@ Deno.test("createServeWorkerPoolReader: lists worker records in this namespace o
   ]);
 });
 
+Deno.test("ServeWorkerPoolReader: reads serve's queue timeout from a function each time, so a reload reaches it", () => {
+  let live = 600_000;
+  const pool = createServeWorkerPoolReader({
+    gateway: {
+      workers: () => [],
+      readTokenRecords: () => Promise.resolve(new Map()),
+    },
+    query: () => Promise.resolve([]),
+    namespace: "team-a",
+    queueTimeoutMs: () => live,
+  });
+  assertEquals(pool.queueTimeoutMs, 600_000);
+  live = 60_000;
+  assertEquals(pool.queueTimeoutMs, 60_000);
+});
+
 Deno.test("ServeWorkerPoolReader: carries serve's queue timeout, and none when serve gave none", () => {
   assertEquals(reader({ queueTimeoutMs: 600_000 }).queueTimeoutMs, 600_000);
   assertEquals(reader({}).queueTimeoutMs, undefined);

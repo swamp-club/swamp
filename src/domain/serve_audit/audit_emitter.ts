@@ -107,7 +107,7 @@ export class AuditEmitter {
   readonly #cursors: Map<string, number> = new Map();
   readonly #deniedRequests = new Set<string>();
   readonly #chainState: AuditChainState;
-  readonly #policy: AuditPolicy | undefined;
+  #policy: AuditPolicy | undefined;
   readonly #hmacContext: HmacContext | undefined;
   readonly #hmacKeyRegistry: HmacKeyRegistry | undefined;
   #alertEngine: AlertRuleEngine | undefined;
@@ -182,6 +182,11 @@ export class AuditEmitter {
 
   set alertEngine(engine: AlertRuleEngine | undefined) {
     this.#alertEngine = engine;
+  }
+
+  /** an event already queued keeps the decision made when it was emitted */
+  setPolicy(policy: AuditPolicy | undefined): void {
+    this.#policy = policy;
   }
 
   droppedEvents(sinkName: string): number {

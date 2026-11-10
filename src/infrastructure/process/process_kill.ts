@@ -82,6 +82,65 @@ export async function findChildPids(ppid: number): Promise<number[]> {
   }
 }
 
+export type PsRunner = (
+  args: readonly string[],
+  env: Readonly<Record<string, string>>,
+) => Promise<{ success: boolean; stdout: string }>;
+
+const runPs: PsRunner = async (args, env) => {
+  const output = await new Deno.Command("ps", {
+    args: [...args],
+    env: { ...env },
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  return {
+    success: output.success,
+    stdout: new TextDecoder().decode(output.stdout),
+  };
+};
+
+/**
+ * the start time ps reports for `pid`, fixed to UTC and the C locale so two
+ * processes read the same text; undefined when ps cannot say (no ps, busybox
+ * ps without -p, no such process, Windows)
+ */
+export async function readProcessStartTime(
+  pid: number,
+  run: PsRunner = runPs,
+): Promise<string | undefined> {
+  if (Deno.build.os === "windows") return undefined;
+  try {
+    const result = await run(["-o", "lstart=", "-p", String(pid)], {
+      TZ: "UTC",
+      LC_ALL: "C",
+    });
+    if (!result.success) return undefined;
+    const started = result.stdout.trim();
+    return started === "" ? undefined : started;
+  } catch {
+    return undefined;
+  }
+}
+
+/** the command line ps reports for `pid`; undefined when ps cannot say */
+export async function readProcessCommand(
+  pid: number,
+  run: PsRunner = runPs,
+): Promise<string | undefined> {
+  if (Deno.build.os === "windows") return undefined;
+  try {
+    const result = await run(["-o", "command=", "-p", String(pid)], {
+      LC_ALL: "C",
+    });
+    if (!result.success) return undefined;
+    const command = result.stdout.trim();
+    return command === "" ? undefined : command;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * a pid later reporting a different start time belongs to another process;
  * undefined where start times cannot be read (Windows, ps failing), and callers

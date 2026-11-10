@@ -2172,7 +2172,8 @@ every run instead; see
    `--json` mode it prints its own `{ "serveReload": … }` document, with
    `null` and the reload command when serve did not reload. A change made any
    other way, such as a pull on the host without `--server`, needs a reload:
-   - **Local**: `swamp serve reload` reads `.swamp/serve.pid` and sends SIGHUP
+   - **Local**: `swamp serve reload` reads `.swamp/serve.pid`, checks the
+     process start time recorded beside it, and sends SIGHUP
    - **Remote**: `swamp serve reload --server wss://host:port` sends a
      `serve.reload` WebSocket request (requires admin authorization)
 4. Serve reloads all pulled extension types. In-flight requests finish on the

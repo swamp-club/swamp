@@ -702,7 +702,7 @@ export interface WebhookEndpointInfo {
  */
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
-  private readonly maxConcurrentRuns: number;
+  private maxConcurrentRuns: number;
   private readonly now: () => number;
   private readonly inFlight = new Map<Promise<void>, QueuedWebhookRun>();
   private readonly lastQueueDelayMs = new Map<string, number>();
@@ -723,6 +723,17 @@ export class WebhookService {
     this.endpoints = [...deps.endpoints];
     this.maxConcurrentRuns = Math.max(1, deps.maxConcurrentRuns ?? 1);
     this.now = deps.now ?? Date.now;
+  }
+
+  /** a lowered limit lets running runs finish; admitQueued starts the rest */
+  setMaxConcurrentRuns(maxConcurrentRuns: number | undefined): void {
+    this.maxConcurrentRuns = Math.max(1, maxConcurrentRuns ?? 1);
+  }
+
+  /** starts the queued runs a raised limit now has room for */
+  admitQueued(): void {
+    if (this.stopped || this.draining) return;
+    this.processQueue();
   }
 
   setEventHandler(handler: WebhookEventHandler): void {

@@ -88,8 +88,8 @@ without it the default file is optional.
 | `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely and are fixed until restart; only the file list reloads |
 | `--webhook-routes-dir` / `webhook-routes-dir` | `SWAMP_WEBHOOK_ROUTES_DIR` | `webhook-routes` | Directory of route files, one route per YAML file, read at startup and on every reload, flag mode included. A relative path resolves against the repository; a directory that is or sits inside the webhook extensions dir, `extensions/` or `.swamp/` loads no file routes and is reported as an error (see Webhooks) |
-| `--webhook-routes-poll` / `webhook-routes-poll` | `SWAMP_WEBHOOK_ROUTES_POLL` | `off` | Polls the routes directory at this interval (minimum `1s`) and applies changed route files without `swamp serve reload`; a change applies once two polls agree, one to two intervals after it lands. Needs no `--hot-reload` and no managed config. Set at startup, not on reload (see Webhooks) |
-| `--max-concurrent-webhook-runs` / `max-concurrent-webhook-runs` | `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS` | `1` | Webhook runs in flight at once, across all routes; deliveries to the same route may overlap. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
+| `--webhook-routes-poll` / `webhook-routes-poll` | `SWAMP_WEBHOOK_ROUTES_POLL` | `off` | Polls the routes directory at this interval (minimum `1s`) and applies changed route files without `swamp serve reload`; a change applies once two polls agree, one to two intervals after it lands. Needs no `--hot-reload` and no managed config. A reload changes the interval of a running poller; turning the poller on or off needs a restart (see Webhooks) |
+| `--max-concurrent-webhook-runs` / `max-concurrent-webhook-runs` | `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS` | `1` | Webhook runs in flight at once, across all routes; deliveries to the same route may overlap. Separate from `--max-concurrent-runs`. A reload changes it: a raised limit starts queued deliveries, a lowered one lets running runs finish |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
 | `--ws-idle-timeout`, `--queue-timeout` | `SWAMP_WS_IDLE_TIMEOUT`, `SWAMP_QUEUE_TIMEOUT` | unset | Worker-facing |
@@ -98,7 +98,7 @@ without it the default file is optional.
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--shutdown-drain-timeout` | `SWAMP_SHUTDOWN_DRAIN_TIMEOUT` | 30 s | How long shutdown waits for in-flight runs; `0` aborts at once; in serve.yaml quote the value (`"0"`) |
-| `--shutdown-listener-grace` | `SWAMP_SHUTDOWN_LISTENER_GRACE` | 1 s, `0` with `--reuse-port` | How long shutdown keeps listening after `/ready` turns 503; never more than the drain timeout. Set at startup, not on reload (see Rolling restart) |
+| `--shutdown-listener-grace` | `SWAMP_SHUTDOWN_LISTENER_GRACE` | 1 s, `0` with `--reuse-port` | How long shutdown keeps listening after `/ready` turns 503; never more than the drain timeout in force when shutdown starts. A reload changes it (see Rolling restart) |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
 | `--continuation-sweep-interval` | `SWAMP_CONTINUATION_SWEEP_INTERVAL` | 30 s | How often serve looks for suspended runs that need no further decision and continues them; `0` disables; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-signal-wait-timeout` | `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT` | 1 y | Longest `timeout` a `wait_for_signal` step may ask for on this server; at most one year; a step that asks for more fails when it would start waiting |
@@ -1954,30 +1954,63 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   (`src/serve/unhandled_rejection_guard.ts`). The open-file limit is raised at
   startup.
 - **PID file and reload.** When SIGHUP reloads (above), serve writes `Deno.pid`
-  to `.swamp/serve.pid`, installs the SIGHUP handler, and removes the file at
-  shutdown while it still names this process. `swamp serve reload` sends the
+  to `.swamp/serve.pid` (a bare PID, so `kill -HUP $(cat …)` and systemd's
+  `PIDFile=` keep working) and the PID with its start time and executable name
+  to `.swamp/serve.pid.json`, installs
+  the SIGHUP handler, and removes both at shutdown while they still name this
+  process (`src/serve/serve_pid_file.ts`). `swamp serve reload` sends the
   signal locally, or issues the admin-only `serve.reload` request with
   `--server`, which works on every serve whether or not it was started with
-  `--hot-reload`. Concurrent reloads are refused while one is in progress.
+  `--hot-reload`. Before a local signal it checks the PID: no process refuses
+  the stale file, and so does a process with another start time whose command
+  line is not that swamp serve. Linux derives a start time from a boot time
+  that moves when the clock is stepped, so a serve with a moved start time,
+  like anything this machine cannot tell (no `ps`, busybox `ps`, no sidecar
+  from an older serve), gets a warning and the signal as before. Concurrent
+  reloads are refused while one is in progress.
 
   SIGHUP, `serve.reload` and the config poller build their options in one place
   (`buildServeReloadOptions` in `src/cli/commands/serve.ts`), so every trigger
-  reloads the same things. The serve config file is re-read with the strict
-  loader and merged with the startup flags and environment exactly as startup
-  merges it (`mergeServeOptions`, `resolveServeStartupSettings`); a file
-  startup would refuse changes nothing, and the response says so. A valid file
-  is diffed against the last applied one (`diffServeSettings`), and each
-  changed setting is reported as applied, needs restart (with the reason), or
-  overridden by the startup flag or environment variable that pins it. The
-  class of every setting is in `SETTING_CATALOGUE`; the type requires every
-  `MergedServeOptions` key to be classified. Applied today: `dashboard`,
-  `enable-internal-api`, `auto-resume`, `ws-idle-timeout`,
-  `max-signal-wait-timeout`, `shutdown-drain-timeout`, `max-concurrent-runs`,
-  `max-runs-per-principal`, `max-run-duration`, `queue-timeout`, `triggers` and
-  `webhooks`; new values govern new runs, requests and sockets, and nothing
-  already running changes. Listener, TLS, auth mode, OAuth client and datastore
-  settings need a new process; the rest are reported as not applied by reload
-  yet. Audit sinks are rebuilt on every reload path.
+  reloads the same things. Settings reload in three phases
+  (`createServeSettingsReloader`, `src/serve/serve_settings_reloader.ts`).
+  Prepare does everything that can fail: the strict re-read, the merge with
+  the startup flags and environment exactly as startup merges it
+  (`mergeServeOptions`, `resolveServeStartupSettings`), the allowed-users
+  lookups and the audit diff; a failure refuses the file, nothing changes,
+  and `swamp serve reload` exits 1. Commit only assigns: each changed setting
+  goes through its applier, typed so every applied catalogue key must have
+  one, and the report lists only what commit applied. Follow-ups run after
+  it (saving resolved user names, swamp-club re-registration, starting queued
+  webhook runs, rebuilding audit sinks); a failed follow-up is a warning that
+  keeps the new values. Before commit the reload records a
+  `serve.config.reloaded` audit event, under the audit policy in force before
+  it, naming the caller and the settings by group, never a value.
+
+  Each changed setting is reported as applied, needs restart (with the
+  reason), or overridden by the startup flag or environment variable that
+  pins it; a setting only partly applied is listed under both. The class of
+  every setting is in `SETTING_CATALOGUE`. Applied: the dashboard and internal
+  API, run, webhook-run and signal-wait limits, queue, idle, drain and
+  listener-grace timeouts, auto-resume, triggers, webhooks and the routes
+  directory, `trust-proxy`, `trusted-hosts`, `dispatch-env-allow`,
+  `verify-on-enroll`, the intervals of services already running (the
+  datastore and routes pollers re-arm at once; reconciliation, the
+  continuation sweep, token GC and group refresh take the new interval after
+  their next run), and in the
+  `audit` block the policy, alerts (each rule's window starts again),
+  fail-open and sinks. Access lists: allowed-users removals always apply, a
+  new name applies once it resolves (from the stored name map, or the club
+  API key) and is retried on each reload until then, and a list that
+  removals leave empty with no collectives admits no one rather than everyone;
+  `allowed-collectives` (re-registering the instance), the restrictions and
+  `groups-field` apply as written. New values govern new runs, requests,
+  sockets and enrollments; nothing already running changes. Needing a
+  restart: the listener, TLS and CA cert, auth mode and OAuth client, admins,
+  the datastore, `stale-ttl` and `heartbeat-interval` (every instance judges
+  its peers' liveness by them), `remote-only`, turning a timed service on or
+  off, the audit stores, WAL, HMAC and batching, and, not applied by reload
+  yet, scheduling, grant reload mode, the grants file and directory and the
+  explicit-grant rules.
 
   `performServeReload` (`src/serve/extension_reload.ts`) re-bundles pulled
   extensions whose source fingerprint changed and re-imports every pulled type.

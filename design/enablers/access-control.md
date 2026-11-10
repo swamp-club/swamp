@@ -562,6 +562,18 @@ are those swamp-club last reported, refreshed by the people read every 5 minutes
 change that drops admission closes the delegation's sessions at once; removing
 them from the lists takes effect at once.
 
+The lists change with `swamp serve reload` as well as at startup
+(`src/serve/serve_access_list_reload.ts`). Removing a name or collective always
+applies. A new allowed-user applies once it resolves, from the stored name map
+or, for a name never recorded, through the club API key; without one, or when
+the lookup fails, that name waits and is retried on every reload, and the
+reload reports it. A list that removals and waiting names leave empty, with no
+collectives, keeps an entry that matches no one, so admission stays closed
+rather than opening to everyone. A file that empties both lists is refused, as
+at startup. Admins are not reloaded: changing `--admins` needs a restart. Each
+instance applies the lists it reloaded, so in a team a removed person is
+admitted by an instance until that instance reloads.
+
 Implementation: `src/domain/access/admission.ts`,
 `src/serve/token_admission.ts`.
 
@@ -775,8 +787,9 @@ peer stored since, keeping the peer's record for a name both recorded.
 `--admins` and `--allowed-users` names in OAuth mode are pinned the same way,
 in the `oauth-resolved-admins` key (`src/serve/oauth_access_list_resolution.ts`):
 a resolved name is never looked up again, and a name the provider reports as not
-found stays skipped until it is removed from the list. Startup looks up only
-names with no record, so it needs a credential that can call
+found stays skipped until it is removed from the list. A reload keeps the map
+in step with the file, as startup does: a removed name's records go, and admin
+records stay. Startup looks up only names with no record, so it needs a credential that can call
 `/api/auth/resolve-user` (a login token, or a collective API token with
 `oauth:manage`) only when a name is added; a refused lookup names that scope.
 An entry must be a plain username: admins, allowed-users and not-found records

@@ -54,9 +54,9 @@ export class RuntimeDataPoller {
   readonly #syncService: DatastoreSyncService;
   readonly #syncGate?: SyncGate;
   readonly #catalogInvalidate: () => void;
-  readonly #pollIntervalMs: number;
+  #pollIntervalMs: number;
   readonly #namespace?: string;
-  readonly #gateTiming: PollerGateTiming;
+  #gateTiming: PollerGateTiming;
   readonly #gateState: PollerGateState = { consecutiveSkips: 0 };
   #stopController = new AbortController();
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -84,6 +84,18 @@ export class RuntimeDataPoller {
     Deno.unrefTimer(this.#timer);
     const intervalSec = this.#pollIntervalMs / 1000;
     logger.info`Runtime data poller started (interval: ${intervalSec}s)`;
+  }
+
+  setPollIntervalMs(pollIntervalMs: number | undefined): void {
+    this.#pollIntervalMs = pollIntervalMs ??
+      DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS;
+    this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);
+    if (this.#timer === null) return;
+    clearInterval(this.#timer);
+    this.#timer = setInterval(() => {
+      this.#poll();
+    }, this.#pollIntervalMs);
+    Deno.unrefTimer(this.#timer);
   }
 
   async stop(): Promise<void> {

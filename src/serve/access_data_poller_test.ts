@@ -1269,3 +1269,22 @@ Deno.test("AccessDataPoller: reloadEveryCycle reloads with nothing changed, beca
   await waitFor(() => loader.loadCalls >= 2, "two reloads with no change");
   await poller.stop();
 });
+
+Deno.test("AccessDataPoller.setPollIntervalMs: a running poller re-arms at the reloaded interval", async () => {
+  const sync = createMockSyncService();
+  const loader = createMockPolicySnapshotLoader();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = new AccessDataPoller({
+    syncService: sync,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 3_600_000,
+  });
+  poller.start();
+  try {
+    poller.setPollIntervalMs(10);
+    await waitFor(() => sync.pullCalls.length >= 2, "two polls at 10ms");
+  } finally {
+    await poller.stop();
+  }
+});

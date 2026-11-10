@@ -139,12 +139,33 @@ import {
   type WebhookRouteTableDeps,
 } from "../../serve/webhook_reload.ts";
 import {
-  diffServeSettings,
   overlayAppliedSettings,
   reloadsOnHangup,
 } from "../../serve/serve_settings_reload.ts";
+import {
+  createServeSettingsReloader,
+  type ReloadFollowUp,
+} from "../../serve/serve_settings_reloader.ts";
+import {
+  alertRulesFrom,
+  type AuditConfigChanges,
+  auditPolicyFrom,
+  diffAuditConfig,
+} from "../../serve/serve_audit_reload.ts";
+
+import { emitServeConfigReloaded } from "../../serve/serve_config_reload_audit.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
-import { removePidFileIfOurs } from "../../serve/serve_pid_file.ts";
+import {
+  readProcessCommand,
+  readProcessStartTime,
+} from "../../infrastructure/process/process_kill.ts";
+import {
+  probeServePid,
+  processExists,
+  readServePidSidecar,
+  removePidFileIfOurs,
+  writeServePidFiles,
+} from "../../serve/serve_pid_file.ts";
 import {
   checkRouteFiles,
   checkWebhookRoutesDir,
@@ -225,6 +246,7 @@ import {
   withHttpServerSpan,
 } from "../../serve/http_request_span.ts";
 import {
+  OAUTH_RESOLVED_ADMINS_KEY,
   resolveOAuthClientCredentials,
   SECRET_WITHOUT_CLIENT_ID_MESSAGE,
 } from "../../serve/oauth_registration.ts";
@@ -317,10 +339,7 @@ import {
   createServerTokenGcRepos,
 } from "../../serve/server_token_gc_deps.ts";
 import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
-import {
-  DEFAULT_QUEUE_TIMEOUT_MS,
-  DispatchService,
-} from "../../serve/dispatch_service.ts";
+import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
 import { BundleRegistry } from "../../serve/bundle_registry.ts";
 import {
@@ -412,6 +431,7 @@ import {
   TOKEN_SECRETS_VAULT_NAME,
 } from "../../domain/vaults/control_plane_vault_provider.ts";
 import {
+  type AuditConfig,
   loadServeConfig,
   type MergedServeOptions,
   mergeServeOptions,
@@ -429,12 +449,8 @@ import {
 } from "../../serve/oauth_client_secret_source.ts";
 import {
   type ActorIdentity,
-  type AuditCategory,
   AuditChainState,
   AuditEmitter,
-  type AuditLevel,
-  AuditPolicy,
-  type AuditPolicyRule,
   type AuditSink,
   type AuditStore,
   AuditWal,
@@ -445,7 +461,6 @@ import { WebSocketSink } from "../../serve/audit_sinks/websocket_sink.ts";
 import { WebhookSink } from "../../serve/audit_sinks/webhook_sink.ts";
 import { SyslogSink } from "../../serve/audit_sinks/syslog_sink.ts";
 import {
-  type AlertRuleConfig,
   AlertRuleEngine,
   AuditSinkHotReloader,
   generateHmacKeyBytes,
@@ -550,8 +565,15 @@ import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import {
   registerInstance,
   type RegisterInstanceRequest,
+  resolveUsername,
   sendInstanceHeartbeat,
 } from "../../serve/oauth_client.ts";
+import {
+  allowedUsersPartialReason,
+  type AllowedUsersReloadPlan,
+  planAllowedUsersReload,
+  readStoredNameMap,
+} from "../../serve/serve_access_list_reload.ts";
 import {
   ClubHeartbeatService,
   DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
@@ -772,6 +794,16 @@ import {
   coLocatedTokenKeyWarning,
   TOKEN_SECRETS_KEY_RECORD,
 } from "../../serve/token_key_exposure.ts";
+
+/** what a reload's prepare phase settled before anything changed */
+interface ReloadPrepared {
+  allowedUsers?: AllowedUsersReloadPlan;
+  nameMapUnread?: boolean;
+  audit?: {
+    readonly changes: AuditConfigChanges;
+    readonly config: AuditConfig | null;
+  };
+}
 
 /** boot waits for this push before serving, so it is bounded. */
 const SETTLED_RUN_PUSH_TIMEOUT_MS = 30_000;
@@ -2024,6 +2056,14 @@ export function parseShutdownListenerGrace(
   return parseTimerDuration(raw, "--shutdown-listener-grace");
 }
 
+/** an operator who bounds the drain also bounds how long shutdown lingers */
+export function boundedListenerGraceMs(
+  graceMs: number,
+  drainTimeoutMs: number,
+): number {
+  return Math.min(graceMs, drainTimeoutMs);
+}
+
 export function listenerGraceElapsed(
   startedAt: number,
   graceMs: number,
@@ -2063,6 +2103,8 @@ export function parseWebhookRoutesPoll(
   }
   return parseTimerDuration(raw, "--webhook-routes-poll");
 }
+
+const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
 
 export function parseContinuationSweepInterval(
   raw: string | undefined,
@@ -2174,6 +2216,9 @@ export interface ServeStartupSettings {
   continuationSweepIntervalMs: number;
   maxSignalWaitTimeoutSeconds?: number;
   tokenGcSettings: TokenGcSettings;
+  /** 0 when group refresh is off */
+  groupRefreshMs: number;
+  dispatchEnvAllow?: readonly string[];
   maxConcurrentRuns?: number;
   maxConcurrentScheduledRuns?: number;
   maxConcurrentWebhookRuns?: number;
@@ -2239,10 +2284,9 @@ export function resolveServeStartupSettings(
   const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
     merged.shutdownDrainTimeout,
   );
-  // an operator who bounds the drain also bounds how long shutdown lingers
-  const shutdownListenerGraceMs = Math.min(
-    parseShutdownListenerGrace(merged.shutdownListenerGrace, merged.reusePort),
-    shutdownDrainTimeoutMs,
+  const shutdownListenerGraceMs = parseShutdownListenerGrace(
+    merged.shutdownListenerGrace,
+    merged.reusePort,
   );
 
   const hydrationTimeoutMs = merged.hydrationTimeout !== undefined
@@ -2267,6 +2311,20 @@ export function resolveServeStartupSettings(
     merged.tokenGcInterval,
     merged.tokenGcGracePeriod,
   );
+
+  const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
+
+  let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
+  if (merged.groupRefreshInterval !== undefined) {
+    const normalized = merged.groupRefreshInterval.trim().replace(
+      /^0[smhdw].*$/i,
+      "0",
+    );
+    groupRefreshMs = normalized === "0" ? 0 : parseTimerDuration(
+      merged.groupRefreshInterval,
+      "--group-refresh-interval",
+    );
+  }
 
   const maxConcurrentRuns = merged.maxConcurrentRuns;
   if (
@@ -2352,6 +2410,8 @@ export function resolveServeStartupSettings(
     continuationSweepIntervalMs,
     maxSignalWaitTimeoutSeconds,
     tokenGcSettings,
+    groupRefreshMs,
+    ...(dispatchEnvAllow !== undefined ? { dispatchEnvAllow } : {}),
     maxConcurrentRuns,
     maxConcurrentScheduledRuns,
     maxConcurrentWebhookRuns,
@@ -2836,6 +2896,38 @@ const reloadCommand = new Command()
         new UserError("Invalid PID in " + pidPath + ": " + pidStr.trim()),
         [pidPath],
       );
+    }
+
+    const verdict = await probeServePid(
+      pid,
+      await readServePidSidecar(pidPath),
+      {
+        processExists,
+        startTime: (p) => readProcessStartTime(p),
+        command: (p) => readProcessCommand(p),
+      },
+    );
+    if (verdict === "gone") {
+      throw markErrorPaths(
+        new UserError(
+          "Process " + pid + " is not running — stale PID file. " +
+            "Remove " + pidPath + ", or reload with --server.",
+        ),
+        [pidPath],
+      );
+    }
+    if (verdict === "reused") {
+      throw markErrorPaths(
+        new UserError(
+          "Process " + pid + " is not the serve that wrote " + pidPath +
+            ": it started at another time and is not a swamp serve — stale PID file. Remove it, or reload with --server.",
+        ),
+        [pidPath],
+      );
+    }
+    if (verdict === "unknown") {
+      logger
+        .warn`Could not confirm process ${pid} is the serve that wrote ${pidPath} (an older serve records no start time, ps cannot report it, or the clock was changed since serve started); sending SIGHUP anyway`;
     }
 
     try {
@@ -3685,13 +3777,15 @@ export const serveCommand = new Command()
       staleTtlMs,
       reconciliationIntervalMs,
       shutdownDrainTimeoutMs: startupShutdownDrainTimeoutMs,
-      shutdownListenerGraceMs,
+      shutdownListenerGraceMs: startupShutdownListenerGraceMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
       webhookRoutesPollMs,
       continuationSweepIntervalMs,
       maxSignalWaitTimeoutSeconds,
       tokenGcSettings,
+      groupRefreshMs,
+      dispatchEnvAllow,
       maxConcurrentRuns,
       maxConcurrentScheduledRuns,
       maxConcurrentWebhookRuns,
@@ -3703,7 +3797,16 @@ export const serveCommand = new Command()
     } = resolveServeStartupSettings(merged);
     // reload replaces these; everything that reads them reads them when used
     let shutdownDrainTimeoutMs = startupShutdownDrainTimeoutMs;
-    let liveConfigFile = configFile;
+    let shutdownListenerGraceMs = startupShutdownListenerGraceMs;
+    // each loop reads the interval in force when it next schedules itself
+    const liveIntervals = {
+      reconciliationMs: reconciliationIntervalMs ?? 60_000,
+      continuationSweepMs: continuationSweepIntervalMs,
+      tokenGcMs: tokenGcSettings.intervalMs,
+      tokenGcGraceMs: tokenGcSettings.gracePeriodMs,
+      groupRefreshMs: 0,
+    };
+    let reconciliationLoopRunning = false;
     if (
       advertiseAddress !== undefined &&
       advertiseAddressInCleartext(advertiseAddress)
@@ -3730,7 +3833,7 @@ export const serveCommand = new Command()
     if (merged.reusePort) {
       checkReusePortListen({ port, hostname: host, cert, key });
     }
-    const trustProxy = merged.trustProxy;
+    let trustProxy = merged.trustProxy;
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
       logger.warn(
@@ -3799,12 +3902,6 @@ export const serveCommand = new Command()
       );
     }
 
-    const trustedHostsRaw = merged.trustedHosts;
-    const configuredTrustedHosts = trustedHostsRaw
-      ? trustedHostsRaw.split(",").map((h) => h.trim()).filter((h) =>
-        h.length > 0
-      )
-      : undefined;
     // a node advertising itself to a team also trusts its client-facing address
     // (a forwarded session's Origin) and its advertised address (a follower's
     // Host)
@@ -3813,12 +3910,16 @@ export const serveCommand = new Command()
       : [ownerAddress, advertiseAddress]
         .filter((address): address is string => address !== undefined)
         .map((address) => new URL(address).host);
-    const trustedHosts = configuredTrustedHosts === undefined &&
-        teamHosts.length === 0
-      ? undefined
-      : [...(configuredTrustedHosts ?? []), ...teamHosts];
+    const trustedHostsFrom = (raw: string | undefined) => {
+      const configured = raw
+        ? raw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
+        : undefined;
+      return configured === undefined && teamHosts.length === 0
+        ? undefined
+        : [...(configured ?? []), ...teamHosts];
+    };
+    let trustedHosts = trustedHostsFrom(merged.trustedHosts);
 
-    const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
     if (dispatchEnvAllow !== undefined) {
       if (dispatchEnvAllow.length === 0) {
         logger
@@ -4010,7 +4111,7 @@ export const serveCommand = new Command()
       queueTimeoutMs,
       dispatchEnvAllow,
     });
-    const verifyOnEnroll = merged.verifyOnEnroll;
+    let verifyOnEnroll = merged.verifyOnEnroll;
     const gateSession = currentAuthGateSession();
     const gatePassKeeper = gateSession
       ? createGatePassKeeper(
@@ -4034,31 +4135,32 @@ export const serveCommand = new Command()
         dispatchService.notifyWorkerEnrolled(worker),
       onWorkerDraining: (worker) =>
         dispatchService.notifyWorkerDraining(worker),
-      verifyOnEnroll,
+      // reload changes it; each enrollment reads the one in force
+      get verifyOnEnroll() {
+        return verifyOnEnroll;
+      },
       gatePass: () => {
         const pass = gatePassKeeper?.current();
         return pass ? formatOrchestratorGatePass(pass) : undefined;
       },
-      verifyWorker: verifyOnEnroll
-        ? async (workerName) => {
-          const probe = await dispatchFleetProbe(
-            dispatchService,
-            repoContext.unifiedDataRepo,
-            workerName,
-            "verify-on-enroll",
-            AbortSignal.timeout(60_000),
-          );
-          if (probe.status === "pass") {
-            return { ok: true };
-          }
-          return {
-            ok: false,
-            failureReason: probe.status === "error"
-              ? probe.error ?? "probe error"
-              : (probe.failures ?? []).join("; ") || "probe failed",
-          };
+      verifyWorker: async (workerName) => {
+        const probe = await dispatchFleetProbe(
+          dispatchService,
+          repoContext.unifiedDataRepo,
+          workerName,
+          "verify-on-enroll",
+          AbortSignal.timeout(60_000),
+        );
+        if (probe.status === "pass") {
+          return { ok: true };
         }
-        : undefined,
+        return {
+          ok: false,
+          failureReason: probe.status === "error"
+            ? probe.error ?? "probe error"
+            : (probe.failures ?? []).join("; ") || "probe failed",
+        };
+      },
     });
     dispatchService.bindGateway(workerGateway);
     setRemoteStepDispatcher(dispatchService);
@@ -4067,7 +4169,7 @@ export const serveCommand = new Command()
       query: (predicate, options) =>
         repoContext.dataQueryService.query(predicate, options),
       namespace: repoContext.unifiedDataRepo.namespace,
-      queueTimeoutMs: queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS,
+      queueTimeoutMs: () => dispatchService.queueTimeoutMs,
     }));
     if (merged.remoteOnly) {
       setRemoteOnlyMode(true);
@@ -4662,6 +4764,17 @@ export const serveCommand = new Command()
     const clubApiKey = authConfig.mode === "oauth"
       ? resolveApiKey() ?? null
       : null;
+    // the name map reload resolves allowed-users against, once startup has it
+    let oauthNameCache: Record<string, string> | undefined;
+    let storeOauthNameCache:
+      | ((cache: Record<string, string>) => Promise<void>)
+      | undefined;
+    // undefined when the vault cannot answer, so nothing is written back
+    let readOauthNameCache:
+      | (() => Promise<Record<string, string> | undefined>)
+      | undefined;
+    let allowedUsersConfigured: readonly string[] = [];
+    let allowedUsersDeferred = false;
     const oauthClientName = merged.oauthClientName ??
       `swamp-serve-${basename(resolvedRepoDir)}-${Deno.hostname()}`.slice(
         0,
@@ -5066,18 +5179,30 @@ export const serveCommand = new Command()
         authConfig.oauthProvider,
       );
 
-      // Written in either mode: dropping a removed name's record is what
-      // lets it be looked up fresh if it is added back.
-      if (resolution.cacheChanged) {
-        await storeResolvedAdmins(
+      storeOauthNameCache = (cache) =>
+        storeResolvedAdmins(
           {
             putVaultSecret: (_v, k, val) =>
               oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
           },
           TOKEN_SECRETS_VAULT_NAME,
-          resolution.cache,
+          cache,
         );
-      }
+      // Written in either mode: dropping a removed name's record is what
+      // lets it be looked up fresh if it is added back.
+      if (resolution.cacheChanged) await storeOauthNameCache(resolution.cache);
+      oauthNameCache = resolution.cache;
+      allowedUsersConfigured = [...authConfig.allowedUsers];
+      readOauthNameCache = () =>
+        readStoredNameMap({
+          list: () => oauthVaultService.list(TOKEN_SECRETS_VAULT_NAME),
+          get: (key) =>
+            oauthVaultService.get(
+              TOKEN_SECRETS_VAULT_NAME,
+              key,
+              "serve:oauth-resolve",
+            ),
+        }, OAUTH_RESOLVED_ADMINS_KEY);
 
       authConfig.admins.splice(
         0,
@@ -5661,6 +5786,17 @@ export const serveCommand = new Command()
           deploymentMode: deploymentMode.mode,
         }
         : undefined;
+    // a reload changes the collectives, so every registration sends the ones in force
+    const clubRegistrationNow = (
+      oauthClientId: string,
+    ): RegisterInstanceRequest => ({
+      oauthClientId,
+      instanceId,
+      collectiveSlugs: [...authConfig.allowedCollectives],
+      hostname: Deno.hostname(),
+      version: VERSION,
+      deploymentMode: deploymentMode.mode,
+    });
     if (clubRegistration !== undefined && clubApiKey) {
       try {
         await registerInstance(
@@ -6040,7 +6176,9 @@ export const serveCommand = new Command()
     // it with the caller's own credentials
     const leaderLink = v3Location === undefined ? undefined : new LeaderLink({
       leader: () => connectionCtx.followerGate?.leader(),
-      trustProxy,
+      get trustProxy() {
+        return trustProxy;
+      },
       peerToken: () => teamPeerKey?.cachedToken(),
       ...(caCerts === undefined ? {} : { caCerts }),
     });
@@ -6266,16 +6404,7 @@ export const serveCommand = new Command()
           checkpointIntervalMs: auditConfig.flushIntervalMs,
         });
 
-        const policyRules = auditConfig.policyRules.map((r) => ({
-          category: r.category as AuditCategory | undefined,
-          action: r.action,
-          tier: r.tier as AuditPolicyRule["tier"],
-          level: r.level as AuditLevel,
-        }));
-        const policy = new AuditPolicy(
-          policyRules,
-          auditConfig.policyDefaultLevel as AuditLevel,
-        );
+        const policy = auditPolicyFrom(auditConfig);
 
         let highestSeq = -1;
         let highestDigest = "";
@@ -6549,11 +6678,13 @@ export const serveCommand = new Command()
           (s) => s !== walSink && s !== webSocketSink,
         );
         let currentExternalSinks = capturedExternalSinks;
-        connectionCtx.auditSinkRebuilder = async () => {
-          const reloadedConfig = loadServeConfig(
-            options.config as string | undefined,
-            resolvedRepoDir,
-          );
+        connectionCtx.auditSinkRebuilder = async (validated) => {
+          const reloadedConfig = validated !== undefined
+            ? validated
+            : loadServeConfig(
+              options.config as string | undefined,
+              resolvedRepoDir,
+            );
           const reloadedAudit = parseAuditConfig(reloadedConfig);
           const newExtSinks: AuditSink[] = [];
           if (reloadedAudit) {
@@ -6641,25 +6772,7 @@ export const serveCommand = new Command()
         };
 
         if (auditConfig.alerts.length > 0) {
-          const alertConfigs: AlertRuleConfig[] = auditConfig.alerts.map(
-            (a) => ({
-              name: a.name,
-              description: a.description,
-              match: {
-                category: a.match.category,
-                action: a.match.action,
-                outcome: a.match.outcome,
-                principal: a.match.principal,
-              },
-              threshold: {
-                count: a.threshold.count,
-                windowSeconds: a.threshold["window-seconds"],
-              },
-              action: a.action.type === "webhook"
-                ? { type: "webhook" as const, url: a.action.url! }
-                : { type: "log" as const },
-            }),
-          );
+          const alertConfigs = alertRulesFrom(auditConfig);
           connectionCtx.auditEmitter!.alertEngine = new AlertRuleEngine(
             alertConfigs,
           );
@@ -6946,14 +7059,7 @@ export const serveCommand = new Command()
       | null = null;
     const groupRefreshRaw = merged.groupRefreshInterval;
 
-    const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
-    let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
-    if (groupRefreshRaw !== undefined) {
-      const normalized = groupRefreshRaw.trim().replace(/^0[smhdw].*$/i, "0");
-      groupRefreshMs = normalized === "0"
-        ? 0
-        : parseTimerDuration(groupRefreshRaw, "--group-refresh-interval");
-    }
+    liveIntervals.groupRefreshMs = groupRefreshMs;
 
     if (
       shouldWarnGroupRefreshIgnored(
@@ -6987,9 +7093,14 @@ export const serveCommand = new Command()
       );
 
       collectiveRefreshService = new CollectiveRefreshService({
-        intervalMs: groupRefreshMs,
+        get intervalMs() {
+          return liveIntervals.groupRefreshMs;
+        },
         oauthProvider: authConfig.oauthProvider,
-        groupsField: authConfig.groupsField,
+        // reload changes it; each refresh reads the one in force
+        get groupsField() {
+          return authConfig.groupsField;
+        },
         getUserInfo,
         listActiveTokens: async () => {
           const records = await repoContext.dataQueryService.query(
@@ -7284,7 +7395,7 @@ export const serveCommand = new Command()
           registerInstance(
             authConfig.oauthProvider,
             accessToken,
-            clubRegistration,
+            clubRegistrationNow(clubRegistration.oauthClientId),
             signal,
           ),
       });
@@ -7315,7 +7426,7 @@ export const serveCommand = new Command()
         trustedCollectives,
       );
     }
-    const webhookRoutesDir = resolveServePath(
+    let webhookRoutesDir = resolveServePath(
       resolvedRepoDir,
       merged.webhookRoutesDir,
     );
@@ -7635,7 +7746,9 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       policySnapshotLoader,
-      trustProxy,
+      get trustProxy() {
+        return trustProxy;
+      },
       auditEmitter: connectionCtx.auditEmitter,
       instanceId,
       resolvedUserNames: connectionCtx.resolvedUserNames,
@@ -7654,61 +7767,403 @@ export const serveCommand = new Command()
 
     // each value is read where it is used, so new runs, requests and sockets
     // take it; nothing already running is changed
-    const applyLiveSettings = (
-      nextMerged: MergedServeOptions,
-      next: ServeStartupSettings,
-    ) => {
-      dashboardDistDir = nextMerged.dashboard ? getDashboardDistDir() : null;
-      enableInternalApi = nextMerged.enableInternalApi;
-      if (next.wsIdleTimeoutSeconds === undefined) {
-        delete wsUpgradeOpts.idleTimeout;
-      } else {
-        wsUpgradeOpts.idleTimeout = next.wsIdleTimeoutSeconds;
-      }
-      shutdownDrainTimeoutMs = next.shutdownDrainTimeoutMs;
+    const applyRunLimits = (next: ServeStartupSettings) =>
       activeRunRegistry.setLimits({
         maxConcurrent: next.maxConcurrentRuns,
         maxPerPrincipal: next.maxRunsPerPrincipal,
         maxRunDurationMs: next.maxRunDurationMs,
       });
-      dispatchService.setQueueTimeoutMs(next.queueTimeoutMs);
-      const signalWaits = repoContext.signalWaits;
-      if (signalWaits?.supported) {
-        repoContext.signalWaits = {
-          ...signalWaits,
-          maxTimeoutSeconds: next.maxSignalWaitTimeoutSeconds,
-        };
+    // reload applies these itself after the settings commit
+    const appliedByReloadStage = () => {};
+    // read per request from the overlaid serveOptions
+    const appliedByOverlay = () => {};
+    // in place: consumers hold these arrays
+    const replaceList = (target: string[], next: readonly string[]) => {
+      target.length = 0;
+      for (const entry of next) target.push(entry);
+    };
+    // removals always apply; a name not resolvable now waits for the next reload
+    const applyAllowedUsers = (
+      startup: ServeStartupSettings,
+      prepared: ReloadPrepared,
+    ) => {
+      const plan = prepared.allowedUsers;
+      if (!plan) {
+        replaceList(authConfig.allowedUsers, startup.authConfig.allowedUsers);
+        return;
       }
+      replaceList(authConfig.allowedUsers, plan.allowedUsers);
+      oauthNameCache = { ...plan.cache };
+      allowedUsersConfigured = [...startup.authConfig.allowedUsers];
+      allowedUsersDeferred = plan.deferred.length > 0;
+      rememberUsernames(plan.usernamesBySub);
+      const partial = allowedUsersPartialReason(plan);
+      return partial === undefined ? undefined : { partial };
+    };
+    const settingsReloader = createServeSettingsReloader<
+      ServeStartupSettings,
+      ReloadPrepared
+    >({
+      initialConfig: configFile,
+      explicitFlags,
+      envLookup: (name) => Deno.env.get(name),
+      load: () =>
+        loadServeConfig(options.config as string | undefined, repoDir),
+      merge: (file) =>
+        resolveServeTlsPaths(
+          repoDir,
+          mergeServeOptions(file, options, explicitFlags),
+        ),
+      // startup's own checks, so a file startup would refuse changes nothing
+      resolve: resolveServeStartupSettings,
+      prepare: async ({ file, merged: next, startup }, toApply, before) => {
+        const prepared: ReloadPrepared = {};
+        const nextAudit = parseAuditConfig(file);
+        prepared.audit = {
+          changes: diffAuditConfig(parseAuditConfig(before), nextAudit),
+          config: nextAudit,
+        };
+        if (
+          authConfig.mode !== "none" &&
+          (toApply.includes("restrictedModelTypes") ||
+            toApply.includes("restrictedCommands"))
+        ) {
+          for (
+            const finding of findIneffectiveRestrictions({
+              restrictedModelTypes: next.restrictedModelTypes,
+              restrictedCommands: next.restrictedCommands,
+              requestTypes: new Set(serverRequestPayloadFields().keys()),
+              isKnownModelType: (type) => modelRegistry.has(type),
+            })
+          ) {
+            logger.warn("{warning}", { warning: finding.message });
+          }
+        }
+        if (
+          authConfig.mode === "oauth" && oauthNameCache !== undefined &&
+          (toApply.includes("allowedUsers") ||
+            toApply.includes("allowedCollectives"))
+        ) {
+          const apiKey = clubApiKey;
+          const stored = await readOauthNameCache?.();
+          prepared.nameMapUnread = stored === undefined;
+          prepared.allowedUsers = await planAllowedUsersReload({
+            configured: startup.authConfig.allowedUsers,
+            previouslyConfigured: allowedUsersConfigured,
+            allowedCollectives: startup.authConfig.allowedCollectives,
+            stored: stored ?? oauthNameCache,
+            cache: oauthNameCache,
+            resolve: apiKey
+              ? (name, signal) =>
+                resolveUsername(
+                  authConfig.oauthProvider,
+                  name,
+                  apiKey,
+                  AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+                )
+              : null,
+            now: () => new Date().toISOString(),
+          });
+        }
+        return prepared;
+      },
+      notRunning: ({ startup }) => {
+        const reasons: Partial<Record<keyof MergedServeOptions, string>> = {};
+        if (!scheduledExecution) {
+          reasons.triggerOverrides =
+            "no scheduler runs on this serve; restart serve with schedule on to change it";
+        }
+        const dataPollers = [
+          configPoller,
+          accessDataPoller,
+          integrationDataPoller,
+          delegationDataPoller,
+          runtimeDataPoller,
+        ];
+        if (dataPollers.every((poller) => poller === null)) {
+          reasons.datastorePollInterval =
+            "no datastore poller runs on this serve";
+        }
+        if (!reconciliationLoopRunning) {
+          reasons.reconciliationInterval =
+            "no reconciliation loop runs on this serve";
+        }
+        const startOrStop = (
+          running: boolean,
+          stays: boolean,
+          service: string,
+        ) =>
+          !running
+            ? `${service} is not running on this serve; restart serve to start it`
+            : !stays
+            ? `turning ${service} off needs a restart`
+            : undefined;
+        const sweep = startOrStop(
+          continuationSweepService !== undefined,
+          startup.continuationSweepIntervalMs > 0,
+          "the continuation sweep",
+        );
+        if (sweep) reasons.continuationSweepInterval = sweep;
+        const tokenGc = startOrStop(
+          serverTokenGcService !== undefined,
+          startup.tokenGcSettings.intervalMs > 0,
+          "server token GC",
+        );
+        if (tokenGc) {
+          reasons.tokenGcInterval = tokenGc;
+          reasons.tokenGcGracePeriod = tokenGc;
+        }
+        const groupRefresh = startOrStop(
+          collectiveRefreshService !== null,
+          startup.groupRefreshMs > 0,
+          "group refresh",
+        );
+        if (groupRefresh) reasons.groupRefreshInterval = groupRefresh;
+        const routesPoll = startOrStop(
+          webhookRoutesPoller !== null,
+          startup.webhookRoutesPollMs !== undefined,
+          "the webhook routes poller",
+        );
+        if (routesPoll) reasons.webhookRoutesPoll = routesPoll;
+        return reasons;
+      },
+      pending: () => allowedUsersDeferred ? ["allowedUsers"] : [],
+      extraChanges: (prepared) =>
+        prepared.audit?.changes ?? { applied: [], needsRestart: [] },
+      // runs after the reload's own audit event, so the old policy decides it
+      commitExtra: (prepared) => {
+        const audit = prepared.audit;
+        const emitter = connectionCtx.auditEmitter;
+        if (!audit?.config || !emitter) return [];
+        const notes: string[] = [];
+        if (audit.changes.applied.includes("audit.policy")) {
+          const policy = auditPolicyFrom(audit.config);
+          emitter.setPolicy(policy);
+          connectionCtx.auditPolicy = policy;
+        }
+        if (audit.changes.applied.includes("audit.alerts")) {
+          emitter.alertEngine = audit.config.alerts.length > 0
+            ? new AlertRuleEngine(alertRulesFrom(audit.config))
+            : undefined;
+          notes.push(
+            "Audit alert rules reloaded; each rule's window and cooldown start again",
+          );
+        }
+        if (audit.changes.applied.includes("audit.fail-open")) {
+          connectionCtx.auditFailOpen = audit.config.failOpen;
+        }
+        return notes;
+      },
+      appliers: {
+        dashboard: ({ merged }) => {
+          dashboardDistDir = merged.dashboard ? getDashboardDistDir() : null;
+        },
+        enableInternalApi: ({ merged }) => {
+          enableInternalApi = merged.enableInternalApi;
+        },
+        autoResume: appliedByOverlay,
+        wsIdleTimeout: ({ startup }) => {
+          if (startup.wsIdleTimeoutSeconds === undefined) {
+            delete wsUpgradeOpts.idleTimeout;
+          } else {
+            wsUpgradeOpts.idleTimeout = startup.wsIdleTimeoutSeconds;
+          }
+        },
+        maxSignalWaitTimeout: ({ startup }) => {
+          const signalWaits = repoContext.signalWaits;
+          if (signalWaits?.supported) {
+            repoContext.signalWaits = {
+              ...signalWaits,
+              maxTimeoutSeconds: startup.maxSignalWaitTimeoutSeconds,
+            };
+          }
+        },
+        shutdownDrainTimeout: ({ startup }) => {
+          shutdownDrainTimeoutMs = startup.shutdownDrainTimeoutMs;
+        },
+        maxConcurrentRuns: ({ startup }) => applyRunLimits(startup),
+        maxRunsPerPrincipal: ({ startup }) => applyRunLimits(startup),
+        maxRunDuration: ({ startup }) => applyRunLimits(startup),
+        queueTimeout: ({ startup }) =>
+          dispatchService.setQueueTimeoutMs(startup.queueTimeoutMs),
+        triggerOverrides: appliedByReloadStage,
+        webhookConfigs: appliedByReloadStage,
+        allowedUsers: ({ startup }, prepared) =>
+          applyAllowedUsers(startup, prepared),
+        allowedCollectives: ({ startup }, prepared) => {
+          replaceList(
+            authConfig.allowedCollectives,
+            startup.authConfig.allowedCollectives,
+          );
+          // an emptied collectives list must close an allowed-users list
+          // whose names are all deferred
+          applyAllowedUsers(startup, prepared);
+        },
+        restrictedModelTypes: ({ startup }) =>
+          replaceList(
+            authConfig.restrictedModelTypes,
+            startup.authConfig.restrictedModelTypes,
+          ),
+        restrictedCommands: ({ startup }) =>
+          replaceList(
+            authConfig.restrictedCommands,
+            startup.authConfig.restrictedCommands,
+          ),
+        groupsField: ({ startup }) => {
+          authConfig.groupsField = startup.authConfig.groupsField;
+        },
+        datastorePollInterval: ({ startup }) => {
+          for (
+            const poller of [
+              configPoller,
+              accessDataPoller,
+              integrationDataPoller,
+              delegationDataPoller,
+              runtimeDataPoller,
+            ]
+          ) {
+            poller?.setPollIntervalMs(startup.datastorePollIntervalMs);
+          }
+        },
+        reconciliationInterval: ({ startup }) => {
+          liveIntervals.reconciliationMs = startup.reconciliationIntervalMs ??
+            60_000;
+        },
+        continuationSweepInterval: ({ startup }) => {
+          liveIntervals.continuationSweepMs =
+            startup.continuationSweepIntervalMs;
+        },
+        tokenGcInterval: ({ startup }) => {
+          liveIntervals.tokenGcMs = startup.tokenGcSettings.intervalMs;
+        },
+        tokenGcGracePeriod: ({ startup }) => {
+          liveIntervals.tokenGcGraceMs = startup.tokenGcSettings.gracePeriodMs;
+        },
+        groupRefreshInterval: ({ startup }) => {
+          liveIntervals.groupRefreshMs = startup.groupRefreshMs;
+        },
+        webhookRoutesPoll: ({ startup }) => {
+          if (startup.webhookRoutesPollMs !== undefined) {
+            webhookRoutesPoller?.setIntervalMs(startup.webhookRoutesPollMs);
+          }
+        },
+        trustProxy: ({ merged: next }) => {
+          trustProxy = next.trustProxy;
+        },
+        trustedHosts: ({ merged: next }) => {
+          trustedHosts = trustedHostsFrom(next.trustedHosts);
+        },
+        dispatchEnvAllow: ({ startup }) =>
+          dispatchService.setDispatchEnvAllow(startup.dispatchEnvAllow),
+        verifyOnEnroll: ({ merged: next }) => {
+          verifyOnEnroll = next.verifyOnEnroll;
+        },
+        // the next route load and poll read the new directory
+        webhookRoutesDir: ({ merged: next }) => {
+          webhookRoutesDir = resolveServePath(
+            resolvedRepoDir,
+            next.webhookRoutesDir,
+          );
+        },
+        maxConcurrentWebhookRuns: ({ startup }) =>
+          webhookService.setMaxConcurrentRuns(
+            startup.maxConcurrentWebhookRuns,
+          ),
+        shutdownListenerGrace: ({ startup }) => {
+          shutdownListenerGraceMs = startup.shutdownListenerGraceMs;
+        },
+      },
+      beforeCommit: (report, context) =>
+        emitServeConfigReloaded(
+          {
+            auditEmitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
+          },
+          context,
+          report,
+        ),
       // only what was applied, so the config and health views never show a
       // value this process has not adopted
-      connectionCtx.serveOptions = overlayAppliedSettings(
-        connectionCtx.serveOptions ?? merged,
-        nextMerged,
-      );
-    };
-    // validated exactly as startup validates, so a file startup would refuse
-    // changes nothing
-    const settingsReloader = () =>
-      Promise.resolve().then(() => {
-        const nextFile = loadServeConfig(
-          options.config as string | undefined,
-          repoDir,
+      afterCommit: ({ merged: nextMerged }, applied, prepared) => {
+        const live = overlayAppliedSettings(
+          connectionCtx.serveOptions ?? merged,
+          nextMerged,
+          applied,
         );
-        const nextMerged = resolveServeTlsPaths(
-          repoDir,
-          mergeServeOptions(nextFile, options, explicitFlags),
-        );
-        const next = resolveServeStartupSettings(nextMerged);
-        const report = diffServeSettings({
-          before: liveConfigFile,
-          after: nextFile,
-          explicitFlags,
-          envLookup: (name) => Deno.env.get(name),
-        });
-        applyLiveSettings(nextMerged, next);
-        liveConfigFile = nextFile;
-        return { config: nextFile, report };
-      });
+        connectionCtx.serveOptions = prepared.allowedUsers
+          ? {
+            ...live,
+            allowedUsers: prepared.allowedUsers.namesInForce.join(","),
+          }
+          : live;
+      },
+      followUps: (_candidate, prepared, applied) => {
+        const followUps: ReloadFollowUp[] = [];
+        if (applied.includes("maxConcurrentWebhookRuns")) {
+          followUps.push({
+            name: "Starting queued webhook runs",
+            run: () => Promise.resolve(webhookService.admitQueued()),
+          });
+        }
+        const plan = prepared.allowedUsers;
+        const store = storeOauthNameCache;
+        if (plan?.cacheChanged && store) {
+          followUps.push({
+            name: "Saving the resolved user names",
+            run: () =>
+              prepared.nameMapUnread
+                ? Promise.reject(
+                  new Error(
+                    "the stored name map could not be read, so it was left as it was",
+                  ),
+                )
+                : store({ ...plan.cache }),
+          });
+        }
+        const clientId = authConfig.oauthClientId;
+        const apiKey = clubApiKey;
+        if (
+          applied.includes("allowedCollectives") &&
+          authConfig.mode === "oauth" && clientId && apiKey
+        ) {
+          followUps.push({
+            name: "swamp-club re-registration",
+            run: async () => {
+              if (authConfig.allowedCollectives.length === 0) {
+                clubHeartbeatService?.stop();
+                clubHeartbeatService = null;
+                return;
+              }
+              await registerInstance(
+                authConfig.oauthProvider,
+                apiKey,
+                clubRegistrationNow(clientId),
+                AbortSignal.timeout(30_000),
+              );
+              if (!clubHeartbeatService) {
+                clubHeartbeatService = new ClubHeartbeatService({
+                  providerUrl: authConfig.oauthProvider,
+                  oauthClientId: clientId,
+                  instanceId,
+                  intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
+                  getAccessToken: () => Promise.resolve(apiKey),
+                  sendHeartbeat: sendInstanceHeartbeat,
+                  reregister: (accessToken, signal) =>
+                    registerInstance(
+                      authConfig.oauthProvider,
+                      accessToken,
+                      clubRegistrationNow(clientId),
+                      signal,
+                    ),
+                });
+                clubHeartbeatService.start();
+              }
+            },
+          });
+        }
+        return followUps;
+      },
+    });
     const buildServeReloadOptions = (
       webhookContext: WebhookApplyContext,
     ): ServeReloadOptions => ({
@@ -7728,8 +8183,10 @@ export const serveCommand = new Command()
       settingsReloader,
       ...(connectionCtx.auditEmitter && connectionCtx.auditSinkRebuilder
         ? {
-          auditSinkReloader: async () => {
-            const sinks = await connectionCtx.auditSinkRebuilder!();
+          auditSinkReloader: async (config) => {
+            const sinks = await connectionCtx.auditSinkRebuilder!(config);
+            // a sink this reload removes still records the reload itself
+            await connectionCtx.auditEmitter!.flush();
             connectionCtx.auditEmitter!.replaceSinks(sinks);
             return sinks.length;
           },
@@ -8932,7 +9389,11 @@ export const serveCommand = new Command()
 
     if (reloadOnHangup && pidPath) {
       try {
-        await Deno.writeTextFile(pidPath, String(Deno.pid));
+        await writeServePidFiles(pidPath, {
+          pid: Deno.pid,
+          startTime: await readProcessStartTime(Deno.pid),
+          executable: basename(Deno.execPath()),
+        });
         logger.info`SIGHUP reloads this serve, PID file written to ${pidPath}`;
       } catch (err) {
         // --hot-reload asked for the local reload; without it a read-only repo
@@ -9031,7 +9492,7 @@ export const serveCommand = new Command()
       // the stages below run meanwhile, so the grace never lengthens shutdown
       const listenerClosed = listenerGraceElapsed(
         drainStarted,
-        Math.min(shutdownListenerGraceMs, shutdownDrainTimeoutMs),
+        boundedListenerGraceMs(shutdownListenerGraceMs, shutdownDrainTimeoutMs),
       ).then(() => listenerAc.abort());
       // before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does
@@ -9246,17 +9707,7 @@ export const serveCommand = new Command()
       setRemoteOnlyMode(false);
       await stages.run("listener", () => listenerClosed, "awaited");
       ac.abort();
-      if (pidPath) {
-        try {
-          // an overlapping serve that started after this one owns it now
-          const pidOwner = await Deno.readTextFile(pidPath);
-          if (pidOwner.trim() === String(Deno.pid)) {
-            await Deno.remove(pidPath);
-          }
-        } catch {
-          // PID file may already be gone
-        }
-      }
+      if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
       if (isJson) {
         console.log(JSON.stringify({ status: "stopped" }));
       }
@@ -9431,7 +9882,7 @@ export const serveCommand = new Command()
       await heartbeatService.start();
       logger.info`Instance heartbeat started (id: ${instanceId})`;
 
-      const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
+      reconciliationLoopRunning = true;
       let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
         try {
@@ -9520,7 +9971,7 @@ export const serveCommand = new Command()
             runReconciliationTick().catch(() => {}).finally(
               scheduleReconciliation,
             ),
-          RECONCILIATION_INTERVAL_MS + jitterMs,
+          liveIntervals.reconciliationMs + jitterMs,
         );
         Deno.unrefTimer(timer);
       };
@@ -10003,7 +10454,7 @@ export const serveCommand = new Command()
             // mutex. The next pass continues.
             shouldBackOff: () =>
               control.manualGcWaiting() ||
-              activeRunRegistry.size >= (maxConcurrentRuns ?? 100),
+              activeRunRegistry.size >= activeRunRegistry.maxConcurrent,
           },
         ),
       onPass: (result) => {
@@ -10037,38 +10488,45 @@ export const serveCommand = new Command()
       }
     } else {
       const tokenGcSync = syncService;
-      serverTokenGcService = new ServerTokenGcService(
-        createServerTokenGcDeps({
-          intervalMs: tokenGcSettings.intervalMs,
-          gracePeriodMs: tokenGcSettings.gracePeriodMs,
-          dataQueryService: repoContext.dataQueryService,
-          ...createServerTokenGcRepos(
-            resolvedRepoDir,
-            repoContext,
-            datastoreResolver,
-          ),
-          vaultService: await VaultService.fromRepository(resolvedRepoDir, {
-            defaultVaultName: repoMarker?.defaultVault,
-          }),
-          libCtx: libSwampContextForRepo(repoContext),
-          pushChanged: tokenGcSync
-            ? async () => {
-              await tokenGcSync.pushChanged({ namespace: serveNamespace });
-            }
-            : undefined,
-          pullChanged: tokenGcSync
-            ? async () => {
-              const pulled = await tokenGcSync.pullChanged({
-                namespace: serveNamespace,
-              });
-              if (pulled !== 0) repoContext.catalogStore.invalidate();
-            }
-            : undefined,
-          syncGate,
-          withTokenLock: (name, fn) =>
-            withServerTokenLock(datastoreConfig, name, fn),
+      const tokenGcDeps = createServerTokenGcDeps({
+        intervalMs: tokenGcSettings.intervalMs,
+        gracePeriodMs: tokenGcSettings.gracePeriodMs,
+        dataQueryService: repoContext.dataQueryService,
+        ...createServerTokenGcRepos(
+          resolvedRepoDir,
+          repoContext,
+          datastoreResolver,
+        ),
+        vaultService: await VaultService.fromRepository(resolvedRepoDir, {
+          defaultVaultName: repoMarker?.defaultVault,
         }),
-      );
+        libCtx: libSwampContextForRepo(repoContext),
+        pushChanged: tokenGcSync
+          ? async () => {
+            await tokenGcSync.pushChanged({ namespace: serveNamespace });
+          }
+          : undefined,
+        pullChanged: tokenGcSync
+          ? async () => {
+            const pulled = await tokenGcSync.pullChanged({
+              namespace: serveNamespace,
+            });
+            if (pulled !== 0) repoContext.catalogStore.invalidate();
+          }
+          : undefined,
+        syncGate,
+        withTokenLock: (name, fn) =>
+          withServerTokenLock(datastoreConfig, name, fn),
+      });
+      serverTokenGcService = new ServerTokenGcService({
+        ...tokenGcDeps,
+        get intervalMs() {
+          return liveIntervals.tokenGcMs;
+        },
+        get gracePeriodMs() {
+          return liveIntervals.tokenGcGraceMs;
+        },
+      });
       startWhenLeading(() => serverTokenGcService!.start());
     }
 
@@ -10110,7 +10568,9 @@ export const serveCommand = new Command()
       // Built once, outside the pass: it remembers when it last swept.
       const sweepHeldSignalsWhenDue = heldSignalSweeper();
       continuationSweepService = new ContinuationSweepService({
-        intervalMs: continuationSweepIntervalMs,
+        get intervalMs() {
+          return liveIntervals.continuationSweepMs;
+        },
         bootPassOnly,
         sweep: async ({ boot, isStopping, signal }) => {
           // A follower resumes nothing, since its commits would be refused;

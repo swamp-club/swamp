@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { ServeConfigFile } from "./serve_config.ts";
 import {
   diffServeSettings,
@@ -72,14 +72,31 @@ Deno.test("diffServeSettings: a listener setting needs a new process, with the r
   );
 });
 
-Deno.test("diffServeSettings: an auth list is not applied by reload yet", () => {
+Deno.test("diffServeSettings: allowed-users and the restrictions apply on reload; admins need a restart", () => {
   const report = diff(
-    { auth: { mode: "oauth", "allowed-users": ["alice"] } },
-    { auth: { mode: "oauth", "allowed-users": ["alice", "bob"] } },
+    {
+      auth: {
+        mode: "oauth",
+        admins: ["root"],
+        "allowed-users": ["alice"],
+        "restricted-commands": ["datastore.write"],
+      },
+    },
+    {
+      auth: {
+        mode: "oauth",
+        admins: ["root", "newadmin"],
+        "allowed-users": ["alice", "bob"],
+        "restricted-commands": [],
+      },
+    },
   );
-  assertEquals(report.needsRestart.map((r) => r.setting), [
+  assertEquals(report.applied, [
     "auth.allowed-users",
+    "auth.restricted-commands",
   ]);
+  assertEquals(report.needsRestart.map((r) => r.setting), ["auth.admins"]);
+  assertStringIncludes(report.needsRestart[0].reason, "restart serve");
 });
 
 Deno.test("diffServeSettings: a value pinned by a startup flag is overridden, naming the flag", () => {
@@ -110,6 +127,20 @@ Deno.test("diffServeSettings: --webhook flags override the file's webhooks list"
   const route = { route: "/hooks/a", workflow: "a", secret: "s" };
   const report = diff({ webhooks: [] }, { webhooks: [route] }, ["webhook"]);
   assertEquals(report.overridden, [{ setting: "webhooks", by: "--webhook" }]);
+});
+
+Deno.test("diffServeSettings: an applied setting whose consumer is not running needs a restart, with that reason", () => {
+  const report = diffServeSettings({
+    before: { triggers: {} },
+    after: { triggers: { nightly: { schedule: "0 3 * * *" } } },
+    explicitFlags: new Set(),
+    envLookup: () => undefined,
+    notRunning: { triggerOverrides: "no scheduler runs on this serve" },
+  });
+  assertEquals(report.applied, []);
+  assertEquals(report.needsRestart, [
+    { setting: "triggers", reason: "no scheduler runs on this serve" },
+  ]);
 });
 
 Deno.test("diffServeSettings: a startup-only setting is not reported", () => {
@@ -152,7 +183,7 @@ Deno.test("reloadsOnHangup: never on Windows, which has no SIGHUP", () => {
   );
 });
 
-Deno.test("overlayAppliedSettings: takes only applied settings from the reloaded file", () => {
+Deno.test("overlayAppliedSettings: takes only the keys the reload applied from the reloaded file", () => {
   const current = {
     port: 9090,
     allowedUsers: ["alice", "bob"],
@@ -165,12 +196,33 @@ Deno.test("overlayAppliedSettings: takes only applied settings from the reloaded
     dashboard: true,
     maxConcurrentRuns: 9,
   } as unknown as Parameters<typeof overlayAppliedSettings>[1];
-  const live = overlayAppliedSettings(current, next) as unknown as Record<
-    string,
-    unknown
-  >;
+  const live = overlayAppliedSettings(current, next, [
+    "dashboard",
+  ]) as unknown as Record<string, unknown>;
   assertEquals(live.port, 9090);
   assertEquals(live.allowedUsers, ["alice", "bob"]);
   assertEquals(live.dashboard, true);
-  assertEquals(live.maxConcurrentRuns, 9);
+  // applied class, but this reload did not apply it
+  assertEquals(live.maxConcurrentRuns, 5);
+});
+
+Deno.test("diffServeSettings: stale-ttl and heartbeat-interval stay restart-only, since peers judge liveness by them; intervals apply", () => {
+  const report = diff(
+    {
+      "stale-ttl": "60s",
+      "heartbeat-interval": "10s",
+      "token-gc-interval": "1h",
+    },
+    {
+      "stale-ttl": "30s",
+      "heartbeat-interval": "5s",
+      "token-gc-interval": "2h",
+    },
+  );
+  assertEquals(report.applied, ["token-gc-interval"]);
+  assertEquals(
+    report.needsRestart.map((entry) => entry.setting).sort(),
+    ["heartbeat-interval", "stale-ttl"],
+  );
+  assertStringIncludes(report.needsRestart[0].reason, "liveness");
 });

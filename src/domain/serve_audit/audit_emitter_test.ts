@@ -27,6 +27,7 @@ import type { AuditEvent, ChainedAuditEvent } from "./audit_event.ts";
 import { createAuditEvent } from "./audit_event.ts";
 import type { AuditSink } from "./audit_sink.ts";
 import { type AlertRuleConfig, AlertRuleEngine } from "./audit_alerts.ts";
+import { AuditPolicy } from "./audit_policy.ts";
 import {
   generateHmacKeyBytes,
   HmacKeyRegistry,
@@ -1136,4 +1137,22 @@ Deno.test("AuditEmitter: a sink named like a generated key is not counted as a s
   } finally {
     await initializeLogging({ _reset: true });
   }
+});
+
+Deno.test("AuditEmitter.setPolicy: an event emitted after the change follows the new policy", async () => {
+  const sink = createMockSink("store");
+  const emitter = new AuditEmitter({
+    sinks: [sink],
+    policy: new AuditPolicy([], "metadata"),
+  });
+  emitter.emit(makeEvent("auth.login"));
+  emitter.setPolicy(
+    new AuditPolicy([{ category: "auth", level: "none" }], "metadata"),
+  );
+  emitter.emit(makeEvent("auth.login.again"));
+  await emitter.flush();
+  assertEquals(
+    sink.written.flat().map((event) => event.action),
+    ["auth.login"],
+  );
 });

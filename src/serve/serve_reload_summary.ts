@@ -64,6 +64,14 @@ export function summarizeServeReload(
     for (const line of lines.info) info.push(line);
     for (const line of lines.warn) warn.push(line);
   }
+  // a refused serve.yaml is an error even when the extension refresh worked
+  if (result.configRejected) {
+    return {
+      info,
+      warn: [...warn, ...(result.warnings ?? [])],
+      error: [...result.errors],
+    };
+  }
   return {
     info,
     warn: [...warn, ...(result.warnings ?? []), ...result.errors],

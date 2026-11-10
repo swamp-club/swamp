@@ -353,6 +353,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/infrastructure/process/process_kill.ts: findChildPids": TOOLING,
     "src/infrastructure/process/process_kill.ts: isSwampProcess": TOOLING,
     "src/infrastructure/process/process_kill.ts: processStartTimes": TOOLING,
+    "src/infrastructure/process/process_kill.ts: runPs": TOOLING,
     "src/infrastructure/process/resolve_command.ts: defaultLookupRunner":
       TOOLING,
     "src/infrastructure/process/terminal/terminal_launcher.ts: createSystemTerminalLauncher":
@@ -516,6 +517,7 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       AUTHORED_SOURCE,
     "src/serve/extension_reload.ts: reloadPulledExtensions": CONFIG_WRITE,
     "src/serve/serve_config.ts: writeServeConfigFile": CONFIG_WRITE,
+    "src/serve/serve_pid_file.ts: writeServePidFiles": CONFIG_WRITE,
     "src/serve/unpushed_interrupts.ts: recordUnpushedInterrupts": CONFIG_WRITE,
     "src/worker/bundle_cache.ts: writeAtomically": CONFIG_WRITE,
     "src/worker/connect.ts: loadOrCreateMachineId": CONFIG_WRITE,

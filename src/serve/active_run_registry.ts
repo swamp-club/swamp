@@ -98,6 +98,10 @@ export class ActiveRunRegistry {
     this.#maxRunDurationMs = options?.maxRunDurationMs;
   }
 
+  get maxConcurrent(): number {
+    return this.#maxConcurrent;
+  }
+
   /**
    * new limits govern runs registered from now on; a run already over a
    * lowered cap keeps running, and its duration timer keeps the old limit
@@ -147,15 +151,16 @@ export class ActiveRunRegistry {
     }
     this.#runs.set(run.runId, run);
 
-    if (this.#maxRunDurationMs !== undefined) {
+    const durationMs = this.#maxRunDurationMs;
+    if (durationMs !== undefined) {
       const timer = setTimeout(() => {
         this.#timers.delete(run.runId);
         logger.warn(
           "Run {runId} exceeded max duration ({durationMs}ms), aborting",
-          { runId: run.runId, durationMs: this.#maxRunDurationMs! },
+          { runId: run.runId, durationMs },
         );
         run.controller.abort(new Error("max run duration exceeded"));
-      }, this.#maxRunDurationMs);
+      }, durationMs);
       Deno.unrefTimer(timer);
       this.#timers.set(run.runId, timer);
     }

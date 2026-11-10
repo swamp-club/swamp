@@ -39,16 +39,20 @@ export interface SettingCatalogueEntry {
   readonly reason?: string;
 }
 
+interface AppliedEntry extends SettingCatalogueEntry {
+  readonly reloadClass: "applied";
+}
+
 const NEW_PROCESS = "restart serve to change it; it needs a new process";
 const NOT_YET = "not applied by reload yet; restart serve to change it";
+const LIVENESS =
+  "restart serve to change it; every instance judges its peers' liveness by it";
 
 /**
  * Every MergedServeOptions key and how reload treats it. Keyed by the
  * merged option name so the type checker refuses a key that is not one.
  */
-export const SETTING_CATALOGUE: {
-  readonly [K in keyof MergedServeOptions]-?: SettingCatalogueEntry;
-} = {
+export const SETTING_CATALOGUE = {
   port: restart("port", "port", `${NEW_PROCESS}: the listener is bound to it`),
   host: restart("host", "host", `${NEW_PROCESS}: the listener is bound to it`),
   certFile: restart(
@@ -61,7 +65,11 @@ export const SETTING_CATALOGUE: {
     "key-file",
     `${NEW_PROCESS}: the listener holds the key`,
   ),
-  caCert: restart("tls.ca-cert", "ca-cert", NOT_YET),
+  caCert: restart(
+    "tls.ca-cert",
+    "ca-cert",
+    `${NEW_PROCESS}: TLS connections are set up with it`,
+  ),
   reusePort: restart(
     "reuse-port",
     "reuse-port",
@@ -100,35 +108,35 @@ export const SETTING_CATALOGUE: {
   keepOauthClientInVault: restart(
     "auth.keep-oauth-client-in-vault",
     "keep-oauth-client-in-vault",
-    NOT_YET,
+    `${NEW_PROCESS}: the OAuth client is set up with it`,
   ),
   hotReload: restart(
     "hot-reload",
     "hot-reload",
     `${NEW_PROCESS}: the signal handler is installed at startup`,
   ),
-  admins: restart("auth.admins", "admins", NOT_YET),
-  allowedCollectives: restart(
+  admins: restart(
+    "auth.admins",
+    "admins",
+    "restart serve to change admins; admin grants are written when serve starts",
+  ),
+  allowedCollectives: applied(
     "auth.allowed-collectives",
     "allowed-collectives",
-    NOT_YET,
   ),
-  allowedUsers: restart("auth.allowed-users", "allowed-users", NOT_YET),
-  groupsField: restart("auth.groups-field", "groups-field", NOT_YET),
-  restrictedModelTypes: restart(
+  allowedUsers: applied("auth.allowed-users", "allowed-users"),
+  groupsField: applied("auth.groups-field", "groups-field"),
+  restrictedModelTypes: applied(
     "auth.restricted-model-types",
     "restricted-model-types",
-    NOT_YET,
   ),
-  restrictedCommands: restart(
+  restrictedCommands: applied(
     "auth.restricted-commands",
     "restricted-commands",
-    NOT_YET,
   ),
-  groupRefreshInterval: restart(
+  groupRefreshInterval: applied(
     "auth.group-refresh-interval",
     "group-refresh-interval",
-    NOT_YET,
   ),
   approveRequiresExplicitGrant: restart(
     "auth.approve-requires-explicit-grant",
@@ -149,66 +157,49 @@ export const SETTING_CATALOGUE: {
   grantsFile: restart("grants-file", "grants-file", NOT_YET),
   grantsDir: restart("grants-dir", "grants-dir", NOT_YET),
   grantReload: restart("grant-reload", "grant-reload", NOT_YET),
-  webhookRoutesDir: restart(
-    "webhook-routes-dir",
-    "webhook-routes-dir",
-    NOT_YET,
-  ),
-  webhookRoutesPoll: restart(
-    "webhook-routes-poll",
-    "webhook-routes-poll",
-    NOT_YET,
-  ),
-  trustProxy: restart("trust-proxy", "trust-proxy", NOT_YET),
-  trustedHosts: restart("trusted-hosts", "trusted-hosts", NOT_YET),
-  verifyOnEnroll: restart("verify-on-enroll", "verify-on-enroll", NOT_YET),
-  dispatchEnvAllow: restart(
-    "dispatch-env-allow",
-    "dispatch-env-allow",
-    NOT_YET,
-  ),
+  webhookRoutesDir: applied("webhook-routes-dir", "webhook-routes-dir"),
+  webhookRoutesPoll: applied("webhook-routes-poll", "webhook-routes-poll"),
+  trustProxy: applied("trust-proxy", "trust-proxy"),
+  trustedHosts: applied("trusted-hosts", "trusted-hosts"),
+  verifyOnEnroll: applied("verify-on-enroll", "verify-on-enroll"),
+  dispatchEnvAllow: applied("dispatch-env-allow", "dispatch-env-allow"),
   heartbeatInterval: restart(
     "heartbeat-interval",
     "heartbeat-interval",
-    NOT_YET,
+    LIVENESS,
   ),
-  staleTtl: restart("stale-ttl", "stale-ttl", NOT_YET),
-  reconciliationInterval: restart(
+  staleTtl: restart("stale-ttl", "stale-ttl", LIVENESS),
+  reconciliationInterval: applied(
     "reconciliation-interval",
     "reconciliation-interval",
-    NOT_YET,
   ),
-  datastorePollInterval: restart(
+  datastorePollInterval: applied(
     "datastore-poll-interval",
     "datastore-poll-interval",
-    NOT_YET,
   ),
-  continuationSweepInterval: restart(
+  continuationSweepInterval: applied(
     "continuation-sweep-interval",
     "continuation-sweep-interval",
-    NOT_YET,
   ),
-  tokenGcInterval: restart("token-gc-interval", "token-gc-interval", NOT_YET),
-  tokenGcGracePeriod: restart(
-    "token-gc-grace-period",
-    "token-gc-grace-period",
-    NOT_YET,
-  ),
+  tokenGcInterval: applied("token-gc-interval", "token-gc-interval"),
+  tokenGcGracePeriod: applied("token-gc-grace-period", "token-gc-grace-period"),
   maxConcurrentScheduledRuns: restart(
     "max-concurrent-scheduled-runs",
     "max-concurrent-scheduled-runs",
     NOT_YET,
   ),
-  maxConcurrentWebhookRuns: restart(
+  maxConcurrentWebhookRuns: applied(
     "max-concurrent-webhook-runs",
     "max-concurrent-webhook-runs",
-    NOT_YET,
   ),
-  remoteOnly: restart("remote-only", "remote-only", NOT_YET),
-  shutdownListenerGrace: restart(
+  remoteOnly: restart(
+    "remote-only",
+    "remote-only",
+    "restart serve to change it; every step of a running run reads it",
+  ),
+  shutdownListenerGrace: applied(
     "shutdown-listener-grace",
     "shutdown-listener-grace",
-    NOT_YET,
   ),
   dashboard: applied("dashboard", "dashboard"),
   enableInternalApi: applied("enable-internal-api", "enable-internal-api"),
@@ -246,9 +237,17 @@ export const SETTING_CATALOGUE: {
     flag: "detach-runs",
     reloadClass: "startup-only",
   },
+} satisfies {
+  readonly [K in keyof MergedServeOptions]-?: SettingCatalogueEntry;
 };
 
-function applied(setting: string, flag?: string): SettingCatalogueEntry {
+/** the settings a running serve takes on reload; each needs an applier */
+export type AppliedSettingKey = {
+  [K in keyof typeof SETTING_CATALOGUE]: (typeof SETTING_CATALOGUE)[K] extends
+    AppliedEntry ? K : never;
+}[keyof typeof SETTING_CATALOGUE];
+
+function applied(setting: string, flag?: string): AppliedEntry {
   return { setting, ...(flag ? { flag } : {}), reloadClass: "applied" };
 }
 
@@ -272,43 +271,78 @@ export interface SettingsDiffInput {
   /** flags given explicitly at startup; they win over the file */
   readonly explicitFlags: ReadonlySet<string>;
   readonly envLookup: (name: string) => string | undefined;
+  /** applied settings whose consumer is not running here, with the reason */
+  readonly notRunning?: Partial<Record<keyof MergedServeOptions, string>>;
+}
+
+export interface SettingChanges {
+  readonly applied: readonly AppliedSettingKey[];
+  readonly needsRestart: readonly {
+    key: keyof MergedServeOptions;
+    reason: string;
+  }[];
+  readonly overridden: readonly { key: keyof MergedServeOptions; by: string }[];
 }
 
 /**
  * What the serve.yaml edit changed, judged on the file alone, and for each
- * change whether reload applies it, cannot, or is overridden by a startup flag
- * or environment variable.
+ * changed key whether reload applies it, cannot, or is overridden by a startup
+ * flag or environment variable.
  */
-export function diffServeSettings(
+export function classifyServeSettingChanges(
   input: SettingsDiffInput,
-): SettingsReloadReport {
+): SettingChanges {
   const fileOnly = (config: ServeConfigFile | null) =>
     mergeServeOptions(config, {}, new Set(), () => undefined);
   const before = fileOnly(input.before);
   const after = fileOnly(input.after);
 
-  const appliedSettings: string[] = [];
-  const needsRestart: { setting: string; reason: string }[] = [];
-  const overridden: { setting: string; by: string }[] = [];
+  const appliedKeys: AppliedSettingKey[] = [];
+  const needsRestart: { key: keyof MergedServeOptions; reason: string }[] = [];
+  const overridden: { key: keyof MergedServeOptions; by: string }[] = [];
   for (
     const key of Object.keys(SETTING_CATALOGUE) as (keyof MergedServeOptions)[]
   ) {
     if (sameValue(before[key], after[key])) continue;
-    const entry = SETTING_CATALOGUE[key];
+    const entry: SettingCatalogueEntry = SETTING_CATALOGUE[key];
     if (entry.reloadClass === "startup-only") continue;
     const by = overriddenBy(key, entry, input);
     if (by !== undefined) {
-      overridden.push({ setting: entry.setting, by });
-    } else if (entry.reloadClass === "applied") {
-      appliedSettings.push(entry.setting);
+      overridden.push({ key, by });
+    } else if (
+      entry.reloadClass === "applied" && input.notRunning?.[key] === undefined
+    ) {
+      appliedKeys.push(key as AppliedSettingKey);
     } else {
       needsRestart.push({
-        setting: entry.setting,
-        reason: entry.reason ?? NOT_YET,
+        key,
+        reason: input.notRunning?.[key] ?? entry.reason ?? NOT_YET,
       });
     }
   }
-  return { applied: appliedSettings, needsRestart, overridden };
+  return { applied: appliedKeys, needsRestart, overridden };
+}
+
+export function settingName(key: keyof MergedServeOptions): string {
+  return SETTING_CATALOGUE[key].setting;
+}
+
+/** the report an operator reads, with settings named as serve.yaml names them */
+export function diffServeSettings(
+  input: SettingsDiffInput,
+): SettingsReloadReport {
+  const changes = classifyServeSettingChanges(input);
+  return {
+    applied: changes.applied.map(settingName),
+    needsRestart: changes.needsRestart.map(({ key, reason }) => ({
+      setting: settingName(key),
+      reason,
+    })),
+    overridden: changes.overridden.map(({ key, by }) => ({
+      setting: settingName(key),
+      by,
+    })),
+  };
 }
 
 function overriddenBy(
@@ -345,21 +379,16 @@ export function reloadsOnHangup(options: {
 }
 
 /**
- * The options in force after a reload: the current ones with only the
- * applied-class settings taken from the reloaded file, since a restart-class
- * change has not been adopted by this process.
+ * The options in force after a reload: the current ones with only the keys
+ * the reload applied taken from the reloaded file, so a change this process
+ * has not adopted never shows in the config or health views.
  */
 export function overlayAppliedSettings(
   current: MergedServeOptions,
   next: MergedServeOptions,
+  appliedKeys: readonly AppliedSettingKey[],
 ): MergedServeOptions {
   const live: Record<string, unknown> = { ...current };
-  for (
-    const key of Object.keys(SETTING_CATALOGUE) as (keyof MergedServeOptions)[]
-  ) {
-    if (SETTING_CATALOGUE[key].reloadClass === "applied") {
-      live[key] = next[key];
-    }
-  }
+  for (const key of appliedKeys) live[key] = next[key];
   return live as unknown as MergedServeOptions;
 }

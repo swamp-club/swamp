@@ -54,6 +54,7 @@ function message(error: unknown): string {
 
 export class WebhookRoutesPoller {
   readonly #options: WebhookRoutesPollerOptions;
+  #intervalMs: number;
   readonly #now: () => Date;
   #timer: ReturnType<typeof setInterval> | null = null;
   #stopped = false;
@@ -72,18 +73,30 @@ export class WebhookRoutesPoller {
 
   constructor(options: WebhookRoutesPollerOptions) {
     this.#options = options;
+    this.#intervalMs = options.intervalMs;
     this.#now = options.now ?? (() => new Date());
   }
 
   start(): void {
     if (this.#timer) return;
     this.#stopped = false;
+    this.#arm();
+  }
+
+  #arm(): void {
     this.#timer = setInterval(() => {
       // a slow check skips the ticks it overlaps rather than queueing them
       if (this.#running) return;
       this.#pending = this.#pending.then(() => this.#tick());
-    }, this.#options.intervalMs);
+    }, this.#intervalMs);
     Deno.unrefTimer(this.#timer);
+  }
+
+  setIntervalMs(intervalMs: number): void {
+    this.#intervalMs = intervalMs;
+    if (this.#timer === null) return;
+    clearInterval(this.#timer);
+    this.#arm();
   }
 
   async stop(): Promise<void> {
@@ -103,7 +116,7 @@ export class WebhookRoutesPoller {
 
   status(): WebhookRoutesPollStatus {
     return {
-      intervalMs: this.#options.intervalMs,
+      intervalMs: this.#intervalMs,
       lastCheckedAt: this.#lastCheckedAt,
       lastAppliedAt: this.#lastAppliedAt,
       lastError: this.#lastError,
