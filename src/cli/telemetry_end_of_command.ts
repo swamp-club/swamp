@@ -50,6 +50,9 @@ export async function sendTelemetryAtCommandEnd(
     return;
   }
   try {
+    // without a distinct id the sender exits at once, freeing the lock for
+    // the next command to start another
+    if (!(ctx.userId ?? ctx.repoId)) return;
     if (!await ctx.service.hasUnflushed()) return;
     await (deps.startSender ?? startTelemetrySender)(globalTelemetryDir(), {
       endpoint: ctx.telemetryEndpoint,

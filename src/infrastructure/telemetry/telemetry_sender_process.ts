@@ -296,7 +296,9 @@ export interface LingerOptions extends DrainOptions {
 
 /**
  * drains the spool, then keeps the lock and drains what later commands spool
- * until a linger passes with nothing new, a send fails or the lock is lost
+ * until a linger passes with nothing new or the lock is lost. After a failed
+ * send it sends nothing more but keeps the lock for a linger, so a failing
+ * ingest costs one sender per linger rather than one per command
  */
 export async function drainAndLinger(options: LingerOptions): Promise<void> {
   const skipIds = options.skipIds ?? new Set<string>();
@@ -318,15 +320,22 @@ export async function drainAndLinger(options: LingerOptions): Promise<void> {
     });
   };
   const startedAt = now();
-  if (!(await drain()).ok) return;
+  const lingering = (since: number) =>
+    now() - since < lingerMs && now() - startedAt < maxLifetimeMs;
+  const hold = async () => {
+    const failedAt = now();
+    while (lingering(failedAt)) {
+      await sleep(pollMs);
+      if (!await options.heartbeat()) return;
+    }
+  };
+  if (!(await drain()).ok) return await hold();
   let idleSince = now();
-  while (
-    now() - idleSince < lingerMs && now() - startedAt < maxLifetimeMs
-  ) {
+  while (lingering(idleSince)) {
     await sleep(pollMs);
     if (!await options.heartbeat()) return;
     const outcome = await drain();
-    if (!outcome.ok) return;
+    if (!outcome.ok) return await hold();
     if (outcome.sent > 0) idleSince = now();
   }
 }

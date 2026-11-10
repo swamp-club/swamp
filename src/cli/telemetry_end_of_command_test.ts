@@ -105,3 +105,24 @@ for (const os of ["darwin", "linux"] as const) {
     });
   });
 }
+
+Deno.test("sendTelemetryAtCommandEnd: a command with no distinct id starts no sender, which would exit at once and free the lock", async () => {
+  await withSpooledContext(async (ctx) => {
+    let started = 0;
+    const sender = new CountingSender();
+    await sendTelemetryAtCommandEnd(
+      { ...ctx, userId: null, repoId: undefined },
+      { succeeded: true },
+      {
+        os: "linux",
+        sender,
+        startSender: () => {
+          started++;
+          return Promise.resolve(true);
+        },
+      },
+    );
+    assertEquals(started, 0);
+    assertEquals(sender.sent, 0);
+  });
+});

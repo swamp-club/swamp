@@ -33,6 +33,7 @@ import {
   SENDER_LOCK_FILE,
   SENDER_MAX_LIFETIME_MS,
   senderArgs,
+  startTelemetrySender,
 } from "./telemetry_sender_process.ts";
 
 const INGEST = "http://ingest.test";
@@ -380,3 +381,56 @@ Deno.test("runTelemetrySenderMain: under steady activity the sender exits at its
     });
   });
 });
+
+const FAILING_INGESTS: [string, (req: Request) => Promise<Response>][] = [
+  ["refuses", () => Promise.reject(new TypeError("connection refused"))],
+  [
+    "never answers",
+    (req) =>
+      new Promise<Response>((_resolve, reject) => {
+        req.signal.addEventListener("abort", () => reject(req.signal.reason));
+      }),
+  ],
+];
+
+for (const [label, respond] of FAILING_INGESTS) {
+  Deno.test(`runTelemetrySenderMain: when the ingest ${label}, a burst of commands starts no second sender while the first holds the lock`, async () => {
+    await withIngest(respond, async (url, received) => {
+      await withSpool(url, 1, async (dir) => {
+        const lock = join(dir, SENDER_LOCK_FILE);
+        const token = await claimSenderLock(lock);
+        assert(token !== undefined);
+        let launches = 0;
+        const commands: boolean[] = [];
+        const lingering = lingerDeps(dir, async () => {
+          await spoolEntry(dir, url);
+          commands.push(
+            await startTelemetrySender(dir, {
+              endpoint: url,
+              userAgent: "swamp-cli/test",
+              keepFlushed: false,
+            }, {
+              command: { command: "swamp", prefixArgs: [] },
+              launch: () => launches++,
+            }),
+          );
+        });
+
+        await runTelemetrySenderMain(
+          senderArgs(token, {
+            endpoint: url,
+            userAgent: "swamp-cli/test",
+            keepFlushed: false,
+          }),
+          { ...lingering, requestTimeoutMs: 200 },
+        );
+
+        assertEquals(received.length, 1);
+        assertEquals(commands.length, 30);
+        assert(commands.every((started) => !started));
+        assertEquals(launches, 0);
+        assert(await claimSenderLock(lock) !== undefined);
+      });
+    });
+  });
+}
