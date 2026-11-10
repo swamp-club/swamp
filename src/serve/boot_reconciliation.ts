@@ -439,14 +439,19 @@ export async function replayPendingRuns(
   let replayed = 0;
   for (const entry of pending) {
     if (deps.only && !deps.only.has(entry.id)) continue;
+    // a run this process already owns is in its queue, or failed to start
+    if (
+      deps.claimAs !== undefined &&
+      entry.owner?.instanceId === deps.claimAs.instanceId
+    ) continue;
     if (entry.owner && deps.ownerAlive && await deps.ownerAlive(entry.owner)) {
       deps.deferred?.add(entry.id);
       continue;
     }
-    if (deps.claimAs) {
-      await claimPendingRun(deps, entry, remoteSourceKeys.get(entry.id));
-    }
     try {
+      if (deps.claimAs) {
+        await claimPendingRun(deps, entry, remoteSourceKeys.get(entry.id));
+      }
       if (entry.source === "webhook" && deps.webhookService) {
         if (!deps.configuredWebhookWorkflows.has(entry.workflowIdOrName)) {
           await discardEntry(

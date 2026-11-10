@@ -308,7 +308,7 @@ const HTTP_RESTART_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "not_ready",
 ]);
 
-const RESTART_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+export const RESTART_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 interface RetryTiming {
   sleep?: Sleep;
@@ -405,6 +405,9 @@ function withRetriedFor(err: UserError, window: RetryWindow): UserError {
       code: err.code ?? "",
       message: `${err.serverMessage}${suffix}`,
       details: err.details,
+      ...(err.retryAfterSeconds !== undefined
+        ? { retryAfterSeconds: err.retryAfterSeconds }
+        : {}),
     });
   }
   return new UserError(`${err.message}${suffix}`, err.code);

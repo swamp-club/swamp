@@ -115,6 +115,15 @@ Deno.test("pendingOwnerLiveness: a peer elsewhere is alive while its heartbeat i
   assertEquals(await noStore(PEER), false);
 });
 
+Deno.test("pendingOwnerLiveness: an earlier process with this process's pid on this host is gone", async () => {
+  const alive = pendingOwnerLiveness({
+    instanceId: "self",
+    ownPid: PEER.pid,
+    ...onHost("host-a", false),
+  });
+  assertEquals(await alive(PEER), false);
+});
+
 Deno.test("pendingOwnerLiveness: an owner with no host is judged by its heartbeat", async () => {
   const alive = pendingOwnerLiveness({
     instanceId: "self",

@@ -2938,3 +2938,41 @@ Deno.test("replayPendingRuns: a remote entry's owner is read, and one that does 
   assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["remote-bad"]);
   assertEquals([...deferred], ["remote-live"]);
 });
+
+Deno.test("replayPendingRuns: a run this process already owns is neither replayed nor deferred", async () => {
+  const h = createReplayHarness([cronEntry("mine", SELF)]);
+  const deferred = new Set<string>();
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: () => Promise.resolve(true),
+    deferred,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 0);
+  assertEquals(h.cronReplays, []);
+  assertEquals([...deferred], []);
+});
+
+Deno.test("replayPendingRuns: a claim that fails to write skips its run, not the rest", async () => {
+  const h = createReplayHarness([
+    cronEntry("bad-claim", GONE_PEER),
+    cronEntry("good", GONE_PEER),
+  ]);
+  const runTracker = h.deps.runTracker as unknown as {
+    setPendingRunOwner: (id: string, owner: PendingRunOwner) => void;
+  };
+  runTracker.setPendingRunOwner = (id) => {
+    if (id === "bad-claim") throw new Error("database is locked");
+  };
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 1);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["good"]);
+});

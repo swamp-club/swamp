@@ -8848,6 +8848,8 @@ export const serveCommand = new Command()
       shuttingDown = true;
       isReady = false;
       admission.beginDraining();
+      // a pass during the drain would claim runs this process can no longer start
+      await deferredReplay.stop();
       // stopped first so it lets go of its load in flight instead of competing
       // with the drain; waited on after the drain, which does not wait for that
       // load
@@ -8900,11 +8902,6 @@ export const serveCommand = new Command()
       // closing the listener ends every open WebSocket, so it waits for the
       // drain, and for the grace load balancers need to see /ready turn 503;
       // the stages below run meanwhile, so the grace never lengthens shutdown
-      await stages.run(
-        "deferred replay",
-        () => deferredReplay.stop(),
-        "awaited",
-      );
       const listenerClosed = listenerGraceElapsed(
         drainStarted,
         shutdownListenerGraceMs,

@@ -46,6 +46,7 @@ import {
   diagnoseTlsMessage,
   getDefaultHttpClient,
   probeServeRestarting,
+  RESTART_STATUSES,
 } from "../cli/remote_run.ts";
 
 const logger = getSwampLogger(["worker", "connect"]);
@@ -426,8 +427,6 @@ async function serveRestartingFromFailure(
   if (status) return RESTART_STATUSES.has(Number(status[1]));
   return await probeServeRestarting(url, headers, caCerts);
 }
-
-const RESTART_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 
 function formatElapsed(ms: number): string {
   const totalSeconds = Math.floor(ms / 1_000);

@@ -33,6 +33,7 @@ export interface PendingOwnerLivenessDeps {
   staleTtlMs?: number;
   hostIdentity?: () => string;
   isGone?: (pid: number) => boolean;
+  ownPid?: number;
 }
 
 /**
@@ -45,10 +46,12 @@ export function pendingOwnerLiveness(
 ): PendingOwnerAlive {
   const hostIdentity = deps.hostIdentity ?? processHostIdentity;
   const isGone = deps.isGone ?? isProcessGone;
+  const ownPid = deps.ownPid ?? Deno.pid;
   return async (owner) => {
     if (owner.instanceId === deps.instanceId) return true;
     if (owner.host !== undefined && owner.host === hostIdentity()) {
-      return !isGone(owner.pid);
+      // this pid is this process's, and the instance id says the owner was not
+      return owner.pid !== ownPid && !isGone(owner.pid);
     }
     const store = deps.controlPlaneStore;
     if (!store) return false;

@@ -4344,6 +4344,43 @@ for (
 
 Deno.test({
   name:
+    "remote run: the refusal that ends the retries keeps the wait serve asked for",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: {
+          code: "draining",
+          message: "serve is shutting down",
+          retryAfterSeconds: 5,
+        },
+      });
+    });
+    const clock = fakeRetryClock();
+    try {
+      const error = await assertRejects(
+        () =>
+          drainRun(runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+            restartRetryBudgetMs: 6_000,
+            ...clock.options,
+          })),
+        ServerResponseError,
+      );
+      assertEquals(error.retryAfterSeconds, 5);
+      assertStringIncludes(error.message, "after retrying for");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "remote run: a serve still draining when the 30s budget runs out fails with the refusal and how long it retried",
   sanitizeOps: false,
   sanitizeResources: false,
