@@ -30,10 +30,35 @@ import {
   type ServeLeader,
   ServeNotLeaderError,
 } from "../domain/datastore_v3/serve_leader.ts";
+import {
+  answersWithoutConfirm,
+  serveRequestDeadlineMs,
+} from "../infrastructure/datastore_v3/serve_datastore_client.ts";
+import { SERVE_REQUEST_SYNC_DEADLINE_MS } from "../infrastructure/datastore_v3/serve_request_deadlines.ts";
 import { endOnAbort } from "./stream_abort.ts";
 import { TEAM_PEER_HEADER } from "./peer_auth.ts";
+import { MAX_LOCK_WAIT_MS } from "./datastore_locks.ts";
 
 const logger = getSwampLogger(["serve", "leader-link"]);
+
+/**
+ * how long the leader may take to start its reply to a forward, past the wait
+ * a lock request asks of it and the upload; under a member's own response
+ * deadline, so the member reads this node's refusal rather than timing out
+ */
+export const FORWARD_RESPONSE_BASE_MS = 7_000;
+
+/**
+ * a forward that may wait for the leader to confirm a replicated write: past
+ * that deadline and a margin, under the member's own for it
+ */
+export const FORWARD_COMMIT_RESPONSE_BASE_MS = SERVE_REQUEST_SYNC_DEADLINE_MS +
+  3_000;
+
+const DATASTORE_PATH = /^\/api\/v1\/datastore\/[^/]+\/(.*)$/;
+
+/** the most bytes of a lock request read to learn the wait it asks for */
+const LOCK_BODY_PEEK_BYTES = 64 * 1024;
 
 const HOP_HEADERS = [
   "host",
@@ -113,6 +138,8 @@ export interface LeaderLinkOptions {
    * undefined while this node holds no usable key
    */
   readonly peerToken?: () => string | undefined;
+  readonly responseBaseMs?: number;
+  readonly commitResponseBaseMs?: number;
 }
 
 export interface ForwardOptions {
@@ -187,7 +214,20 @@ export class LeaderLink {
       headers.set(name, value);
     }
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
-    const signal = AbortSignal.any([this.#closed.signal, req.signal]);
+    const responseMs = await this.#responseDeadlineMs(req, url, options.body);
+    const unanswered = new AbortController();
+    const responseTimer = setTimeout(() =>
+      unanswered.abort(
+        new DOMException(
+          `The leader did not start its reply within ${responseMs} ms`,
+          "TimeoutError",
+        ),
+      ), responseMs);
+    const signal = AbortSignal.any([
+      this.#closed.signal,
+      req.signal,
+      unanswered.signal,
+    ]);
     const client = this.client(address);
     let upstream: Response;
     try {
@@ -202,6 +242,10 @@ export class LeaderLink {
       } as RequestInit);
     } catch (error) {
       const inFlight = !forwardNeverSent(error);
+      if (unanswered.signal.aborted && !req.signal.aborted) {
+        // its connections may reach a leader that no longer answers
+        this.#dropClient(address);
+      }
       logger
         .info`Forwarding ${req.method} ${url.pathname} to the leader at ${address} failed${
         inFlight ? " after it was sent" : ""
@@ -210,6 +254,8 @@ export class LeaderLink {
         new ServeNotLeaderError(leader, false, inFlight),
         nameLeader,
       );
+    } finally {
+      clearTimeout(responseTimer);
     }
     if (!upstream.body) {
       return new Response(null, {
@@ -223,6 +269,49 @@ export class LeaderLink {
       statusText: upstream.statusText,
       headers: upstream.headers,
     });
+  }
+
+  async #responseDeadlineMs(
+    req: Request,
+    url: URL,
+    body: Uint8Array | undefined,
+  ): Promise<number> {
+    const datastorePath = DATASTORE_PATH.exec(url.pathname)?.[1];
+    const base = datastorePath !== undefined &&
+        answersWithoutConfirm(req.method, datastorePath)
+      ? this.#options.responseBaseMs ?? FORWARD_RESPONSE_BASE_MS
+      : this.#options.commitResponseBaseMs ?? FORWARD_COMMIT_RESPONSE_BASE_MS;
+    const length = body?.byteLength ??
+      Number(req.headers.get("content-length") ?? 0);
+    const bytes = Number.isSafeInteger(length) && length > 0 ? length : 0;
+    let waitMs = 0;
+    if (
+      req.method === "POST" && url.pathname.endsWith("/locks") &&
+      bytes <= LOCK_BODY_PEEK_BYTES
+    ) {
+      try {
+        const fields = body !== undefined
+          ? JSON.parse(new TextDecoder().decode(body))
+          : await req.clone().json();
+        const asked = (fields as { waitMs?: unknown })?.waitMs;
+        if (typeof asked === "number" && Number.isFinite(asked) && asked > 0) {
+          waitMs = Math.min(asked, MAX_LOCK_WAIT_MS);
+        }
+      } catch {
+        // the leader refuses a body it cannot read
+      }
+    }
+    return serveRequestDeadlineMs(base, bytes) + waitMs;
+  }
+
+  #dropClient(address: string): void {
+    const client = this.#clients.get(address);
+    if (!this.#clients.delete(address)) return;
+    try {
+      client?.close();
+    } catch {
+      // Already closed.
+    }
   }
 
   openSocket(
