@@ -30,8 +30,7 @@ const SERVE_COMMAND = join(SRC_DIR, "cli", "commands", "serve.ts");
 /** awaits after the drain that are not a stage, each reviewed */
 const PINNED_UNSTAGED_AWAITS: readonly string[] = [
   // the pid file, read and removed after ac.abort() released the server
-  "await Deno.readTextFile(pidPath)",
-  "await Deno.remove(pidPath)",
+  "await removePidFileIfOurs(pidPath, Deno.pid)",
 ];
 
 /** index just past the `)` closing the call whose `(` ends at `open` */

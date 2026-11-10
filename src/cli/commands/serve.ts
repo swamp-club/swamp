@@ -139,10 +139,11 @@ import {
   type WebhookRouteTableDeps,
 } from "../../serve/webhook_reload.ts";
 import {
-  diffServeSettings,
   overlayAppliedSettings,
   reloadsOnHangup,
 } from "../../serve/serve_settings_reload.ts";
+import { createServeSettingsReloader } from "../../serve/serve_settings_reloader.ts";
+import { emitServeConfigReloaded } from "../../serve/serve_config_reload_audit.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
 import { readProcessStartTime } from "../../infrastructure/process/process_kill.ts";
 import {
@@ -3733,7 +3734,6 @@ export const serveCommand = new Command()
     } = resolveServeStartupSettings(merged);
     // reload replaces these; everything that reads them reads them when used
     let shutdownDrainTimeoutMs = startupShutdownDrainTimeoutMs;
-    let liveConfigFile = configFile;
     if (
       advertiseAddress !== undefined &&
       advertiseAddressInCleartext(advertiseAddress)
@@ -6579,11 +6579,13 @@ export const serveCommand = new Command()
           (s) => s !== walSink && s !== webSocketSink,
         );
         let currentExternalSinks = capturedExternalSinks;
-        connectionCtx.auditSinkRebuilder = async () => {
-          const reloadedConfig = loadServeConfig(
-            options.config as string | undefined,
-            resolvedRepoDir,
-          );
+        connectionCtx.auditSinkRebuilder = async (validated) => {
+          const reloadedConfig = validated !== undefined
+            ? validated
+            : loadServeConfig(
+              options.config as string | undefined,
+              resolvedRepoDir,
+            );
           const reloadedAudit = parseAuditConfig(reloadedConfig);
           const newExtSinks: AuditSink[] = [];
           if (reloadedAudit) {
@@ -7684,65 +7686,95 @@ export const serveCommand = new Command()
 
     // each value is read where it is used, so new runs, requests and sockets
     // take it; nothing already running is changed
-    const applyLiveSettings = (
-      nextMerged: MergedServeOptions,
-      next: ServeStartupSettings,
-    ) => {
-      dashboardDistDir = nextMerged.dashboard ? getDashboardDistDir() : null;
-      enableInternalApi = nextMerged.enableInternalApi;
-      if (next.wsIdleTimeoutSeconds === undefined) {
-        delete wsUpgradeOpts.idleTimeout;
-      } else {
-        wsUpgradeOpts.idleTimeout = next.wsIdleTimeoutSeconds;
-      }
-      shutdownDrainTimeoutMs = next.shutdownDrainTimeoutMs;
+    const applyRunLimits = (next: ServeStartupSettings) =>
       activeRunRegistry.setLimits({
         maxConcurrent: next.maxConcurrentRuns,
         maxPerPrincipal: next.maxRunsPerPrincipal,
         maxRunDurationMs: next.maxRunDurationMs,
       });
-      dispatchService.setQueueTimeoutMs(next.queueTimeoutMs);
-      const signalWaits = repoContext.signalWaits;
-      if (signalWaits?.supported) {
-        repoContext.signalWaits = {
-          ...signalWaits,
-          maxTimeoutSeconds: next.maxSignalWaitTimeoutSeconds,
-        };
-      }
-      // only what was applied, so the config and health views never show a
-      // value this process has not adopted
-      connectionCtx.serveOptions = overlayAppliedSettings(
-        connectionCtx.serveOptions ?? merged,
-        nextMerged,
-      );
-    };
+    // reload applies these itself after the settings commit
+    const appliedByReloadStage = () => {};
+    // read per request from the overlaid serveOptions
+    const appliedByOverlay = () => {};
     // validated exactly as startup validates, so a file startup would refuse
     // changes nothing
-    const settingsReloader = () =>
-      Promise.resolve().then(() => {
-        const nextFile = loadServeConfig(
-          options.config as string | undefined,
+    const settingsReloader = createServeSettingsReloader<
+      ServeStartupSettings,
+      void
+    >({
+      initialConfig: configFile,
+      explicitFlags,
+      envLookup: (name) => Deno.env.get(name),
+      load: () =>
+        loadServeConfig(options.config as string | undefined, repoDir),
+      merge: (file) =>
+        resolveServeTlsPaths(
           repoDir,
-        );
-        const nextMerged = resolveServeTlsPaths(
-          repoDir,
-          mergeServeOptions(nextFile, options, explicitFlags),
-        );
-        const next = resolveServeStartupSettings(nextMerged);
-        const report = diffServeSettings({
-          before: liveConfigFile,
-          after: nextFile,
-          explicitFlags,
-          envLookup: (name) => Deno.env.get(name),
-          notRunning: scheduledExecution ? {} : {
-            triggerOverrides:
-              "no scheduler runs on this serve; restart serve with schedule on to change it",
+          mergeServeOptions(file, options, explicitFlags),
+        ),
+      resolve: resolveServeStartupSettings,
+      prepare: () => Promise.resolve(),
+      notRunning: () =>
+        scheduledExecution ? {} : {
+          triggerOverrides:
+            "no scheduler runs on this serve; restart serve with schedule on to change it",
+        },
+      pending: () => [],
+      appliers: {
+        dashboard: ({ merged }) => {
+          dashboardDistDir = merged.dashboard ? getDashboardDistDir() : null;
+        },
+        enableInternalApi: ({ merged }) => {
+          enableInternalApi = merged.enableInternalApi;
+        },
+        autoResume: appliedByOverlay,
+        wsIdleTimeout: ({ startup }) => {
+          if (startup.wsIdleTimeoutSeconds === undefined) {
+            delete wsUpgradeOpts.idleTimeout;
+          } else {
+            wsUpgradeOpts.idleTimeout = startup.wsIdleTimeoutSeconds;
+          }
+        },
+        maxSignalWaitTimeout: ({ startup }) => {
+          const signalWaits = repoContext.signalWaits;
+          if (signalWaits?.supported) {
+            repoContext.signalWaits = {
+              ...signalWaits,
+              maxTimeoutSeconds: startup.maxSignalWaitTimeoutSeconds,
+            };
+          }
+        },
+        shutdownDrainTimeout: ({ startup }) => {
+          shutdownDrainTimeoutMs = startup.shutdownDrainTimeoutMs;
+        },
+        maxConcurrentRuns: ({ startup }) => applyRunLimits(startup),
+        maxRunsPerPrincipal: ({ startup }) => applyRunLimits(startup),
+        maxRunDuration: ({ startup }) => applyRunLimits(startup),
+        queueTimeout: ({ startup }) =>
+          dispatchService.setQueueTimeoutMs(startup.queueTimeoutMs),
+        triggerOverrides: appliedByReloadStage,
+        webhookConfigs: appliedByReloadStage,
+      },
+      beforeCommit: (report, context) =>
+        emitServeConfigReloaded(
+          {
+            auditEmitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
           },
-        });
-        applyLiveSettings(nextMerged, next);
-        liveConfigFile = nextFile;
-        return { config: nextFile, report };
-      });
+          context,
+          report,
+        ),
+      // only what was applied, so the config and health views never show a
+      // value this process has not adopted
+      afterCommit: ({ merged: nextMerged }, applied) => {
+        connectionCtx.serveOptions = overlayAppliedSettings(
+          connectionCtx.serveOptions ?? merged,
+          nextMerged,
+          applied,
+        );
+      },
+      followUps: () => [],
+    });
     const buildServeReloadOptions = (
       webhookContext: WebhookApplyContext,
     ): ServeReloadOptions => ({
@@ -7762,8 +7794,10 @@ export const serveCommand = new Command()
       settingsReloader,
       ...(connectionCtx.auditEmitter && connectionCtx.auditSinkRebuilder
         ? {
-          auditSinkReloader: async () => {
-            const sinks = await connectionCtx.auditSinkRebuilder!();
+          auditSinkReloader: async (config) => {
+            const sinks = await connectionCtx.auditSinkRebuilder!(config);
+            // a sink this reload removes still records the reload itself
+            await connectionCtx.auditEmitter!.flush();
             connectionCtx.auditEmitter!.replaceSinks(sinks);
             return sinks.length;
           },

@@ -39,6 +39,10 @@ export interface SettingCatalogueEntry {
   readonly reason?: string;
 }
 
+interface AppliedEntry extends SettingCatalogueEntry {
+  readonly reloadClass: "applied";
+}
+
 const NEW_PROCESS = "restart serve to change it; it needs a new process";
 const NOT_YET = "not applied by reload yet; restart serve to change it";
 
@@ -46,9 +50,7 @@ const NOT_YET = "not applied by reload yet; restart serve to change it";
  * Every MergedServeOptions key and how reload treats it. Keyed by the
  * merged option name so the type checker refuses a key that is not one.
  */
-export const SETTING_CATALOGUE: {
-  readonly [K in keyof MergedServeOptions]-?: SettingCatalogueEntry;
-} = {
+export const SETTING_CATALOGUE = {
   port: restart("port", "port", `${NEW_PROCESS}: the listener is bound to it`),
   host: restart("host", "host", `${NEW_PROCESS}: the listener is bound to it`),
   certFile: restart(
@@ -246,9 +248,17 @@ export const SETTING_CATALOGUE: {
     flag: "detach-runs",
     reloadClass: "startup-only",
   },
+} satisfies {
+  readonly [K in keyof MergedServeOptions]-?: SettingCatalogueEntry;
 };
 
-function applied(setting: string, flag?: string): SettingCatalogueEntry {
+/** the settings a running serve takes on reload; each needs an applier */
+export type AppliedSettingKey = {
+  [K in keyof typeof SETTING_CATALOGUE]: (typeof SETTING_CATALOGUE)[K] extends
+    AppliedEntry ? K : never;
+}[keyof typeof SETTING_CATALOGUE];
+
+function applied(setting: string, flag?: string): AppliedEntry {
   return { setting, ...(flag ? { flag } : {}), reloadClass: "applied" };
 }
 
@@ -276,43 +286,74 @@ export interface SettingsDiffInput {
   readonly notRunning?: Partial<Record<keyof MergedServeOptions, string>>;
 }
 
+export interface SettingChanges {
+  readonly applied: readonly AppliedSettingKey[];
+  readonly needsRestart: readonly {
+    key: keyof MergedServeOptions;
+    reason: string;
+  }[];
+  readonly overridden: readonly { key: keyof MergedServeOptions; by: string }[];
+}
+
 /**
  * What the serve.yaml edit changed, judged on the file alone, and for each
- * change whether reload applies it, cannot, or is overridden by a startup flag
- * or environment variable.
+ * changed key whether reload applies it, cannot, or is overridden by a startup
+ * flag or environment variable.
  */
-export function diffServeSettings(
+export function classifyServeSettingChanges(
   input: SettingsDiffInput,
-): SettingsReloadReport {
+): SettingChanges {
   const fileOnly = (config: ServeConfigFile | null) =>
     mergeServeOptions(config, {}, new Set(), () => undefined);
   const before = fileOnly(input.before);
   const after = fileOnly(input.after);
 
-  const appliedSettings: string[] = [];
-  const needsRestart: { setting: string; reason: string }[] = [];
-  const overridden: { setting: string; by: string }[] = [];
+  const appliedKeys: AppliedSettingKey[] = [];
+  const needsRestart: { key: keyof MergedServeOptions; reason: string }[] = [];
+  const overridden: { key: keyof MergedServeOptions; by: string }[] = [];
   for (
     const key of Object.keys(SETTING_CATALOGUE) as (keyof MergedServeOptions)[]
   ) {
     if (sameValue(before[key], after[key])) continue;
-    const entry = SETTING_CATALOGUE[key];
+    const entry: SettingCatalogueEntry = SETTING_CATALOGUE[key];
     if (entry.reloadClass === "startup-only") continue;
     const by = overriddenBy(key, entry, input);
     if (by !== undefined) {
-      overridden.push({ setting: entry.setting, by });
+      overridden.push({ key, by });
     } else if (
       entry.reloadClass === "applied" && input.notRunning?.[key] === undefined
     ) {
-      appliedSettings.push(entry.setting);
+      appliedKeys.push(key as AppliedSettingKey);
     } else {
       needsRestart.push({
-        setting: entry.setting,
+        key,
         reason: input.notRunning?.[key] ?? entry.reason ?? NOT_YET,
       });
     }
   }
-  return { applied: appliedSettings, needsRestart, overridden };
+  return { applied: appliedKeys, needsRestart, overridden };
+}
+
+export function settingName(key: keyof MergedServeOptions): string {
+  return SETTING_CATALOGUE[key].setting;
+}
+
+/** the report an operator reads, with settings named as serve.yaml names them */
+export function diffServeSettings(
+  input: SettingsDiffInput,
+): SettingsReloadReport {
+  const changes = classifyServeSettingChanges(input);
+  return {
+    applied: changes.applied.map(settingName),
+    needsRestart: changes.needsRestart.map(({ key, reason }) => ({
+      setting: settingName(key),
+      reason,
+    })),
+    overridden: changes.overridden.map(({ key, by }) => ({
+      setting: settingName(key),
+      by,
+    })),
+  };
 }
 
 function overriddenBy(
@@ -349,21 +390,16 @@ export function reloadsOnHangup(options: {
 }
 
 /**
- * The options in force after a reload: the current ones with only the
- * applied-class settings taken from the reloaded file, since a restart-class
- * change has not been adopted by this process.
+ * The options in force after a reload: the current ones with only the keys
+ * the reload applied taken from the reloaded file, so a change this process
+ * has not adopted never shows in the config or health views.
  */
 export function overlayAppliedSettings(
   current: MergedServeOptions,
   next: MergedServeOptions,
+  appliedKeys: readonly AppliedSettingKey[],
 ): MergedServeOptions {
   const live: Record<string, unknown> = { ...current };
-  for (
-    const key of Object.keys(SETTING_CATALOGUE) as (keyof MergedServeOptions)[]
-  ) {
-    if (SETTING_CATALOGUE[key].reloadClass === "applied") {
-      live[key] = next[key];
-    }
-  }
+  for (const key of appliedKeys) live[key] = next[key];
   return live as unknown as MergedServeOptions;
 }

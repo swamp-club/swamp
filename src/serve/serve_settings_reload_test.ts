@@ -166,7 +166,7 @@ Deno.test("reloadsOnHangup: never on Windows, which has no SIGHUP", () => {
   );
 });
 
-Deno.test("overlayAppliedSettings: takes only applied settings from the reloaded file", () => {
+Deno.test("overlayAppliedSettings: takes only the keys the reload applied from the reloaded file", () => {
   const current = {
     port: 9090,
     allowedUsers: ["alice", "bob"],
@@ -179,12 +179,12 @@ Deno.test("overlayAppliedSettings: takes only applied settings from the reloaded
     dashboard: true,
     maxConcurrentRuns: 9,
   } as unknown as Parameters<typeof overlayAppliedSettings>[1];
-  const live = overlayAppliedSettings(current, next) as unknown as Record<
-    string,
-    unknown
-  >;
+  const live = overlayAppliedSettings(current, next, [
+    "dashboard",
+  ]) as unknown as Record<string, unknown>;
   assertEquals(live.port, 9090);
   assertEquals(live.allowedUsers, ["alice", "bob"]);
   assertEquals(live.dashboard, true);
-  assertEquals(live.maxConcurrentRuns, 9);
+  // applied class, but this reload did not apply it
+  assertEquals(live.maxConcurrentRuns, 5);
 });

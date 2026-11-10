@@ -2594,3 +2594,63 @@ Deno.test("performServeReload: audit sinks reload on every path that passes them
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("performServeReload: the settings reloader hears who asked, its follow-up warnings are reported, and sinks rebuild from the file it validated", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const contexts: unknown[] = [];
+    const sinkConfigs: unknown[] = [];
+    const validated = { dashboard: true };
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        webhookContext: { trigger: "reload", client: "cli" },
+        settingsReloader: (context) => {
+          contexts.push(context);
+          return Promise.resolve({
+            config: validated,
+            report: {
+              applied: ["dashboard"],
+              needsRestart: [],
+              overridden: [],
+            },
+            followUp: () =>
+              Promise.resolve(["re-registration did not complete"]),
+          });
+        },
+        auditSinkReloader: (config) => {
+          sinkConfigs.push(config);
+          return Promise.resolve(1);
+        },
+      },
+    );
+    assertEquals(result.success, true);
+    assertEquals(contexts, [{ trigger: "reload", client: "cli" }]);
+    assertEquals(sinkConfigs, [validated]);
+    assertEquals(result.warnings, ["re-registration did not complete"]);
+    assertEquals(result.configRejected, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("performServeReload: without a settings reloader the sink rebuild reads the file itself", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const sinkConfigs: unknown[] = [];
+    await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        auditSinkReloader: (config) => {
+          sinkConfigs.push(config);
+          return Promise.resolve(1);
+        },
+      },
+    );
+    assertEquals(sinkConfigs, [undefined]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});

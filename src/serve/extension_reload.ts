@@ -792,12 +792,19 @@ export interface ServeReloadOptions {
    * validates the file as startup does and applies the settings reload can;
    * a throw leaves every setting, trigger and webhook as it was
    */
-  settingsReloader?: () => Promise<{
+  settingsReloader?: (context: WebhookApplyContext) => Promise<{
     readonly config: ServeConfigFile | null;
     readonly report: SettingsReloadReport;
+    /** async work after commit; returns a warning per step that failed */
+    readonly followUp?: () => Promise<string[]>;
   }>;
-  /** rebuilds the audit sinks from the file; returns how many are in force */
-  auditSinkReloader?: () => Promise<number>;
+  /**
+   * rebuilds the audit sinks, from the file this reload validated when there
+   * is one (undefined: read it); returns how many are in force
+   */
+  auditSinkReloader?: (
+    config: ServeConfigFile | null | undefined,
+  ) => Promise<number>;
 }
 
 export const RELOAD_IN_PROGRESS_ERROR = "Reload already in progress";
@@ -947,11 +954,15 @@ async function runServeReload(
     let configRejected = false;
     let settings: SettingsReloadReport | undefined;
     let config: ServeConfigFile | null = null;
+    let followUp: (() => Promise<string[]>) | undefined;
     if (options?.settingsReloader) {
       try {
-        const reloaded = await options.settingsReloader();
+        const reloaded = await options.settingsReloader(
+          options.webhookContext ?? { trigger: "reload" },
+        );
         config = reloaded.config;
         settings = reloaded.report;
+        followUp = reloaded.followUp;
       } catch (err) {
         errors.push(
           "Serve config not applied, nothing changed: " +
@@ -1011,10 +1022,16 @@ async function runServeReload(
       }
     }
 
+    if (followUp) {
+      for (const warning of await followUp()) warnings.push(warning);
+    }
+
     let auditSinks: number | undefined;
     if (options?.auditSinkReloader && !configReadFailed) {
       try {
-        auditSinks = await options.auditSinkReloader();
+        auditSinks = await options.auditSinkReloader(
+          options.settingsReloader ? config : undefined,
+        );
       } catch (err) {
         errors.push(
           "Audit sinks not reloaded, keeping the existing ones: " +

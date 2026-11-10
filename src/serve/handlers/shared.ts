@@ -452,7 +452,10 @@ export interface ConnectionContext {
   auditWal?: AuditWal;
   auditWebSocketSink?: import("../audit_sinks/websocket_sink.ts").WebSocketSink;
   auditNamespace?: string;
-  auditSinkRebuilder?: () => Promise<
+  /** from the reload's validated file, or read here when undefined */
+  auditSinkRebuilder?: (
+    config?: import("../serve_config.ts").ServeConfigFile | null,
+  ) => Promise<
     import("../../domain/serve_audit/audit_sink.ts").AuditSink[]
   >;
   auditVaultService?:
