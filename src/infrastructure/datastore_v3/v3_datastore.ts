@@ -24,6 +24,7 @@ import { basename, dirname, join, resolve } from "@std/path";
 import {
   CheckoutCopyAtRiskError,
   ReadModelApplyError,
+  ReadModelApplyRefusedError,
   ReadModelCatchUpUnreachableError,
 } from "../../domain/datastore_v3/read_model.ts";
 import { isNetworkFailure } from "./network_failure.ts";
@@ -2165,9 +2166,10 @@ export async function unreachableAsCatchUpError<T>(
     return await catchUp();
   } catch (error) {
     if (
-      error instanceof ReadModelApplyError &&
-      !(error instanceof CheckoutCopyAtRiskError) &&
-      isNetworkFailure(error)
+      error instanceof ReadModelApplyRefusedError ||
+      (error instanceof ReadModelApplyError &&
+        !(error instanceof CheckoutCopyAtRiskError) &&
+        isNetworkFailure(error))
     ) {
       throw new ReadModelCatchUpUnreachableError(error);
     }

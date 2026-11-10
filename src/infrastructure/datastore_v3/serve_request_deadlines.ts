@@ -22,3 +22,10 @@
  * deadline
  */
 export const SERVE_REQUEST_SYNC_DEADLINE_MS = 10_000;
+
+/**
+ * how long a member's reads ride out a serve node refusing them as not the
+ * leader or behind, about a takeover's length; the pause allowed for work
+ * that may go offline
+ */
+export const SERVE_READ_REFUSAL_BUDGET_MS = 15_000;

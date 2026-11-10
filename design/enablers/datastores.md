@@ -6212,6 +6212,16 @@ leader election and followers").
   first code, not the message that offers deleting its marker. A lease release
   that fails after such a failure is logged and never replaces it. Other
   failures keep their own errors.
+- A team member's recovery or catch-up whose chunk reads serve refuses as not
+  the leader or behind, past the CLI's read retry (see "What a follower
+  refuses"), fails with `datastore_v3_catch_up_unreachable` (exit 75): the read
+  model keeps the commits it applied, a recovery keeps its writer marker, and
+  the next command resumes it (swamp-club#4579). The read model names such a
+  commit with `ReadModelApplyRefusedError`, which carries the refusal's code,
+  so "retry later" is told from a commit that will never apply. Any other
+  failure of an interrupted writer's recovery carries
+  `datastore_v3_recovery_failed` (exit 1), names the commit and the reason, and
+  offers deleting the marker.
 - `datastore_v3_replication_unconfirmed` ("this command's changes are saved
   locally") is reported only for a command that committed something
   (swamp-club#3882). The writer records the commit log's high-water mark when
@@ -8566,8 +8576,19 @@ nothing was taken, so a retry is safe), in one place per surface:
   an unknown request is refused. The error frame names the leader.
 - The datastore API: every write after authentication, as a 503 with
   `Retry-After` and the leader. A chunk check (`has`) is a read. The CLI's
-  serve upstream maps it to `ServeNotLeaderError` and does not retry or
-  redirect. A partition read from a caller whose copy holds more of the
+  serve upstream maps it to `ServeNotLeaderError`. It never retries a write;
+  that refusal goes through the outbox and offline paths. A read (any `GET`,
+  and `has`) refused as `serve_not_leader` without `inFlight`, or as
+  `serve_follower_behind`, is retried with backoff (250 ms doubling to 2 s,
+  capped by `Retry-After`) within a 15 s budget
+  (`SERVE_READ_REFUSAL_BUDGET_MS`), shared by every client of that serve in
+  the process and reset by any reply that is not a 503 or by the command's end
+  (swamp-club#4579). A refusal naming a leader on the configured host, over
+  https or on loopback, is followed for the rest of that read; its reply is
+  read only when it names the datastore log the configured serve named, and a
+  leader that does not connect, names another log or fails sends the read back
+  to the configured serve. Past the budget the refusal is thrown as a read's.
+  `datastore status`'s probe and the lock listings opt out and answer at once. A partition read from a caller whose copy holds more of the
   partition than this follower's is refused as behind
   (`serve_follower_behind`, see "Team mode: the CLI's serve upstream"), after
   authentication and the read check (swamp-club#4254).

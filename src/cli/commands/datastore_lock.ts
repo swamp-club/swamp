@@ -105,8 +105,13 @@ const datastoreLockStatusCommand = new Command()
           createServeMemberLockStatusDeps(async () => {
             const client = binding.client();
             try {
-              // Bounded by the client's own per-request timeout.
-              return await client.listLocks("", new AbortController().signal);
+              // bounded by the client's per-request timeout, and answered at
+              // once while serve fails over
+              return await client.listLocks(
+                "",
+                new AbortController().signal,
+                { retryRefusals: false },
+              );
             } finally {
               client.close();
             }
@@ -435,8 +440,11 @@ async function refuseWrongType(
   modelType: string,
   modelId: string,
 ): Promise<void> {
-  const listing = await client.listLocks("data/", new AbortController().signal)
-    .catch(() => undefined);
+  const listing = await client.listLocks(
+    "data/",
+    new AbortController().signal,
+    { retryRefusals: false },
+  ).catch(() => undefined);
   for (const lease of listing?.leases ?? []) {
     const match = /^data\/(.+)\/([^/]+)\/\.lock$/.exec(lease.lockKey);
     if (match === null || match[2] !== modelId || match[1] === modelType) {

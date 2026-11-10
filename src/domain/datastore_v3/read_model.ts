@@ -26,6 +26,10 @@
 import { UserError } from "../errors.ts";
 import { UNREADABLE_CONTENT_CODE } from "../datastore/unreadable_content.ts";
 import type { BlobRef } from "./blob_ref.ts";
+import type {
+  ServeFollowerBehindError,
+  ServeNotLeaderError,
+} from "./serve_leader.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";
 
@@ -67,7 +71,30 @@ export class ReadModelApplyError extends Error {
   }
 }
 
+/**
+ * serve refused a read the commit needs as not the leader or behind: nothing
+ * was applied of it, and it applies once serve answers; the code is the
+ * refusal's
+ */
+export class ReadModelApplyRefusedError extends ReadModelApplyError {
+  readonly code: string;
+
+  constructor(
+    namespace: string,
+    partition: string,
+    seq: number,
+    refusal: ServeNotLeaderError | ServeFollowerBehindError,
+  ) {
+    super(namespace, partition, seq, refusal.message, { cause: refusal });
+    this.name = "ReadModelApplyRefusedError";
+    this.code = refusal.code;
+  }
+}
+
 export const CATCH_UP_UNREACHABLE_CODE = "datastore_v3_catch_up_unreachable";
+
+/** an interrupted writer's recovery that a retry alone will not finish */
+export const RECOVERY_FAILED_CODE = "datastore_v3_recovery_failed";
 
 /**
  * nothing was changed: commits before a failed one stay applied and the cursor

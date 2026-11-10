@@ -66,11 +66,13 @@ import {
   type LiveRecord,
   type ReadModel,
   ReadModelApplyError,
+  ReadModelApplyRefusedError,
   ReadModelBusyError,
   ReadModelIncompleteError,
   type UnreadableRecord,
   unreadableRecordAdvice,
 } from "../../domain/datastore_v3/read_model.ts";
+import { retryableServeRefusal } from "../../domain/datastore_v3/serve_leader.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   type Namespace,
@@ -1746,6 +1748,15 @@ export class SqliteReadModel implements ReadModel {
     } catch (error) {
       if (signal.aborted) throw signal.reason;
       if (error instanceof ReadModelApplyError) throw error;
+      const refusal = retryableServeRefusal(error);
+      if (refusal !== undefined) {
+        throw new ReadModelApplyRefusedError(
+          namespace,
+          partition,
+          commit.seq,
+          refusal,
+        );
+      }
       throw fail(errorMessage(error), error);
     }
   }

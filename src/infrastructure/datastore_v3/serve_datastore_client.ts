@@ -50,7 +50,16 @@ import {
 import { type Span, withSpan } from "../tracing/tracer.ts";
 import { injectTraceContext } from "../tracing/propagation.ts";
 import { isNetworkFailure } from "./network_failure.ts";
-import { SERVE_REQUEST_SYNC_DEADLINE_MS } from "./serve_request_deadlines.ts";
+import {
+  SERVE_READ_REFUSAL_BUDGET_MS,
+  SERVE_REQUEST_SYNC_DEADLINE_MS,
+} from "./serve_request_deadlines.ts";
+import {
+  advertiseAddressInCleartext,
+  retryableServeRefusal,
+  type ServeFollowerBehindError,
+  ServeNotLeaderError,
+} from "../../domain/datastore_v3/serve_leader.ts";
 import { recordServeClock } from "./serve_offline.ts";
 import {
   serveErrorFromReply,
@@ -109,6 +118,64 @@ export function serveResponseDeadlineMs(
 }
 
 /**
+ * when serve began refusing reads as not the leader or behind, per serve: every
+ * client of the process shares one budget, so a rebuild reading many chunks
+ * waits it out once
+ */
+const refusalStreaks = new Map<string, number>();
+
+let readRefusalBudgetForTesting: number | undefined;
+
+/** clients built by serveDatastoreClientFor wait this long; undefined restores */
+export function setServeReadRefusalBudgetForTesting(
+  ms: number | undefined,
+): void {
+  readRefusalBudgetForTesting = ms;
+}
+
+const FIRST_REFUSAL_RETRY_MS = 250;
+const MAX_REFUSAL_RETRY_MS = 2_000;
+
+/**
+ * a leader named by a refusal is followed only on the configured host and never
+ * in cleartext off loopback: the member's token goes where it follows
+ */
+function followableLeader(
+  baseUrl: string,
+  address: string | undefined,
+): string | undefined {
+  if (address === undefined) return undefined;
+  let leader: URL;
+  let base: URL;
+  try {
+    leader = new URL(address);
+    base = new URL(baseUrl);
+  } catch {
+    return undefined;
+  }
+  if (leader.protocol !== "https:" && leader.protocol !== "http:") {
+    return undefined;
+  }
+  if (leader.hostname.toLowerCase() !== base.hostname.toLowerCase()) {
+    return undefined;
+  }
+  if (base.protocol === "https:" && leader.protocol !== "https:") {
+    return undefined;
+  }
+  if (advertiseAddressInCleartext(leader.origin)) return undefined;
+  return leader.origin;
+}
+
+function retryableReadRefusal(
+  error: unknown,
+): ServeNotLeaderError | ServeFollowerBehindError | undefined {
+  const refusal = retryableServeRefusal(error);
+  return refusal instanceof ServeNotLeaderError && !refusal.reads
+    ? new ServeNotLeaderError(refusal.leader, true)
+    : refusal;
+}
+
+/**
  * once a write found serve unreachable, the rest of the command fails at once
  * instead of waiting out a request timeout per call; requests in flight end too
  */
@@ -133,6 +200,7 @@ export function latchServeUnreachable(baseUrl: string, cause: unknown): void {
 /** the command's end: the next command asks serve afresh */
 export function clearServeUnreachableLatches(): void {
   unreachableLatches.clear();
+  refusalStreaks.clear();
 }
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
@@ -269,6 +337,9 @@ export interface ServeDatastoreClientOptions {
   readonly maxRetryDelayMs?: number;
   readonly responseBaseMs?: number;
   readonly commitResponseBaseMs?: number;
+  readonly readRefusalBudgetMs?: number;
+  readonly now?: () => number;
+  readonly delay?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 export interface CommitChunk {
@@ -432,6 +503,8 @@ interface RequestSpec {
   readonly body?: Uint8Array<ArrayBuffer> | string;
   /** how long the request asks serve to wait before it answers */
   readonly serverWaitMs?: number;
+  /** a read refused as not the leader or behind is thrown at once */
+  readonly noRefusalRetry?: boolean;
 }
 
 function isTimeout(error: unknown): boolean {
@@ -471,6 +544,9 @@ export class ServeDatastoreClient {
   readonly #timeoutSignal: (ms: number) => AbortSignal;
   readonly #maxAttempts: number;
   readonly #maxRetryDelayMs: number;
+  readonly #readRefusalBudgetMs: number;
+  readonly #now: () => number;
+  readonly #delay: (ms: number, signal: AbortSignal) => Promise<void>;
   #logCheck: ((logId: string | undefined) => void) | undefined;
   #accessCheck: ((fingerprint: string) => void) | undefined;
   #takesStepStarts = false;
@@ -501,6 +577,10 @@ export class ServeDatastoreClient {
     this.#responseBaseMs = options.responseBaseMs ?? SERVE_RESPONSE_BASE_MS;
     this.#commitResponseBaseMs = options.commitResponseBaseMs ??
       SERVE_COMMIT_RESPONSE_BASE_MS;
+    this.#readRefusalBudgetMs = options.readRefusalBudgetMs ??
+      readRefusalBudgetForTesting ?? SERVE_READ_REFUSAL_BUDGET_MS;
+    this.#now = options.now ?? (() => performance.now());
+    this.#delay = options.delay ?? abortableDelay;
   }
 
   close(): void {
@@ -1167,12 +1247,14 @@ export class ServeDatastoreClient {
   async listLocks(
     prefix: string,
     signal: AbortSignal,
+    options: { readonly retryRefusals?: boolean } = {},
   ): Promise<ServeLeaseListing | undefined> {
     return await this.#exchange(
       {
         method: "GET",
         path: "locks",
         ...(prefix === "" ? {} : { query: { prefix } }),
+        ...(options.retryRefusals === false ? { noRefusalRetry: true } : {}),
       },
       signal,
       async (response) => {
@@ -1319,12 +1401,20 @@ export class ServeDatastoreClient {
     signal: AbortSignal,
     read: (response: Response) => Promise<T>,
   ): Promise<T> {
-    const url = this.#url(spec);
     const headers = this.#headers(spec);
     let resentOnFreshConnection = false;
+    let origin = this.baseUrl;
+    let refusalWaitMs = FIRST_REFUSAL_RETRY_MS;
+    let refusalRetries = 0;
+    // a followed reply is read only when it names the log the configured serve
+    // named; one that does not, or fails, ends following for this request
+    let baseLogId: string | undefined;
+    let followFailed = false;
     for (let attempt = 1;; attempt++) {
       span.setAttribute("swamp.datastore.v3.serve.attempts", attempt);
       signal.throwIfAborted();
+      const url = this.#url(spec, origin);
+      const following = origin !== this.baseUrl;
       const latch = unreachableLatchOf(this.baseUrl);
       if (latch.aborted) {
         throw this.#latched("never", latch.reason, spec);
@@ -1344,6 +1434,10 @@ export class ServeDatastoreClient {
             ),
           ),
           latch,
+          // a leader's address may not answer members: never past the budget
+          ...(following
+            ? [this.#timeoutSignal(Math.max(1, this.#refusalBudgetLeft()))]
+            : []),
         ]);
         const bodyBytes = bodyBytesOf(spec.body);
         const responseMs = serveResponseDeadlineMs(
@@ -1379,6 +1473,11 @@ export class ServeDatastoreClient {
           if (latch.aborted && !signal.aborted) {
             throw this.#latched("maybe", latch.reason, spec);
           }
+          if (following && !signal.aborted) {
+            origin = this.baseUrl;
+            followFailed = true;
+            continue;
+          }
           if (isTimeout(error)) {
             // its connection may reach a node that no longer answers: the next
             // request opens a fresh one, which the address may route elsewhere
@@ -1401,12 +1500,14 @@ export class ServeDatastoreClient {
         // serve's clock, which judges a lease's expiry and corrects an offline
         // write's time while serve is unreachable; read before the 429 retry on
         // purpose: a throttled reply's Date is valid
-        recordServeClock(
-          this.baseUrl,
-          response.headers.get("date"),
-          sentAt,
-          Date.now(),
-        );
+        if (!following) {
+          recordServeClock(
+            this.baseUrl,
+            response.headers.get("date"),
+            sentAt,
+            Date.now(),
+          );
+        }
         span.setAttribute("http.response.status_code", response.status);
         if (response.status === 429 && attempt < this.#maxAttempts) {
           const wait = retryAfterMs(response.headers.get("retry-after"));
@@ -1418,6 +1519,17 @@ export class ServeDatastoreClient {
         }
         const logId = response.headers.get(SERVE_DATASTORE_LOG_HEADER) ??
           undefined;
+        if (!following) {
+          baseLogId = logId ?? baseLogId;
+        } else if (
+          logId === undefined || logId !== baseLogId ||
+          (!response.ok && response.status !== 404 && response.status !== 503)
+        ) {
+          await response.body?.cancel();
+          origin = this.baseUrl;
+          followFailed = true;
+          continue;
+        }
         if (
           this.#logCheck !== undefined && (logId !== undefined || response.ok)
         ) {
@@ -1430,7 +1542,7 @@ export class ServeDatastoreClient {
         }
         // a refused token never vouches for the principal it would act as
         if (
-          logId !== undefined && response.status !== 401 &&
+          !following && logId !== undefined && response.status !== 401 &&
           response.status !== 403
         ) {
           const features = (response.headers.get(
@@ -1449,6 +1561,38 @@ export class ServeDatastoreClient {
         const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
         if (this.#accessCheck !== undefined && access !== null) {
           this.#accessCheck(access);
+        }
+        const refusal = response.status === 503 && isReadSpec(spec)
+          ? retryableReadRefusal(
+            await this.#refusal(response.clone(), routeTemplate(spec.path)),
+          )
+          : undefined;
+        // a write's refusal is the outbox's to handle and leaves the streak
+        if (response.status !== 503) refusalStreaks.delete(this.baseUrl);
+        if (refusal !== undefined) {
+          await response.body?.cancel();
+          if (!refusalStreaks.has(this.baseUrl)) {
+            refusalStreaks.set(this.baseUrl, this.#now());
+          }
+          const left = this.#refusalBudgetLeft();
+          if (spec.noRefusalRetry === true || left <= 0) throw refusal;
+          const hinted = retryAfterMs(response.headers.get("retry-after"));
+          const wait = Math.min(refusalWaitMs, hinted ?? Infinity, left);
+          refusalWaitMs = Math.min(refusalWaitMs * 2, MAX_REFUSAL_RETRY_MS);
+          refusalRetries++;
+          span.setAttribute(
+            "swamp.datastore.v3.serve.refusal_retries",
+            refusalRetries,
+          );
+          await this.#delay(wait, signal);
+          if (
+            refusal instanceof ServeNotLeaderError && !followFailed &&
+            baseLogId !== undefined
+          ) {
+            origin = followableLeader(this.baseUrl, refusal.leader?.address) ??
+              origin;
+          }
+          continue;
         }
         try {
           return await read(response);
@@ -1511,9 +1655,15 @@ export class ServeDatastoreClient {
     return new ServeUnreachableError(this.baseUrl, sent, error);
   }
 
-  #url(spec: RequestSpec): string {
+  #refusalBudgetLeft(): number {
+    const started = refusalStreaks.get(this.baseUrl);
+    if (started === undefined) return this.#readRefusalBudgetMs;
+    return this.#readRefusalBudgetMs - (this.#now() - started);
+  }
+
+  #url(spec: RequestSpec, origin: string = this.baseUrl): string {
     const url = new URL(
-      `${this.baseUrl}/api/v1/datastore/${
+      `${origin}/api/v1/datastore/${
         encodeURIComponent(this.namespace)
       }/${spec.path}`,
     );
