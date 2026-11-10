@@ -21,6 +21,7 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   displaySafeReason,
   MAX_REFUSAL_REASON,
+  REQUIRES_PLAN_MESSAGE,
   ServeLinkClient,
   ServeLinkError,
 } from "./serve_link_client.ts";
@@ -133,6 +134,46 @@ Deno.test("ServeLinkClient: capabilities answers 404 as not enabled", async () =
     );
     assertEquals(error.kind, "not_enabled");
   });
+});
+
+Deno.test("ServeLinkClient: a collective without a plan is requires_plan with swamp-club's message at capabilities and start, never not_enabled", async () => {
+  const message = "Links need a trial or a paid plan.";
+  await withMock(
+    () => ({ status: 403, body: { error: "links_require_plan", message } }),
+    async (client) => {
+      for (
+        const call of [() => client.capabilities(), () => client.start(START)]
+      ) {
+        const error = await assertRejects(call, ServeLinkError);
+        assertEquals(error.kind, "requires_plan");
+        assertEquals(error.code, "links_require_plan");
+        assertEquals(error.message, message);
+      }
+    },
+  );
+});
+
+Deno.test("ServeLinkClient: a plan refusal without a usable message carries serve's own wording", async () => {
+  for (
+    const body of [
+      { error: "links_require_plan" },
+      { error: "links_require_plan", message: 7 },
+      { error: "links_require_plan", message: "\u200b\u0000 " },
+    ]
+  ) {
+    await withMock(() => ({ status: 403, body }), async (client) => {
+      const error = await assertRejects(
+        () => client.start(START),
+        ServeLinkError,
+      );
+      assertEquals(error.message, REQUIRES_PLAN_MESSAGE, JSON.stringify(body));
+    });
+  }
+});
+
+Deno.test("displaySafeReason: an empty reason takes the caller's fallback", () => {
+  assertEquals(displaySafeReason(" \u0007 "), "refused");
+  assertEquals(displaySafeReason(" \u0007 ", "no plan"), "no plan");
 });
 
 Deno.test("ServeLinkClient: report returns the link id, a refusal ack, and terminal conflicts", async () => {

@@ -24,6 +24,9 @@ export const LINK_REQUEST_TIMEOUT_MS = 15_000;
 /** swamp-club refuses a longer reason, and refuses an unsafe one */
 export const MAX_REFUSAL_REASON = 200;
 
+export const REQUIRES_PLAN_MESSAGE =
+  "swamp-club offers links only to a collective on an active trial or a paid plan";
+
 export interface ServeLinkClientConfig {
   readonly baseUrl: string;
   readonly clientId: string;
@@ -37,6 +40,7 @@ export class ServeLinkError extends Error {
   constructor(
     readonly kind:
       | "not_enabled"
+      | "requires_plan"
       | "no_instance"
       | "refused"
       | "not_found"
@@ -159,10 +163,13 @@ function isUnsafe(char: string): boolean {
  * the strings swamp-club shows a person must be short and free of control or
  * invisible characters, so a reason is cut and cleaned rather than refused
  */
-export function displaySafeReason(reason: string): string {
+export function displaySafeReason(
+  reason: string,
+  fallback = "refused",
+): string {
   const cleaned = Array.from(reason, (char) => isUnsafe(char) ? " " : char)
     .join("").replace(/\s+/g, " ").trim();
-  return (cleaned.length > 0 ? cleaned : "refused").slice(
+  return (cleaned.length > 0 ? cleaned : fallback).slice(
     0,
     MAX_REFUSAL_REASON,
   );
@@ -353,6 +360,13 @@ export class ServeLinkClient {
 
   #throwFor(status: number, body: unknown): void {
     if (status >= 200 && status < 300) return;
+    if (status === 403 && bodyError(body) === "links_require_plan") {
+      throw new ServeLinkError(
+        "requires_plan",
+        planMessage(body),
+        "links_require_plan",
+      );
+    }
     if (status === 401 || status === 403) {
       throw new ServeLinkError(
         "unauthorized",
@@ -420,6 +434,14 @@ export class ServeLinkClient {
     }
     return { status: resp.status, body };
   }
+}
+
+// the app shows this message to a person, so it is cleaned like a refusal reason
+function planMessage(body: unknown): string {
+  const message = (body as { message?: unknown } | null)?.message;
+  return typeof message === "string"
+    ? displaySafeReason(message, REQUIRES_PLAN_MESSAGE)
+    : REQUIRES_PLAN_MESSAGE;
 }
 
 function bodyError(body: unknown): string | undefined {

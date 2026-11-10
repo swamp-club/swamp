@@ -346,7 +346,12 @@ the request unread.
    consent URL to show the person, and how long and how often to poll. A second
    start for the same person replaces the pending one. An app asks for every action
    it needs on each link: a new consent replaces the old one (see
-   [Consenting again](#consenting-again)).
+   [Consenting again](#consenting-again)). A start swamp-club won't take answers
+   `409 links_require_plan` when its collective has no active trial or paid plan,
+   with swamp-club's message cleaned for display; `409 links_not_enabled` when
+   swamp-club has no link routes for it; and `502 club_unavailable` when swamp-club
+   can't be reached or refuses serve's client. Serve stores nothing for any of them
+   and the app's client does not retry them.
 2. **Consent** happens on swamp-club. The leader polls it at swamp-club's interval,
    backing off to a minute on errors. On approval it checks the digest swamp-club
    bound the consent to, runs the same admission check as a sign-in, writes the
@@ -471,7 +476,9 @@ and streams as an end does.
 
 - **The feed**, `GET /api/v1/serve/links/changes`, every 30 s, page by page until
   `more` is false. Each listed link that names a delegation ends it, with cause
-  `disowned` or `club_ended` read from the people read. The cursor is stored in a
+  `disowned`, `plan_lapsed` (the collective's trial or plan ended) or, for any
+  other reason, `club_ended`, read from the people read. swamp-club already knows
+  these ends, so serve doesn't tell it back. The cursor is stored in a
   `delegation-sync` record beside the delegations, after the page's ends and only
   if it is still the cursor that page was read from, so a new leader carries on from
   it and an end applies once however often it is listed.

@@ -294,6 +294,7 @@ export async function refreshDelegation(
 export const CLUB_ORIGINATED_CAUSES = [
   "club_ended",
   "disowned",
+  "plan_lapsed",
   "club_client_refused",
   "club_unknown",
 ] as const;

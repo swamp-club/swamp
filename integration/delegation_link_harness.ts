@@ -69,6 +69,10 @@ export class MockClub {
   endedFeed: string[] = [];
   people = new Map<string, unknown>();
   refuseClient: { status: number; error: string } | undefined;
+  /** swamp-club's answer for a collective without a trial or paid plan */
+  refusePlan:
+    | { at: "capabilities" | "start"; message?: unknown }
+    | undefined;
   down = false;
   feedCursors: (string | null)[] = [];
   #server: Deno.HttpServer<Deno.NetAddr>;
@@ -89,6 +93,19 @@ export class MockClub {
           return Response.json({ error: this.refuseClient.error }, {
             status: this.refuseClient.status,
           });
+        }
+        const planRefused = this.refusePlan !== undefined &&
+          (this.refusePlan.at === "capabilities"
+            ? path === "/capabilities"
+            : path === "" && req.method === "POST");
+        if (planRefused) {
+          if (path === "") this.starts++;
+          return Response.json({
+            error: "links_require_plan",
+            ...(this.refusePlan!.message !== undefined
+              ? { message: this.refusePlan!.message }
+              : {}),
+          }, { status: 403 });
         }
         if (path === "/capabilities") return Response.json({ version: 1 });
         if (path === "/changes" && req.method === "GET") {
