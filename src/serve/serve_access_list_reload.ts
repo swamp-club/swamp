@@ -251,3 +251,29 @@ export function allowedUsersPartialReason(
   }
   return parts.length > 0 ? parts.join("; ") : undefined;
 }
+
+/**
+ * undefined when the vault cannot answer, so the caller never writes back a
+ * map it did not read; only a listing without the key means there is none
+ */
+export async function readStoredNameMap(
+  vault: {
+    list(): Promise<readonly string[]>;
+    get(key: string): Promise<string>;
+  },
+  key: string,
+): Promise<Record<string, string> | undefined> {
+  try {
+    if (!(await vault.list()).includes(key)) return {};
+    const parsed: unknown = JSON.parse(await vault.get(key));
+    if (
+      typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+      Object.values(parsed).some((value) => typeof value !== "string")
+    ) {
+      return undefined;
+    }
+    return parsed as Record<string, string>;
+  } catch {
+    return undefined;
+  }
+}

@@ -23,6 +23,7 @@ import {
   allowedUsersPartialReason,
   CLOSED_ALLOWED_USERS_ENTRY,
   planAllowedUsersReload,
+  readStoredNameMap,
 } from "./serve_access_list_reload.ts";
 import { checkAdmission } from "../domain/access/admission.ts";
 
@@ -259,4 +260,34 @@ Deno.test("planAllowedUsersReload: lookups run a few at a time under one deadlin
   });
   assertEquals(tooMany.allowedUsers, []);
   assertEquals(tooMany.deferred.length, 10);
+});
+
+Deno.test("readStoredNameMap: reads through list and get, which every vault provider has", async () => {
+  const vault = (
+    keys: string[],
+    value: string | Error,
+    listFails = false,
+  ) => ({
+    list: () =>
+      listFails
+        ? Promise.reject(new Error("vault down"))
+        : Promise.resolve(keys),
+    get: () =>
+      value instanceof Error ? Promise.reject(value) : Promise.resolve(value),
+  });
+  const KEY = "oauth-resolved-admins";
+  assertEquals(
+    await readStoredNameMap(vault([KEY], '{"allowed:bob":"sub-b"}'), KEY),
+    { "allowed:bob": "sub-b" },
+  );
+  // no key listed: nothing stored yet
+  assertEquals(await readStoredNameMap(vault([], "unused"), KEY), {});
+  // anything else is unreadable, never empty
+  assertEquals(await readStoredNameMap(vault([], "", true), KEY), undefined);
+  assertEquals(
+    await readStoredNameMap(vault([KEY], new Error("get failed")), KEY),
+    undefined,
+  );
+  assertEquals(await readStoredNameMap(vault([KEY], "[1,2]"), KEY), undefined);
+  assertEquals(await readStoredNameMap(vault([KEY], "null"), KEY), undefined);
 });

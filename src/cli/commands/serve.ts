@@ -572,6 +572,7 @@ import {
   allowedUsersPartialReason,
   type AllowedUsersReloadPlan,
   planAllowedUsersReload,
+  readStoredNameMap,
 } from "../../serve/serve_access_list_reload.ts";
 import {
   ClubHeartbeatService,
@@ -5192,36 +5193,16 @@ export const serveCommand = new Command()
       if (resolution.cacheChanged) await storeOauthNameCache(resolution.cache);
       oauthNameCache = resolution.cache;
       allowedUsersConfigured = [...authConfig.allowedUsers];
-      readOauthNameCache = async () => {
-        try {
-          if (
-            !await oauthVaultService.has(
+      readOauthNameCache = () =>
+        readStoredNameMap({
+          list: () => oauthVaultService.list(TOKEN_SECRETS_VAULT_NAME),
+          get: (key) =>
+            oauthVaultService.get(
               TOKEN_SECRETS_VAULT_NAME,
-              OAUTH_RESOLVED_ADMINS_KEY,
-            )
-          ) {
-            return {};
-          }
-          const parsed: unknown = JSON.parse(
-            await oauthVaultService.get(
-              TOKEN_SECRETS_VAULT_NAME,
-              OAUTH_RESOLVED_ADMINS_KEY,
+              key,
               "serve:oauth-resolve",
             ),
-          );
-          // anything but a map of strings is unreadable, not empty
-          if (
-            typeof parsed !== "object" || parsed === null ||
-            Array.isArray(parsed) ||
-            Object.values(parsed).some((value) => typeof value !== "string")
-          ) {
-            return undefined;
-          }
-          return parsed as Record<string, string>;
-        } catch {
-          return undefined;
-        }
-      };
+        }, OAUTH_RESOLVED_ADMINS_KEY);
 
       authConfig.admins.splice(
         0,
