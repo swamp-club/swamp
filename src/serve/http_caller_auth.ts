@@ -22,8 +22,8 @@ import type { AccessCaller } from "./handlers/shared.ts";
 import {
   checkIpBurst,
   checkPrincipalRate,
+  failedAttemptKey,
   limitFailedAttempts,
-  rateLimitKey,
 } from "./rate_limiter.ts";
 import { resolveDashboardSessionForOrigin } from "./dashboard_session_handler.ts";
 import type {
@@ -54,8 +54,6 @@ export interface HttpCallerAuthDeps {
    * it; absent, only a bearer token is accepted
    */
   readonly dashboardSession?: HttpCallerSessionAuth;
-  /** what a failed credential counts against; rateLimitKey unless given */
-  readonly failedAttemptKey?: (token: string, sourceIp: string) => string;
 }
 
 export interface HttpCallerSessionAuth {
@@ -114,7 +112,7 @@ export async function authenticateHttpCaller(
     return httpFailure(401, "unauthorized", "Unauthorized: token required");
   }
   const guarded = await limitFailedAttempts(
-    (deps.failedAttemptKey ?? rateLimitKey)(token, sourceIp),
+    failedAttemptKey(token, sourceIp),
     () => deps.authenticate(token, sourceIp),
   );
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
@@ -162,7 +160,7 @@ async function authenticateSessionCaller(
     );
   }
   const guarded = await limitFailedAttempts(
-    rateLimitKey(`${session.tokenName}.${session.id}`, sourceIp),
+    failedAttemptKey(`${session.tokenName}.${session.id}`, sourceIp),
     () => sessionAuth.authenticate(session, sourceIp),
   );
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);

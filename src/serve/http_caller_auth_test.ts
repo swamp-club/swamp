@@ -157,6 +157,85 @@ Deno.test("authenticateHttpCaller: repeated failures with one token are rate-lim
   assertEquals(last.headers.get("Retry-After") !== null, true);
 });
 
+function delegatedToken(delegationId: string, secret = "a"): string {
+  return `swda1.${delegationId}.${secret.repeat(64)}`;
+}
+
+function acceptingOnly(valid: string): HttpCallerAuthDepsForTest {
+  return {
+    authMode: "token",
+    authenticate: (presented) =>
+      Promise.resolve(
+        presented === valid
+          ? validToken
+          : { ok: false, error: "bad", reason: "secret-mismatch" },
+      ),
+  };
+}
+
+type HttpCallerAuthDepsForTest = Parameters<typeof authenticateHttpCaller>[2];
+
+async function statusOf(
+  token: string,
+  sourceIp: string,
+  deps: HttpCallerAuthDepsForTest,
+): Promise<number> {
+  const result = await authenticateHttpCaller(
+    request(`Bearer ${token}`),
+    sourceIp,
+    deps,
+  );
+  if (!(result instanceof Response)) return 200;
+  await result.body?.cancel();
+  return result.status;
+}
+
+Deno.test("authenticateHttpCaller: failed delegated tokens for other delegations never lock out a delegated caller at the same address", async () => {
+  const holder = crypto.randomUUID();
+  const valid = delegatedToken(holder);
+  const deps = acceptingOnly(valid);
+  const sourceIp = uniqueIp();
+  const other = crypto.randomUUID();
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await statusOf(delegatedToken(other), sourceIp, deps);
+    await statusOf(delegatedToken(crypto.randomUUID()), sourceIp, deps);
+  }
+  assertEquals(await statusOf(delegatedToken(other), sourceIp, deps), 429);
+  assertEquals(await statusOf(valid, sourceIp, deps), 200);
+});
+
+Deno.test("authenticateHttpCaller: failures on a delegated token from other addresses never lock out its holder", async () => {
+  const holder = crypto.randomUUID();
+  const valid = delegatedToken(holder);
+  const deps = acceptingOnly(valid);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await statusOf(delegatedToken(holder, "b"), uniqueIp(), deps);
+  }
+  assertEquals(await statusOf(valid, uniqueIp(), deps), 200);
+});
+
+Deno.test("authenticateHttpCaller: a delegated token failing at one address is refused there on the sixth attempt", async () => {
+  const holder = crypto.randomUUID();
+  const deps = acceptingOnly(delegatedToken(holder));
+  const sourceIp = uniqueIp();
+  const statuses: number[] = [];
+  for (let attempt = 0; attempt < 6; attempt++) {
+    statuses.push(await statusOf(delegatedToken(holder, "b"), sourceIp, deps));
+  }
+  assertEquals(statuses, [401, 401, 401, 401, 401, 429]);
+});
+
+Deno.test("authenticateHttpCaller: an address spraying made-up delegation ids is refused by the IP burst", async () => {
+  const deps = acceptingOnly(delegatedToken(crypto.randomUUID()));
+  const sourceIp = uniqueIp();
+  let last = 0;
+  for (let attempt = 0; attempt < 60 && last !== 429; attempt++) {
+    last = await statusOf(delegatedToken(crypto.randomUUID()), sourceIp, deps);
+  }
+  assertEquals(last, 429);
+  assertEquals(checkIpBurst(sourceIp).allowed, false);
+});
+
 Deno.test("authenticateHttpCaller: concurrent requests on one valid bearer token are all accepted", async () => {
   const token = `Bearer ${crypto.randomUUID()}.secret`;
   let release!: () => void;
@@ -426,14 +505,15 @@ Deno.test("authenticateHttpCaller: concurrent reads on one session token are all
   }
 });
 
-Deno.test("authenticateHttpCaller: repeated failed session authentications on one token are rate-limited", async () => {
+Deno.test("authenticateHttpCaller: repeated failed session authentications on one token from one address are rate-limited", async () => {
   const store = sessionStore();
   const tokenName = `revoked-${crypto.randomUUID()}`;
+  const ip = uniqueIp();
   const statuses: number[] = [];
   for (let attempt = 0; attempt < 7; attempt++) {
     const response = await authenticateHttpCaller(
       cookieRequest(store.add(tokenName).id, DASHBOARD_ORIGIN),
-      uniqueIp(),
+      ip,
       {
         authMode: "token",
         authenticate: rejectBearer,

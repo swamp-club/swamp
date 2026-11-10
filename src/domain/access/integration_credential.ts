@@ -71,6 +71,18 @@ export type IntegrationCredentialCheck =
   }
   | { readonly ok: false };
 
+/** the id a credential claims, read without checking it; undefined unless well formed */
+export function integrationIdOfCredential(
+  presented: string,
+): string | undefined {
+  const parts = presented.split(".");
+  if (
+    parts.length !== 3 || parts[0] !== CREDENTIAL_PREFIX ||
+    !INTEGRATION_ID_PATTERN.test(parts[1]) || !/^[0-9a-f]{64}$/.test(parts[2])
+  ) return undefined;
+  return parts[1];
+}
+
 /**
  * one answer for every refusal, so a caller learns nothing about which ids
  * exist; an unknown, revoked or unloaded integration has no credential
@@ -79,12 +91,8 @@ export async function verifyIntegrationCredential(
   presented: string,
   source: IntegrationCredentialSource,
 ): Promise<IntegrationCredentialCheck> {
-  const parts = presented.split(".");
-  if (
-    parts.length !== 3 || parts[0] !== CREDENTIAL_PREFIX ||
-    !INTEGRATION_ID_PATTERN.test(parts[1]) || !/^[0-9a-f]{64}$/.test(parts[2])
-  ) return { ok: false };
-  const integrationId = parts[1];
+  const integrationId = integrationIdOfCredential(presented);
+  if (integrationId === undefined) return { ok: false };
   const record = source.credentialOf(integrationId);
   const presentedHash = await integrationCredentialHash(presented);
   if (

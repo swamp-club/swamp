@@ -66,7 +66,7 @@ import {
   tooManyRequests,
 } from "./http_caller_auth.ts";
 import type { LeaderLink } from "./leader_link.ts";
-import { limitFailedAttempts } from "./rate_limiter.ts";
+import { failedAttemptKey, limitFailedAttempts } from "./rate_limiter.ts";
 import { type ServeLinkClient, ServeLinkError } from "./serve_link_client.ts";
 import { hasJsonContentType } from "./signal_http.ts";
 import { readBodyWithLimit } from "./webhook.ts";
@@ -251,7 +251,7 @@ export async function handleDelegationRequest(
     );
   }
   const guarded = await limitFailedAttempts(
-    `integration-credential|address:${sourceIp}`,
+    failedAttemptKey(credential, sourceIp),
     () => verifyIntegrationCredential(credential, deps.integrations),
   );
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
@@ -552,7 +552,7 @@ async function redeem(
   }
   const { pendingId, redeemSecret } = parsed.data;
   const guarded = await limitFailedAttempts(
-    `delegation-redeem:${integrationId}|address:${sourceIp}`,
+    failedAttemptKey(null, sourceIp, `delegation-redeem:${integrationId}`),
     async () => {
       const record = await deps.store.readOrNull(pendingId);
       const ok = record !== null && record.integrationId === integrationId &&
@@ -750,7 +750,7 @@ async function refresh(
   }
   const id = secret.delegationId;
   const guarded = await limitFailedAttempts(
-    `delegation-refresh:${integrationId}|address:${sourceIp}`,
+    failedAttemptKey(null, sourceIp, `delegation-refresh:${integrationId}`),
     async () => {
       const known = await deps.store.readOrNull(id);
       if (known === null || known.integrationId !== integrationId) {

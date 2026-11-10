@@ -251,9 +251,9 @@ import {
 import {
   checkIpBurst,
   checkPrincipalRate,
+  failedAttemptKey,
   limitDashboardSessionGuesses,
   limitFailedAttempts,
-  rateLimitKey,
   recordFailedAttempt,
 } from "../../serve/rate_limiter.ts";
 import {
@@ -7873,7 +7873,7 @@ export const serveCommand = new Command()
                 !(await teamPeerKey.verify(extracted.token))
               ) {
                 const failedBurst = checkIpBurst(remoteAddr);
-                const failedKey = rateLimitKey(extracted.token, remoteAddr);
+                const failedKey = failedAttemptKey(extracted.token, remoteAddr);
                 const failedRate = recordFailedAttempt(failedKey);
                 logger.warn(
                   "WebSocket peer auth rejected from {ip}",
@@ -7989,7 +7989,7 @@ export const serveCommand = new Command()
               transport = "cookie";
             }
 
-            const rlKey = rateLimitKey(rateLimitCredential, remoteAddr);
+            const rlKey = failedAttemptKey(rateLimitCredential, remoteAddr);
             logger.debug(
               "WebSocket token received via {transport} from {ip}",
               { transport, ip: remoteAddr },
@@ -8334,7 +8334,7 @@ export const serveCommand = new Command()
                 });
               }
               const cancelGuarded = await limitFailedAttempts(
-                rateLimitKey(token, cancelRemoteAddr),
+                failedAttemptKey(token, cancelRemoteAddr),
                 () =>
                   authenticateServerToken(
                     token,
@@ -8734,7 +8734,7 @@ export const serveCommand = new Command()
             },
             authenticateToken: async (token) => {
               const guarded = await limitFailedAttempts(
-                rateLimitKey(token, dashboardRemoteAddr),
+                failedAttemptKey(token, dashboardRemoteAddr),
                 () =>
                   authenticateServerToken(
                     token,
@@ -8799,7 +8799,7 @@ export const serveCommand = new Command()
             },
             authenticateSession: async (session) => {
               const guarded = await limitFailedAttempts(
-                rateLimitKey(
+                failedAttemptKey(
                   `${session.tokenName}.${session.id}`,
                   dashboardRemoteAddr,
                 ),

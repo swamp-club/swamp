@@ -33,8 +33,8 @@ import type { DashboardSession } from "./dashboard_session_store.ts";
 import { parsePrincipal } from "../domain/access/principal.ts";
 import {
   checkIpBurst,
+  failedAttemptKey,
   limitFailedAttempts,
-  rateLimitKey,
 } from "./rate_limiter.ts";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { UsernamesResolved } from "./known_usernames.ts";
@@ -150,7 +150,7 @@ export async function authenticateToken(
   }
 
   const guarded = await limitFailedAttempts(
-    rateLimitKey(token, clientAddr),
+    failedAttemptKey(token, clientAddr),
     () =>
       authenticateServerToken(
         token,
@@ -208,7 +208,7 @@ export async function authenticateDashboardSessionToken(
   session: DashboardSession,
 ): Promise<DashboardSessionTokenAuthResult> {
   const guarded = await limitFailedAttempts(
-    rateLimitKey(`${session.tokenName}.${session.id}`, clientAddr),
+    failedAttemptKey(`${session.tokenName}.${session.id}`, clientAddr),
     () =>
       authenticateDashboardSession(
         session,

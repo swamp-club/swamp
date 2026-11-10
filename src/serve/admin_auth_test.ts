@@ -257,6 +257,29 @@ Deno.test("authenticateToken: returns 401 with an invalid token", async () => {
   if (!result.ok) assertEquals(result.response.status, 401);
 });
 
+Deno.test("authenticateToken: failures on a token from other addresses never rate-limit its holder", async () => {
+  for (
+    const token of [
+      `laptop-${crypto.randomUUID()}.secret`,
+      `swda1.${crypto.randomUUID()}.${"b".repeat(64)}`,
+    ]
+  ) {
+    const deps = makeDeps();
+    const attempt = (clientAddr: string) =>
+      authenticateToken(
+        new Request("http://localhost/api/v1/health/stream", {
+          headers: { authorization: `Bearer ${token}` },
+        }),
+        clientAddr,
+        deps,
+      );
+    for (let i = 0; i < 6; i++) await attempt(freshClientAddr());
+    const result = await attempt(freshClientAddr());
+    assertEquals(result.ok, false);
+    if (!result.ok) assertEquals(result.response.status, 401, token);
+  }
+});
+
 const PRINCIPAL = {
   ok: true as const,
   principalId: "user:operator",
