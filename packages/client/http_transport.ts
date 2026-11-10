@@ -24,15 +24,18 @@ export interface HttpClientOptions {
   fetch?: typeof fetch;
   /** per attempt, in milliseconds */
   timeoutMs?: number;
-  /** attempts per call, the first included; defaults to 3 */
+  /** attempts per call, the first included; defaults to 8 */
   maxAttempts?: number;
-  /** total time a call may spend waiting between attempts; defaults to 10 s */
+  /** total time a call may spend waiting between attempts; defaults to 30 s */
   maxRetryWaitMs?: number;
   /** for tests: the source of jitter, in [0, 1) */
   random?: () => number;
 }
 
-/** what serve answered; status 0 is no answer, with code network_error or timeout */
+/**
+ * what serve answered; status 0 is no answer, with code connection_refused,
+ * network_error or timeout
+ */
 export interface HttpReply {
   readonly status: number;
   readonly body: Record<string, unknown>;
@@ -55,6 +58,36 @@ export interface PostOptions {
 
 const BACKOFF_BASE_MS = 250;
 const BACKOFF_CAP_MS = 5_000;
+const RETRY_AFTER_JITTER_CAP_MS = 1_000;
+
+// Deno names the OS error only in the cause; other runtimes use ECONNREFUSED
+const REFUSED_PATTERN =
+  /connection refused|ECONNREFUSED|os error (?:61|111|10061)\b/i;
+
+/** whether a fetch failed because nothing accepted the connection */
+export function isConnectionRefused(error: unknown): boolean {
+  for (let e = error, depth = 0; e != null && depth < 5; depth++) {
+    const record = e as { message?: unknown; code?: unknown; cause?: unknown };
+    if (record.code === "ECONNREFUSED") return true;
+    if (
+      typeof record.message === "string" && REFUSED_PATTERN.test(record.message)
+    ) {
+      return true;
+    }
+    e = record.cause;
+  }
+  return false;
+}
+
+/** Retry-After plus up to a quarter of it, at most a second, so clients spread out */
+export function retryAfterDelayMs(
+  retryAfterSeconds: number,
+  random: () => number,
+): number {
+  const ms = retryAfterSeconds * 1000;
+  return ms +
+    Math.floor(random() * Math.min(RETRY_AFTER_JITTER_CAP_MS, ms / 4));
+}
 
 /** bearer credentials don't belong in a page, where any script could read them */
 export function refuseInBrowser(
@@ -114,8 +147,8 @@ export class HttpTransport {
     this.#baseUrl = serveBaseUrl(baseUrl);
     this.#fetch = options.fetch ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
-    this.#maxAttempts = Math.max(1, options.maxAttempts ?? 3);
-    this.#maxRetryWaitMs = options.maxRetryWaitMs ?? 10_000;
+    this.#maxAttempts = Math.max(1, options.maxAttempts ?? 8);
+    this.#maxRetryWaitMs = options.maxRetryWaitMs ?? 30_000;
     this.#random = options.random ?? Math.random;
   }
 
@@ -131,7 +164,7 @@ export class HttpTransport {
       const reply = await this.#once(path, bearer, body, options);
       if (attempt >= this.#maxAttempts || !options.retry(reply)) return reply;
       const delay = reply.retryAfterSeconds !== undefined
-        ? reply.retryAfterSeconds * 1000
+        ? retryAfterDelayMs(reply.retryAfterSeconds, this.#random)
         : Math.floor(
           this.#random() *
             Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1)),
@@ -165,10 +198,16 @@ export class HttpTransport {
         body: JSON.stringify(body),
         signal,
       });
-    } catch {
-      // the fetch error names the URL and nothing else useful; drop it
+    } catch (error) {
+      // the fetch error names the URL, so only its kind is kept
       if (options.signal?.aborted) throw abortReason(options.signal);
-      return noAnswer(timeout.aborted ? "timeout" : "network_error");
+      return noAnswer(
+        timeout.aborted
+          ? "timeout"
+          : isConnectionRefused(error)
+          ? "connection_refused"
+          : "network_error",
+      );
     }
     const receivedAtMs = Date.now();
     const isJson = (response.headers.get("content-type") ?? "").includes(
@@ -208,7 +247,9 @@ export class HttpTransport {
   }
 }
 
-function noAnswer(code: "timeout" | "network_error"): HttpReply {
+function noAnswer(
+  code: "timeout" | "network_error" | "connection_refused",
+): HttpReply {
   return { status: 0, body: {}, code, receivedAtMs: Date.now() };
 }
 
@@ -221,6 +262,8 @@ export function errorFrom(
   const message = reply.status === 0
     ? reply.code === "timeout"
       ? "The request to serve timed out"
+      : reply.code === "connection_refused"
+      ? "Serve refused the connection; it may be restarting"
       : "Serve could not be reached"
     : reply.code === "route_unavailable"
     ? `This serve has no ${route} route; upgrade serve`
@@ -246,11 +289,14 @@ export function errorFrom(
 }
 
 /**
- * a refusal serve gives before anything is done, so sending again is safe:
- * rate limits, and 503s or busy replies that name a time to retry
+ * a refusal given before anything is done, so sending again is safe: a
+ * refused connection, rate limits, a starting serve, and 503s or busy replies
+ * that name a time to retry
  */
 export function refusedBeforeActing(reply: HttpReply): boolean {
+  if (reply.code === "connection_refused") return true;
   if (reply.status === 429) return true;
+  if (reply.status === 503 && reply.code === "not_ready") return true;
   if (reply.status === 409 && reply.code === "busy") return true;
   return reply.status === 503 && reply.retryAfterSeconds !== undefined &&
     reply.code !== "outcome_unknown" && reply.code !== "still_working";
@@ -258,6 +304,8 @@ export function refusedBeforeActing(reply: HttpReply): boolean {
 
 /** no answer, or one that says the action may or may not have happened */
 export function outcomeUnknown(reply: HttpReply): boolean {
+  // a refused connection sent nothing
+  if (reply.code === "connection_refused") return false;
   return reply.status === 0 || reply.code === "outcome_unknown" ||
     reply.code === "still_working";
 }

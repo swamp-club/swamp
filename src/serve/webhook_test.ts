@@ -801,6 +801,7 @@ function extensionService(
   acceptsRuns?: () => boolean,
   leaderLink?: LeaderLink,
   trustedCollectives?: () => readonly string[],
+  startupComplete?: () => boolean,
 ): {
   service: WebhookService;
   pendingRuns: unknown[];
@@ -808,6 +809,7 @@ function extensionService(
   const pendingRuns: unknown[] = [];
   const service = new WebhookService({
     ...(acceptsRuns !== undefined ? { acceptsRuns } : {}),
+    ...(startupComplete !== undefined ? { startupComplete } : {}),
     ...(leaderLink !== undefined ? { leaderLink } : {}),
     ...(trustedCollectives !== undefined ? { trustedCollectives } : {}),
     repoDir: "/tmp/fake",
@@ -889,6 +891,34 @@ Deno.test("handleRequest: a drain starting during the hooks turns the delivery a
   assertEquals(res?.headers.get("retry-after"), "5");
   await res?.body?.cancel();
   assertEquals(pendingRuns.length, 0);
+  await service.stop();
+});
+
+Deno.test("handleRequest: a node still starting answers a verified delivery with a retryable 503 and queues nothing", async () => {
+  const type = registerExtension({});
+  let complete = false;
+  const { service, pendingRuns } = extensionService(
+    type,
+    undefined,
+    undefined,
+    undefined,
+    () => complete,
+  );
+  const res = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(res?.status, 503);
+  assertEquals(res?.headers.get("retry-after"), "2");
+  await res?.body?.cancel();
+  assertEquals(pendingRuns.length, 0);
+
+  const unverified = await service.handleRequest(extensionRequest("wrong"));
+  assertEquals(unverified?.status, 401);
+  await unverified?.body?.cancel();
+
+  complete = true;
+  const accepted = await service.handleRequest(extensionRequest("s3cret"));
+  assertEquals(accepted?.status, 200);
+  await accepted?.body?.cancel();
+  assertEquals(pendingRuns.length, 1);
   await service.stop();
 });
 

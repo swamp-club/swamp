@@ -1299,6 +1299,8 @@ export interface SerializedError {
   code: string;
   message: string;
   details?: unknown;
+  /** set on a refusal serve did not act on, such as not_ready or draining */
+  retryAfterSeconds?: number;
 }
 
 export interface AccessGrantListResponse {

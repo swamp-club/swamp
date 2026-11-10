@@ -152,6 +152,8 @@ async function main() {
       "deno",
       "compile",
       "--unstable-bundle",
+      // Deno marks listening with SO_REUSEPORT unstable; serve --reuse-port needs it
+      "--unstable-net",
       // the dashboard's build packages stay in the workspace but never ship
       "--exclude-unused-npm",
       "--allow-read",

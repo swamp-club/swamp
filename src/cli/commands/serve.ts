@@ -475,6 +475,7 @@ import { pushNamespaceCounted } from "../../infrastructure/persistence/push_path
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
+import { ServeAdmission } from "../../serve/serve_admission.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
@@ -1394,9 +1395,14 @@ export function cancelSuccessBody(
   };
 }
 
-/** unauthenticated liveness body; it names no schedule, webhook or setting */
-export function legacyHealthBody(): { status: "ok"; version: "1" } {
-  return { status: "ok", version: "1" };
+/**
+ * unauthenticated liveness body; it names no schedule, webhook or setting. It
+ * stays 200 while draining so a liveness probe never kills a drain
+ */
+export function legacyHealthBody(
+  draining = false,
+): { status: "ok" | "draining"; version: "1" } {
+  return { status: draining ? "draining" : "ok", version: "1" };
 }
 
 function nestedOf(
@@ -1822,6 +1828,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.shutdownDrainTimeout as string,
     );
   }
+  if (options.shutdownListenerGrace) {
+    args.push(
+      "--shutdown-listener-grace",
+      options.shutdownListenerGrace as string,
+    );
+  }
   if (options.datastorePollInterval) {
     args.push(
       "--datastore-poll-interval",
@@ -1851,6 +1863,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.remoteOnly) {
     args.push("--remote-only");
+  }
+  if (options.reusePort) {
+    args.push("--reuse-port");
   }
   if (options.maxConcurrentRuns !== undefined) {
     args.push(
@@ -1972,6 +1987,31 @@ export function isUnreachableBindHost(host: string): boolean {
 }
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
+const DEFAULT_SHUTDOWN_LISTENER_GRACE_MS = 1_000;
+
+// with reuse-port the kernel stops handing this process connections only once
+// it stops listening, and no load balancer needs time to notice
+export function parseShutdownListenerGrace(
+  raw: string | undefined,
+  reusePort: boolean,
+): number {
+  if (raw === undefined) {
+    return reusePort ? 0 : DEFAULT_SHUTDOWN_LISTENER_GRACE_MS;
+  }
+  if (/^0+(ms|mo|[smhdwy])?$/i.test(raw.trim())) return 0;
+  return parseTimerDuration(raw, "--shutdown-listener-grace");
+}
+
+/** resolves once `graceMs` has passed since `startedAt` */
+export function listenerGraceElapsed(
+  startedAt: number,
+  graceMs: number,
+  now: () => number = Date.now,
+): Promise<void> {
+  const left = startedAt + graceMs - now();
+  if (left <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, left));
+}
 
 export function parseShutdownDrainTimeout(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
@@ -2106,6 +2146,7 @@ export interface ServeStartupSettings {
   staleTtlMs?: number;
   reconciliationIntervalMs?: number;
   shutdownDrainTimeoutMs: number;
+  shutdownListenerGraceMs: number;
   hydrationTimeoutMs: number;
   datastorePollIntervalMs?: number;
   webhookRoutesPollMs?: number;
@@ -2176,6 +2217,11 @@ export function resolveServeStartupSettings(
 
   const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
     merged.shutdownDrainTimeout,
+  );
+  // an operator who bounds the drain also bounds how long shutdown lingers
+  const shutdownListenerGraceMs = Math.min(
+    parseShutdownListenerGrace(merged.shutdownListenerGrace, merged.reusePort),
+    shutdownDrainTimeoutMs,
   );
 
   const hydrationTimeoutMs = merged.hydrationTimeout !== undefined
@@ -2278,6 +2324,7 @@ export function resolveServeStartupSettings(
     staleTtlMs,
     reconciliationIntervalMs,
     shutdownDrainTimeoutMs,
+    shutdownListenerGraceMs,
     hydrationTimeoutMs,
     datastorePollIntervalMs,
     ...(webhookRoutesPollMs !== undefined ? { webhookRoutesPollMs } : {}),
@@ -2493,6 +2540,10 @@ const daemonEnableCommand = new Command()
     "How long shutdown waits for in-flight runs before aborting them (default: 30s, 0 aborts at once, env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
   )
   .option(
+    "--shutdown-listener-grace <duration:string>",
+    "How long serve keeps listening after /ready turns 503, so load balancers notice first (default: 1s, 0 with --reuse-port, env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
+  )
+  .option(
     "--datastore-poll-interval <duration:string>",
     "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
@@ -2516,6 +2567,10 @@ const daemonEnableCommand = new Command()
     "--remote-only",
     "Disable local (loopback) execution — all steps must declare placement " +
       "(env: SWAMP_REMOTE_ONLY)",
+  )
+  .option(
+    "--reuse-port",
+    "Listen with SO_REUSEPORT, opening the port only once startup completes, so a new process can start beside the old one (Linux; env: SWAMP_REUSE_PORT)",
   )
   .option(
     "--ws-idle-timeout <duration:string>",
@@ -3418,6 +3473,12 @@ export const serveCommand = new Command()
       "Keep it below the pod's terminationGracePeriodSeconds minus about 25s (env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
   )
   .option(
+    "--shutdown-listener-grace <duration:string>",
+    "How long shutdown keeps accepting connections after /ready turns 503, so load balancers stop routing here first. " +
+      "The listener closes once this has passed and in-flight runs have drained. " +
+      "Raise it above the load balancer's health-check window. Default: 1s, or 0 with --reuse-port (env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
+  )
+  .option(
     "--datastore-poll-interval <duration:string>",
     "How often to pull config, access data and runtime data from the remote datastore, " +
       "and to check the managedConfig extension lockfile for changes. " +
@@ -3492,6 +3553,12 @@ export const serveCommand = new Command()
     "Disable local (loopback) execution — all steps must declare placement " +
       "and be dispatched to remote workers. Steps without placement will error " +
       "(env: SWAMP_REMOTE_ONLY)",
+  )
+  .option(
+    "--reuse-port",
+    "Listen with SO_REUSEPORT and open the port only once startup completes, so a new serve can start " +
+      "beside the old one before it is stopped. The kernel balances connections across them on Linux only " +
+      "(env: SWAMP_REUSE_PORT)",
   )
   .option(
     "--dashboard",
@@ -3590,6 +3657,7 @@ export const serveCommand = new Command()
       staleTtlMs,
       reconciliationIntervalMs,
       shutdownDrainTimeoutMs,
+      shutdownListenerGraceMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
       webhookRoutesPollMs,
@@ -3733,6 +3801,12 @@ export const serveCommand = new Command()
       }
     }
 
+    if (merged.reusePort && Deno.build.os !== "linux") {
+      logger.warn(
+        "--reuse-port: {os} does not balance connections across processes sharing a port, so an overlapping restart may send every connection to one of them",
+        { os: Deno.build.os },
+      );
+    }
     const rejectionGuard = installUnhandledRejectionGuard();
 
     const raiseResult = tryRaiseOpenFileLimit();
@@ -5442,6 +5516,7 @@ export const serveCommand = new Command()
 
     const cancelRegistry = new RunCancelRegistry();
     const detachRuns = merged.detachRuns;
+    const admission = new ServeAdmission();
     const activeRunRegistry = new ActiveRunRegistry({
       maxConcurrent: maxConcurrentRuns,
       maxPerPrincipal: maxRunsPerPrincipal,
@@ -5974,6 +6049,7 @@ export const serveCommand = new Command()
         authConfig,
         cancelRegistry,
         activeRunRegistry,
+        admission,
         runTracker,
         dispatchService,
         controlPlaneStore,
@@ -6025,6 +6101,8 @@ export const serveCommand = new Command()
     });
 
     const ac = new AbortController();
+    // closes the listener ahead of ac, whose audit sinks must outlive the drain
+    const listenerAc = new AbortController();
 
     const auditConfig = parseAuditConfig(configFile);
     if (auditConfig) {
@@ -7177,6 +7255,7 @@ export const serveCommand = new Command()
     // built with no routes too, so a reload can add the first one
     const webhookService = new WebhookService({
       acceptsRuns: () => !isFollowing(),
+      startupComplete: () => admission.phase !== "starting",
       ...(leaderLink !== undefined ? { leaderLink } : {}),
       repoDir: resolvedRepoDir,
       repoContext,
@@ -7536,32 +7615,36 @@ export const serveCommand = new Command()
       }
       return authenticated;
     };
-    const server = Deno.serve(
-      {
-        port,
-        hostname: host,
-        signal: ac.signal,
-        cert,
-        key,
-        onListen({ hostname, port: listenPort }) {
-          if (isJson) {
-            console.log(JSON.stringify({
-              status: "listening",
-              host: hostname,
-              port: listenPort,
-              url: `${wsScheme}://${hostname}:${listenPort}`,
-              schedulingEnabled: enableSchedule,
-              detachRuns: true,
-              mode: deploymentMode.mode,
-            }));
-          } else {
-            logger.info("WebSocket API server listening on {url}", {
-              url: `${wsScheme}://${hostname}:${listenPort}`,
-            });
-          }
-        },
+    const serveOptions: Deno.ServeTcpOptions & {
+      cert?: string;
+      key?: string;
+    } = {
+      port,
+      hostname: host,
+      signal: listenerAc.signal,
+      reusePort: merged.reusePort,
+      cert,
+      key,
+      onListen({ hostname, port: listenPort }) {
+        if (isJson) {
+          console.log(JSON.stringify({
+            status: "listening",
+            host: hostname,
+            port: listenPort,
+            url: `${wsScheme}://${hostname}:${listenPort}`,
+            schedulingEnabled: enableSchedule,
+            detachRuns: true,
+            mode: deploymentMode.mode,
+          }));
+        } else {
+          logger.info("WebSocket API server listening on {url}", {
+            url: `${wsScheme}://${hostname}:${listenPort}`,
+          });
+        }
       },
-      unscopedHttpHandler(traceHttpRequests(async (req, info) => {
+    };
+    const serveHandler: Deno.ServeHandler<Deno.NetAddr> = unscopedHttpHandler(
+      traceHttpRequests(async (req, info) => {
         // a request a team follower forwarded carries the team's peer token,
         // making the follower a trusted proxy for it
         const resolvedClientAddress = requestClientAddress(
@@ -7639,7 +7722,10 @@ export const serveCommand = new Command()
               const { socket, response } = Deno.upgradeWebSocket(
                 req,
                 extracted.transport === "subprotocol"
-                  ? { ...wsUpgradeOpts, protocol: `bearer.${extracted.token}` }
+                  ? {
+                    ...wsUpgradeOpts,
+                    protocol: `bearer.${extracted.token}`,
+                  }
                   : wsUpgradeOpts,
               );
               markPeerSocket(socket);
@@ -7693,9 +7779,12 @@ export const serveCommand = new Command()
                   "WebSocket dashboard session rejected: unknown session from {ip}",
                   { ip: remoteAddr },
                 );
-                return new Response("Unauthorized: dashboard session expired", {
-                  status: 401,
-                });
+                return new Response(
+                  "Unauthorized: dashboard session expired",
+                  {
+                    status: 401,
+                  },
+                );
               }
               logger.warn(
                 "WebSocket dashboard session rejected: origin mismatch from {ip}",
@@ -7857,7 +7946,10 @@ export const serveCommand = new Command()
             nameLeader: false,
           });
         }
-        const dataPlaneResponse = await dataPlane.handle(req, clientAddress());
+        const dataPlaneResponse = await dataPlane.handle(
+          req,
+          clientAddress(),
+        );
         if (dataPlaneResponse) return dataPlaneResponse;
 
         if (req.method === "POST") {
@@ -7881,9 +7973,12 @@ export const serveCommand = new Command()
             "No-auth HTTP API request rejected: {reason} from {ip}",
             { reason: requestTrust.reason, ip: clientAddress() },
           );
-          const forbidden = new Response(`Forbidden: ${requestTrust.reason}`, {
-            status: 403,
-          });
+          const forbidden = new Response(
+            `Forbidden: ${requestTrust.reason}`,
+            {
+              status: 403,
+            },
+          );
           // refused before handleDatastoreRequest, which opens a datastore route's span
           return matchDatastoreRoute(apiUrl.pathname) === undefined
             ? forbidden
@@ -8222,8 +8317,11 @@ export const serveCommand = new Command()
               info.remoteAddr.hostname,
             );
             if (!auth.ok) return auth.response;
-            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
-            const snapshot = await healthCollector.collect(ac.signal);
+            const reader = createReadAuthorizer(
+              auth.authResult,
+              adminAuthDeps,
+            );
+            const snapshot = await healthCollector.collect(listenerAc.signal);
             return Response.json(
               await healthSnapshotFor(snapshot, reader, healthResources),
             );
@@ -8238,7 +8336,10 @@ export const serveCommand = new Command()
             );
             if (!auth.ok) return auth.response;
             const token = auth.token;
-            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
+            const reader = createReadAuthorizer(
+              auth.authResult,
+              adminAuthDeps,
+            );
 
             return createHealthStreamResponse({
               collect: async (signal) =>
@@ -8249,7 +8350,7 @@ export const serveCommand = new Command()
                 ),
               intervalParam: url.searchParams.get("interval"),
               lastEventId: req.headers.get("Last-Event-ID"),
-              serverSignal: ac.signal,
+              serverSignal: listenerAc.signal,
               requestSignal: req.signal,
               // Auth mode none has no token, so there is no session to bind
               // and no per-token cap: that mode is unauthenticated by design.
@@ -8282,7 +8383,7 @@ export const serveCommand = new Command()
               instanceId,
               staleTtlMs,
               serveOptions: merged,
-              signal: ac.signal,
+              signal: listenerAc.signal,
             });
 
             return Response.json({ instances });
@@ -8368,7 +8469,9 @@ export const serveCommand = new Command()
             });
           }
         }
-        let deviceAuthDeps: ReturnType<typeof createDeviceAuthDeps> | undefined;
+        let deviceAuthDeps:
+          | ReturnType<typeof createDeviceAuthDeps>
+          | undefined;
         let deviceRemoteAddr: string | undefined;
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
           deviceRemoteAddr = trustProxy
@@ -8612,7 +8715,7 @@ export const serveCommand = new Command()
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/" || url.pathname === "/health") {
-            return Response.json(legacyHealthBody());
+            return Response.json(legacyHealthBody(shuttingDown));
           }
         }
 
@@ -8625,8 +8728,12 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      })),
+      }),
     );
+    const listen = () => Deno.serve(serveOptions, serveHandler);
+    // with reuse-port a process that is not ready must not take a share of
+    // the connections, so it listens only once startup completes
+    let server = merged.reusePort ? undefined : listen();
 
     const hotReload = merged.hotReload;
     const pidPath = hotReload ? swampPath(resolvedRepoDir, "serve.pid") : null;
@@ -8720,6 +8827,7 @@ export const serveCommand = new Command()
       if (shuttingDown) return;
       shuttingDown = true;
       isReady = false;
+      admission.beginDraining();
       // stopped first so it lets go of its load in flight instead of competing
       // with the drain; waited on after the drain, which does not wait for that
       // load
@@ -8769,6 +8877,13 @@ export const serveCommand = new Command()
       // a run still registered past the abort grace may still be writing, so on
       // v3 the next command must recover what it leaves uncommitted
       if ((activeRunRegistry?.size ?? 0) > 0) keepV3WriterMarkers();
+      // closing the listener ends every open WebSocket, so it waits for the
+      // drain, and for the grace load balancers need to see /ready turn 503;
+      // the stages below run meanwhile, so the grace never lengthens shutdown
+      const listenerClosed = listenerGraceElapsed(
+        drainStarted,
+        shutdownListenerGraceMs,
+      ).then(() => listenerAc.abort());
       // before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does
       let unpushedRunIds: readonly string[] = [];
@@ -8976,6 +9091,7 @@ export const serveCommand = new Command()
       setRemoteStepDispatcher(null);
       setTokenRefusalNodeState(undefined);
       setRemoteOnlyMode(false);
+      await stages.run("listener", () => listenerClosed, "awaited");
       ac.abort();
       if (pidPath) {
         try {
@@ -8988,9 +9104,13 @@ export const serveCommand = new Command()
         console.log(JSON.stringify({ status: "stopped" }));
       }
     };
+    // every trigger shares one run, which the action waits for before closing
+    // the catalog the shutdown stages still use
+    let shutdownRun: Promise<void> | undefined;
+    const startShutdown = () => (shutdownRun ??= shutdown());
     registerShutdownHandler({
       handler: () => {
-        shutdown().catch((e) =>
+        startShutdown().catch((e) =>
           logger.error("Shutdown error: {error}", {
             error: e instanceof Error ? e.message : String(e),
           })
@@ -9003,7 +9123,7 @@ export const serveCommand = new Command()
       // SIGTERM still needs to trigger shutdown on POSIX.
       if (Deno.build.os !== "windows") {
         Deno.addSignalListener("SIGTERM", () => {
-          shutdown().catch((e) =>
+          startShutdown().catch((e) =>
             logger.error("Shutdown error: {error}", {
               error: e instanceof Error ? e.message : String(e),
             })
@@ -9345,7 +9465,7 @@ export const serveCommand = new Command()
         // restarts it as a follower; runs outside the leadership tick
         onLostLead: async () => {
           Deno.exitCode = 75;
-          await shutdown();
+          await startShutdown();
         },
       });
       serveLeadership = leadership;
@@ -9836,13 +9956,17 @@ export const serveCommand = new Command()
           ),
       });
     }
+    if (!shuttingDown) server ??= listen();
+    admission.open();
     isReady = true;
     logger.info("Startup complete — /ready is now serving 200");
 
     runIndexWarmup.start();
     eventLoopLag.start();
 
-    await server.finished;
+    await server?.finished;
+    // shutdown logs its own failure
+    await shutdownRun?.catch(() => {});
 
     repoContext.catalogStore.close();
   })

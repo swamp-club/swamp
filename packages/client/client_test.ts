@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { SwampClient } from "./client.ts";
+import { SwampClient, type SwampClientOptions } from "./client.ts";
 import { SwampClientError } from "./stream.ts";
 
 // ── Constructor ─────────────────────────────────────────────────────────
@@ -61,7 +61,9 @@ Deno.test("SwampClient - connect and close lifecycle", async () => {
 
 Deno.test("SwampClient - connect rejects on refused connection", async () => {
   // Port 1 is almost certainly not listening
-  const client = new SwampClient("ws://127.0.0.1:1/ws");
+  const client = new SwampClient("ws://127.0.0.1:1/ws", {
+    retryBudgetMs: 0,
+  });
 
   await assertRejects(
     () => client.connect(),
@@ -453,7 +455,9 @@ Deno.test("SwampClient - request sends payload when provided", async () => {
 });
 
 Deno.test("SwampClient - request rejects when connection fails", async () => {
-  const client = new SwampClient("ws://127.0.0.1:1/ws");
+  const client = new SwampClient("ws://127.0.0.1:1/ws", {
+    retryBudgetMs: 0,
+  });
 
   await assertRejects(
     () => client.request("workflow.search"),
@@ -976,4 +980,285 @@ Deno.test("SwampClient - a closed socket ending after a reconnect leaves the new
     client.close();
     server.close();
   }
+});
+
+// ── Retrying while serve restarts ───────────────────────────────────────
+
+/** a clock that only moves when the client sleeps */
+function fakeClock(random = 0.5) {
+  const sleeps: number[] = [];
+  let t = 0;
+  return {
+    sleeps,
+    options: {
+      now: () => t,
+      random: () => random,
+      sleep: (ms: number) => {
+        sleeps.push(ms);
+        t += ms;
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+function closedPort(): number {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+  listener.close();
+  return port;
+}
+
+const completedRun = (id: string): Frame =>
+  event(id, {
+    kind: "completed",
+    run: { ...RUN, workflowName: "w", status: "succeeded" },
+  });
+
+const refusal = (
+  id: string,
+  code: string,
+  retryAfterSeconds?: number,
+): Frame => ({
+  type: "error",
+  id,
+  error: {
+    code,
+    message: `serve is ${code}`,
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+  },
+});
+
+/** a serve stand-in whose answer depends on how many requests came before */
+async function withRestartingServer(
+  upgrade: (connection: number) => Response | undefined,
+  script: (req: Request, n: number, socket: WebSocket) => void,
+  options: Partial<SwampClientOptions>,
+  fn: (client: SwampClient, received: Request[]) => Promise<void>,
+): Promise<void> {
+  const received: Request[] = [];
+  let connections = 0;
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    const refused = upgrade(connections++);
+    if (refused) return refused;
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    socket.onmessage = (e) => {
+      const msg = JSON.parse(e.data as string) as Request;
+      received.push(msg);
+      script(msg, received.length, socket);
+    };
+    return response;
+  });
+  const client = new SwampClient(
+    `ws://127.0.0.1:${server.addr.port}/ws`,
+    options,
+  );
+  try {
+    await fn(client, received);
+  } finally {
+    client.close();
+    await server.shutdown();
+  }
+}
+
+const accept = () => undefined;
+
+Deno.test("SwampClient - connect retries a refused connection until serve listens", async () => {
+  const port = closedPort();
+  let server: Deno.HttpServer | undefined;
+  const sleeps: number[] = [];
+  const client = new SwampClient(`ws://127.0.0.1:${port}/ws`, {
+    random: () => 0.5,
+    sleep: (ms) => {
+      sleeps.push(ms);
+      server ??= Deno.serve(
+        { hostname: "127.0.0.1", port, onListen: () => {} },
+        (req) => Deno.upgradeWebSocket(req).response,
+      );
+      return Promise.resolve();
+    },
+  });
+  try {
+    await client.connect();
+    assertEquals(sleeps, [125]);
+  } finally {
+    client.close();
+    await server?.shutdown();
+  }
+});
+
+Deno.test("SwampClient - connect gives up on a refused connection when its budget runs out", async () => {
+  const clock = fakeClock(1);
+  const client = new SwampClient(`ws://127.0.0.1:${closedPort()}/ws`, {
+    retryBudgetMs: 2_000,
+    ...clock.options,
+  });
+  await assertRejects(() => client.connect(), Error, "tcp connect error");
+  // backoff doubles from 250 ms; the next 2 s wait would pass the budget
+  assertEquals(clock.sleeps, [250, 500, 1000]);
+});
+
+Deno.test("SwampClient - connect retries a 503 upgrade but not a 401", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    (n) => n < 2 ? new Response("starting", { status: 503 }) : undefined,
+    () => {},
+    clock.options,
+    async (client) => {
+      await client.connect();
+      assertEquals(clock.sleeps.length, 2);
+    },
+  );
+
+  const denied = fakeClock();
+  await withRestartingServer(
+    () => new Response("no", { status: 401 }),
+    () => {},
+    denied.options,
+    async (client) => {
+      await assertRejects(() => client.connect(), Error, "401");
+      assertEquals(denied.sleeps, []);
+    },
+  );
+});
+
+Deno.test("SwampClient - workflowRun starts again on a fresh connection after a draining refusal", async () => {
+  const clock = fakeClock();
+  let opened = 0;
+  await withRestartingServer(
+    () => {
+      opened++;
+      return undefined;
+    },
+    (req, n, socket) => {
+      if (n === 1) {
+        socket.send(JSON.stringify(refusal(req.id, "draining", 5)));
+        return;
+      }
+      socket.send(JSON.stringify(completedRun(req.id)));
+    },
+    clock.options,
+    async (client, received) => {
+      const result = await client.workflowRun({ workflowIdOrName: "w" });
+      assertEquals(result.outcome, "completed");
+      assertEquals(received.length, 2);
+      assert(received[0].id !== received[1].id);
+      assertEquals(opened, 2);
+      // Retry-After plus a jitter of half of min(1 s, a quarter of it)
+      assertEquals(clock.sleeps, [5_500]);
+    },
+  );
+});
+
+Deno.test("SwampClient - a draining refusal from an older serve backs off without Retry-After", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    accept,
+    (req, n, socket) => {
+      socket.send(JSON.stringify(
+        n === 1 ? refusal(req.id, "draining") : completedRun(req.id),
+      ));
+    },
+    clock.options,
+    async (client) => {
+      await client.workflowRun({ workflowIdOrName: "w" });
+      assertEquals(clock.sleeps, [125]);
+    },
+  );
+});
+
+Deno.test("SwampClient - not_ready refusals are retried for every run start", async () => {
+  const notReadyOnce = (req: Request, n: number, socket: WebSocket) => {
+    socket.send(JSON.stringify(
+      n % 2 === 1 ? refusal(req.id, "not_ready", 2) : completedRun(req.id),
+    ));
+  };
+  const clock = fakeClock(0);
+  await withRestartingServer(
+    accept,
+    notReadyOnce,
+    clock.options,
+    async (client, received) => {
+      await client.modelMethodRun({ modelIdOrName: "m", methodName: "run" });
+      await client.workflowResume({ workflowIdOrName: "w", runId: "run-1" });
+      const { kinds, error } = await collect(
+        client.workflowRunStream({ workflowIdOrName: "w" }),
+      );
+      assertEquals([kinds, error], [["completed"], undefined]);
+      const streamed = await collect(
+        client.modelMethodRunStream({ modelIdOrName: "m", methodName: "run" }),
+      );
+      assertEquals([streamed.kinds, streamed.error], [
+        ["completed"],
+        undefined,
+      ]);
+      assertEquals(received.length, 8);
+      assertEquals(clock.sleeps, [2000, 2000, 2000, 2000]);
+    },
+  );
+});
+
+Deno.test("SwampClient - a refused start past its budget rejects with the refusal and its retryAfterSeconds", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    accept,
+    (req, _n, socket) =>
+      socket.send(JSON.stringify(refusal(req.id, "draining", 5))),
+    { retryBudgetMs: 12_000, ...clock.options },
+    async (client, received) => {
+      const err = await assertRejects(
+        () => client.workflowRun({ workflowIdOrName: "w" }),
+        SwampClientError,
+      );
+      assertEquals([err.code, err.retryAfterSeconds], ["draining", 5]);
+      assertEquals(received.length, 3);
+      assertEquals(clock.sleeps, [5_500, 5_500]);
+    },
+  );
+});
+
+Deno.test("SwampClient - a run start is not sent again once the connection closes after it", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    accept,
+    (_req, _n, socket) => socket.close(),
+    clock.options,
+    async (client, received) => {
+      const err = await assertRejects(
+        () => client.workflowRun({ workflowIdOrName: "w" }),
+        SwampClientError,
+      );
+      assertEquals(err.code, "connection_closed");
+      assertEquals(received.length, 1);
+      assertEquals(clock.sleeps, []);
+    },
+  );
+});
+
+Deno.test("SwampClient - a draining error after a run event, or on a plain request, is not retried", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    accept,
+    (req, _n, socket) => {
+      if (req.type === "workflow.run") {
+        socket.send(JSON.stringify(event(req.id, { kind: "started" })));
+      }
+      socket.send(JSON.stringify(refusal(req.id, "draining", 5)));
+    },
+    clock.options,
+    async (client, received) => {
+      const run = await assertRejects(
+        () => client.workflowRun({ workflowIdOrName: "w" }),
+        SwampClientError,
+      );
+      assertEquals(run.code, "draining");
+      const plain = await assertRejects(
+        () => client.request("workflow.search"),
+        SwampClientError,
+      );
+      assertEquals([plain.code, plain.retryAfterSeconds], ["draining", 5]);
+      assertEquals(received.length, 2);
+      assertEquals(clock.sleeps, []);
+    },
+  );
 });

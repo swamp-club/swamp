@@ -2127,6 +2127,102 @@ Deno.test("loadServeConfig: boolean remote-only is accepted", () => {
   });
 });
 
+Deno.test("mergeServeOptions: reuse-port defaults to false", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.reusePort, false);
+});
+
+Deno.test("mergeServeOptions: reuse-port CLI flag wins over config and env", () => {
+  const merged = mergeServeOptions(
+    { "reuse-port": false },
+    { reusePort: true },
+    new Set(["reuse-port"]),
+    (name: string) => name === "SWAMP_REUSE_PORT" ? "false" : undefined,
+  );
+  assertEquals(merged.reusePort, true);
+});
+
+Deno.test("mergeServeOptions: reuse-port env var wins over config when CLI not explicit", () => {
+  const merged = mergeServeOptions(
+    { "reuse-port": false },
+    {},
+    new Set<string>(),
+    (name: string) => name === "SWAMP_REUSE_PORT" ? "true" : undefined,
+  );
+  assertEquals(merged.reusePort, true);
+});
+
+Deno.test("mergeServeOptions: reuse-port from config when no CLI or env", () => {
+  const merged = mergeServeOptions(
+    { "reuse-port": true },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.reusePort, true);
+});
+
+Deno.test("loadServeConfig: non-boolean reuse-port produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "reuse-port": "yes" });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "Invalid reuse-port",
+    );
+  });
+});
+
+Deno.test("mergeServeOptions: shutdown-listener-grace CLI flag wins over env and config", () => {
+  const merged = mergeServeOptions(
+    { "shutdown-listener-grace": "20s" },
+    { shutdownListenerGrace: "2s" },
+    new Set(["shutdown-listener-grace"]),
+    (name: string) =>
+      name === "SWAMP_SHUTDOWN_LISTENER_GRACE" ? "10s" : undefined,
+  );
+  assertEquals(merged.shutdownListenerGrace, "2s");
+});
+
+Deno.test("mergeServeOptions: shutdown-listener-grace env var wins over config", () => {
+  const merged = mergeServeOptions(
+    { "shutdown-listener-grace": "20s" },
+    {},
+    new Set<string>(),
+    (name: string) =>
+      name === "SWAMP_SHUTDOWN_LISTENER_GRACE" ? "10s" : undefined,
+  );
+  assertEquals(merged.shutdownListenerGrace, "10s");
+});
+
+Deno.test("mergeServeOptions: shutdown-listener-grace from config, unset by default", () => {
+  const fromConfig = mergeServeOptions(
+    { "shutdown-listener-grace": "20s" },
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(fromConfig.shutdownListenerGrace, "20s");
+  const unset = mergeServeOptions(null, {}, new Set<string>(), () => undefined);
+  assertEquals(unset.shutdownListenerGrace, undefined);
+});
+
+Deno.test("loadServeConfig: non-string shutdown-listener-grace produces error", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "shutdown-listener-grace": 5 });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      "shutdown-listener-grace",
+    );
+  });
+});
+
 Deno.test("mergeServeOptions: auto-resume defaults to false", () => {
   const merged = mergeServeOptions(
     null,

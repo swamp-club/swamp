@@ -39,12 +39,14 @@ import {
   collectServeExtraArgs,
   isUnreachableBindHost,
   legacyHealthBody,
+  listenerGraceElapsed,
   loadServeCaCerts,
   MAX_CANCEL_BODY_BYTES,
   parseContinuationSweepInterval,
   parseDatastorePollInterval,
   parseMaxSignalWaitTimeout,
   parseShutdownDrainTimeout,
+  parseShutdownListenerGrace,
   parseTokenGcSettings,
   parseWebhookRoutesPoll,
   readBulkCancelBody,
@@ -259,6 +261,44 @@ Deno.test("parseTokenGcSettings: caps the interval at the timer ceiling but not 
   assertEquals(
     parseTokenGcSettings(undefined, "60d").gracePeriodMs,
     60 * 86_400_000,
+  );
+});
+
+Deno.test("parseShutdownListenerGrace: unset is 1s, or 0 with reuse-port", () => {
+  assertEquals(parseShutdownListenerGrace(undefined, false), 1_000);
+  assertEquals(parseShutdownListenerGrace(undefined, true), 0);
+});
+
+Deno.test("parseShutdownListenerGrace: an explicit value wins over the reuse-port default", () => {
+  assertEquals(parseShutdownListenerGrace("20s", true), 20_000);
+  assertEquals(parseShutdownListenerGrace("0s", false), 0);
+});
+
+Deno.test("listenerGraceElapsed: resolves at once when the grace has passed", async () => {
+  await listenerGraceElapsed(1_000, 5_000, () => 6_000);
+  await listenerGraceElapsed(1_000, 0, () => 1_000);
+});
+
+Deno.test("listenerGraceElapsed: waits out what is left of the grace", async () => {
+  const startedAt = Date.now();
+  let settled = false;
+  const waiting = listenerGraceElapsed(startedAt, 50).then(() => {
+    settled = true;
+  });
+  assertEquals(settled, false);
+  await waiting;
+  assertEquals(settled, true);
+});
+
+Deno.test("legacyHealthBody: reports draining while keeping its shape", () => {
+  assertEquals(legacyHealthBody(true), { status: "draining", version: "1" });
+});
+
+Deno.test("collectServeExtraArgs: forwards --reuse-port and --shutdown-listener-grace", () => {
+  assertEquals(collectServeExtraArgs({ reusePort: true }), ["--reuse-port"]);
+  assertEquals(
+    collectServeExtraArgs({ shutdownListenerGrace: "10s" }),
+    ["--shutdown-listener-grace", "10s"],
   );
 });
 

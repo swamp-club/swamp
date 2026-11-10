@@ -45,6 +45,10 @@ import {
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 import {
+  parseRetryAfter,
+  type Sleep,
+} from "../infrastructure/http/rate_limit.ts";
+import {
   recordWithheldTokenFile,
   serverLoginHint,
   withheldTokenFileMessage,
@@ -198,12 +202,33 @@ export class ServerResponseError extends UserError {
   readonly details: unknown;
   /** the server's own message, without the code it is prefixed with here */
   readonly serverMessage: string;
+  readonly retryAfterSeconds?: number;
 
-  constructor(error: { code: string; message: string; details?: unknown }) {
+  constructor(
+    error: {
+      code: string;
+      message: string;
+      details?: unknown;
+      retryAfterSeconds?: unknown;
+    },
+  ) {
     super(formatServerError(error), error.code);
     this.serverMessage = error.message;
     this.name = "UserError";
     this.details = error.details;
+    if (
+      typeof error.retryAfterSeconds === "number" &&
+      Number.isFinite(error.retryAfterSeconds) && error.retryAfterSeconds >= 0
+    ) {
+      this.retryAfterSeconds = error.retryAfterSeconds;
+    }
+  }
+}
+
+/** a connect that never reached serve, or reached a proxy saying serve is gone */
+class ServeUnreachableError extends UserError {
+  constructor(message: string, readonly reason: string) {
+    super(message);
   }
 }
 
@@ -259,19 +284,158 @@ const CANCEL_DRAIN_MS = 10_000;
 
 const CONNECT_TIMEOUT_MS = 15_000;
 
-const MAX_RECONNECT_RETRIES = 5;
-
-const MAX_ELSEWHERE_RETRIES = 10;
-
 const ELSEWHERE_RETRY_DELAY_MS = 1_500;
 
-export interface ServerRunOptions {
+/** how long a request that serve refused without acting keeps being retried */
+const RESTART_RETRY_BUDGET_MS = 30_000;
+
+/** sized for a single-instance serve restart, which drains runs before exiting */
+const REATTACH_BUDGET_MS = 120_000;
+
+const RETRY_BACKOFF_BASE_MS = 1_000;
+const RETRY_BACKOFF_CAP_MS = 8_000;
+const RETRY_BACKOFF_JITTER_RATIO = 0.25;
+const RETRY_AFTER_JITTER_MS = 500;
+
+/** frame codes serve sends only for a request it refused before acting on it */
+const RESTART_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "draining",
+  "not_ready",
+]);
+
+const HTTP_RESTART_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "shutting_down",
+  "not_ready",
+]);
+
+const RESTART_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+interface RetryTiming {
+  sleep?: Sleep;
+  random?: () => number;
+  now?: () => number;
+  /** where retry notices go; stderr when unset */
+  log?: (message: string) => void;
+  restartRetryBudgetMs?: number;
+}
+
+/** one stretch of retries against a time budget, started by the first wait */
+class RetryWindow {
+  private start: number | undefined;
+  private waits = 0;
+
+  constructor(
+    readonly budgetMs: number,
+    private readonly timing: RetryTiming,
+  ) {}
+
+  get retries(): number {
+    return this.waits;
+  }
+
+  begin(): void {
+    this.start ??= this.now();
+  }
+
+  elapsedMs(): number {
+    return this.start === undefined ? 0 : this.now() - this.start;
+  }
+
+  /** the wait before the next attempt, or undefined once the budget is spent */
+  nextWait(retryAfterSeconds?: number, fixedMs?: number): number | undefined {
+    this.begin();
+    const remaining = this.budgetMs - this.elapsedMs();
+    if (remaining <= 0) return undefined;
+    this.waits++;
+    const random = this.timing.random ?? Math.random;
+    let wait: number;
+    if (fixedMs !== undefined) {
+      wait = fixedMs;
+    } else if (retryAfterSeconds !== undefined) {
+      wait = retryAfterSeconds * 1000 +
+        Math.floor(random() * RETRY_AFTER_JITTER_MS);
+    } else {
+      const base = Math.min(
+        RETRY_BACKOFF_BASE_MS * 2 ** (this.waits - 1),
+        RETRY_BACKOFF_CAP_MS,
+      );
+      wait = Math.round(
+        base * (1 + RETRY_BACKOFF_JITTER_RATIO * (2 * random() - 1)),
+      );
+    }
+    return Math.min(wait, remaining);
+  }
+
+  reset(): void {
+    this.start = undefined;
+    this.waits = 0;
+  }
+
+  private now(): number {
+    return (this.timing.now ?? Date.now)();
+  }
+}
+
+function formatSeconds(ms: number): string {
+  return `${Math.max(0, Math.round(ms / 1000))}s`;
+}
+
+/** why serve refused without acting, when the refusal proves it did not act */
+function restartRefusal(
+  err: unknown,
+  codes: ReadonlySet<string>,
+): { reason: string; retryAfterSeconds?: number } | undefined {
+  if (err instanceof ServeUnreachableError) return { reason: err.reason };
+  if (err instanceof ServerResponseError && codes.has(err.code ?? "")) {
+    return {
+      reason: err.code ?? "",
+      retryAfterSeconds: err.retryAfterSeconds,
+    };
+  }
+  return undefined;
+}
+
+function withRetriedFor(err: UserError, window: RetryWindow): UserError {
+  if (window.retries === 0) return err;
+  const suffix = ` (serve was still unavailable after retrying for ${
+    formatSeconds(window.elapsedMs())
+  })`;
+  if (err instanceof ServerResponseError) {
+    return new ServerResponseError({
+      code: err.code ?? "",
+      message: `${err.serverMessage}${suffix}`,
+      details: err.details,
+    });
+  }
+  return new UserError(`${err.message}${suffix}`, err.code);
+}
+
+/** writes the restart notice once, on the first retry */
+function restartNotifier(
+  timing: RetryTiming,
+): (server: string, reason: string, budgetMs: number) => void {
+  let shown = false;
+  return (server, reason, budgetMs) => {
+    if (shown) return;
+    shown = true;
+    (timing.log ?? getReconnectLogger())(
+      `serve at ${
+        redactServerUrl(toHttpUrl(server)) ?? "(invalid URL)"
+      } is restarting (${reason}); retrying for up to ${
+        formatSeconds(budgetMs)
+      }`,
+    );
+  };
+}
+
+export interface ServerRunOptions extends RetryTiming {
   server: string;
   token?: string;
   signal?: AbortSignal;
   headers?: Record<string, string>;
   caCerts?: string[];
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
+  reattachBudgetMs?: number;
 }
 
 /** stored credentials are keyed by http(s) URL, but --server often uses ws(s) */
@@ -539,7 +703,7 @@ export async function requestNewerServerResponse<T>(
   }
 }
 
-export interface RequestResponseOptions {
+export interface RequestResponseOptions extends RetryTiming {
   server: string;
   token?: string;
   signal?: AbortSignal;
@@ -576,11 +740,39 @@ export async function requestServerResponse<T>(
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
   writeRemoteIndicator(options.server);
-  if (HTTP_REQUEST_TYPES.has(request.type)) {
-    const outcome = await requestOverHttp<T>(options, request);
-    if (outcome.kind === "payload") return outcome.payload;
+  const window = new RetryWindow(
+    options.restartRetryBudgetMs ?? RESTART_RETRY_BUDGET_MS,
+    options,
+  );
+  const notify = restartNotifier(options);
+  while (true) {
+    let overHttp = false;
+    try {
+      if (HTTP_REQUEST_TYPES.has(request.type)) {
+        overHttp = true;
+        const outcome = await requestOverHttp<T>(options, request);
+        if (outcome.kind === "payload") return outcome.payload;
+      }
+      overHttp = false;
+      return await requestOverSocket<T>(options, request);
+    } catch (err) {
+      // over HTTP only a refusal that names when to come back is retried
+      const refusal = restartRefusal(
+        err,
+        overHttp ? HTTP_RESTART_REFUSAL_CODES : RESTART_REFUSAL_CODES,
+      );
+      if (
+        refusal === undefined ||
+        (overHttp && refusal.retryAfterSeconds === undefined)
+      ) {
+        throw err;
+      }
+      const wait = window.nextWait(refusal.retryAfterSeconds);
+      if (wait === undefined) throw withRetriedFor(err as UserError, window);
+      notify(options.server, refusal.reason, window.budgetMs);
+      await (options.sleep ?? delay)(wait, options.signal);
+    }
   }
-  return await requestOverSocket<T>(options, request);
 }
 
 type HttpRequestOutcome<T> =
@@ -705,6 +897,7 @@ interface ServeRefusal {
   readonly code: string;
   readonly message: string;
   readonly leader?: unknown;
+  readonly retryAfterSeconds?: number;
 }
 
 async function readServeRefusal(
@@ -719,7 +912,12 @@ async function readServeRefusal(
   if (typeof body?.code !== "string" || typeof body.message !== "string") {
     return undefined;
   }
-  return { code: body.code, message: body.message, leader: body.leader };
+  return {
+    code: body.code,
+    message: body.message,
+    leader: body.leader,
+    retryAfterSeconds: parseRetryAfter(response.headers.get("retry-after")),
+  };
 }
 
 function httpRefusal(
@@ -735,11 +933,14 @@ function httpRefusal(
       describeHandshakeStatus(baseUrl, 429, "Rate-limited by server"),
     );
   }
+  const restarting = status === 503 &&
+    HTTP_RESTART_REFUSAL_CODES.has(refusal.code);
   return new ServerResponseError({
     code: refusal.code,
     message: refusal.message,
     ...(refusal.leader !== undefined &&
       { details: { leader: refusal.leader } }),
+    ...(restarting && { retryAfterSeconds: refusal.retryAfterSeconds }),
   });
 }
 
@@ -1312,27 +1513,53 @@ async function classifyConnectionError(
   headers: Record<string, string>,
   caCerts: string[] | undefined,
 ): Promise<string> {
+  return (await diagnoseConnectFailure(
+    wsUrl,
+    originalMessage,
+    headers,
+    caCerts,
+  )).message;
+}
+
+/**
+ * unreachable names why serve cannot have seen the request: nothing answered,
+ * or a proxy answered 502/503/504 for it
+ */
+async function diagnoseConnectFailure(
+  wsUrl: string,
+  originalMessage: string,
+  headers: Record<string, string>,
+  caCerts: string[] | undefined,
+): Promise<{ message: string; unreachable?: string }> {
   const statusMatch = originalMessage.match(/Invalid status code: (\d+)/);
   if (statusMatch) {
     // the server answered with a status of its own; the probe below only covers
     // connections that never got one
-    return describeHandshakeStatus(
-      wsUrl,
-      parseInt(statusMatch[1], 10),
-      originalMessage,
-    );
+    const status = parseInt(statusMatch[1], 10);
+    return {
+      message: describeHandshakeStatus(wsUrl, status, originalMessage),
+      ...(RESTART_STATUSES.has(status) && { unreachable: `HTTP ${status}` }),
+    };
   }
   const tlsGuidance = diagnoseTlsMessage(originalMessage);
-  if (tlsGuidance) return tlsGuidance;
+  if (tlsGuidance) return { message: tlsGuidance };
   const sentToken = Object.keys(headers).some((name) =>
     name.toLowerCase() === "authorization"
   );
-  return describeStatuslessFailure(
+  const probed = await probeHandshakeStatus(wsUrl, headers, caCerts);
+  const message = describeStatuslessFailure(
     wsUrl,
     originalMessage,
-    await probeHandshakeStatus(wsUrl, headers, caCerts),
+    probed,
     sentToken,
   );
+  if (probed === undefined) {
+    return { message, unreachable: "not accepting connections" };
+  }
+  if (RESTART_STATUSES.has(probed)) {
+    return { message, unreachable: `HTTP ${probed}` };
+  }
+  return { message };
 }
 
 /**
@@ -1512,7 +1739,7 @@ interface OutboundRequest {
 
 type StreamOutcome =
   | { kind: "done" }
-  | { kind: "disconnected"; closeDetail?: string }
+  | { kind: "disconnected"; closeDetail?: string; retryAfterSeconds?: number }
   | { kind: "elsewhere"; instanceId: string }
   | { kind: "interrupted"; instanceId: string; reason: string };
 
@@ -1630,14 +1857,15 @@ async function* singleConnectionStream(
           err.message.includes("closed before it opened")
         )
       ) {
-        throw new UserError(
-          await classifyConnectionError(
-            baseUrl,
-            err.message,
-            headers,
-            options.caCerts,
-          ),
+        const failure = await diagnoseConnectFailure(
+          baseUrl,
+          err.message,
+          headers,
+          options.caCerts,
         );
+        throw failure.unreachable === undefined
+          ? new UserError(failure.message)
+          : new ServeUnreachableError(failure.message, failure.unreachable);
       }
       throw err;
     }
@@ -1746,13 +1974,28 @@ async function* streamServerRun(
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   writeRemoteIndicator(options.server);
   const state = { runId: undefined as string | undefined, lastSeq: 0 };
-  let reconnectRetries = 0;
-  let elsewhereRetries = 0;
+  const sleep = options.sleep ?? delay;
+  const startWindow = new RetryWindow(
+    options.restartRetryBudgetMs ?? RESTART_RETRY_BUDGET_MS,
+    options,
+  );
+  startWindow.begin();
+  const notifyRestart = restartNotifier(options);
+  const reattachWindow = new RetryWindow(
+    options.reattachBudgetMs ?? REATTACH_BUDGET_MS,
+    options,
+  );
   let currentRequest: OutboundRequest | {
     type: "run.attach";
     payload: { runId: string; afterSeq: number; eventKinds: string[] };
   } = request;
-  const logger = getReconnectLogger();
+  const log = options.log ?? getReconnectLogger();
+  let lastNotice = "";
+  const notifyReattach = (message: string) => {
+    if (message === lastNotice) return;
+    lastNotice = message;
+    log(message);
+  };
   // why the server closed the last connection, so a reconnect that fails can
   // say why
   let lastCloseDetail = "";
@@ -1778,35 +2021,54 @@ async function* streamServerRun(
         await stream.return({ kind: "done" });
       }
     } catch (err) {
-      if (err instanceof UserError && lastCloseDetail && !receivedEvents) {
-        // A reconnect after the server closed the session failed — most often
-        // because the token expired. Say why the session ended, not just why
-        // the reconnect was refused.
-        throw new UserError(
-          `The server ended this session${lastCloseDetail} and reconnecting ` +
-            `failed: ${err.message}. ` +
-            "Check the run's final status with: swamp run history",
-        );
+      const refusal = receivedEvents
+        ? undefined
+        : restartRefusal(err, RESTART_REFUSAL_CODES);
+      if (refusal !== undefined && !state.runId) {
+        const wait = startWindow.nextWait(refusal.retryAfterSeconds);
+        if (wait === undefined) {
+          throw withRetriedFor(err as UserError, startWindow);
+        }
+        notifyRestart(options.server, refusal.reason, startWindow.budgetMs);
+        await sleep(wait, options.signal);
+        continue;
       }
-      if (
-        !state.runId || err instanceof DOMException ||
-        err instanceof UserError || !(err instanceof Error)
-      ) {
-        throw err;
+      if (refusal !== undefined) {
+        outcome = {
+          kind: "disconnected",
+          retryAfterSeconds: refusal.retryAfterSeconds,
+        };
+      } else {
+        if (err instanceof UserError && lastCloseDetail && !receivedEvents) {
+          // A reconnect after the server closed the session failed — most
+          // often because the token expired. Say why the session ended, not
+          // just why the reconnect was refused.
+          throw new UserError(
+            `The server ended this session${lastCloseDetail} and reconnecting ` +
+              `failed: ${err.message}. ` +
+              "Check the run's final status with: swamp run history",
+          );
+        }
+        if (
+          !state.runId || err instanceof DOMException ||
+          err instanceof UserError || !(err instanceof Error)
+        ) {
+          throw err;
+        }
+        const msg = err.message ?? "";
+        if (
+          !msg.includes("connect") && !msg.includes("closed") &&
+          !msg.includes("Connection")
+        ) {
+          throw err;
+        }
+        outcome = { kind: "disconnected" };
       }
-      const msg = err.message ?? "";
-      if (
-        !msg.includes("connect") && !msg.includes("closed") &&
-        !msg.includes("Connection")
-      ) {
-        throw err;
-      }
-      outcome = { kind: "disconnected" };
     }
 
     if (receivedEvents) {
-      reconnectRetries = 0;
-      elsewhereRetries = 0;
+      reattachWindow.reset();
+      lastNotice = "";
       lastCloseDetail = "";
     }
 
@@ -1822,43 +2084,38 @@ async function* streamServerRun(
       );
     }
 
+    let wait: number | undefined;
     if (outcome.kind === "elsewhere") {
-      elsewhereRetries++;
-      if (elsewhereRetries > MAX_ELSEWHERE_RETRIES) {
+      wait = reattachWindow.nextWait(undefined, ELSEWHERE_RETRY_DELAY_MS);
+      if (wait === undefined) {
         throw new UserError(
-          "Run is on another instance but could not reach it after " +
-            `${MAX_ELSEWHERE_RETRIES} retries. ` +
+          "Run is on another instance but could not reach it within " +
+            `${formatSeconds(reattachWindow.budgetMs)}. ` +
             "Check the run's final status with: swamp run history",
         );
       }
-      logger(
-        `Run is on another instance, retrying (${elsewhereRetries}/${MAX_ELSEWHERE_RETRIES})...`,
+      notifyReattach(
+        `Run is on another instance, retrying for up to ${
+          formatSeconds(reattachWindow.budgetMs)
+        }...`,
       );
-      await delay(ELSEWHERE_RETRY_DELAY_MS, options.signal);
-      currentRequest = {
-        type: "run.attach",
-        payload: {
-          runId: state.runId!,
-          afterSeq: state.lastSeq,
-          eventKinds: [...FAN_OUT_EVENT_KINDS],
-        },
-      };
-      continue;
-    }
-
-    if (outcome.closeDetail) lastCloseDetail = outcome.closeDetail;
-    reconnectRetries++;
-    if (reconnectRetries > MAX_RECONNECT_RETRIES) {
-      throw new UserError(
-        `Connection lost${lastCloseDetail} and could not reconnect after ` +
-          `${MAX_RECONNECT_RETRIES} retries. ` +
-          "Check the run's final status with: swamp run history",
+    } else {
+      if (outcome.closeDetail) lastCloseDetail = outcome.closeDetail;
+      wait = reattachWindow.nextWait(outcome.retryAfterSeconds);
+      if (wait === undefined) {
+        throw new UserError(
+          `Connection lost${lastCloseDetail} and could not reconnect within ` +
+            `${formatSeconds(reattachWindow.budgetMs)}. ` +
+            "Check the run's final status with: swamp run history",
+        );
+      }
+      notifyReattach(
+        `Connection dropped, reconnecting for up to ${
+          formatSeconds(reattachWindow.budgetMs)
+        }...`,
       );
     }
-    logger(
-      `Connection dropped, reconnecting (${reconnectRetries}/${MAX_RECONNECT_RETRIES})...`,
-    );
-    await delay(1_000 * reconnectRetries, options.signal);
+    await sleep(wait, options.signal);
     currentRequest = {
       type: "run.attach",
       payload: {

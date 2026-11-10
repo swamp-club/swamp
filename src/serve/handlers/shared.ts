@@ -410,6 +410,7 @@ export interface ConnectionContext {
   authConfig: ServeAuthConfig;
   cancelRegistry?: RunCancelRegistry;
   activeRunRegistry?: import("../active_run_registry.ts").ActiveRunRegistry;
+  admission?: import("../serve_admission.ts").ServeAdmission;
   runTracker?: RunTrackerRepository;
   dispatchService?: import("../dispatch_service.ts").DispatchService;
   controlPlaneStore?: ControlPlaneStore;
@@ -2718,6 +2719,7 @@ export function sendError(
   code: string,
   message: string,
   details?: unknown,
+  retryAfterSeconds?: number,
 ): void {
   let errors = erroredRequests.get(socket);
   if (!errors) {
@@ -2743,8 +2745,32 @@ export function sendError(
   send(socket, {
     type: "error",
     id,
-    error: { code, message, ...(details !== undefined && { details }) },
+    error: {
+      code,
+      message,
+      ...(details !== undefined && { details }),
+      ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+    },
   });
+}
+
+/** answers a run start or resume this node cannot take yet, or any longer */
+export function refusedAdmission(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+): boolean {
+  const refusal = ctx.admission?.refusal();
+  if (refusal === undefined) return false;
+  sendError(
+    socket,
+    requestId,
+    refusal.code,
+    refusal.message,
+    undefined,
+    refusal.retryAfterSeconds,
+  );
+  return true;
 }
 
 /**

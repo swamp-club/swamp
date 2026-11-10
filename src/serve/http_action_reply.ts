@@ -29,6 +29,10 @@ import {
 } from "./handlers/shared.ts";
 import type { GateState } from "../domain/workflows/gate_state.ts";
 import {
+  DRAINING_RETRY_AFTER_SECONDS,
+  NOT_READY_RETRY_AFTER_SECONDS,
+} from "./serve_admission.ts";
+import {
   type ResumeRefusal,
   RUN_NOT_SUSPENDED_CODE,
 } from "./resume_launcher.ts";
@@ -188,7 +192,13 @@ const FAILURES: Readonly<Record<string, Failure>> = {
     status: 503,
     code: "shutting_down",
     message: "Serve is shutting down; try again once it is back",
-    retryAfterSeconds: 5,
+    retryAfterSeconds: DRAINING_RETRY_AFTER_SECONDS,
+  },
+  not_ready: {
+    status: 503,
+    code: "not_ready",
+    message: "Serve is still starting; try again shortly",
+    retryAfterSeconds: NOT_READY_RETRY_AFTER_SECONDS,
   },
   not_found: NOT_FOUND,
   workflow_not_found: NOT_FOUND,

@@ -81,7 +81,12 @@ export async function result<E extends StreamEvent>(
     }
     if (event.kind === "error") {
       const error = (event as unknown as { error: SerializedError }).error;
-      throw new SwampClientError(error.code, error.message, error.details);
+      throw new SwampClientError(
+        error.code,
+        error.message,
+        error.details,
+        error.retryAfterSeconds,
+      );
     }
   }
   throw new Error("Stream ended without a completed or error event");
@@ -111,11 +116,24 @@ export function withDefaults<E extends StreamEvent>(
 export class SwampClientError extends Error {
   readonly code: string;
   readonly details?: unknown;
+  /** how long serve asked the client to wait before sending again */
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: string, message: string, details?: unknown) {
+  constructor(
+    code: string,
+    message: string,
+    details?: unknown,
+    retryAfterSeconds?: unknown,
+  ) {
     super(message);
     this.name = "SwampClientError";
     this.code = code;
     this.details = details;
+    if (
+      typeof retryAfterSeconds === "number" &&
+      Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+    ) {
+      this.retryAfterSeconds = retryAfterSeconds;
+    }
   }
 }

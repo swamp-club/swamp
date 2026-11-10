@@ -283,6 +283,7 @@ import {
   pushChangedToRemote,
   recordAuditedDetail,
   recordAuditedResource,
+  refusedAdmission,
   rejectEditWithoutContent,
   resourceDecider,
   resourceReadability,
@@ -297,6 +298,7 @@ import {
   withCommittedUnknownSteps,
   wouldAuthorize,
 } from "./shared.ts";
+import { DRAINING_RETRY_AFTER_SECONDS } from "../serve_admission.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
@@ -497,6 +499,7 @@ export async function handleWorkflowRun(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (refusedAdmission(socket, ctx, requestId)) return;
   const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
     !authorizeResolved(
@@ -701,7 +704,14 @@ export async function handleWorkflowRun(
         : err.code === "draining"
         ? "Serve is shutting down; try again once it is back"
         : "Too many concurrent runs; wait for active runs to complete";
-      sendError(socket, requestId, err.code, clientMsg);
+      sendError(
+        socket,
+        requestId,
+        err.code,
+        clientMsg,
+        undefined,
+        err.code === "draining" ? DRAINING_RETRY_AFTER_SECONDS : undefined,
+      );
     } else {
       sendError(socket, requestId, "internal_error", "Run registration failed");
     }
@@ -2901,6 +2911,7 @@ export async function handleWorkflowResume(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (refusedAdmission(socket, ctx, requestId)) return;
   const target = await resolveWorkflowRequest(ctx, payload.workflowIdOrName);
   if (
     !authorizeResolved(
@@ -3151,6 +3162,7 @@ export async function handleWorkflowResume(
       launched.code,
       launched.message,
       launched.refusal ? { resumeRefusal: launched.refusal } : undefined,
+      launched.code === "draining" ? DRAINING_RETRY_AFTER_SECONDS : undefined,
     );
     return;
   }

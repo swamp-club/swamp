@@ -21,9 +21,11 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   errorFrom,
   HttpTransport,
+  isConnectionRefused,
   outcomeUnknown,
   refusedBeforeActing,
   refuseInBrowser,
+  retryAfterDelayMs,
   serveBaseUrl,
 } from "./http_transport.ts";
 import { FAST, scriptedFetch, SERVE } from "./http_test_helpers.ts";
@@ -68,14 +70,14 @@ Deno.test("HttpTransport.post: stops at the attempt limit and when Retry-After o
     body: { code: "x" },
     headers: { "retry-after": "0" },
   };
-  const capped = scriptedFetch([limited, limited, limited, limited]);
+  const capped = scriptedFetch(Array(9).fill(limited));
   await new HttpTransport(SERVE, 1000, { fetch: capped.fetch, ...FAST }).post(
     "/x",
     "t",
     {},
     { route: "x", retry: always },
   );
-  assertEquals(capped.sent.length, 3);
+  assertEquals(capped.sent.length, 8);
 
   const slow = scriptedFetch([
     { status: 503, body: { code: "x" }, headers: { "retry-after": "120" } },
@@ -142,6 +144,9 @@ Deno.test("refusedBeforeActing: rate limits, busy and timed 503s, but never an u
   assert(refusedBeforeActing(r(429, "rate_limited")));
   assert(refusedBeforeActing(r(409, "busy", 1)));
   assert(refusedBeforeActing(r(503, "shutting_down", 5)));
+  assert(refusedBeforeActing(r(503, "not_ready")));
+  assert(refusedBeforeActing(r(0, "connection_refused")));
+  assert(!refusedBeforeActing(r(0, "network_error")));
   assert(!refusedBeforeActing(r(503, "team_not_ready")));
   assert(!refusedBeforeActing(r(503, "outcome_unknown", 5)));
   assert(!refusedBeforeActing(r(503, "still_working", 1)));
@@ -161,4 +166,89 @@ Deno.test("serveBaseUrl: takes http and https, trims a trailing slash, refuses w
   assertEquals(serveBaseUrl("https://s.test/"), "https://s.test");
   assertEquals(serveBaseUrl("http://s.test/base/"), "http://s.test/base");
   assertThrows(() => serveBaseUrl("ws://s.test"), Error, "http: or https:");
+});
+
+Deno.test("HttpTransport.post: a closed port reads as connection_refused, which is no unknown outcome", async () => {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+  listener.close();
+  const reply = await new HttpTransport(`http://127.0.0.1:${port}`, 1000)
+    .post("/x", "t", {}, { route: "x", retry: never });
+  assertEquals([reply.status, reply.code], [0, "connection_refused"]);
+  assert(!outcomeUnknown(reply));
+  assert(refusedBeforeActing(reply));
+  const error = errorFrom(reply, "x");
+  assertEquals(error.code, "connection_refused");
+  assert(!error.message.includes("127.0.0.1"));
+});
+
+Deno.test("isConnectionRefused: reads the cause chain, not a DNS or reset failure", () => {
+  assert(isConnectionRefused({ code: "ECONNREFUSED" }));
+  assert(
+    isConnectionRefused(
+      new TypeError("fetch failed", {
+        cause: new Error(
+          "tcp connect error: Connection refused (os error 111)",
+        ),
+      }),
+    ),
+  );
+  assert(!isConnectionRefused(new TypeError("fetch failed")));
+  assert(
+    !isConnectionRefused(
+      new TypeError("fetch failed", {
+        cause: new Error("dns error: failed to lookup address information"),
+      }),
+    ),
+  );
+  assert(!isConnectionRefused(new Error("connection reset by peer")));
+});
+
+Deno.test("HttpTransport.post: retries a refused connection and a starting serve, then answers", async () => {
+  const { fetch, sent } = scriptedFetch([
+    "connection_refused",
+    "connection_refused",
+    {
+      status: 503,
+      body: { code: "not_ready" },
+      headers: { "retry-after": "0" },
+    },
+    { status: 200, body: { ok: true } },
+  ]);
+  const reply = await new HttpTransport(SERVE, 1000, { fetch, ...FAST })
+    .post("/x", "t", {}, { route: "x", retry: refusedBeforeActing });
+  assertEquals(reply.status, 200);
+  assertEquals(sent.length, 4);
+});
+
+Deno.test("HttpTransport.post: an unknown network failure is not retried by refusedBeforeActing", async () => {
+  const { fetch, sent } = scriptedFetch(["network_error", "network_error"]);
+  const reply = await new HttpTransport(SERVE, 1000, { fetch, ...FAST })
+    .post("/x", "t", {}, { route: "x", retry: refusedBeforeActing });
+  assertEquals([reply.code, sent.length], ["network_error", 1]);
+  assert(outcomeUnknown(reply));
+});
+
+Deno.test("retryAfterDelayMs: adds up to a quarter of Retry-After, at most a second", () => {
+  assertEquals(retryAfterDelayMs(2, () => 0), 2000);
+  assertEquals(retryAfterDelayMs(2, () => 0.999999), 2499);
+  assertEquals(retryAfterDelayMs(5, () => 0.999999), 5999);
+  assertEquals(retryAfterDelayMs(60, () => 0.999999), 60_999);
+  assertEquals(retryAfterDelayMs(0, () => 0.999999), 0);
+});
+
+Deno.test("HttpTransport.post: counts the Retry-After jitter against the wait budget", async () => {
+  const shutting = {
+    status: 503,
+    body: { code: "shutting_down" },
+    headers: { "retry-after": "1" },
+  };
+  const { fetch, sent } = scriptedFetch([shutting, shutting]);
+  // 1 s fits a 1.2 s budget, 1 s plus a 249 ms jitter does not
+  const reply = await new HttpTransport(SERVE, 1000, {
+    fetch,
+    random: () => 0.999999,
+    maxRetryWaitMs: 1200,
+  }).post("/x", "t", {}, { route: "x", retry: refusedBeforeActing });
+  assertEquals([reply.code, sent.length], ["shutting_down", 1]);
 });

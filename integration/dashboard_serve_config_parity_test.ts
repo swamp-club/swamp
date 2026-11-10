@@ -53,6 +53,7 @@ Deno.test("serveConfigRows: renders a real serve.config payload with everything 
     schedule: true,
     dashboard: true,
     remoteOnly: true,
+    reusePort: true,
     autoResume: true,
     hotReload: true,
     trustProxy: true,
@@ -69,6 +70,7 @@ Deno.test("serveConfigRows: renders a real serve.config payload with everything 
     { label: "Remote Only", value: "enabled", ok: true },
     { label: "Auto Resume", value: "enabled", ok: true },
     { label: "Hot Reload", value: "enabled", ok: true },
+    { label: "Reuse Port", value: "enabled", ok: true },
     { label: "Trust Proxy", value: "enabled", ok: true },
     { label: "Webhooks", value: "1 endpoint", ok: false },
     { label: "Webhook Routes Dir", value: "webhook-routes", ok: false },
@@ -83,6 +85,7 @@ Deno.test("serveConfigRows: renders disabled flags from a real serve.config payl
     schedule: false,
     dashboard: false,
     remoteOnly: false,
+    reusePort: false,
     autoResume: false,
     hotReload: false,
     trustProxy: false,
@@ -97,6 +100,7 @@ Deno.test("serveConfigRows: renders disabled flags from a real serve.config payl
     { label: "Remote Only", value: "disabled", ok: false },
     { label: "Auto Resume", value: "disabled", ok: false },
     { label: "Hot Reload", value: "disabled", ok: false },
+    { label: "Reuse Port", value: "disabled", ok: false },
     { label: "Trust Proxy", value: "disabled", ok: false },
   ]);
 });
