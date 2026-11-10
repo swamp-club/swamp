@@ -170,6 +170,7 @@ export function workflowStepLockHook(
     syncGate,
     createLockProgressWriter,
     onLeaseLost,
+    false,
   );
   // a serve-mode checkout working offline judges each step before it starts:
   // one that changes things needs its behavior's lease
@@ -459,13 +460,22 @@ export const workflowRunCommand = new Command()
     );
 
     const stepLeaseLost = new AbortController();
+    const syncGate = createSyncGate();
     const stepLockHook = workflowStepLockHook(
       repoDir,
       repoContext,
       unlocked.datastoreConfig,
       unlocked.syncService,
-      undefined,
+      syncGate,
       (reason) => stepLeaseLost.abort(reason),
+    );
+    // a lapse of the report lock's lease fails the reports, never the run
+    const reportLockHook = workflowStepLockHook(
+      repoDir,
+      repoContext,
+      unlocked.datastoreConfig,
+      unlocked.syncService,
+      syncGate,
     );
 
     const abort = new AbortController();
@@ -647,7 +657,7 @@ export const workflowRunCommand = new Command()
                 service.signalWaits = signalWaitsOf(repoContext);
                 service.runCheckpointer = runCheckpointer;
                 if (repoContext.commitLog !== undefined) {
-                  service.reportLock = stepLockHook;
+                  service.reportLock = reportLockHook;
                 }
                 return service;
               },

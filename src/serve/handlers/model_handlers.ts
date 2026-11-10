@@ -221,7 +221,10 @@ import {
   targetArgument,
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
-import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  runInRootUnitOfWork,
+  servesClaimedDatastore,
+} from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import { TimeSlice } from "../../infrastructure/persistence/scan_permits.ts";
 import { containedLogFileReader } from "./log_file_containment.ts";
 import {
@@ -249,19 +252,20 @@ type PublishedModel = { modelType: string; modelId: string };
  * a direct type execution can rewrite an existing definition's global arguments
  * whatever the method, so it always locks for the run
  */
-function runLockMode(
+async function runLockMode(
   ctx: ConnectionContext,
   target: MethodRunTarget,
   modelType: string,
   methodName: string,
 ): Promise<MethodRunLockMode> {
-  if (target.run !== undefined) return Promise.resolve("run");
-  return methodRunLockMode({
+  if (target.run !== undefined) return "run";
+  return await methodRunLockMode({
     modelType,
     methodName,
     config: ctx.datastoreConfig,
     syncService: ctx.syncService,
     repoContext: ctx.repoContext,
+    teamMode: servesClaimedDatastore(ctx.repoContext),
   });
 }
 

@@ -43,6 +43,7 @@ import {
   pullModelsUnlocked,
   requireInitializedRepoUnlocked,
   runUnderModelLocks,
+  writesThroughServe,
 } from "../repo_context.ts";
 import {
   methodKindOf,
@@ -644,6 +645,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               config: datastoreConfig,
               syncService,
               repoContext,
+              teamMode: writesThroughServe(datastoreConfig),
             });
             // only a lock answers with the catch-up; a run taking none reads
             // a copy caught up first

@@ -49,6 +49,7 @@ import {
   MODEL_METHOD_RUN_SYNTAX,
 } from "../src/cli/commands/model_method_run.ts";
 import { workflowRunCommand } from "../src/cli/commands/workflow_run.ts";
+import { workflowResumeCommand } from "../src/cli/commands/workflow_resume.ts";
 import { setRunCheckpointIntervalForTesting } from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
 import { dataGetCommand } from "../src/cli/commands/data_get.ts";
 import { dataListCommand } from "../src/cli/commands/data_list.ts";
@@ -149,6 +150,12 @@ function registerWriter(type: ModelType): void {
       },
     },
     methods: {
+      peek: {
+        description: "Reads nothing and writes no data",
+        kind: "read",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
       write: {
         description: "Writes one data version",
         kind: "update",
@@ -450,6 +457,25 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "team-mode method run: a read run takes the behavior's lock, so its requests to serve are pinned (swamp-club#4578)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withMember(async (member) => {
+      // as many requests as a lockless read's catch-up and commit
+      assertEquals(
+        await steadyState(member, () => methodRun(member, WRITER, "peek")),
+        [
+          LOCK, // answered with the catch-up the run would have asked for
+          BATCH, // its method summary, ending the lease
+        ],
+      );
+    });
+  },
+});
+
+Deno.test({
   name: "team-mode workflow run: a two-step run's requests to serve are pinned",
   sanitizeOps: false,
   sanitizeResources: false,
@@ -480,6 +506,135 @@ Deno.test({
           ...step,
           LOCK, // the workflow's own lock, for its summary report's version
           HAS, // the report and the run record, over the inline limit by its end
+          BATCH, // the summary report and the final record, ending that lease
+        ]);
+      });
+    } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "team-mode workflow run: --skip-reports sends no lock for the workflow when no workflow-scope report is left to run (swamp-club#4578)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // A paced checkpoint firing mid-run on a slow host races a step's lock.
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
+    try {
+      await withMember(async (member) => {
+        const run = () =>
+          runCommand(
+            member.scratch,
+            member.client,
+            member.env,
+            ["workflow", "run"],
+            (root) => {
+              root.command("cmd", workflowRunCommand);
+            },
+            [WORKFLOW, "--skip-reports"],
+          );
+        const step = [
+          START_AND_LOCK, // the method waits for both
+          BATCH, // its data and the run record, ending the lease
+        ];
+        assertEquals(startsWithLocks(await steadyState(member, run)), [
+          CHANGES,
+          BATCH, // the run record, the evaluated workflow and the snapshot
+          ...step,
+          ...step,
+          HAS, // the run record, over the inline limit by its end
+          COMMIT, // the final record on its own, with no report to ride
+        ]);
+      });
+    } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "team-mode workflow resume: a retry of a failed run takes the workflow's lock for its summary report (swamp-club#4578)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
+    try {
+      await withMember(async (member) => {
+        const workflow = Workflow.create({
+          name: "fails-its-check",
+          jobs: [Job.create({
+            name: "main",
+            steps: [Step.create({
+              name: "check",
+              task: StepTask.assert("false", "never holds"),
+            })],
+          })],
+        });
+        await writeCommand(
+          member.scratch,
+          member.client,
+          member.env,
+          (repos) => repos.workflowRepo.save(workflow),
+        );
+        // the run and each retry fail their check, which is all this needs
+        const failing = async (command: () => Promise<void>) => {
+          const exitCode = Deno.exitCode;
+          try {
+            await command();
+          } catch {
+            // the failed check
+          } finally {
+            Deno.exitCode = exitCode;
+          }
+        };
+        await failing(() =>
+          runCommand(
+            member.scratch,
+            member.client,
+            member.env,
+            ["workflow", "run"],
+            (root) => {
+              root.command("cmd", workflowRunCommand);
+            },
+            [workflow.name],
+          )
+        );
+        const failed = await readCommand(
+          member.scratch,
+          member.client,
+          member.env,
+          (repos) => repos.workflowRunRepo.findLatestByWorkflowId(workflow.id),
+        );
+        const resume = () =>
+          failing(() =>
+            runCommand(
+              member.scratch,
+              member.client,
+              member.env,
+              ["workflow", "resume"],
+              (root) => {
+                root.command("cmd", workflowResumeCommand);
+              },
+              [workflow.name, "--run", failed!.id],
+            )
+          );
+        await resume();
+        let requests: string[] = [];
+        await withCapturedSpans(async (spans) => {
+          await resume();
+          requests = requestsOf(spans);
+        });
+        assertEquals(requests, [
+          CHANGES,
+          LOCK, // the run's claim
+          COMMIT, // the run taken over
+          RELEASE, // the claim
+          COMMIT, // the retried step's outcome
+          LOCK, // the workflow's own lock, for its summary report's version
           BATCH, // the summary report and the final record, ending that lease
         ]);
       });

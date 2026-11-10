@@ -174,6 +174,7 @@ export function buildErrorJson(
     data.refusals = err.refusals.map((refusal) => ({
       partition: refusal.partition.toString(),
       reason: refusal.reason,
+      message: refusal.message,
     }));
   }
   if (err instanceof RunPartlyCommittedError) {

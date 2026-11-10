@@ -238,7 +238,7 @@ async function lockedSave(
   client: Client,
   env: Record<string, string | undefined>,
   by: string,
-  options: { readonly deferred?: boolean } = {},
+  options: { readonly deferred?: boolean; readonly read?: boolean } = {},
 ): Promise<number> {
   resetServeLeasesForTesting();
   resetLeaseRenewalsForTesting();
@@ -250,12 +250,13 @@ async function lockedSave(
         outputMode: "json",
         ...(options.deferred === true ? { catchUpAtLock: true } : {}),
       });
+      // a read run in team mode takes the behavior's lock as a changing one does
       const run = {
         modelType: serve.modelType.normalized,
         modelId: serve.models.web,
         behaviorName: "web",
-        methodName: "update",
-        methodKind: "update",
+        methodName: options.read === true ? "describe" : "update",
+        methodKind: options.read === true ? "read" : "update",
       } as const;
       await assertOfflineRunAllowed(ctx.datastoreConfig, run);
       const locks = await acquireModelLocks(
@@ -546,7 +547,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve offline: without a lease a changing run is refused with the code before it starts, a read-kind run and reads work, a definition edit is refused, and a read-only command never flushes",
+    "serve offline: without a lease a changing run is refused with the code before it starts, a read-kind run and reads work, locked or not, a definition edit is refused, and a read-only command never flushes",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -595,12 +596,19 @@ Deno.test({
           version: 2,
           by: "read offline",
         });
+        // the behavior's local lock only, as the lock a team-mode read takes
+        assertEquals(
+          await lockedSave(scratch, serve, alice, env, "locked read offline", {
+            read: true,
+          }),
+          3,
+        );
 
         proxy.up();
         await latestBy(scratch, serve, alice, env);
         assertEquals(await servedVersions(serve), [1]);
         await command(scratch, alice, env, () => Promise.resolve());
-        assertEquals(await servedVersions(serve), [1, 2]);
+        assertEquals(await servedVersions(serve), [1, 2, 3]);
       });
     });
   },

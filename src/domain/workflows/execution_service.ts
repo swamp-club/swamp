@@ -1376,6 +1376,14 @@ async function flushStepLock(
 /** the model type workflow-scope reports save their data under */
 const WORKFLOW_MODEL_TYPE = "workflow";
 
+/**
+ * a datastore refusal, a lost or lapsed lease, an unreachable serve or a lock
+ * wait that timed out fails the reports; anything else is a fault and thrown
+ */
+function isReportSaveFailure(error: unknown): boolean {
+  return error instanceof UserError || isUnpublishedDataError(error);
+}
+
 export interface StepLockResult {
   flush: (written?: readonly WrittenVersion[]) => Promise<void>;
   /**
@@ -1389,6 +1397,11 @@ export interface StepLockResult {
    * that has ended stops skipping them
    */
   lentLocks?: LentLocks;
+  /**
+   * after a refused flush, once the caller's run names none of the refused
+   * versions, so the run's root commits its record without the refusal
+   */
+  acknowledgeRefusals?: () => void;
 }
 
 export type StepLockHook = (
@@ -4226,6 +4239,7 @@ export class WorkflowExecutionService {
             stepStatuses,
             dataHandlesByStep,
             options?.reportFilterOptions,
+            options?.signal,
           );
         } finally {
           wfReportsSpan.end();
@@ -4295,11 +4309,15 @@ export class WorkflowExecutionService {
         return;
       }
       if (workflowRun) {
-        if (this.runTracker) {
-          this.runTracker.complete(workflowRun.id, "failed");
-        }
         settleStoppedJobs(error, workflowRun);
         workflowRun.complete();
+        // an error after the run completed, from its reports, keeps its result
+        if (this.runTracker) {
+          this.runTracker.complete(
+            workflowRun.id,
+            trackerStatusForRun(workflowRun.status),
+          );
+        }
         await this.saveRun(
           createWorkflowId(workflowRun.workflowId),
           workflowRun,
@@ -5186,6 +5204,7 @@ export class WorkflowExecutionService {
         stepStatuses,
         dataHandlesByStep,
         options?.reportFilterOptions,
+        options?.signal,
       );
 
       yield { kind: "completed", run: existingRun };
@@ -5226,11 +5245,15 @@ export class WorkflowExecutionService {
         yield { kind: "cancelled" as const, run: existingRun };
         return;
       }
-      if (this.runTracker) {
-        this.runTracker.complete(existingRun.id, "failed");
-      }
       settleStoppedJobs(error, existingRun);
       existingRun.complete();
+      // an error after the run completed, from its reports, keeps its result
+      if (this.runTracker) {
+        this.runTracker.complete(
+          existingRun.id,
+          trackerStatusForRun(existingRun.status),
+        );
+      }
       await this.saveRun(workflow.id, existingRun);
       yield { kind: "completed" as const, run: existingRun };
       throw this.#stoppedRunError(error, existingRun);
@@ -9023,6 +9046,7 @@ export class WorkflowExecutionService {
     reportFilterOptions:
       | import("../reports/report_execution_service.ts").ReportFilterOptions
       | undefined,
+    signal?: AbortSignal,
   ): AsyncGenerator<WorkflowExecutionEvent> {
     // Callers that don't thread CLI report flags (workflow resume, embedded
     // runs) still execute reports — required reports must not silently
@@ -9141,31 +9165,55 @@ export class WorkflowExecutionService {
     // behavior's; otherwise an overlapping member's run takes the version first.
     let reportLock: StepLockResult | undefined;
     if (this.reportLock) {
+      let selected: string[] | undefined;
       try {
-        reportLock = await this.reportLock(WORKFLOW_MODEL_TYPE, workflow.id);
+        selected = await this.workflowReportRunner.selectedReports(
+          workflow,
+          filterOptions,
+        );
       } catch (error) {
-        const reason = `the workflow's lock could not be taken: ${
-          error instanceof Error ? error.message : String(error)
-        }`;
-        runLogger.warn("Workflow-scope reports were not run: {reason}", {
-          reason,
+        // runFor meets and reports the same failure; lock as if a report ran
+        runLogger.debug("Selecting the workflow's reports failed: {error}", {
+          error: error instanceof Error ? error.message : String(error),
         });
-        yield {
-          kind: "report_failed",
-          reportName: "workflow-scope reports",
-          scope: "workflow",
-          error: reason,
-        };
-        return;
+      }
+      if (selected === undefined || selected.length > 0) {
+        try {
+          reportLock = await this.reportLock(
+            WORKFLOW_MODEL_TYPE,
+            workflow.id,
+            undefined,
+            signal,
+          );
+        } catch (error) {
+          const reason = signal?.aborted
+            ? "the run was cancelled while waiting for the workflow's lock"
+            : `the workflow's lock could not be taken: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          runLogger.warn("Workflow-scope reports were not run: {reason}", {
+            reason,
+          });
+          for (const reportName of selected ?? ["workflow-scope reports"]) {
+            yield {
+              kind: "report_failed",
+              reportName,
+              scope: "workflow",
+              error: reason,
+            };
+          }
+          return;
+        }
       }
     }
     let artifacts: Awaited<ReturnType<WorkflowReportRunner["runFor"]>> = [];
     let flushFailure: string | undefined;
+    let fault: { error: unknown } | undefined;
     // a top-level run that has ended stages its final record naming the
     // reports, so the reports' commit carries it and ends the lease
     let staged: typeof artifacts = [];
-    try {
-      artifacts = await this.workflowReportRunner.runFor({
+    const runReports = () =>
+      this.workflowReportRunner.runFor({
         workflow,
         workflowRunId: run.id,
         workflowStatus: run.status === "succeeded" ? "succeeded" : "failed",
@@ -9180,6 +9228,12 @@ export class WorkflowExecutionService {
           bufferedEvents.push(event);
         },
       });
+    try {
+      // a swamp a report starts skips the workflow's lock this run holds
+      const held = reportLock?.lentLocks ?? reportLock?.heldLockIds;
+      artifacts = held === undefined
+        ? await runReports()
+        : await processLockHolderMarker.runHolding(held, runReports);
     } finally {
       if (reportLock) {
         try {
@@ -9211,12 +9265,19 @@ export class WorkflowExecutionService {
         } catch (error) {
           run.withdrawWorkflowDataArtifacts(staged);
           staged = [];
-          flushFailure = `the reports could not be saved: ${
-            error instanceof Error ? error.message : String(error)
-          }`;
+          if (isReportSaveFailure(error)) {
+            // the run's record is saved again below naming none of them
+            reportLock.acknowledgeRefusals?.();
+            flushFailure = `the reports could not be saved: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          } else {
+            fault = { error };
+          }
         }
       }
     }
+    if (fault !== undefined) throw fault.error;
 
     // A report that did not land is a failed report, as any report error is:
     // the run keeps its result and its record names none of them.

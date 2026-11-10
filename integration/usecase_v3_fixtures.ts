@@ -67,6 +67,8 @@ import {
 export interface V3RowRepoOptions {
   managedConfig?: boolean;
   namespace?: string;
+  /** opens the serve repo as serve at this address, as `swamp serve` does */
+  serveAddress?: string;
 }
 
 async function initV3Repo(
@@ -136,6 +138,9 @@ export async function withV3RowRepos(
     const a = await requireInitializedRepoUnlocked({
       repoDir: repoA,
       outputMode: "json",
+      ...(options.serveAddress === undefined ? {} : {
+        v3OwnerCheck: { as: "serve" as const, address: options.serveAddress },
+      }),
     });
     await fn({
       remote: createInMemoryRemote(),

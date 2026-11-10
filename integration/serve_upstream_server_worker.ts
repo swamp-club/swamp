@@ -22,6 +22,7 @@
 // releasing its writer lease
 
 import "../src/domain/models/models.ts";
+import { z } from "zod";
 import { acquireModelLocks } from "../src/cli/repo_context.ts";
 import { runCommandInRootUnit } from "../src/cli/command_root_unit.ts";
 import { Data } from "../src/domain/data/data.ts";
@@ -35,6 +36,11 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { grant } from "./serve_request_harness.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import { modelRegistry } from "../src/domain/models/model.ts";
+import { DatastoreLockLeases } from "../src/serve/datastore_locks.ts";
+import { setOwnLockGate } from "../src/infrastructure/datastore_v3/own_lock_gate.ts";
+import { sendRequest } from "./serve_request_harness.ts";
+import { setRunCheckpointIntervalForTesting } from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import {
   registerBarrierReport,
@@ -55,10 +61,27 @@ export type ServeWorkerRequest =
     readonly models?: readonly string[];
     readonly managedConfig?: boolean;
     readonly commitFeed?: boolean;
+    readonly checkpointIntervalMs?: number;
+    /** adds a read method writing the `out` resource, as a refreshing get does */
+    readonly refreshMethod?: boolean;
+    /** serve holds its datastore at this address and claims it */
+    readonly claimedAs?: string;
   }
   | { readonly kind: "log" }
+  | { readonly kind: "renewals" }
+  | { readonly kind: "lock-stats" }
+  | {
+    readonly kind: "method-run";
+    readonly modelIdOrName: string;
+    readonly methodName: string;
+  }
   | { readonly kind: "grants"; readonly grants: readonly GrantSpec[] }
   | { readonly kind: "restrict"; readonly types: readonly string[] }
+  | {
+    readonly kind: "force-release";
+    readonly modelType: string;
+    readonly modelId: string;
+  }
   | { readonly kind: "compact"; readonly claim?: boolean }
   | {
     readonly kind: "write";
@@ -96,6 +119,16 @@ export type ServeWorkerMessage =
   | { readonly kind: "compacted"; readonly point: number }
   | { readonly kind: "granted" }
   | { readonly kind: "restricted" }
+  | { readonly kind: "force-released"; readonly principal?: string }
+  | { readonly kind: "renewals"; readonly refused: number }
+  | {
+    readonly kind: "lock-stats";
+    /** lock requests serve answered held by someone else */
+    readonly busy: number;
+    /** keys serve's own runs asked to lock, in order */
+    readonly ownLockKeys: readonly string[];
+  }
+  | { readonly kind: "ran-method"; readonly errors: readonly string[] }
   | {
     readonly kind: "wrote";
     readonly versions: readonly number[];
@@ -116,6 +149,40 @@ declare const self: Worker;
 const logging = initializeLogging({});
 
 let stop: (() => void) | undefined;
+/**
+ * renewals or releases of a lease serve no longer holds: serve asks whether
+ * such a lease awaits adoption before it answers not found
+ */
+let refusedRenewals = 0;
+
+let busyAnswers = 0;
+const ownLockKeys: string[] = [];
+
+class CountingLeases extends DatastoreLockLeases {
+  override async acquire(
+    ...args: Parameters<DatastoreLockLeases["acquire"]>
+  ): ReturnType<DatastoreLockLeases["acquire"]> {
+    const outcome = await super.acquire(...args);
+    if (outcome.kind === "held") busyAnswers++;
+    return outcome;
+  }
+
+  override leaseAdoptionPending(leaseId: string): boolean {
+    const pending = super.leaseAdoptionPending(leaseId);
+    if (!pending) refusedRenewals++;
+    return pending;
+  }
+}
+let methodRun:
+  | ((
+    request: Extract<ServeWorkerRequest, { kind: "method-run" }>,
+  ) => Promise<void>)
+  | undefined;
+let forceRelease:
+  | ((
+    request: Extract<ServeWorkerRequest, { kind: "force-release" }>,
+  ) => Promise<void>)
+  | undefined;
 let log: (() => Promise<void>) | undefined;
 let restrict:
   | ((request: Extract<ServeWorkerRequest, { kind: "restrict" }>) => void)
@@ -162,6 +229,13 @@ async function start(
   request: Extract<ServeWorkerRequest, { kind: "start" }>,
 ): Promise<void> {
   await logging;
+  if (request.checkpointIntervalMs !== undefined) {
+    setRunCheckpointIntervalForTesting(request.checkpointIntervalMs);
+  }
+  setOwnLockGate((lockKey) => {
+    ownLockKeys.push(lockKey);
+    return Promise.resolve();
+  });
   await withServer(
     request.grants.map(toGrant),
     async (server) => {
@@ -172,6 +246,50 @@ async function start(
           bound: () => store.highWaterMark().cursor,
           onMoved: (listener) => store.onHeadMoved(listener),
         };
+      }
+      if (request.refreshMethod === true) {
+        modelRegistry.invalidateType(server.modelType);
+        modelRegistry.register({
+          type: server.modelType,
+          version: "2026.01.01.1",
+          resources: {
+            out: {
+              description: "One data version per run",
+              schema: z.object({ body: z.string() }),
+              lifetime: "infinite",
+              garbageCollection: 10,
+            },
+          },
+          methods: {
+            noop: {
+              description: "does nothing",
+              kind: "read",
+              arguments: z.object({}),
+              execute: () => Promise.resolve({}),
+            },
+            refresh: {
+              description: "a read that writes the resource it read",
+              kind: "read",
+              arguments: z.object({}),
+              execute: async (_args, context) => ({
+                dataHandles: [
+                  await context.writeResource!("out", "out", { body: "r" }),
+                ],
+              }),
+            },
+          },
+        });
+      }
+      if (request.claimedAs !== undefined) {
+        const store = server.v3.commitStore;
+        await store.claimOwner(
+          store.writerFence() ?? 1,
+          DatastoreOwner.create({
+            address: request.claimedAs,
+            claimedAt: new Date().toISOString(),
+            claimedAtCursor: store.highWaterMark().cursor,
+          }),
+        );
       }
       const models: Record<string, string> = { web: server.model.id };
       for (const name of request.models ?? []) {
@@ -292,6 +410,43 @@ async function start(
           { kind: "wrote", versions, errors } satisfies ServeWorkerMessage,
         );
       };
+      methodRun = async ({ modelIdOrName, methodName }) => {
+        const frames = await sendRequest(
+          server.ctx as ConnectionContext,
+          {
+            type: "model.method.run",
+            id: crypto.randomUUID(),
+            payload: { modelIdOrName, methodName },
+          } as Parameters<typeof sendRequest>[1],
+        );
+        const errors = frames.flatMap((frame) => {
+          const event = frame.event as
+            | { kind?: string; error?: { message?: string } }
+            | undefined;
+          if (event?.kind === "error") {
+            return [event.error?.message ?? JSON.stringify(event)];
+          }
+          return frame.error === undefined ? [] : [JSON.stringify(frame.error)];
+        });
+        self.postMessage(
+          { kind: "ran-method", errors } satisfies ServeWorkerMessage,
+        );
+      };
+      forceRelease = async ({ modelType, modelId }) => {
+        const released = await server.locks.forceRelease({
+          kind: "model",
+          modelType,
+          modelId,
+        });
+        self.postMessage(
+          {
+            kind: "force-released",
+            ...(released === undefined ? {} : {
+              principal: released.principal,
+            }),
+          } satisfies ServeWorkerMessage,
+        );
+      };
       runWorkflow = async ({ workflowName, initiatedBy, barrier }) => {
         if (barrier !== undefined) {
           registerBarrierReport(
@@ -342,7 +497,13 @@ async function start(
       await stopped;
     },
     undefined,
-    { managedConfig: request.managedConfig === true },
+    {
+      managedConfig: request.managedConfig === true,
+      locks: (createLock) => new CountingLeases({ createLock }),
+      ...(request.claimedAs === undefined
+        ? {}
+        : { serveAddress: request.claimedAs }),
+    },
   );
 }
 
@@ -384,6 +545,29 @@ self.onmessage = (event: MessageEvent<ServeWorkerRequest>) => {
     } catch (error) {
       fail(error);
     }
+  } else if (request.kind === "lock-stats") {
+    self.postMessage(
+      {
+        kind: "lock-stats",
+        busy: busyAnswers,
+        ownLockKeys: [...ownLockKeys],
+      } satisfies ServeWorkerMessage,
+    );
+  } else if (request.kind === "method-run") {
+    (methodRun ?? (() => Promise.reject(new Error("serve is not started"))))(
+      request,
+    ).catch(fail);
+  } else if (request.kind === "renewals") {
+    self.postMessage(
+      {
+        kind: "renewals",
+        refused: refusedRenewals,
+      } satisfies ServeWorkerMessage,
+    );
+  } else if (request.kind === "force-release") {
+    (forceRelease ?? (() => Promise.reject(new Error("serve is not started"))))(
+      request,
+    ).catch(fail);
   } else if (request.kind === "run-workflow") {
     (runWorkflow ?? (() => Promise.reject(new Error("serve is not started"))))(
       request,

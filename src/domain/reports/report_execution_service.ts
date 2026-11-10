@@ -246,6 +246,62 @@ function buildRedactSensitiveArgs(
   };
 }
 
+/**
+ * promotes lazy-registered reports for every candidate name before getAll(),
+ * which excludes lazy entries; otherwise user extension reports from the
+ * bundle catalog would be silently filtered out (#1089). Promoted
+ * unconditionally, scope-mismatched ones included, since scope is unknown
+ * until import; load errors propagate so a broken required bundle fails loudly
+ */
+async function promoteCandidateReports(
+  registry: ReportRegistry,
+  selection: ReportSelection | undefined,
+  modelTypeReports: readonly string[] | undefined,
+): Promise<void> {
+  const candidateNames = new Set<string>();
+  for (const ref of selection?.require ?? []) {
+    candidateNames.add(getReportRefName(ref));
+  }
+  for (const name of modelTypeReports ?? []) candidateNames.add(name);
+  await Promise.all(
+    Array.from(candidateNames, (name) => registry.ensureTypeLoaded(name)),
+  );
+}
+
+/**
+ * the reports executeReports would run or fail, without running them: a
+ * required report still unresolved counts, since it saves an error artifact
+ */
+export async function selectedReportNames(
+  registry: ReportRegistry,
+  scope: ReportScope,
+  selection: ReportSelection | undefined,
+  filterOptions: ReportFilterOptions,
+  methodName?: string,
+  modelTypeReports?: string[],
+): Promise<string[]> {
+  await promoteCandidateReports(registry, selection, modelTypeReports);
+  const names = new Set<string>();
+  const skipNames = new Set(selection?.skip ?? []);
+  for (const ref of selection?.require ?? []) {
+    const name = getReportRefName(ref);
+    if (!skipNames.has(name) && !registry.get(name)) names.add(name);
+  }
+  for (
+    const { name } of filterReports(
+      registry.getAll(),
+      scope,
+      selection,
+      filterOptions,
+      methodName,
+      modelTypeReports,
+    )
+  ) {
+    names.add(name);
+  }
+  return [...names];
+}
+
 export async function executeReports(
   registry: ReportRegistry,
   context: ReportContext,
@@ -263,25 +319,7 @@ export async function executeReports(
     ? context.workflowName
     : context.definition.name;
 
-  // promote lazy-registered reports for every candidate name before getAll(),
-  // which excludes lazy entries; otherwise user extension reports from the
-  // bundle catalog would be silently filtered out
-  // #1089.
-  // promoted unconditionally, scope-mismatched ones included, since scope is
-  // unknown until import; wasted imports are bounded and once per process; load
-  // errors propagate so a broken required bundle fails loudly
-  const candidateNames = new Set<string>();
-  for (const ref of selection?.require ?? []) {
-    candidateNames.add(getReportRefName(ref));
-  }
-  if (modelTypeReports) {
-    for (const name of modelTypeReports) {
-      candidateNames.add(name);
-    }
-  }
-  await Promise.all(
-    Array.from(candidateNames, (name) => registry.ensureTypeLoaded(name)),
-  );
+  await promoteCandidateReports(registry, selection, modelTypeReports);
 
   const results: ReportExecutionResult[] = [];
   let failures = 0;

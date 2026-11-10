@@ -1041,14 +1041,21 @@ export function createCommitLogUnitOfWork(
       }
       return "committed";
     },
-    acknowledgeRefusals(): void {
+    acknowledgeRefusals(partitions?: readonly PartitionKey[]): void {
       if (parent !== undefined) {
         throw new Error(
           "acknowledgeRefusals called on a child unit of work; its root holds " +
             "the run records",
         );
       }
-      refusals = [];
+      if (partitions === undefined) {
+        refusals = [];
+        return;
+      }
+      const keys = new Set(partitions.map((partition) => partition.toString()));
+      refusals = refusals.filter((refusal) =>
+        !keys.has(refusal.partition.toString())
+      );
     },
     commit: () => end("committed"),
     abandon: () => end("abandoned"),

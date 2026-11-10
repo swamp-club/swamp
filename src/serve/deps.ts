@@ -467,6 +467,8 @@ export function createStepLockHook(
    * locally
    */
   onLeaseLost?: (reason: unknown) => void,
+  /** false only for a checkout, whose lease at serve commits before release */
+  commitBeforeRelease = true,
 ): StepLockHook {
   return async (modelType, modelId, _step, signal) => {
     const result = await acquireModelLocks(
@@ -480,6 +482,7 @@ export function createStepLockHook(
         wrapSync: (fn, kind) => withRunSyncGate(syncGate, fn, kind),
         repoContext,
         signal,
+        commitBeforeRelease,
       },
     );
     if (result.synced) repoContext.catalogStore.invalidate();

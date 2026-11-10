@@ -66,11 +66,22 @@ export async function methodRunLockMode(options: {
   config: DatastoreConfig;
   syncService: DatastoreSyncService | undefined;
   repoContext: Pick<RepositoryContext, "commitLog">;
+  /**
+   * a checkout writing through serve, or serve on a datastore it claimed:
+   * other writers hold the behavior's lease there, so a lockless save would be
+   * refused under it or take the version it allocated
+   */
+  teamMode?: boolean;
 }): Promise<MethodRunLockMode> {
   if (await isMethodMutating(options.modelType, options.methodName)) {
     return "run";
   }
   const { config } = options;
+  if (
+    options.teamMode === true && options.repoContext.commitLog !== undefined
+  ) {
+    return "run";
+  }
   // Only a v2 extension datastore publishes a run's writes through the
   // model lock: a filesystem datastore has no push, and a v3 root commits
   // through its commit log whatever the locks.

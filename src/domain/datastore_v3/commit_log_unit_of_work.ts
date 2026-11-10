@@ -85,9 +85,9 @@ export interface CommitLogUnitOfWork extends UnitOfWork {
   /**
    * the caller acknowledges once it has saved each affected run again so its
    * record names no refused data; only a root holds them, so a child refuses
-   * the call
+   * the call. Given partitions, only their refusals are acknowledged
    */
-  acknowledgeRefusals(): void;
+  acknowledgeRefusals(partitions?: readonly PartitionKey[]): void;
   /**
    * all or nothing; a partition's changes split into commits only between
    * batches, so one batch lands in one commit and a batch over the limit for

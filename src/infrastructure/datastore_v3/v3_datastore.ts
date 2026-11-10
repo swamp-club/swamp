@@ -164,6 +164,7 @@ import {
 } from "./commit_log_unit_of_work.ts";
 import {
   AppendUnrecordedError,
+  type CommitLogUnitOfWork,
   MayLandLaterError,
   PartitionsRefusedError,
   type TypedChange,
@@ -639,6 +640,8 @@ export interface V3Datastore {
     runRepo: () => WorkflowRunRepository,
     options?: {
       readonly readOnly?: boolean;
+      /** whether serve holds this datastore under a claim naming it */
+      readonly claimedByServe?: () => boolean;
     },
   ): CommitLogEngine;
   /**
@@ -1533,11 +1536,18 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
             throw error;
           }
         },
+        acknowledgeOpenUnitRefusals(partitions) {
+          const root = commitLogRootFor(markDirty, currentUnitOfWork()) as
+            | CommitLogUnitOfWork
+            | undefined;
+          root?.acknowledgeRefusals(partitions);
+        },
         lastCheckpointAt: () => {
           const root = commitLogRootFor(markDirty, currentUnitOfWork());
           return root === undefined ? undefined : checkpointedAt.get(root);
         },
         forwardsToServe: serveSink !== undefined,
+        claimedByServe: () => engineOptions.claimedByServe?.() === true,
         async appendToOpenUnit(changes, appendOptions) {
           const unit = commitLogParentFor(markDirty, currentUnitOfWork());
           if (unit === undefined) return "no-unit";

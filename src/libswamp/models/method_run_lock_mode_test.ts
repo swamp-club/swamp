@@ -27,6 +27,7 @@ import type {
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 
 const TEST_TYPE = ModelType.create("test/lock-check");
 
@@ -272,4 +273,38 @@ Deno.test("methodRunLockMode: an unresolvable type locks for the run", async () 
     }),
     "run",
   );
+});
+
+Deno.test("methodRunLockMode: in team mode a read or list run on v3 locks for the run; solo v3 and v2 keep their lockless reads (swamp-club#4578)", async () => {
+  registerTestModel({ status: { kind: "read" }, search: { kind: "list" } });
+  try {
+    const service = syncService({ fetchContent: true });
+    const v3 = {
+      commitLog: {} as NonNullable<RepositoryContext["commitLog"]>,
+    };
+    const mode = (
+      methodName: string,
+      config: DatastoreConfig,
+      repoContext: Pick<RepositoryContext, "commitLog">,
+      teamMode: boolean,
+    ) =>
+      methodRunLockMode({
+        modelType: TEST_TYPE.normalized,
+        methodName,
+        config,
+        syncService: service,
+        repoContext,
+        teamMode,
+      });
+    assertEquals(await mode("status", FILESYSTEM, v3, true), "run");
+    assertEquals(await mode("search", V3_REMOTE, v3, true), "run");
+    assertEquals(await mode("status", FILESYSTEM, v3, false), "none");
+    assertEquals(await mode("search", V3_REMOTE, v3, false), "none");
+    assertEquals(
+      await mode("status", V2_REMOTE, { commitLog: undefined }, true),
+      "publish",
+    );
+  } finally {
+    cleanup();
+  }
 });
