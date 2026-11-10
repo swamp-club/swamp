@@ -28,8 +28,8 @@ export function scrubSecrets(text: string): string {
 /**
  * client-side codes, beside the codes serve answers with: route_unavailable
  * (an older serve has no such route), action_unavailable,
- * connection_refused, network_error, timeout, unexpected_reply, link_ended
- * and not_admitted
+ * connection_refused, network_error, timeout, unexpected_reply, link_ended,
+ * link_suspended and not_admitted
  */
 export type SwampHttpErrorCode = string;
 

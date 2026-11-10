@@ -160,3 +160,61 @@ Deno.test("renderDelegationEnded: log mode says it ended and swamp-club will be 
   );
   assertStringIncludes(already, "had already ended");
 });
+
+Deno.test("renderDelegation: a suspended delegation says why and since when, in log and json", () => {
+  const held: DelegationView = {
+    ...VIEW,
+    state: "suspended",
+    hold: {
+      causes: ["person_suspended", "club_client_refused"],
+      since: new Date(2_000).toISOString(),
+    },
+  };
+  assertEquals(
+    JSON.parse(captured(() => renderDelegation(held, "json"))).hold,
+    held.hold,
+  );
+  const output = captured(() => renderDelegation(held, "log"));
+  assertStringIncludes(output, "State: suspended");
+  assertStringIncludes(output, `Suspended since: ${held.hold!.since}`);
+  assertStringIncludes(output, "because the person is suspended on Swamp Club");
+  assertStringIncludes(
+    output,
+    "because Swamp Club refuses this serve's client",
+  );
+});
+
+Deno.test("renderDelegation: a relink shows the replaced link, the pending redeem and the folded link's target", () => {
+  const relinked: DelegationView = {
+    ...VIEW,
+    club: { linkId: "link-2", endState: "none", endAttempts: 0 },
+    relinkPending: true,
+    retiredLinks: [{
+      linkId: "link-1",
+      endState: "pending",
+      endAttempts: 1,
+      lastEndError: "swamp-club answered 503",
+    }],
+  };
+  const output = captured(() => renderDelegation(relinked, "log"));
+  assertStringIncludes(output, "Swamp Club link: link-2");
+  assertStringIncludes(
+    output,
+    "Replaced link: link-1 (Swamp Club not told yet",
+  );
+  assertStringIncludes(
+    output,
+    "Relink: consented, not yet redeemed by the app",
+  );
+  assertStringIncludes(output, "last error: swamp-club answered 503");
+  const folded: DelegationView = {
+    ...PENDING,
+    endCause: "relinked",
+    club: { endState: "none", endAttempts: 0 },
+    mergedInto: VIEW.id,
+  };
+  assertStringIncludes(
+    captured(() => renderDelegation(folded, "log")),
+    `Relinked into: ${VIEW.id}`,
+  );
+});

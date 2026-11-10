@@ -193,3 +193,35 @@ Deno.test("delegationList: a failed query is an error event", async () => {
   }
   throw new Error("no error event");
 });
+
+Deno.test("delegationView: a suspended record shows its causes, and a relink shows no pending redeem hash", () => {
+  const view = delegationView(record({
+    phase: "suspended",
+    hold: {
+      causes: ["person_suspended"],
+      since: new Date(3_000).toISOString(),
+    },
+    pendingRedeem: {
+      pendingId: crypto.randomUUID(),
+      hash: HASH("e"),
+      expiresAt: new Date(4_000).toISOString(),
+    },
+    club: {
+      ...record().club,
+      linkId: "link-2",
+      retiredLinks: [{ linkId: "link-1", endState: "pending", endAttempts: 0 }],
+    },
+  }));
+  assertEquals(view.state, "suspended");
+  assertEquals(view.hold, {
+    causes: ["person_suspended"],
+    since: new Date(3_000).toISOString(),
+  });
+  assertEquals(view.relinkPending, true);
+  assertEquals(view.retiredLinks, [{
+    linkId: "link-1",
+    endState: "pending",
+    endAttempts: 0,
+  }]);
+  assert(!JSON.stringify(view).includes(HASH("e")));
+});

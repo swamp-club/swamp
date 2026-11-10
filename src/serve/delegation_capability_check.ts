@@ -25,6 +25,8 @@ import {
 
 // a node that rotates refresh tokens would end a link on a racing refresh
 export const DELEGATION_LINKS_CAPABILITY = "delegation-links-2";
+// an older node can't redeem a relink folded into an existing delegation
+export const DELEGATION_RELINK_CAPABILITY = "delegation-links-3";
 
 export type DelegationCapability =
   | { readonly ok: true }
@@ -37,9 +39,10 @@ export type DelegationCapability =
  */
 export async function checkDelegationCapability(
   store: ControlPlaneStore | undefined,
-  options: { staleTtlMs?: number } = {},
+  options: { staleTtlMs?: number; capability?: string } = {},
 ): Promise<DelegationCapability> {
   if (store === undefined) return { ok: true };
+  const capability = options.capability ?? DELEGATION_LINKS_CAPABILITY;
   const lacking: string[] = [];
   for (const key of await store.list("heartbeats/")) {
     const data = await store.get(key);
@@ -52,7 +55,7 @@ export async function checkDelegationCapability(
     const ttl = record.staleTtlMs ?? options.staleTtlMs ??
       DEFAULT_STALE_TTL_MS;
     if (InstanceHeartbeatService.isStale(record, ttl)) continue;
-    if (!record.capabilities?.includes(DELEGATION_LINKS_CAPABILITY)) {
+    if (!record.capabilities?.includes(capability)) {
       lacking.push(`${record.instanceId} (${record.hostname})`);
     }
   }

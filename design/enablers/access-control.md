@@ -344,7 +344,9 @@ the request unread.
    integration's live ceiling. Serve asks swamp-club's capabilities route, then
    starts the link there, and answers a `pendingId`, a `swdx1.` redeem secret, the
    consent URL to show the person, and how long and how often to poll. A second
-   start for the same person replaces the pending one.
+   start for the same person replaces the pending one. An app asks for every action
+   it needs on each link: a new consent replaces the old one (see
+   [Consenting again](#consenting-again)).
 2. **Consent** happens on swamp-club. The leader polls it at swamp-club's interval,
    backing off to a minute on errors. On approval it checks the digest swamp-club
    bound the consent to, runs the same admission check as a sign-in, writes the
@@ -358,8 +360,9 @@ the request unread.
 4. **Refresh**, `POST /api/v1/delegations/refresh`, mints a new access token and
    keeps the refresh token. A wrong refresh token is refused with a reason and ends
    nothing. A refused refresh answers `401 invalid_grant` with `reason`: `mismatch`,
-   `unknown`, `not_issued`, `not_admitted`, `ended`, `expired`, `superseded` or
-   `unreadable`; only `not_admitted` is a denial the link recovers from.
+   `unknown`, `not_issued`, `not_admitted`, `ended`, `expired`, `superseded`,
+   `unreadable`, `suspended` or `links_unavailable`; `not_admitted`, `suspended` and
+   `links_unavailable` are denials the link recovers from.
 5. **End**, `POST /api/v1/delegations/end`, with either token.
 
 Pending links live in the datastore, so a restart or a new leader carries them on.
@@ -375,13 +378,13 @@ link the app never redeems, serve ends after an hour.
 | Redeem secret  | `swdx1.<delegation>.<hex>` | Until redeemed                        |
 
 Each secret is 256 random bits. Only SHA-256 hashes are stored, compared in constant
-time. A delegation lasts 30 days from consent, never extended; the person links
-again after that. The current access token and the two before it each work until
+time. A delegation lasts 30 days from its latest consent; only a fresh consent on
+swamp-club restarts that, and the person links again after it. The current access token and the two before it each work until
 they expire, so a follower whose copy is behind still answers and copies of an app
 that refresh at once each keep a working token. A node on an older build reads only
-the newest two. Links, redeem and refresh need every live node to advertise
-`delegation-links-2`; if one does not, they answer `team_not_ready` and nothing
-changes.
+the newest two. Links and redeem need every live node to advertise
+`delegation-links-3`, and refresh `delegation-links-2`; if one does not, they answer
+`team_not_ready` and nothing changes.
 
 The refresh token does not rotate. Every refresh already needs the integration's
 credential, so rotation adds little against a stolen refresh token, while rotation
@@ -401,13 +404,16 @@ intersected with the integration's live ceiling, intersected with the ceiling th
 person consented to, all inside `GrantBasedAccessDecisionService`. The refusals are
 `builtin:delegation-required` (an integration client with no delegation, or a
 delegation without one), `builtin:delegation-ended` and
-`builtin:delegation-ceiling`.
+`builtin:delegation-ceiling`. A refusal by the consented ceiling alone, where grants
+would allow it, answers `consent_required` (WebSocket error code, or HTTP 403 with
+that code), so the app can ask the person to link again. A refused signal still
+reads as no wait at all.
 
 A delegation stands while it is issued, inside its life, not superseded and its
 ceiling readable. The newest consent for one person through one integration
 supersedes every older one, whatever its own state, so ending the newest never
 brings an older one back. The person's collectives and groups are those swamp-club
-reported at consent.
+last reported, at consent and then by the people read.
 
 ### Changes apply without a grant reload
 
@@ -444,22 +450,63 @@ An end applies here at once and records that swamp-club must be told. The leader
 calls swamp-club's end with backoff; a link swamp-club no longer knows counts as
 ended. A pending end shows in `swamp access delegation show` with its attempts and
 last error, is audited, and is logged every hour it stays pending. Expiry,
-supersession and revoking the integration end a delegation the same way.
+supersession and revoking the integration end a delegation the same way; a revoke
+ends one in any state short of ended, and refuses one still waiting for consent.
 
 ### The team check
 
-Every node's heartbeat lists what it supports. Start, redeem and refresh need every
-live node (a heartbeat neither stopped nor stale) to list `delegation-links-1`; a
-record this build can't read counts against. A stale record never blocks, since an
+Every node's heartbeat lists what it supports. Start and redeem need every live node
+(a heartbeat neither stopped nor stale) to list `delegation-links-3`, and refresh
+`delegation-links-2`, so a rolling upgrade never stops links refreshing; a record
+this build can't read counts against. A stale record never blocks, since an
 older node refuses delegated tokens anyway. A serve without a remote control plane
 writes no heartbeats, so only it counts.
 
-### Not seen yet
+### Keeping in step with swamp-club
 
-Serve does not yet read swamp-club's change feed or poll its people: an end made on
-swamp-club ("this wasn't me", an undeliverable email) and a person leaving the
-collective reach serve only when the delegation is next ended or expires, within 30
-days.
+The leader alone reads swamp-club, with serve's own client credential and a timeout
+on every call; every change is a delegation write, so followers and the leader apply
+it through the directory, without a grant reload, and close the delegation's sockets
+and streams as an end does.
+
+- **The feed**, `GET /api/v1/serve/links/changes`, every 30 s, page by page until
+  `more` is false. Each listed link that names a delegation ends it, with cause
+  `disowned` or `club_ended` read from the people read. The cursor is stored in a
+  `delegation-sync` record beside the delegations, after the page's ends and only
+  if it is still the cursor that page was read from, so a new leader carries on from
+  it and an end applies once however often it is listed.
+- **People**, `POST /api/v1/serve/links/people`, every 5 minutes, 200 links a call:
+  `ended` ends the delegation; `suspended` suspends it; `active` lifts that and
+  replaces the person's email, username, collectives and groups, so leaving the
+  collective refuses the person through admission, and rejoining restores them. A
+  link swamp-club leaves out is suspended as `club_unknown`.
+- **swamp-club refuses serve's client** (`401 invalid_client` or
+  `403 client_not_collective`, and no other 401 or 403): every issued or
+  suspended delegation holds the cause `club_client_refused`, logged once with the time they will end. Any accepted call
+  lifts it; a rate limit or an outage does not. Past one hour, the access token's
+  life, every delegation still suspended for it ends.
+- **swamp-club unavailable**: links keep working, new links can't start, and the
+  reads back off up to 5 minutes.
+
+A suspended delegation refuses requests, refresh and run resumes, and stands again
+only once every cause has cleared. Ended and refused are final: nothing moves a
+delegation out of them. An older node can't read the `suspended` phase, so it
+refuses such a delegation rather than serve it.
+
+### Consenting again
+
+When the same swamp-club person consents again for the same integration and
+external identity, the new consent replaces the delegation's consented ceiling,
+wider or narrower, and keeps its ID, so runs bound to it carry on; one waiting on an
+action the new consent drops is refused when it resumes. Only a consent swamp-club
+approved, whose digest covers the ceiling, changes it. The new link becomes the
+delegation's link and the replaced one is ended on swamp-club; a later
+`disowned` end of a replaced link still ends the delegation. Redeeming the new link
+issues fresh tokens under the existing ID and retires the old ones; until then the
+app's old tokens keep working. Like any link, the new one must be redeemed within an
+hour, or it lapses and the delegation carries on as it was. A delegation already
+superseded is never folded into. A different swamp-club person's consent supersedes
+instead. The email is matched against the external identity only at consent.
 
 ### Upgrade first
 
@@ -472,8 +519,9 @@ Implementation: `src/domain/access/delegation.ts`,
 `src/domain/models/access/delegation_model.ts`, `src/serve/delegation_routes.ts`,
 `src/serve/delegation_link_service.ts`, `src/serve/delegation_store.ts`,
 `src/serve/delegated_token_auth.ts`, `src/serve/serve_link_client.ts`,
-`src/serve/delegation_capability_check.ts`. Guards:
-`integration/delegation_link_flow_test.ts` and
+`src/serve/delegation_capability_check.ts`, `src/serve/delegation_sync_service.ts`.
+Guards: `integration/delegation_link_flow_test.ts`,
+`integration/delegation_sync_test.ts` and
 `integration/delegation_secret_leak_rules_test.ts`.
 
 ## Admission
@@ -509,9 +557,10 @@ A credential that fails is refused with reason `not-admitted` and audited as
 written, each serve instance applies its own lists, and adding the person back
 restores the same credential without a new login or consent. Tokens minted with
 `swamp access token create` are outside admission. A delegation's collectives
-are those recorded at consent, so leaving a collective upstream reaches a
-delegation only when the person re-links; removing them from the lists takes
-effect at once.
+are those swamp-club last reported, refreshed by the people read every 5 minutes
+(see [Keeping in step with swamp-club](#keeping-in-step-with-swamp-club)), and a
+change that drops admission closes the delegation's sessions at once; removing
+them from the lists takes effect at once.
 
 Implementation: `src/domain/access/admission.ts`,
 `src/serve/token_admission.ts`.

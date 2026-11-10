@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { z } from "zod";
 import type { CeilingDocument } from "../domain/access/ceiling.ts";
 
 export const LINK_REQUEST_TIMEOUT_MS = 15_000;
@@ -98,6 +99,47 @@ export type ReportOutcome =
     readonly kind: "terminal";
     readonly code: "not_approved" | "person_unavailable" | "already_recorded";
   };
+
+/** swamp-club's own cap on a people read */
+export const MAX_PEOPLE_LINK_IDS = 200;
+
+const LinkIdSchema = z.string().min(1).max(200);
+
+const ChangesSchema = z.object({
+  ended: z.array(LinkIdSchema).max(1000),
+  cursor: z.string().min(1).max(1000),
+  more: z.boolean(),
+});
+
+export type LinkChanges = z.infer<typeof ChangesSchema>;
+
+const IdentitySchema = z.object({
+  sub: z.string().min(1).max(200),
+  email: z.string().max(320),
+  username: z.string().max(200),
+  collectives: z.array(z.string().max(200)).max(200),
+  groups: z.array(z.string().max(200)).max(500),
+});
+
+const PersonViewSchema = z.discriminatedUnion("state", [
+  z.object({
+    linkId: LinkIdSchema,
+    state: z.literal("active"),
+    identity: IdentitySchema,
+  }),
+  z.object({ linkId: LinkIdSchema, state: z.literal("suspended") }),
+  z.object({
+    linkId: LinkIdSchema,
+    state: z.literal("ended"),
+    endedReason: z.string().max(64),
+  }),
+]);
+
+export type LinkPersonView = z.infer<typeof PersonViewSchema>;
+
+const PeopleSchema = z.object({
+  people: z.array(PersonViewSchema).max(MAX_PEOPLE_LINK_IDS),
+});
 
 const UNSAFE_RANGES: readonly (readonly [number, number])[] = [
   [0x00, 0x1f],
@@ -240,6 +282,61 @@ export class ServeLinkClient {
     return typeof ack.linkId === "string"
       ? { kind: "recorded", linkId: ack.linkId }
       : { kind: "refused" };
+  }
+
+  /** a cursor swamp-club no longer reads answers invalid_cursor; the caller starts over */
+  async changes(
+    since: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<LinkChanges | "invalid_cursor"> {
+    const { status, body } = await this.#call(
+      "GET",
+      `changes${
+        since !== undefined ? `?since=${encodeURIComponent(since)}` : ""
+      }`,
+      undefined,
+      signal,
+    );
+    if (status === 400 && bodyError(body) === "invalid_cursor") {
+      return "invalid_cursor";
+    }
+    this.#throwFor(status, body);
+    const parsed = ChangesSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new ServeLinkError(
+        "unavailable",
+        "swamp-club's link changes reply was not understood",
+      );
+    }
+    return parsed.data;
+  }
+
+  /** IDs swamp-club doesn't hold for this client are left out of the reply */
+  async people(
+    linkIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<LinkPersonView[]> {
+    if (linkIds.length > MAX_PEOPLE_LINK_IDS) {
+      throw new RangeError(
+        `A people read takes at most ${MAX_PEOPLE_LINK_IDS} link IDs`,
+      );
+    }
+    const { status, body } = await this.#call(
+      "POST",
+      "people",
+      { linkIds },
+      signal,
+    );
+    this.#throwFor(status, body);
+    const parsed = PeopleSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new ServeLinkError(
+        "unavailable",
+        "swamp-club's people reply was not understood",
+      );
+    }
+    const asked = new Set(linkIds);
+    return parsed.data.people.filter((view) => asked.has(view.linkId));
   }
 
   /** a link swamp-club no longer knows is as ended as one it just ended */

@@ -28,6 +28,7 @@ import { DelegationStore } from "../../serve/delegation_store.ts";
 import { createRecordLock } from "../../serve/deps.ts";
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
 import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
+import { DelegationSyncService } from "../../serve/delegation_sync_service.ts";
 import {
   type DelegationRouteDeps,
   handleDelegationRequest,
@@ -178,6 +179,7 @@ import {
   isRestrictedCommand,
   listTokenSessions,
   MAX_CANCEL_REASON_LENGTH,
+  NOT_ADMITTED_REASON,
   refuseIntegrationCaller,
   registerStreamSession,
   removeConnection,
@@ -7139,10 +7141,10 @@ export const serveCommand = new Command()
       directory: delegationDirectory,
       store: delegationStore,
       client: () => serveLinkClient,
-      capability: () =>
+      capability: (name) =>
         checkDelegationCapability(
           hasRemoteControlPlane ? controlPlaneStore : undefined,
-          { staleTtlMs },
+          { staleTtlMs, ...(name !== undefined ? { capability: name } : {}) },
         ),
       get followerGate() {
         return connectionCtx.followerGate;
@@ -7163,6 +7165,19 @@ export const serveCommand = new Command()
       audit: delegationAudit,
     });
     delegationLinkService.start();
+    // only a confirmed leader reads swamp-club's feed; followers apply what it writes
+    const delegationSyncService = new DelegationSyncService({
+      store: delegationStore,
+      directory: delegationDirectory,
+      client: () => serveLinkClient,
+      isLeader: () => {
+        const gate = connectionCtx.followerGate;
+        return gate === undefined ||
+          (gate.role === "leader" && gate.leadUnconfirmed?.() !== true);
+      },
+      audit: delegationAudit,
+    });
+    delegationSyncService.start();
 
     integrationDirectory.onNarrowed((changes) => {
       for (const { id, reason } of changes) {
@@ -7186,6 +7201,27 @@ export const serveCommand = new Command()
           code: 4003,
           reason: DELEGATION_ENDED_REASON,
           cause: "delegation-ended",
+          initiatedBy: "system",
+          audit: {
+            emitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
+          },
+        });
+      }
+    });
+    // a person snapshot from swamp-club can drop the collective admission
+    // reads, so their sockets close now rather than at the next revalidation
+    delegationDirectory.onPersonChanged((ids) => {
+      if (tokenAdmission === null) return;
+      for (const id of ids) {
+        const person = delegationDirectory.recordOf(id)?.person;
+        if (
+          person === undefined || tokenAdmission.delegation(person).admitted
+        ) continue;
+        terminateTokenSessions(delegationSessionName(id), {
+          code: 4003,
+          reason: NOT_ADMITTED_REASON,
+          cause: "not-admitted",
           initiatedBy: "system",
           audit: {
             emitter: connectionCtx.auditEmitter,
@@ -9023,6 +9059,10 @@ export const serveCommand = new Command()
       await stages.run(
         "delegation links",
         () => delegationLinkService.stop(),
+      );
+      await stages.run(
+        "delegation sync",
+        () => delegationSyncService.stop(),
       );
       if (clubHeartbeatService) {
         clubHeartbeatService.stop();

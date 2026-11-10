@@ -184,6 +184,16 @@ export class DelegatedTokens implements TokenSource {
         reason: "not_admitted",
       });
     }
+    if (outcome.kind === "suspended") {
+      throw new SwampHttpError({
+        status: 401,
+        code: "link_suspended",
+        message:
+          "The link is refused for now and kept; it refreshes again once swamp-club vouches for it again",
+        route: "delegations/refresh",
+        reason: outcome.reason,
+      });
+    }
     if (outcome.kind === "mismatch") {
       throw new SwampHttpError({
         status: 401,

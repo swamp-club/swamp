@@ -25,6 +25,7 @@ import {
   type DelegationPhase,
   type DelegationRecord,
   DelegationSchema,
+  type HoldCause,
 } from "../../domain/models/access/delegation_model.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -61,6 +62,22 @@ export interface DelegationView {
   };
   readonly tokenGeneration?: number;
   readonly accessTokenExpiresAt?: string;
+  /** why a suspended delegation is refused, and since when */
+  readonly hold?: {
+    readonly causes: readonly HoldCause[];
+    readonly since: string;
+  };
+  /** a relink the app has not redeemed yet */
+  readonly relinkPending?: boolean;
+  /** on a pending link a relink folded: the delegation it now updates */
+  readonly mergedInto?: string;
+  /** links a relink replaced, each ended on swamp-club */
+  readonly retiredLinks?: readonly {
+    readonly linkId: string;
+    readonly endState: DelegationRecord["club"]["endState"];
+    readonly endAttempts: number;
+    readonly lastEndError?: string;
+  }[];
 }
 
 export function delegationView(record: DelegationRecord): DelegationView {
@@ -111,6 +128,23 @@ export function delegationView(record: DelegationRecord): DelegationView {
       ? {
         tokenGeneration: tokens.generation,
         accessTokenExpiresAt: tokens.accessExpiresAt,
+      }
+      : {}),
+    ...(record.hold
+      ? { hold: { causes: [...record.hold.causes], since: record.hold.since } }
+      : {}),
+    ...(record.pendingRedeem ? { relinkPending: true } : {}),
+    ...(record.mergedInto ? { mergedInto: record.mergedInto } : {}),
+    ...(club.retiredLinks && club.retiredLinks.length > 0
+      ? {
+        retiredLinks: club.retiredLinks.map((link) => ({
+          linkId: link.linkId,
+          endState: link.endState,
+          endAttempts: link.endAttempts,
+          ...(link.lastEndError !== undefined
+            ? { lastEndError: link.lastEndError }
+            : {}),
+        })),
       }
       : {}),
   };

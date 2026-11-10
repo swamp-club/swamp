@@ -161,6 +161,8 @@ Deno.test("DelegatedTokens: a refused refresh throws link_ended or not_admitted"
       ["expired", "link_ended"],
       ["not_admitted", "not_admitted"],
       ["mismatch", "token_mismatch"],
+      ["suspended", "link_suspended"],
+      ["links_unavailable", "link_suspended"],
     ]
   ) {
     const store = memoryTokenStore();

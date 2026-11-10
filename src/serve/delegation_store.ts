@@ -21,10 +21,15 @@ import type { DelegationDirectory } from "../domain/access/delegation_directory.
 import {
   DELEGATION_DATA_NAME,
   DELEGATION_MODEL_TYPE,
+  DELEGATION_SYNC_DATA_NAME,
+  DELEGATION_SYNC_DEFINITION_NAME,
+  DELEGATION_SYNC_ID,
   delegationDefinitionName,
   delegationModel,
   type DelegationRecord,
   DelegationSchema,
+  type DelegationSyncRecord,
+  DelegationSyncSchema,
 } from "../domain/models/access/delegation_model.ts";
 import { Definition } from "../domain/definitions/definition.ts";
 import { createResourceWriter } from "../domain/models/data_writer.ts";
@@ -102,6 +107,74 @@ export class DelegationStore {
     );
   }
 
+  /**
+   * null when none was written or this build can't read it, so the feed starts
+   * over; a failed read throws, so a passing outage never resets the cursor
+   */
+  async readSync(): Promise<DelegationSyncRecord | null> {
+    const content = await this.#deps.repoContext.unifiedDataRepo.getContent(
+      DELEGATION_MODEL_TYPE,
+      DELEGATION_SYNC_ID,
+      DELEGATION_SYNC_DATA_NAME,
+    );
+    if (content === null) return null;
+    try {
+      return DelegationSyncSchema.parse(
+        JSON.parse(new TextDecoder().decode(content)),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /** under the sync record's own lock, so two leaders overlapping never interleave */
+  syncTransition<T>(
+    change: (
+      current: DelegationSyncRecord | null,
+    ) => { write: DelegationSyncRecord | null; value: T },
+  ): Promise<T> {
+    const key = DELEGATION_SYNC_ID;
+    const previous = this.#inProcess.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(async () => {
+      const locks = await this.#deps.lock(
+        DELEGATION_MODEL_TYPE.normalized,
+        key,
+      );
+      let result: { write: DelegationSyncRecord | null; value: T };
+      try {
+        if (locks.synced) this.#deps.repoContext.catalogStore.invalidate();
+        result = change(await this.readSync());
+      } catch (error) {
+        await locks.release();
+        throw error;
+      }
+      if (result.write === null) {
+        await locks.release();
+        return result.value;
+      }
+      const written = result.write;
+      await this.#inRoot(
+        locks,
+        () =>
+          this.#writeData(
+            DELEGATION_SYNC_ID,
+            DELEGATION_SYNC_DEFINITION_NAME,
+            "sync",
+            DELEGATION_SYNC_DATA_NAME,
+            written,
+          ),
+      );
+      await this.#deps.confirmReplicated?.();
+      return result.value;
+    });
+    this.#inProcess.set(key, next);
+    const cleanup = () => {
+      if (this.#inProcess.get(key) === next) this.#inProcess.delete(key);
+    };
+    next.then(cleanup, cleanup);
+    return next;
+  }
+
   async create(record: DelegationRecord): Promise<void> {
     await this.transition(record.id, (current) => {
       if (current !== null) {
@@ -159,8 +232,9 @@ export class DelegationStore {
   }
 
   /**
-   * only tokens nobody received need undoing: an end or a refusal is kept, since
-   * publishing it later is safe, and a first write has nothing to restore
+   * only tokens nobody received need undoing: an end, a refusal or a hold is
+   * kept, since publishing it later is safe, and a first write has nothing to
+   * restore
    */
   async #rollBack(
     id: string,
@@ -174,7 +248,7 @@ export class DelegationStore {
     });
     if (
       previous === null || written.phase === "ended" ||
-      written.phase === "refused"
+      written.phase === "refused" || written.phase === "suspended"
     ) return;
     // one attempt that never rolls back itself, so a failing restore can't
     // restore the record it was undoing
@@ -230,15 +304,30 @@ export class DelegationStore {
   }
 
   async #write(record: DelegationRecord): Promise<void> {
+    await this.#writeData(
+      record.id,
+      delegationDefinitionName(record.id),
+      "delegation",
+      DELEGATION_DATA_NAME,
+      record,
+    );
+  }
+
+  async #writeData(
+    id: string,
+    name: string,
+    resource: "delegation" | "sync",
+    dataName: string,
+    attrs: object,
+  ): Promise<void> {
     const { repoContext, repoDir } = this.#deps;
-    const name = delegationDefinitionName(record.id);
     const existing = await repoContext.definitionRepo.findByName(
       DELEGATION_MODEL_TYPE,
       name,
     );
     if (!existing) {
       const created = Definition.create({
-        id: record.id,
+        id,
         type: DELEGATION_MODEL_TYPE.normalized,
         name,
         typeVersion: delegationModel.version,
@@ -255,7 +344,7 @@ export class DelegationStore {
     const { writeResource } = createResourceWriter(
       repoContext.unifiedDataRepo,
       DELEGATION_MODEL_TYPE,
-      record.id,
+      id,
       delegationModel.resources!,
       undefined,
       undefined,
@@ -264,9 +353,9 @@ export class DelegationStore {
       name,
     );
     await writeResource(
-      "delegation",
-      DELEGATION_DATA_NAME,
-      record as unknown as Record<string, unknown>,
+      resource,
+      dataName,
+      attrs as Record<string, unknown>,
     );
   }
 }

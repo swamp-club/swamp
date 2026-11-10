@@ -113,6 +113,13 @@ const FORBIDDEN: Failure = {
   message: "This action is not allowed",
 };
 
+const CONSENT_REQUIRED: Failure = {
+  status: 403,
+  code: "consent_required",
+  message:
+    "The person has not consented to this through the link; link again to ask for it",
+};
+
 const ACTION_FAILED: Failure = {
   status: 500,
   code: "action_failed",
@@ -319,6 +326,9 @@ function typedFailure(
   requestId: string,
 ): ActionReply | undefined {
   switch (error.code) {
+    case "consent_required":
+      // grants and the integration already allow it, so naming it reveals nothing
+      return failed(CONSENT_REQUIRED, requestId);
     case "unauthorized":
       // these name a run or wait, so a refusal must read like a missing one
       return failed(

@@ -19,11 +19,17 @@
 
 import { checkAdmission } from "../domain/access/admission.ts";
 import {
+  absorbPending,
+  canFold,
   DELEGATION_REDEEM_WINDOW_MS,
+  dropExpiredRedeem,
   endDelegation,
+  foldConsent,
+  isFinalPhase,
   recordApproval,
   recordClubEnd,
   recordReported,
+  recordRetiredLinkEnd,
   refuseDelegation,
 } from "../domain/access/delegation.ts";
 import type { DelegationDirectory } from "../domain/access/delegation_directory.ts";
@@ -49,7 +55,11 @@ export interface DelegationAuditEvent {
     | "recorded"
     | "ended"
     | "club_ended"
-    | "club_end_failed";
+    | "club_end_failed"
+    | "relinked"
+    | "suspended"
+    | "suspension_lifted"
+    | "identity_updated";
   readonly record: DelegationRecord;
   readonly outcome: string;
   readonly detail?: string;
@@ -163,6 +173,19 @@ export class DelegationLinkService {
   }
 
   async #step(record: DelegationRecord, now: number): Promise<void> {
+    if (
+      !isFinalPhase(record.phase) &&
+      this.#deps.integrations.standingOf(record.integrationId).kind ===
+        "revoked"
+    ) {
+      // an approved consent is refused back to swamp-club, so its page stops offering it
+      if (record.phase === "reporting") {
+        await this.#refuse(record.id, "integration_revoked", now, true);
+      } else {
+        await this.#end(record.id, "integration_revoked", now);
+      }
+      return;
+    }
     switch (record.phase) {
       case "awaiting_consent":
         return await this.#poll(record, now);
@@ -175,6 +198,8 @@ export class DelegationLinkService {
         ) await this.#end(record.id, "not_redeemed", now);
         return;
       case "issued":
+      case "suspended":
+        await this.#tellRetired(record, now);
         return await this.#checkIssued(record, now);
       case "ended":
         return await this.#tellClub(record, now);
@@ -258,6 +283,7 @@ export class DelegationLinkService {
       outcome: "recorded",
     });
     if (outcome.kind === "recorded") {
+      if (await this.#fold(record, outcome.linkId, now)) return;
       await this.#deps.store.transition(record.id, (current) => {
         if (current?.phase !== "reporting") {
           return Promise.resolve({ write: null, value: undefined });
@@ -285,6 +311,58 @@ export class DelegationLinkService {
     );
   }
 
+  // target first: a crash between the two writes re-reports and finds the link already folded
+  async #fold(
+    pending: DelegationRecord,
+    linkId: string,
+    now: number,
+  ): Promise<boolean> {
+    const person = pending.person;
+    if (person === undefined) return false;
+    // a superseded delegation is about to end, so a fresh consent must not land in it
+    const foldable = (candidate: DelegationRecord) =>
+      canFold(candidate, pending, person) &&
+      this.#deps.directory.supersededBy(candidate.id) === undefined;
+    const target = this.#deps.directory.all().find(foldable);
+    if (target === undefined) return false;
+    const outcome = await this.#deps.store.transition<
+      { folded: DelegationRecord; replaced: boolean } | null
+    >(
+      target.id,
+      (current) => {
+        if (current === null || !foldable(current)) {
+          return Promise.resolve({ write: null, value: null });
+        }
+        const next = foldConsent(current, pending, linkId, person, now);
+        return Promise.resolve({
+          write: next === current ? null : next,
+          value: {
+            folded: next,
+            replaced: next.ceilingDigest !== current.ceilingDigest,
+          },
+        });
+      },
+    );
+    if (outcome === null) return false;
+    const { folded, replaced } = outcome;
+    await this.#deps.store.transition(pending.id, (current) => {
+      if (current?.phase !== "reporting") {
+        return Promise.resolve({ write: null, value: undefined });
+      }
+      return Promise.resolve({
+        write: absorbPending(current, folded.id, now),
+        value: undefined,
+      });
+    });
+    this.#deps.audit?.({
+      action: "relinked",
+      record: folded,
+      outcome: replaced ? "consent_replaced" : "consent_unchanged",
+      detail: `pending=${pending.id}`,
+    });
+    return true;
+  }
+
   async #checkIssued(record: DelegationRecord, now: number): Promise<void> {
     if (record.expiresAt !== undefined && Date.parse(record.expiresAt) <= now) {
       await this.#end(record.id, "expired", now);
@@ -294,11 +372,63 @@ export class DelegationLinkService {
       await this.#end(record.id, "superseded", now);
       return;
     }
-    if (
-      this.#deps.integrations.standingOf(record.integrationId).kind ===
-        "revoked"
-    ) {
-      await this.#end(record.id, "integration_revoked", now);
+    if (dropExpiredRedeem(record, now) !== record) {
+      await this.#deps.store.transition(record.id, (current) => {
+        const next = current === null ? null : dropExpiredRedeem(current, now);
+        return Promise.resolve({
+          write: next === current ? null : next,
+          value: undefined,
+        });
+      });
+    }
+  }
+
+  /** the links a relink replaced, ended on swamp-club while the delegation lives on */
+  async #tellRetired(record: DelegationRecord, now: number): Promise<void> {
+    for (const link of record.club.retiredLinks ?? []) {
+      if (link.endState !== "pending") continue;
+      if (
+        link.nextEndAttemptAt !== undefined &&
+        Date.parse(link.nextEndAttemptAt) > now
+      ) continue;
+      const client = this.#deps.client();
+      let failure: string | undefined;
+      if (client === undefined) {
+        failure = "this serve has no swamp-club client";
+      } else {
+        try {
+          await client.end(link.linkId);
+        } catch (error) {
+          failure = error instanceof ServeLinkError
+            ? `${error.kind}: ${error.message}`
+            : String(error);
+        }
+      }
+      const retryAtMs = now +
+        Math.min(MAX_CLUB_END_BACKOFF_MS, 30_000 * 2 ** link.endAttempts);
+      await this.#deps.store.transition(
+        record.id,
+        (current) =>
+          Promise.resolve({
+            write: current === null ? null : recordRetiredLinkEnd(
+              current,
+              link.linkId,
+              failure === undefined
+                ? { ok: true }
+                : { ok: false, error: failure, retryAtMs },
+              now,
+            ),
+            value: undefined,
+          }),
+      );
+      this.#deps.audit?.({
+        action: failure === undefined ? "club_ended" : "club_end_failed",
+        record,
+        outcome: failure === undefined ? "ok" : "failed",
+        detail: `retired_link=${link.linkId}${
+          failure !== undefined ? ` ${failure}` : ""
+        }`,
+      });
     }
   }
 
@@ -431,11 +561,13 @@ export class DelegationLinkService {
 
 /** shared with the routes and the operator command: an end applies here at once */
 export async function endLocally(
-  store: DelegationStore,
+  store: Pick<DelegationStore, "transition">,
   id: string,
   cause: string,
   now: number,
   audit?: (event: DelegationAuditEvent) => void,
+  // checked under the lock, for an end that holds only while the record is as it was read
+  applies: (current: DelegationRecord) => boolean = () => true,
 ): Promise<{ record: DelegationRecord; changed: boolean } | null> {
   const ended = await store.transition<
     { record: DelegationRecord; changed: boolean } | null
@@ -443,7 +575,7 @@ export async function endLocally(
     if (current === null) {
       return Promise.resolve({ write: null, value: null });
     }
-    if (current.phase === "ended" || current.phase === "refused") {
+    if (isFinalPhase(current.phase) || !applies(current)) {
       return Promise.resolve({
         write: null,
         value: { record: current, changed: false },

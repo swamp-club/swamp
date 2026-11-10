@@ -24,6 +24,13 @@ import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { createDelegationAuditor } from "../src/serve/delegation_audit.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import { START_BODY, withRig } from "./delegation_link_harness.ts";
+import { DelegationSyncService } from "../src/serve/delegation_sync_service.ts";
+import { ServeLinkClient } from "../src/serve/serve_link_client.ts";
+import {
+  createDelegationListDeps,
+  delegationList,
+} from "../src/libswamp/access/delegation_list.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
 
 function rendered(record: LogRecord): string {
   return JSON.stringify({
@@ -102,6 +109,123 @@ Deno.test("delegation links: no token, credential, redeem secret, consent code o
       }
       assert(events.length > 0);
       assert(events.every((e) => e.delegation === pendingId));
+    });
+  } finally {
+    await reset();
+  }
+});
+
+Deno.test("delegation sync and relink: no token, credential or redeem secret reaches logs, audit, stored records or the operator listing", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      { category: [], lowestLevel: "debug", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  const events: AuditEvent[] = [];
+  const auditor = createDelegationAuditor({
+    auditEmitter: { emit: (event: AuditEvent) => events.push(event) },
+    instanceId: "leak-test",
+  });
+  const secrets: string[] = ["serve-secret", btoa("serve-client:serve-secret")];
+  try {
+    await withRig(async (rig) => {
+      secrets.push(rig.credential);
+      const first = await rig.post("links", START_BODY);
+      secrets.push(first.body.redeemSecret as string);
+      rig.club.status = "approved";
+      await rig.pass();
+      const redeemed = await rig.post("redeem", {
+        pendingId: first.body.pendingId,
+        redeemSecret: first.body.redeemSecret,
+      });
+      secrets.push(
+        redeemed.body.accessToken as string,
+        redeemed.body.refreshToken as string,
+      );
+      const relink = await rig.post("links", START_BODY);
+      secrets.push(relink.body.redeemSecret as string);
+      await rig.pass();
+      const folded = await rig.post("redeem", {
+        pendingId: relink.body.pendingId,
+        redeemSecret: relink.body.redeemSecret,
+      });
+      assertEquals(folded.status, 200, JSON.stringify(folded.body));
+      secrets.push(
+        folded.body.accessToken as string,
+        folded.body.refreshToken as string,
+      );
+      const clock = { now: Date.now() };
+      const sync = new DelegationSyncService({
+        store: rig.store,
+        directory: rig.directory,
+        client: () =>
+          new ServeLinkClient({
+            baseUrl: rig.club.url,
+            clientId: "serve-client",
+            clientSecret: "serve-secret",
+          }),
+        isLeader: () => true,
+        audit: (event) => rig.audit.push(event),
+        now: () => clock.now,
+      });
+      rig.club.people.set("link-2", { state: "suspended" });
+      await sync.tick();
+      rig.club.refuseClient = { status: 401, error: "invalid_client" };
+      clock.now += 5 * 60_000;
+      await sync.tick();
+      rig.club.refuseClient = undefined;
+      rig.club.endedFeed.push("link-2");
+      rig.club.people.set("link-2", {
+        state: "ended",
+        endedReason: "disowned",
+      });
+      clock.now += 5 * 60_000;
+      await sync.tick();
+      await rig.pass();
+      for (const event of rig.audit) auditor(event);
+
+      const listing = await Array.fromAsync(
+        delegationList(
+          createLibSwampContext(),
+          createDelegationListDeps(rig.repo.repoContext.dataQueryService),
+        ),
+      );
+      const stored: string[] = [];
+      for await (
+        const entry of walk(rig.repo.repoDir, { includeDirs: false })
+      ) {
+        stored.push(await Deno.readTextFile(entry.path).catch(() => ""));
+      }
+      const surfaces = [
+        ["logs", records.map(rendered).join("\n")],
+        ["audit", JSON.stringify(events)],
+        ["stored records", stored.join("\n")],
+        ["--json listing", JSON.stringify(listing)],
+      ] as const;
+      for (const [where, text] of surfaces) {
+        for (const secret of secrets) {
+          assert(
+            !text.includes(secret),
+            `${where} holds a secret starting ${secret.slice(0, 6)}`,
+          );
+        }
+        for (const prefix of ["swda1.", "swdr1.", "swdx1.", "swi1."]) {
+          assert(!text.includes(prefix), `${where} holds a ${prefix} value`);
+        }
+      }
+      for (
+        const action of [
+          "delegation.relinked",
+          "delegation.suspended",
+          "delegation.ended",
+        ]
+      ) {
+        assert(events.some((e) => e.action === action), action);
+      }
     });
   } finally {
     await reset();

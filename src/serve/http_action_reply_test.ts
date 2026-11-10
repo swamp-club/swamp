@@ -42,6 +42,28 @@ Deno.test("actionFailure: pinned codes and statuses", () => {
     ["workflow.resume", "unauthorized", undefined, 403, "forbidden"],
     ["workflow.history.get", "unauthorized", undefined, 404, "not_found"],
     ["workflow.signal", "unauthorized", undefined, 404, "not_found"],
+    ["workflow.run", "consent_required", undefined, 403, "consent_required"],
+    [
+      "workflow.approve",
+      "consent_required",
+      undefined,
+      403,
+      "consent_required",
+    ],
+    [
+      "workflow.signal",
+      "consent_required",
+      undefined,
+      403,
+      "consent_required",
+    ],
+    [
+      "workflow.history.get",
+      "consent_required",
+      undefined,
+      403,
+      "consent_required",
+    ],
     [
       "workflow.approve",
       "workflow_approve_failed",

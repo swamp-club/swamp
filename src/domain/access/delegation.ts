@@ -20,7 +20,9 @@
 import type {
   DelegationRecord,
   ExternalIdentity,
+  HoldCause,
   LinkedPerson,
+  RetiredLink,
 } from "../models/access/delegation_model.ts";
 import { Ceiling } from "./ceiling.ts";
 import { issueDelegatedSecret, type IssuedSecret } from "./delegated_token.ts";
@@ -216,6 +218,8 @@ export const REFRESH_REFUSAL_REASONS = [
   "expired",
   "superseded",
   "unreadable",
+  "suspended",
+  "links_unavailable",
 ] as const satisfies readonly (
   | "mismatch"
   | "not_admitted"
@@ -235,7 +239,10 @@ export async function refreshDelegation(
   nowMs: number,
   standing: DelegationStanding,
 ): Promise<RefreshOutcome> {
-  if (record.phase !== "issued" || record.tokens === undefined) {
+  if (
+    (record.phase !== "issued" && record.phase !== "suspended") ||
+    record.tokens === undefined
+  ) {
     return { kind: "refused", reason: "not_issued" };
   }
   if (
@@ -280,19 +287,33 @@ export async function refreshDelegation(
   };
 }
 
-/** causes swamp-club already knows need no end call back to it */
-const CLUB_ORIGINATED = new Set(["club_ended"]);
+/**
+ * causes swamp-club already knows, or can't be told, need no end call back to
+ * it
+ */
+export const CLUB_ORIGINATED_CAUSES = [
+  "club_ended",
+  "disowned",
+  "club_client_refused",
+  "club_unknown",
+] as const;
+const CLUB_ORIGINATED: ReadonlySet<string> = new Set(CLUB_ORIGINATED_CAUSES);
+
+export function isFinalPhase(phase: DelegationRecord["phase"]): boolean {
+  return phase === "ended" || phase === "refused";
+}
 
 export function endDelegation(
   record: DelegationRecord,
   cause: string,
   nowMs: number,
 ): DelegationRecord {
-  if (record.phase === "ended" || record.phase === "refused") return record;
+  if (isFinalPhase(record.phase)) return record;
   const tellClub = record.club.linkId !== undefined &&
     !CLUB_ORIGINATED.has(cause);
+  const { hold: _hold, pendingRedeem: _redeem, ...rest } = record;
   return {
-    ...record,
+    ...rest,
     phase: "ended",
     ended: { cause, at: iso(nowMs) },
     tokens: undefined,
@@ -340,7 +361,9 @@ export type DelegationStanding =
       | "ended"
       | "expired"
       | "superseded"
-      | "unreadable";
+      | "unreadable"
+      | "suspended"
+      | "links_unavailable";
   };
 
 /**
@@ -354,8 +377,11 @@ export function delegationStanding(
   supersededBy: string | undefined,
 ): DelegationStanding {
   if (record === undefined) return { kind: "unknown" };
-  if (record.phase === "ended" || record.phase === "refused") {
-    return { kind: "ended" };
+  if (isFinalPhase(record.phase)) return { kind: "ended" };
+  if (record.phase === "suspended") {
+    return record.hold?.causes.includes("person_suspended") === false
+      ? { kind: "links_unavailable" }
+      : { kind: "suspended" };
   }
   if (record.phase !== "issued" || record.tokens === undefined) {
     return { kind: "not_issued" };
@@ -369,6 +395,231 @@ export function delegationStanding(
   } catch {
     return { kind: "unreadable" };
   }
+}
+
+/** unchanged records come back as the same object, so a caller can skip the write */
+export function holdDelegation(
+  record: DelegationRecord,
+  cause: HoldCause,
+  nowMs: number,
+): DelegationRecord {
+  if (record.phase === "issued") {
+    return {
+      ...record,
+      phase: "suspended",
+      hold: { causes: [cause], since: iso(nowMs) },
+      updatedAt: iso(nowMs),
+    };
+  }
+  if (record.phase !== "suspended" || record.hold === undefined) return record;
+  if (record.hold.causes.includes(cause)) return record;
+  return {
+    ...record,
+    hold: { ...record.hold, causes: [...record.hold.causes, cause] },
+    updatedAt: iso(nowMs),
+  };
+}
+
+export function releaseHold(
+  record: DelegationRecord,
+  cause: HoldCause,
+  nowMs: number,
+): DelegationRecord {
+  if (record.phase !== "suspended" || record.hold === undefined) return record;
+  if (!record.hold.causes.includes(cause)) return record;
+  const causes = record.hold.causes.filter((c) => c !== cause);
+  if (causes.length > 0) {
+    return {
+      ...record,
+      hold: { ...record.hold, causes },
+      updatedAt: iso(nowMs),
+    };
+  }
+  const { hold: _hold, ...rest } = record;
+  return { ...rest, phase: "issued", updatedAt: iso(nowMs) };
+}
+
+function samePerson(a: LinkedPerson, b: LinkedPerson): boolean {
+  return a.sub === b.sub && a.email === b.email && a.username === b.username &&
+    JSON.stringify(a.collectives) === JSON.stringify(b.collectives) &&
+    JSON.stringify(a.groups) === JSON.stringify(b.groups);
+}
+
+/** swamp-club's link row names one person for life, so another sub is ignored */
+export function applyClubIdentity(
+  record: DelegationRecord,
+  person: LinkedPerson,
+  nowMs: number,
+): DelegationRecord {
+  if (record.phase !== "issued" && record.phase !== "suspended") return record;
+  if (record.person === undefined || record.person.sub !== person.sub) {
+    return record;
+  }
+  if (samePerson(record.person, person)) return record;
+  return { ...record, person, updatedAt: iso(nowMs) };
+}
+
+/** whether a newly reported consent folds into this delegation rather than superseding it */
+export function canFold(
+  target: DelegationRecord,
+  pending: DelegationRecord,
+  person: LinkedPerson,
+): boolean {
+  return (target.phase === "issued" || target.phase === "suspended") &&
+    target.id !== pending.id &&
+    target.person?.sub === person.sub &&
+    target.integrationId === pending.integrationId &&
+    canonicalExternalKey(target.integrationId, target.external) ===
+      canonicalExternalKey(pending.integrationId, pending.external);
+}
+
+/**
+ * a fresh consent replaces the consented ceiling, wider or narrower, and
+ * restarts the life; the replaced link is ended on swamp-club. Tokens change
+ * only when the app redeems the new link
+ */
+export function foldConsent(
+  target: DelegationRecord,
+  pending: DelegationRecord,
+  linkId: string,
+  person: LinkedPerson,
+  nowMs: number,
+): DelegationRecord {
+  if (!canFold(target, pending, person)) {
+    throw new DelegationTransitionError(
+      "not_foldable",
+      `Delegation ${pending.id} can't be folded into ${target.id}`,
+    );
+  }
+  if (target.club.linkId === linkId) return target;
+  const previous = target.club.linkId;
+  const retired: RetiredLink[] = [
+    ...(target.club.retiredLinks ?? []),
+    ...(previous !== undefined
+      ? [{
+        linkId: previous,
+        endState: "pending" as const,
+        endAttempts: 0,
+        nextEndAttemptAt: iso(nowMs),
+      }]
+      : []),
+  ].slice(-20);
+  return {
+    ...target,
+    ceiling: pending.ceiling,
+    ceilingDigest: pending.ceilingDigest,
+    person,
+    club: {
+      ...target.club,
+      requestId: pending.club.requestId,
+      digest: pending.club.digest,
+      linkId,
+      retiredLinks: retired,
+    },
+    expiresAt: iso(nowMs + DELEGATION_MAX_LIFE_MS),
+    pendingRedeem: {
+      pendingId: pending.id,
+      hash: pending.redeemHash,
+      expiresAt: iso(nowMs + DELEGATION_REDEEM_WINDOW_MS),
+    },
+    updatedAt: iso(nowMs),
+  };
+}
+
+/** the pending record of a folded relink; it never consents, so it never supersedes */
+export function absorbPending(
+  pending: DelegationRecord,
+  targetId: string,
+  nowMs: number,
+): DelegationRecord {
+  requirePhase(pending, ["reporting"], "be folded");
+  return {
+    ...pending,
+    phase: "ended",
+    ended: { cause: "relinked", at: iso(nowMs) },
+    mergedInto: targetId,
+    updatedAt: iso(nowMs),
+  };
+}
+
+/** once per folded relink: fresh tokens replace every earlier one */
+export async function redeemFolded(
+  target: DelegationRecord,
+  pendingId: string,
+  nowMs: number,
+): Promise<{ record: DelegationRecord; tokens: IssuedTokens }> {
+  requirePhase(target, ["issued"], "issue tokens for a relink");
+  if (target.pendingRedeem?.pendingId !== pendingId) {
+    throw new DelegationTransitionError(
+      "not_pending",
+      `Delegation ${target.id} has no relink ${pendingId} to redeem`,
+    );
+  }
+  if (Date.parse(target.pendingRedeem.expiresAt) <= nowMs) {
+    throw new DelegationTransitionError(
+      "redeem_expired",
+      `The relink ${pendingId} was not redeemed in time`,
+    );
+  }
+  const tokens = await newTokens(target.id, nowMs);
+  const accessExpiresAt = cappedExpiry(target, tokens.accessExpiresAt);
+  const { pendingRedeem: _redeem, ...rest } = target;
+  return {
+    tokens: { ...tokens, accessExpiresAt },
+    record: {
+      ...rest,
+      tokens: {
+        accessHash: tokens.access.hash,
+        accessExpiresAt,
+        refreshHash: tokens.refresh.hash,
+        generation: (target.tokens?.generation ?? 0) + 1,
+      },
+      updatedAt: iso(nowMs),
+    },
+  };
+}
+
+/** a folded relink the app never redeems lapses like any unredeemed link; its tokens stay as they were */
+export function dropExpiredRedeem(
+  record: DelegationRecord,
+  nowMs: number,
+): DelegationRecord {
+  if (
+    record.pendingRedeem === undefined ||
+    Date.parse(record.pendingRedeem.expiresAt) > nowMs
+  ) return record;
+  const { pendingRedeem: _redeem, ...rest } = record;
+  return { ...rest, updatedAt: iso(nowMs) };
+}
+
+export function recordRetiredLinkEnd(
+  record: DelegationRecord,
+  linkId: string,
+  outcome: { ok: true } | { ok: false; error: string; retryAtMs: number },
+  nowMs: number,
+): DelegationRecord {
+  const links = record.club.retiredLinks ?? [];
+  const index = links.findIndex((link) =>
+    link.linkId === linkId && link.endState === "pending"
+  );
+  if (index < 0) return record;
+  const link = links[index];
+  const next: RetiredLink = outcome.ok
+    ? { linkId, endState: "done", endAttempts: link.endAttempts + 1 }
+    : {
+      ...link,
+      endAttempts: link.endAttempts + 1,
+      lastEndError: outcome.error.slice(0, 500),
+      nextEndAttemptAt: iso(outcome.retryAtMs),
+    };
+  return {
+    ...record,
+    club: {
+      ...record.club,
+      retiredLinks: links.map((l, i) => i === index ? next : l),
+    },
+    updatedAt: iso(nowMs),
+  };
 }
 
 /** the newest access token first, the legacy fields before olderAccess */
@@ -438,7 +689,9 @@ export function supersessionOf(
 ): Map<string, string> {
   const newest = new Map<string, DelegationRecord>();
   for (const record of records) {
-    if (record.consentedAt === undefined) continue;
+    if (record.consentedAt === undefined || record.mergedInto !== undefined) {
+      continue;
+    }
     const key = canonicalExternalKey(record.integrationId, record.external);
     const seen = newest.get(key);
     if (
@@ -448,7 +701,9 @@ export function supersessionOf(
   }
   const superseded = new Map<string, string>();
   for (const record of records) {
-    if (record.consentedAt === undefined) continue;
+    if (record.consentedAt === undefined || record.mergedInto !== undefined) {
+      continue;
+    }
     const winner = newest.get(
       canonicalExternalKey(record.integrationId, record.external),
     )!;
