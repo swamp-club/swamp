@@ -437,6 +437,43 @@ Deno.test("command routes: a completion callback's tree resolves each completion
   }
 });
 
+Deno.test("command routes: a completion callback naming a hidden command is refused with the full tree's listing", async () => {
+  // snapshot first: every later build re-parents the shared command instances
+  const full = await buildCommandTree();
+  const hiddenPaths: string[][] = [];
+  const visit = (command: AnyCommand, path: string[]) => {
+    const visible = new Set(command.getBaseCommands(false));
+    for (const child of command.getBaseCommands(true)) {
+      const childPath = [...path, child.getName()];
+      if (visible.has(child)) visit(child, childPath);
+      else hiddenPaths.push(childPath);
+    }
+  };
+  visit(full, []);
+  assert(hiddenPaths.length > 0, "no hidden command found");
+  // Cliffy's refusal lists the visible commands beside the hidden one
+  const listing = (node: AnyCommand) =>
+    node.getCommands(false).map((c) => c.getName());
+  const expected = new Map(
+    hiddenPaths.map((path) => [
+      path.join(" "),
+      listing(walkVisible(full, path.slice(0, -1))!),
+    ]),
+  );
+
+  for (const path of hiddenPaths) {
+    const args = ["completions", "complete", "action", ...path];
+    if (selectRoute(ROOT_ROUTES, args).kind === "all") continue;
+    const parent = walkVisible(await buildCommandTree(args), path.slice(0, -1));
+    assert(parent !== undefined, `swamp ${args.join(" ")}: parent missing`);
+    assertEquals(
+      listing(parent),
+      expected.get(path.join(" ")),
+      `swamp ${args.join(" ")}`,
+    );
+  }
+});
+
 // a worker that exits or stalls without answering would otherwise hold the
 // test, and with it the whole run, until an outer cap with no route named
 const WORKER_DEADLINE_MS = 120_000;
