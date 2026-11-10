@@ -74,7 +74,7 @@ import {
 import {
   GIT_SHA as SERVER_GIT_SHA,
   VERSION as SERVER_VERSION,
-} from "../cli/commands/version.ts";
+} from "../infrastructure/runtime/build_info.ts";
 import {
   handleDataDelete,
   handleDataGc,

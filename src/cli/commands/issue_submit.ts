@@ -60,7 +60,7 @@ import {
   resolveExtensionTarget,
 } from "./extension_report_dispatcher.ts";
 import { collectReporterContext } from "../../infrastructure/process/reporter_context_collector.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 /** swamp-club refuses a blank title or body, so the request is never sent. */
 export function requireNonBlank(flag: string, value: string): string {

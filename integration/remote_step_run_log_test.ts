@@ -21,7 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
 import { requireInitializedRepo } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../src/domain/models/method_execution_service.ts";
 import type {

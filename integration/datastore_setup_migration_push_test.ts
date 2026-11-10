@@ -32,7 +32,7 @@ import {
   datastoreSetupExtension,
 } from "../src/libswamp/datastores/setup.ts";
 import { collect } from "../src/libswamp/testing.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 
 await initializeLogging({});
 

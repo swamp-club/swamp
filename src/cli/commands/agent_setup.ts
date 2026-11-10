@@ -38,7 +38,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import {
   promptChoice,
   promptConfirmation,

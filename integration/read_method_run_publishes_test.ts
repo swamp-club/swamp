@@ -46,7 +46,7 @@ import {
   acquirePublishLocksOrDefer,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import {
   type DistributedLock,

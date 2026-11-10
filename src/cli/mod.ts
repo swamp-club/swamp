@@ -55,7 +55,8 @@ import {
   bufferStartupWarnings,
   initializeLogging,
 } from "../infrastructure/logging/logger.ts";
-import { VERSION, versionCommand } from "./commands/version.ts";
+import { versionCommand } from "./commands/version.ts";
+import { VERSION } from "../infrastructure/runtime/build_info.ts";
 import { modelCommand } from "./commands/model_create.ts";
 import { runCommand } from "./commands/run.ts";
 import { repoCommand, repoInitCommand } from "./commands/repo_init.ts";

@@ -27,7 +27,7 @@ import {
   telemetryStats,
 } from "../../libswamp/telemetry/stats.ts";
 import { createTelemetryStatsRenderer } from "../../presentation/renderers/telemetry_stats.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 export const telemetryStatsCommand = new Command()
   .name("stats")

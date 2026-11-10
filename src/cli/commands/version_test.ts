@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { getVersionData, VERSION } from "./version.ts";
+import { getVersionData } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 Deno.test("getVersionData returns correct version", () => {
   const data = getVersionData();

@@ -55,7 +55,7 @@ import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { getLogger } from "@logtape/logtape";
 import type { MethodContext } from "../src/domain/models/model.ts";
 import {

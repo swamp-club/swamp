@@ -28,7 +28,7 @@ import { MockVaultProvider } from "../../domain/vaults/mock_vault_provider.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS } from "../../domain/vaults/local_encryption_key_source.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 import "../../domain/models/models.ts";
 

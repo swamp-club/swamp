@@ -29,7 +29,7 @@ import { join } from "@std/path";
 import { walk } from "@std/fs";
 import { parse as parseYaml } from "@std/yaml";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,

@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 function resolveSubcommand(
   root: AnyCommand,

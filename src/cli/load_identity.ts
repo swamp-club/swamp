@@ -20,7 +20,7 @@
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
-import { VERSION } from "./commands/version.ts";
+import { VERSION } from "../infrastructure/runtime/build_info.ts";
 
 export const USER_AGENT = `swamp-cli/${VERSION}`;
 

@@ -87,7 +87,7 @@ import {
 } from "./access_helpers.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
-import { GIT_SHA } from "./version.ts";
+import { GIT_SHA } from "../../infrastructure/runtime/build_info.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

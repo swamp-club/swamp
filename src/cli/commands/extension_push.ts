@@ -42,7 +42,7 @@ import {
   REGISTRY_NOT_AUTHENTICATED_MESSAGE,
   REGISTRY_TOKEN_SCOPE_CODE,
 } from "../../infrastructure/http/extension_api_client.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import {
   computePackageCacheHash,

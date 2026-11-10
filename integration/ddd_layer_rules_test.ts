@@ -170,7 +170,6 @@ Deno.test(
 // CLI helpers are debt to hoist into a layer both can use, so no new edges
 // appear
 const PINNED_SERVE_CLI_EDGES: readonly string[] = [
-  "src/serve/connection.ts -> src/cli/commands/version.ts",
   "src/serve/deps.ts -> src/cli/repo_context.ts",
   "src/serve/extension_reload.ts -> src/cli/resolve_models_dir.ts",
   "src/serve/handlers/admin_handlers.ts -> src/cli/create_extension_install_deps.ts",
@@ -251,6 +250,30 @@ Deno.test(
         `${edges.join("\n")}\n\n` +
         `${CLI_COMPOSITION_ROOT} imports every command, so an importer depends on the whole CLI.\n` +
         `Import the name from the file that defines it instead.`,
+    );
+  },
+);
+
+// the version command is a leaf only the composition root imports: another
+// importer puts it in that file's closure, so affectedCommands for an edit to
+// it would name more than version
+const VERSION_COMMAND = "src/cli/commands/version.ts";
+
+Deno.test(
+  "collectImportEdges: only the CLI composition root imports the version command",
+  async () => {
+    const edges = await collectImportEdges(
+      SRC_DIR,
+      (filePath, importPath) =>
+        resolveImport(filePath, importPath) === VERSION_COMMAND,
+    );
+
+    assertEquals(
+      edges,
+      [`${CLI_COMPOSITION_ROOT} -> ${VERSION_COMMAND}`],
+      `Imports of ${VERSION_COMMAND} other than ${CLI_COMPOSITION_ROOT}:\n` +
+        `${edges.join("\n")}\n\n` +
+        `Build constants live in src/infrastructure/runtime/build_info.ts; import them from there.`,
     );
   },
 );

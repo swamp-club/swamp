@@ -130,7 +130,7 @@ import {
   preV3CheckoutRecordDirs,
   V3CheckoutHoldsRecordsError,
 } from "../../infrastructure/datastore_v3/v3_checkout_join.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";

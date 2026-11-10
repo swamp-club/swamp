@@ -47,7 +47,7 @@ import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yam
 import { resolveDatastoreForRepo } from "../src/cli/repo_context.ts";
 import { noteRetentionCandidate } from "../src/cli/retention_candidate.ts";
 import { runRetentionAtCommandEnd } from "../src/cli/retention_teardown.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { runRepoRetention } from "../src/libswamp/retention/run.ts";
 import {
   DAY_MS,

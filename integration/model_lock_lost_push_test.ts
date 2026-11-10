@@ -57,7 +57,7 @@ import {
   acquireModelLocks,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import type { AtomicWriteSync } from "../src/infrastructure/persistence/atomic_write.ts";
 
 await initializeLogging({});

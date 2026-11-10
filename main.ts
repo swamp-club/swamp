@@ -35,7 +35,7 @@ import {
   runWithParentTrace,
   shutdownObservability,
 } from "./src/infrastructure/tracing/mod.ts";
-import { VERSION } from "./src/cli/commands/version.ts";
+import { VERSION } from "./src/infrastructure/runtime/build_info.ts";
 import { initExecutionMetrics } from "./src/infrastructure/tracing/otel_metrics_init.ts";
 import { commandSurfaceFromArgs } from "./src/cli/command_surface_args.ts";
 import { extractCommandInfo } from "./src/cli/telemetry_integration.ts";

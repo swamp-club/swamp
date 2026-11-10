@@ -73,7 +73,7 @@ import {
   promptLine,
   promptLineWithDefault,
 } from "../prompt_helpers.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { V3_BUCKET_MIN_EXTENSION_VERSION } from "../../domain/datastore/v3_hosting.ts";
 
 // deno-lint-ignore no-explicit-any

@@ -28,17 +28,41 @@ interface CompileOptions {
   version?: string;
 }
 
-const VERSION_FILE = "src/cli/commands/version.ts";
+export const VERSION_FILE = "src/infrastructure/runtime/build_info.ts";
 
-async function stampVersion(version: string): Promise<string> {
-  const content = await Deno.readTextFile(VERSION_FILE);
-  const original = content;
-  const updated = content.replace(
-    /export const VERSION = "[^"]+";/,
-    `export const VERSION = "${version}";`,
-  );
-  await Deno.writeTextFile(VERSION_FILE, updated);
-  return original;
+const VERSION_PATTERN = /export const VERSION = "[^"]+";/;
+const GIT_SHA_PATTERN = /export const GIT_SHA = "[^"]*";/;
+
+function replaceConstant(
+  content: string,
+  name: string,
+  pattern: RegExp,
+  value: string,
+): string {
+  if (!pattern.test(content)) {
+    throw new Error(`${VERSION_FILE} has no ${name} constant to stamp`);
+  }
+  return content.replace(pattern, `export const ${name} = "${value}";`);
+}
+
+// pure so a failed match throws before anything is written
+export function stampBuildInfo(
+  content: string,
+  stamp: { version?: string; sha?: string },
+): string {
+  let stamped = content;
+  if (stamp.sha) {
+    stamped = replaceConstant(stamped, "GIT_SHA", GIT_SHA_PATTERN, stamp.sha);
+  }
+  if (stamp.version) {
+    stamped = replaceConstant(
+      stamped,
+      "VERSION",
+      VERSION_PATTERN,
+      stamp.version,
+    );
+  }
+  return stamped;
 }
 
 async function getGitSha(): Promise<string> {
@@ -54,18 +78,6 @@ async function getGitSha(): Promise<string> {
   } catch {
     return "";
   }
-}
-
-async function stampGitSha(): Promise<string> {
-  const sha = await getGitSha();
-  if (!sha) return "";
-  const content = await Deno.readTextFile(VERSION_FILE);
-  const updated = content.replace(
-    /export const GIT_SHA = "[^"]*";/,
-    `export const GIT_SHA = "${sha}";`,
-  );
-  await Deno.writeTextFile(VERSION_FILE, updated);
-  return sha;
 }
 
 async function downloadDeno(target?: string): Promise<void> {
@@ -123,21 +135,25 @@ async function main() {
 
   // stamp the version only when given (CI passes --version); dev builds keep
   // the source default, so the original is saved to restore after compile
-  const preStampContent = await Deno.readTextFile(VERSION_FILE);
-
-  const sha = await stampGitSha();
+  const originalContent = await Deno.readTextFile(VERSION_FILE);
+  const sha = await getGitSha();
+  const stamped = stampBuildInfo(originalContent, {
+    version: options.version,
+    sha,
+  });
   if (sha) {
     console.log(`Git SHA: ${sha}`);
   }
-
-  let originalContent: string | null = preStampContent;
   if (options.version) {
     console.log(`Version: ${options.version}`);
-    await stampVersion(options.version);
   } else {
     console.log(
       "No --version provided; using source-default version (dev build)",
     );
+  }
+  const wroteStamp = stamped !== originalContent;
+  if (wroteStamp) {
+    await Deno.writeTextFile(VERSION_FILE, stamped);
   }
 
   try {
@@ -227,7 +243,7 @@ async function main() {
       Deno.exit(1);
     }
   } finally {
-    if (originalContent !== null) {
+    if (wroteStamp) {
       await Deno.writeTextFile(VERSION_FILE, originalContent);
     }
 

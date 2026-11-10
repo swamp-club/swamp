@@ -35,7 +35,7 @@ import {
 } from "./worker_shared.ts";
 import { runWorker, type WorkerExitReason } from "../../worker/connect.ts";
 import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { warnIfRunningAsInit } from "../../infrastructure/process/init_process.ts";
 import { parseTimerDuration } from "../duration_parser.ts";

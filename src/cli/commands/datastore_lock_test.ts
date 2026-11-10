@@ -26,7 +26,7 @@ import { RepoService } from "../../domain/repo/repo_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createDatastoreLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
 import { createModelLock, resolveDatastoreForRepo } from "../repo_context.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 import "../../domain/models/models.ts";
 

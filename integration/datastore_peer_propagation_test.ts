@@ -46,7 +46,7 @@ import {
   requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { assertPinnedSet } from "./arch_fitness_helpers.ts";
 import { withUnscopedWriteGuard } from "./unscoped_write_guard.ts";
 

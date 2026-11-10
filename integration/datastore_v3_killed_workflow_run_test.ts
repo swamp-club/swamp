@@ -29,7 +29,7 @@ import { join, toFileUrl } from "@std/path";
 import { fromFileUrl } from "@std/path";
 import { walk } from "@std/fs";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";

@@ -36,7 +36,7 @@ import {
   createWorkspaceListHandlers,
   createWorkspaceRemoveHandlers,
 } from "../../presentation/renderers/workspace.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
