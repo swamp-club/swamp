@@ -65,7 +65,11 @@ export const SETTING_CATALOGUE = {
     "key-file",
     `${NEW_PROCESS}: the listener holds the key`,
   ),
-  caCert: restart("tls.ca-cert", "ca-cert", NOT_YET),
+  caCert: restart(
+    "tls.ca-cert",
+    "ca-cert",
+    `${NEW_PROCESS}: TLS connections are set up with it`,
+  ),
   reusePort: restart(
     "reuse-port",
     "reuse-port",
@@ -104,7 +108,7 @@ export const SETTING_CATALOGUE = {
   keepOauthClientInVault: restart(
     "auth.keep-oauth-client-in-vault",
     "keep-oauth-client-in-vault",
-    NOT_YET,
+    `${NEW_PROCESS}: the OAuth client is set up with it`,
   ),
   hotReload: restart(
     "hot-reload",
@@ -153,20 +157,12 @@ export const SETTING_CATALOGUE = {
   grantsFile: restart("grants-file", "grants-file", NOT_YET),
   grantsDir: restart("grants-dir", "grants-dir", NOT_YET),
   grantReload: restart("grant-reload", "grant-reload", NOT_YET),
-  webhookRoutesDir: restart(
-    "webhook-routes-dir",
-    "webhook-routes-dir",
-    NOT_YET,
-  ),
+  webhookRoutesDir: applied("webhook-routes-dir", "webhook-routes-dir"),
   webhookRoutesPoll: applied("webhook-routes-poll", "webhook-routes-poll"),
-  trustProxy: restart("trust-proxy", "trust-proxy", NOT_YET),
-  trustedHosts: restart("trusted-hosts", "trusted-hosts", NOT_YET),
-  verifyOnEnroll: restart("verify-on-enroll", "verify-on-enroll", NOT_YET),
-  dispatchEnvAllow: restart(
-    "dispatch-env-allow",
-    "dispatch-env-allow",
-    NOT_YET,
-  ),
+  trustProxy: applied("trust-proxy", "trust-proxy"),
+  trustedHosts: applied("trusted-hosts", "trusted-hosts"),
+  verifyOnEnroll: applied("verify-on-enroll", "verify-on-enroll"),
+  dispatchEnvAllow: applied("dispatch-env-allow", "dispatch-env-allow"),
   heartbeatInterval: restart(
     "heartbeat-interval",
     "heartbeat-interval",
@@ -192,16 +188,18 @@ export const SETTING_CATALOGUE = {
     "max-concurrent-scheduled-runs",
     NOT_YET,
   ),
-  maxConcurrentWebhookRuns: restart(
+  maxConcurrentWebhookRuns: applied(
     "max-concurrent-webhook-runs",
     "max-concurrent-webhook-runs",
-    NOT_YET,
   ),
-  remoteOnly: restart("remote-only", "remote-only", NOT_YET),
-  shutdownListenerGrace: restart(
+  remoteOnly: restart(
+    "remote-only",
+    "remote-only",
+    "restart serve to change it; every step of a running run reads it",
+  ),
+  shutdownListenerGrace: applied(
     "shutdown-listener-grace",
     "shutdown-listener-grace",
-    NOT_YET,
   ),
   dashboard: applied("dashboard", "dashboard"),
   enableInternalApi: applied("enable-internal-api", "enable-internal-api"),

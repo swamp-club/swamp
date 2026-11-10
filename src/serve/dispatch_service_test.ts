@@ -3649,3 +3649,30 @@ Deno.test("DispatchService.setQueueTimeoutMs: a new dispatch uses the reloaded s
     "Timed out waiting for a worker matching",
   );
 });
+
+Deno.test("DispatchService.setDispatchEnvAllow: the next dispatch ships the reloaded allow list", async () => {
+  const service = new DispatchService({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    dispatches: new DispatchRegistry(),
+    bundles: new BundleRegistry(),
+    runModelMethod: () => Promise.resolve(),
+  });
+  const calls: DispatchParams[] = [];
+  service.bindGateway({
+    workers: () => [snapshot({ name: "w1" })],
+    worker: () => snapshot({ name: "w1" }),
+    dispatch: (_name, params) => {
+      calls.push(params);
+      return Promise.resolve({
+        status: "success",
+        outputs: [],
+        logs: [],
+        durationMs: 1,
+      });
+    },
+  });
+  service.setDispatchEnvAllow([]);
+  await service.executeRemote(stepRequest());
+  assertEquals(calls[0].environmentSnapshot, {});
+});

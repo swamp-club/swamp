@@ -2668,3 +2668,44 @@ Deno.test("webhookSchemeKeepRefusal: judges a kept route as delivery would", asy
     "its scheme '@test/uninstalled' is no longer installed",
   );
 });
+
+Deno.test("WebhookService.setMaxConcurrentRuns: a raised limit starts queued deliveries once admitQueued runs", async () => {
+  const { service, runs } = await concurrentService({ maxConcurrentRuns: 1 });
+  for (let i = 0; i < 3; i++) {
+    await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  }
+  await waitFor(() => runs.length === 1, "one run started");
+  service.setMaxConcurrentRuns(3);
+  assertEquals(runs.length, 1);
+  service.admitQueued();
+  await waitFor(() => runs.length === 3, "the queued runs started");
+  for (const run of runs) run.release();
+  await waitFor(
+    () => service.queueStatus("/hooks/gh").active === 0,
+    "all runs settled",
+  );
+  await service.stop();
+});
+
+Deno.test("WebhookService.setMaxConcurrentRuns: a lowered limit lets running runs finish and holds the rest", async () => {
+  const { service, runs } = await concurrentService({ maxConcurrentRuns: 2 });
+  for (let i = 0; i < 3; i++) {
+    await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  }
+  await waitFor(() => runs.length === 2, "two runs started");
+  service.setMaxConcurrentRuns(1);
+  runs[0].release();
+  await waitFor(
+    () => service.queueStatus("/hooks/gh").active === 1,
+    "one run still active",
+  );
+  assertEquals(runs.length, 2);
+  runs[1].release();
+  await waitFor(() => runs.length === 3, "the held run started");
+  runs[2].release();
+  await waitFor(
+    () => service.queueStatus("/hooks/gh").active === 0,
+    "all runs settled",
+  );
+  await service.stop();
+});

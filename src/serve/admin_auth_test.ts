@@ -391,3 +391,22 @@ Deno.test("authenticateDashboardSessionToken: refuses a person who is no longer 
     assertEquals(result.invalidateSession, false);
   }
 });
+
+Deno.test("authenticateToken: reads trustProxy on every request, so a reload that turns it off stops trusting the header", async () => {
+  let trustProxy = true;
+  const deps = {
+    ...makeDeps({ authMode: "none" }),
+    get trustProxy() {
+      return trustProxy;
+    },
+  };
+  const forwarded = () =>
+    new Request("http://localhost/api/v1/health/stream", {
+      headers: { "x-forwarded-for": "10.0.0.9" },
+    });
+  const before = await authenticateToken(forwarded(), "127.0.0.1", deps);
+  trustProxy = false;
+  const after = await authenticateToken(forwarded(), "127.0.0.1", deps);
+  assertEquals(before.ok && before.clientAddr, "10.0.0.9");
+  assertEquals(after.ok && after.clientAddr, "127.0.0.1");
+});

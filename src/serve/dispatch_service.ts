@@ -250,6 +250,7 @@ export class DispatchService {
   readonly #stepLeases: StepLeaseStore;
   readonly #pendingDispatches: PendingDispatchStore;
   readonly #captureEnvironment: () => Record<string, string>;
+  #dispatchEnvAllow: readonly string[] | undefined;
   #gateway: DispatchGateway | null = null;
   #onDispatchEnd: ((dispatchId: string) => void) | null = null;
   #writtenVersionsOf:
@@ -291,11 +292,12 @@ export class DispatchService {
         options.repoContext,
         methodRunnerPendingDispatchStore(this.#runModelMethod),
       );
+    this.#dispatchEnvAllow = options.dispatchEnvAllow;
     this.#captureEnvironment = options.captureEnvironment ??
       (() =>
         captureEnvironmentSnapshot(
           Deno.env.toObject(),
-          options.dispatchEnvAllow,
+          this.#dispatchEnvAllow,
         ));
   }
 
@@ -378,6 +380,11 @@ export class DispatchService {
       ...(request.jobName ? { "job.name": request.jobName } : {}),
       ...(request.stepName ? { "step.name": request.stepName } : {}),
     }, () => this.#executeRemote(request));
+  }
+
+  /** a dispatch already sent keeps the environment it captured */
+  setDispatchEnvAllow(dispatchEnvAllow: readonly string[] | undefined): void {
+    this.#dispatchEnvAllow = dispatchEnvAllow;
   }
 
   get queueTimeoutMs(): number {

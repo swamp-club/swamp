@@ -390,3 +390,29 @@ Deno.test("notLeaderResponse: says whether a read or a write was refused, so the
   );
   assertEquals("reads" in await unnamed.json(), false);
 });
+
+Deno.test("LeaderLink.forward: reads trustProxy on every forward, so a reload that changes it applies to the next request", async () => {
+  let trustProxy = false;
+  const forwardedFor: (string | null)[] = [];
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => undefined,
+    get trustProxy() {
+      return trustProxy;
+    },
+    fetch: (_input, init) => {
+      forwardedFor.push(new Headers(init?.headers).get("x-forwarded-for"));
+      return Promise.resolve(new Response("ok"));
+    },
+  });
+  const request = () =>
+    new Request("http://lb.example/api/v1/signal/x", {
+      method: "POST",
+      headers: { "x-forwarded-for": "198.51.100.66" },
+      body: "payload",
+    });
+  await forwarder.forward(request(), { clientIp: "10.0.0.7" });
+  trustProxy = true;
+  await forwarder.forward(request(), { clientIp: "10.0.0.7" });
+  assertEquals(forwardedFor, ["10.0.0.7", "198.51.100.66, 10.0.0.7"]);
+});

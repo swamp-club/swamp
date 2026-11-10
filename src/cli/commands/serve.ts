@@ -2211,6 +2211,7 @@ export interface ServeStartupSettings {
   tokenGcSettings: TokenGcSettings;
   /** 0 when group refresh is off */
   groupRefreshMs: number;
+  dispatchEnvAllow?: readonly string[];
   maxConcurrentRuns?: number;
   maxConcurrentScheduledRuns?: number;
   maxConcurrentWebhookRuns?: number;
@@ -2303,6 +2304,8 @@ export function resolveServeStartupSettings(
     merged.tokenGcInterval,
     merged.tokenGcGracePeriod,
   );
+
+  const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
 
   let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
   if (merged.groupRefreshInterval !== undefined) {
@@ -2401,6 +2404,7 @@ export function resolveServeStartupSettings(
     maxSignalWaitTimeoutSeconds,
     tokenGcSettings,
     groupRefreshMs,
+    ...(dispatchEnvAllow !== undefined ? { dispatchEnvAllow } : {}),
     maxConcurrentRuns,
     maxConcurrentScheduledRuns,
     maxConcurrentWebhookRuns,
@@ -3753,7 +3757,7 @@ export const serveCommand = new Command()
       staleTtlMs,
       reconciliationIntervalMs,
       shutdownDrainTimeoutMs: startupShutdownDrainTimeoutMs,
-      shutdownListenerGraceMs,
+      shutdownListenerGraceMs: startupShutdownListenerGraceMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
       webhookRoutesPollMs,
@@ -3761,6 +3765,7 @@ export const serveCommand = new Command()
       maxSignalWaitTimeoutSeconds,
       tokenGcSettings,
       groupRefreshMs,
+      dispatchEnvAllow,
       maxConcurrentRuns,
       maxConcurrentScheduledRuns,
       maxConcurrentWebhookRuns,
@@ -3772,6 +3777,7 @@ export const serveCommand = new Command()
     } = resolveServeStartupSettings(merged);
     // reload replaces these; everything that reads them reads them when used
     let shutdownDrainTimeoutMs = startupShutdownDrainTimeoutMs;
+    let shutdownListenerGraceMs = startupShutdownListenerGraceMs;
     // each loop reads the interval in force when it next schedules itself
     const liveIntervals = {
       reconciliationMs: reconciliationIntervalMs ?? 60_000,
@@ -3807,7 +3813,7 @@ export const serveCommand = new Command()
     if (merged.reusePort) {
       checkReusePortListen({ port, hostname: host, cert, key });
     }
-    const trustProxy = merged.trustProxy;
+    let trustProxy = merged.trustProxy;
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
       logger.warn(
@@ -3876,12 +3882,6 @@ export const serveCommand = new Command()
       );
     }
 
-    const trustedHostsRaw = merged.trustedHosts;
-    const configuredTrustedHosts = trustedHostsRaw
-      ? trustedHostsRaw.split(",").map((h) => h.trim()).filter((h) =>
-        h.length > 0
-      )
-      : undefined;
     // a node advertising itself to a team also trusts its client-facing address
     // (a forwarded session's Origin) and its advertised address (a follower's
     // Host)
@@ -3890,12 +3890,16 @@ export const serveCommand = new Command()
       : [ownerAddress, advertiseAddress]
         .filter((address): address is string => address !== undefined)
         .map((address) => new URL(address).host);
-    const trustedHosts = configuredTrustedHosts === undefined &&
-        teamHosts.length === 0
-      ? undefined
-      : [...(configuredTrustedHosts ?? []), ...teamHosts];
+    const trustedHostsFrom = (raw: string | undefined) => {
+      const configured = raw
+        ? raw.split(",").map((h) => h.trim()).filter((h) => h.length > 0)
+        : undefined;
+      return configured === undefined && teamHosts.length === 0
+        ? undefined
+        : [...(configured ?? []), ...teamHosts];
+    };
+    let trustedHosts = trustedHostsFrom(merged.trustedHosts);
 
-    const dispatchEnvAllow = parseDispatchEnvAllow(merged.dispatchEnvAllow);
     if (dispatchEnvAllow !== undefined) {
       if (dispatchEnvAllow.length === 0) {
         logger
@@ -4087,7 +4091,7 @@ export const serveCommand = new Command()
       queueTimeoutMs,
       dispatchEnvAllow,
     });
-    const verifyOnEnroll = merged.verifyOnEnroll;
+    let verifyOnEnroll = merged.verifyOnEnroll;
     const gateSession = currentAuthGateSession();
     const gatePassKeeper = gateSession
       ? createGatePassKeeper(
@@ -4111,31 +4115,32 @@ export const serveCommand = new Command()
         dispatchService.notifyWorkerEnrolled(worker),
       onWorkerDraining: (worker) =>
         dispatchService.notifyWorkerDraining(worker),
-      verifyOnEnroll,
+      // reload changes it; each enrollment reads the one in force
+      get verifyOnEnroll() {
+        return verifyOnEnroll;
+      },
       gatePass: () => {
         const pass = gatePassKeeper?.current();
         return pass ? formatOrchestratorGatePass(pass) : undefined;
       },
-      verifyWorker: verifyOnEnroll
-        ? async (workerName) => {
-          const probe = await dispatchFleetProbe(
-            dispatchService,
-            repoContext.unifiedDataRepo,
-            workerName,
-            "verify-on-enroll",
-            AbortSignal.timeout(60_000),
-          );
-          if (probe.status === "pass") {
-            return { ok: true };
-          }
-          return {
-            ok: false,
-            failureReason: probe.status === "error"
-              ? probe.error ?? "probe error"
-              : (probe.failures ?? []).join("; ") || "probe failed",
-          };
+      verifyWorker: async (workerName) => {
+        const probe = await dispatchFleetProbe(
+          dispatchService,
+          repoContext.unifiedDataRepo,
+          workerName,
+          "verify-on-enroll",
+          AbortSignal.timeout(60_000),
+        );
+        if (probe.status === "pass") {
+          return { ok: true };
         }
-        : undefined,
+        return {
+          ok: false,
+          failureReason: probe.status === "error"
+            ? probe.error ?? "probe error"
+            : (probe.failures ?? []).join("; ") || "probe failed",
+        };
+      },
     });
     dispatchService.bindGateway(workerGateway);
     setRemoteStepDispatcher(dispatchService);
@@ -6124,7 +6129,9 @@ export const serveCommand = new Command()
     // it with the caller's own credentials
     const leaderLink = v3Location === undefined ? undefined : new LeaderLink({
       leader: () => connectionCtx.followerGate?.leader(),
-      trustProxy,
+      get trustProxy() {
+        return trustProxy;
+      },
       peerToken: () => teamPeerKey?.cachedToken(),
       ...(caCerts === undefined ? {} : { caCerts }),
     });
@@ -7372,7 +7379,7 @@ export const serveCommand = new Command()
         trustedCollectives,
       );
     }
-    const webhookRoutesDir = resolveServePath(
+    let webhookRoutesDir = resolveServePath(
       resolvedRepoDir,
       merged.webhookRoutesDir,
     );
@@ -7692,7 +7699,9 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       policySnapshotLoader,
-      trustProxy,
+      get trustProxy() {
+        return trustProxy;
+      },
       auditEmitter: connectionCtx.auditEmitter,
       instanceId,
       resolvedUserNames: connectionCtx.resolvedUserNames,
@@ -7987,6 +7996,31 @@ export const serveCommand = new Command()
             webhookRoutesPoller?.setIntervalMs(startup.webhookRoutesPollMs);
           }
         },
+        trustProxy: ({ merged: next }) => {
+          trustProxy = next.trustProxy;
+        },
+        trustedHosts: ({ merged: next }) => {
+          trustedHosts = trustedHostsFrom(next.trustedHosts);
+        },
+        dispatchEnvAllow: ({ startup }) =>
+          dispatchService.setDispatchEnvAllow(startup.dispatchEnvAllow),
+        verifyOnEnroll: ({ merged: next }) => {
+          verifyOnEnroll = next.verifyOnEnroll;
+        },
+        // the next route load and poll read the new directory
+        webhookRoutesDir: ({ merged: next }) => {
+          webhookRoutesDir = resolveServePath(
+            resolvedRepoDir,
+            next.webhookRoutesDir,
+          );
+        },
+        maxConcurrentWebhookRuns: ({ startup }) =>
+          webhookService.setMaxConcurrentRuns(
+            startup.maxConcurrentWebhookRuns,
+          ),
+        shutdownListenerGrace: ({ startup }) => {
+          shutdownListenerGraceMs = startup.shutdownListenerGraceMs;
+        },
       },
       beforeCommit: (report, context) =>
         emitServeConfigReloaded(
@@ -8014,6 +8048,12 @@ export const serveCommand = new Command()
       },
       followUps: (_candidate, prepared, applied) => {
         const followUps: ReloadFollowUp[] = [];
+        if (applied.includes("maxConcurrentWebhookRuns")) {
+          followUps.push({
+            name: "Starting queued webhook runs",
+            run: () => Promise.resolve(webhookService.admitQueued()),
+          });
+        }
         const plan = prepared.allowedUsers;
         const store = storeOauthNameCache;
         if (plan?.cacheChanged && store) {
