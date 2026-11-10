@@ -8056,6 +8056,7 @@ never relies on:
 | `409 precondition_failed` | `config_edit_conflict` for a managed-config definition or the lockfile (swamp-club#4097); otherwise serve's "changed by … at …" message, as a local expect-failed | 1 |
 | `409 datastore_v3_writer_fenced` | the same code | 1 |
 | `409 commit_lease-lost` | `datastore_v3_commit_lease_lost`, no stack trace, with a hint for the command (resume or recover a workflow run; rerun, or check the behavior's data, for a method run) | 75 if nothing of the command landed, else 1 |
+| `409` refusing a commit as it stands (`version-live`, `version-reused`, `expect-failed`, …) | `datastore_v3_partitions_refused`, with `refusals` naming each partition and its reason; the run records that name refused data are held back | 1 |
 | Lease lapsed (not renewed in time, force-released, or expired at serve) | `datastore_v3_lease_lapsed`: the work under it is cancelled and the run reports the lapse | 75 if nothing of the command landed, else 1 |
 | `503` storage unreachable, writer busy, replication | the same code (serve now answers storage-unreachable and writer-busy as 503, not 500) | 75 |
 | `403` | serve's message and the op's index | 1 |

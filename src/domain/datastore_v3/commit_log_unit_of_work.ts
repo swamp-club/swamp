@@ -127,12 +127,16 @@ export interface PartitionRefusal {
   }[];
 }
 
+export const PARTITIONS_REFUSED_CODE = "datastore_v3_partitions_refused";
+
 /**
  * heldRuns are run partitions held while a refusal is unacknowledged, since a
  * run record must never name data its partition refused and is rewritten whole
  * on each save
  */
 export class PartitionsRefusedError extends CommitRejectedError {
+  readonly code = PARTITIONS_REFUSED_CODE;
+
   constructor(
     readonly refusals: readonly PartitionRefusal[],
     readonly heldRuns: readonly PartitionKey[],

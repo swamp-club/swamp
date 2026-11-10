@@ -646,6 +646,9 @@ export const workflowRunCommand = new Command()
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
                 service.runCheckpointer = runCheckpointer;
+                if (repoContext.commitLog !== undefined) {
+                  service.reportLock = stepLockHook;
+                }
                 return service;
               },
               catalogStore: repoContext.catalogStore,

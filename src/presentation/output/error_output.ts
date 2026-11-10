@@ -61,6 +61,7 @@ import {
   CommitLeaseLostError,
   LEASE_LAPSED_CODE,
   leaseLostRefusalOf,
+  PartitionsRefusedError,
   recoveryNeedsAcknowledgement,
   runInitiatorMismatchOf,
   RunPartlyCommittedError,
@@ -168,6 +169,12 @@ export function buildErrorJson(
     data.refusal = err.refusal;
     if (err.lastWait) data.lastWait = { ...err.lastWait };
     if (err.pending) data.pending = { ...err.pending };
+  }
+  if (err instanceof PartitionsRefusedError) {
+    data.refusals = err.refusals.map((refusal) => ({
+      partition: refusal.partition.toString(),
+      reason: refusal.reason,
+    }));
   }
   if (err instanceof RunPartlyCommittedError) {
     data.runs = err.runs.map((run) => ({

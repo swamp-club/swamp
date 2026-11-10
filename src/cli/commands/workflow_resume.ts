@@ -523,6 +523,7 @@ export const workflowResumeCommand = withRemoteOptions(
 
     service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);
     service.continuationClaims = repoContext.continuationClaims;
+    if (repoContext.commitLog !== undefined) service.reportLock = stepLockHook;
     service.signalWaits = signalWaits;
     service.ownerLiveness = liveness;
     const runCheckpointer = new WorkflowRunCheckpointer(repoContext);
