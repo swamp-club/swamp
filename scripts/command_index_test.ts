@@ -17,55 +17,35 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import {
-  buildCommandIndex,
-  loadCommandIndex,
-  rootCommands,
-} from "./command_index.ts";
+import { assertEquals, assertThrows } from "@std/assert";
+import { buildCommandIndex, loadCommandIndex } from "./command_index.ts";
+import { ROOT_ROUTES } from "../src/cli/root_routes.ts";
 
-const vault = { id: "vault" };
-const repo = { id: "repo" };
-const init = { id: "init" };
-const help = { id: "help" };
+const GRAPH = [
+  "src/cli/commands/vault.ts",
+  "src/cli/commands/repo_init.ts",
+  "src/cli/commands/help.ts",
+];
 
-Deno.test("rootCommands: lists top-level commands by registered name, hidden included", () => {
-  let askedForHidden: boolean | undefined;
-  const node = (name: string) => ({ getName: () => name, getCommands: () => [] });
-  const tree = {
-    getName: () => "swamp",
-    getCommands: (hidden?: boolean) => {
-      askedForHidden = hidden;
-      return [node("vault"), node("audit")];
-    },
-  };
-  assertEquals(rootCommands(tree).map((r) => r.name), ["vault", "audit"]);
-  assertEquals(askedForHidden, true);
-});
-
-Deno.test("buildCommandIndex: maps a command to the file that exports its object", () => {
+Deno.test("buildCommandIndex: maps each root to its route module, help from its declared file", () => {
   const index = buildCommandIndex(
-    [{ name: "vault", command: vault }],
-    new Map([
-      ["src/cli/commands/vault.ts", [vault, "a string export"]],
-      ["src/cli/commands/other.ts", [{ id: "vault" }]],
-    ]),
+    [{ name: "vault", module: "src/cli/commands/vault.ts" }],
+    GRAPH,
   );
-  assertEquals(index, { vault: "src/cli/commands/vault.ts" });
+  assertEquals(index, {
+    vault: "src/cli/commands/vault.ts",
+    help: "src/cli/commands/help.ts",
+  });
 });
 
-Deno.test("buildCommandIndex: the registered name wins over the file name", () => {
+Deno.test("buildCommandIndex: two roots defined in one file both resolve to it", () => {
   const index = buildCommandIndex(
-    [{ name: "first-rule", command: vault }],
-    new Map([["src/cli/commands/invite_link.ts", [vault]]]),
-  );
-  assertEquals(index, { "first-rule": "src/cli/commands/invite_link.ts" });
-});
-
-Deno.test("buildCommandIndex: two commands defined in one file both resolve to it", () => {
-  const index = buildCommandIndex(
-    [{ name: "init", command: init }, { name: "repo", command: repo }],
-    new Map([["src/cli/commands/repo_init.ts", [init, repo]]]),
+    [
+      { name: "init", module: "src/cli/commands/repo_init.ts" },
+      { name: "repo", module: "src/cli/commands/repo_init.ts" },
+    ],
+    GRAPH,
+    {},
   );
   assertEquals(index, {
     init: "src/cli/commands/repo_init.ts",
@@ -73,39 +53,47 @@ Deno.test("buildCommandIndex: two commands defined in one file both resolve to i
   });
 });
 
-Deno.test("buildCommandIndex: an unexported root uses its declared file", () => {
-  const index = buildCommandIndex([{ name: "help", command: help }], new Map());
-  assertEquals(index, { help: "src/cli/commands/help.ts" });
-});
-
-Deno.test("buildCommandIndex: a root no file exports is an error, not an omission", () => {
+Deno.test("buildCommandIndex: a root whose file is not in the module graph is an error, not an omission", () => {
   assertThrows(
     () =>
       buildCommandIndex(
-        [{ name: "vault", command: vault }, { name: "new", command: {} }],
-        new Map([["src/cli/commands/vault.ts", [vault]]]),
+        [
+          { name: "vault", module: "src/cli/commands/vault.ts" },
+          { name: "new", module: "src/cli/commands/new.ts" },
+        ],
+        GRAPH,
       ),
     Error,
-    "new is exported by no command file",
+    "new names src/cli/commands/new.ts, which is not in the module graph",
   );
 });
 
-Deno.test("buildCommandIndex: a command exported by two files is an error", () => {
+Deno.test("buildCommandIndex: a root listed twice is an error", () => {
   assertThrows(
     () =>
       buildCommandIndex(
-        [{ name: "vault", command: vault }],
-        new Map([
-          ["src/cli/commands/b.ts", [vault]],
-          ["src/cli/commands/a.ts", [vault]],
-        ]),
+        [{ name: "help", module: "src/cli/commands/vault.ts" }],
+        GRAPH,
       ),
     Error,
-    "vault is exported by src/cli/commands/a.ts and src/cli/commands/b.ts",
+    "help is listed twice",
   );
 });
 
-Deno.test("loadCommandIndex: refuses a path outside the command directory before importing it", async () => {
+Deno.test("loadCommandIndex: indexes every route by registered name, in table order, help last", () => {
+  const files = [...new Set([
+    ...ROOT_ROUTES.map((route) => route.module),
+    "src/cli/commands/help.ts",
+  ])];
+  const index = loadCommandIndex(files);
+  assertEquals(Object.keys(index), [
+    ...ROOT_ROUTES.map((route) => route.name),
+    "help",
+  ]);
+  for (const route of ROOT_ROUTES) assertEquals(index[route.name], route.module);
+});
+
+Deno.test("loadCommandIndex: refuses a path outside the command directory", () => {
   for (
     const file of [
       "scripts/compile.ts",
@@ -114,8 +102,8 @@ Deno.test("loadCommandIndex: refuses a path outside the command directory before
       "src/cli/commands/data.json",
     ]
   ) {
-    await assertRejects(
-      () => loadCommandIndex("/nonexistent", [file]),
+    assertThrows(
+      () => loadCommandIndex([file]),
       Error,
       "not a command file",
     );

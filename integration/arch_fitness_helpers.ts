@@ -24,6 +24,7 @@
 import { AssertionError } from "@std/assert";
 import { walk } from "@std/fs/walk";
 import { dirname, join, relative, SEPARATOR } from "@std/path";
+import { findModuleReferences } from "../scripts/unbarrel.ts";
 
 export const ROOT = join(import.meta.dirname!, "..");
 
@@ -105,6 +106,52 @@ export async function collectImportEdges(
     }
   }
   return [...edges].sort();
+}
+
+const SOURCE_MODULE = /\.(tsx?|mjs|js)$/;
+
+/**
+ * unlike collectImportEdges, sees side-effect imports and import(); matches the
+ * repo-relative path each reference resolves to
+ */
+export async function collectReferenceEdges(
+  dir: string,
+  matches: (resolved: string) => boolean,
+): Promise<string[]> {
+  const edges = new Set<string>();
+  for await (const filePath of productionSourceFiles(dir)) {
+    const source = await Deno.readTextFile(filePath);
+    for (const reference of findModuleReferences(filePath, source)) {
+      const resolved = resolveImport(filePath, reference.specifier);
+      if (resolved === undefined || !matches(resolved)) continue;
+      edges.add(`${repoRelative(filePath)} -> ${resolved}`);
+    }
+  }
+  return [...edges].sort();
+}
+
+/**
+ * every local module evaluated before any import() runs; type references are
+ * followed too, which over-reports rather than miss an edge
+ */
+export async function staticImportClosure(entry: string): Promise<Set<string>> {
+  const seen = new Set<string>([entry]);
+  const pending = [entry];
+  while (pending.length > 0) {
+    const filePath = join(ROOT, pending.pop()!);
+    const source = await Deno.readTextFile(filePath);
+    for (const reference of findModuleReferences(filePath, source)) {
+      if (reference.kind === "dynamic") continue;
+      const resolved = resolveImport(filePath, reference.specifier);
+      if (
+        resolved === undefined || seen.has(resolved) ||
+        !SOURCE_MODULE.test(resolved)
+      ) continue;
+      seen.add(resolved);
+      pending.push(resolved);
+    }
+  }
+  return seen;
 }
 
 /**

@@ -82,13 +82,15 @@ for verification.
   stands.
 
 The decision is made against the real command tree, the same declarations
-Cliffy parses (`createRootCommand` and `registerCommands` in
-`src/cli/mod.ts`). Guessing from token positions once read `swamp --log init`
-as bare `swamp`, because the guess did not know `--log` takes no value, and let
-`init` run without an account. A help or version token counts only when no
-command on the path declares that name, and the token before it is not an
-option that takes a value. So `--input --help` is still gated. When in doubt
-the rule gates. `src/cli/auth_gate_exemptions.ts` holds it.
+Cliffy parses (`createRootCommand` and `registerLoadedCommands` in
+`src/cli/mod.ts`): the invoked command's subtree, or the full tree when the
+router in `src/cli/command_routes.ts` cannot place the invocation. Guessing
+from token positions once read `swamp --log init` as bare `swamp`, because the
+guess did not know `--log` takes no value, and let `init` run without an
+account. A help or version token counts only when no command on the path
+declares that name, and the token before it is not an option that takes a
+value. So `--input --help` is still gated. When in doubt the rule gates.
+`src/cli/auth_gate_exemptions.ts` holds it.
 
 A blocked run throws `AuthGateBlockedError` (code `auth_gate_blocked`). It
 records one telemetry event with `authMode: none`. In JSON mode the error

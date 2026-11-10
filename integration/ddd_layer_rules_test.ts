@@ -28,6 +28,7 @@ import {
 import {
   assertPinnedSet,
   collectImportEdges,
+  collectReferenceEdges,
   importsLayer,
   isUnder,
   repoRelative,
@@ -229,18 +230,18 @@ Deno.test(
   },
 );
 
-// only main.ts may import the CLI composition root: any other importer pulls
-// the whole CLI into its module closure, so affectedCommands would name nearly
-// every command
+// only main.ts may import the CLI composition root, and only it may import the
+// route table: any other importer pulls the whole CLI into its module closure,
+// so affectedCommands would name nearly every command
 const CLI_COMPOSITION_ROOT = "src/cli/mod.ts";
+const CLI_ROUTE_TABLE = "src/cli/root_routes.ts";
 
 Deno.test(
-  "collectImportEdges: nothing under src/ imports the CLI composition root",
+  "collectReferenceEdges: nothing under src/ imports the CLI composition root",
   async () => {
-    const edges = await collectImportEdges(
+    const edges = await collectReferenceEdges(
       SRC_DIR,
-      (filePath, importPath) =>
-        resolveImport(filePath, importPath) === CLI_COMPOSITION_ROOT,
+      (resolved) => resolved === CLI_COMPOSITION_ROOT,
     );
 
     assertEquals(
@@ -248,30 +249,47 @@ Deno.test(
       0,
       `Imports of ${CLI_COMPOSITION_ROOT} found:\n` +
         `${edges.join("\n")}\n\n` +
-        `${CLI_COMPOSITION_ROOT} imports every command, so an importer depends on the whole CLI.\n` +
+        `${CLI_COMPOSITION_ROOT} loads every command, so an importer depends on the whole CLI.\n` +
         `Import the name from the file that defines it instead.`,
     );
   },
 );
 
-// the version command is a leaf only the composition root imports: another
-// importer puts it in that file's closure, so affectedCommands for an edit to
-// it would name more than version
-const VERSION_COMMAND = "src/cli/commands/version.ts";
-
 Deno.test(
-  "collectImportEdges: only the CLI composition root imports the version command",
+  "collectReferenceEdges: only the CLI composition root imports the route table",
   async () => {
-    const edges = await collectImportEdges(
+    const edges = await collectReferenceEdges(
       SRC_DIR,
-      (filePath, importPath) =>
-        resolveImport(filePath, importPath) === VERSION_COMMAND,
+      (resolved) => resolved === CLI_ROUTE_TABLE,
     );
 
     assertEquals(
       edges,
-      [`${CLI_COMPOSITION_ROOT} -> ${VERSION_COMMAND}`],
-      `Imports of ${VERSION_COMMAND} other than ${CLI_COMPOSITION_ROOT}:\n` +
+      [`${CLI_COMPOSITION_ROOT} -> ${CLI_ROUTE_TABLE}`],
+      `Imports of ${CLI_ROUTE_TABLE} other than ${CLI_COMPOSITION_ROOT}:\n` +
+        `${edges.join("\n")}\n\n` +
+        `${CLI_ROUTE_TABLE} names every command module, so an importer depends on the whole CLI.`,
+    );
+  },
+);
+
+// the version command is a leaf only the route table imports: another importer
+// puts it in that file's closure, so affectedCommands for an edit to it would
+// name more than version
+const VERSION_COMMAND = "src/cli/commands/version.ts";
+
+Deno.test(
+  "collectReferenceEdges: only the route table imports the version command",
+  async () => {
+    const edges = await collectReferenceEdges(
+      SRC_DIR,
+      (resolved) => resolved === VERSION_COMMAND,
+    );
+
+    assertEquals(
+      edges,
+      [`${CLI_ROUTE_TABLE} -> ${VERSION_COMMAND}`],
+      `Imports of ${VERSION_COMMAND} other than ${CLI_ROUTE_TABLE}:\n` +
         `${edges.join("\n")}\n\n` +
         `Build constants live in src/infrastructure/runtime/build_info.ts; import them from there.`,
     );

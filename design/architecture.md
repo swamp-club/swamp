@@ -126,6 +126,10 @@ The CLI and serve are two front ends over the same application layer.
 every read and run command works the same with `--server`
 (`withRemoteOptions(` in `src/cli/commands`).
 
+Each invocation loads only the top-level command it runs, through its row in
+`src/cli/root_routes.ts`; a new top-level command gets a row there, and
+startup code never imports a command module statically.
+
 The dependency rule is `cli → libswamp → domain ← infrastructure`, never the
 reverse. `integration/ddd_layer_rules_test.ts` enforces it for new code and
 pins a list of existing `domain → infrastructure` and `serve → cli` imports so

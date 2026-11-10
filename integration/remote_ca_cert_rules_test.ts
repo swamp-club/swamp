@@ -60,7 +60,10 @@ function isEntryScript(source: string): boolean {
 async function loadExportedCommands(): Promise<AnyCommand[]> {
   // Settle the command modules in production evaluation order first; entering
   // a module cycle from the wrong side throws a TDZ ReferenceError.
-  await import(toFileUrl(join(SRC_DIR, "cli", "mod.ts")).href);
+  const { buildCommandTree } = await import(
+    toFileUrl(join(SRC_DIR, "cli", "mod.ts")).href
+  );
+  await buildCommandTree();
 
   const commands: AnyCommand[] = [];
   const commandsDir = join(SRC_DIR, "cli", "commands");
