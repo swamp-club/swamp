@@ -568,8 +568,10 @@ logged in to swamp-club with the `serve:*` scope (`requireAuthenticated` /
 applies the same gate, keyed on the auth mode the daemon will resolve
 (including one set in `serve.yaml`). OAuth mode also reads the collective
 API key to register the instance with the provider and resolve admin
-usernames. The key comes from `--club-api-key-file`, then
-`SWAMP_API_KEY_FILE`, then `SWAMP_API_KEY`
+usernames. Every process registers under its own `instanceId` and names it in
+the hourly heartbeat; a heartbeat answered 404 registers again, once per beat
+(`src/serve/club_heartbeat_service.ts`). The key comes from
+`--club-api-key-file`, then `SWAMP_API_KEY_FILE`, then `SWAMP_API_KEY`
 (`src/infrastructure/persistence/api_key_source.ts`). Setting both env vars is
 an error. The flag is read from argv before Cliffy parses, so the operator
 gate, telemetry and extension pulls use the same key as the OAuth calls.

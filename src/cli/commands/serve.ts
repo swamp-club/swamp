@@ -549,6 +549,7 @@ import { validateServerRepoExclusivity } from "./access_helpers.ts";
 import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import {
   registerInstance,
+  type RegisterInstanceRequest,
   sendInstanceHeartbeat,
 } from "../../serve/oauth_client.ts";
 import {
@@ -5646,24 +5647,26 @@ export const serveCommand = new Command()
           ),
       )
       : undefined;
-    if (
+    const clubRegistration: RegisterInstanceRequest | undefined =
       authConfig.mode === "oauth" &&
-      authConfig.oauthClientId &&
-      authConfig.allowedCollectives.length > 0 &&
-      clubApiKey
-    ) {
+        authConfig.oauthClientId &&
+        authConfig.allowedCollectives.length > 0 &&
+        clubApiKey
+        ? {
+          oauthClientId: authConfig.oauthClientId,
+          instanceId,
+          collectiveSlugs: [...authConfig.allowedCollectives],
+          hostname: Deno.hostname(),
+          version: VERSION,
+          deploymentMode: deploymentMode.mode,
+        }
+        : undefined;
+    if (clubRegistration !== undefined && clubApiKey) {
       try {
         await registerInstance(
           authConfig.oauthProvider,
           clubApiKey,
-          {
-            oauthClientId: authConfig.oauthClientId,
-            instanceId,
-            collectiveSlugs: [...authConfig.allowedCollectives],
-            hostname: Deno.hostname(),
-            version: VERSION,
-            deploymentMode: deploymentMode.mode,
-          },
+          clubRegistration,
           AbortSignal.timeout(30_000),
         );
         logger.info(
@@ -7269,17 +7272,21 @@ export const serveCommand = new Command()
     workerTokenRevalidationService.start();
 
     let clubHeartbeatService: ClubHeartbeatService | null = null;
-    if (
-      authConfig.mode === "oauth" && authConfig.oauthClientId &&
-      authConfig.allowedCollectives.length > 0 &&
-      clubApiKey
-    ) {
+    if (clubRegistration !== undefined && clubApiKey) {
       clubHeartbeatService = new ClubHeartbeatService({
         providerUrl: authConfig.oauthProvider,
-        oauthClientId: authConfig.oauthClientId,
+        oauthClientId: clubRegistration.oauthClientId,
+        instanceId,
         intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
         getAccessToken: () => Promise.resolve(clubApiKey),
         sendHeartbeat: sendInstanceHeartbeat,
+        reregister: (accessToken, signal) =>
+          registerInstance(
+            authConfig.oauthProvider,
+            accessToken,
+            clubRegistration,
+            signal,
+          ),
       });
       clubHeartbeatService.start();
     }

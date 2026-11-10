@@ -24,6 +24,7 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   DeviceGrantPollError,
   getUserInfo,
+  InstanceNotRegisteredError,
   pollForToken,
   registerInstance,
   resolveUsername,
@@ -824,14 +825,18 @@ Deno.test("registerInstance: throws with status text on non-JSON error body", as
   }
 });
 
-Deno.test("sendInstanceHeartbeat: sends correct URL with encoded oauthClientId and auth header", async () => {
+Deno.test("sendInstanceHeartbeat: sends the encoded oauthClientId, auth header and instanceId body", async () => {
   let receivedPath = "";
   let receivedMethod = "";
   let receivedAuth = "";
-  const mock = startMockServer((req) => {
+  let receivedContentType = "";
+  let receivedBody = "";
+  const mock = startMockServer(async (req) => {
     receivedPath = new URL(req.url).pathname;
     receivedMethod = req.method;
     receivedAuth = req.headers.get("authorization") ?? "";
+    receivedContentType = req.headers.get("content-type") ?? "";
+    receivedBody = await req.text();
     return Response.json({
       oauthClientId: "clt/special",
       lastHeartbeatAt: "2026-08-13T15:00:00.000Z",
@@ -843,6 +848,7 @@ Deno.test("sendInstanceHeartbeat: sends correct URL with encoded oauthClientId a
       `http://localhost:${mock.port}`,
       "my-token",
       "clt/special",
+      "inst-1",
       AbortSignal.timeout(5000),
     );
     assertEquals(
@@ -851,6 +857,8 @@ Deno.test("sendInstanceHeartbeat: sends correct URL with encoded oauthClientId a
     );
     assertEquals(receivedMethod, "PUT");
     assertEquals(receivedAuth, "Bearer my-token");
+    assertEquals(receivedContentType, "application/json");
+    assertEquals(receivedBody, '{"instanceId":"inst-1"}');
     assertEquals(result.oauthClientId, "clt/special");
     assertEquals(result.lastHeartbeatAt, "2026-08-13T15:00:00.000Z");
     assertEquals(result.heartbeatCount, 5);
@@ -859,7 +867,7 @@ Deno.test("sendInstanceHeartbeat: sends correct URL with encoded oauthClientId a
   }
 });
 
-Deno.test("sendInstanceHeartbeat: throws with JSON error body on HTTP error", async () => {
+Deno.test("sendInstanceHeartbeat: a 404 throws InstanceNotRegisteredError carrying the server reason", async () => {
   const mock = startMockServer(() =>
     Response.json(
       { error: "No registration found for this oauthClientId" },
@@ -873,9 +881,10 @@ Deno.test("sendInstanceHeartbeat: throws with JSON error body on HTTP error", as
           `http://localhost:${mock.port}`,
           "tok",
           "missing-client",
+          "inst-1",
           AbortSignal.timeout(5000),
         ),
-      Error,
+      InstanceNotRegisteredError,
     );
     assertStringIncludes(err.message, "404");
     assertStringIncludes(err.message, "No registration found");
@@ -895,11 +904,13 @@ Deno.test("sendInstanceHeartbeat: throws with status text on non-JSON error body
           `http://localhost:${mock.port}`,
           "tok",
           "client-id",
+          "inst-1",
           AbortSignal.timeout(5000),
         ),
       Error,
     );
     assertStringIncludes(err.message, "502");
+    assertEquals(err instanceof InstanceNotRegisteredError, false);
   } finally {
     await mock.shutdown();
   }
