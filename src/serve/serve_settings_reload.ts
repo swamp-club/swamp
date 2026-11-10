@@ -45,6 +45,8 @@ interface AppliedEntry extends SettingCatalogueEntry {
 
 const NEW_PROCESS = "restart serve to change it; it needs a new process";
 const NOT_YET = "not applied by reload yet; restart serve to change it";
+const LIVENESS =
+  "restart serve to change it; every instance judges its peers' liveness by it";
 
 /**
  * Every MergedServeOptions key and how reload treats it. Keyed by the
@@ -128,10 +130,9 @@ export const SETTING_CATALOGUE = {
     "auth.restricted-commands",
     "restricted-commands",
   ),
-  groupRefreshInterval: restart(
+  groupRefreshInterval: applied(
     "auth.group-refresh-interval",
     "group-refresh-interval",
-    NOT_YET,
   ),
   approveRequiresExplicitGrant: restart(
     "auth.approve-requires-explicit-grant",
@@ -157,11 +158,7 @@ export const SETTING_CATALOGUE = {
     "webhook-routes-dir",
     NOT_YET,
   ),
-  webhookRoutesPoll: restart(
-    "webhook-routes-poll",
-    "webhook-routes-poll",
-    NOT_YET,
-  ),
+  webhookRoutesPoll: applied("webhook-routes-poll", "webhook-routes-poll"),
   trustProxy: restart("trust-proxy", "trust-proxy", NOT_YET),
   trustedHosts: restart("trusted-hosts", "trusted-hosts", NOT_YET),
   verifyOnEnroll: restart("verify-on-enroll", "verify-on-enroll", NOT_YET),
@@ -173,30 +170,23 @@ export const SETTING_CATALOGUE = {
   heartbeatInterval: restart(
     "heartbeat-interval",
     "heartbeat-interval",
-    NOT_YET,
+    LIVENESS,
   ),
-  staleTtl: restart("stale-ttl", "stale-ttl", NOT_YET),
-  reconciliationInterval: restart(
+  staleTtl: restart("stale-ttl", "stale-ttl", LIVENESS),
+  reconciliationInterval: applied(
     "reconciliation-interval",
     "reconciliation-interval",
-    NOT_YET,
   ),
-  datastorePollInterval: restart(
+  datastorePollInterval: applied(
     "datastore-poll-interval",
     "datastore-poll-interval",
-    NOT_YET,
   ),
-  continuationSweepInterval: restart(
+  continuationSweepInterval: applied(
     "continuation-sweep-interval",
     "continuation-sweep-interval",
-    NOT_YET,
   ),
-  tokenGcInterval: restart("token-gc-interval", "token-gc-interval", NOT_YET),
-  tokenGcGracePeriod: restart(
-    "token-gc-grace-period",
-    "token-gc-grace-period",
-    NOT_YET,
-  ),
+  tokenGcInterval: applied("token-gc-interval", "token-gc-interval"),
+  tokenGcGracePeriod: applied("token-gc-grace-period", "token-gc-grace-period"),
   maxConcurrentScheduledRuns: restart(
     "max-concurrent-scheduled-runs",
     "max-concurrent-scheduled-runs",

@@ -78,8 +78,13 @@ export interface ServeSettingsReloaderDeps<S, P> {
   };
   /** assigns them after the audit event; returns notes for the operator */
   commitExtra?(prepared: P): readonly string[];
-  /** applied settings whose consumer is not running here, with the reason */
-  notRunning(): Partial<Record<keyof MergedServeOptions, string>>;
+  /**
+   * applied settings whose consumer is not running here, or that would start
+   * or stop it, with the reason
+   */
+  notRunning(
+    candidate: ReloadCandidate<S>,
+  ): Partial<Record<keyof MergedServeOptions, string>>;
   /** applied settings to re-apply though the file did not change them */
   pending(): readonly AppliedSettingKey[];
   appliers: SettingAppliers<S, P>;
@@ -125,7 +130,7 @@ export function createServeSettingsReloader<S, P>(
       after: file,
       explicitFlags: deps.explicitFlags,
       envLookup: (name) => deps.envLookup(name),
-      notRunning: deps.notRunning(),
+      notRunning: deps.notRunning(candidate),
     });
     const toApply = [...changes.applied];
     for (const key of deps.pending()) {

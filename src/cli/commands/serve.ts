@@ -2097,6 +2097,8 @@ export function parseWebhookRoutesPoll(
   return parseTimerDuration(raw, "--webhook-routes-poll");
 }
 
+const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
+
 export function parseContinuationSweepInterval(
   raw: string | undefined,
 ): number {
@@ -2207,6 +2209,8 @@ export interface ServeStartupSettings {
   continuationSweepIntervalMs: number;
   maxSignalWaitTimeoutSeconds?: number;
   tokenGcSettings: TokenGcSettings;
+  /** 0 when group refresh is off */
+  groupRefreshMs: number;
   maxConcurrentRuns?: number;
   maxConcurrentScheduledRuns?: number;
   maxConcurrentWebhookRuns?: number;
@@ -2300,6 +2304,18 @@ export function resolveServeStartupSettings(
     merged.tokenGcGracePeriod,
   );
 
+  let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
+  if (merged.groupRefreshInterval !== undefined) {
+    const normalized = merged.groupRefreshInterval.trim().replace(
+      /^0[smhdw].*$/i,
+      "0",
+    );
+    groupRefreshMs = normalized === "0" ? 0 : parseTimerDuration(
+      merged.groupRefreshInterval,
+      "--group-refresh-interval",
+    );
+  }
+
   const maxConcurrentRuns = merged.maxConcurrentRuns;
   if (
     maxConcurrentRuns !== undefined &&
@@ -2384,6 +2400,7 @@ export function resolveServeStartupSettings(
     continuationSweepIntervalMs,
     maxSignalWaitTimeoutSeconds,
     tokenGcSettings,
+    groupRefreshMs,
     maxConcurrentRuns,
     maxConcurrentScheduledRuns,
     maxConcurrentWebhookRuns,
@@ -3743,6 +3760,7 @@ export const serveCommand = new Command()
       continuationSweepIntervalMs,
       maxSignalWaitTimeoutSeconds,
       tokenGcSettings,
+      groupRefreshMs,
       maxConcurrentRuns,
       maxConcurrentScheduledRuns,
       maxConcurrentWebhookRuns,
@@ -3754,6 +3772,15 @@ export const serveCommand = new Command()
     } = resolveServeStartupSettings(merged);
     // reload replaces these; everything that reads them reads them when used
     let shutdownDrainTimeoutMs = startupShutdownDrainTimeoutMs;
+    // each loop reads the interval in force when it next schedules itself
+    const liveIntervals = {
+      reconciliationMs: reconciliationIntervalMs ?? 60_000,
+      continuationSweepMs: continuationSweepIntervalMs,
+      tokenGcMs: tokenGcSettings.intervalMs,
+      tokenGcGraceMs: tokenGcSettings.gracePeriodMs,
+      groupRefreshMs: 0,
+    };
+    let reconciliationLoopRunning = false;
     if (
       advertiseAddress !== undefined &&
       advertiseAddressInCleartext(advertiseAddress)
@@ -6978,14 +7005,7 @@ export const serveCommand = new Command()
       | null = null;
     const groupRefreshRaw = merged.groupRefreshInterval;
 
-    const DEFAULT_GROUP_REFRESH_MS = 4 * 60 * 60 * 1000;
-    let groupRefreshMs = DEFAULT_GROUP_REFRESH_MS;
-    if (groupRefreshRaw !== undefined) {
-      const normalized = groupRefreshRaw.trim().replace(/^0[smhdw].*$/i, "0");
-      groupRefreshMs = normalized === "0"
-        ? 0
-        : parseTimerDuration(groupRefreshRaw, "--group-refresh-interval");
-    }
+    liveIntervals.groupRefreshMs = groupRefreshMs;
 
     if (
       shouldWarnGroupRefreshIgnored(
@@ -7019,7 +7039,9 @@ export const serveCommand = new Command()
       );
 
       collectiveRefreshService = new CollectiveRefreshService({
-        intervalMs: groupRefreshMs,
+        get intervalMs() {
+          return liveIntervals.groupRefreshMs;
+        },
         oauthProvider: authConfig.oauthProvider,
         // reload changes it; each refresh reads the one in force
         get groupsField() {
@@ -7785,11 +7807,66 @@ export const serveCommand = new Command()
         }
         return prepared;
       },
-      notRunning: () =>
-        scheduledExecution ? {} : {
-          triggerOverrides:
-            "no scheduler runs on this serve; restart serve with schedule on to change it",
-        },
+      notRunning: ({ startup }) => {
+        const reasons: Partial<Record<keyof MergedServeOptions, string>> = {};
+        if (!scheduledExecution) {
+          reasons.triggerOverrides =
+            "no scheduler runs on this serve; restart serve with schedule on to change it";
+        }
+        const dataPollers = [
+          configPoller,
+          accessDataPoller,
+          integrationDataPoller,
+          delegationDataPoller,
+          runtimeDataPoller,
+        ];
+        if (dataPollers.every((poller) => poller === null)) {
+          reasons.datastorePollInterval =
+            "no datastore poller runs on this serve";
+        }
+        if (!reconciliationLoopRunning) {
+          reasons.reconciliationInterval =
+            "no reconciliation loop runs on this serve";
+        }
+        const startOrStop = (
+          running: boolean,
+          stays: boolean,
+          service: string,
+        ) =>
+          !running
+            ? `${service} is not running on this serve; restart serve to start it`
+            : !stays
+            ? `turning ${service} off needs a restart`
+            : undefined;
+        const sweep = startOrStop(
+          continuationSweepService !== undefined,
+          startup.continuationSweepIntervalMs > 0,
+          "the continuation sweep",
+        );
+        if (sweep) reasons.continuationSweepInterval = sweep;
+        const tokenGc = startOrStop(
+          serverTokenGcService !== undefined,
+          startup.tokenGcSettings.intervalMs > 0,
+          "server token GC",
+        );
+        if (tokenGc) {
+          reasons.tokenGcInterval = tokenGc;
+          reasons.tokenGcGracePeriod = tokenGc;
+        }
+        const groupRefresh = startOrStop(
+          collectiveRefreshService !== null,
+          startup.groupRefreshMs > 0,
+          "group refresh",
+        );
+        if (groupRefresh) reasons.groupRefreshInterval = groupRefresh;
+        const routesPoll = startOrStop(
+          webhookRoutesPoller !== null,
+          startup.webhookRoutesPollMs !== undefined,
+          "the webhook routes poller",
+        );
+        if (routesPoll) reasons.webhookRoutesPoll = routesPoll;
+        return reasons;
+      },
       pending: () => allowedUsersDeferred ? ["allowedUsers"] : [],
       extraChanges: (prepared) =>
         prepared.audit?.changes ?? { applied: [], needsRestart: [] },
@@ -7874,6 +7951,41 @@ export const serveCommand = new Command()
           ),
         groupsField: ({ startup }) => {
           authConfig.groupsField = startup.authConfig.groupsField;
+        },
+        datastorePollInterval: ({ startup }) => {
+          for (
+            const poller of [
+              configPoller,
+              accessDataPoller,
+              integrationDataPoller,
+              delegationDataPoller,
+              runtimeDataPoller,
+            ]
+          ) {
+            poller?.setPollIntervalMs(startup.datastorePollIntervalMs);
+          }
+        },
+        reconciliationInterval: ({ startup }) => {
+          liveIntervals.reconciliationMs = startup.reconciliationIntervalMs ??
+            60_000;
+        },
+        continuationSweepInterval: ({ startup }) => {
+          liveIntervals.continuationSweepMs =
+            startup.continuationSweepIntervalMs;
+        },
+        tokenGcInterval: ({ startup }) => {
+          liveIntervals.tokenGcMs = startup.tokenGcSettings.intervalMs;
+        },
+        tokenGcGracePeriod: ({ startup }) => {
+          liveIntervals.tokenGcGraceMs = startup.tokenGcSettings.gracePeriodMs;
+        },
+        groupRefreshInterval: ({ startup }) => {
+          liveIntervals.groupRefreshMs = startup.groupRefreshMs;
+        },
+        webhookRoutesPoll: ({ startup }) => {
+          if (startup.webhookRoutesPollMs !== undefined) {
+            webhookRoutesPoller?.setIntervalMs(startup.webhookRoutesPollMs);
+          }
         },
       },
       beforeCommit: (report, context) =>
@@ -9670,7 +9782,7 @@ export const serveCommand = new Command()
       await heartbeatService.start();
       logger.info`Instance heartbeat started (id: ${instanceId})`;
 
-      const RECONCILIATION_INTERVAL_MS = reconciliationIntervalMs ?? 60_000;
+      reconciliationLoopRunning = true;
       let knownPeerIds: Set<string> | null = null;
       const runReconciliationTick = async () => {
         try {
@@ -9759,7 +9871,7 @@ export const serveCommand = new Command()
             runReconciliationTick().catch(() => {}).finally(
               scheduleReconciliation,
             ),
-          RECONCILIATION_INTERVAL_MS + jitterMs,
+          liveIntervals.reconciliationMs + jitterMs,
         );
         Deno.unrefTimer(timer);
       };
@@ -10276,38 +10388,45 @@ export const serveCommand = new Command()
       }
     } else {
       const tokenGcSync = syncService;
-      serverTokenGcService = new ServerTokenGcService(
-        createServerTokenGcDeps({
-          intervalMs: tokenGcSettings.intervalMs,
-          gracePeriodMs: tokenGcSettings.gracePeriodMs,
-          dataQueryService: repoContext.dataQueryService,
-          ...createServerTokenGcRepos(
-            resolvedRepoDir,
-            repoContext,
-            datastoreResolver,
-          ),
-          vaultService: await VaultService.fromRepository(resolvedRepoDir, {
-            defaultVaultName: repoMarker?.defaultVault,
-          }),
-          libCtx: libSwampContextForRepo(repoContext),
-          pushChanged: tokenGcSync
-            ? async () => {
-              await tokenGcSync.pushChanged({ namespace: serveNamespace });
-            }
-            : undefined,
-          pullChanged: tokenGcSync
-            ? async () => {
-              const pulled = await tokenGcSync.pullChanged({
-                namespace: serveNamespace,
-              });
-              if (pulled !== 0) repoContext.catalogStore.invalidate();
-            }
-            : undefined,
-          syncGate,
-          withTokenLock: (name, fn) =>
-            withServerTokenLock(datastoreConfig, name, fn),
+      const tokenGcDeps = createServerTokenGcDeps({
+        intervalMs: tokenGcSettings.intervalMs,
+        gracePeriodMs: tokenGcSettings.gracePeriodMs,
+        dataQueryService: repoContext.dataQueryService,
+        ...createServerTokenGcRepos(
+          resolvedRepoDir,
+          repoContext,
+          datastoreResolver,
+        ),
+        vaultService: await VaultService.fromRepository(resolvedRepoDir, {
+          defaultVaultName: repoMarker?.defaultVault,
         }),
-      );
+        libCtx: libSwampContextForRepo(repoContext),
+        pushChanged: tokenGcSync
+          ? async () => {
+            await tokenGcSync.pushChanged({ namespace: serveNamespace });
+          }
+          : undefined,
+        pullChanged: tokenGcSync
+          ? async () => {
+            const pulled = await tokenGcSync.pullChanged({
+              namespace: serveNamespace,
+            });
+            if (pulled !== 0) repoContext.catalogStore.invalidate();
+          }
+          : undefined,
+        syncGate,
+        withTokenLock: (name, fn) =>
+          withServerTokenLock(datastoreConfig, name, fn),
+      });
+      serverTokenGcService = new ServerTokenGcService({
+        ...tokenGcDeps,
+        get intervalMs() {
+          return liveIntervals.tokenGcMs;
+        },
+        get gracePeriodMs() {
+          return liveIntervals.tokenGcGraceMs;
+        },
+      });
       startWhenLeading(() => serverTokenGcService!.start());
     }
 
@@ -10349,7 +10468,9 @@ export const serveCommand = new Command()
       // Built once, outside the pass: it remembers when it last swept.
       const sweepHeldSignalsWhenDue = heldSignalSweeper();
       continuationSweepService = new ContinuationSweepService({
-        intervalMs: continuationSweepIntervalMs,
+        get intervalMs() {
+          return liveIntervals.continuationSweepMs;
+        },
         bootPassOnly,
         sweep: async ({ boot, isStopping, signal }) => {
           // A follower resumes nothing, since its commits would be refused;

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   MAX_FAILED_ROUTE_APPLIES,
   type WebhookRoutesApplyResult,
@@ -276,4 +277,27 @@ Deno.test("WebhookRoutesPoller: an unexpected failure in a check keeps later pol
   await poller.pollNow();
   assertEquals(calls, 2);
   await poller.stop();
+});
+
+Deno.test("WebhookRoutesPoller.setIntervalMs: status reports it and a running poller checks at the new interval", async () => {
+  const { state, poller } = harness("v1");
+  let checks = 0;
+  const counting = new WebhookRoutesPoller({
+    intervalMs: 3_600_000,
+    snapshot: () => {
+      checks++;
+      return Promise.resolve(state.snapshot);
+    },
+    apply: () => Promise.resolve({ changed: 0, errors: [] }),
+  });
+  counting.start();
+  try {
+    counting.setIntervalMs(10);
+    assertEquals(counting.status().intervalMs, 10);
+    await waitFor(() => checks >= 2, "two checks at 10ms");
+  } finally {
+    await counting.stop();
+  }
+  poller.setIntervalMs(30_000);
+  assertEquals(poller.status().intervalMs, 30_000);
 });

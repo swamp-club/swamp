@@ -413,3 +413,35 @@ Deno.test("RuntimeDataPoller: each poll cycle is the root of its own trace", asy
     }
   });
 });
+
+Deno.test("RuntimeDataPoller.setPollIntervalMs: a running poller re-arms at the reloaded interval", async () => {
+  const sync = createMockSyncService();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    catalogInvalidate,
+    pollIntervalMs: 3_600_000,
+  });
+  poller.start();
+  try {
+    poller.setPollIntervalMs(10);
+    await waitFor(() => sync.pullCalls.length >= 2, "two polls at 10ms");
+  } finally {
+    await poller.stop();
+  }
+});
+
+Deno.test("RuntimeDataPoller.setPollIntervalMs: a stopped poller stays stopped", async () => {
+  const sync = createMockSyncService();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = new RuntimeDataPoller({
+    syncService: sync,
+    catalogInvalidate,
+    pollIntervalMs: 3_600_000,
+  });
+  poller.setPollIntervalMs(10);
+  poller.start();
+  await poller.stop();
+  poller.setPollIntervalMs(5);
+  assertEquals(sync.pullCalls.length, 0);
+});

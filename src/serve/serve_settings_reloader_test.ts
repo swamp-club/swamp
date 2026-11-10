@@ -199,3 +199,22 @@ Deno.test("createServeSettingsReloader: a follow-up that fails is a warning, kee
     "swamp-club re-registration did not complete; the reloaded values are in force: club unreachable",
   ]);
 });
+
+Deno.test("createServeSettingsReloader: not-running reasons see the reloaded values, so turning a service off needs a restart", async () => {
+  const h = harness({ "continuation-sweep-interval": "60s" }, {
+    notRunning: ({ merged }) =>
+      merged.continuationSweepInterval === "0"
+        ? {
+          continuationSweepInterval:
+            "turning the continuation sweep off needs a restart",
+        }
+        : {},
+  });
+  h.file = { "continuation-sweep-interval": "0" };
+  const outcome = await createServeSettingsReloader(h.deps)(reload);
+  assertEquals(outcome.report.applied, []);
+  assertEquals(outcome.report.needsRestart, [{
+    setting: "continuation-sweep-interval",
+    reason: "turning the continuation sweep off needs a restart",
+  }]);
+});

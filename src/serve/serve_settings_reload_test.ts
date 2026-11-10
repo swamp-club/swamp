@@ -205,3 +205,24 @@ Deno.test("overlayAppliedSettings: takes only the keys the reload applied from t
   // applied class, but this reload did not apply it
   assertEquals(live.maxConcurrentRuns, 5);
 });
+
+Deno.test("diffServeSettings: stale-ttl and heartbeat-interval stay restart-only, since peers judge liveness by them; intervals apply", () => {
+  const report = diff(
+    {
+      "stale-ttl": "60s",
+      "heartbeat-interval": "10s",
+      "token-gc-interval": "1h",
+    },
+    {
+      "stale-ttl": "30s",
+      "heartbeat-interval": "5s",
+      "token-gc-interval": "2h",
+    },
+  );
+  assertEquals(report.applied, ["token-gc-interval"]);
+  assertEquals(
+    report.needsRestart.map((entry) => entry.setting).sort(),
+    ["heartbeat-interval", "stale-ttl"],
+  );
+  assertStringIncludes(report.needsRestart[0].reason, "liveness");
+});

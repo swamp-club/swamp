@@ -64,9 +64,9 @@ export class ConfigPoller {
   readonly #catalogInvalidate: () => void;
   readonly #extensionReloader: () => Promise<ExtensionReloadResult>;
   readonly #lockfileHash: () => Promise<string | null>;
-  readonly #pollIntervalMs: number;
+  #pollIntervalMs: number;
   readonly #namespace?: string;
-  readonly #gateTiming: PollerGateTiming;
+  #gateTiming: PollerGateTiming;
   readonly #gateState: PollerGateState = { consecutiveSkips: 0 };
   #stopController = new AbortController();
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -101,6 +101,18 @@ export class ConfigPoller {
     Deno.unrefTimer(this.#timer);
     const intervalSec = this.#pollIntervalMs / 1000;
     logger.info`Config poller started (interval: ${intervalSec}s)`;
+  }
+
+  /** re-arms a running timer, so the next tick waits the new interval */
+  setPollIntervalMs(pollIntervalMs: number | undefined): void {
+    this.#pollIntervalMs = pollIntervalMs ?? DEFAULT_CONFIG_POLL_INTERVAL_MS;
+    this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);
+    if (this.#timer === null) return;
+    clearInterval(this.#timer);
+    this.#timer = setInterval(() => {
+      this.#poll();
+    }, this.#pollIntervalMs);
+    Deno.unrefTimer(this.#timer);
   }
 
   async stop(): Promise<void> {
