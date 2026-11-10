@@ -1109,6 +1109,29 @@ export class JobRun implements TriggerEvaluationContext {
     return held;
   }
 
+  /**
+   * holds a gate the finished rollout never reached, as a halt does, so no
+   * finished job keeps a pending gate and a retry asks it again; no halt is recorded
+   */
+  holdUnreachedFanOutGates(): string[] {
+    if (this._fanOutPlan === undefined) {
+      throw new Error(
+        `Job '${this.jobName}' has no fan-out plan to hold gates of`,
+      );
+    }
+    const held: string[] = [];
+    for (const step of this._steps) {
+      if (
+        step.status === "pending" &&
+        this.fanOutGateKindOf(step.stepName) !== undefined
+      ) {
+        step.skipUnstarted({ kind: "job_skipped" });
+        held.push(step.stepName);
+      }
+    }
+    return held;
+  }
+
   /** dependsOn and cleanup rules of a lane read only that lane's steps */
   laneView(laneStepOf: (authored: string) => string): StepStatusView {
     return {

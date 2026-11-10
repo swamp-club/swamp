@@ -6123,6 +6123,8 @@ export class WorkflowExecutionService {
         ),
       ];
       attemptFailed = failed.length;
+      // every later lane failed before start, so the canary gate was never reached
+      if (end.kind === "complete") jobRun.holdUnreachedFanOutGates();
       if (end.kind === "halted") {
         held = end.held;
         jobRun.haltFanOut(

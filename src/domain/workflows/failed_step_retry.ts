@@ -104,16 +104,16 @@ export function selectRetryTemplates(
   for (const job of run.jobs) {
     for (const step of job.steps) {
       if (TERMINAL_STATUSES.has(step.status)) continue;
-      const hint = step.status === "pending"
+      // --from takes an authored step, so a gate is reached from the job's first
+      const template = job.fanOutGateKindOf(step.stepName) !== undefined
+        ? workflowJobOf(workflow, job, pairExpressionJobs(workflow, run))
+          ?.steps[0]?.name
+        : step.forEachTemplate ??
+          laneStepOf(step.stepName, job.fanOutPlan?.lanes)?.authored ??
+          step.stepName;
+      const hint = step.status === "pending" && template !== undefined
         ? ` Add ${
-          fromArguments(
-            workflow,
-            run,
-            job.jobName,
-            step.forEachTemplate ??
-              laneStepOf(step.stepName, job.fanOutPlan?.lanes)?.authored ??
-              step.stepName,
-          )
+          fromArguments(workflow, run, job.jobName, template)
         } to run it.`
         : "";
       throw new UserError(

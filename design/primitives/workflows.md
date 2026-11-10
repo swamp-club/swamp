@@ -3347,7 +3347,11 @@ job, named in the lane form: `patch[approve-plan]` and
   `nextBatch` would start the first lane outside frozen batch 0, every batch-0
   lane has settled, and the budget still allows it. A canary that spends the
   budget halts as above and the gate never opens; the halt holds the gate
-  record with the lanes (`job_skipped`, `settledByAbort`). While the canary
+  record with the lanes (`job_skipped`, `settledByAbort`). A rollout that
+  ends without reaching its canary gate, because every later lane failed
+  before it started, holds the gate record the same way
+  (`JobRun.holdUnreachedFanOutGates`) with no `fanOutHalts` entry, so no
+  finished job keeps a pending gate and a retry asks it again. While the canary
   gate is undecided, a retry puts only canary lanes the last halt failed ahead
   of the rest, so the canary always runs before its gate opens; a canary lane
   that never ran reads as `not_run` in the approver's view.
