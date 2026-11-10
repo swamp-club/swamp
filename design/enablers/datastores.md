@@ -5799,8 +5799,19 @@ leave every checkout with the same records.
   writer this process cannot judge (another host, pid namespace or boot, or
   a marker from before swamp-club#3564) once the lease is free, expired, or
   held by this process: a writer writes only while it holds the lease. A
-  writing command recovers under the writer lock it has just taken; a
-  read-only command takes the lock without waiting (`tryAcquireV3WriterLock`)
+  team follower recovers before it follows when the marker names a process
+  this host judges gone, its own killed predecessor
+  (`recoverOwnPredecessor`): only serve writes a claimed checkout and that
+  writer cannot return, so the leader's lease is not needed, and a takeover
+  then never waits for the replay (swamp-club#4559); any other marker waits
+  for the lease, taken when the node leads. Every recovery of a checkout
+  holds its local recovery lock (`recovery.lock` beside the read model's
+  state), taken before the read model's own, and reads the marker again once
+  it holds it, so a boot recovery and a writer's never run together. The
+  node is not ready while it recovers: the recovery runs before serve
+  listens. A writing command recovers under
+  the writer lock it has just taken; a read-only command takes the lock
+  without waiting (`tryAcquireV3WriterLock`)
   and skips recovery when a live process holds it, whatever its TTL, or
   when the lease still keeps writers out; while it recovers it holds the
   lock, so a writer that starts then waits for the replay, and a stalled
@@ -7926,9 +7937,13 @@ that happens.
   changed, retry). It never answers with a head that reads as a rewind. A
   follower that holds the head its leader named answers as the leader would,
   so a log genuinely behind the copy is still refused below. A follower with
-  no leader feed, or one whose feed has not been live for 30 seconds, cannot
-  tell catching up from such a log, so it answers as before, as it does a
-  read that names no `held` (from a CLI before it) (swamp-club#4254).
+  no leader feed, or one whose feed has not been live for 30 seconds (its
+  leader stopped, or a node just deposed), cannot tell catching up from such
+  a log, so it refuses the same way: it answers once it follows a live leader
+  again or leads itself, and either then reports a real rewind as diverged
+  (swamp-club#4559 reversed swamp-club#4254's rule that it answered as
+  before). A read that names no `held` (from a CLI before it) is answered as
+  before.
 - **Refused.** Another log id, a head below the commit's seq, or another
   `txnId` at that seq fails the command with `serve_upstream_diverged`.
   - It is a user error, not exit 75.
@@ -8078,7 +8093,33 @@ shows serve unreachable, the rest of the command fails at once instead of
 waiting out a request timeout per call, requests in flight included
 (`latchServeUnreachable`; a read never sets it). The teardown is then
 bounded and releases the writer straight away, leaving kept entries for the
-next command. A run under an explicit lease stops the same way; the next
+next command.
+
+**A node that stops answering fails a request in seconds** (swamp-club#4559).
+Behind a load balancer whose health check only opens a TCP connection, a
+stopped serve process (SIGSTOP, a hung VM) stays in rotation: its kernel
+completes the handshake and nothing answers. Each request therefore has a
+response deadline besides its whole timeout, within which serve must start
+its reply; reading the body keeps the whole timeout. It is the base, plus the
+wait the request asks of serve (a lock's long-poll `waitMs`), plus the upload
+allowance, never past the whole timeout. The base depends on what serve does
+before it answers:
+
+- a read, a chunk check, a lock acquire, renewal or release:
+  `SERVE_RESPONSE_BASE_MS` (10 s, never more than `SWAMP_SERVE_TIMEOUT_MS`);
+- anything else, a commit or batch above all, which waits for serve to confirm
+  the write replicated: `SERVE_COMMIT_RESPONSE_BASE_MS`, serve's own request
+  confirm deadline (`SERVE_REQUEST_SYNC_DEADLINE_MS`, 10 s) plus 5 s.
+
+A request that times out either way leaves its connection: the client stops
+using its HTTP client (closing it with the client, so requests in flight on it
+finish there) and the next request opens a fresh connection the address may
+route to another node; a client on the process-wide pool moves to a
+connection of its own. The model-lease client shares this, so a renewal that
+met a stopped node renews over a new connection next tick. A read or chunk
+check that met the response deadline is sent once more on the fresh
+connection; nothing else is, and fails as `ServeUnreachableError` with
+`sent: "maybe"` as before. A run under an explicit lease stops the same way; the next
 command works offline under the lease and queues. Offline mode still begins
 only at a command's start.
 
@@ -8522,6 +8563,24 @@ A follower answers reads from its own copy only while it is fresh: one that
 went three ticks (30 s) without a refresh refuses reads with the same code,
 so a revoked grant stops allowing reads on a follower within that bound.
 
+A leader answers only while its lease is confirmed (swamp-club#4559). A
+process stopped past the lease's TTL (SIGSTOP) may have been taken over by
+the time it runs again, and until its next renewal it would still answer
+from a copy behind the new leader's, as the leader. So a leader whose last
+successful writer-lease renewal is older than the TTL (30 s, the earliest
+another node may judge the lease expired) refuses every datastore API request
+as the retryable `serve_not_leader`, never sent and naming no leader, and asks
+for a renewal at once (`v3WriterLeaseConfirmed`, through the follower gate's
+`leadUnconfirmed`). A renewal that confirms the lease lifts the refusal; one
+that finds a higher fence loses the lead as before. The check reads a
+monotonic clock, so a step of the wall clock never trips it. That clock stops
+while a VM is suspended, so a suspend is not caught: a VM resumed past the
+TTL answers as the leader until its next renewal, at most a third of the TTL.
+
+With two nodes on one host, a test arrangement, the follower was not seen to
+take a stopped leader's lease before the leader resumed; across hosts the
+lease's TTL decides. This is left as it is.
+
 A follower's access policy follows its copy (swamp-club#4207). On a bucket
 the leader's commits land in the follower's own `commits.db` before its read
 model catches up, so `ServeCommitEffects` applies a commit's effects (the
@@ -8678,7 +8737,17 @@ credentials to an address of their own. A record without it names the
 leader but no address, and the follower refuses as before. `LeaderLink`
 (`src/serve/leader_link.ts`) holds one HTTP client
 per leader address, replaced when the record names another node; HTTP/2
-carries every forwarded HTTP request over one connection. Every forward,
+carries every forwarded HTTP request over one connection. A forward the
+leader has not started to answer within its forward deadline is refused as
+the retryable `serve_not_leader`, in flight, and the address's client is
+dropped so the next forward opens a fresh connection. The deadline is a
+datastore read, chunk check or lock call's `FORWARD_RESPONSE_BASE_MS` (7 s,
+plus a lock request's `waitMs` up to `MAX_LOCK_WAIT_MS`), or for anything
+else, a commit above all, `FORWARD_COMMIT_RESPONSE_BASE_MS` (serve's confirm
+deadline plus 3 s), each plus the upload allowance. Each is under the
+member's own deadline for the same request, so the member reads the refusal
+rather than timing out first, and a stopped leader holds no forward until
+the member gives up (swamp-club#4559). Every forward,
 HTTP or WebSocket, carries the team's peer token in `x-swamp-team-peer`
 (the follower drops one a caller sent); a leader that verifies it against
 its cached key treats the follower as a trusted proxy for that request and
