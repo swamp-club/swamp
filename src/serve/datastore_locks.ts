@@ -41,6 +41,16 @@ export const MIN_LOCK_TTL_MS = 5_000;
 export const MAX_LOCK_TTL_MS = 120_000;
 export const DEFAULT_LOCK_TTL_MS = 30_000;
 export const MAX_LOCK_WAIT_MS = 10_000;
+
+/**
+ * how long a lock request's id stays matched to its lease, or to its cancel:
+ * past the longest a request can sit unanswered, behind a stopped leader
+ * included, before the caller gives up on it
+ */
+export const LOCK_REQUEST_MEMORY_MS = 120_000;
+
+/** request ids come from callers, so how many are remembered is capped */
+export const MAX_REMEMBERED_LOCK_REQUESTS = 10_000;
 /**
  * a day, so a member can check one out before working offline; such a lease
  * keeps serve's own runs off the behavior until it ends, so an admin can end an
@@ -290,6 +300,14 @@ export class DatastoreLockLeases {
   readonly #retryIntervalMs: number;
   readonly #leases = new Map<string, Lease>();
   readonly #byKey = new Map<string, string>();
+  /**
+   * by principal and request id, oldest first: the lease granted for it, or
+   * none once its caller cancelled it
+   */
+  readonly #requests = new Map<
+    string,
+    { readonly leaseId?: string; readonly until: number }
+  >();
   readonly #releasing = new Set<Promise<void>>();
   /**
    * The highest fence issued per lock key by this process, so two leases
@@ -418,6 +436,7 @@ export class DatastoreLockLeases {
     readonly fenced?: () => Promise<LeaseBase>;
     readonly holdMs?: number;
     readonly budgetMs?: number;
+    readonly requestId?: string;
   }): Promise<AcquireOutcome> {
     if (this.#disposed) return { kind: "held", heldBy: "serve" };
     const attempt = this.#acquire(request);
@@ -438,8 +457,13 @@ export class DatastoreLockLeases {
     readonly fenced?: () => Promise<LeaseBase>;
     readonly holdMs?: number;
     readonly budgetMs?: number;
+    readonly requestId?: string;
   }): Promise<AcquireOutcome> {
     const { principal, target, ttlMs } = request;
+    const cancelled = () =>
+      request.requestId !== undefined &&
+      this.#requestCancelled(principal, request.requestId);
+    if (cancelled()) return { kind: "held", heldBy: "serve" };
     if (this.#heldBy(principal) >= this.#maxPerPrincipal) {
       return { kind: "too-many" };
     }
@@ -456,14 +480,16 @@ export class DatastoreLockLeases {
       // whole wait: an explicit lease that outlasts it is answered now
       const outlasts = request.budgetMs !== undefined &&
         this.#explicitUntil(key) > this.#now() + request.budgetMs;
-      if (signal.aborted || outlasts || this.#now() >= deadline) {
+      if (
+        signal.aborted || cancelled() || outlasts || this.#now() >= deadline
+      ) {
         return this.#held(key, principal);
       }
       await delay(this.#retryIntervalMs, signal);
     }
-    // Taken for a caller that hung up, or during shutdown: nobody will
-    // renew or release it, so it goes now.
-    if (signal.aborted || this.#disposed) {
+    // Taken for a caller that hung up or cancelled, or during shutdown:
+    // nobody will renew or release it, so it goes now.
+    if (signal.aborted || cancelled() || this.#disposed) {
       await lock.release();
       return { kind: "held", heldBy: "serve" };
     }
@@ -487,9 +513,10 @@ export class DatastoreLockLeases {
       this.#issued.set(key, fence);
       floor = base.names;
     }
-    // Checked again after the read: the caller may have hung up, or
-    // shutdown begun, meanwhile; nobody would renew or release the lease.
-    if (signal.aborted || this.#disposed) {
+    // Checked again after the read: the caller may have hung up or
+    // cancelled, or shutdown begun, meanwhile; nobody would renew or release
+    // the lease.
+    if (signal.aborted || cancelled() || this.#disposed) {
       await lock.release();
       return { kind: "held", heldBy: "serve" };
     }
@@ -508,6 +535,9 @@ export class DatastoreLockLeases {
     this.#leases.set(lease.id, lease);
     this.#byKey.set(key, lease.id);
     this.#schedule(lease);
+    if (request.requestId !== undefined) {
+      this.#rememberRequest(principal, request.requestId, lease.id);
+    }
     // Recorded pending first, so a write that landed though its reply did
     // not names a lease no leader adopts; refused, its record goes if it
     // can. Then confirmed: a confirmation that fails keeps the lease, which
@@ -600,6 +630,53 @@ export class DatastoreLockLeases {
    * an expired or already released lease is not an error to the caller, which
    * ends its hold either way
    */
+  /**
+   * a caller that gave up on a lock request: the lease granted for it is
+   * released, and one granted later from it is never granted
+   */
+  async cancelRequest(
+    principal: string,
+    requestId: string,
+  ): Promise<"released" | "cancelled"> {
+    const granted = this.#requests.get(requestKey(principal, requestId));
+    this.#rememberRequest(principal, requestId, undefined);
+    if (
+      granted?.leaseId !== undefined &&
+      await this.release(principal, granted.leaseId)
+    ) {
+      return "released";
+    }
+    return "cancelled";
+  }
+
+  #requestCancelled(principal: string, requestId: string): boolean {
+    const entry = this.#requests.get(requestKey(principal, requestId));
+    return entry !== undefined && entry.leaseId === undefined &&
+      entry.until > this.#now();
+  }
+
+  #rememberRequest(
+    principal: string,
+    requestId: string,
+    leaseId: string | undefined,
+  ): void {
+    const now = this.#now();
+    for (const [key, entry] of this.#requests) {
+      if (entry.until > now) break;
+      this.#requests.delete(key);
+    }
+    const key = requestKey(principal, requestId);
+    this.#requests.delete(key);
+    this.#requests.set(key, {
+      ...(leaseId !== undefined ? { leaseId } : {}),
+      until: now + LOCK_REQUEST_MEMORY_MS,
+    });
+    for (const oldest of this.#requests.keys()) {
+      if (this.#requests.size <= MAX_REMEMBERED_LOCK_REQUESTS) break;
+      this.#requests.delete(oldest);
+    }
+  }
+
   async release(principal: string, leaseId: string): Promise<boolean> {
     const lease = this.#leases.get(leaseId);
     if (lease === undefined || lease.principal !== principal) return false;
@@ -1020,4 +1097,8 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
     const timer = setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
   });
+}
+
+function requestKey(principal: string, requestId: string): string {
+  return `${principal}\u0000${requestId}`;
 }

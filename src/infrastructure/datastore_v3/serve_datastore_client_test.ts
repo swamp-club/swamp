@@ -123,6 +123,15 @@ function clientWith(
 
 const signal = () => new AbortController().signal;
 
+/** a lock request names a fresh id each time; checked on its own */
+function withoutRequestId(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  const { requestId, ...rest } = body;
+  assert(typeof requestId === "string" && requestId.length > 0);
+  return rest;
+}
+
 Deno.test("ServeDatastoreClient: normalizes the origin and defaults the namespace to _default", async () => {
   const { client, requests } = clientWith(() => Response.json({ held: [] }));
   const custom = new ServeDatastoreClient({
@@ -793,7 +802,7 @@ Deno.test("ServeDatastoreClient.acquireLock: posts the key, TTL and wait, and re
   });
   assertEquals(requests[0].method, "POST");
   assertEquals(requests[0].url, `${PREFIX}/locks`);
-  assertEquals(await requests[0].json(), {
+  assertEquals(withoutRequestId(await requests[0].json()), {
     lockKey: LOCK_KEY,
     ttlMs: 30_000,
     waitMs: 2_000,
@@ -817,7 +826,7 @@ Deno.test("ServeDatastoreClient.acquireLock: a fenced lease's fence, floor and h
     }),
     { acquired: true, lease: fenced },
   );
-  assertEquals(await requests[0].json(), {
+  assertEquals(withoutRequestId(await requests[0].json()), {
     lockKey: LOCK_KEY,
     waitMs: 0,
     fenced: true,
@@ -1958,4 +1967,43 @@ Deno.test("ServeDatastoreClient: on the process-wide pool, a timed-out request m
   } finally {
     client.close();
   }
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a request that may have reached serve without a reply is cancelled by its id on a fresh connection", async () => {
+  const { client, requests } = clientWith(
+    (req) =>
+      req.method === "POST"
+        ? neverAnswered(req)
+        : Response.json({ cancelled: true }),
+    { responseBaseMs: 20, timeoutSignal: neverTimesOut },
+  );
+  try {
+    await assertRejects(
+      () => client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(requests.length, 2);
+    const asked = await requests[0].json();
+    assertEquals(requests[1].method, "DELETE");
+    assertEquals(
+      requests[1].url,
+      `${PREFIX}/locks/requests/${asked.requestId}`,
+    );
+  } finally {
+    client.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: a request never sent, or one serve answered, is not cancelled", async () => {
+  const refused = clientWith(() =>
+    Promise.reject(new TypeError("tcp connect error: Connection refused"))
+  );
+  await assertRejects(
+    () => refused.client.acquireLock(LOCK_KEY, 30_000, 0, signal()),
+    ServeUnreachableError,
+  );
+  assertEquals(refused.requests.length, 1);
+  const answered = clientWith(() => Response.json(LEASE, { status: 201 }));
+  await answered.client.acquireLock(LOCK_KEY, 30_000, 0, signal());
+  assertEquals(answered.requests.length, 1);
 });

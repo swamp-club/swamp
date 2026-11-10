@@ -25,6 +25,7 @@ import {
   DatastoreLockLeases,
   type DatastoreLockLeasesOptions,
   LeaseRecordNotRemovedError,
+  LOCK_REQUEST_MEMORY_MS,
   lockKeyOf,
   type LockTarget,
   lockTargetOfPartition,
@@ -1439,6 +1440,85 @@ Deno.test("DatastoreLockLeases.acquire: serve's own lock names no principal", as
     assert(refused.kind === "held");
     assertEquals(refused.heldBy, "serve");
     assertEquals(refused.holder, undefined);
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.cancelRequest: a lease granted for a request its caller gave up on is released, so the lock is free for the next acquire", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    const granted = await subject.acquire({
+      ...request("user:alice"),
+      requestId: "req-1",
+    });
+    assertEquals(granted.kind, "acquired");
+    assertEquals(
+      await subject.cancelRequest("user:alice", "req-1"),
+      "released",
+    );
+    assertEquals(
+      (await subject.acquire(request("user:bob"))).kind,
+      "acquired",
+    );
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.cancelRequest: a request cancelled before serve takes it is never granted, and nothing is held for it", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    assertEquals(
+      await subject.cancelRequest("user:alice", "req-2"),
+      "cancelled",
+    );
+    assertEquals(
+      (await subject.acquire({ ...request("user:alice"), requestId: "req-2" }))
+        .kind,
+      "held",
+    );
+    assertEquals(locks.held.size, 0);
+    // another id, or the same id from another principal, is its own request
+    assertEquals(
+      (await subject.acquire({ ...request("user:bob"), requestId: "req-2" }))
+        .kind,
+      "acquired",
+    );
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.cancelRequest: one principal cannot release another's lease by naming its request", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    await subject.acquire({ ...request("user:alice"), requestId: "req-3" });
+    assertEquals(await subject.cancelRequest("user:bob", "req-3"), "cancelled");
+    assertEquals(
+      (await subject.acquire(request("user:carol"))).kind,
+      "held",
+    );
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.cancelRequest: a cancel is forgotten once its memory has passed", async () => {
+  let now = 1_000_000;
+  const locks = fakeLocks();
+  const subject = leases(locks, { now: () => now });
+  try {
+    await subject.cancelRequest("user:alice", "req-4");
+    now += LOCK_REQUEST_MEMORY_MS + 1;
+    assertEquals(
+      (await subject.acquire({ ...request("user:alice"), requestId: "req-4" }))
+        .kind,
+      "acquired",
+    );
   } finally {
     await subject.dispose();
   }

@@ -6723,6 +6723,7 @@ are stamped `@anonymous`.
 | `POST locks` | `{lockKey, ttlMs?, waitMs?, catchUp?}`: serve's own lock on a behavior or a workflow run's claim, held for the caller: `201 {leaseId, lockKey, ttlMs, expiresAt, catchUp?}`, or `409 lock_held`. With `catchUp: {cursor, anchor?}`, the grant carries the first changes page after `cursor` (up to 4 MiB, `more` when it stops early) and the anchor verdict, built as `GET changes` builds them for the caller; a compacted feed is answered as `refused`, and a page that cannot be read is left out, never failing the grant |
 | `PUT locks/{leaseId}` | `{ttlMs?}`: renews the caller's lease, authorised again; `404 lease_not_found` once it ended |
 | `DELETE locks/{leaseId}` | Releases the caller's lease; `404 lease_not_found` when it already ended |
+| `DELETE locks/requests/{requestId}` | Cancels the caller's lock request by the `requestId` its `POST locks` named: a lease granted for it is released, and one serve would grant later, from a request still queued, is refused (swamp-club#4559) |
 
 A request's deadline is the client's flat timeout (`SWAMP_SERVE_TIMEOUT_MS`,
 30 s by default) plus its body at 256 KiB/s
@@ -8094,6 +8095,20 @@ waiting out a request timeout per call, requests in flight included
 (`latchServeUnreachable`; a read never sets it). The teardown is then
 bounded and releases the writer straight away, leaving kept entries for the
 next command.
+
+**A lock request that got no reply is cancelled** (swamp-club#4559). Every
+`POST locks` names a fresh `requestId`. A request that may have reached serve
+but brought no reply (`ServeUnreachableError` with `sent: "maybe"`) is
+cancelled at once, best effort with a 5 s deadline, by `DELETE
+locks/requests/{requestId}`. Otherwise a lease serve granted as the caller gave
+up, or later from a request still queued at a stopped node, holds the lock
+until its TTL and the caller's next command waits for it. Serve remembers each
+request id, the lease granted for it or that it was cancelled, for
+`LOCK_REQUEST_MEMORY_MS` (2 min), at most `MAX_REMEMBERED_LOCK_REQUESTS`
+(10,000) of them, keyed by principal so no caller can cancel another's. The
+record lives on the node that saw it, so a cancel that reaches a new leader
+before the old one's grant was adopted does not find the adopted lease; that
+lease ends with its TTL as before. An older serve answers the cancel 404.
 
 **A node that stops answering fails a request in seconds** (swamp-club#4559).
 Behind a load balancer whose health check only opens a TCP connection, a

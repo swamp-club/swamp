@@ -137,6 +137,9 @@ export function clearServeUnreachableLatches(): void {
 
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
+/** how long a cancel of a lock request that got no reply may take */
+export const LOCK_REQUEST_CANCEL_DEADLINE_MS = 5_000;
+
 export const DEFAULT_MAX_RETRY_DELAY_MS = 10_000;
 
 /**
@@ -830,7 +833,55 @@ export class ServeDatastoreClient {
         ? { budgetMs: Math.max(0, Math.floor(options.budgetMs)) }
         : {}),
       ...(options.catchUp !== undefined ? { catchUp: options.catchUp } : {}),
+      requestId: crypto.randomUUID(),
     };
+    try {
+      return await this.#acquireLockAs(lockKey, ttlMs, waitMs, signal, {
+        ...options,
+        budget,
+      });
+    } catch (error) {
+      if (error instanceof ServeUnreachableError && error.sent === "maybe") {
+        await this.#cancelLockRequest(budget.requestId);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * best effort: a request serve may still be holding, or may have granted,
+   * is cancelled so its lease never blocks the lock; serve forgets nothing it
+   * never saw, and an older serve answers 404
+   */
+  async #cancelLockRequest(requestId: string): Promise<void> {
+    try {
+      await this.#exchange(
+        {
+          method: "DELETE",
+          path: `locks/requests/${encodeURIComponent(requestId)}`,
+        },
+        AbortSignal.timeout(LOCK_REQUEST_CANCEL_DEADLINE_MS),
+        async (response) => {
+          await response.body?.cancel();
+        },
+      );
+    } catch {
+      // the lease, if any, ends with its TTL
+    }
+  }
+
+  async #acquireLockAs(
+    lockKey: string,
+    ttlMs: number,
+    waitMs: number,
+    signal: AbortSignal,
+    options: {
+      readonly holdMs?: number;
+      readonly catchUp?: CatchUpRequest;
+      readonly budget: Readonly<Record<string, unknown>>;
+    },
+  ): Promise<LockAcquireReply> {
+    const budget = options.budget;
     return await this.#exchange(
       {
         method: "POST",
