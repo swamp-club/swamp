@@ -26,6 +26,7 @@ import {
   assert,
   assertEquals,
   assertInstanceOf,
+  assertNotStrictEquals,
   assertRejects,
   assertStrictEquals,
   assertStringIncludes,
@@ -74,6 +75,7 @@ import {
   type ServeDatastoreClientOptions,
   serveRequestDeadlineMs,
   serveRequestTimeoutMs,
+  serveResponseDeadlineMs,
 } from "./serve_datastore_client.ts";
 import {
   ServeAuthFailedError,
@@ -1760,4 +1762,200 @@ Deno.test("ServeDatastoreClient: a lock's catch-up and a changes page's anchor v
   );
   // an other-commit verdict naming no txnId is not trusted
   assertEquals((await client.changes(0, signal())).anchor, undefined);
+});
+
+// a reply serve never starts: the request ends only when its signal aborts
+function neverAnswered(req: Request): Promise<Response> {
+  return new Promise<Response>((_, reject) => {
+    req.signal.addEventListener("abort", () => reject(req.signal.reason));
+  });
+}
+
+const neverTimesOut = () => new AbortController().signal;
+
+Deno.test("serveResponseDeadlineMs: the base plus the wait asked of serve and the upload allowance, never past the whole deadline", () => {
+  assertEquals(serveResponseDeadlineMs(10_000, 30_000, 0, 0), 10_000);
+  assertEquals(serveResponseDeadlineMs(10_000, 30_000, 0, 10_000), 20_000);
+  assertEquals(
+    serveResponseDeadlineMs(
+      10_000,
+      30_000,
+      MIN_SERVE_UPLOAD_BYTES_PER_SECOND,
+      0,
+    ),
+    11_000,
+  );
+  assertEquals(serveResponseDeadlineMs(10_000, 30_000, 0, 60_000), 30_000);
+  // a lower SWAMP_SERVE_TIMEOUT_MS lowers the base with it
+  assertEquals(serveResponseDeadlineMs(10_000, 4_000, 0, 0), 4_000);
+});
+
+Deno.test("ServeDatastoreClient: a reply serve never starts ends at the response deadline, not the request timeout", async () => {
+  const { client } = clientWith(neverAnswered, {
+    responseBaseMs: 20,
+    commitResponseBaseMs: 20,
+    timeoutSignal: neverTimesOut,
+  });
+  try {
+    const thrown = await assertRejects(
+      () =>
+        client.postCommit(
+          modelPartition(),
+          { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+          [],
+          signal(),
+        ),
+      ServeUnreachableError,
+    );
+    assertEquals(thrown.sent, "maybe");
+    assertStringIncludes(String(thrown.cause), "did not start its reply");
+  } finally {
+    client.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient: a read serve never answers is sent once more on a fresh connection", async () => {
+  let made = 0;
+  const used: unknown[] = [];
+  const client = new ServeDatastoreClient({
+    baseUrl: BASE,
+    responseBaseMs: 20,
+    timeoutSignal: neverTimesOut,
+    httpClient: () => {
+      made++;
+      return Deno.createHttpClient({});
+    },
+    fetch: (input, init) => {
+      used.push((init as { client?: unknown }).client);
+      return used.length === 1
+        ? neverAnswered(new Request(input, init))
+        : Promise.resolve(
+          Response.json({ changes: [], cursor: 0, more: false }),
+        );
+    },
+  });
+  try {
+    await client.changes(0, signal());
+    assertEquals(made, 2);
+    assertEquals(used.length, 2);
+    assertNotStrictEquals(used[0], used[1]);
+  } finally {
+    client.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient: a read is sent again at most once; the second unanswered try is unreachable", async () => {
+  const { client, requests } = clientWith(neverAnswered, {
+    responseBaseMs: 20,
+    timeoutSignal: neverTimesOut,
+  });
+  try {
+    await assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(requests.length, 2);
+  } finally {
+    client.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient: a commit serve never answers is not sent again", async () => {
+  const { client, requests } = clientWith(neverAnswered, {
+    responseBaseMs: 20,
+    commitResponseBaseMs: 20,
+    timeoutSignal: neverTimesOut,
+  });
+  try {
+    await assertRejects(
+      () =>
+        client.postCommit(
+          modelPartition(),
+          { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+          [],
+          signal(),
+        ),
+      ServeUnreachableError,
+    );
+    assertEquals(requests.length, 1);
+  } finally {
+    client.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient.acquireLock: the response deadline waits out the wait the lock asks of serve", async () => {
+  const { client } = clientWith(
+    async () => {
+      await new Promise((done) => setTimeout(done, 60));
+      return Response.json({
+        code: "lock_held",
+        heldBy: "serve",
+        message: "held by serve's own work",
+      }, { status: 409 });
+    },
+    { responseBaseMs: 10, timeoutSignal: neverTimesOut },
+  );
+  try {
+    const reply = await client.acquireLock("k", 30_000, 5_000, signal());
+    assertEquals(reply.acquired, false);
+  } finally {
+    client.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient: a request its caller timed out leaves its connection, so the next one opens a fresh one", async () => {
+  let made = 0;
+  const used: unknown[] = [];
+  const client = new ServeDatastoreClient({
+    baseUrl: BASE,
+    httpClient: () => {
+      made++;
+      return Deno.createHttpClient({});
+    },
+    fetch: (input, init) => {
+      used.push((init as { client?: unknown }).client);
+      return used.length === 1
+        ? neverAnswered(new Request(input, init))
+        : Promise.resolve(new Response(null, { status: 204 }));
+    },
+  });
+  try {
+    const caller = new AbortController();
+    const pending = client.renewLock("lease", 30_000, caller.signal);
+    caller.abort(new DOMException("renewal deadline", "TimeoutError"));
+    await assertRejects(() => pending);
+    await client.releaseLock("lease", signal());
+    assertEquals(made, 2);
+    assertNotStrictEquals(used[0], used[1]);
+  } finally {
+    client.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient: on the process-wide pool, a timed-out request moves later ones to a connection of their own", async () => {
+  const used: unknown[] = [];
+  const client = new ServeDatastoreClient({
+    baseUrl: BASE,
+    responseBaseMs: 20,
+    timeoutSignal: neverTimesOut,
+    fetch: (input, init) => {
+      used.push((init as { client?: unknown }).client);
+      return used.length <= 2
+        ? neverAnswered(new Request(input, init))
+        : Promise.resolve(
+          Response.json({ changes: [], cursor: 0, more: false }),
+        );
+    },
+  });
+  try {
+    await assertRejects(
+      () => client.changes(0, signal()),
+      ServeUnreachableError,
+    );
+    await client.changes(0, signal());
+    assertEquals(used[0], undefined);
+    assertInstanceOf(used[2], Deno.HttpClient);
+  } finally {
+    client.close();
+  }
 });

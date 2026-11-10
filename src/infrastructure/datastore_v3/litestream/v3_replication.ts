@@ -37,6 +37,7 @@ import {
 import { defaultPrivateRoot } from "./replication_files.ts";
 import { v3ReplicaFor } from "../v3_datastore_binding.ts";
 import { withSpan } from "../../tracing/tracer.ts";
+import { SERVE_REQUEST_SYNC_DEADLINE_MS } from "../serve_request_deadlines.ts";
 
 export type { ReplicationHandle } from "./litestream_replicator.ts";
 
@@ -44,11 +45,7 @@ export const DEFAULT_SYNC_DEADLINE_MS = 60_000;
 
 export const MAX_SYNC_DEADLINE_MS = 24 * 60 * 60 * 1000;
 
-/**
- * a stuck sidecar fails the request rather than holding its reply for the CLI's
- * deadline
- */
-export const SERVE_REQUEST_SYNC_DEADLINE_MS = 10_000;
+export { SERVE_REQUEST_SYNC_DEADLINE_MS } from "../serve_request_deadlines.ts";
 
 let replicator: LitestreamReplicator | undefined;
 let testDeps: Partial<ReplicatorDeps> | undefined;

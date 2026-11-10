@@ -50,6 +50,7 @@ import {
 import { type Span, withSpan } from "../tracing/tracer.ts";
 import { injectTraceContext } from "../tracing/propagation.ts";
 import { isNetworkFailure } from "./network_failure.ts";
+import { SERVE_REQUEST_SYNC_DEADLINE_MS } from "./serve_request_deadlines.ts";
 import { recordServeClock } from "./serve_offline.ts";
 import {
   serveErrorFromReply,
@@ -63,6 +64,20 @@ import {
 export const MAX_HAS_HASHES = 1024;
 
 export const DEFAULT_SERVE_TIMEOUT_MS = 30_000;
+
+/**
+ * how long serve may take to start its reply, past any wait the request asks
+ * of it and its upload; a node that accepts connections but never answers (a
+ * stopped process) fails within it instead of the whole request timeout
+ */
+export const SERVE_RESPONSE_BASE_MS = 10_000;
+
+/**
+ * a commit's reply waits for serve to confirm it replicated, which may take up
+ * to its own request deadline; past it, and a margin, serve is not answering
+ */
+export const SERVE_COMMIT_RESPONSE_BASE_MS = SERVE_REQUEST_SYNC_DEADLINE_MS +
+  5_000;
 
 /** the slowest upload a request's deadline allows for, past its flat timeout */
 export const MIN_SERVE_UPLOAD_BYTES_PER_SECOND = 256 * 1024;
@@ -78,6 +93,19 @@ export function serveRequestDeadlineMs(
 ): number {
   return timeoutMs +
     Math.ceil(bodyBytes * 1000 / MIN_SERVE_UPLOAD_BYTES_PER_SECOND);
+}
+
+export function serveResponseDeadlineMs(
+  responseBaseMs: number,
+  timeoutMs: number,
+  bodyBytes: number,
+  serverWaitMs: number,
+): number {
+  return Math.min(
+    serveRequestDeadlineMs(timeoutMs, bodyBytes),
+    serveRequestDeadlineMs(Math.min(responseBaseMs, timeoutMs), bodyBytes) +
+      serverWaitMs,
+  );
 }
 
 /**
@@ -236,6 +264,8 @@ export interface ServeDatastoreClientOptions {
   readonly timeoutSignal?: (ms: number) => AbortSignal;
   readonly maxAttempts?: number;
   readonly maxRetryDelayMs?: number;
+  readonly responseBaseMs?: number;
+  readonly commitResponseBaseMs?: number;
 }
 
 export interface CommitChunk {
@@ -397,6 +427,26 @@ interface RequestSpec {
   readonly query?: Readonly<Record<string, string>>;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: Uint8Array<ArrayBuffer> | string;
+  /** how long the request asks serve to wait before it answers */
+  readonly serverWaitMs?: number;
+}
+
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeoutError";
+}
+
+/**
+ * answered without serve confirming a replicated write: a read, a chunk check
+ * or a lock call; anything else may wait for that confirmation
+ */
+export function answersWithoutConfirm(method: string, path: string): boolean {
+  return method === "GET" || path === "chunks/has" || path === "locks" ||
+    path.startsWith("locks/");
+}
+
+/** safe to send again on a fresh connection: serve changes nothing for it */
+function isReadSpec(spec: RequestSpec): boolean {
+  return spec.method === "GET" || spec.path === "chunks/has";
 }
 
 export class ServeDatastoreClient {
@@ -405,7 +455,13 @@ export class ServeDatastoreClient {
   readonly #token: string | undefined;
   readonly #makeHttpClient: (() => Deno.HttpClient) | undefined;
   #httpClient: Deno.HttpClient | undefined;
+  // a client whose connection timed out takes no new request; requests still
+  // in flight on it finish there, and close() ends it
+  readonly #retiredClients: Deno.HttpClient[] = [];
+  #ownConnectionAfterTimeout = false;
   readonly #timeoutMs: number;
+  readonly #responseBaseMs: number;
+  readonly #commitResponseBaseMs: number;
   readonly #extraHeaders: Readonly<Record<string, string>>;
   readonly #fetch: typeof fetch;
   readonly #timeoutSignal: (ms: number) => AbortSignal;
@@ -438,11 +494,15 @@ export class ServeDatastoreClient {
     );
     this.#maxRetryDelayMs = options.maxRetryDelayMs ??
       DEFAULT_MAX_RETRY_DELAY_MS;
+    this.#responseBaseMs = options.responseBaseMs ?? SERVE_RESPONSE_BASE_MS;
+    this.#commitResponseBaseMs = options.commitResponseBaseMs ??
+      SERVE_COMMIT_RESPONSE_BASE_MS;
   }
 
   close(): void {
     this.#httpClient?.close();
     this.#httpClient = undefined;
+    for (const client of this.#retiredClients.splice(0)) client.close();
   }
 
   async hasChunks(
@@ -776,6 +836,7 @@ export class ServeDatastoreClient {
         method: "POST",
         path: "locks",
         headers: { "content-type": "application/json" },
+        serverWaitMs: waitMs,
         // an older serve ignores `fenced` and grants an unfenced lease; an
         // explicit lease is held for `holdMs` between renewals
         body: JSON.stringify(
@@ -1207,6 +1268,7 @@ export class ServeDatastoreClient {
   ): Promise<T> {
     const url = this.#url(spec);
     const headers = this.#headers(spec);
+    let resentOnFreshConnection = false;
     for (let attempt = 1;; attempt++) {
       span.setAttribute("swamp.datastore.v3.serve.attempts", attempt);
       signal.throwIfAborted();
@@ -1224,6 +1286,26 @@ export class ServeDatastoreClient {
         ),
         latch,
       ]);
+      const bodyBytes = bodyBytesOf(spec.body);
+      const responseMs = serveResponseDeadlineMs(
+        answersWithoutConfirm(spec.method, spec.path)
+          ? this.#responseBaseMs
+          : this.#commitResponseBaseMs,
+        this.#timeoutMs,
+        bodyBytes,
+        spec.serverWaitMs ?? 0,
+      );
+      const unanswered = new AbortController();
+      const responseTimer = responseMs <
+          serveRequestDeadlineMs(this.#timeoutMs, bodyBytes)
+        ? setTimeout(() =>
+          unanswered.abort(
+            new DOMException(
+              `Serve did not start its reply within ${responseMs} ms`,
+              "TimeoutError",
+            ),
+          ), responseMs)
+        : undefined;
       let response: Response;
       const sentAt = Date.now();
       try {
@@ -1231,14 +1313,31 @@ export class ServeDatastoreClient {
           method: spec.method,
           headers,
           ...(spec.body === undefined ? {} : { body: spec.body }),
-          signal: timed,
+          signal: AbortSignal.any([timed, unanswered.signal]),
           ...this.#clientInit(),
         });
       } catch (error) {
         if (latch.aborted && !signal.aborted) {
           throw this.#latched("maybe", latch.reason, spec);
         }
+        if (isTimeout(error)) {
+          // its connection may reach a node that no longer answers: the next
+          // request opens a fresh one, which the address may route elsewhere
+          this.#retireConnection();
+        }
+        if (unanswered.signal.aborted && !signal.aborted) {
+          if (isReadSpec(spec) && !resentOnFreshConnection) {
+            resentOnFreshConnection = true;
+            span.setAttribute(
+              "swamp.datastore.v3.serve.resent_on_fresh_connection",
+              true,
+            );
+            continue;
+          }
+        }
         throw this.#unreachable(error, signal, sentOf(error), true);
+      } finally {
+        clearTimeout(responseTimer);
       }
       // serve's clock, which judges a lease's expiry and corrects an offline
       // write's time while serve is unreachable; read before the 429 retry on
@@ -1381,9 +1480,24 @@ export class ServeDatastoreClient {
   }
 
   #clientInit(): { client?: Deno.HttpClient } {
-    if (this.#makeHttpClient === undefined) return {};
-    this.#httpClient ??= this.#makeHttpClient();
+    const make = this.#makeHttpClient ??
+      (this.#ownConnectionAfterTimeout
+        ? () => Deno.createHttpClient({})
+        : undefined);
+    if (make === undefined) return {};
+    this.#httpClient ??= make();
     return { client: this.#httpClient };
+  }
+
+  #retireConnection(): void {
+    if (this.#httpClient !== undefined) {
+      this.#retiredClients.push(this.#httpClient);
+      this.#httpClient = undefined;
+    }
+    // the process-wide pool may hold more connections to the same node
+    if (this.#makeHttpClient === undefined) {
+      this.#ownConnectionAfterTimeout = true;
+    }
   }
 }
 
