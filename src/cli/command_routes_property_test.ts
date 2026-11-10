@@ -95,17 +95,20 @@ const token = fc.oneof(
     "debug",
     "versoin",
     "get",
+    "completions",
+    "complete",
+    "model_name",
     "",
   ),
 );
 
-Deno.test("selectRoute: Cliffy's parse ends the same way with only the selected route registered", async () => {
+Deno.test("selectRoute: Cliffy's parse ends the same way with only the selected routes registered", async () => {
   await fc.assert(
     fc.asyncProperty(fc.array(token, { maxLength: 6 }), async (args) => {
       const selection = selectRoute(ROOT_ROUTES, args);
       if (selection.kind === "all") return;
       assertEquals(
-        await outcome([selection.route], args),
+        await outcome(selection.routes, args),
         await outcome(ROOT_ROUTES, args),
         args.join(" "),
       );
@@ -190,7 +193,7 @@ async function groupOutcome(
 }
 
 interface Narrowed {
-  readonly route: CommandRoute;
+  readonly routes: readonly CommandRoute[];
   readonly narrow: Narrow;
   readonly selectedUnder: readonly string[];
 }
@@ -200,7 +203,9 @@ function narrowedPath(args: string[]): Narrowed | undefined {
   const selection = selectRoute(ROOT_ROUTES, args);
   if (selection.kind === "all") return undefined;
   const chosen = new Map<string, CommandRoute>();
-  let path = [selection.route.name];
+  const root = selection.routes.find((r) => GROUP_TABLES.has(r.name)) ??
+    selection.routes[0];
+  let path = [root.name];
   let rest = selection.rest;
   for (;;) {
     const table = GROUP_TABLES.get(path.join(" "));
@@ -211,7 +216,7 @@ function narrowedPath(args: string[]): Narrowed | undefined {
     rest = sub.rest;
   }
   return {
-    route: selection.route,
+    routes: selection.routes,
     narrow: (at) => {
       const picked = chosen.get(at.join(" "));
       return picked ? [picked] : fullGroups(at);
@@ -289,7 +294,7 @@ Deno.test("selectSubcommandWithRest: Cliffy's parse ends the same way with only 
       const narrowed = narrowedPath(args);
       if (!narrowed) return;
       const outcome = await groupOutcome(
-        [narrowed.route],
+        narrowed.routes,
         narrowed.narrow,
         args,
       );

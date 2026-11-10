@@ -29,6 +29,7 @@ import {
 import {
   type CommandRoute,
   ROOT_GLOBAL_OPTIONS,
+  selectRoute,
 } from "../src/cli/command_routes.ts";
 import { ROOT_ROUTES } from "../src/cli/root_routes.ts";
 import { DATA_ROUTES } from "../src/cli/commands/data_routes.ts";
@@ -52,6 +53,7 @@ import type {
   RouteWorkerRequest,
   RouteWorkerResponse,
 } from "./command_route_worker.ts";
+import { completionOwners, walkVisible } from "./command_completion_helpers.ts";
 
 const ROUTE_TABLE = join(ROOT, "src", "cli", "root_routes.ts");
 
@@ -364,6 +366,64 @@ Deno.test("command routes: the tree built for a path has the full tree's schema 
   }
 });
 
+Deno.test("command routes: a completion callback's tree resolves each completion from the same command as the full tree", async () => {
+  // snapshot first: every later build re-parents the shared command instances
+  const full = await buildCommandTree();
+  const primary: string[][] = [[]];
+  const visit = (command: AnyCommand, path: string[]) => {
+    for (const child of command.getBaseCommands(false)) {
+      const childPath = [...path, child.getName()];
+      primary.push(childPath);
+      visit(child, childPath);
+    }
+  };
+  visit(full, []);
+  const aliased = ROOT_ROUTES.flatMap((route) =>
+    route.aliases.flatMap((alias) =>
+      primary
+        .filter((path) => path[0] === route.name)
+        .map((path) => [alias, ...path.slice(1)])
+    )
+  );
+  const paths = [...primary, ...aliased];
+  assert(primary.length > 100, `only ${primary.length} command paths found`);
+  assert(aliased.length > 0, "no route alias reached");
+  const expected = new Map(
+    paths.map((
+      path,
+    ) => [path.join(" "), completionOwners(walkVisible(full, path)!)]),
+  );
+
+  for (const path of paths) {
+    const args = ["completions", "complete", "action", ...path];
+    const selection = selectRoute(ROOT_ROUTES, args);
+    assert(
+      selection.kind === "routes" && selection.routes.length <= 2,
+      `swamp ${args.join(" ")} loads the full tree`,
+    );
+    const node = walkVisible(await buildCommandTree(args), path);
+    assert(node !== undefined, `swamp ${args.join(" ")}: path missing`);
+    assertEquals(
+      completionOwners(node),
+      expected.get(path.join(" ")),
+      `swamp ${args.join(" ")}`,
+    );
+  }
+
+  for (const route of ROOT_ROUTES.filter((r) => r.hidden)) {
+    assertEquals(
+      selectRoute(ROOT_ROUTES, [
+        "completions",
+        "complete",
+        "action",
+        route.name,
+      ]),
+      { kind: "all" },
+      `a callback naming hidden ${route.name} keeps the full tree`,
+    );
+  }
+});
+
 // a worker that exits or stalls without answering would otherwise hold the
 // test, and with it the whole run, until an outer cap with no route named
 const WORKER_DEADLINE_MS = 120_000;
@@ -410,11 +470,14 @@ async function inBatches<T, R>(
 
 Deno.test("command routes: each route loads alone in a fresh module graph with the full tree's schema and error handlers", async () => {
   const full = await buildCommandTree();
-  const requests: Array<RouteWorkerRequest & { expected: string }> = [
+  const requests: Array<
+    RouteWorkerRequest & { expected: string; hidden: boolean }
+  > = [
     ...ROOT_ROUTES.map((route) => ({
       args: [route.name],
       path: [route.name],
       expected: schemaOf(resolvePath(full, [route.name])!, [route.name]),
+      hidden: route.hidden,
     })),
     ...GROUP_TABLES.flatMap(({ path: group, routes }) =>
       routes.map((route) => {
@@ -423,15 +486,17 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
           args: path,
           path,
           expected: schemaOf(resolvePath(full, path)!, path),
+          hidden: route.hidden,
         };
       })
     ),
-    { args: undefined, path: [], expected: schemaOf(full, []) },
+    { args: undefined, path: [], expected: schemaOf(full, []), hidden: false },
   ];
 
   const results = await inBatches(requests, 4, async (request) => ({
     label: request.args?.join(" ") ?? "the full tree",
     expected: request.expected,
+    hidden: request.hidden,
     response: await inWorker({ args: request.args, path: request.path }),
   }));
 
@@ -452,6 +517,21 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
         fullTree.errorHandlers[path],
         `swamp ${path} (loading ${label}) reports refused input through a ` +
           "different error handler than with the full tree",
+      );
+    }
+  }
+
+  // completion.ts shares no command with any route, so a route's own graph
+  // answers for the completion callback that loads it beside completions
+  for (const { label, hidden, response } of results.slice(0, -1)) {
+    assert(response.ok);
+    if (hidden) continue;
+    for (const [path, owners] of Object.entries(response.completionOwners)) {
+      assertEquals(
+        owners,
+        fullTree.completionOwners[path],
+        `swamp ${path} (loading ${label}) resolves its completions from ` +
+          "different commands than with the full tree",
       );
     }
   }

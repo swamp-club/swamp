@@ -22,6 +22,7 @@
 import type { ErrorHandler } from "@cliffy/command";
 import { type AnyCommand, buildCliSchema } from "../src/cli/cli_schema.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
+import { completionOwnersUnder } from "./command_completion_helpers.ts";
 
 export interface RouteWorkerRequest {
   /** undefined builds the full tree */
@@ -35,6 +36,8 @@ export type RouteWorkerResponse =
     schema: string | null;
     /** for every command path at and under the requested one */
     errorHandlers: Record<string, string>;
+    /** for the requested path and every visible command path under it */
+    completionOwners: Record<string, Record<string, string>>;
   }
   | { ok: false; error: string };
 
@@ -107,6 +110,9 @@ self.onmessage = async (event: MessageEvent<RouteWorkerRequest>) => {
     response = {
       ok: true,
       errorHandlers: node === undefined ? {} : errorHandlers(node, path),
+      completionOwners: node === undefined
+        ? {}
+        : completionOwnersUnder(node, path),
       schema: node === undefined ? null : JSON.stringify(
         buildCliSchema(node, VERSION, {
           stripGlobalOptions: path.length > 0,

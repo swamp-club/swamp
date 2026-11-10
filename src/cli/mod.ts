@@ -1966,8 +1966,8 @@ async function initTelemetryService(
 }
 
 /**
- * the invoked top-level command alone, or every command when argv is omitted
- * or the router cannot place it
+ * the routes the router selects for argv, or every command when argv is
+ * omitted or the router cannot place it
  */
 function loadCommands(
   args?: readonly string[],
@@ -1976,7 +1976,7 @@ function loadCommands(
   const selection = selectRoute(ROOT_ROUTES, args);
   return selection.kind === "all"
     ? loadRoutes(ROOT_ROUTES)
-    : loadRoutes([selection.route], selection.rest);
+    : loadRoutes(selection.routes, selection.rest);
 }
 
 /**
