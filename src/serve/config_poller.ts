@@ -103,7 +103,6 @@ export class ConfigPoller {
     logger.info`Config poller started (interval: ${intervalSec}s)`;
   }
 
-  /** re-arms a running timer, so the next tick waits the new interval */
   setPollIntervalMs(pollIntervalMs: number | undefined): void {
     this.#pollIntervalMs = pollIntervalMs ?? DEFAULT_CONFIG_POLL_INTERVAL_MS;
     this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);

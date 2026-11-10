@@ -86,7 +86,6 @@ export class RuntimeDataPoller {
     logger.info`Runtime data poller started (interval: ${intervalSec}s)`;
   }
 
-  /** re-arms a running timer, so the next tick waits the new interval */
   setPollIntervalMs(pollIntervalMs: number | undefined): void {
     this.#pollIntervalMs = pollIntervalMs ??
       DEFAULT_RUNTIME_DATA_POLL_INTERVAL_MS;

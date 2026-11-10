@@ -153,7 +153,6 @@ export class AccessDataPoller {
     }
   }
 
-  /** re-arms a running timer, so the next tick waits the new interval */
   setPollIntervalMs(pollIntervalMs: number | undefined): void {
     this.#pollIntervalMs = pollIntervalMs ??
       DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS;

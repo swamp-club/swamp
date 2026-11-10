@@ -93,10 +93,14 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
     ...authConfig.allowedUsers.map((name) => subs[name]),
   );
   let deferred = false;
+  let configured: readonly string[] = toAuth(merge(initial)).allowedUsers;
   let file: ServeConfigFile | null = initial;
   let lookupsUp = true;
 
-  const applyUsers = (prepared: Prepared) => {
+  const applyUsers = (
+    prepared: Prepared,
+    configuredNext: readonly string[],
+  ) => {
     const plan = prepared.allowedUsers!;
     authConfig.allowedUsers.splice(
       0,
@@ -105,6 +109,7 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
     );
     cache = { ...plan.cache };
     deferred = plan.deferred.length > 0;
+    configured = [...configuredNext];
   };
   const noop = () => {};
   const appliers = Object.fromEntries(
@@ -125,9 +130,11 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
     prepare: async ({ startup }) => ({
       allowedUsers: await planAllowedUsersReload({
         configured: startup.authConfig.allowedUsers,
+        previouslyConfigured: configured,
         allowedCollectives: startup.authConfig.allowedCollectives,
+        stored: cache,
         cache,
-        resolve: (name) =>
+        resolve: (name, _signal) =>
           lookupsUp && Object.hasOwn(subs, name)
             ? Promise.resolve(subs[name])
             : Promise.reject(new Error("club unreachable")),
@@ -138,14 +145,15 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
     pending: () => deferred ? ["allowedUsers"] : [],
     appliers: {
       ...appliers,
-      allowedUsers: (_candidate, prepared) => applyUsers(prepared),
+      allowedUsers: ({ startup }, prepared) =>
+        applyUsers(prepared, startup.authConfig.allowedUsers),
       allowedCollectives: ({ startup }, prepared) => {
         authConfig.allowedCollectives.splice(
           0,
           authConfig.allowedCollectives.length,
           ...startup.authConfig.allowedCollectives,
         );
-        applyUsers(prepared);
+        applyUsers(prepared, startup.authConfig.allowedUsers);
       },
     },
     beforeCommit: noop,
@@ -187,11 +195,9 @@ async function admittedEverywhere(
   sub: string,
 ): Promise<boolean[]> {
   return [
-    // server tokens and dashboard sessions
     (await serve.admission.serverToken(loginToken(sub))).admitted,
-    // delegation refresh
     serve.admission.delegation({ sub, collectives: [] }).admitted,
-    // delegation consent
+    // consent reads the arrays the delegation link service holds
     checkAdmission(
       sub,
       [],

@@ -27,13 +27,28 @@ import {
 import { checkAdmission } from "../domain/access/admission.ts";
 
 const NOW = "2026-11-10T00:00:00.000Z";
+
+type PlanInput = Parameters<typeof planAllowedUsersReload>[0];
+
+function planFor(
+  input: Omit<PlanInput, "stored" | "previouslyConfigured"> & {
+    stored?: PlanInput["stored"];
+    previouslyConfigured?: PlanInput["previouslyConfigured"];
+  },
+) {
+  return planAllowedUsersReload({
+    stored: {},
+    previouslyConfigured: [],
+    ...input,
+  });
+}
 const PROVIDER = "https://club.example";
 
 function lookup(subs: Record<string, string>, failing: string[] = []) {
   const asked: string[] = [];
   return {
     asked,
-    resolve: (name: string) => {
+    resolve: (name: string, _signal: AbortSignal) => {
       asked.push(name);
       if (failing.includes(name)) {
         return Promise.reject(new Error("connection reset"));
@@ -47,8 +62,9 @@ function lookup(subs: Record<string, string>, failing: string[] = []) {
 }
 
 Deno.test("planAllowedUsersReload: a removed name leaves the list and the name map; admin records stay", async () => {
-  const plan = await planAllowedUsersReload({
+  const plan = await planFor({
     configured: ["alice"],
+    previouslyConfigured: ["alice", "bob"],
     allowedCollectives: [],
     cache: { "allowed:alice": "sub-a", "allowed:bob": "sub-b", root: "sub-r" },
     resolve: null,
@@ -62,8 +78,9 @@ Deno.test("planAllowedUsersReload: a removed name leaves the list and the name m
 });
 
 Deno.test("planAllowedUsersReload: without a club API key a new name waits, unmarked, while the removal applies", async () => {
-  const plan = await planAllowedUsersReload({
+  const plan = await planFor({
     configured: ["carol"],
+    previouslyConfigured: ["alice"],
     allowedCollectives: [],
     cache: { "allowed:alice": "sub-a" },
     resolve: null,
@@ -82,7 +99,7 @@ Deno.test("planAllowedUsersReload: without a club API key a new name waits, unma
 
 Deno.test("planAllowedUsersReload: a lookup error defers only that name and writes no marker", async () => {
   const { resolve } = lookup({ dave: "sub-d" }, ["erin"]);
-  const plan = await planAllowedUsersReload({
+  const plan = await planFor({
     configured: ["dave", "erin"],
     allowedCollectives: [],
     cache: {},
@@ -95,7 +112,7 @@ Deno.test("planAllowedUsersReload: a lookup error defers only that name and writ
 });
 
 Deno.test("planAllowedUsersReload: a deferred name resolves on a later reload", async () => {
-  const first = await planAllowedUsersReload({
+  const first = await planFor({
     configured: ["erin"],
     allowedCollectives: ["acme"],
     cache: {},
@@ -105,7 +122,7 @@ Deno.test("planAllowedUsersReload: a deferred name resolves on a later reload", 
   assertEquals(first.allowedUsers, []);
   assertEquals(first.closed, false);
   const { resolve } = lookup({ erin: "sub-e" });
-  const second = await planAllowedUsersReload({
+  const second = await planFor({
     configured: ["erin"],
     allowedCollectives: ["acme"],
     cache: first.cache,
@@ -118,7 +135,7 @@ Deno.test("planAllowedUsersReload: a deferred name resolves on a later reload", 
 
 Deno.test("planAllowedUsersReload: a name the provider lacks is marked and stays skipped, never looked up again", async () => {
   const first = lookup({});
-  const plan = await planAllowedUsersReload({
+  const plan = await planFor({
     configured: ["typo"],
     allowedCollectives: ["acme"],
     cache: {},
@@ -128,7 +145,7 @@ Deno.test("planAllowedUsersReload: a name the provider lacks is marked and stays
   assertEquals(plan.cache, { "unresolved:allowed:typo": NOW });
   assertEquals(plan.skipped.map((s) => s.name), ["typo"]);
   const again = lookup({ typo: "sub-claimed" });
-  const next = await planAllowedUsersReload({
+  const next = await planFor({
     configured: ["typo"],
     allowedCollectives: ["acme"],
     cache: plan.cache,
@@ -141,9 +158,10 @@ Deno.test("planAllowedUsersReload: a name the provider lacks is marked and stays
 
 Deno.test("planAllowedUsersReload: a resolved name is pinned and never looked up again", async () => {
   const { asked, resolve } = lookup({ alice: "sub-other" });
-  const plan = await planAllowedUsersReload({
+  const plan = await planFor({
     configured: ["alice"],
     allowedCollectives: [],
+    stored: { "allowed:alice": "sub-a" },
     cache: { "allowed:alice": "sub-a" },
     resolve,
     now: () => NOW,
@@ -154,7 +172,7 @@ Deno.test("planAllowedUsersReload: a resolved name is pinned and never looked up
 });
 
 Deno.test("planAllowedUsersReload: a name that is not a plain username is skipped with the reason", async () => {
-  const plan = await planAllowedUsersReload({
+  const plan = await planFor({
     configured: ["group:ops"],
     allowedCollectives: ["acme"],
     cache: {},
@@ -171,4 +189,74 @@ Deno.test("CLOSED_ALLOWED_USERS_ENTRY: admits no one, so an emptied list never o
     false,
   );
   assertEquals(checkAdmission("anyone", [], [], []).admitted, true);
+});
+
+Deno.test("planAllowedUsersReload: a peer's records survive, and only names this reload removed lose theirs", async () => {
+  const result = await planFor({
+    configured: ["alice"],
+    previouslyConfigured: ["alice", "bob"],
+    allowedCollectives: [],
+    // a peer marked typo missing and pinned dave after this instance started
+    stored: {
+      "allowed:alice": "sub-a",
+      "allowed:bob": "sub-b",
+      "unresolved:allowed:typo": NOW,
+      "allowed:dave": "sub-d",
+    },
+    cache: { "allowed:alice": "sub-a", "allowed:bob": "sub-b" },
+    resolve: null,
+    now: () => NOW,
+  });
+  assertEquals(result.cache, {
+    "allowed:alice": "sub-a",
+    "unresolved:allowed:typo": NOW,
+    "allowed:dave": "sub-d",
+  });
+});
+
+Deno.test("planAllowedUsersReload: a waiting name a peer has since pinned resolves without a lookup", async () => {
+  const result = await planFor({
+    configured: ["dave"],
+    allowedCollectives: [],
+    stored: { "allowed:dave": "sub-d" },
+    cache: {},
+    resolve: null,
+    now: () => NOW,
+  });
+  assertEquals(result.allowedUsers, ["sub-d"]);
+  assertEquals(result.deferred, []);
+});
+
+Deno.test("planAllowedUsersReload: lookups run a few at a time under one deadline, and too many new names wait", async () => {
+  let inFlight = 0;
+  let most = 0;
+  const resolve = async (name: string) => {
+    inFlight++;
+    most = Math.max(most, inFlight);
+    await Promise.resolve();
+    inFlight--;
+    return `sub-${name}`;
+  };
+  const many = Array.from({ length: 10 }, (_, i) => `user${i}`);
+  const bounded = await planFor({
+    configured: many,
+    allowedCollectives: [],
+    cache: {},
+    resolve,
+    now: () => NOW,
+    limits: { concurrency: 3, deadlineMs: 60_000, maxNewNames: 10 },
+  });
+  assertEquals(bounded.allowedUsers.length, 10);
+  assertEquals(most <= 3, true);
+
+  const tooMany = await planFor({
+    configured: many,
+    allowedCollectives: ["acme"],
+    cache: {},
+    resolve,
+    now: () => NOW,
+    limits: { concurrency: 3, deadlineMs: 60_000, maxNewNames: 5 },
+  });
+  assertEquals(tooMany.allowedUsers, []);
+  assertEquals(tooMany.deferred.length, 10);
 });

@@ -55,7 +55,7 @@ export async function readServePidSidecar(
   }
 }
 
-export type ServePidVerdict = "match" | "mismatch" | "unknown";
+export type ServePidVerdict = "match" | "gone" | "reused" | "unknown";
 
 export interface ServePidProbeDeps {
   /** false only when no process has the pid; true when one does, even another user's */
@@ -63,22 +63,18 @@ export interface ServePidProbeDeps {
   startTime(pid: number): Promise<string | undefined>;
 }
 
-/**
- * Whether `pid` is still the serve that wrote the files: mismatch means it is
- * gone or its start time differs (the pid was reused), unknown means this
- * machine cannot tell, and the caller signals as it always has.
- */
+/** unknown when this machine cannot tell; the caller then signals as before */
 export async function probeServePid(
   pid: number,
   sidecar: ServePidRecord | undefined,
   deps: ServePidProbeDeps,
 ): Promise<ServePidVerdict> {
-  if (!deps.processExists(pid)) return "mismatch";
+  if (!deps.processExists(pid)) return "gone";
   if (sidecar === undefined || sidecar.pid !== pid) return "unknown";
   if (sidecar.startTime === undefined) return "unknown";
   const started = await deps.startTime(pid);
   if (started === undefined) return "unknown";
-  return started === sidecar.startTime ? "match" : "mismatch";
+  return started === sidecar.startTime ? "match" : "reused";
 }
 
 export function processExists(pid: number): boolean {

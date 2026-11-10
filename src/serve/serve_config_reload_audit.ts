@@ -64,9 +64,8 @@ export function serveConfigReloadedDetail(
 }
 
 /**
- * Records what a reload is about to change, under the audit policy in force
- * before it, so a reload that lowers auditing still leaves its own record.
- * Audit must never break a reload, so an emitter failure is dropped.
+ * under the policy in force before the reload, so lowering auditing still
+ * leaves its own record; an emitter failure never breaks a reload
  */
 export function emitServeConfigReloaded(
   ctx: ServeConfigReloadAuditContext,

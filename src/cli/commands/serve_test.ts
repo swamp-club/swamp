@@ -2478,3 +2478,23 @@ Deno.test("serve check-config: a refused route file is named in the json report 
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("resolveServeStartupSettings: parses group refresh and dispatch-env-allow, so reload refuses what startup refuses", () => {
+  const defaults = resolveServeStartupSettings(mergedServeOptions());
+  assertEquals(defaults.groupRefreshMs, 4 * 60 * 60 * 1000);
+  assertEquals(defaults.dispatchEnvAllow, undefined);
+  const set = resolveServeStartupSettings(
+    mergedServeOptions({
+      groupRefreshInterval: "0s",
+      dispatchEnvAllow: "HOME,PATH",
+    }),
+  );
+  assertEquals(set.groupRefreshMs, 0);
+  assertEquals(set.dispatchEnvAllow, ["HOME", "PATH"]);
+  assertEquals(
+    resolveServeStartupSettings(
+      mergedServeOptions({ groupRefreshInterval: "10m" }),
+    ).groupRefreshMs,
+    600_000,
+  );
+});

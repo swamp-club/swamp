@@ -26,7 +26,6 @@ import {
 } from "./serve_settings_reload.ts";
 import type { ServeReloadCaller } from "./serve_config_reload_audit.ts";
 
-/** the reloaded file as startup would read it, validated */
 export interface ReloadCandidate<S> {
   readonly file: ServeConfigFile | null;
   readonly merged: MergedServeOptions;
@@ -59,11 +58,8 @@ export interface ServeSettingsReloaderDeps<S, P> {
   readonly initialConfig: ServeConfigFile | null;
   readonly explicitFlags: ReadonlySet<string>;
   envLookup(name: string): string | undefined;
-  /** strict read of serve.yaml; a throw refuses the reload */
   load(): ServeConfigFile | null;
-  /** merged with the startup flags and env, which keep winning */
   merge(file: ServeConfigFile | null): MergedServeOptions;
-  /** the checks startup runs; a throw refuses the reload */
   resolve(merged: MergedServeOptions): S;
   /** everything else that can fail before anything changes */
   prepare(
@@ -71,7 +67,7 @@ export interface ServeSettingsReloaderDeps<S, P> {
     changed: readonly AppliedSettingKey[],
     before: ServeConfigFile | null,
   ): Promise<P>;
-  /** changes outside the catalogue that prepare settled, for the report */
+  /** settings outside the catalogue, such as the audit block */
   extraChanges?(prepared: P): {
     readonly applied: readonly string[];
     readonly needsRestart: readonly { setting: string; reason: string }[];
@@ -85,7 +81,7 @@ export interface ServeSettingsReloaderDeps<S, P> {
   notRunning(
     candidate: ReloadCandidate<S>,
   ): Partial<Record<keyof MergedServeOptions, string>>;
-  /** applied settings to re-apply though the file did not change them */
+  /** deferred work a reload retries though the file is unchanged */
   pending(): readonly AppliedSettingKey[];
   appliers: SettingAppliers<S, P>;
   /** runs in commit before any applier, so it sees the policy in force */

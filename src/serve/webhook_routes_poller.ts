@@ -92,7 +92,6 @@ export class WebhookRoutesPoller {
     Deno.unrefTimer(this.#timer);
   }
 
-  /** re-arms a running timer, so the next check waits the new interval */
   setIntervalMs(intervalMs: number): void {
     this.#intervalMs = intervalMs;
     if (this.#timer === null) return;

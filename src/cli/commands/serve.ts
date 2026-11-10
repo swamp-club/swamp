@@ -153,14 +153,6 @@ import {
   diffAuditConfig,
 } from "../../serve/serve_audit_reload.ts";
 
-/** what a reload's prepare phase settled before anything changed */
-interface ReloadPrepared {
-  allowedUsers?: AllowedUsersReloadPlan;
-  audit?: {
-    readonly changes: AuditConfigChanges;
-    readonly config: AuditConfig | null;
-  };
-}
 import { emitServeConfigReloaded } from "../../serve/serve_config_reload_audit.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
 import { readProcessStartTime } from "../../infrastructure/process/process_kill.ts";
@@ -251,6 +243,7 @@ import {
   withHttpServerSpan,
 } from "../../serve/http_request_span.ts";
 import {
+  OAUTH_RESOLVED_ADMINS_KEY,
   resolveOAuthClientCredentials,
   SECRET_WITHOUT_CLIENT_ID_MESSAGE,
 } from "../../serve/oauth_registration.ts";
@@ -797,6 +790,16 @@ import {
   coLocatedTokenKeyWarning,
   TOKEN_SECRETS_KEY_RECORD,
 } from "../../serve/token_key_exposure.ts";
+
+/** what a reload's prepare phase settled before anything changed */
+interface ReloadPrepared {
+  allowedUsers?: AllowedUsersReloadPlan;
+  nameMapUnread?: boolean;
+  audit?: {
+    readonly changes: AuditConfigChanges;
+    readonly config: AuditConfig | null;
+  };
+}
 
 /** boot waits for this push before serving, so it is bounded. */
 const SETTLED_RUN_PUSH_TIMEOUT_MS = 30_000;
@@ -2896,18 +2899,27 @@ const reloadCommand = new Command()
       await readServePidSidecar(pidPath),
       { processExists, startTime: (p) => readProcessStartTime(p) },
     );
-    if (verdict === "mismatch") {
+    if (verdict === "gone") {
       throw markErrorPaths(
         new UserError(
-          "Process " + pid + " is not the serve that wrote " + pidPath +
-            " — stale PID file. Remove it, or reload with --server.",
+          "Process " + pid + " is not running — stale PID file. " +
+            "Remove " + pidPath + ", or reload with --server.",
+        ),
+        [pidPath],
+      );
+    }
+    if (verdict === "reused") {
+      throw markErrorPaths(
+        new UserError(
+          "Process " + pid + " started after the serve that wrote " + pidPath +
+            ", so it is another process — stale PID file. Remove it, or reload with --server.",
         ),
         [pidPath],
       );
     }
     if (verdict === "unknown") {
       logger
-        .warn`Could not confirm process ${pid} is the serve that wrote ${pidPath}; sending SIGHUP anyway`;
+        .warn`Could not confirm process ${pid} is the serve that wrote ${pidPath} (an older serve records no start time, or ps cannot report it); sending SIGHUP anyway. Restarting serve records its start time`;
     }
 
     try {
@@ -4749,6 +4761,11 @@ export const serveCommand = new Command()
     let storeOauthNameCache:
       | ((cache: Record<string, string>) => Promise<void>)
       | undefined;
+    // undefined when the vault cannot answer, so nothing is written back
+    let readOauthNameCache:
+      | (() => Promise<Record<string, string> | undefined>)
+      | undefined;
+    let allowedUsersConfigured: readonly string[] = [];
     let allowedUsersDeferred = false;
     const oauthClientName = merged.oauthClientName ??
       `swamp-serve-${basename(resolvedRepoDir)}-${Deno.hostname()}`.slice(
@@ -5167,6 +5184,28 @@ export const serveCommand = new Command()
       // lets it be looked up fresh if it is added back.
       if (resolution.cacheChanged) await storeOauthNameCache(resolution.cache);
       oauthNameCache = resolution.cache;
+      allowedUsersConfigured = [...authConfig.allowedUsers];
+      readOauthNameCache = async () => {
+        try {
+          if (
+            !await oauthVaultService.has(
+              TOKEN_SECRETS_VAULT_NAME,
+              OAUTH_RESOLVED_ADMINS_KEY,
+            )
+          ) {
+            return {};
+          }
+          return JSON.parse(
+            await oauthVaultService.get(
+              TOKEN_SECRETS_VAULT_NAME,
+              OAUTH_RESOLVED_ADMINS_KEY,
+              "serve:oauth-resolve",
+            ),
+          ) as Record<string, string>;
+        } catch {
+          return undefined;
+        }
+      };
 
       authConfig.admins.splice(
         0,
@@ -7730,8 +7769,6 @@ export const serveCommand = new Command()
     const appliedByReloadStage = () => {};
     // read per request from the overlaid serveOptions
     const appliedByOverlay = () => {};
-    // validated exactly as startup validates, so a file startup would refuse
-    // changes nothing
     // in place: consumers hold these arrays
     const replaceList = (target: string[], next: readonly string[]) => {
       target.length = 0;
@@ -7748,7 +7785,8 @@ export const serveCommand = new Command()
         return;
       }
       replaceList(authConfig.allowedUsers, plan.allowedUsers);
-      oauthNameCache = plan.cache;
+      oauthNameCache = { ...plan.cache };
+      allowedUsersConfigured = [...startup.authConfig.allowedUsers];
       allowedUsersDeferred = plan.deferred.length > 0;
       rememberUsernames(plan.usernamesBySub);
       const partial = allowedUsersPartialReason(plan);
@@ -7768,6 +7806,7 @@ export const serveCommand = new Command()
           repoDir,
           mergeServeOptions(file, options, explicitFlags),
         ),
+      // startup's own checks, so a file startup would refuse changes nothing
       resolve: resolveServeStartupSettings,
       prepare: async ({ file, merged: next, startup }, toApply, before) => {
         const prepared: ReloadPrepared = {};
@@ -7798,17 +7837,21 @@ export const serveCommand = new Command()
             toApply.includes("allowedCollectives"))
         ) {
           const apiKey = clubApiKey;
+          const stored = await readOauthNameCache?.();
+          prepared.nameMapUnread = stored === undefined;
           prepared.allowedUsers = await planAllowedUsersReload({
             configured: startup.authConfig.allowedUsers,
+            previouslyConfigured: allowedUsersConfigured,
             allowedCollectives: startup.authConfig.allowedCollectives,
+            stored: stored ?? oauthNameCache,
             cache: oauthNameCache,
             resolve: apiKey
-              ? (name) =>
+              ? (name, signal) =>
                 resolveUsername(
                   authConfig.oauthProvider,
                   name,
                   apiKey,
-                  AbortSignal.timeout(10_000),
+                  AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
                 )
               : null,
             now: () => new Date().toISOString(),
@@ -8059,7 +8102,14 @@ export const serveCommand = new Command()
         if (plan?.cacheChanged && store) {
           followUps.push({
             name: "Saving the resolved user names",
-            run: () => store({ ...plan.cache }),
+            run: () =>
+              prepared.nameMapUnread
+                ? Promise.reject(
+                  new Error(
+                    "the stored name map could not be read, so it was left as it was",
+                  ),
+                )
+                : store({ ...plan.cache }),
           });
         }
         const clientId = authConfig.oauthClientId;

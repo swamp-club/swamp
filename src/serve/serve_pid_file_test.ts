@@ -118,14 +118,14 @@ Deno.test("probeServePid: the same start time is the serve that wrote the files"
 Deno.test("probeServePid: a reused pid or a vanished process is a stale file", async () => {
   assertEquals(
     await probeServePid(4242, { pid: 4242, startTime: "t1" }, exists("t2")),
-    "mismatch",
+    "reused",
   );
   assertEquals(
     await probeServePid(4242, { pid: 4242, startTime: "t1" }, {
       processExists: () => false,
       startTime: () => Promise.resolve(undefined),
     }),
-    "mismatch",
+    "gone",
   );
 });
 

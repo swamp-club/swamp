@@ -98,14 +98,14 @@ export class ActiveRunRegistry {
     this.#maxRunDurationMs = options?.maxRunDurationMs;
   }
 
-  /**
-   * new limits govern runs registered from now on; a run already over a
-   * lowered cap keeps running, and its duration timer keeps the old limit
-   */
   get maxConcurrent(): number {
     return this.#maxConcurrent;
   }
 
+  /**
+   * new limits govern runs registered from now on; a run already over a
+   * lowered cap keeps running, and its duration timer keeps the old limit
+   */
   setLimits(options: ActiveRunRegistryOptions): void {
     this.#maxConcurrent = Math.max(1, options.maxConcurrent ?? 100);
     this.#maxPerPrincipal = options.maxPerPrincipal !== undefined
