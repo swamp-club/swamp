@@ -30,7 +30,7 @@ import {
   SENT_ARGUMENTS,
 } from "../src/cli/telemetry_invocation.ts";
 
-function buildRoot(): AnyCommand {
+async function buildRoot(): Promise<AnyCommand> {
   const root = new Command()
     .name("swamp")
     .globalOption("--json", "json")
@@ -41,7 +41,7 @@ function buildRoot(): AnyCommand {
     .globalOption("--no-telemetry", "telemetry")
     .globalOption("--show-properties", "properties")
     .globalOption("--no-color", "color");
-  registerCommands(root);
+  await registerCommands(root);
   return root;
 }
 
@@ -68,7 +68,7 @@ function collectCases(
   return out;
 }
 
-const CASES = collectCases(buildRoot(), [], []);
+const CASES = collectCases(await buildRoot(), [], []);
 
 Deno.test("telemetry redaction: the tree has commands to check", () => {
   assert(CASES.length > 100, `only ${CASES.length} commands found`);
@@ -95,8 +95,8 @@ Deno.test("telemetry redaction: every declared argument name is classified", () 
   );
 });
 
-Deno.test("telemetry redaction: every command resolves to its full path", () => {
-  const root = buildRoot();
+Deno.test("telemetry redaction: every command resolves to its full path", async () => {
+  const root = await buildRoot();
   for (const { path } of CASES) {
     const result = resolveTelemetryInvocation(root, path);
     assertEquals(result.commandPath, path, path.join(" "));
@@ -105,8 +105,8 @@ Deno.test("telemetry redaction: every command resolves to its full path", () => 
   }
 });
 
-Deno.test("telemetry redaction: only sent arguments survive, and no option value does", () => {
-  const root = buildRoot();
+Deno.test("telemetry redaction: only sent arguments survive, and no option value does", async () => {
+  const root = await buildRoot();
   let counter = 0;
   const canary = () => `rdx-${counter++}-${crypto.randomUUID().slice(0, 8)}`;
 
@@ -153,8 +153,8 @@ Deno.test("telemetry redaction: only sent arguments survive, and no option value
   }
 });
 
-Deno.test("telemetry redaction: leaving out a required argument sends nothing", () => {
-  const root = buildRoot();
+Deno.test("telemetry redaction: leaving out a required argument sends nothing", async () => {
+  const root = await buildRoot();
   for (const { path, command } of CASES) {
     const required = command.getArguments().filter((a) => !a.optional);
     if (required.length < 2) continue;
@@ -174,8 +174,8 @@ Deno.test("telemetry redaction: leaving out a required argument sends nothing", 
   }
 });
 
-Deno.test("telemetry redaction: help sends the command words it names and nothing after", () => {
-  const root = buildRoot();
+Deno.test("telemetry redaction: help sends the command words it names and nothing after", async () => {
+  const root = await buildRoot();
   for (const { path } of CASES) {
     if (path[0] === "help") continue;
     const secret = `rdx-help-${crypto.randomUUID().slice(0, 8)}`;

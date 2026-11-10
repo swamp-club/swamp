@@ -131,7 +131,8 @@ a pre-PR gate — the verification workflows cover all of them.
 
 - Follows domain driven design principles. Use the `ddd` skill when designing or
   reviewing code.
-- Uses Cliffy for the command line
+- Uses Cliffy for the command line; top-level commands load lazily through
+  `src/cli/root_routes.ts`, never by a static import from startup code
 - Uses Ink for interactive terminal UIs (search, TUI dashboard)
 - Uses LogTape for logging and non-interactive output (`"log"` mode)
 - Uses JSON for structured output (`"json"` mode via `--json`)

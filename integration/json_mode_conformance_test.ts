@@ -25,6 +25,9 @@ import { Command } from "@cliffy/command";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { definingModuleOf } from "../src/cli/commands/command_syntax.ts";
+import { createHelpCommand } from "../src/cli/commands/help.ts";
+import { loadRoutes } from "../src/cli/command_routes.ts";
+import { ROOT_ROUTES } from "../src/cli/root_routes.ts";
 
 await initializeLogging({});
 
@@ -162,10 +165,10 @@ async function loadCommandModules(): Promise<{
   const fileOfCommand = new Map<unknown, string>();
   const sources = new Map<string, string>();
 
-  // import mod.ts first to settle command modules in production order; entering
-  // the extension.ts -> extension_source.ts -> extension_source_add.ts cycle
-  // from the wrong side throws a TDZ ReferenceError
-  await import(toFileUrl(join(cliDir, "mod.ts")).href);
+  // load every route first to settle command modules in production order;
+  // entering the extension.ts -> extension_source.ts -> extension_source_add.ts
+  // cycle from the wrong side throws a TDZ ReferenceError
+  await loadRoutes(ROOT_ROUTES);
 
   for await (
     const entry of walkFs(commandsDir, { exts: [".ts"], includeDirs: false })
@@ -189,43 +192,6 @@ async function loadCommandModules(): Promise<{
   return { fileOfCommand, sources };
 }
 
-async function readTopLevelRegistrations(): Promise<
-  Array<{ name: string; symbol: string; specifier: string }>
-> {
-  const modSource = await Deno.readTextFile(join(cliDir, "mod.ts"));
-
-  const importedFrom = new Map<string, string>();
-  for (
-    const match of modSource.matchAll(
-      /import\s*\{([^}]*)\}\s*from\s*"(\.\/commands\/[^"]+)"/g,
-    )
-  ) {
-    for (const symbol of match[1].split(",").map((s) => s.trim())) {
-      if (symbol) importedFrom.set(symbol, match[2]);
-    }
-  }
-
-  const registrations: Array<
-    { name: string; symbol: string; specifier: string }
-  > = [];
-  for (
-    const match of modSource.matchAll(
-      /\.command\(\s*"([\w-]+)",\s*([A-Za-z_$][\w$]*)/g,
-    )
-  ) {
-    const [, name, symbol] = match;
-    const specifier = importedFrom.get(symbol);
-    assert(
-      specifier !== undefined,
-      `src/cli/mod.ts registers "${name}" from symbol "${symbol}", which is ` +
-        `not imported from ./commands/. The JSON-mode conformance test cannot ` +
-        `resolve it — move the command under src/cli/commands/.`,
-    );
-    registrations.push({ name, symbol, specifier });
-  }
-  return registrations;
-}
-
 /**
  * prefer the factory's recorded module: swamp behavior leaves are built by the
  * same factories as their model twins and no module exports them; otherwise
@@ -247,7 +213,6 @@ async function buildCliTree(): Promise<CliTree> {
   if (cachedTree) return cachedTree;
 
   const { fileOfCommand, sources } = await loadCommandModules();
-  const registrations = await readTopLevelRegistrations();
 
   // Mirrors the root wiring in src/cli/mod.ts. The `--json` global option is
   // what every leaf must inherit; `cliRootDeclaresGlobalJson` below pins that
@@ -256,23 +221,10 @@ async function buildCliTree(): Promise<CliTree> {
     .name("swamp")
     .globalOption("--json", "Output in JSON format (non-interactive)");
 
-  for (const { name, symbol, specifier } of registrations) {
-    const path = join(cliDir, specifier.replace(/^\.\//, ""));
-    const module = await import(toFileUrl(path).href) as Record<
-      string,
-      unknown
-    >;
-    const exported = module[symbol];
-    assert(
-      exported !== undefined,
-      `src/cli/mod.ts imports "${symbol}" from ${specifier}, but that module ` +
-        `does not export it.`,
-    );
-    const command = typeof exported === "function"
-      ? (exported as (root: AnyCommand) => AnyCommand)(root)
-      : exported;
+  for (const { name, command } of await loadRoutes(ROOT_ROUTES)) {
     (root as AnyCommand).command(name, command);
   }
+  (root as AnyCommand).command("help", createHelpCommand(root));
 
   const leaves: LeafCommand[] = [];
   const visit = (command: AnyCommand, path: string[]): void => {
@@ -300,7 +252,7 @@ async function buildCliTree(): Promise<CliTree> {
   cachedTree = {
     leaves,
     sources,
-    topLevelNames: registrations.map((r) => r.name),
+    topLevelNames: [...ROOT_ROUTES.map((route) => route.name), "help"],
   };
   return cachedTree;
 }

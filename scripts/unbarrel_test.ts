@@ -302,6 +302,34 @@ Deno.test("rewriteSource: leaves an import whose comment it would drop", () => {
   ]);
 });
 
+Deno.test("findModuleReferences: marks references erased at runtime as type-only", () => {
+  const references = findModuleReferences(
+    COMMAND,
+    `import type { A } from "./a.ts";\n` +
+      `import { type B } from "./b.ts";\n` +
+      `import { type C, d } from "./c.ts";\n` +
+      `import "./side.ts";\n` +
+      `export type { E } from "./e.ts";\n` +
+      `export { f } from "./f.ts";\n` +
+      `type T = import("./t.ts").T;\n` +
+      `const lazy = () => import("./lazy.ts");\n`,
+  );
+
+  assertEquals(
+    references.map((r) => [r.specifier, r.typeOnly]),
+    [
+      ["./a.ts", true],
+      ["./b.ts", true],
+      ["./c.ts", false],
+      ["./side.ts", false],
+      ["./e.ts", true],
+      ["./f.ts", false],
+      ["./t.ts", true],
+      ["./lazy.ts", false],
+    ],
+  );
+});
+
 Deno.test("findModuleReferences: reports each kind with origin-side names", () => {
   const references = findModuleReferences(
     COMMAND,

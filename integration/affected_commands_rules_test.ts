@@ -25,10 +25,7 @@ import {
   COMMAND_DIR,
   ENTRY_POINT,
 } from "../scripts/affected_commands.ts";
-import {
-  loadCommandIndex,
-  UNEXPORTED_ROOTS,
-} from "../scripts/command_index.ts";
+import { loadCommandIndex, UNROUTED_ROOTS } from "../scripts/command_index.ts";
 
 /**
  * entry points of their own, not part of the CLI module graph; the index never
@@ -54,7 +51,7 @@ async function commandFiles(): Promise<string[]> {
 }
 
 Deno.test("affected commands: every root command maps to a file that exists", async () => {
-  const index = await loadCommandIndex(ROOT, await commandFiles());
+  const index = loadCommandIndex(await commandFiles());
 
   // Load-bearing: an index that came back empty would make every assertion
   // below pass over nothing.
@@ -71,10 +68,10 @@ Deno.test("affected commands: every root command maps to a file that exists", as
   }
 });
 
-Deno.test("affected commands: each declared unexported root names a real command file", async () => {
+Deno.test("affected commands: each declared unrouted root names a real command file", async () => {
   const files = await commandFiles();
-  const index = await loadCommandIndex(ROOT, files);
-  for (const [name, file] of Object.entries(UNEXPORTED_ROOTS)) {
+  const index = loadCommandIndex(files);
+  for (const [name, file] of Object.entries(UNROUTED_ROOTS)) {
     assert(files.includes(file), `${name} is declared in ${file}, not found`);
     assertEquals(index[name], file);
   }

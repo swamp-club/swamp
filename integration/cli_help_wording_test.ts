@@ -26,7 +26,7 @@ import {
   DECIDED_ON_SERVE_TOKEN_DESCRIPTION,
 } from "../src/cli/remote_run.ts";
 
-const root = buildCommandTree();
+const root = await buildCommandTree();
 
 interface Visited {
   path: string[];

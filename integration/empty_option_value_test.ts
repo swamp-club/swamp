@@ -28,7 +28,7 @@ import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCommands } from "../src/cli/mod.ts";
 import { findEmptyOptionValue } from "../src/cli/empty_option_value.ts";
 
-function buildRoot(): AnyCommand {
+async function buildRoot(): Promise<AnyCommand> {
   const root = new Command()
     .name("swamp")
     .globalOption("--json", "json")
@@ -39,7 +39,7 @@ function buildRoot(): AnyCommand {
     .globalOption("--no-telemetry", "telemetry")
     .globalOption("--show-properties", "properties")
     .globalOption("--no-color", "color");
-  registerCommands(root);
+  await registerCommands(root);
   return root;
 }
 
@@ -60,7 +60,7 @@ function collectCases(
   return out;
 }
 
-const ROOT = buildRoot();
+const ROOT = await buildRoot();
 const CASES = collectCases(ROOT, [], []);
 
 Deno.test("empty option value: the tree has commands to check", () => {

@@ -25,7 +25,7 @@
 
 import { assertEquals } from "@std/assert";
 
-Deno.test("importing the CLI entry point constructs no HTTP client", async () => {
+Deno.test("importing the CLI entry point and loading every command constructs no HTTP client", async () => {
   const original = Deno.createHttpClient;
   let constructed = 0;
   Deno.createHttpClient = ((options: Deno.CreateHttpClientOptions = {}) => {
@@ -33,7 +33,9 @@ Deno.test("importing the CLI entry point constructs no HTTP client", async () =>
     return original(options);
   }) as typeof Deno.createHttpClient;
   try {
-    await import("./mod.ts");
+    const { buildCommandTree } = await import("./mod.ts");
+    // command modules load through the route table, not on importing mod.ts
+    await buildCommandTree();
   } finally {
     Deno.createHttpClient = original;
   }

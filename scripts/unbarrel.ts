@@ -63,6 +63,8 @@ export interface ModuleReference {
   specifier: string;
   names: string[];
   line: number;
+  /** erased at runtime, so the module is not evaluated through this reference */
+  typeOnly: boolean;
 }
 
 export interface RewriteResult {
@@ -209,12 +211,14 @@ export function findModuleReferences(
     kind: ReferenceKind,
     specifier: string,
     names: string[] = [],
+    typeOnly = false,
   ) => {
     references.push({
       kind,
       specifier,
       names,
       line: lineOf(source, node.start),
+      typeOnly,
     });
   };
 
@@ -227,21 +231,34 @@ export function findModuleReferences(
           add(node, "side-effect", specifier);
           break;
         }
+        const typeOnly = node.importKind === "type" ||
+          specifiers.every((s) =>
+            s.type === "ImportSpecifier" && s.importKind === "type"
+          );
         const named = specifiers.filter((s) => s.type === "ImportSpecifier");
         if (named.length > 0) {
-          add(node, "import", specifier, named.map((s) => nameOf(s.imported)));
+          add(
+            node,
+            "import",
+            specifier,
+            named.map((s) => nameOf(s.imported)),
+            typeOnly,
+          );
         }
         if (specifiers.some((s) => s.type === "ImportDefaultSpecifier")) {
-          add(node, "default", specifier);
+          add(node, "default", specifier, [], typeOnly);
         }
         if (specifiers.some((s) => s.type === "ImportNamespaceSpecifier")) {
-          add(node, "namespace", specifier);
+          add(node, "namespace", specifier, [], typeOnly);
         }
         break;
       }
       case "ExportNamedDeclaration": {
         if (!isStringLiteral(node.source)) break;
         const specifiers = node.specifiers as AstNode[];
+        const typeOnly = node.exportKind === "type" ||
+          (specifiers.length > 0 &&
+            specifiers.every((s) => s.exportKind === "type"));
         const named = specifiers.filter((s) => s.type === "ExportSpecifier");
         if (named.length > 0) {
           add(
@@ -249,24 +266,31 @@ export function findModuleReferences(
             "export",
             node.source.value,
             named.map((s) => nameOf(s.local)),
+            typeOnly,
           );
         }
         if (named.length < specifiers.length) {
-          add(node, "namespace", node.source.value);
+          add(node, "namespace", node.source.value, [], typeOnly);
         }
         break;
       }
       case "ExportAllDeclaration":
-        add(node, "export-all", (node.source as AstNode).value as string);
+        add(
+          node,
+          "export-all",
+          (node.source as AstNode).value as string,
+          [],
+          node.exportKind === "type",
+        );
         break;
       case "TSImportType": {
         const specifier = importTypeArgument(node).value;
         if (isNode(node.qualifier)) {
           add(node, "import-type", specifier, [
             nameOf(leftmostIdentifier(node.qualifier)),
-          ]);
+          ], true);
         } else {
-          add(node, "import-type-module", specifier);
+          add(node, "import-type-module", specifier, [], true);
         }
         break;
       }

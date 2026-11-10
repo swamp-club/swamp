@@ -463,10 +463,13 @@ How to read it:
 - **It is derived from static imports.** Extension loading, registries,
   bundled assets and computed import paths are invisible to it, so an empty
   list is not proof that nothing is affected.
-- **No command reaches `src/cli/mod.ts`.** It imports every command and only
-  `main.ts` imports it, so a change to it shows under `startupPath`, not in the
-  list. `integration/ddd_layer_rules_test.ts` fails if a file under `src/`
-  imports it, which would put the whole CLI in that file's closure.
+- **No command reaches `src/cli/mod.ts` or `src/cli/root_routes.ts`.** The
+  route table names every command through `import()`, which `deno info`
+  records, and only `mod.ts` imports it, so a change to either shows under
+  `startupPath`, not in the list. The index of root commands is read from that
+  table. `integration/ddd_layer_rules_test.ts` fails if a file under `src/`
+  imports `mod.ts`, or any file but `mod.ts` imports the table, which would
+  put the whole CLI in that file's closure.
 
 The rule table is `classifyOutsideGraph` in `scripts/affected_commands.ts`. A
 new top-level directory needs a rule there;

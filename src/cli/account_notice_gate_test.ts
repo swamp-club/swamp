@@ -35,7 +35,7 @@ import {
 import { buildCommandTree } from "./mod.ts";
 import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
 
-const tree = buildCommandTree();
+const tree = await buildCommandTree();
 
 function eligibility(
   args: string[],

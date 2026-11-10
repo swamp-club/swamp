@@ -25,7 +25,7 @@ import { buildCommandTree } from "../src/cli/mod.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { COMPLETION_TYPE_NAMES } from "../src/cli/completion_types.ts";
 
-const root = buildCommandTree();
+const root = await buildCommandTree();
 
 interface Visited {
   path: string[];

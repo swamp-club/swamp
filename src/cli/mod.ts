@@ -55,41 +55,17 @@ import {
   bufferStartupWarnings,
   initializeLogging,
 } from "../infrastructure/logging/logger.ts";
-import { versionCommand } from "./commands/version.ts";
 import { VERSION } from "../infrastructure/runtime/build_info.ts";
-import { modelCommand } from "./commands/model_create.ts";
-import { runCommand } from "./commands/run.ts";
-import { repoCommand, repoInitCommand } from "./commands/repo_init.ts";
-import { workflowCommand } from "./commands/workflow.ts";
-import { completionCommand } from "./commands/completion.ts";
-import { vaultCommand } from "./commands/vault.ts";
-import { dataCommand } from "./commands/data.ts";
-import { issueCommand } from "./commands/issue.ts";
-import { inviteCommand } from "./commands/invite.ts";
-import { firstRuleCommand } from "./commands/invite_link.ts";
-import { telemetryCommand } from "./commands/telemetry_stats.ts";
-import { auditCommand } from "./commands/audit.ts";
-import { updateCommand } from "./commands/update.ts";
-import { configCommand } from "./commands/config.ts";
-import { sourceCommand } from "./commands/source.ts";
-import { accessCommand } from "./commands/access.ts";
-import { authCommand } from "./commands/auth.ts";
-import { extensionCommand } from "./commands/extension.ts";
-import { summariseCommand } from "./commands/summarise.ts";
-import { behaviorCommand } from "./commands/behavior.ts";
-import { datastoreCommand } from "./commands/datastore.ts";
-import { doctorCommand } from "./commands/doctor.ts";
-import { reportCommand } from "./commands/report.ts";
-import { serveCommand } from "./commands/serve.ts";
-import { agentCommand } from "./commands/agent_setup.ts";
-import { workerCommand } from "./commands/worker.ts";
-import { questCommand } from "./commands/quest.ts";
-import { subscriptionCommand } from "./commands/subscription.ts";
-import { inboxCommand } from "./commands/inbox.ts";
-import { startCommand } from "./commands/start.ts";
-import { dashboardCommand } from "./commands/dashboard.ts";
-import { workspaceCommand } from "./commands/workspace.ts";
 import { createHelpCommand } from "./commands/help.ts";
+import {
+  type LoadedCommand,
+  loadRoutes,
+  selectRoute,
+} from "./command_routes.ts";
+import { ROOT_ROUTES } from "./root_routes.ts";
+// snapshots the root async context on evaluation, so it must load at startup
+// and not with a command imported inside the invocation's span
+import "../infrastructure/runtime/ambient_context.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
 import {
@@ -1990,49 +1966,37 @@ async function initTelemetryService(
 }
 
 /**
+ * the invoked top-level command alone, or every command when argv is omitted
+ * or the router cannot place it
+ */
+function loadCommands(
+  args?: readonly string[],
+): Promise<LoadedCommand[]> {
+  if (args === undefined) return loadRoutes(ROOT_ROUTES);
+  const selection = selectRoute(ROOT_ROUTES, args);
+  return selection.kind === "all"
+    ? loadRoutes(ROOT_ROUTES)
+    : loadRoutes([selection.route], selection.rest);
+}
+
+/**
  * kept free of invocation state so the real command tree can be built outside
  * runInvocation; the telemetry redaction fitness test walks it
  */
-export function registerCommands(cli: AnyCommand): void {
-  cli
-    .command("access", accessCommand)
-    .command("version", versionCommand)
-    .command("behavior", behaviorCommand)
-    .command("model", modelCommand)
-    .command("init", repoInitCommand)
-    .command("repo", repoCommand)
-    .command("workflow", workflowCommand)
-    .command("vault", vaultCommand)
-    .command("data", dataCommand)
-    .command("telemetry", telemetryCommand)
-    .command("audit", auditCommand)
-    .command("update", updateCommand)
-    .command("config", configCommand)
-    .command("source", sourceCommand)
-    .command("completions", completionCommand)
-    .command("issue", issueCommand)
-    .command("invite", inviteCommand)
-    // Hidden easter egg — the same command as `swamp invite link`.
-    .command("first-rule", firstRuleCommand)
-    .command("auth", authCommand)
-    .command("extension", extensionCommand)
-    .command("summarise", summariseCommand)
-    .command("datastore", datastoreCommand)
-    .command("doctor", doctorCommand)
-    .command("run", runCommand)
-    .command("report", reportCommand)
-    .command("serve", serveCommand)
-    .command("agent", agentCommand)
-    .command("worker", workerCommand)
-    .command("quest", questCommand)
-    .command("subscription", subscriptionCommand)
-    .command("inbox", inboxCommand)
-    .command("start", startCommand)
-    .command("dashboard", dashboardCommand)
-    .command("workspace", workspaceCommand);
-
-  // Register help command last — needs reference to the fully-built CLI tree
+function registerLoadedCommands(
+  cli: AnyCommand,
+  loaded: readonly LoadedCommand[],
+): void {
+  for (const { name, command } of loaded) cli.command(name, command);
+  // help resolves its path against whichever tree it is registered on
   cli.command("help", createHelpCommand(cli));
+}
+
+export async function registerCommands(
+  cli: AnyCommand,
+  args?: readonly string[],
+): Promise<void> {
+  registerLoadedCommands(cli, await loadCommands(args));
 }
 
 /**
@@ -2148,9 +2112,15 @@ export function createRootCommand(colorEnabled: boolean): AnyCommand {
  * call before the real cli registers its commands: the instances are shared and
  * Cliffy re-parents each to the tree that registers it last
  */
-export function buildCommandTree(): AnyCommand {
+export async function buildCommandTree(
+  args?: readonly string[],
+): Promise<AnyCommand> {
+  return buildLoadedCommandTree(await loadCommands(args));
+}
+
+function buildLoadedCommandTree(loaded: readonly LoadedCommand[]): AnyCommand {
   const tree = createRootCommand(false);
-  registerCommands(tree);
+  registerLoadedCommands(tree, loaded);
   return tree;
 }
 
@@ -2230,6 +2200,9 @@ async function runInvocation(
   const colorEnabled = applyColorPolicy(
     commandInfo.globalOptions.includes("--no-color"),
   );
+
+  // before any per-run state, so a failed import has nothing to unwind
+  const loadedCommands = await loadCommands(args);
 
   // Windows: clean up stale .old binary from a previous self-update
   if (Deno.build.os === "windows") {
@@ -2319,10 +2292,12 @@ async function runInvocation(
     setActiveTelemetryContext(telemetryCtx);
   }
 
-  // buildCommandTree must run before registerCommands(cli) because Cliffy
-  // re-parents shared instances to the last tree; hook mode checks locally and,
-  // when blocked, records nothing and exits 0
-  const commandTree = hookMode ? undefined : buildCommandTree();
+  // the gate tree must be built before the real cli registers the same commands
+  // because Cliffy re-parents shared instances to the last tree; hook mode
+  // checks locally and, when blocked, records nothing and exits 0
+  const commandTree = hookMode
+    ? undefined
+    : buildLoadedCommandTree(loadedCommands);
   // a process that does not own the config dir (e.g. a root system daemon)
   // reads it but never writes it, leaving no root-owned files the user's own
   // runs cannot read
@@ -2677,7 +2652,7 @@ async function runInvocation(
     .error(unknownCommandErrorHandler)
     .action(groupCommandAction);
 
-  registerCommands(cli);
+  registerLoadedCommands(cli, loadedCommands);
 
   // resolved against the real command tree before parsing, since recording
   // needs it whether the parse succeeds or throws. raw redacted values stay in
