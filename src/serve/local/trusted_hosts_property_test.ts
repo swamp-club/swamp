@@ -22,7 +22,9 @@ import fc from "fast-check";
 import { TrustedHosts } from "./trusted_hosts.ts";
 
 // Starts with a letter: URL parsing turns an all-digit name into an IPv4 address.
-const label = fc.stringMatching(/^[a-z]([a-z0-9-]{0,8}[a-z0-9])?$/);
+const ldhLabel = fc.stringMatching(/^[a-z]([a-z0-9-]{0,8}[a-z0-9])?$/);
+// "--" at positions 3-4 is reserved: URL parsing refuses an xn-- label with bad punycode.
+const label = ldhLabel.filter((l) => !/^..--/.test(l));
 const hostName = fc.array(label, { minLength: 1, maxLength: 4 }).map((l) =>
   l.join(".")
 );
