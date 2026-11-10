@@ -375,18 +375,58 @@ Deno.test("createAutoDefinitionReaper: a dry run ahead of an output gc ignores t
       "last-ran-10d-ago",
       old,
     );
-    await saveAgedOutput(f.outputRepo, TYPE, 10 * DAY_MS, {
+    const output = await saveAgedOutput(f.outputRepo, TYPE, 10 * DAY_MS, {
       definitionId: idle.definition.id,
     });
     assertEquals(await drain(f.sources(), { dryRun: true }), []);
     const reaper = createAutoDefinitionReaper(f.sources());
     const batch = await reaper.collectBatch(cutoff(), 10, {
       dryRun: true,
-      outputsRemovedBefore: new Date(Date.now() - 7 * DAY_MS),
+      outputsRemoved: new Set([output.yamlPath]),
     });
     assertEquals(batch.removed.map((c) => c.definition.name), [
       "last-ran-10d-ago",
     ]);
     assert(await pathExists(idle.path));
+  });
+});
+
+Deno.test("createAutoDefinitionReaper: one failing lock release still releases the rest of the batch", async () => {
+  await withFixture(async (f) => {
+    const old = 40 * DAY_MS;
+    await saveAgedAutoDefinition(f.autoRepo, f.autoDir, TYPE, "a", old);
+    // locks are released last-taken first, so b's release runs before a's
+    const first = await saveAgedAutoDefinition(
+      f.autoRepo,
+      f.autoDir,
+      TYPE,
+      "b",
+      old,
+    );
+    const released: string[] = [];
+    const reaper = createAutoDefinitionReaper(f.sources({
+      tryLockModel: (_type, id) =>
+        Promise.resolve({
+          release: () => {
+            if (id === first.definition.id) {
+              return Promise.reject(new Error("release failed"));
+            }
+            released.push(id);
+            return Promise.resolve();
+          },
+        }),
+    }));
+    let failure: unknown;
+    try {
+      await reaper.collectBatch(cutoff(), 10);
+    } catch (error) {
+      failure = error;
+    }
+    assert(failure instanceof Error);
+    assertEquals(failure.message, "release failed");
+    assertEquals(released.length, 1);
+    // the create locks went too: a second pass can take them again
+    const again = createAutoDefinitionReaper(f.sources());
+    await again.collectBatch(cutoff(), 10);
   });
 });

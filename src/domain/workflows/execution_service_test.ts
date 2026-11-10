@@ -18813,7 +18813,7 @@ Deno.test("DefaultStepExecutor: a definition removed while the step waited for i
   assert(error instanceof Error, `unexpected error: ${error}`);
   assertStringIncludes(
     error.message,
-    "removed and created again, while this step waited for its lock",
+    "was removed, or removed and created again, while this step waited for its lock",
   );
   assertEquals(
     (error as { code?: string }).code,

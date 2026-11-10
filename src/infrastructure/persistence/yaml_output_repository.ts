@@ -541,15 +541,13 @@ export class YamlOutputRepository implements OutputRepository {
 
   /**
    * from file names alone; an unmaterialised record counts as an output;
-   * startedSince leaves out outputs a gc is about to remove
+   * excluding leaves out the files a gc is about to remove
    */
   async definitionIdsWithOutputs(
     type: ModelType,
-    options: { startedSince?: Date } = {},
+    options: { excluding?: ReadonlySet<string> } = {},
   ): Promise<Set<string>> {
     const ids = new Set<string>();
-    const since = options.startedSince && fileStamp(options.startedSince);
-    const keeps = (stamp: string) => since === undefined || stamp >= since;
     const typeDir = this.getTypeDir(type);
     let methodDirs: Deno.DirEntry[];
     try {
@@ -569,7 +567,9 @@ export class YamlOutputRepository implements OutputRepository {
       }
       for (const file of files) {
         const name = parseOutputFileName(file.name);
-        if (name && keeps(name.stamp)) ids.add(name.definitionId);
+        if (!name) continue;
+        const path = join(typeDir, methodDir.name, file.name);
+        if (!options.excluding?.has(path)) ids.add(name.definitionId);
       }
     }
     for (
@@ -579,7 +579,7 @@ export class YamlOutputRepository implements OutputRepository {
       )
     ) {
       const name = parseOutputFileName(entry.path);
-      if (name && keeps(name.stamp)) ids.add(name.definitionId);
+      if (name) ids.add(name.definitionId);
     }
     return ids;
   }
@@ -1744,7 +1744,14 @@ export class YamlOutputRepository implements OutputRepository {
   async deleteByMethodLifetime(
     fallbackCutoff: Date,
     options?: { dryRun?: boolean; limit?: number },
-  ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
+  ): Promise<
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      more: boolean;
+      wouldDelete?: readonly string[];
+    }
+  > {
     const fallbackCutoffMs = fallbackCutoff.getTime();
     // An unrepresentable cutoff deletes nothing rather than everything.
     if (!Number.isFinite(fallbackCutoffMs)) {
@@ -1795,7 +1802,14 @@ export class YamlOutputRepository implements OutputRepository {
   private async deleteExpired(
     cutoffFor: (relativePath: string) => number,
     options?: { dryRun?: boolean; limit?: number },
-  ): Promise<{ deleted: number; bytesReclaimed: number; more: boolean }> {
+  ): Promise<
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      more: boolean;
+      wouldDelete?: readonly string[];
+    }
+  > {
     const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
     const dryRun = options?.dryRun ?? false;
     const limit = options?.limit;
@@ -1935,7 +1949,12 @@ export class YamlOutputRepository implements OutputRepository {
       }
     }
 
-    return { deleted, bytesReclaimed, more };
+    return {
+      deleted,
+      bytesReclaimed,
+      more,
+      ...(dryRun ? { wouldDelete: [...deletedYamls] } : {}),
+    };
   }
 
   private liveSummaryKeys(

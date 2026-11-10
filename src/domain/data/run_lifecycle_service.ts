@@ -48,6 +48,8 @@ export interface RunGcResult {
    * this one stopped
    */
   more: boolean;
+  /** on a dry run, the output files the gc would delete */
+  outputsWouldDelete?: readonly string[];
 }
 
 export interface RunLifecycleService {
@@ -229,7 +231,14 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
     retentionDays: number;
     dryRun: boolean;
     limit?: number;
-  }): Promise<{ deleted: number; bytesReclaimed: number; more?: boolean }> {
+  }): Promise<
+    {
+      deleted: number;
+      bytesReclaimed: number;
+      more?: boolean;
+      wouldDelete?: readonly string[];
+    }
+  > {
     const cutoffMs = Date.now() - options.retentionDays * 86_400_000;
     return await this.outputRepo.deleteByMethodLifetime(
       new Date(cutoffMs),
@@ -298,6 +307,9 @@ export class DefaultRunLifecycleService implements RunLifecycleService {
       snapshotsDeleted: snapshots.deleted,
       snapshotBytesReclaimed: snapshots.bytesReclaimed,
       dryRun: options.dryRun,
+      ...(outputs.wouldDelete
+        ? { outputsWouldDelete: outputs.wouldDelete }
+        : {}),
       more: (workflowRuns.more ?? false) || (outputs.more ?? false),
     };
   }

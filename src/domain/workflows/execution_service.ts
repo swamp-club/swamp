@@ -2388,9 +2388,8 @@ export class DefaultStepExecutor implements StepExecutor {
       // the run is cancelled; inside the try so the finally still releases
       ctx.signal.throwIfAborted();
       if (this.stepLockHook) {
-        // removed or replaced between its lookup and this lock: retention or a
-        // delete took it, and the step must not run under a lock it lost
-        // by name first, which reads one file; by id only when that misses
+        // removed or replaced between its lookup and this lock; by name first,
+        // which reads one file, by id only when that misses
         const held = await definitionRepo.findByName(
           modelType,
           originalDefinition.name,
@@ -2403,7 +2402,7 @@ export class DefaultStepExecutor implements StepExecutor {
             ) === null
         ) {
           throw new UserError(
-            `Behavior ${originalDefinition.name} was renamed, or removed and created again, while this step waited for its lock: run it again`,
+            `Behavior ${originalDefinition.name} was removed, or removed and created again, while this step waited for its lock: run it again`,
             "definition_changed_under_lock",
           );
         }

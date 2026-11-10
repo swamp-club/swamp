@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   runGc,
   type RunGcDeps,
@@ -364,23 +364,22 @@ Deno.test("runGc: collects auto-definitions after the outputs, only with their r
       return Promise.resolve({
         workflowRunsDeleted: 0,
         workflowRunBytesReclaimed: 0,
-        outputsDeleted: 0,
+        outputsDeleted: 1,
         outputBytesReclaimed: 0,
         snapshotsDeleted: 0,
         snapshotBytesReclaimed: 0,
         dryRun: true,
         more: false,
+        outputsWouldDelete: ["/outputs/command/shell/run/x.yaml"],
       });
     },
-    collectAutoDefinitions: (cutoff, dryRun, outputsRemovedBefore) => {
+    collectAutoDefinitions: (cutoff, dryRun, outputsRemoved) => {
       calls.push(`auto:${dryRun}`);
-      // a dry run deleted no outputs, so it names the ones the gc would remove
-      const outputDays = outputsRemovedBefore === undefined
-        ? undefined
-        : Math.round(
-          (Date.now() - outputsRemovedBefore.getTime()) / 86_400_000,
-        );
-      assertEquals(outputDays, dryRun ? 7 : undefined);
+      // a dry run deleted no outputs, so it is told the ones the gc would
+      assertEquals(
+        outputsRemoved && [...outputsRemoved],
+        dryRun ? ["/outputs/command/shell/run/x.yaml"] : undefined,
+      );
       const days = (Date.now() - cutoff.getTime()) / 86_400_000;
       assertEquals(Math.round(days), 60);
       return Promise.resolve([{ name: "idle", type: "command/shell" }]);
@@ -413,4 +412,94 @@ Deno.test("runGc: collects auto-definitions after the outputs, only with their r
     { name: "idle", type: "command/shell" },
   ]);
   assertEquals(withKey.totalBytesReclaimed, 0);
+});
+
+Deno.test("runGcPreview: names an auto-definition whose last output its method's shorter outputLifetime removes", async () => {
+  const { z } = await import("zod");
+  const { modelRegistry } = await import("../../domain/models/model.ts");
+  const { ModelType } = await import("../../domain/models/model_type.ts");
+  const { YamlOutputRepository } = await import(
+    "../../infrastructure/persistence/yaml_output_repository.ts"
+  );
+  const { YamlEvaluatedDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
+  );
+  const { YamlDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_definition_repository.ts"
+  );
+  const { saveAgedAutoDefinition, saveAgedOutput, pathExists } = await import(
+    "../retention/retention_fixture_test_helpers.ts"
+  );
+  const type = ModelType.create(
+    `test/short-lived-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  modelRegistry.register({
+    type,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "keeps its outputs for a week",
+        arguments: z.object({}),
+        outputLifetime: "7d",
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  try {
+    await withTempDir(async (dir) => {
+      const autoDir = join(dir, ".swamp", "auto-definitions");
+      const autoRepo = new YamlDefinitionRepository(
+        dir,
+        undefined,
+        autoDir,
+        false,
+      );
+      const outputRepo = new YamlOutputRepository(dir);
+      const idle = await saveAgedAutoDefinition(
+        autoRepo,
+        autoDir,
+        type,
+        "job-123",
+        40 * 86_400_000,
+      );
+      await saveAgedOutput(outputRepo, type, 10 * 86_400_000, {
+        definitionId: idle.definition.id,
+      });
+      const deps = createRunGcDeps(
+        dir,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          autoDefinitionsDir: autoDir,
+          autoDefinitionRepo: autoRepo,
+          outputRepo,
+          dataRepo: { findAllForModel: () => Promise.resolve([]) },
+          evaluatedDefinitionRepo: new YamlEvaluatedDefinitionRepository(dir),
+          workflowRepo: { findAll: () => Promise.resolve([]) },
+        },
+      );
+      const input = {
+        dryRun: false,
+        workflowRunRetentionDays: 30,
+        outputRetentionDays: 30,
+        autoDefinitionRetentionDays: 5,
+      };
+      const preview = await runGcPreview(createMockCtx(), deps, input);
+      assertEquals(preview.autoDefinitions.map((d) => d.name), ["job-123"]);
+      assert(await pathExists(idle.path));
+
+      for await (const event of runGc(createMockCtx(), deps, input)) {
+        if (event.kind === "completed") {
+          assertEquals(event.data.autoDefinitions.map((d) => d.name), [
+            "job-123",
+          ]);
+        }
+      }
+      assertEquals(await pathExists(idle.path), false);
+    });
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
 });

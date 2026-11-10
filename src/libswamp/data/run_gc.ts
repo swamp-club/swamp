@@ -176,7 +176,7 @@ export interface RunGcDeps {
   collectAutoDefinitions?: (
     cutoff: Date,
     dryRun: boolean,
-    outputsRemovedBefore?: Date,
+    outputsRemoved?: ReadonlySet<string>,
   ) => Promise<RunGcAutoDefinition[]>;
 }
 
@@ -254,13 +254,8 @@ export function createRunGcDeps(
   return {
     gcAll: (options) => service.gcAll(options),
     ...(autoDefinitions === undefined ? {} : {
-      collectAutoDefinitions: (cutoff, dryRun, outputsRemovedBefore) =>
-        drainAutoDefinitions(
-          autoDefinitions,
-          cutoff,
-          dryRun,
-          outputsRemovedBefore,
-        ),
+      collectAutoDefinitions: (cutoff, dryRun, outputsRemoved) =>
+        drainAutoDefinitions(autoDefinitions, cutoff, dryRun, outputsRemoved),
     }),
   };
 }
@@ -271,14 +266,14 @@ async function drainAutoDefinitions(
   sources: AutoDefinitionRetentionSources,
   cutoff: Date,
   dryRun: boolean,
-  outputsRemovedBefore?: Date,
+  outputsRemoved?: ReadonlySet<string>,
 ): Promise<RunGcAutoDefinition[]> {
   const reaper = createAutoDefinitionReaper(sources);
   const removed: RunGcAutoDefinition[] = [];
   while (true) {
     const batch = await reaper.collectBatch(cutoff, AUTO_DEFINITION_GC_BATCH, {
       dryRun,
-      ...(outputsRemovedBefore ? { outputsRemovedBefore } : {}),
+      ...(outputsRemoved ? { outputsRemoved } : {}),
     });
     for (const candidate of batch.removed) {
       removed.push({
@@ -294,6 +289,7 @@ async function collectAutoDefinitionsFor(
   deps: RunGcDeps,
   input: RunGcInput,
   dryRun: boolean,
+  gc: RunGcResult,
 ): Promise<RunGcAutoDefinition[]> {
   if (
     input.autoDefinitionRetentionDays === undefined ||
@@ -301,20 +297,14 @@ async function collectAutoDefinitionsFor(
   ) {
     return [];
   }
-  const now = Date.now();
-  const cutoff = new Date(now - input.autoDefinitionRetentionDays * DAY_MS);
-  // a dry run deleted no outputs, so the ones the real gc removes are ignored
-  const outputsRemovedBefore = dryRun
-    ? new Date(
-      now -
-        (input.outputRetentionDays ?? DEFAULT_OUTPUT_RETENTION_DAYS) * DAY_MS,
-    )
-    : undefined;
-  return await deps.collectAutoDefinitions(
-    cutoff,
-    dryRun,
-    outputsRemovedBefore,
+  const cutoff = new Date(
+    Date.now() - input.autoDefinitionRetentionDays * DAY_MS,
   );
+  // a dry run deleted no outputs, so the ones the gc would delete are ignored
+  const outputsRemoved = dryRun
+    ? new Set(gc.outputsWouldDelete ?? [])
+    : undefined;
+  return await deps.collectAutoDefinitions(cutoff, dryRun, outputsRemoved);
 }
 
 export function createRunLifecycleService(
@@ -378,7 +368,12 @@ export async function runGcPreview(
       snapshotRetentionDays: input.evaluatedSnapshotRetentionDays,
     }),
   });
-  const autoDefinitions = await collectAutoDefinitionsFor(deps, input, true);
+  const autoDefinitions = await collectAutoDefinitionsFor(
+    deps,
+    input,
+    true,
+    result,
+  );
   return {
     workflowRunsToDelete: result.workflowRunsDeleted,
     workflowRunBytesReclaimable: result.workflowRunBytesReclaimed,
@@ -420,6 +415,7 @@ export async function* runGc(
           deps,
           input,
           input.dryRun,
+          result,
         );
 
         yield {

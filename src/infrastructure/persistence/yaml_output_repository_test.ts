@@ -1628,7 +1628,9 @@ Deno.test(
       assertEquals(await pathExists(orphan), true);
 
       const real = await repo.deleteByMethodLifetime(cutoff);
-      assertEquals(preview, real);
+      const { wouldDelete, ...counts } = preview;
+      assertEquals(counts, real);
+      assertEquals(wouldDelete, [yamlPath]);
       assertEquals(await pathExists(logPath), false);
     });
   },

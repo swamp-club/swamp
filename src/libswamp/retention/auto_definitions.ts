@@ -82,12 +82,12 @@ export interface AutoDefinitionBatchResult {
 export interface AutoDefinitionReaper {
   /**
    * judges up to limit more candidates; removes the idle ones unless dryRun.
-   * A dry run ahead of an output gc passes its cutoff as outputsRemovedBefore
+   * A dry run ahead of an output gc passes the files that gc would delete
    */
   collectBatch(
     cutoff: Date,
     limit: number,
-    options?: { dryRun?: boolean; outputsRemovedBefore?: Date },
+    options?: { dryRun?: boolean; outputsRemoved?: ReadonlySet<string> },
   ): Promise<AutoDefinitionBatchResult>;
 }
 
@@ -152,7 +152,7 @@ export function createAutoDefinitionReaper(
           outputIds,
           sources,
           read.type,
-          options.outputsRemovedBefore,
+          options.outputsRemoved,
         );
         const facts = {
           modelType: read.type.normalized,
@@ -199,24 +199,42 @@ export function createAutoDefinitionReaper(
           }
         }
       } finally {
-        for (const { release } of held.reverse()) await release();
+        await releaseAll(held.reverse().map((h) => h.release));
       }
       return { removed, bytesReclaimed, more };
     },
   };
 }
 
+/** every lock is released even when one release fails; the failures follow */
+async function releaseAll(
+  releases: readonly (() => Promise<void>)[],
+): Promise<void> {
+  const errors: unknown[] = [];
+  for (const release of releases) {
+    try {
+      await release();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Failed to release auto-definition locks");
+  }
+}
+
 async function outputIdsOf(
   cache: Map<string, Set<string>>,
   sources: AutoDefinitionRetentionSources,
   type: ModelType,
-  startedSince?: Date,
+  excluding?: ReadonlySet<string>,
 ): Promise<Set<string>> {
   let ids = cache.get(type.normalized);
   if (!ids) {
     ids = await sources.outputRepo.definitionIdsWithOutputs(
       type,
-      startedSince ? { startedSince } : {},
+      excluding ? { excluding } : {},
     );
     cache.set(type.normalized, ids);
   }
