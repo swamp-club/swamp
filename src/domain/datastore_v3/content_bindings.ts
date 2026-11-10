@@ -551,7 +551,7 @@ function fanOutHaltRefusal(
     ) {
       return `it adds a fan-out halt to job '${job.jobName}' other than in the record where the job fails`;
     }
-    const mismatch = haltMismatch(job, halts[halts.length - 1]);
+    const mismatch = haltMismatch(job, prior, halts[halts.length - 1]);
     if (mismatch !== undefined) {
       return `its fan-out halt of job '${job.jobName}' ${mismatch}`;
     }
@@ -678,6 +678,7 @@ function fanOutGateRefusal(
 
 function haltMismatch(
   job: JobRunData,
+  prior: JobRunData,
   halt: NonNullable<JobRunData["fanOutHalts"]>[number],
 ): string | undefined {
   const plan = job.fanOutPlan;
@@ -699,14 +700,21 @@ function haltMismatch(
       return `names '${worker}', not a lane of the plan`;
     }
   }
-  // a resumed lane keeps the steps it finished before its failed one
+  // a resumed lane keeps the steps before the one it re-runs from; --from can keep a failed one
+  const priorSteps = new Map(prior.steps.map((step) => [step.stepName, step]));
+  const keptFailure = (step: StepRunData) => {
+    const was = priorSteps.get(step.stepName);
+    return step.status === "failed" && was?.status === "failed" &&
+      !was.allowedFailure;
+  };
   for (const worker of halt.held) {
     const steps = records.get(worker)!;
     if (
       !steps.some((step) => step.status === "skipped" && step.settledByAbort) ||
       steps.some((step) =>
         step.status !== "succeeded" && step.status !== "skipped" &&
-        !(step.status === "failed" && step.allowedFailure)
+        !(step.status === "failed" && step.allowedFailure) &&
+        !keptFailure(step)
       )
     ) {
       return `holds lane '${worker}', which started`;

@@ -1258,6 +1258,36 @@ Deno.test("judgeRunRecord: a held lane may keep an allowed failure from an earli
   }
 });
 
+Deno.test("judgeRunRecord: a held lane may keep a failure that counts from an earlier attempt, as --from leaves one, but not one new in the record", () => {
+  const halted = (prior: StepRunData) =>
+    judge(
+      rolloutRun("running", [
+        step("apply[w-a]", { status: "failed" }),
+        prior,
+        step("verify[w-b]"),
+        step("verify[w-c]"),
+      ]),
+      rolloutRun("failed", [
+        step("apply[w-a]", { status: "failed" }),
+        step("apply[w-b]", { status: "failed" }),
+        step("verify[w-b]", HELD),
+        step("verify[w-c]", HELD),
+      ], [CANARY_HALT]),
+    ).refusal;
+  assertEquals(halted(step("apply[w-b]", { status: "failed" })), undefined);
+  for (
+    const prior of [
+      step("apply[w-b]"),
+      step("apply[w-b]", { status: "failed", allowedFailure: true }),
+    ]
+  ) {
+    assertStringIncludes(
+      halted(prior) ?? "",
+      "holds lane 'w-b', which started",
+    );
+  }
+});
+
 const PLAN_GATE = "patch[approve-plan]";
 const CANARY_GATE = "patch[approve-canary]";
 const APPROVED = {

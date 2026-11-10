@@ -33,7 +33,7 @@ import type {
 } from "../domain/access/mod.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DashboardSession } from "./dashboard_session_store.ts";
-import { checkIpBurst } from "./rate_limiter.ts";
+import { checkIpBurst, resetRateLimitState } from "./rate_limiter.ts";
 
 const DASHBOARD_SESSION: DashboardSession = {
   id: "a".repeat(64),
@@ -192,6 +192,7 @@ Deno.test("authenticateToken: does not treat a dashboard session cookie as an ad
 });
 
 Deno.test("authenticateDashboardSessionToken: returns the token mint binding for a valid session", async () => {
+  resetRateLimitState();
   const result = await authenticateDashboardSessionToken(
     new Request("https://serve.test/api/v1/health"),
     freshClientAddr(),
@@ -210,6 +211,7 @@ Deno.test("authenticateDashboardSessionToken: returns the token mint binding for
 });
 
 Deno.test("authenticateDashboardSessionToken: marks revoked backing tokens for session invalidation", async () => {
+  resetRateLimitState();
   const result = await authenticateDashboardSessionToken(
     new Request("https://serve.test/api/v1/health"),
     freshClientAddr(),
@@ -344,6 +346,7 @@ Deno.test("authenticateToken: a request without a bearer token does not count to
 });
 
 Deno.test("authenticateDashboardSessionToken: refuses a person who is no longer admitted, keeping the session", async () => {
+  resetRateLimitState();
   const deniesEveryone = {
     serverToken: () =>
       Promise.resolve({ admitted: false, reason: "not in allowed-users" }),

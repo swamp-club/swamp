@@ -6114,9 +6114,13 @@ export class WorkflowExecutionService {
         );
         return;
       }
+      // a held lane never started this attempt, so a failed step it kept is not one of this attempt's failures
+      const heldNow = end.kind === "halted" ? end.held : [];
       const failed = [
         ...keptFailed,
-        ...batches.flat().filter((worker) => laneFailed(stepsOfLane(worker))),
+        ...batches.flat().filter((worker) =>
+          !heldNow.includes(worker) && laneFailed(stepsOfLane(worker))
+        ),
       ];
       attemptFailed = failed.length;
       if (end.kind === "halted") {
