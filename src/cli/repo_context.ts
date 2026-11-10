@@ -59,7 +59,7 @@ import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
-import { VERSION } from "./commands/version.ts";
+import { VERSION } from "../infrastructure/runtime/build_info.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 import type { Logger } from "@logtape/logtape";

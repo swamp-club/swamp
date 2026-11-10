@@ -40,7 +40,7 @@ import {
   isChildOf,
   withCapturedSpans,
 } from "../src/infrastructure/tracing/span_test_helpers.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import {
   createModelLock,
   requireInitializedRepo,

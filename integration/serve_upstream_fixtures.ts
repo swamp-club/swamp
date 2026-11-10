@@ -26,7 +26,7 @@
 import { join } from "@std/path";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import {
   resetServeUpstreamCommandPath,
   setServeUpstreamCommandPath,

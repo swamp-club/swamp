@@ -24,7 +24,7 @@
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";
 import { z } from "zod";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import {
   createModelLock,
   createWorkflowRunLock,

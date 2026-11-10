@@ -38,7 +38,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
-import { GIT_SHA } from "./version.ts";
+import { GIT_SHA } from "../../infrastructure/runtime/build_info.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { modelMethodRun } from "../../libswamp/models/run.ts";

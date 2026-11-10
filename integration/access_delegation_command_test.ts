@@ -20,7 +20,7 @@
 import "../src/domain/models/models.ts";
 import { join } from "@std/path";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { Ceiling } from "../src/domain/access/ceiling.ts";
 import {
   issueDelegationTokens,

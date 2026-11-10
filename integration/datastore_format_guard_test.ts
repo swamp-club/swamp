@@ -28,7 +28,7 @@ import {
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
 } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import {
   DATASTORE_FORMAT_MARKER_FILE,
   DATASTORE_FORMAT_MARKER_INVALID_CODE,

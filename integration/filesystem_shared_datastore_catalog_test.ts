@@ -29,7 +29,7 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { CATALOG_WRITERS_DIR } from "../src/infrastructure/persistence/shared_datastore_write_tracker.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 
 await initializeLogging({});
 

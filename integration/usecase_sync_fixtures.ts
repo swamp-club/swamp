@@ -47,7 +47,7 @@ import { runCommand } from "../src/cli/commands/run.ts";
 import { vaultCommand } from "../src/cli/commands/vault.ts";
 import { workerCommand } from "../src/cli/commands/worker.ts";
 import { workflowCommand } from "../src/cli/commands/workflow.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";

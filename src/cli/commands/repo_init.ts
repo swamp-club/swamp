@@ -44,7 +44,7 @@ import { ManagedConfigUnresolvedError } from "../repo_context.ts";
 import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 import { repoPruneCommand } from "./repo_prune.ts";
 

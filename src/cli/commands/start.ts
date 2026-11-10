@@ -31,7 +31,7 @@ import {
 } from "../../libswamp/start/start.ts";
 import { createStartRenderer } from "../../presentation/renderers/start.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { blockMessage, createAuthGateDeps, runAuthGate } from "../auth_gate.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";

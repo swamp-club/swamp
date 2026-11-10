@@ -36,7 +36,7 @@ import {
   registerTestDatastoreType,
 } from "../src/infrastructure/testing/test_datastore_type.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 
 await initializeLogging({});
 

@@ -74,7 +74,7 @@ import type {
   ModelMethodRunView,
   UnpublishedVersionView,
 } from "../../libswamp/models/model_method_run_view.ts";
-import { GIT_SHA } from "./version.ts";
+import { GIT_SHA } from "../../infrastructure/runtime/build_info.ts";
 import {
   deepMerge,
   mergeInputArgs,

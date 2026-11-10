@@ -35,7 +35,7 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
 import { resolvePulledExtensionsRoot } from "../src/infrastructure/persistence/paths.ts";
 import { requireInitializedRepoReadOnly } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { workflowsDirFor } from "../src/libswamp/workflows/broken_workflow.ts";

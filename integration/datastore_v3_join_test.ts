@@ -28,7 +28,7 @@ import { copy, walk } from "@std/fs";
 import { join } from "@std/path";
 import { z } from "zod";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,

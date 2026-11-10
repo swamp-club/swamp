@@ -88,7 +88,7 @@ import {
 import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { withGeneratorTraceContext } from "../../infrastructure/tracing/mod.ts";
-import { GIT_SHA } from "./version.ts";
+import { GIT_SHA } from "../../infrastructure/runtime/build_info.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
 import { abortOnTimeout } from "../abort_on_timeout.ts";
 import {

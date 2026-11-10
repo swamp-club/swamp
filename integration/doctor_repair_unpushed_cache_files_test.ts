@@ -41,7 +41,7 @@ import { RepoService } from "../src/domain/repo/repo_service.ts";
 import { UserError } from "../src/domain/errors.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { registerTestDatastoreType } from "../src/infrastructure/testing/test_datastore_type.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 
 await initializeLogging({});
 

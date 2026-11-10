@@ -33,11 +33,7 @@ import {
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-
-// replaced by the compile script during release builds
-export const VERSION = "20260206.200442.0-sha.";
-
-export const GIT_SHA = "948fb52d";
+import { GIT_SHA, VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 export function getVersionData(): VersionData {
   return { version: VERSION };

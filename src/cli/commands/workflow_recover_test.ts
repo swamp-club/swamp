@@ -35,7 +35,7 @@ import {
   type StepExecutor,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { hostname } from "node:os";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";

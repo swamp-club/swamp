@@ -50,7 +50,7 @@ import {
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { readOnlyLockFor } from "../../infrastructure/runtime/deno_lockfile_reader.ts";
 

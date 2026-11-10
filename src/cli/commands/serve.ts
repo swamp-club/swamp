@@ -546,7 +546,7 @@ import {
   TOKEN_FILE_DESCRIPTION,
 } from "../remote_run.ts";
 import { validateServerRepoExclusivity } from "./access_helpers.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import {
   registerInstance,
   sendInstanceHeartbeat,

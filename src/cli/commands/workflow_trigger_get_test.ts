@@ -34,7 +34,7 @@ import {
 } from "../../serve/serve_config.ts";
 import type { WorkflowTriggerGetResult } from "../../serve/protocol.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
-import { VERSION } from "./version.ts";
+import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 
 import "../../domain/models/models.ts";
 

@@ -46,7 +46,7 @@ import {
   uninstallExecutionObserver,
 } from "../src/infrastructure/tracing/execution_observer.ts";
 import { resolveDatastoreForRepo } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { createSyncGate, withSyncGate } from "../src/serve/sync_gate.ts";
 import { runRepoRetention } from "../src/libswamp/retention/run.ts";
 import type { RetentionPassResult } from "../src/libswamp/retention/pass.ts";

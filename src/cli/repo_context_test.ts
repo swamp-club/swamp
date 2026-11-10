@@ -154,7 +154,7 @@ import {
 } from "./serve_upstream.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
-import { VERSION } from "./commands/version.ts";
+import { VERSION } from "../infrastructure/runtime/build_info.ts";
 import { setOwnLockGate } from "../infrastructure/datastore_v3/own_lock_gate.ts";
 
 await initializeLogging({});

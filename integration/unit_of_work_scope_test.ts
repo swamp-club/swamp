@@ -25,7 +25,7 @@ import {
   type InMemoryRemote,
 } from "@swamp-club/swamp-testing";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import type { MarkDirtyHook } from "../src/domain/datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../src/domain/datastore/unit_of_work.ts";
 import { Data } from "../src/domain/data/data.ts";

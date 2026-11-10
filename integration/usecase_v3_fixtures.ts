@@ -24,7 +24,7 @@ import { assert, assertEquals } from "@std/assert";
 import { z } from "zod";
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { isCustomDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";

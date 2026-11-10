@@ -22,7 +22,7 @@ import { assertEquals, assertExists } from "@std/assert";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
 import { z } from "zod";
-import { VERSION } from "../src/cli/commands/version.ts";
+import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
