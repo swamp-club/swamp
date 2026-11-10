@@ -216,7 +216,16 @@ export function createAutoDefinitionReaper(
         );
         throw error;
       }
-      await releaseAll(held.reverse().map((h) => h.release));
+      // the removals went through, so a failed release must not report them lost
+      await releaseAll(held.reverse().map((h) => h.release)).catch(
+        (releaseError) =>
+          logger
+            .warn`Removed ${removed.length} auto-definition(s), but failed to release the batch's locks: ${
+            releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError)
+          }`,
+      );
       return { removed, bytesReclaimed, more };
     },
   };

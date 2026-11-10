@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Logger } from "@logtape/logtape";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
   RunGcAutoDefinition,
@@ -27,6 +28,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { logTextBlock } from "./log_text_block.ts";
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -39,11 +41,16 @@ function formatBytes(bytes: number): string {
 
 const LISTED_AUTO_DEFINITIONS = 20;
 
-function autoDefinitionList(removed: readonly RunGcAutoDefinition[]): string {
-  const shown = removed.slice(0, LISTED_AUTO_DEFINITIONS)
-    .map((d) => `${d.name} (${d.type})`).join(", ");
+// printed verbatim: as an interpolated value the list would be quoted
+function logAutoDefinitionList(
+  logger: Logger,
+  removed: readonly RunGcAutoDefinition[],
+): void {
+  const lines = removed.slice(0, LISTED_AUTO_DEFINITIONS)
+    .map((d) => `${d.name} (${d.type})`);
   const rest = removed.length - LISTED_AUTO_DEFINITIONS;
-  return rest > 0 ? `${shown}, and ${rest} more` : shown;
+  if (rest > 0) lines.push(`and ${rest} more`);
+  logTextBlock(logger, "info", lines.join("\n"), "  ");
 }
 
 class LogRunGcRenderer implements Renderer<RunGcEvent> {
@@ -66,9 +73,8 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
           }), total: ${total} items (${totalBytes})`;
           if (e.data.autoDefinitionsDeleted > 0) {
             logger
-              .info`Run GC dry run: would remove ${e.data.autoDefinitionsDeleted} idle auto-definition(s): ${
-              autoDefinitionList(e.data.autoDefinitions)
-            }`;
+              .info`Run GC dry run: would remove ${e.data.autoDefinitionsDeleted} idle auto-definition(s):`;
+            logAutoDefinitionList(logger, e.data.autoDefinitions);
           }
           return;
         }
@@ -82,9 +88,8 @@ class LogRunGcRenderer implements Renderer<RunGcEvent> {
         }), total: ${total} items (${totalBytes})`;
         if (e.data.autoDefinitionsDeleted > 0) {
           logger
-            .info`Run GC removed ${e.data.autoDefinitionsDeleted} idle auto-definition(s): ${
-            autoDefinitionList(e.data.autoDefinitions)
-          }`;
+            .info`Run GC removed ${e.data.autoDefinitionsDeleted} idle auto-definition(s):`;
+          logAutoDefinitionList(logger, e.data.autoDefinitions);
         }
       },
       error: (e) => {
@@ -172,9 +177,8 @@ export function renderRunGcPreview(
     }
     if (preview.autoDefinitionsToDelete > 0) {
       logger
-        .info`Run GC preview: ${preview.autoDefinitionsToDelete} idle auto-definition(s) to remove, with their edited arguments: ${
-        autoDefinitionList(preview.autoDefinitions)
-      }`;
+        .info`Run GC preview: ${preview.autoDefinitionsToDelete} idle auto-definition(s) to remove, with their edited arguments:`;
+      logAutoDefinitionList(logger, preview.autoDefinitions);
     }
   }
 }

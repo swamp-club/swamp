@@ -19,6 +19,7 @@
 
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { EventBus } from "../events/event_bus.ts";
+import { modelWording } from "../behavior_wording.ts";
 import type { RunCheckpointer } from "./run_checkpointer.ts";
 import { StepStartUnrecordedError } from "./step_start.ts";
 import {
@@ -18813,7 +18814,12 @@ Deno.test("DefaultStepExecutor: a definition removed while the step waited for i
   assert(error instanceof Error, `unexpected error: ${error}`);
   assertStringIncludes(
     error.message,
-    "was removed, or removed and created again, while this step waited for its lock",
+    "was removed, or replaced by a new definition with the same name, while this step waited for its lock: run it again",
+  );
+  assert(error.message.startsWith("Behavior "), error.message);
+  assert(
+    modelWording(error)?.startsWith("Model "),
+    `model wording: ${modelWording(error)}`,
   );
   assertEquals(
     (error as { code?: string }).code,

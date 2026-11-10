@@ -328,8 +328,10 @@ garbageCollection:
   removes the evaluated definition and the definition. Removing one discards
   global arguments set with `swamp behavior edit`, and the next run by name
   creates a new definition with a new id. A step that names its behavior
-  through an expression is not seen by the reference check; its definition is
-  created again by name on the next run. A run that looked a definition up
+  through an expression is not seen by the reference check, and neither is a
+  per-worker lane definition (`perWorkerBehaviorName`), which no workflow names
+  literally, so only its data and outputs keep it; such a definition is created
+  again by name on the next run. A run that looked a definition up
   before retention removed it and locked it after is refused with
   `definition_changed_under_lock` (direct runs, serve runs and workflow steps
   alike) and succeeds when run again. `swamp run gc` applies the key too;

@@ -391,7 +391,7 @@ Deno.test("createAutoDefinitionReaper: a dry run ahead of an output gc ignores t
   });
 });
 
-Deno.test("createAutoDefinitionReaper: one failing lock release still releases the rest of the batch", async () => {
+Deno.test("createAutoDefinitionReaper: a failing lock release after removals still reports them and releases the rest of the batch", async () => {
   await withFixture(async (f) => {
     const old = 40 * DAY_MS;
     await saveAgedAutoDefinition(f.autoRepo, f.autoDir, TYPE, "a", old);
@@ -416,14 +416,13 @@ Deno.test("createAutoDefinitionReaper: one failing lock release still releases t
           },
         }),
     }));
-    let failure: unknown;
-    try {
-      await reaper.collectBatch(cutoff(), 10);
-    } catch (error) {
-      failure = error;
-    }
-    assert(failure instanceof Error);
-    assertEquals(failure.message, "release failed");
+    // the removals went through, so the batch reports them despite the release
+    const result = await reaper.collectBatch(cutoff(), 10);
+    assertEquals(result.removed.map((c) => c.definition.name).sort(), [
+      "a",
+      "b",
+    ]);
+    assert(result.bytesReclaimed > 0);
     assertEquals(released.length, 1);
     // the create locks went too: b, saved again, is removed by a second pass
     const resaved = await saveAgedAutoDefinition(
