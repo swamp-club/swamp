@@ -260,10 +260,19 @@ export interface HeartbeatResponse {
   readonly heartbeatCount: number;
 }
 
+/** swamp-club has no row for this process, so registering again restores it */
+export class InstanceNotRegisteredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InstanceNotRegisteredError";
+  }
+}
+
 export async function sendInstanceHeartbeat(
   providerUrl: string,
   accessToken: string,
   oauthClientId: string,
+  instanceId: string,
   signal: AbortSignal,
 ): Promise<HeartbeatResponse> {
   const resp = await fetch(
@@ -273,18 +282,21 @@ export async function sendInstanceHeartbeat(
     {
       method: "PUT",
       headers: {
+        "content-type": "application/json",
         "authorization": `Bearer ${accessToken}`,
       },
+      body: JSON.stringify({ instanceId }),
       signal,
     },
   );
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
-    throw new Error(
+    const message =
       `Instance heartbeat failed: ${resp.status} ${resp.statusText}${
         data.error ? ` — ${data.error}` : ""
-      }`,
-    );
+      }`;
+    if (resp.status === 404) throw new InstanceNotRegisteredError(message);
+    throw new Error(message);
   }
   return await resp.json() as HeartbeatResponse;
 }
