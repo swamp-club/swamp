@@ -18,6 +18,8 @@
     "fmt": "deno fmt",
     "compile": "deno run -A scripts/compile.ts",
     "check-binary-size": "deno run --allow-read scripts/check_binary_size.ts",
+    "bench-startup": "deno run --allow-read --allow-write --allow-env --allow-run scripts/bench_startup.ts",
+    "cli-parity": "deno run --allow-read --allow-write --allow-env --allow-run scripts/cli_parity.ts",
     "license-headers": "deno run --allow-read --allow-write scripts/add_license_headers.ts",
     "unbarrel": "deno run --allow-read --allow-write scripts/unbarrel.ts",
     "agent-session-schema": "deno run --allow-read --allow-write=design/surfaces/agent-session-record.schema.json,design/surfaces/agent-session-summary.schema.json scripts/generate_agent_session_schema.ts",
