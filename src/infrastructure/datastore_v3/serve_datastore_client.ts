@@ -459,8 +459,9 @@ export class ServeDatastoreClient {
   readonly #makeHttpClient: (() => Deno.HttpClient) | undefined;
   #httpClient: Deno.HttpClient | undefined;
   // a client whose connection timed out takes no new request; requests still
-  // in flight on it finish there, and close() ends it
-  readonly #retiredClients: Deno.HttpClient[] = [];
+  // in flight on it finish there, and it closes once they have
+  readonly #retiredClients = new Set<Deno.HttpClient>();
+  readonly #inFlight = new Map<Deno.HttpClient, number>();
   #ownConnectionAfterTimeout = false;
   readonly #timeoutMs: number;
   readonly #responseBaseMs: number;
@@ -505,7 +506,8 @@ export class ServeDatastoreClient {
   close(): void {
     this.#httpClient?.close();
     this.#httpClient = undefined;
-    for (const client of this.#retiredClients.splice(0)) client.close();
+    for (const client of this.#retiredClients) client.close();
+    this.#retiredClients.clear();
   }
 
   async hasChunks(
@@ -1327,130 +1329,139 @@ export class ServeDatastoreClient {
       if (latch.aborted) {
         throw this.#latched("never", latch.reason, spec);
       }
-      const timed = AbortSignal.any([
-        signal,
-        this.#timeoutSignal(
-          serveRequestDeadlineMs(
-            this.#timeoutMs,
-            bodyBytesOf(spec.body),
-          ),
-        ),
-        latch,
-      ]);
-      const bodyBytes = bodyBytesOf(spec.body);
-      const responseMs = serveResponseDeadlineMs(
-        answersWithoutConfirm(spec.method, spec.path)
-          ? this.#responseBaseMs
-          : this.#commitResponseBaseMs,
-        this.#timeoutMs,
-        bodyBytes,
-        spec.serverWaitMs ?? 0,
-      );
-      const unanswered = new AbortController();
-      const responseTimer = responseMs <
-          serveRequestDeadlineMs(this.#timeoutMs, bodyBytes)
-        ? setTimeout(() =>
-          unanswered.abort(
-            new DOMException(
-              `Serve did not start its reply within ${responseMs} ms`,
-              "TimeoutError",
-            ),
-          ), responseMs)
-        : undefined;
-      let response: Response;
-      const sentAt = Date.now();
+      const clientInit = this.#clientInit();
+      const used = clientInit.client;
+      if (used !== undefined) {
+        this.#inFlight.set(used, (this.#inFlight.get(used) ?? 0) + 1);
+      }
       try {
-        response = await this.#fetch(url, {
-          method: spec.method,
-          headers,
-          ...(spec.body === undefined ? {} : { body: spec.body }),
-          signal: AbortSignal.any([timed, unanswered.signal]),
-          ...this.#clientInit(),
-        });
-      } catch (error) {
-        if (latch.aborted && !signal.aborted) {
-          throw this.#latched("maybe", latch.reason, spec);
+        const timed = AbortSignal.any([
+          signal,
+          this.#timeoutSignal(
+            serveRequestDeadlineMs(
+              this.#timeoutMs,
+              bodyBytesOf(spec.body),
+            ),
+          ),
+          latch,
+        ]);
+        const bodyBytes = bodyBytesOf(spec.body);
+        const responseMs = serveResponseDeadlineMs(
+          answersWithoutConfirm(spec.method, spec.path)
+            ? this.#responseBaseMs
+            : this.#commitResponseBaseMs,
+          this.#timeoutMs,
+          bodyBytes,
+          spec.serverWaitMs ?? 0,
+        );
+        const unanswered = new AbortController();
+        const responseTimer = responseMs <
+            serveRequestDeadlineMs(this.#timeoutMs, bodyBytes)
+          ? setTimeout(() =>
+            unanswered.abort(
+              new DOMException(
+                `Serve did not start its reply within ${responseMs} ms`,
+                "TimeoutError",
+              ),
+            ), responseMs)
+          : undefined;
+        let response: Response;
+        const sentAt = Date.now();
+        try {
+          response = await this.#fetch(url, {
+            method: spec.method,
+            headers,
+            ...(spec.body === undefined ? {} : { body: spec.body }),
+            signal: AbortSignal.any([timed, unanswered.signal]),
+            ...clientInit,
+          });
+        } catch (error) {
+          if (latch.aborted && !signal.aborted) {
+            throw this.#latched("maybe", latch.reason, spec);
+          }
+          if (isTimeout(error)) {
+            // its connection may reach a node that no longer answers: the next
+            // request opens a fresh one, which the address may route elsewhere
+            this.#retireConnection();
+          }
+          if (unanswered.signal.aborted && !signal.aborted) {
+            if (isReadSpec(spec) && !resentOnFreshConnection) {
+              resentOnFreshConnection = true;
+              span.setAttribute(
+                "swamp.datastore.v3.serve.resent_on_fresh_connection",
+                true,
+              );
+              continue;
+            }
+          }
+          throw this.#unreachable(error, signal, sentOf(error), true);
+        } finally {
+          clearTimeout(responseTimer);
         }
-        if (isTimeout(error)) {
-          // its connection may reach a node that no longer answers: the next
-          // request opens a fresh one, which the address may route elsewhere
-          this.#retireConnection();
-        }
-        if (unanswered.signal.aborted && !signal.aborted) {
-          if (isReadSpec(spec) && !resentOnFreshConnection) {
-            resentOnFreshConnection = true;
-            span.setAttribute(
-              "swamp.datastore.v3.serve.resent_on_fresh_connection",
-              true,
-            );
+        // serve's clock, which judges a lease's expiry and corrects an offline
+        // write's time while serve is unreachable; read before the 429 retry on
+        // purpose: a throttled reply's Date is valid
+        recordServeClock(
+          this.baseUrl,
+          response.headers.get("date"),
+          sentAt,
+          Date.now(),
+        );
+        span.setAttribute("http.response.status_code", response.status);
+        if (response.status === 429 && attempt < this.#maxAttempts) {
+          const wait = retryAfterMs(response.headers.get("retry-after"));
+          if (wait !== undefined) {
+            await response.body?.cancel();
+            await abortableDelay(Math.min(wait, this.#maxRetryDelayMs), signal);
             continue;
           }
         }
-        throw this.#unreachable(error, signal, sentOf(error), true);
-      } finally {
-        clearTimeout(responseTimer);
-      }
-      // serve's clock, which judges a lease's expiry and corrects an offline
-      // write's time while serve is unreachable; read before the 429 retry on
-      // purpose: a throttled reply's Date is valid
-      recordServeClock(
-        this.baseUrl,
-        response.headers.get("date"),
-        sentAt,
-        Date.now(),
-      );
-      span.setAttribute("http.response.status_code", response.status);
-      if (response.status === 429 && attempt < this.#maxAttempts) {
-        const wait = retryAfterMs(response.headers.get("retry-after"));
-        if (wait !== undefined) {
-          await response.body?.cancel();
-          await abortableDelay(Math.min(wait, this.#maxRetryDelayMs), signal);
-          continue;
+        const logId = response.headers.get(SERVE_DATASTORE_LOG_HEADER) ??
+          undefined;
+        if (
+          this.#logCheck !== undefined && (logId !== undefined || response.ok)
+        ) {
+          try {
+            this.#logCheck(logId);
+          } catch (error) {
+            await response.body?.cancel();
+            throw error;
+          }
         }
-      }
-      const logId = response.headers.get(SERVE_DATASTORE_LOG_HEADER) ??
-        undefined;
-      if (
-        this.#logCheck !== undefined && (logId !== undefined || response.ok)
-      ) {
+        // a refused token never vouches for the principal it would act as
+        if (
+          logId !== undefined && response.status !== 401 &&
+          response.status !== 403
+        ) {
+          const features = (response.headers.get(
+            SERVE_DATASTORE_FEATURES_HEADER,
+          ) ?? "").split(",").map((feature) => feature.trim());
+          this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
+          this.#takesCommitBatches = features.includes(COMMIT_BATCH_FEATURE);
+          heardFeatures.set(this.#heardKey(), features);
+          this.#heardReply = true;
+          this.#initiatorMode = initiatorModeOf(
+            features,
+            response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),
+          );
+          heardInitiators.set(this.#heardKey(), this.#initiatorMode);
+        }
+        const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
+        if (this.#accessCheck !== undefined && access !== null) {
+          this.#accessCheck(access);
+        }
         try {
-          this.#logCheck(logId);
+          return await read(response);
         } catch (error) {
-          await response.body?.cancel();
-          throw error;
+          // The request reached serve: a failure reading its reply may have
+          // come after serve acted on it.
+          if (latch.aborted && !signal.aborted) {
+            throw this.#latched("maybe", latch.reason, spec);
+          }
+          throw this.#unreachable(error, signal, "maybe");
         }
-      }
-      // a refused token never vouches for the principal it would act as
-      if (
-        logId !== undefined && response.status !== 401 &&
-        response.status !== 403
-      ) {
-        const features = (response.headers.get(
-          SERVE_DATASTORE_FEATURES_HEADER,
-        ) ?? "").split(",").map((feature) => feature.trim());
-        this.#takesStepStarts = features.includes(STEP_STARTS_FEATURE);
-        this.#takesCommitBatches = features.includes(COMMIT_BATCH_FEATURE);
-        heardFeatures.set(this.#heardKey(), features);
-        this.#heardReply = true;
-        this.#initiatorMode = initiatorModeOf(
-          features,
-          response.headers.get(SERVE_DATASTORE_PRINCIPAL_HEADER),
-        );
-        heardInitiators.set(this.#heardKey(), this.#initiatorMode);
-      }
-      const access = response.headers.get(SERVE_DATASTORE_ACCESS_HEADER);
-      if (this.#accessCheck !== undefined && access !== null) {
-        this.#accessCheck(access);
-      }
-      try {
-        return await read(response);
-      } catch (error) {
-        // The request reached serve: a failure reading its reply may have
-        // come after serve acted on it.
-        if (latch.aborted && !signal.aborted) {
-          throw this.#latched("maybe", latch.reason, spec);
-        }
-        throw this.#unreachable(error, signal, "maybe");
+      } finally {
+        if (used !== undefined) this.#settle(used);
       }
     }
   }
@@ -1540,10 +1551,22 @@ export class ServeDatastoreClient {
     return { client: this.#httpClient };
   }
 
+  #settle(client: Deno.HttpClient): void {
+    const left = (this.#inFlight.get(client) ?? 1) - 1;
+    if (left > 0) {
+      this.#inFlight.set(client, left);
+      return;
+    }
+    this.#inFlight.delete(client);
+    if (this.#retiredClients.delete(client)) client.close();
+  }
+
   #retireConnection(): void {
-    if (this.#httpClient !== undefined) {
-      this.#retiredClients.push(this.#httpClient);
+    const client = this.#httpClient;
+    if (client !== undefined) {
       this.#httpClient = undefined;
+      if (this.#inFlight.has(client)) this.#retiredClients.add(client);
+      else client.close();
     }
     // the process-wide pool may hold more connections to the same node
     if (this.#makeHttpClient === undefined) {

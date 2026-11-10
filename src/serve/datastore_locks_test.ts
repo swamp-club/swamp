@@ -29,6 +29,7 @@ import {
   lockKeyOf,
   type LockTarget,
   lockTargetOfPartition,
+  MAX_REMEMBERED_LOCK_REQUESTS_PER_PRINCIPAL,
   parseLockKey,
   type TryLock,
 } from "./datastore_locks.ts";
@@ -1516,6 +1517,32 @@ Deno.test("DatastoreLockLeases.cancelRequest: a cancel is forgotten once its mem
     now += LOCK_REQUEST_MEMORY_MS + 1;
     assertEquals(
       (await subject.acquire({ ...request("user:alice"), requestId: "req-4" }))
+        .kind,
+      "acquired",
+    );
+  } finally {
+    await subject.dispose();
+  }
+});
+
+Deno.test("DatastoreLockLeases.cancelRequest: one principal's many cancels push out only its own oldest, never another's", async () => {
+  const locks = fakeLocks();
+  const subject = leases(locks);
+  try {
+    await subject.cancelRequest("user:alice", "kept");
+    for (let i = 0; i <= MAX_REMEMBERED_LOCK_REQUESTS_PER_PRINCIPAL; i++) {
+      await subject.cancelRequest("user:mallory", `flood-${i}`);
+    }
+    assertEquals(
+      (await subject.acquire({ ...request("user:alice"), requestId: "kept" }))
+        .kind,
+      "held",
+    );
+    assertEquals(
+      (await subject.acquire({
+        ...request("user:mallory"),
+        requestId: "flood-0",
+      }))
         .kind,
       "acquired",
     );

@@ -238,6 +238,8 @@ async function retakeLease(
 ): Promise<void> {
   const retake = entry.take!;
   const lost = entry.hold;
+  // from before the store was asked: the lease runs from its write, not the reply
+  const asked = performance.now();
   const hold = await takeLease(datastorePath, {
     maxWaitMs,
     ttlMs: retake.ttlMs,
@@ -246,7 +248,7 @@ async function retakeLease(
       : {}),
   });
   entry.hold = hold;
-  entry.confirmedAt = performance.now();
+  entry.confirmedAt = asked;
   if (lost !== undefined) {
     logger
       .info`This process took the writer lease of the v3 datastore at ${datastorePath} again, at fence ${hold.fence}`;
@@ -287,6 +289,7 @@ async function advanceHold(
   let advanced: number | undefined;
   const move = (async () => {
     const lease = await writerLease(datastorePath, take.ttlMs);
+    const asked = performance.now();
     const next = await lease.advance(hold);
     if (next === undefined) return;
     try {
@@ -296,7 +299,7 @@ async function advanceHold(
       throw error;
     }
     entry.hold = next;
-    entry.confirmedAt = performance.now();
+    entry.confirmedAt = asked;
     advanced = next.fence;
   })();
   // `renewing` never rejects: `endHold` awaits it before it releases the
@@ -592,8 +595,9 @@ function startRenewal(
     const hold = entry.hold;
     if (hold === undefined) return;
     entry.renewing = (async () => {
+      const asked = performance.now();
       if (hold.lost === undefined && await hold.renew() === "held") {
-        if (entry.hold === hold) entry.confirmedAt = performance.now();
+        if (entry.hold === hold) entry.confirmedAt = asked;
         return;
       }
       if (reported !== hold) {

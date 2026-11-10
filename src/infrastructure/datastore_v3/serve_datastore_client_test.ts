@@ -2007,3 +2007,29 @@ Deno.test("ServeDatastoreClient.acquireLock: a request never sent, or one serve 
   await answered.client.acquireLock(LOCK_KEY, 30_000, 0, signal());
   assertEquals(answered.requests.length, 1);
 });
+
+Deno.test("ServeDatastoreClient: a connection retired after a timeout is closed once its request settles, not left open until the client closes", async () => {
+  let closed = 0;
+  const reads = new ServeDatastoreClient({
+    baseUrl: BASE,
+    responseBaseMs: 20,
+    timeoutSignal: neverTimesOut,
+    httpClient: () => {
+      const made = Deno.createHttpClient({});
+      const close = made.close.bind(made);
+      made.close = () => {
+        closed++;
+        close();
+      };
+      return made;
+    },
+    fetch: (input, init) => neverAnswered(new Request(input, init)),
+  });
+  try {
+    await assertRejects(() => reads.changes(0, signal()));
+    assertEquals(closed, 2, "both retired connections closed as they settled");
+  } finally {
+    reads.close();
+  }
+  assertEquals(closed, 2, "nothing left for close() to end");
+});

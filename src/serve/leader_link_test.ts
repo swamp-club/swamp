@@ -347,3 +347,24 @@ Deno.test("LeaderLink.forward: a forwarded lock request's deadline waits out the
   assertEquals(reply.status, 409);
   forwarder.close();
 });
+
+Deno.test("LeaderLink.forward: a forward outside the datastore API keeps its caller's deadline, not the datastore's", async () => {
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => undefined,
+    responseBaseMs: 10,
+    commitResponseBaseMs: 10,
+    fetch: async () => {
+      await new Promise((done) => setTimeout(done, 60));
+      return new Response("done");
+    },
+  });
+  const reply = await forwarder.forward(
+    new Request("https://node-b.internal:9090/api/v1/actions/deploy", {
+      method: "POST",
+      body: "{}",
+    }),
+  );
+  assertEquals(await reply.text(), "done");
+  forwarder.close();
+});

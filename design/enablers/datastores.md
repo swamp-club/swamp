@@ -8105,7 +8105,9 @@ up, or later from a request still queued at a stopped node, holds the lock
 until its TTL and the caller's next command waits for it. Serve remembers each
 request id, the lease granted for it or that it was cancelled, for
 `LOCK_REQUEST_MEMORY_MS` (2 min), at most `MAX_REMEMBERED_LOCK_REQUESTS`
-(10,000) of them, keyed by principal so no caller can cancel another's. The
+(10,000) of them and `MAX_REMEMBERED_LOCK_REQUESTS_PER_PRINCIPAL` (1,000) a
+principal, so one caller's requests push out only its own; they are keyed by
+principal, so no caller can cancel another's. The
 record lives on the node that saw it, so a cancel that reaches a new leader
 before the old one's grant was adopted does not find the adopted lease; that
 lease ends with its TTL as before. An older serve answers the cancel 404.
@@ -8752,8 +8754,9 @@ credentials to an address of their own. A record without it names the
 leader but no address, and the follower refuses as before. `LeaderLink`
 (`src/serve/leader_link.ts`) holds one HTTP client
 per leader address, replaced when the record names another node; HTTP/2
-carries every forwarded HTTP request over one connection. A forward the
-leader has not started to answer within its forward deadline is refused as
+carries every forwarded HTTP request over one connection. A datastore API
+forward the leader has not started to answer within its forward deadline is
+refused as
 the retryable `serve_not_leader`, in flight, and the address's client is
 dropped so the next forward opens a fresh connection. The deadline is a
 datastore read, chunk check or lock call's `FORWARD_RESPONSE_BASE_MS` (7 s,
@@ -8762,7 +8765,9 @@ else, a commit above all, `FORWARD_COMMIT_RESPONSE_BASE_MS` (serve's confirm
 deadline plus 3 s), each plus the upload allowance. Each is under the
 member's own deadline for the same request, so the member reads the refusal
 rather than timing out first, and a stopped leader holds no forward until
-the member gives up (swamp-club#4559). Every forward,
+the member gives up (swamp-club#4559). Other forwards (HTTP actions,
+signals, delegation, webhooks) have no forward deadline: their routes wait on
+their own, an action up to `ACTION_DEADLINE_MS`. Every forward,
 HTTP or WebSocket, carries the team's peer token in `x-swamp-team-peer`
 (the follower drops one a caller sent); a leader that verifies it against
 its cached key treats the follower as a trusted proxy for that request and

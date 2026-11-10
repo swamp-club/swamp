@@ -36,7 +36,11 @@ import {
  * a node whose process is stopped: its kernel completes every handshake and
  * reads what is sent, and nothing ever answers
  */
-function frozenNode(): { url: string; accepted: () => number; close(): void } {
+function frozenNode(): {
+  url: string;
+  accepted: () => number;
+  close(): Promise<void>;
+} {
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
   const conns: Deno.Conn[] = [];
   const accepting = (async () => {
@@ -53,7 +57,7 @@ function frozenNode(): { url: string; accepted: () => number; close(): void } {
   return {
     url: `http://127.0.0.1:${(listener.addr as Deno.NetAddr).port}`,
     accepted: () => conns.length,
-    close() {
+    async close() {
       listener.close();
       for (const conn of conns) {
         try {
@@ -62,7 +66,7 @@ function frozenNode(): { url: string; accepted: () => number; close(): void } {
           // already closed
         }
       }
-      void accepting;
+      await accepting;
     },
   };
 }
@@ -104,7 +108,7 @@ Deno.test({
       );
     } finally {
       client.close();
-      node.close();
+      await node.close();
     }
   },
 });
@@ -133,7 +137,7 @@ Deno.test({
       assertEquals(node.accepted(), before + 1);
     } finally {
       client.close();
-      node.close();
+      await node.close();
     }
   },
 });
@@ -181,7 +185,7 @@ Deno.test({
       });
     } finally {
       link.close();
-      node.close();
+      await node.close();
     }
   },
 });

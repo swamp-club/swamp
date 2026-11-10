@@ -214,15 +214,18 @@ export class LeaderLink {
       headers.set(name, value);
     }
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
+    // other forwards (actions, signals, webhooks) keep their callers' deadlines
     const responseMs = await this.#responseDeadlineMs(req, url, options.body);
     const unanswered = new AbortController();
-    const responseTimer = setTimeout(() =>
-      unanswered.abort(
-        new DOMException(
-          `The leader did not start its reply within ${responseMs} ms`,
-          "TimeoutError",
-        ),
-      ), responseMs);
+    const responseTimer = responseMs === undefined
+      ? undefined
+      : setTimeout(() =>
+        unanswered.abort(
+          new DOMException(
+            `The leader did not start its reply within ${responseMs} ms`,
+            "TimeoutError",
+          ),
+        ), responseMs);
     const signal = AbortSignal.any([
       this.#closed.signal,
       req.signal,
@@ -275,18 +278,20 @@ export class LeaderLink {
     req: Request,
     url: URL,
     body: Uint8Array | undefined,
-  ): Promise<number> {
+  ): Promise<number | undefined> {
     const datastorePath = DATASTORE_PATH.exec(url.pathname)?.[1];
-    const base = datastorePath !== undefined &&
-        answersWithoutConfirm(req.method, datastorePath)
+    if (datastorePath === undefined) return undefined;
+    const base = answersWithoutConfirm(req.method, datastorePath)
       ? this.#options.responseBaseMs ?? FORWARD_RESPONSE_BASE_MS
       : this.#options.commitResponseBaseMs ?? FORWARD_COMMIT_RESPONSE_BASE_MS;
-    const length = body?.byteLength ??
-      Number(req.headers.get("content-length") ?? 0);
+    const declared = req.headers.get("content-length");
+    const length = body?.byteLength ?? Number(declared ?? 0);
     const bytes = Number.isSafeInteger(length) && length > 0 ? length : 0;
     let waitMs = 0;
+    // a body of unknown length is never read here: its lock wait goes unknown
     if (
-      req.method === "POST" && url.pathname.endsWith("/locks") &&
+      req.method === "POST" && datastorePath === "locks" &&
+      (body !== undefined || declared !== null) &&
       bytes <= LOCK_BODY_PEEK_BYTES
     ) {
       try {

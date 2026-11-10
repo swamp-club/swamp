@@ -49,8 +49,11 @@ export const MAX_LOCK_WAIT_MS = 10_000;
  */
 export const LOCK_REQUEST_MEMORY_MS = 120_000;
 
-/** request ids come from callers, so how many are remembered is capped */
 export const MAX_REMEMBERED_LOCK_REQUESTS = 10_000;
+
+/** so one caller's requests cannot push out another's cancels */
+export const MAX_REMEMBERED_LOCK_REQUESTS_PER_PRINCIPAL = 1_000;
+
 /**
  * a day, so a member can check one out before working offline; such a lease
  * keeps serve's own runs off the behavior until it ends, so an admin can end an
@@ -306,8 +309,13 @@ export class DatastoreLockLeases {
    */
   readonly #requests = new Map<
     string,
-    { readonly leaseId?: string; readonly until: number }
+    {
+      readonly principal: string;
+      readonly leaseId?: string;
+      readonly until: number;
+    }
   >();
+  readonly #requestsBy = new Map<string, number>();
   readonly #releasing = new Set<Promise<void>>();
   /**
    * The highest fence issued per lock key by this process, so two leases
@@ -627,10 +635,6 @@ export class DatastoreLockLeases {
   }
 
   /**
-   * an expired or already released lease is not an error to the caller, which
-   * ends its hold either way
-   */
-  /**
    * a caller that gave up on a lock request: the lease granted for it is
    * released, and one granted later from it is never granted
    */
@@ -663,20 +667,45 @@ export class DatastoreLockLeases {
     const now = this.#now();
     for (const [key, entry] of this.#requests) {
       if (entry.until > now) break;
-      this.#requests.delete(key);
+      this.#forgetRequest(key);
     }
     const key = requestKey(principal, requestId);
-    this.#requests.delete(key);
+    this.#forgetRequest(key);
+    if (
+      (this.#requestsBy.get(principal) ?? 0) >=
+        MAX_REMEMBERED_LOCK_REQUESTS_PER_PRINCIPAL
+    ) {
+      for (const [oldest, entry] of this.#requests) {
+        if (entry.principal !== principal) continue;
+        this.#forgetRequest(oldest);
+        break;
+      }
+    }
     this.#requests.set(key, {
+      principal,
       ...(leaseId !== undefined ? { leaseId } : {}),
       until: now + LOCK_REQUEST_MEMORY_MS,
     });
+    this.#requestsBy.set(principal, (this.#requestsBy.get(principal) ?? 0) + 1);
     for (const oldest of this.#requests.keys()) {
       if (this.#requests.size <= MAX_REMEMBERED_LOCK_REQUESTS) break;
-      this.#requests.delete(oldest);
+      this.#forgetRequest(oldest);
     }
   }
 
+  #forgetRequest(key: string): void {
+    const entry = this.#requests.get(key);
+    if (entry === undefined) return;
+    this.#requests.delete(key);
+    const left = (this.#requestsBy.get(entry.principal) ?? 1) - 1;
+    if (left > 0) this.#requestsBy.set(entry.principal, left);
+    else this.#requestsBy.delete(entry.principal);
+  }
+
+  /**
+   * an expired or already released lease is not an error to the caller, which
+   * ends its hold either way
+   */
   async release(principal: string, leaseId: string): Promise<boolean> {
     const lease = this.#leases.get(leaseId);
     if (lease === undefined || lease.principal !== principal) return false;
