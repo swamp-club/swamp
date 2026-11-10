@@ -242,10 +242,11 @@ class Model {
     const held = order.flat().filter((w) => this.hasPending(w));
     if (held.length > 0) {
       this.hold();
-      if (this.gates.get("canary") === "pending") {
-        this.gates.set("canary", "held");
-      }
       this.lastHaltFailed = [...failed];
+    }
+    // a gate the finished rollout never reached is held, halt or not
+    if (this.gates.get("canary") === "pending") {
+      this.gates.set("canary", "held");
     }
     this.status = workers.some((w) => this.lane(w) !== "succeeded")
       ? "failed"
@@ -277,10 +278,6 @@ class Model {
   /** undefined when refused; reopens from the entry step in unkept lanes, and every held step */
   retry(from: number | undefined): RetryOutcome | undefined {
     if (this.rejected) return undefined;
-    // a gate the run ended without asking stays pending, and a plain retry refuses a pending step
-    if (from === undefined && [...this.gates.values()].includes("pending")) {
-      return undefined;
-    }
     const workers = this.batches.flat();
     const entry = from ?? Math.min(
       ...workers.flatMap((w) =>
@@ -817,7 +814,7 @@ Deno.test({
               { kind: "retryFrom", step: 0 },
             ],
           }],
-          // --from leaves no lane for the canary gate to hold, so it ends unasked
+          // --from leaves no later lane to start, so the canary gate is held unasked
           [{
             workers: 2,
             batches: [1, "100%"],
@@ -847,6 +844,33 @@ Deno.test({
             actions: [
               { kind: "disconnect", worker: 1 },
               { kind: "retryFrom", step: 1 },
+            ],
+          }],
+          // a plain retry after --from asks the canary gate it never reached
+          [{
+            workers: 3,
+            batches: [2, "100%"],
+            maxFailures: null,
+            approve: ["canary"],
+            failing: [0, 1, 3],
+            actions: [
+              { kind: "disconnect", worker: 2 },
+              { kind: "approve" },
+              { kind: "retryFrom" },
+              { kind: "retry" },
+            ],
+          }],
+          // a retry that halts again with no lane left to hold
+          [{
+            workers: 3,
+            batches: [2, "100%"],
+            maxFailures: 1,
+            approve: ["canary"],
+            failing: [0, 1],
+            actions: [
+              { kind: "disconnect", worker: 2 },
+              { kind: "retry" },
+              { kind: "retry" },
             ],
           }],
         ],

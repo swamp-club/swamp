@@ -241,6 +241,54 @@ Deno.test("selectRetryTemplates: refuses a pending step and suggests --from", ()
   assertStringIncludes(error.message, "--from lint");
 });
 
+Deno.test("selectRetryTemplates: a pending fan-out gate suggests --from the job's first authored step, never the gate", () => {
+  const workflow = Workflow.create({
+    name: "fleet",
+    jobs: [Job.create({
+      name: "patch",
+      fanOut: {
+        offline: "fail",
+        minWorkers: 1,
+        rollout: { batches: [1, "100%"], approve: ["canary"] },
+      },
+      labels: { role: "web" },
+      steps: ["prepare", "apply"].map((name) =>
+        Step.create({
+          name,
+          task: StepTask.directExecution("command/shell", name, "execute"),
+        })
+      ),
+    })],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("patch")!;
+  job.recordFanOutPlan({
+    kind: "planned",
+    members: [
+      { worker: "host-a", instanceUuid: "uuid-a", disposition: "dispatch" },
+      { worker: "host-b", instanceUuid: "uuid-b", disposition: "dispatch" },
+    ],
+    plannedLanes: 2,
+    maxFailures: null,
+  }, [["host-a"], ["host-b"]]);
+  const lanes = ["host-a", "host-b"].flatMap((w) => [
+    `prepare[${w}]`,
+    `apply[${w}]`,
+  ]);
+  job.expandLanes(lanes, ["patch[approve-canary]"]);
+  for (const name of lanes) job.getStep(name)!.fail("broke");
+  job.fail();
+  run.complete();
+  const error = refusal(workflow, run);
+  assertStringIncludes(
+    error.message,
+    `Step "patch[approve-canary]" in job "patch" is pending`,
+  );
+  assertStringIncludes(error.message, "Add --from prepare to run it.");
+  assertEquals(error.message.includes("--from 'patch["), false);
+});
+
 const EACH_TEMPLATE = "read-${{ self.plate }}";
 
 function createEachWorkflow(task: StepTask): Workflow {

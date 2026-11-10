@@ -4290,6 +4290,58 @@ Deno.test("JobRun.rejectFanOutGate: refuses a gate that is not waiting or not a 
   assertEquals(job.status, "running");
 });
 
+Deno.test("JobRun.holdUnreachedFanOutGates: holds a pending gate, leaves decided gates and lanes, records no halt and keeps the job status", () => {
+  const job = gatedJob();
+  job.getStep("patch[approve-plan]")!.recordApprovalDecision({
+    approved: true,
+    decidedAt: new Date().toISOString(),
+  });
+  job.getStep("patch[approve-plan]")!.succeed();
+  for (const name of ["apply[host-a]", "verify[host-a]"]) {
+    job.getStep(name)!.start();
+    job.getStep(name)!.fail("boom");
+  }
+  job.getStep("apply[host-b]")!.fail("offline");
+  job.getStep("verify[host-b]")!.fail("offline");
+  job.fail();
+  const held = job.holdUnreachedFanOutGates();
+  assertEquals(held, ["patch[approve-canary]"]);
+  const canary = job.getStep("patch[approve-canary]")!;
+  assertEquals(canary.status, "skipped");
+  assertEquals(canary.skipReason, { kind: "job_skipped" });
+  assertEquals(canary.settledByAbort, true);
+  assertEquals(job.getStep("patch[approve-plan]")!.status, "succeeded");
+  assertEquals(job.getStep("apply[host-b]")!.status, "failed");
+  assertEquals(job.status, "failed");
+  assertEquals("fanOutHalts" in job.toData(), false);
+});
+
+Deno.test("JobRun.holdUnreachedFanOutGates: leaves a waiting gate and a pending lane step, and holds nothing", () => {
+  const job = gatedJob();
+  job.getStep("patch[approve-plan]")!.waitForApproval("go?");
+  job.getStep("patch[approve-canary]")!.recordApprovalDecision({
+    approved: true,
+    decidedAt: new Date().toISOString(),
+  });
+  job.getStep("patch[approve-canary]")!.succeed();
+  assertEquals(job.holdUnreachedFanOutGates(), []);
+  assertEquals(
+    job.getStep("patch[approve-plan]")!.status,
+    "waiting_approval",
+  );
+  assertEquals(job.getStep("apply[host-b]")!.status, "pending");
+  assertEquals(job.status, "running");
+});
+
+Deno.test("JobRun.holdUnreachedFanOutGates: a job without a fan-out plan cannot hold gates", () => {
+  const job = JobRun.pending("patch", ["apply"]);
+  assertThrows(
+    () => job.holdUnreachedFanOutGates(),
+    Error,
+    "has no fan-out plan",
+  );
+});
+
 Deno.test("JobRun.toData: a job that never halted writes no fanOutHalts key", () => {
   const job = haltedJob();
   assertEquals("fanOutHalts" in job.toData(), false);
