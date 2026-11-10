@@ -268,3 +268,103 @@ Deno.test("LeaderLink.forward: adds the team's forwarding header and drops one a
   await forward(undefined);
   assertEquals(seen, ["swamp-peer.team", null]);
 });
+
+function neverAnswered(
+  signal: AbortSignal | undefined | null,
+): Promise<Response> {
+  return new Promise<Response>((_, reject) => {
+    signal?.addEventListener("abort", () => reject(signal.reason));
+  });
+}
+
+Deno.test("LeaderLink.forward: a leader that never starts its reply is refused as in flight at the forward deadline", async () => {
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => undefined,
+    responseBaseMs: 20,
+    fetch: (_input, init) => neverAnswered(init?.signal),
+  });
+  const reply = await forwarder.forward(
+    new Request(
+      "https://node-b.internal:9090/api/v1/datastore/_default/changes",
+    ),
+  );
+  assertEquals(reply.status, 503);
+  const body = await reply.json();
+  assertEquals(body.code, "serve_not_leader");
+  assertEquals(body.inFlight, true);
+  forwarder.close();
+});
+
+Deno.test("LeaderLink.forward: after a leader left a forward unanswered, the next one opens a fresh connection", async () => {
+  let made = 0;
+  let calls = 0;
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => {
+      made++;
+      return Deno.createHttpClient({});
+    },
+    responseBaseMs: 20,
+    fetch: (_input, init) =>
+      ++calls === 1
+        ? neverAnswered(init?.signal)
+        : Promise.resolve(new Response("ok")),
+  });
+  try {
+    const url =
+      "https://node-b.internal:9090/api/v1/datastore/_default/changes";
+    assertEquals((await forwarder.forward(new Request(url))).status, 503);
+    assertEquals(
+      await (await forwarder.forward(new Request(url))).text(),
+      "ok",
+    );
+    assertEquals(made, 2);
+  } finally {
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.forward: a forwarded lock request's deadline waits out the wait it asks of the leader", async () => {
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => undefined,
+    responseBaseMs: 10,
+    fetch: async () => {
+      await new Promise((done) => setTimeout(done, 60));
+      return new Response("held", { status: 409 });
+    },
+  });
+  const reply = await forwarder.forward(
+    new Request(
+      "https://node-b.internal:9090/api/v1/datastore/_default/locks",
+      {
+        method: "POST",
+        body: JSON.stringify({ lockKey: "k", waitMs: 5_000 }),
+      },
+    ),
+  );
+  assertEquals(reply.status, 409);
+  forwarder.close();
+});
+
+Deno.test("LeaderLink.forward: a forward outside the datastore API keeps its caller's deadline, not the datastore's", async () => {
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => undefined,
+    responseBaseMs: 10,
+    commitResponseBaseMs: 10,
+    fetch: async () => {
+      await new Promise((done) => setTimeout(done, 60));
+      return new Response("done");
+    },
+  });
+  const reply = await forwarder.forward(
+    new Request("https://node-b.internal:9090/api/v1/actions/deploy", {
+      method: "POST",
+      body: "{}",
+    }),
+  );
+  assertEquals(await reply.text(), "done");
+  forwarder.close();
+});

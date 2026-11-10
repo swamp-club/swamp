@@ -355,3 +355,58 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore locks: a member that gave up on a lock request cancels it by its id, which frees a lease granted for it and refuses one taken later",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(twoMembers(), async (server) => {
+      const key = modelKey(server);
+      const requestId = crypto.randomUUID();
+      const taken = await call(server, "POST", "locks", "alice-token", {
+        lockKey: key,
+        ttlMs: 30_000,
+        requestId,
+      });
+      assertEquals(taken.status, 201, JSON.stringify(taken.json));
+      const cancelled = await call(
+        server,
+        "DELETE",
+        `locks/requests/${requestId}`,
+        "alice-token",
+      );
+      assertEquals(cancelled.status, 200);
+      assertEquals(cancelled.json.released, true);
+      const next = await call(server, "POST", "locks", "bob-token", {
+        lockKey: key,
+        ttlMs: 30_000,
+      });
+      assertEquals(next.status, 201, JSON.stringify(next.json));
+      const released = await call(
+        server,
+        "DELETE",
+        `locks/${next.json.leaseId}`,
+        "bob-token",
+      );
+      assertEquals(released.status, 200);
+
+      const early = crypto.randomUUID();
+      await call(server, "DELETE", `locks/requests/${early}`, "alice-token");
+      const late = await call(server, "POST", "locks", "alice-token", {
+        lockKey: key,
+        ttlMs: 30_000,
+        requestId: early,
+      });
+      assertEquals(late.status, 409, JSON.stringify(late.json));
+
+      const bad = await call(server, "POST", "locks", "alice-token", {
+        lockKey: key,
+        ttlMs: 30_000,
+        requestId: "not/an id",
+      });
+      assertEquals(bad.status, 400);
+    });
+  },
+});

@@ -92,6 +92,10 @@ interface Held {
   acquiring?: Promise<void>;
   renewal?: ReturnType<typeof setInterval>;
   renewing?: Promise<void>;
+  /** monotonic time the store last confirmed the lease is this hold's */
+  confirmedAt?: number;
+  ttlMs?: number;
+  renewNow?: () => void;
   retaking?: Promise<void>;
   advancing?: Promise<number | undefined>;
   take?: {
@@ -234,6 +238,8 @@ async function retakeLease(
 ): Promise<void> {
   const retake = entry.take!;
   const lost = entry.hold;
+  // from before the store was asked: the lease runs from its write, not the reply
+  const asked = performance.now();
   const hold = await takeLease(datastorePath, {
     maxWaitMs,
     ttlMs: retake.ttlMs,
@@ -242,6 +248,7 @@ async function retakeLease(
       : {}),
   });
   entry.hold = hold;
+  entry.confirmedAt = asked;
   if (lost !== undefined) {
     logger
       .info`This process took the writer lease of the v3 datastore at ${datastorePath} again, at fence ${hold.fence}`;
@@ -282,6 +289,7 @@ async function advanceHold(
   let advanced: number | undefined;
   const move = (async () => {
     const lease = await writerLease(datastorePath, take.ttlMs);
+    const asked = performance.now();
     const next = await lease.advance(hold);
     if (next === undefined) return;
     try {
@@ -291,6 +299,7 @@ async function advanceHold(
       throw error;
     }
     entry.hold = next;
+    entry.confirmedAt = asked;
     advanced = next.fence;
   })();
   // `renewing` never rejects: `endHold` awaits it before it releases the
@@ -578,13 +587,19 @@ function startRenewal(
   ttlMs = entry.take?.ttlMs ?? DEFAULT_LOCK_TTL_MS,
 ): void {
   let reported: WriterLeaseHold | undefined;
-  entry.renewal = setInterval(() => {
+  entry.confirmedAt ??= performance.now();
+  entry.ttlMs = ttlMs;
+  entry.renewNow = () => {
     // One renewal at a time: a slow store must not stack them up.
     if (entry.renewing !== undefined) return;
     const hold = entry.hold;
     if (hold === undefined) return;
     entry.renewing = (async () => {
-      if (hold.lost === undefined && await hold.renew() === "held") return;
+      const asked = performance.now();
+      if (hold.lost === undefined && await hold.renew() === "held") {
+        if (entry.hold === hold) entry.confirmedAt = asked;
+        return;
+      }
       if (reported !== hold) {
         reported = hold;
         logger
@@ -607,7 +622,34 @@ function startRenewal(
     }).finally(() => {
       entry.renewing = undefined;
     });
-  }, Math.max(1, Math.floor(ttlMs / 3)));
+  };
+  entry.renewal = setInterval(
+    entry.renewNow,
+    Math.max(1, Math.floor(ttlMs / 3)),
+  );
+}
+
+/**
+ * confirmed within its TTL, the earliest another writer could take it over; a
+ * process stopped past that is not, and a renewal is asked for at once
+ */
+export function v3WriterLeaseConfirmed(datastorePath: string): boolean {
+  const entry = held.get(resolve(datastorePath));
+  if (
+    entry === undefined || entry.refs <= 0 || entry.hold === undefined ||
+    entry.hold.lost !== undefined
+  ) {
+    return false;
+  }
+  const ttlMs = entry.ttlMs ?? DEFAULT_LOCK_TTL_MS;
+  if (
+    entry.confirmedAt !== undefined &&
+    performance.now() - entry.confirmedAt < ttlMs
+  ) {
+    return true;
+  }
+  entry.renewNow?.();
+  return false;
 }
 
 function writerLease(

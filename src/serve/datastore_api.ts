@@ -36,6 +36,7 @@
  * | `POST locks` | take serve's model or workflow-run lock for the caller: a lease |
  * | `PUT locks/{leaseId}` | renew a lease |
  * | `DELETE locks/{leaseId}` | release a lease |
+ * | `DELETE locks/requests/{requestId}` | cancel the caller's lock request: release its lease, or refuse it when it is taken later |
  * | `DELETE locks` | `{lockKey}`: end the lease on a lock whoever holds it; admin |
  * | `POST quarantine` | keep a change serve refuses for a grant its author lacks |
  * | `POST quarantine/{txnId}/accept` | land a kept change, as its author; admin |
@@ -555,6 +556,8 @@ function heldMessage(
     : `${lockKey} is held by ${who}`;
 }
 
+const LOCK_REQUEST_ID = /^[A-Za-z0-9-]{1,64}$/;
+
 /**
  * The reply to a write that must wait for a new leader to adopt the kept
  * lease on its key (swamp-club#4195, swamp-club#4258): the retryable
@@ -593,7 +596,16 @@ function followerDatastoreRefusal(
   ctx: ConnectionContext,
 ): Promise<Response> | undefined {
   const gate = ctx.followerGate;
-  if (gate === undefined || gate.role === "leader") return undefined;
+  if (gate === undefined) return undefined;
+  if (gate.role === "leader") {
+    // never sent on: a leader that may have been taken over neither answers
+    // from its copy nor changes it
+    return gate.leadUnconfirmed?.() === true
+      ? Promise.resolve(
+        notLeaderResponse(new ServeNotLeaderError(undefined), false),
+      )
+      : undefined;
+  }
   // Leases live on the leader, so listing them is the leader's to answer
   // (swamp-club#4121).
   const reads = (req.method === "GET" && route.kind !== "locks") ||
@@ -749,6 +761,10 @@ async function answerDatastoreRequest(
           return await api.releaseLock(route.leaseId);
         }
         return methodNotAllowed("DELETE, PUT");
+      case "lock-request":
+        return req.method === "DELETE"
+          ? await api.cancelLockRequest(route.requestId)
+          : methodNotAllowed("DELETE");
       case "quarantine":
         return req.method === "POST"
           ? await api.depositQuarantine(req)
@@ -1572,14 +1588,17 @@ class DatastoreApi {
     held: number,
   ): Promise<boolean> {
     if (this.#deps.ctx.followerGate?.role !== "follower") return false;
-    const catchUp = this.#deps.ctx.followerCatchUp;
-    if (catchUp === undefined) return false;
     const head = async () =>
       (await this.#v3.commitStore.head(this.#namespace, partition)).seq;
     if (held <= await head()) return false;
+    // With no live feed it cannot tell catching up from a log behind the
+    // copy: it refuses until it follows a leader again or leads, and either
+    // answers then, so a real rewind is still reported as diverged.
+    const catchUp = this.#deps.ctx.followerCatchUp;
+    if (catchUp === undefined) return true;
     const standing = await catchUp();
     if (held <= await head()) return false;
-    return standing === "catching-up";
+    return standing !== "caught-up";
   }
 
   /** `GET changes?cursor={c}&limit=`. */
@@ -1970,6 +1989,17 @@ class DatastoreApi {
     }
     // the caller's whole remaining wait: an explicit lease outlasting it is
     // answered at once rather than long-polled
+    const requestId = fields.requestId;
+    if (
+      requestId !== undefined &&
+      (typeof requestId !== "string" || !LOCK_REQUEST_ID.test(requestId))
+    ) {
+      return failure(
+        400,
+        "invalid_request",
+        "requestId must be 1 to 64 letters, digits or dashes",
+      );
+    }
     const budgetMs = fields.budgetMs;
     if (
       budgetMs !== undefined &&
@@ -2005,6 +2035,7 @@ class DatastoreApi {
       ...(fenced ? { fenced: () => this.#leaseBase(target) } : {}),
       ...(holdMs !== undefined ? { holdMs: holdMs as number } : {}),
       ...(budgetMs !== undefined ? { budgetMs: budgetMs as number } : {}),
+      ...(requestId !== undefined ? { requestId: requestId as string } : {}),
     });
     switch (outcome.kind) {
       case "acquired": {
@@ -2956,6 +2987,26 @@ class DatastoreApi {
       requestId: this.#requestId,
       ...(detail === undefined ? {} : { detail }),
     }));
+  }
+
+  /**
+   * `DELETE locks/requests/{requestId}`: a caller that gave up on a lock
+   * request whose reply never came cancels it, so a lease granted for it, or
+   * granted later from a request still queued, never blocks the lock
+   */
+  async cancelLockRequest(requestId: string): Promise<Response> {
+    if (!LOCK_REQUEST_ID.test(requestId)) {
+      return failure(
+        400,
+        "invalid_request",
+        "requestId must be 1 to 64 letters, digits or dashes",
+      );
+    }
+    const outcome = await this.#deps.locks.cancelRequest(
+      this.#caller.principal,
+      requestId,
+    );
+    return Response.json({ cancelled: true, released: outcome === "released" });
   }
 
   /** `DELETE locks/{leaseId}`: releases the caller's lease. */

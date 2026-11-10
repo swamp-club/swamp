@@ -347,6 +347,10 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // commit feed; the feed is filtered per caller as GET changes is, and the
   // commits serve sees keep its catalog, policy and extensions current.
   "src/serve/leader_link.ts -> src/domain/datastore_v3/serve_leader.ts",
+  // a forward's response deadline sits under the member's for the same
+  // request, both counted from serve's own confirm deadline
+  "src/serve/leader_link.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
+  "src/serve/leader_link.ts -> src/infrastructure/datastore_v3/serve_request_deadlines.ts",
   "src/serve/follower_forwarder.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/follower_feed.ts -> src/domain/datastore_v3/serve_leader.ts",
   "src/serve/peer_auth.ts -> src/domain/datastore_v3/serve_leader.ts",

@@ -41,6 +41,11 @@ export type DatastoreRoute =
     readonly namespace: string;
     readonly leaseId: string;
   }
+  | {
+    readonly kind: "lock-request";
+    readonly namespace: string;
+    readonly requestId: string;
+  }
   | { readonly kind: "quarantine"; readonly namespace: string }
   | {
     readonly kind: "quarantine-accept";
@@ -103,6 +108,9 @@ export function matchDatastoreRoute(
   if (rest.length === 2 && rest[0] === "locks") {
     return { kind: "lease", namespace, leaseId: rest[1] };
   }
+  if (rest.length === 3 && rest[0] === "locks" && rest[1] === "requests") {
+    return { kind: "lock-request", namespace, requestId: rest[2] };
+  }
   if (rest.length === 1 && rest[0] === "quarantine") {
     return { kind: "quarantine", namespace };
   }
@@ -142,6 +150,8 @@ export function datastoreRouteTemplate(route: DatastoreRoute): string {
       return "/api/v1/datastore/{namespace}/locks";
     case "lease":
       return "/api/v1/datastore/{namespace}/locks/{leaseId}";
+    case "lock-request":
+      return "/api/v1/datastore/{namespace}/locks/requests/{requestId}";
     case "quarantine":
       return "/api/v1/datastore/{namespace}/quarantine";
     case "quarantine-accept":

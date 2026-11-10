@@ -50,6 +50,11 @@ export interface LeadershipLease {
   fence(): number | undefined;
   take(): Promise<"writer" | "follower">;
   /**
+   * whether the store confirmed the lease within its TTL; false asks for a
+   * renewal. Absent, a held lease is taken as confirmed.
+   */
+  confirmed?(): boolean;
+  /**
    * the highest fence whoever holds it, undefined when unreadable; a follower
    * forwards to a leader record's address only at this fence
    */
@@ -144,6 +149,17 @@ export class ServeLeadership {
 
   markRefreshed(): void {
     if (this.#role === "follower") this.#refreshedAt = this.#now();
+  }
+
+  /**
+   * a leader whose lease the store has not confirmed within its TTL, as after
+   * the process was stopped, may already have been taken over: it answers
+   * nothing as the leader until a renewal confirms it
+   */
+  leadUnconfirmed(): boolean {
+    return this.#role === "leader" &&
+      this.#deps.lease.confirmed !== undefined &&
+      !this.#deps.lease.confirmed();
   }
 
   isStale(): boolean {

@@ -179,6 +179,7 @@ export interface FollowerGate {
   readonly role: "leader" | "follower";
   leader(): ServeLeader | undefined;
   isStale(): boolean;
+  leadUnconfirmed?(): boolean;
 }
 
 export function followerRefusal(

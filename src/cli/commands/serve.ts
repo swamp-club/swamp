@@ -709,6 +709,7 @@ import {
 import {
   holdsCurrentV3WriterLease,
   v3WriterFence,
+  v3WriterLeaseConfirmed,
   v3WriterLeaseHolder,
 } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { importCheckoutControlPlane } from "../../infrastructure/persistence/checkout_control_plane_import.ts";
@@ -9473,6 +9474,7 @@ export const serveCommand = new Command()
           : {}),
         lease: {
           holdsCurrent: () => holdsCurrentV3WriterLease(location.path),
+          confirmed: () => v3WriterLeaseConfirmed(location.path),
           fence: () => v3WriterFence(location.path),
           currentFence: async () =>
             (await v3WriterLeaseHolder(location.path))?.fence,

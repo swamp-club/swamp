@@ -28,6 +28,7 @@ import {
   readWriterMarker,
   readWriterMarkerFile,
   recoverInterruptedWriter,
+  recoverOwnPredecessor,
   recoverySince,
   removeOwnWriterMarker,
   setV3RecoveryProgress,
@@ -434,5 +435,97 @@ Deno.test("recoverInterruptedWriter: puts back the step starts a dead writer que
         Deno.errors.NotFound,
       );
     }
+  });
+});
+
+Deno.test("recoverOwnPredecessor: a follower recovers a predecessor this host judges gone, and leaves a live, unjudgeable or unreadable one to the lease", async () => {
+  const kernel = { host: "host#pid:[1]", bootId: "boot-id:a" };
+  const local = (present: boolean): LocalProcess => ({
+    pid: Deno.pid,
+    identity: { ...kernel, startTime: "t-self" },
+    probe: () => ({ present, zombie: false, startTime: "t1" }),
+    bootIdRequired: true,
+  });
+  const marker = (process?: ProcessIdentity) =>
+    JSON.stringify({
+      hostname: "host",
+      pid: 4242,
+      since: 5_000,
+      ...(process !== undefined ? { process } : {}),
+    });
+  await withTempDir(async (dir) => {
+    const calls: number[] = [];
+    await writeRaw(dir, marker({ ...kernel, startTime: "t1" }));
+    assertEquals(
+      await recoverOwnPredecessor(recordingHandle(dir, calls), dir, {
+        local: local(false),
+      }),
+      [],
+    );
+    assertEquals(calls, [5_000]);
+    assertEquals(await readWriterMarkerFile(dir), { kind: "absent" });
+
+    for (
+      const [text, judge] of [
+        [marker({ ...kernel, startTime: "t1" }), local(true)],
+        [marker({ ...kernel, host: "host#pid:[2]" }), local(false)],
+        [marker(), local(false)],
+        ["not json", local(false)],
+      ] as const
+    ) {
+      await writeRaw(dir, text);
+      const left: number[] = [];
+      assertEquals(
+        await recoverOwnPredecessor(recordingHandle(dir, left), dir, {
+          local: judge,
+        }),
+        undefined,
+        text,
+      );
+      assertEquals(left, [], text);
+      assert((await readWriterMarkerFile(dir)).kind !== "absent", text);
+    }
+  });
+});
+
+Deno.test("recoverOwnPredecessor: recoveries of one checkout run one at a time, and the second finds nothing left to recover", async () => {
+  const kernel = { host: "host#pid:[1]", bootId: "boot-id:a" };
+  const gone: LocalProcess = {
+    pid: Deno.pid,
+    identity: { ...kernel, startTime: "t-self" },
+    probe: () => ({ present: false, zombie: false }),
+    bootIdRequired: true,
+  };
+  await withTempDir(async (dir) => {
+    await writeRaw(
+      dir,
+      JSON.stringify({
+        hostname: "host",
+        pid: 4242,
+        since: 5_000,
+        process: { ...kernel, startTime: "t1" },
+      }),
+    );
+    let running = 0;
+    let overlapped = false;
+    const calls: number[] = [];
+    const slow = {
+      datastorePath: dir,
+      recoverInterruptedWriter: async (since: number) => {
+        running++;
+        if (running > 1) overlapped = true;
+        calls.push(since);
+        await new Promise((done) => setTimeout(done, 50));
+        running--;
+        return [];
+      },
+    } as unknown as V3Datastore;
+    const results = await Promise.all([
+      recoverOwnPredecessor(slow, dir, { local: gone }),
+      recoverOwnPredecessor(slow, dir, { local: gone }),
+    ]);
+    assertEquals(overlapped, false);
+    assertEquals(calls, [5_000]);
+    assertEquals(results.filter((r) => r !== undefined).length, 1);
   });
 });
