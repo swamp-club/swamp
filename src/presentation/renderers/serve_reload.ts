@@ -21,6 +21,7 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { ServeReloadResponse } from "../../serve/protocol.ts";
+import { settingsReportLines } from "../../serve/serve_reload_summary.ts";
 
 const logger = getSwampLogger(["serve", "reload"]);
 
@@ -52,6 +53,18 @@ class LogServeReloadRenderer implements ServeReloadRenderer {
         "Applied {count} webhook route change(s) from serve.yaml and route files",
         { count: result.webhooksReloaded },
       );
+    }
+
+    if (result.auditSinks !== undefined) {
+      logger.info("Audit sinks in force: {count}", {
+        count: result.auditSinks,
+      });
+    }
+
+    if (result.settings) {
+      const lines = settingsReportLines(result.settings);
+      for (const line of lines.info) logger.info`${line}`;
+      for (const line of lines.warn) logger.warn`${line}`;
     }
 
     for (const warning of result.warnings ?? []) {

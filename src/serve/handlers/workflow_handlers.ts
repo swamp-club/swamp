@@ -4212,7 +4212,7 @@ async function writeTriggerConfig(
       errorCode,
       "Cannot write the serve config file (it or its directory may be " +
         "read-only; the serve log has the cause). Edit it directly, then " +
-        (ctx.hotReload ? "run 'swamp serve reload'." : "restart serve."),
+        "run 'swamp serve reload'.",
     );
     return false;
   }

@@ -245,7 +245,7 @@ export function withWrittenVersions(
 
 export class DispatchService {
   readonly #options: DispatchServiceOptions;
-  readonly #queueTimeoutMs: number;
+  #queueTimeoutMs: number;
   readonly #runModelMethod: ModelMethodRunner;
   readonly #stepLeases: StepLeaseStore;
   readonly #pendingDispatches: PendingDispatchStore;
@@ -378,6 +378,11 @@ export class DispatchService {
       ...(request.jobName ? { "job.name": request.jobName } : {}),
       ...(request.stepName ? { "step.name": request.stepName } : {}),
     }, () => this.#executeRemote(request));
+  }
+
+  /** a dispatch already waiting keeps the deadline it started with */
+  setQueueTimeoutMs(queueTimeoutMs: number | undefined): void {
+    this.#queueTimeoutMs = queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
   }
 
   async #executeRemote(request: RemoteStepRequest): Promise<RemoteStepResult> {

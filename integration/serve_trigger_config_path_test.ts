@@ -196,7 +196,7 @@ Deno.test({
         );
         const removeError = errorFrame(removeFrames)?.error;
         assertEquals(removeError?.code, "workflow_trigger_remove_failed");
-        assertStringIncludes(removeError?.message ?? "", "restart serve");
+        assertStringIncludes(removeError?.message ?? "", "swamp serve reload");
         assertEquals(scheduledExecution.getTriggerOverride("sweep"), original);
         assertEquals(await Deno.readTextFile(configPath), before);
       } finally {

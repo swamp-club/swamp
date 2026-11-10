@@ -2181,10 +2181,10 @@ every run instead; see
 ### Mechanism
 
 The SIGHUP handler and the `serve.reload` WebSocket handler both call the
-shared `performServeReload()` function in `src/serve/extension_reload.ts`. A
-module-level reloading guard (`isReloading()`) rejects a concurrent reload from
-either trigger. `serve.reload` on a server started without `--hot-reload` is
-refused with `hot_reload_disabled` (`src/serve/handlers/admin_handlers.ts`).
+shared `performServeReload()` function in `src/serve/extension_reload.ts`. A module-level reloading guard (`isReloading()`) rejects a concurrent reload from
+either trigger. `serve.reload` works on every serve, with or without
+`--hot-reload`, and is admin-only (`src/serve/handlers/admin_handlers.ts`); see
+serve's PID file and reload notes for when SIGHUP reloads.
 Besides extension types, a reload re-reads the trigger overrides from the config
 file serve was started with (`--config`, or `.swamp/serve.yaml`) and refreshes
 the extension trust list. It also finishes the serialized refresh of repo-local

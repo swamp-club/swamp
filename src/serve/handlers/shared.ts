@@ -433,6 +433,10 @@ export interface ConnectionContext {
   webhookAdmissionSnapshots?: () =>
     import("../../domain/remote/run_progress.ts").WebhookAdmissionSnapshot[];
   webhookUpdater?: import("../webhook_reload.ts").WebhookUpdater;
+  /** the reload options every trigger shares; absent outside serve */
+  serveReloadOptions?: (
+    context: import("../webhook_reload.ts").WebhookApplyContext,
+  ) => import("../extension_reload.ts").ServeReloadOptions;
   trustedCollectivesUpdater?: (collectives: readonly string[]) => void;
   resolvedUserNames?: Record<string, string>;
   grantUsernameResolver?: GrantUsernameResolver;

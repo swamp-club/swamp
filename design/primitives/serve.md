@@ -104,7 +104,7 @@ without it the default file is optional.
 | `--max-signal-wait-timeout` | `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT` | 1 y | Longest `timeout` a `wait_for_signal` step may ask for on this server; at most one year; a step that asks for more fails when it would start waiting |
 | `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
-| `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; an extension pull, update, install or rm made through serve reloads it (swamp-club#3594); not supported on Windows |
+| `--hot-reload` | — | `false` | Makes SIGHUP reload even when serve runs on a terminal (a serve not on a terminal reloads on SIGHUP anyway), and an extension pull, update, install or rm made through serve reloads it (swamp-club#3594); `swamp serve reload --server` works without it; not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
 | `--remote-only` | `SWAMP_REMOTE_ONLY` | `false` | User steps run only on workers |
 | `--reuse-port` | `SWAMP_REUSE_PORT` | `false` | Listens with `SO_REUSEPORT` and opens the port only once startup completes, so a new process can start beside the old one. Only Linux lets two processes share the port: elsewhere serve warns at startup, and a second serve beside the first fails before startup does any work. Set at startup, not on reload (see Rolling restart) |
@@ -138,8 +138,12 @@ Table notes:
   `--max-run-duration`)
   are capped at 2 147 483 647 ms, about 24.8 days (`parseTimerDuration`,
   `src/cli/duration_parser.ts`). Deno fires a longer timer after 1 ms.
-- Without `--hot-reload`, SIGHUP is a shutdown signal
-  (`src/infrastructure/process/shutdown_handlers.ts`).
+- SIGHUP reloads a serve whose stdin is not a terminal (a daemon, container or
+  service, including the generated systemd unit's `systemctl reload`) or one
+  started with `--hot-reload`. A serve on a terminal without `--hot-reload`
+  keeps SIGHUP as a shutdown signal, so closing the terminal still stops it
+  (`reloadsOnHangup`, `src/serve/serve_settings_reload.ts`;
+  `src/infrastructure/process/shutdown_handlers.ts`).
 - `--remote-only` never moves built-in `swamp/*` control-plane behaviors (server
   tokens, enrollment tokens, workers, step leases, etc.) off the orchestrator
   (`src/domain/remote/remote_dispatch.ts`).
@@ -1947,10 +1951,31 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   rejections and uncaught errors from extension code so the daemon stays up
   (`src/serve/unhandled_rejection_guard.ts`). The open-file limit is raised at
   startup.
-- **PID file and hot reload.** With `--hot-reload`, serve writes `Deno.pid` to
-  `.swamp/serve.pid` and installs a SIGHUP handler. `swamp serve reload` sends
-  the signal locally, or issues the `serve.reload` request with `--server`.
-  Concurrent SIGHUPs are ignored while a reload is in progress.
+- **PID file and reload.** When SIGHUP reloads (above), serve writes `Deno.pid`
+  to `.swamp/serve.pid`, installs the SIGHUP handler, and removes the file at
+  shutdown while it still names this process. `swamp serve reload` sends the
+  signal locally, or issues the admin-only `serve.reload` request with
+  `--server`, which works on every serve whether or not it was started with
+  `--hot-reload`. Concurrent reloads are refused while one is in progress.
+
+  SIGHUP, `serve.reload` and the config poller build their options in one place
+  (`buildServeReloadOptions` in `src/cli/commands/serve.ts`), so every trigger
+  reloads the same things. The serve config file is re-read with the strict
+  loader and merged with the startup flags and environment exactly as startup
+  merges it (`mergeServeOptions`, `resolveServeStartupSettings`); a file
+  startup would refuse changes nothing, and the response says so. A valid file
+  is diffed against the last applied one (`diffServeSettings`), and each
+  changed setting is reported as applied, needs restart (with the reason), or
+  overridden by the startup flag or environment variable that pins it. The
+  class of every setting is in `SETTING_CATALOGUE`; the type requires every
+  `MergedServeOptions` key to be classified. Applied today: `dashboard`,
+  `enable-internal-api`, `auto-resume`, `ws-idle-timeout`,
+  `max-signal-wait-timeout`, `shutdown-drain-timeout`, `max-concurrent-runs`,
+  `max-runs-per-principal`, `max-run-duration`, `queue-timeout`, `triggers` and
+  `webhooks`; new values govern new runs, requests and sockets, and nothing
+  already running changes. Listener, TLS, auth mode, OAuth client and datastore
+  settings need a new process; the rest are reported as not applied by reload
+  yet. Audit sinks are rebuilt on every reload path.
 
   `performServeReload` (`src/serve/extension_reload.ts`) re-bundles pulled
   extensions whose source fingerprint changed and re-imports every pulled type.
@@ -1966,8 +1991,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   with no routes, so a reload can add the first one. Routes from `--webhook`
   flags are process arguments and never reload; when the config file also
   lists `webhooks`, the reload response carries a `warnings` entry saying the
-  list was ignored (`src/serve/webhook_reload.ts`). Route files reload as well, in either mode. The admin health snapshot and the dashboard show each route's `source` (`config`, `flag` or `file`, with the route file's name in `file`), and log and reload text name a file route `file:<name>`. The
-  config poller's extension reload does not re-read webhooks.
+  list was ignored (`src/serve/webhook_reload.ts`). Route files reload as well, in either mode. The admin health snapshot and the dashboard show each route's `source` (`config`, `flag` or `file`, with the route file's name in `file`), and log and reload text name a file route `file:<name>`. Once serve is listening, the config poller's
+  extension reload uses the same options, so it re-reads triggers, webhooks and
+  settings too.
 
   `workflow.trigger.set` and `workflow.trigger.remove` over WebSocket apply
   trigger overrides directly: the handlers call `updateTriggerOverrides` on the
@@ -1977,8 +2003,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   are lost, permission bits are kept), through the real path of a symlinked
   `--config` file. When the file cannot be written, such as a read-only
   ConfigMap mount, they refuse and leave the scheduler unchanged; the client
-  message names no server path (the log does) and points at `swamp serve
-  reload` or, without `--hot-reload`, a restart. `workflow.trigger.get` reports
+  message names no server path (the log does) and points at `swamp serve reload`. `workflow.trigger.get` reports
   the override the scheduler holds (`getTriggerOverride`), or the file's entry
   when serve runs without `--schedule`.
 

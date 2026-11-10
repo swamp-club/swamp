@@ -176,3 +176,33 @@ Deno.test("serveReloadRenderer log: a refused route file on a successful reload 
   assertEquals(refused?.level, "error");
   assertEquals(shadowed?.level, "warning");
 });
+
+Deno.test("serveReloadRenderer log: reports applied settings and why others were not", async () => {
+  const messages = await captureLog({
+    success: true,
+    reloadedCount: 0,
+    settings: {
+      applied: ["max-concurrent-runs"],
+      needsRestart: [{
+        setting: "auth.allowed-users",
+        reason: "not applied by reload yet; restart serve to change it",
+      }],
+      overridden: [{ setting: "dashboard", by: "--dashboard" }],
+    },
+    errors: [],
+  });
+  assertEquals(
+    messages.some((m) => m.includes("Applied: max-concurrent-runs")),
+    true,
+  );
+  assertEquals(
+    messages.some((m) =>
+      m.includes("auth.allowed-users changed but not applied by reload yet")
+    ),
+    true,
+  );
+  assertEquals(
+    messages.some((m) => m.includes("--dashboard keeps it pinned")),
+    true,
+  );
+});
