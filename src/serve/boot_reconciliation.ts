@@ -336,6 +336,8 @@ export interface ReplayPendingRunsDeps {
   readRemote?: boolean;
   /** a replayed run becomes this process's, so no later start replays it again */
   claimAs?: PendingRunOwner;
+  /** runs this process claimed, kept for its lifetime: an owner write can fail */
+  replayedRuns?: Set<string>;
 }
 
 export async function replayPendingRuns(
@@ -348,7 +350,20 @@ export async function replayPendingRuns(
   // id
   const pending: PendingRunEntry[] = [...localPending];
   const remoteSourceKeys = new Map<string, string>();
+  let claimKeys: string[] | undefined;
+  let remoteListed = false;
   if (deps.controlPlaneStore && deps.readRemote !== false) {
+    // listed before the runs, so a claim made meanwhile is never judged
+    // against a list of runs older than it
+    if (deps.controlPlaneStore.putIfAbsent) {
+      claimKeys = await deps.controlPlaneStore.list(PENDING_CLAIMS_PREFIX)
+        .catch((err: unknown) => {
+          logger.warn("Failed to list pending-run claims: {error}", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return undefined;
+        });
+    }
     try {
       const remoteKeys = await deps.controlPlaneStore.list("pending-runs/");
       const localIds = new Set(localPending.map((e) => e.id));
@@ -403,11 +418,23 @@ export async function replayPendingRuns(
             .debug`Merged remote pending run ${entry.id} for ${entry.workflowIdOrName}`;
         }
       }
+      remoteListed = true;
     } catch (err) {
       logger.warn(
         "Failed to list remote pending runs: {error}",
         { error: err instanceof Error ? err.message : String(err) },
       );
+    }
+  }
+
+  // only a complete list of runs may prune
+  if (remoteListed || !deps.controlPlaneStore) {
+    const pendingIds = new Set(pending.map((entry) => entry.id));
+    for (const id of deps.replayedRuns ?? []) {
+      if (!pendingIds.has(id)) deps.replayedRuns!.delete(id);
+    }
+    if (claimKeys && deps.controlPlaneStore) {
+      await reapPendingClaims(deps.controlPlaneStore, claimKeys, pendingIds);
     }
   }
 
@@ -440,6 +467,7 @@ export async function replayPendingRuns(
 
   let replayed = 0;
   for (const entry of pending) {
+    if (deps.replayedRuns?.has(entry.id)) continue;
     if (deps.sweep && entry.owner === undefined) continue;
     // a run this process already owns is in its queue, or failed to start
     if (
@@ -467,6 +495,7 @@ export async function replayPendingRuns(
         continue;
       }
       if (!claimed) continue;
+      deps.replayedRuns?.add(entry.id);
     }
     try {
       if (entry.source === "webhook" && deps.webhookService) {
@@ -581,14 +610,18 @@ export async function replayPendingRuns(
   return replayed;
 }
 
-// a run only the control plane holds has no compare-and-swap, so it is taken
-// by writing its owner, as replay always took it
+const PENDING_CLAIMS_PREFIX = "claims/pending-runs/";
+// instance ids are UUIDs, so this never names a real previous owner
+const UNOWNED_CLAIM = "unowned";
+const MAX_CLAIM_HOPS = 4;
+
 async function claimPendingRun(
   deps: ReplayPendingRunsDeps,
   entry: PendingRunEntry,
   remoteKey: string | undefined,
 ): Promise<boolean> {
   const owner = deps.claimAs!;
+  if (!await claimInControlPlane(deps, entry)) return false;
   if (remoteKey === undefined) {
     const claimed = deps.runTracker.claimPendingRun(
       entry.id,
@@ -610,6 +643,70 @@ async function claimPendingRun(
     });
   }
   return true;
+}
+
+/**
+ * one claim per previous owner, so peers that judge the same owner gone race on
+ * one key; a store without putIfAbsent keeps the plain owner write
+ */
+async function claimInControlPlane(
+  deps: ReplayPendingRunsDeps,
+  entry: PendingRunEntry,
+): Promise<boolean> {
+  const store = deps.controlPlaneStore;
+  if (!store?.putIfAbsent) return true;
+  const self = deps.claimAs!;
+  const record = new TextEncoder().encode(JSON.stringify({
+    owner: self,
+    claimedAt: new Date().toISOString(),
+  }));
+  let previous = entry.owner?.instanceId ?? UNOWNED_CLAIM;
+  const visited = new Set<string>();
+  for (let hop = 0; hop < MAX_CLAIM_HOPS; hop++) {
+    visited.add(previous);
+    const key = `${PENDING_CLAIMS_PREFIX}${entry.id}/${previous}`;
+    if (await store.putIfAbsent(key, record)) return true;
+    const data = await store.get(key);
+    const claimant = data ? parseClaimant(data) : undefined;
+    if (!claimant) return false;
+    // an earlier claim of this process landed but was not seen to
+    if (claimant.instanceId === self.instanceId) return true;
+    if (visited.has(claimant.instanceId) || !deps.ownerAlive) return false;
+    if (await deps.ownerAlive(claimant)) {
+      deps.deferred?.add(entry.id);
+      return false;
+    }
+    previous = claimant.instanceId;
+  }
+  return false;
+}
+
+function parseClaimant(data: Uint8Array): PendingRunOwner | undefined {
+  try {
+    return parsePendingRunOwner(
+      JSON.parse(new TextDecoder().decode(data))?.owner,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+async function reapPendingClaims(
+  store: ControlPlaneStore,
+  claimKeys: readonly string[],
+  pendingIds: ReadonlySet<string>,
+): Promise<void> {
+  for (const key of claimKeys) {
+    const segments = key.slice(PENDING_CLAIMS_PREFIX.length).split("/");
+    if (segments.length < 2) continue;
+    if (pendingIds.has(segments.slice(0, -1).join("/"))) continue;
+    await store.delete(key).catch((err: unknown) => {
+      logger.warn("Failed to delete pending-run claim {key}: {error}", {
+        key,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
 }
 
 export const CLAIM_TTL_MS = 5 * 60 * 1000;

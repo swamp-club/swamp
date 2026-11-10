@@ -9234,6 +9234,7 @@ export const serveCommand = new Command()
     const sweepStore = controlPlaneStore
       ? withStoreDeadline(controlPlaneStore)
       : undefined;
+    const replayedRuns = new Set<string>();
     const replayPending = async (
       deferred: Set<string>,
       sweep = false,
@@ -9252,6 +9253,7 @@ export const serveCommand = new Command()
         ownerAlive: sweep ? sweepOwnerAlive : bootOwnerAlive,
         deferred,
         claimAs: pendingRunOwner,
+        replayedRuns,
         sweep,
         readRemote,
       });

@@ -67,8 +67,8 @@ export interface PendingOwnerLivenessDeps {
 
 /**
  * a peer's queued run is its own while that peer lives: on this kernel by its
- * process, elsewhere by a fresh heartbeat; a heartbeat that cannot be read
- * counts as gone, as a missing one does
+ * process, elsewhere by a fresh heartbeat; a missing or stale heartbeat counts
+ * as gone, one that cannot be read is judged as an owner with no heartbeat
  */
 export function pendingOwnerLiveness(
   deps: PendingOwnerLivenessDeps,
@@ -94,7 +94,7 @@ export function pendingOwnerLiveness(
       return record !== null &&
         !InstanceHeartbeatService.isStale(record, deps.staleTtlMs);
     } catch {
-      return false;
+      return deps.unjudgedOwner === "alive";
     }
   };
 }
