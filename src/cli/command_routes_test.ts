@@ -22,9 +22,11 @@ import { Command } from "@cliffy/command";
 import {
   type CommandRoute,
   commandWords,
+  loadGroupRoutes,
   loadRoutes,
   type RouteSelection,
   selectRoute,
+  selectSubcommand,
 } from "./command_routes.ts";
 
 function route(
@@ -166,4 +168,64 @@ Deno.test("loadRoutes: a failed import names the command and its module", async 
     "Failed to load the data command from src/cli/commands/data.ts: Module not found",
   );
   assertStrictEquals(error.cause, cause);
+});
+
+const SUBCOMMANDS = [
+  route("get"),
+  route("search", { aliases: ["list"] }),
+  route("history"),
+];
+
+function subcommand(rest: string[]): string | undefined {
+  return selectSubcommand(SUBCOMMANDS, rest)?.name;
+}
+
+Deno.test("selectSubcommand: picks the first word by name or alias, past root globals", () => {
+  assertEquals(subcommand(["get", "m", "x"]), "get");
+  assertEquals(subcommand(["list"]), "search");
+  assertEquals(subcommand(["--json", "--log-level", "debug", "get"]), "get");
+  assertEquals(subcommand(["history", "search"]), "history");
+});
+
+Deno.test("selectSubcommand: nothing for no word, --, an unknown word or the help word", () => {
+  assertEquals(subcommand([]), undefined);
+  assertEquals(subcommand(["--json"]), undefined);
+  assertEquals(subcommand(["--", "get"]), undefined);
+  assertEquals(subcommand(["gte"]), undefined);
+  assertEquals(subcommand(["help", "get"]), undefined);
+});
+
+Deno.test("selectSubcommand: nothing when an option the root does not declare precedes the word", () => {
+  assertEquals(subcommand(["--help", "get"]), undefined);
+  assertEquals(subcommand(["-h", "get"]), undefined);
+  assertEquals(subcommand(["--include-hidden", "get"]), undefined);
+  assertEquals(subcommand(["--log-level", "get"]), undefined);
+});
+
+Deno.test("loadGroupRoutes: loads the selected subcommand alone, or the whole group", async () => {
+  assertEquals(
+    (await loadGroupRoutes("workflow", SUBCOMMANDS, ["list"])).map((l) =>
+      l.name
+    ),
+    ["search"],
+  );
+  assertEquals(
+    (await loadGroupRoutes("workflow", SUBCOMMANDS, ["help"])).map((l) =>
+      l.name
+    ),
+    ["get", "search", "history"],
+  );
+});
+
+Deno.test("loadGroupRoutes: a failed import names the group, the subcommand and its module", async () => {
+  const failing = route(
+    "get",
+    { module: "src/cli/commands/data_get.ts" },
+    () => Promise.reject(new TypeError("Module not found")),
+  );
+  await assertRejects(
+    () => loadGroupRoutes("data", [failing], ["get"]),
+    Error,
+    "Failed to load the data get command from src/cli/commands/data_get.ts: Module not found",
+  );
 });

@@ -38,7 +38,8 @@ Deno.test("dataRenameCommand has correct description", async () => {
 });
 
 Deno.test("dataRenameCommand is registered as subcommand of dataCommand", async () => {
-  const { dataCommand } = await import("./data.ts");
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   const commands = dataCommand.getCommands();
   const renameCmd = commands.find((c) => c.getName() === "rename");
   assertEquals(renameCmd !== undefined, true);

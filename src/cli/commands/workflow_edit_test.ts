@@ -36,7 +36,8 @@ Deno.test("workflowEditCommand has correct description", async () => {
 });
 
 Deno.test("workflowEditCommand is registered as subcommand of workflowCommand", async () => {
-  const { workflowCommand } = await import("./workflow.ts");
+  const { createWorkflowCommand } = await import("./workflow.ts");
+  const workflowCommand = await createWorkflowCommand();
   const commands = workflowCommand.getCommands();
   const editCmd = commands.find((c) => c.getName() === "edit");
   assertEquals(editCmd !== undefined, true);

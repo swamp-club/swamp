@@ -39,7 +39,8 @@ Deno.test("workflowEvaluateCommand has correct options", async () => {
 });
 
 Deno.test("workflowEvaluateCommand is registered in workflow command", async () => {
-  const { workflowCommand } = await import("./workflow.ts");
+  const { createWorkflowCommand } = await import("./workflow.ts");
+  const workflowCommand = await createWorkflowCommand();
   const commands = workflowCommand.getCommands();
   const evaluateCmd = commands.find((c) => c.getName() === "evaluate");
   assertEquals(evaluateCmd !== undefined, true);

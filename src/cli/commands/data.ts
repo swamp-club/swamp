@@ -18,27 +18,20 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { AnyCommand } from "../cli_schema.ts";
+import { loadGroupRoutes } from "../command_routes.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { dataGetCommand } from "./data_get.ts";
-import { dataListCommand } from "./data_list.ts";
-import { dataSearchCommand } from "./data_search.ts";
-import { dataVersionsCommand } from "./data_versions.ts";
-import { dataGcCommand } from "./data_gc.ts";
-import { dataPruneCommand } from "./data_prune.ts";
-import { dataRenameCommand } from "./data_rename.ts";
-import { dataDeleteCommand } from "./data_delete.ts";
-import { dataQueryCommand } from "./data_query.ts";
+import { DATA_ROUTES } from "./data_routes.ts";
 
-export const dataCommand = new Command()
-  .name("data")
-  .description("Manage behavior data")
-  .action(groupCommandAction)
-  .command("get", dataGetCommand)
-  .command("list", dataListCommand)
-  .command("search", dataSearchCommand)
-  .command("query", dataQueryCommand)
-  .command("versions", dataVersionsCommand)
-  .command("gc", dataGcCommand)
-  .command("prune", dataPruneCommand)
-  .command("rename", dataRenameCommand)
-  .command("delete", dataDeleteCommand);
+/** rest, the argv after the group word, narrows the group to one subcommand */
+export async function createDataCommand(
+  rest: readonly string[] = [],
+): Promise<AnyCommand> {
+  const group: AnyCommand = new Command()
+    .name("data")
+    .description("Manage behavior data")
+    .action(groupCommandAction);
+  const loaded = await loadGroupRoutes("data", DATA_ROUTES, rest);
+  for (const { name, command } of loaded) group.command(name, command);
+  return group;
+}

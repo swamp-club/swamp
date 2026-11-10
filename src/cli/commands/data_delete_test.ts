@@ -38,7 +38,8 @@ Deno.test("dataDeleteCommand has correct description", async () => {
 });
 
 Deno.test("dataDeleteCommand is registered as subcommand of dataCommand", async () => {
-  const { dataCommand } = await import("./data.ts");
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   const commands = dataCommand.getCommands();
   const deleteCmd = commands.find((c) => c.getName() === "delete");
   assertEquals(deleteCmd !== undefined, true);

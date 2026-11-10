@@ -34,7 +34,8 @@ Deno.test("workflowScheduleCommand: has pause, resume and list subcommands", asy
 });
 
 Deno.test("workflowCommand: has schedule subcommand", async () => {
-  const { workflowCommand } = await import("./workflow.ts");
+  const { createWorkflowCommand } = await import("./workflow.ts");
+  const workflowCommand = await createWorkflowCommand();
   assertEquals(
     workflowCommand.getCommands().some((c) => c.getName() === "schedule"),
     true,

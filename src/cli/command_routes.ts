@@ -159,10 +159,35 @@ export function selectRoute(
   return { kind: "route", route, rest: args.slice(next) };
 }
 
+/**
+ * undefined loads the whole group: help is not a subcommand, and an option the
+ * root does not declare cannot be placed
+ */
+export function selectSubcommand(
+  routes: readonly CommandRoute[],
+  rest: readonly string[],
+): CommandRoute | undefined {
+  const scan = scanForWord(rest, 0, ROOT_GLOBAL_OPTIONS);
+  if (scan.kind !== "word") return undefined;
+  const word = rest[scan.index];
+  const route = routes.find((r) => r.name === word || r.aliases.includes(word));
+  return route?.needsFullTree ? undefined : route;
+}
+
+export function loadGroupRoutes(
+  group: string,
+  routes: readonly CommandRoute[],
+  rest: readonly string[],
+): Promise<LoadedCommand[]> {
+  const route = selectSubcommand(routes, rest);
+  return loadRoutes(route ? [route] : routes, [], group);
+}
+
 /** sequential, so command modules evaluate in table order on every run */
 export async function loadRoutes(
   routes: readonly CommandRoute[],
   rest: readonly string[] = [],
+  parent?: string,
 ): Promise<LoadedCommand[]> {
   const loaded: LoadedCommand[] = [];
   for (const route of routes) {
@@ -172,7 +197,9 @@ export async function loadRoutes(
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `Failed to load the ${route.name} command from ${route.module}: ${reason}`,
+        `Failed to load the ${
+          parent ? `${parent} ` : ""
+        }${route.name} command from ${route.module}: ${reason}`,
         { cause: error },
       );
     }

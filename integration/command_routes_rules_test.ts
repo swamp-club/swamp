@@ -26,8 +26,13 @@ import {
   ROOT,
   staticImportClosure,
 } from "./arch_fitness_helpers.ts";
-import { ROOT_GLOBAL_OPTIONS } from "../src/cli/command_routes.ts";
+import {
+  type CommandRoute,
+  ROOT_GLOBAL_OPTIONS,
+} from "../src/cli/command_routes.ts";
 import { ROOT_ROUTES } from "../src/cli/root_routes.ts";
+import { DATA_ROUTES } from "../src/cli/commands/data_routes.ts";
+import { WORKFLOW_ROUTES } from "../src/cli/commands/workflow_routes.ts";
 import { buildCommandTree, createRootCommand } from "../src/cli/mod.ts";
 import { type AnyCommand, buildCliSchema } from "../src/cli/cli_schema.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
@@ -37,6 +42,42 @@ import type {
 } from "./command_route_worker.ts";
 
 const ROUTE_TABLE = join(ROOT, "src", "cli", "root_routes.ts");
+
+interface GroupTable {
+  readonly group: string;
+  readonly file: string;
+  readonly routes: readonly CommandRoute[];
+}
+
+const GROUP_TABLES: readonly GroupTable[] = [
+  {
+    group: "data",
+    file: "src/cli/commands/data_routes.ts",
+    routes: DATA_ROUTES,
+  },
+  {
+    group: "workflow",
+    file: "src/cli/commands/workflow_routes.ts",
+    routes: WORKFLOW_ROUTES,
+  },
+];
+
+function childrenOf(node: AnyCommand) {
+  const visible = new Set(node.getCommands(false));
+  return node.getCommands(true).map((command) => ({
+    name: command.getName(),
+    aliases: command.getAliases(),
+    hidden: !visible.has(command),
+  }));
+}
+
+function tableRows(routes: readonly CommandRoute[]) {
+  return routes.map(({ name, aliases, hidden }) => ({
+    name,
+    aliases: [...aliases],
+    hidden,
+  }));
+}
 
 function resolvePath(root: AnyCommand, path: string[]): AnyCommand | undefined {
   let current: AnyCommand | undefined = root;
@@ -77,6 +118,51 @@ Deno.test("command routes: each route's module is the file its load imports", as
     "every row of src/cli/root_routes.ts needs exactly one literal import() " +
       "of the file its module field names",
   );
+});
+
+Deno.test("command routes: each group row's module is the file its load imports", async () => {
+  for (const { file, routes } of GROUP_TABLES) {
+    const path = join(ROOT, file);
+    const imported = findModuleReferences(path, await Deno.readTextFile(path))
+      .filter((reference) => reference.kind === "dynamic")
+      .map((reference) => resolveImport(path, reference.specifier));
+    assertEquals(
+      imported,
+      routes.map((route) => route.module),
+      `every row of ${file} needs exactly one literal import() of the file ` +
+        "its module field names",
+    );
+  }
+});
+
+Deno.test("command routes: each group's children in the full tree equal its table", async () => {
+  const tree = await buildCommandTree();
+  for (const { group, file, routes } of GROUP_TABLES) {
+    assertEquals(
+      childrenOf(resolvePath(tree, [group])!),
+      tableRows(routes),
+      `${file} must list every swamp ${group} subcommand in registration ` +
+        "order with its aliases and hidden flag; an alias missing from the " +
+        "table makes routing load the whole group",
+    );
+  }
+});
+
+Deno.test("command routes: a subcommand path loads only that subcommand under its group", async () => {
+  for (const { group, routes } of GROUP_TABLES) {
+    for (const route of routes) {
+      for (const word of [route.name, ...route.aliases]) {
+        for (const args of [[group, word], ["help", group, word]]) {
+          const node = resolvePath(await buildCommandTree(args), [group]);
+          assertEquals(
+            node?.getCommands(true).map((c: AnyCommand) => c.getName()),
+            [route.name],
+            `swamp ${args.join(" ")} should load only ${route.module}`,
+          );
+        }
+      }
+    }
+  }
 });
 
 Deno.test("command routes: the full tree's top-level commands equal the table", async () => {
@@ -209,6 +295,16 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
       path: [route.name],
       expected: schemaOf(resolvePath(full, [route.name])!, [route.name]),
     })),
+    ...GROUP_TABLES.flatMap(({ group, routes }) =>
+      routes.map((route) => {
+        const path = [group, route.name];
+        return {
+          args: path,
+          path,
+          expected: schemaOf(resolvePath(full, path)!, path),
+        };
+      })
+    ),
     { args: undefined, path: [], expected: schemaOf(full, []) },
   ];
 

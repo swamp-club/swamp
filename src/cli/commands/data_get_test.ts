@@ -47,7 +47,8 @@ Deno.test("dataGetCommand: workflow example names the data and reads the latest 
 });
 
 Deno.test("dataGetCommand is registered as subcommand of dataCommand", async () => {
-  const { dataCommand } = await import("./data.ts");
+  const { createDataCommand } = await import("./data.ts");
+  const dataCommand = await createDataCommand();
   const commands = dataCommand.getCommands();
   const getCmd = commands.find((c) => c.getName() === "get");
   assertEquals(getCmd !== undefined, true);

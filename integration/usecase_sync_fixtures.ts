@@ -38,7 +38,7 @@ import {
 } from "../src/cli/repo_context.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { accessCommand } from "../src/cli/commands/access.ts";
-import { dataCommand } from "../src/cli/commands/data.ts";
+import { createDataCommand } from "../src/cli/commands/data.ts";
 import { datastoreCommand } from "../src/cli/commands/datastore.ts";
 import { doctorCommand } from "../src/cli/commands/doctor.ts";
 import { extensionCommand } from "../src/cli/commands/extension.ts";
@@ -46,7 +46,7 @@ import { modelCommand } from "../src/cli/commands/model_create.ts";
 import { runCommand } from "../src/cli/commands/run.ts";
 import { vaultCommand } from "../src/cli/commands/vault.ts";
 import { workerCommand } from "../src/cli/commands/worker.ts";
-import { workflowCommand } from "../src/cli/commands/workflow.ts";
+import { createWorkflowCommand } from "../src/cli/commands/workflow.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
@@ -340,13 +340,20 @@ interface CliRoot {
   parse(args: string[]): Promise<unknown>;
 }
 
-let cliRoot: CliRoot | undefined;
+let cliRoot: Promise<CliRoot> | undefined;
 
 // The root carries the global types and the `--json` global option that
 // `src/cli/mod.ts` registers; without the types, `model create` and the
 // edit commands fail to parse.
-function root(): CliRoot {
-  cliRoot ??= registerCompletionTypes(new Command())
+function root(): Promise<CliRoot> {
+  cliRoot ??= buildRoot();
+  return cliRoot;
+}
+
+async function buildRoot(): Promise<CliRoot> {
+  const dataCommand = await createDataCommand();
+  const workflowCommand = await createWorkflowCommand();
+  return registerCompletionTypes(new Command())
     .name("swamp")
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .noExit()
@@ -361,7 +368,6 @@ function root(): CliRoot {
     .command("vault", vaultCommand)
     .command("worker", workerCommand)
     .command("workflow", workflowCommand);
-  return cliRoot;
 }
 
 /**
@@ -437,7 +443,7 @@ async function runCliHere(invocation: CliInvocation): Promise<string[]> {
     stdout.push(args.map(String).join(" "));
   };
   try {
-    const parse = () => root().parse(invocation.args);
+    const parse = async () => (await root()).parse(invocation.args);
     try {
       if (invocation.stdin !== undefined) {
         await withStdin(invocation.stdin, parse);
@@ -476,7 +482,7 @@ export async function runCliRejecting(
   };
   try {
     try {
-      await root().parse(invocation.args);
+      await (await root()).parse(invocation.args);
     } catch (error) {
       try {
         await flushDatastoreSync();
@@ -514,7 +520,7 @@ export async function runCliCapturing(
   let error: unknown;
   let exitCode = 0;
   try {
-    await root().parse(invocation.args);
+    await (await root()).parse(invocation.args);
   } catch (thrown) {
     error = thrown;
   } finally {

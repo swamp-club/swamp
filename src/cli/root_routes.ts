@@ -77,7 +77,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
     hidden: false,
     module: "src/cli/commands/workflow.ts",
     needsFullTree: false,
-    load: async () => (await import("./commands/workflow.ts")).workflowCommand,
+    load: async (rest) =>
+      (await import("./commands/workflow.ts")).createWorkflowCommand(rest),
   },
   {
     name: "vault",
@@ -93,7 +94,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
     hidden: false,
     module: "src/cli/commands/data.ts",
     needsFullTree: false,
-    load: async () => (await import("./commands/data.ts")).dataCommand,
+    load: async (rest) =>
+      (await import("./commands/data.ts")).createDataCommand(rest),
   },
   {
     name: "telemetry",

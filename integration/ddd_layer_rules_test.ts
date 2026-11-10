@@ -273,6 +273,31 @@ Deno.test(
   },
 );
 
+// a group table names every subcommand of its group, so any importer other
+// than the group module would depend on the whole group
+const GROUP_ROUTE_TABLES: ReadonlyArray<readonly [string, string]> = [
+  ["src/cli/commands/data.ts", "src/cli/commands/data_routes.ts"],
+  ["src/cli/commands/workflow.ts", "src/cli/commands/workflow_routes.ts"],
+];
+
+Deno.test(
+  "collectReferenceEdges: only its group module imports a group route table",
+  async () => {
+    for (const [group, table] of GROUP_ROUTE_TABLES) {
+      const edges = await collectReferenceEdges(
+        SRC_DIR,
+        (resolved) => resolved === table,
+      );
+      assertEquals(
+        edges,
+        [`${group} -> ${table}`],
+        `Imports of ${table} other than ${group}:\n${edges.join("\n")}\n\n` +
+          `${table} names every subcommand of its group; build the group through ${group}.`,
+      );
+    }
+  },
+);
+
 // the version command is a leaf only the route table imports: another importer
 // puts it in that file's closure, so affectedCommands for an edit to it would
 // name more than version
