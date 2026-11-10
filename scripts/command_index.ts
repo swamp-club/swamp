@@ -104,7 +104,7 @@ export async function loadCommandIndex(
   // The tree first, then the files: a command file the tree registers is
   // already loaded by then, so importing it again evaluates nothing new.
   const { buildCommandTree } = await import("../src/cli/mod.ts");
-  const roots = rootCommands(buildCommandTree());
+  const roots = rootCommands(await buildCommandTree());
 
   const exportsByFile = new Map<string, unknown[]>();
   for (const file of files) {

@@ -28,7 +28,7 @@ import {
 import { behaviorTwinPath } from "../src/cli/behavior_twin.ts";
 import type { CommandInvocationData } from "../src/domain/telemetry/mod.ts";
 
-const root = buildCommandTree();
+const root = await buildCommandTree();
 
 function at(words: string[]): AnyCommand {
   let command = root;

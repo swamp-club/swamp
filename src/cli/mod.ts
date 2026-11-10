@@ -1993,7 +1993,7 @@ async function initTelemetryService(
  * kept free of invocation state so the real command tree can be built outside
  * runInvocation; the telemetry redaction fitness test walks it
  */
-export function registerCommands(cli: AnyCommand): void {
+export function registerCommands(cli: AnyCommand): Promise<void> {
   cli
     .command("access", accessCommand)
     .command("version", versionCommand)
@@ -2033,6 +2033,7 @@ export function registerCommands(cli: AnyCommand): void {
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
+  return Promise.resolve();
 }
 
 /**
@@ -2148,9 +2149,9 @@ export function createRootCommand(colorEnabled: boolean): AnyCommand {
  * call before the real cli registers its commands: the instances are shared and
  * Cliffy re-parents each to the tree that registers it last
  */
-export function buildCommandTree(): AnyCommand {
+export async function buildCommandTree(): Promise<AnyCommand> {
   const tree = createRootCommand(false);
-  registerCommands(tree);
+  await registerCommands(tree);
   return tree;
 }
 
@@ -2322,7 +2323,7 @@ async function runInvocation(
   // buildCommandTree must run before registerCommands(cli) because Cliffy
   // re-parents shared instances to the last tree; hook mode checks locally and,
   // when blocked, records nothing and exits 0
-  const commandTree = hookMode ? undefined : buildCommandTree();
+  const commandTree = hookMode ? undefined : await buildCommandTree();
   // a process that does not own the config dir (e.g. a root system daemon)
   // reads it but never writes it, leaving no root-owned files the user's own
   // runs cannot read
@@ -2677,7 +2678,7 @@ async function runInvocation(
     .error(unknownCommandErrorHandler)
     .action(groupCommandAction);
 
-  registerCommands(cli);
+  await registerCommands(cli);
 
   // resolved against the real command tree before parsing, since recording
   // needs it whether the parse succeeds or throws. raw redacted values stay in

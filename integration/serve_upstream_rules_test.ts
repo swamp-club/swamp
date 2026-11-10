@@ -24,9 +24,9 @@ import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCommands } from "../src/cli/mod.ts";
 import { SERVE_UPSTREAM_COMMANDS } from "../src/cli/serve_upstream.ts";
 
-function buildRoot(): AnyCommand {
+async function buildRoot(): Promise<AnyCommand> {
   const root = new Command().name("swamp");
-  registerCommands(root);
+  await registerCommands(root);
   return root;
 }
 
@@ -38,8 +38,8 @@ function childSpellings(command: AnyCommand): string[] {
   return command.getCommands(true).flatMap(spellings).sort();
 }
 
-Deno.test("serve upstream: every top-level command and alias has a row", () => {
-  const registered = childSpellings(buildRoot());
+Deno.test("serve upstream: every top-level command and alias has a row", async () => {
+  const registered = childSpellings(await buildRoot());
   const table = Object.keys(SERVE_UPSTREAM_COMMANDS).sort();
   assertEquals(
     table,
@@ -51,8 +51,8 @@ Deno.test("serve upstream: every top-level command and alias has a row", () => {
   );
 });
 
-Deno.test("serve upstream: every subcommand of a split family has a row", () => {
-  const root = buildRoot();
+Deno.test("serve upstream: every subcommand of a split family has a row", async () => {
+  const root = await buildRoot();
   for (const [family, rule] of Object.entries(SERVE_UPSTREAM_COMMANDS)) {
     if (rule.subcommands === undefined) continue;
     const command = root.getCommand(family, true);

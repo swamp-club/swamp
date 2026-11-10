@@ -21,7 +21,7 @@ import { assertEquals } from "@std/assert";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
 import { buildCommandTree } from "./mod.ts";
 
-const tree = buildCommandTree();
+const tree = await buildCommandTree();
 
 function timing(args: string[]) {
   return authGateTiming(tree, args);
