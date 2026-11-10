@@ -45,6 +45,7 @@ import { removeStaleOutputSummaries } from "../../infrastructure/persistence/out
 import { removeStaleRunIndexes } from "../../infrastructure/persistence/workflow_run_index.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { workflowStepLockHook } from "./workflow_run.ts";
+import { createSyncGate } from "../../infrastructure/persistence/sync_gate_lock.ts";
 import { resolveResumableRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
 import { runHasDeadOwner } from "../../domain/workflows/orphaned_run_reaper.ts";
@@ -400,13 +401,22 @@ export const workflowResumeCommand = withRemoteOptions(
     }
 
     const stepLeaseLost = new AbortController();
+    const syncGate = createSyncGate();
     const stepLockHook = workflowStepLockHook(
       repoDir,
       repoContext,
       unlocked.datastoreConfig,
       unlocked.syncService,
-      undefined,
+      syncGate,
       (reason) => stepLeaseLost.abort(reason),
+    );
+    // a lapse of the report lock's lease fails the reports, never the run
+    const reportLockHook = workflowStepLockHook(
+      repoDir,
+      repoContext,
+      unlocked.datastoreConfig,
+      unlocked.syncService,
+      syncGate,
     );
 
     await Promise.all([
@@ -523,7 +533,9 @@ export const workflowResumeCommand = withRemoteOptions(
 
     service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);
     service.continuationClaims = repoContext.continuationClaims;
-    if (repoContext.commitLog !== undefined) service.reportLock = stepLockHook;
+    if (repoContext.commitLog !== undefined) {
+      service.reportLock = reportLockHook;
+    }
     service.signalWaits = signalWaits;
     service.ownerLiveness = liveness;
     const runCheckpointer = new WorkflowRunCheckpointer(repoContext);

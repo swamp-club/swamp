@@ -163,6 +163,17 @@ async function summaryVersions(serve: Serve): Promise<number[]> {
   return [...versions].sort((a, b) => a - b);
 }
 
+async function methodSummaryVersions(serve: Serve): Promise<number[]> {
+  const versions = new Set<number>();
+  for (const entry of await serve.log()) {
+    for (const key of entry.keys) {
+      const match = key.match(/\/report-swamp-method-summary\/(\d+)\/raw$/);
+      if (match !== null) versions.add(Number(match[1]));
+    }
+  }
+  return [...versions].sort((a, b) => a - b);
+}
+
 for (
   const [label, bobGrants] of [
     ["bob's dogfood grants", BOB_DOGFOOD],
@@ -248,10 +259,9 @@ Deno.test({
             reports: { require: [BARRIER_REPORT] },
             jobs: [Job.create({
               name: "main",
-              // no behavior step, so the runs share only the workflow's reports
               steps: [Step.create({
-                name: "check",
-                task: StepTask.assert("true", "always holds"),
+                name: "health",
+                task: StepTask.modelMethod("web", "noop"),
               })],
             })],
           })),
@@ -275,6 +285,77 @@ Deno.test({
         ["succeeded", "succeeded"],
       );
       assertEquals(await summaryVersions(serve), [1, 2]);
+      assertEquals(await methodSummaryVersions(serve), [1, 2]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "workflow report race: a member's run of a behavior step while serve's own run of it waits at its report barrier allocates the next method-summary version, and both succeed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      // no paced checkpoint commits serve's step before the member's run
+      const serve = await scratch.serve({
+        grants: ALICE_ALL,
+        managedConfig: true,
+        checkpointIntervalMs: 60 * 60 * 1000,
+      });
+      const alice = await scratch.client("a", { managedConfig: true });
+      const env = serveEnv(serve, "alice-token");
+      const step = () =>
+        Step.create({
+          name: "health",
+          task: StepTask.modelMethod("web", "noop"),
+        });
+      await writeCommand(scratch, alice, env, async (repos) => {
+        await repos.workflowRepo.save(Workflow.create({
+          name: "held-at-barrier",
+          reports: { require: [BARRIER_REPORT] },
+          jobs: [Job.create({ name: "main", steps: [step()] })],
+        }));
+        await repos.workflowRepo.save(Workflow.create({
+          name: "member-health",
+          jobs: [Job.create({ name: "main", steps: [step()] })],
+        }));
+      });
+      const dir = join(scratch.dir, "barrier");
+      await Deno.mkdir(dir);
+      // serve's run waits at its report, its step done and its lock released,
+      // until the member's whole run has gone in between
+      const fromServe = serve.runWorkflow("held-at-barrier", "user:caller", {
+        dir,
+        label: "serve",
+        labels: ["serve", "member"],
+        waitMs: 120_000,
+      });
+      let fromMember: Runs | undefined;
+      try {
+        await waitFor(
+          () => Deno.stat(join(dir, "serve")).then(() => true, () => false),
+          "serve's run at its report barrier",
+          { timeoutMs: 120_000, intervalMs: 20 },
+        );
+        fromMember = await runWorkflows(
+          scratch,
+          serve,
+          alice,
+          "alice-token",
+          "user:caller",
+          { workflowName: "member-health", count: 1 },
+        );
+      } finally {
+        await Deno.writeTextFile(join(dir, "member"), "");
+      }
+      const served = await fromServe;
+      assertEquals([...served.errors, ...fromMember.errors], []);
+      assertEquals(
+        [...served.statuses, ...fromMember.statuses],
+        ["succeeded", "succeeded"],
+      );
+      assertEquals(await methodSummaryVersions(serve), [1, 2]);
     });
   },
 });

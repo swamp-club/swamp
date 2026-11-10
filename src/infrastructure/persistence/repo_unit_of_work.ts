@@ -59,6 +59,16 @@ export interface CommitLogEngine {
   /** epoch ms of the caller's open unit's last commit of what it had staged */
   lastCheckpointAt?(): number | undefined;
   /**
+   * this process is serve on this datastore: members may lease its behaviors
+   * whether or not serve claimed it, so serve's own reads lock too
+   */
+  heldByServe?(): boolean;
+  /**
+   * once every run record naming the refused data of these partitions is
+   * saved again without it, so the root's end neither holds nor throws it
+   */
+  acknowledgeOpenUnitRefusals?(partitions: readonly PartitionKey[]): void;
+  /**
    * commits the changes at once as their own commit, leaving what the open
    * unit has staged; throws when the commit fails or is refused
    */
@@ -455,6 +465,19 @@ export function lastOpenUnitCheckpointAt(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): number | undefined {
   return commitLogOf(repoContext)?.lastCheckpointAt?.();
+}
+
+export function servesV3Datastore(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+): boolean {
+  return commitLogOf(repoContext)?.heldByServe?.() === true;
+}
+
+export function acknowledgeOpenUnitRefusals(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+  partitions: readonly PartitionKey[],
+): void {
+  commitLogOf(repoContext)?.acknowledgeOpenUnitRefusals?.(partitions);
 }
 
 export async function checkpointOpenUnitOfWork(

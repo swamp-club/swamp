@@ -1627,6 +1627,7 @@ export async function v3RepositoryFactoryConfig(
     commitLog: (markDirty, runRepo) =>
       handle.engineFor(markDirty, runRepo, {
         readOnly: options.readOnly === true,
+        heldByServe: () => serveHolds.has(resolve(config.path)),
       }),
     catalogStore: handle.catalogStore,
     // a read of a record the read model could not materialise fails loudly

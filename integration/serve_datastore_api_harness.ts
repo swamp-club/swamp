@@ -95,6 +95,8 @@ export async function withServer(
   ledger = new UploadLedger(),
   options: {
     managedConfig?: boolean;
+    /** opens serve's repo as serve at this address, as `swamp serve` does */
+    serveAddress?: string;
     /**
      * The groups each token's caller carries, as an identity provider's
      * token names them; read live, so a test may change them mid-way.

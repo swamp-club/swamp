@@ -120,6 +120,7 @@ import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import "../models/models.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
+import { processLockHolderMarker } from "../datastore/lock_holder_marker.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -26155,15 +26156,18 @@ Deno.test("WorkflowExecutionService: a workflow lock that cannot be taken skips 
     await ready;
 
     const kinds: string[] = [];
+    const failedNames: string[] = [];
     let finalRun: WorkflowRun | undefined;
     for await (const event of service.run(workflow.name)) {
       kinds.push(event.kind);
+      if (event.kind === "report_failed") failedNames.push(event.reportName);
       if (event.kind === "completed") finalRun = event.run;
     }
 
     assertEquals(finalRun?.status, "succeeded");
     assertEquals(kinds.includes("report_completed"), false);
     assertEquals(kinds.includes("report_failed"), true);
+    assertEquals(failedNames, ["@swamp/workflow-summary"]);
     assertEquals(finalRun?.workflowDataArtifacts, []);
     assertEquals(lock.flushed, []);
   });
@@ -26172,7 +26176,7 @@ Deno.test("WorkflowExecutionService: a workflow lock that cannot be taken skips 
 Deno.test("WorkflowExecutionService: reports whose flush fails are failed reports, and the run keeps its result and names none of them (swamp-club#4567)", async () => {
   await withTempDir(async (tempDir) => {
     const lock = reportLockHook({
-      flushError: new Error("the lease on the workflow lapsed"),
+      flushError: new UserError("the lease on the workflow lapsed"),
     });
     const { service, workflow, ready } = reportLockService(tempDir, lock.hook);
     await ready;
@@ -26193,6 +26197,203 @@ Deno.test("WorkflowExecutionService: reports whose flush fails are failed report
       "the reports could not be saved: the lease on the workflow lapsed",
     ]);
     assertEquals(lock.flushed.length, 1);
+  });
+});
+
+Deno.test("WorkflowExecutionService: --skip-reports takes no workflow lock when no workflow-scope report is left to run (swamp-club#4578)", async () => {
+  await withTempDir(async (tempDir) => {
+    const lock = reportLockHook({});
+    const { service, workflow, ready } = reportLockService(tempDir, lock.hook);
+    await ready;
+
+    let finalRun: WorkflowRun | undefined;
+    for await (
+      const event of service.run(workflow.name, {
+        reportFilterOptions: { skipAllReports: true },
+      })
+    ) {
+      if (event.kind === "completed") finalRun = event.run;
+    }
+
+    assertEquals(finalRun?.status, "succeeded");
+    assertEquals(lock.taken, []);
+    assertEquals(finalRun?.workflowDataArtifacts, []);
+  });
+});
+
+Deno.test("WorkflowExecutionService: --skip-reports still takes the workflow lock for a required report, which saves an error artifact when unresolved (swamp-club#4578)", async () => {
+  await withTempDir(async (tempDir) => {
+    const lock = reportLockHook({});
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const missing = `@test4578/missing-${crypto.randomUUID()}`;
+    const workflow = Workflow.create({
+      name: "required-missing",
+      reports: { require: [missing] },
+      jobs: [...createSimpleWorkflow().jobs],
+    });
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      new InMemoryWorkflowRunRepository(),
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    service.reportLock = lock.hook;
+
+    for await (
+      const _event of service.run(workflow.name, {
+        reportFilterOptions: { skipAllReports: true },
+      })
+    ) {
+      // drained
+    }
+
+    assertEquals(lock.taken, [{ modelType: "workflow", modelId: workflow.id }]);
+  });
+});
+
+Deno.test("WorkflowExecutionService: a cancel while waiting for the workflow lock ends the wait and fails each report (swamp-club#4578)", async () => {
+  await withTempDir(async (tempDir) => {
+    const controller = new AbortController();
+    let waited: AbortSignal | undefined;
+    const hook: StepLockHook = (_type, _id, _step, signal) => {
+      waited = signal;
+      // the run is cancelled while this lock is held elsewhere
+      controller.abort(new Error("cancelled"));
+      return new Promise((_resolve, reject) => {
+        if (signal?.aborted) reject(signal.reason);
+        signal?.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    };
+    const { service, workflow, ready } = reportLockService(tempDir, hook);
+    await ready;
+
+    const failed: { name: string; error: string }[] = [];
+    for await (
+      const event of service.run(workflow.name, { signal: controller.signal })
+    ) {
+      if (event.kind === "report_failed") {
+        failed.push({ name: event.reportName, error: event.error });
+      }
+    }
+
+    assertEquals(waited, controller.signal);
+    assertEquals(failed, [{
+      name: "@swamp/workflow-summary",
+      error: "the run was cancelled while waiting for the workflow's lock",
+    }]);
+  });
+});
+
+Deno.test("WorkflowExecutionService: a refused report save acknowledges the refusal of the workflow's partition once the reports are withdrawn (swamp-club#4578)", async () => {
+  await withTempDir(async (tempDir) => {
+    let acknowledged = 0;
+    const hook: StepLockHook = () =>
+      Promise.resolve({
+        flush: () =>
+          Promise.reject(new UserError("the lease on the workflow lapsed")),
+        acknowledgeRefusals: () => {
+          acknowledged++;
+        },
+      });
+    const { service, workflow, ready } = reportLockService(tempDir, hook);
+    await ready;
+
+    let finalRun: WorkflowRun | undefined;
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "completed") finalRun = event.run;
+    }
+
+    assertEquals(finalRun?.status, "succeeded");
+    assertEquals(finalRun?.workflowDataArtifacts, []);
+    assertEquals(acknowledged, 1);
+  });
+});
+
+Deno.test("WorkflowExecutionService: an unexpected report save error is thrown, and the run tracker and saved record keep the run's result (swamp-club#4578)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const tracker = new RecordingRunTracker();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = serviceWithTracker(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      new CatalogStore(join(tempDir, "_catalog.db")),
+      tracker,
+    );
+    let acknowledged = 0;
+    service.reportLock = () =>
+      Promise.resolve({
+        flush: () => Promise.reject(new TypeError("a bug in the flush")),
+        acknowledgeRefusals: () => {
+          acknowledged++;
+        },
+      });
+
+    let finalRun: WorkflowRun | undefined;
+    await assertRejects(async () => {
+      for await (const event of service.run(workflow.name)) {
+        if (event.kind === "completed") finalRun = event.run;
+      }
+    }, TypeError);
+
+    assertEquals(finalRun?.status, "succeeded");
+    const saved = await runRepo.findById(workflow.id, finalRun!.id);
+    assertEquals(saved?.status, "succeeded");
+    assertEquals(tracker.completions.at(-1)?.status, "completed");
+    assertEquals(acknowledged, 0);
+  });
+});
+
+Deno.test("WorkflowExecutionService: workflow-scope reports run holding the workflow lock's ids, so a swamp a report starts skips it (swamp-club#4578)", async () => {
+  await withTempDir(async (tempDir) => {
+    const reportName = `@test4578/holder-${crypto.randomUUID()}`;
+    let held: readonly string[] | undefined;
+    reportRegistry.register(reportName, {
+      description: "records the lock ids a child would skip",
+      scope: "workflow",
+      execute: () => {
+        held = processLockHolderMarker.remoteHandOff().holder()?.lockIds;
+        return Promise.resolve({ markdown: "# held", json: {} });
+      },
+    });
+    try {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const workflow = Workflow.create({
+        name: "holds-the-lock",
+        reports: { require: [reportName] },
+        jobs: [...createSimpleWorkflow().jobs],
+      });
+      await workflowRepo.save(workflow);
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        new MockStepExecutor(),
+        undefined,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+      );
+      const nonce = crypto.randomUUID();
+      service.reportLock = () =>
+        Promise.resolve({
+          flush: () => Promise.resolve(),
+          heldLockIds: [nonce],
+        });
+
+      await service.execute(workflow.name);
+
+      assertEquals(held?.includes(nonce), true);
+    } finally {
+      reportRegistry.invalidateType(reportName);
+    }
   });
 });
 

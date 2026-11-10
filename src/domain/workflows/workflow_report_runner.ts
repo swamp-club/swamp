@@ -26,6 +26,7 @@ import {
   executeReports,
   type ReportEventCallback,
   type ReportFilterOptions,
+  selectedReportNames,
 } from "../reports/report_execution_service.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
 import type { WorkflowReportContext } from "../reports/report_context.ts";
@@ -70,6 +71,22 @@ export interface WorkflowReportArgs {
  * mask the workflow result
  */
 export class WorkflowReportRunner {
+  /** the workflow-scope reports runFor would run or fail for these options */
+  async selectedReports(
+    workflow: Workflow,
+    reportFilterOptions: ReportFilterOptions,
+  ): Promise<string[]> {
+    if (reportRegistry.getAll().length === 0) return [];
+    return await selectedReportNames(
+      reportRegistry,
+      "workflow",
+      workflow.reportSelection,
+      reportFilterOptions,
+      undefined,
+      BUILTIN_WORKFLOW_REPORTS,
+    );
+  }
+
   async runFor(args: WorkflowReportArgs): Promise<DataArtifactRef[]> {
     if (reportRegistry.getAll().length === 0) {
       return [];

@@ -185,6 +185,7 @@ import type {
 import type { ForeignContentFetcher } from "../domain/data/repositories.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import {
+  acknowledgeOpenUnitRefusals,
   checkpointOpenUnitOfWork,
   runInRootUnitOfWork,
 } from "../infrastructure/persistence/repo_unit_of_work.ts";
@@ -1848,6 +1849,13 @@ export function datastoreRootOf(config: DatastoreConfig): string | undefined {
   return isCustomDatastoreConfig(locking) ? undefined : locking.path;
 }
 
+/** a checkout whose commits go to serve, online or offline */
+export function writesThroughServe(config: DatastoreConfig): boolean {
+  const locking = lockingConfigOf(config);
+  return !isCustomDatastoreConfig(locking) &&
+    serveUpstreamAt(locking.path) !== undefined;
+}
+
 /**
  * when offline, reads and lists are allowed and their partition is registered
  * so what they record queues; anything that changes things needs a live
@@ -2693,6 +2701,11 @@ export interface ModelLockResult {
   heldLockIds: readonly string[];
   lentLocks: LentLocks;
   leaseLost?: AbortSignal;
+  /**
+   * for a caller that has withdrawn from its run every version a refused
+   * flush of these models named: the run's root then commits its record
+   */
+  acknowledgeRefusals?: () => void;
 }
 
 /**
@@ -2711,7 +2724,7 @@ async function checkpointStepUnderLease(
     );
   } catch (error) {
     getSwampLogger(["cli", "lock"])
-      .warn`Could not commit this step's writes before releasing its lock at serve; the run's end commit tries again: ${error}`;
+      .warn`Could not commit this step's writes before releasing its lock; the run's end commit tries again: ${error}`;
     return;
   }
   if (outcome === "refused") {
@@ -2864,6 +2877,11 @@ export interface AcquireModelLocksOptions {
   ignoresStop?: boolean;
   /** stops every lock wait; nothing taken so far stays held */
   signal?: AbortSignal;
+  /**
+   * serve's own locks are the ones it leases to members, whose floor reads
+   * only committed versions: a step staged under one commits before release
+   */
+  commitBeforeRelease?: boolean;
 }
 
 /**
@@ -4190,6 +4208,7 @@ export async function acquireModelLocks(
   // locks are released; under a lease at serve they commit before release, so
   // they reach serve naming the lease
   const atServe = heldLocks.some((lock) => lock instanceof ServeLock);
+  const commitsBeforeRelease = atServe || options?.commitBeforeRelease === true;
   // the one lease at serve a command holds here, which its last commit ends
   const releasableLease = (): string | undefined => {
     const leases = heldLocks.flatMap((lock) =>
@@ -4201,7 +4220,7 @@ export async function acquireModelLocks(
   };
   const flush = async (written?: readonly WrittenVersion[]) => {
     try {
-      if (atServe && options?.repoContext !== undefined) {
+      if (commitsBeforeRelease && options?.repoContext !== undefined) {
         await checkpointStepUnderLease(
           options.repoContext,
           releasableLease(),
@@ -4230,6 +4249,19 @@ export async function acquireModelLocks(
           : ".datastore.lock",
       }),
   };
+  const acknowledgeRefusals = () => {
+    if (options?.repoContext === undefined) return;
+    acknowledgeOpenUnitRefusals(
+      options.repoContext,
+      unique.map(({ modelType, modelId }) =>
+        partitionOf({
+          kind: "model",
+          type: ModelType.create(modelType),
+          id: modelId,
+        })
+      ),
+    );
+  };
   return {
     flush,
     push: () => push(),
@@ -4240,6 +4272,7 @@ export async function acquireModelLocks(
     heldLockIds: lockIds(),
     lentLocks,
     leaseLost: leaseLost.signal,
+    acknowledgeRefusals,
   };
 }
 

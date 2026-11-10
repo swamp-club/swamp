@@ -1515,7 +1515,7 @@ for (
   });
 }
 
-Deno.test("buildErrorJson: a refused partition carries a stable code and each refusal's reason (swamp-club#4567)", () => {
+Deno.test("buildErrorJson: a refused partition carries a stable code and each refusal's reason and message (swamp-club#4567, swamp-club#4578)", () => {
   const partition = partitionOf({
     kind: "model",
     type: ModelType.create("workflow"),
@@ -1534,5 +1534,7 @@ Deno.test("buildErrorJson: a refused partition carries a stable code and each re
   assertEquals(json.refusals, [{
     partition: partition.toString(),
     reason: "version-live",
+    message: "Data report-swamp-workflow-summary version 3 is already " +
+      "live; only an append re-records it",
   }]);
 });

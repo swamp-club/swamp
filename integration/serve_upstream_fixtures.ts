@@ -80,6 +80,20 @@ export interface Serve {
   compact(options?: { claim?: boolean }): Promise<number>;
   setGrants(grants: readonly GrantSpec[]): Promise<void>;
   restrict(types: readonly string[]): Promise<void>;
+  /** renewals serve answered for a lease it no longer holds */
+  refusedRenewals(): Promise<number>;
+  /** lock requests answered held, and the keys serve's own runs locked */
+  lockStats(): Promise<{ busy: number; ownLockKeys: readonly string[] }>;
+  /** a method run serve makes itself, as a client's --server run is */
+  runMethod(
+    modelIdOrName: string,
+    methodName: string,
+  ): Promise<{ errors: readonly string[] }>;
+  /** ends the lease held on a behavior's lock, as an admin's forced release does */
+  forceRelease(
+    modelType: string,
+    modelId: string,
+  ): Promise<{ principal?: string }>;
   write(
     dataName: string,
     dataId: string,
@@ -155,6 +169,14 @@ export interface ServeOptions {
   readonly managedConfig?: boolean;
   /** answers commits.head and commits.subscribe, so a member's feed watch runs */
   readonly commitFeed?: boolean;
+  /** the pace of serve's own runs' checkpoints, which commit what a step staged */
+  readonly checkpointIntervalMs?: number;
+  /** serve's behavior type gains `refresh`, a read method writing `out` */
+  readonly refreshMethod?: boolean;
+  /** serve opens its datastore as serve at this address, as `swamp serve` does */
+  readonly servedAs?: string;
+  /** and claims it under that address, as a team's serve may */
+  readonly claimed?: boolean;
 }
 
 export interface ClientOptions {
@@ -185,6 +207,10 @@ async function startServe(options: ServeOptions): Promise<Serve> {
   let compactedPoint: number | undefined;
   let granted = false;
   let restricted = false;
+  let forceReleased: { principal?: string } | undefined;
+  let renewals: number | undefined;
+  let stats: { busy: number; ownLockKeys: readonly string[] } | undefined;
+  let ranMethod: { errors: readonly string[] } | undefined;
   let wroteReply:
     | { versions: readonly number[]; errors: readonly string[] }
     | undefined;
@@ -202,6 +228,10 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "compacted") compactedPoint = message.point;
     else if (message.kind === "granted") granted = true;
     else if (message.kind === "restricted") restricted = true;
+    else if (message.kind === "force-released") forceReleased = message;
+    else if (message.kind === "renewals") renewals = message.refused;
+    else if (message.kind === "lock-stats") stats = message;
+    else if (message.kind === "ran-method") ranMethod = message;
     else logReply = message.entries;
   };
   worker.onerror = (event) => {
@@ -223,6 +253,14 @@ async function startServe(options: ServeOptions): Promise<Serve> {
         models: options.models ?? [],
         managedConfig: options.managedConfig === true,
         commitFeed: options.commitFeed === true,
+        ...(options.checkpointIntervalMs === undefined
+          ? {}
+          : { checkpointIntervalMs: options.checkpointIntervalMs }),
+        ...(options.refreshMethod === true ? { refreshMethod: true } : {}),
+        ...(options.servedAs === undefined
+          ? {}
+          : { servedAs: options.servedAs }),
+        ...(options.claimed === true ? { claimed: true } : {}),
       } satisfies ServeWorkerRequest,
     );
     await waitFor(
@@ -304,6 +342,61 @@ async function startServe(options: ServeOptions): Promise<Serve> {
         "serve's restricted types",
       );
       if (!restricted) throw new Error(`serve failed: ${failed}`);
+    },
+    async lockStats() {
+      stats = undefined;
+      worker.postMessage({ kind: "lock-stats" } satisfies ServeWorkerRequest);
+      await waitFor(
+        () => stats !== undefined || failed !== undefined,
+        "serve's lock stats",
+      );
+      if (stats === undefined) throw new Error(`serve failed: ${failed}`);
+      return stats;
+    },
+    async runMethod(modelIdOrName, methodName) {
+      ranMethod = undefined;
+      worker.postMessage(
+        {
+          kind: "method-run",
+          modelIdOrName,
+          methodName,
+        } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => ranMethod !== undefined || failed !== undefined,
+        "serve's method run",
+        { timeoutMs: 240_000, intervalMs: 50 },
+      );
+      if (ranMethod === undefined) throw new Error(`serve failed: ${failed}`);
+      return ranMethod;
+    },
+    async refusedRenewals() {
+      renewals = undefined;
+      worker.postMessage({ kind: "renewals" } satisfies ServeWorkerRequest);
+      await waitFor(
+        () => renewals !== undefined || failed !== undefined,
+        "serve's renewal count",
+      );
+      if (renewals === undefined) throw new Error(`serve failed: ${failed}`);
+      return renewals;
+    },
+    async forceRelease(modelType, modelId) {
+      forceReleased = undefined;
+      worker.postMessage(
+        {
+          kind: "force-release",
+          modelType,
+          modelId,
+        } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => forceReleased !== undefined || failed !== undefined,
+        "serve's forced release",
+      );
+      if (forceReleased === undefined) {
+        throw new Error(`serve failed: ${failed}`);
+      }
+      return forceReleased;
     },
     async write(dataName, dataId, count) {
       wroteReply = undefined;

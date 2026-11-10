@@ -2540,7 +2540,13 @@ these.
    bytes were committed, stages nothing when they are unchanged
    (swamp-club#4574). Any other save stages, since a file can be ahead of its
    last commit after a dropped unit. A flush that fails withdraws them, and the record
-   commits on its own, naming none. Both are direct appends of
+   commits on its own, naming none. The lock is taken only when a
+   workflow-scope report will run or fail (a required report still unresolved
+   saves an error artifact), so `--skip-reports` with none required takes none;
+   its wait stops when the run is cancelled; and a CLI run's report lock has
+   no lease-lost cancel, so a lapse of its lease fails the reports alone: the
+   refused save is acknowledged once the record names none of them, and the
+   run keeps its result and exit code (swamp-club#4578). Both are direct appends of
    one op (`appendNow`): they never flush what the open unit has staged, so
    a start costs the same whatever the size of the run's record, and never
    waits behind a paced upload of it. Recovery reads the start journal with
@@ -7629,6 +7635,10 @@ below describes them.
   released, its TTL passes without a renewal, or serve shuts down
   (`dispose`, after the run drain). A checkout's work and serve's own runs on
   one behavior therefore exclude each other. One lease per key at most.
+  Serve's own runs commit a behavior's writes before they release its lock,
+  as a lease holder does (`commitBeforeRelease`, swamp-club#4578): a lease's
+  floor holds committed versions only, so a version serve staged and left
+  uncommitted past the release would be allocated again by the next holder.
 - **The key.** `lockKey` is `data/{type}/{id}/.lock` or
   `workflow-run-claims/{runId}/.lock`, without a namespace (the route names
   it). It is parsed and made canonical before anything is decided: the type
@@ -7758,7 +7768,7 @@ which behaves as above.
   the short TTL only; acquiring again changes the hold. The checkout records it in its local root
   (`model_leases.json`, `explicit_model_leases.ts`). Every command renews it
   when it binds serve and registers it, so each of its commits to the
-  behavior names the lease, a read-kind method's lockless save included. A
+  behavior names the lease. A
   lease whose renewal fails (a serve blip) is registered from the record,
   unconfirmed (swamp-club#4167): serve, never the record, decides whether
   it is live, and a commit serve refuses as `lease-lost` under an
@@ -8109,7 +8119,7 @@ never relies on:
 | `409 precondition_failed` | `config_edit_conflict` for a managed-config definition or the lockfile (swamp-club#4097); otherwise serve's "changed by … at …" message, as a local expect-failed | 1 |
 | `409 datastore_v3_writer_fenced` | the same code | 1 |
 | `409 commit_lease-lost` | `datastore_v3_commit_lease_lost`, no stack trace, with a hint for the command (resume or recover a workflow run; rerun, or check the behavior's data, for a method run) | 75 if nothing of the command landed, else 1 |
-| `409` refusing a commit as it stands (`version-live`, `version-reused`, `expect-failed`, …) | `datastore_v3_partitions_refused`, with `refusals` naming each partition and its reason; the run records that name refused data are held back | 1 |
+| `409` refusing a commit as it stands (`version-live`, `version-reused`, `expect-failed`, …) | `datastore_v3_partitions_refused`, with `refusals` naming each partition, its reason and its message; the run records that name refused data are held back | 1 |
 | Lease lapsed (not renewed in time, force-released, or expired at serve) | `datastore_v3_lease_lapsed`: the work under it is cancelled and the run reports the lapse | 75 if nothing of the command landed, else 1 |
 | `503` storage unreachable, writer busy, replication | the same code (serve now answers storage-unreachable and writer-busy as 503, not 500) | 75 |
 | `403` | serve's message and the op's index | 1 |
@@ -9737,6 +9747,16 @@ refreshes its resource does. `methodRunLockMode`
 
 - On a filesystem or v3 datastore it takes no lock: a filesystem datastore has
   no push, and a v3 root commits through its commit log whatever the locks.
+- In team mode, a checkout writing through serve or serve itself on its v3
+  datastore, a v3 read or list run locks for the run (swamp-club#4578). Other
+  members hold the behavior's lease there, so a lockless save would be refused
+  under one as `lease-lost`, or take a version a holder allocated and has not
+  committed. A read then waits behind a writer, as in a workflow step, which
+  always locked; the lock's catch-up replaces the run's own, so it sends no
+  more requests. Offline it takes the checkout's local lock and needs no lease.
+  Serve locks its own reads whether or not it claimed the datastore: members
+  write through an unclaimed serve too, and nothing tells a team's serve from a
+  solo one.
   Nor does it on a v2 extension datastore whose provider builds no sync
   service, which has nothing to pull or publish through.
 - On a v2 extension datastore the model lock is the only path that pulls before

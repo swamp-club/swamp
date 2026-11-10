@@ -746,7 +746,9 @@ returns `true` for everything except `"read"` and `"list"`, including
 `undefined` (unrecognized names). It is used internally to decide whether to
 run checks, and how a run holds its behavior's lock (`methodRunLockMode`). A
 mutating run holds the lock throughout. A read or list run takes no lock while
-it runs (swamp-club#1992). On a v2 extension datastore it still pulls the
+it runs (swamp-club#1992), except in team mode on a v3 datastore, where it
+locks for the run (swamp-club#4578): another member's lease there would refuse
+a lockless save, or a holder would take its version. On a v2 extension datastore it still pulls the
 behavior before it runs and takes the lock briefly afterwards to publish what
 it wrote, so a `get` that refreshes its resource reaches the datastore
 (swamp-club#3934). That publish never waits on a writer: while another run
