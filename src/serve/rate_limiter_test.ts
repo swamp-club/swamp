@@ -17,13 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   checkFailedAttempts,
   checkIpBurst,
   checkPrincipalRate,
+  failedAttemptKey,
   limitDashboardSessionGuesses,
   limitFailedAttempts,
   MAX_PENDING_ATTEMPTS,
@@ -32,34 +38,97 @@ import {
   PRINCIPAL_RATE_BURST,
   PRINCIPAL_RATE_PER_MINUTE,
   principalRateBucketCount,
-  rateLimitKey,
-  rateLimitKeyWithAddress,
   recordFailedAttempt,
   resetRateLimitState,
 } from "./rate_limiter.ts";
 
-Deno.test("rateLimitKey: returns token-name key for valid token format", () => {
-  assertEquals(rateLimitKey("mytoken.secret123", "10.0.0.1"), "token:mytoken");
+const HEX = "a".repeat(64);
+const DELEGATION_A = "11111111-1111-4111-8111-111111111111";
+const DELEGATION_B = "22222222-2222-4222-8222-222222222222";
+
+Deno.test("failedAttemptKey: a minted token keys on its name and the address", () => {
+  assertEquals(
+    failedAttemptKey("mytoken.secret123", "10.0.0.1"),
+    "token:mytoken|address:10.0.0.1",
+  );
+  assertEquals(
+    failedAttemptKey("mytoken.other", "10.0.0.1"),
+    failedAttemptKey("mytoken.secret123", "10.0.0.1"),
+  );
 });
 
-Deno.test("rateLimitKey: returns IP key for null token", () => {
-  assertEquals(rateLimitKey(null, "10.0.0.1"), "ip:10.0.0.1");
+Deno.test("failedAttemptKey: every delegated secret keys on its own delegation id", () => {
+  for (const prefix of ["swda1", "swdr1", "swdx1"]) {
+    assertEquals(
+      failedAttemptKey(`${prefix}.${DELEGATION_A}.${HEX}`, "10.0.0.1"),
+      `delegation:${DELEGATION_A}|address:10.0.0.1`,
+    );
+  }
+  assertNotEquals(
+    failedAttemptKey(`swda1.${DELEGATION_A}.${HEX}`, "10.0.0.1"),
+    failedAttemptKey(`swda1.${DELEGATION_B}.${HEX}`, "10.0.0.1"),
+  );
 });
 
-Deno.test("rateLimitKey: returns IP key for malformed token", () => {
-  assertEquals(rateLimitKey("no-dot-here", "10.0.0.1"), "ip:10.0.0.1");
+Deno.test("failedAttemptKey: an integration credential keys on its integration id", () => {
+  assertEquals(
+    failedAttemptKey(`swi1.slackwater.${HEX}`, "10.0.0.1"),
+    "integration-credential:slackwater|address:10.0.0.1",
+  );
+  assertNotEquals(
+    failedAttemptKey(`swi1.slackwater.${HEX}`, "10.0.0.1"),
+    failedAttemptKey(`swi1.other.${HEX}`, "10.0.0.1"),
+  );
 });
 
-Deno.test("rateLimitKey: returns IP key for empty token", () => {
-  assertEquals(rateLimitKey("", "10.0.0.1"), "ip:10.0.0.1");
+Deno.test("failedAttemptKey: the same principal counts apart at each address", () => {
+  for (
+    const credential of [
+      "mytoken.secret",
+      `swda1.${DELEGATION_A}.${HEX}`,
+      `swi1.slackwater.${HEX}`,
+    ]
+  ) {
+    assertNotEquals(
+      failedAttemptKey(credential, "10.0.0.1"),
+      failedAttemptKey(credential, "10.0.0.2"),
+    );
+  }
 });
 
-Deno.test("rateLimitKey: returns IP key for token starting with dot", () => {
-  assertEquals(rateLimitKey(".secret", "10.0.0.1"), "ip:10.0.0.1");
+Deno.test("failedAttemptKey: a reserved prefix that does not parse keys on the address alone", () => {
+  for (
+    const credential of [
+      "swda1.not-a-uuid.deadbeef",
+      `swda1.${DELEGATION_A}.short`,
+      "swdr1.x",
+      "swdx1.x.y",
+      "swi1.slackwater.short",
+    ]
+  ) {
+    assertEquals(
+      failedAttemptKey(credential, "10.0.0.1"),
+      "address:10.0.0.1",
+      credential,
+    );
+  }
 });
 
-Deno.test("rateLimitKey: returns IP key for token ending with dot", () => {
-  assertEquals(rateLimitKey("name.", "10.0.0.1"), "ip:10.0.0.1");
+Deno.test("failedAttemptKey: no credential or a malformed one keys on the address alone", () => {
+  for (const credential of [null, "", "no-dot-here", ".secret", "name."]) {
+    assertEquals(failedAttemptKey(credential, "10.0.0.1"), "address:10.0.0.1");
+  }
+});
+
+Deno.test("failedAttemptKey: a scope leads the key", () => {
+  assertEquals(
+    failedAttemptKey(null, "10.0.0.1", "delegation-refresh:slackwater"),
+    "delegation-refresh:slackwater|address:10.0.0.1",
+  );
+  assertEquals(
+    failedAttemptKey("mytoken.secret", "10.0.0.1", "scope"),
+    "scope|token:mytoken|address:10.0.0.1",
+  );
 });
 
 Deno.test("recordFailedAttempt: allows up to 5 failures for a key", () => {
@@ -113,6 +182,16 @@ Deno.test("checkFailedAttempts: different token names are independent", () => {
   }
   assertEquals(checkFailedAttempts("token:worker-a").allowed, false);
   assertEquals(checkFailedAttempts("token:worker-b").allowed, true);
+});
+
+Deno.test("recordFailedAttempt: filling the bucket map never lifts a lockout", () => {
+  resetRateLimitState();
+  const locked = `locked-${crypto.randomUUID()}`;
+  for (let i = 0; i < 5; i++) recordFailedAttempt(locked);
+  assertEquals(checkFailedAttempts(locked).allowed, false);
+  for (let i = 0; i < 10_001; i++) recordFailedAttempt(`spray-${i}`);
+  assertEquals(checkFailedAttempts(locked).allowed, false);
+  resetRateLimitState();
 });
 
 Deno.test("checkFailedAttempts: IP-keyed fallback works like token keys", () => {
@@ -542,14 +621,4 @@ Deno.test("limitFailedAttempts: the failure that locks a key out is logged once,
   assertEquals(lockouts.length, 1);
   assertEquals(lockouts[0].properties.count, 5);
   assert((lockouts[0].properties.seconds as number) > 0);
-});
-
-Deno.test("rateLimitKeyWithAddress: one token name counts per address", () => {
-  const key = (ip: string) => rateLimitKeyWithAddress("name.secret", ip);
-  assertEquals(key("10.0.0.1") === key("10.0.0.1"), true);
-  assertEquals(key("10.0.0.1") === key("10.0.0.2"), false);
-  assertEquals(
-    rateLimitKeyWithAddress("name.other-secret", "10.0.0.1"),
-    key("10.0.0.1"),
-  );
 });

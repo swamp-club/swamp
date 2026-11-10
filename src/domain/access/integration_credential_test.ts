@@ -27,6 +27,7 @@ import {
   generateIntegrationCredential,
   INTEGRATION_CREDENTIAL_HASH_PATTERN,
   integrationCredentialHash,
+  integrationIdOfCredential,
   verifyIntegrationCredential,
 } from "./integration_credential.ts";
 
@@ -92,5 +93,26 @@ Deno.test("verifyIntegrationCredential: refuses another credential, an unknown i
       { ok: false },
       presented,
     );
+  }
+});
+
+Deno.test("integrationIdOfCredential: names the claimed id of a well-formed credential only", async () => {
+  const { credential } = await generateIntegrationCredential("slackwater");
+  assertEquals(integrationIdOfCredential(credential), "slackwater");
+  const hex = "a".repeat(64);
+  assertEquals(integrationIdOfCredential(`swi1.other.${hex}`), "other");
+  for (
+    const malformed of [
+      "",
+      "swi1",
+      `swi1.slackwater`,
+      `swi1.slackwater.${hex}.extra`,
+      `swi1.Slackwater.${hex}`,
+      `swi1.slackwater.${"A".repeat(64)}`,
+      `swi1.slackwater.short`,
+      `swda1.slackwater.${hex}`,
+    ]
+  ) {
+    assertEquals(integrationIdOfCredential(malformed), undefined, malformed);
   }
 });

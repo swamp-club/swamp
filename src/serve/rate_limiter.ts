@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { splitServerToken } from "./token_auth.ts";
+import {
+  parseDelegatedSecret,
+  RESERVED_TOKEN_NAMES,
+} from "../domain/access/delegated_token.ts";
+import { integrationIdOfCredential } from "../domain/access/integration_credential.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "rate-limit"]);
@@ -49,6 +54,20 @@ function sweepExpired(buckets: Map<string, RateLimitEntry>): void {
   }
 }
 
+/** a refusing entry outlives fresher ones, so filling the map never lifts a lockout */
+function evictOldest(
+  buckets: Map<string, RateLimitEntry>,
+  maxAttempts: number,
+): void {
+  for (const [key, entry] of buckets) {
+    if (entry.count < maxAttempts) {
+      buckets.delete(key);
+      return;
+    }
+  }
+  buckets.delete(buckets.keys().next().value!);
+}
+
 function checkBucket(
   buckets: Map<string, RateLimitEntry>,
   key: string,
@@ -59,10 +78,7 @@ function checkBucket(
   const entry = buckets.get(key);
   if (!entry || now > entry.resetAt) {
     if (buckets.size >= MAX_ENTRIES) sweepExpired(buckets);
-    if (buckets.size >= MAX_ENTRIES) {
-      const oldest = buckets.keys().next().value!;
-      buckets.delete(oldest);
-    }
+    if (buckets.size >= MAX_ENTRIES) evictOldest(buckets, maxAttempts);
     buckets.set(key, { count: 1, resetAt: now + windowMs });
     return { allowed: true };
   }
@@ -76,28 +92,37 @@ function checkBucket(
   };
 }
 
-export function rateLimitKey(
-  token: string | null,
-  ip: string,
+/**
+ * Every key ends in the address, so knowing a principal only locks it out from
+ * the caller's own address; the principal is the one the credential claims,
+ * never a prefix that every credential of its kind shares.
+ */
+export function failedAttemptKey(
+  credential: string | null,
+  address: string,
+  scope?: string,
 ): string {
-  if (token !== null) {
-    const split = splitServerToken(token);
-    if (split !== null) {
-      return `token:${split.name}`;
-    }
-  }
-  return `ip:${ip}`;
+  const principal = credential === null
+    ? undefined
+    : claimedPrincipal(credential);
+  return [scope, principal, `address:${address}`]
+    .filter((part) => part !== undefined)
+    .join("|");
 }
 
-/**
- * failures counted per address too, so someone who knows a token's name can only
- * lock out themselves, never the token's real holder
- */
-export function rateLimitKeyWithAddress(
-  token: string | null,
-  ip: string,
-): string {
-  return `${rateLimitKey(token, ip)}|address:${ip}`;
+function claimedPrincipal(credential: string): string | undefined {
+  const delegated = parseDelegatedSecret(credential);
+  if (delegated !== null) return `delegation:${delegated.delegationId}`;
+  const integrationId = integrationIdOfCredential(credential);
+  if (integrationId !== undefined) {
+    return `integration-credential:${integrationId}`;
+  }
+  const split = splitServerToken(credential);
+  // a reserved prefix that failed to parse names no principal of its own
+  if (split === null || RESERVED_TOKEN_NAMES.includes(split.name)) {
+    return undefined;
+  }
+  return `token:${split.name}`;
 }
 
 export function checkIpBurst(ip: string): RateLimitResult {

@@ -40,7 +40,6 @@ import {
   holdingSlotUntilRead,
 } from "./http_request_route.ts";
 import { MAX_HTTP_ACTION_BODY_BYTES } from "./protocol.ts";
-import { rateLimitKeyWithAddress } from "./rate_limiter.ts";
 import { hasJsonContentType } from "./signal_http.ts";
 import type { ServerTokenAuthResult } from "./token_auth.ts";
 import { readBodyWithLimit } from "./webhook.ts";
@@ -173,7 +172,6 @@ export async function handleHttpActionRequest(
     authenticate: deps.authenticate,
     now: deps.now,
     limitPrincipalRate: true,
-    failedAttemptKey: rateLimitKeyWithAddress,
   });
   if (caller instanceof Response) return caller;
 

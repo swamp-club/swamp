@@ -44,8 +44,8 @@ import {
 } from "./handlers/shared.ts";
 import {
   checkIpBurst,
+  failedAttemptKey,
   limitFailedAttempts,
-  rateLimitKey,
 } from "./rate_limiter.ts";
 import {
   continueAfterSignal,
@@ -175,7 +175,7 @@ export async function handleSignalHttpRequest(
     const ipBurst = checkIpBurst(sourceIp);
     if (!ipBurst.allowed) return tooManyRequests(ipBurst.retryAfterSeconds);
     const guarded = await limitFailedAttempts(
-      rateLimitKey(token, sourceIp),
+      failedAttemptKey(token, sourceIp),
       () => deps.authenticate(token, sourceIp),
     );
     if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);

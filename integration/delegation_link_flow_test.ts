@@ -406,3 +406,45 @@ Deno.test("delegation links: a person no longer admitted cannot refresh, and can
     assertEquals(refreshed.status, 200, JSON.stringify(refreshed.body));
   }, { admission });
 });
+
+Deno.test("delegation links: another integration's failed credentials never lock an integration out at the same address", async () => {
+  await withRig(async (rig) => {
+    const other = `swi1.other-app.${"b".repeat(64)}`;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const refused = await rig.post("links", START_BODY, {
+        credential: other,
+      });
+      assertEquals(refused.status, attempt < 5 ? 401 : 429);
+    }
+    const started = await rig.post("links", START_BODY);
+    assertEquals(started.status, 201, JSON.stringify(started.body));
+  });
+});
+
+Deno.test("delegation links: an integration's own failed credential is refused at that address on the sixth attempt", async () => {
+  await withRig(async (rig) => {
+    const wrong = `swi1.slack-bot.${"b".repeat(64)}`;
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 6; attempt++) {
+      statuses.push(
+        (await rig.post("links", START_BODY, { credential: wrong })).status,
+      );
+    }
+    assertEquals(statuses, [401, 401, 401, 401, 401, 429]);
+  });
+});
+
+Deno.test("delegation links: an address spraying made-up integration ids is refused by the IP burst, and a valid credential there still works", async () => {
+  await withRig(async (rig) => {
+    let last = 0;
+    for (let attempt = 0; attempt < 60 && last !== 429; attempt++) {
+      const id = `fake-${crypto.randomUUID().slice(0, 8)}`;
+      last = (await rig.post("links", START_BODY, {
+        credential: `swi1.${id}.${"b".repeat(64)}`,
+      })).status;
+    }
+    assertEquals(last, 429);
+    const started = await rig.post("links", START_BODY);
+    assertEquals(started.status, 201, JSON.stringify(started.body));
+  });
+});

@@ -170,6 +170,34 @@ Deno.test("handleSignalHttpRequest: repeated bad tokens are rate limited without
   resetRateLimitState();
 });
 
+Deno.test("handleSignalHttpRequest: failures on a delegated token from other addresses never lock out its holder", async () => {
+  const delegation = crypto.randomUUID();
+  const valid = `swda1.${delegation}.${"a".repeat(64)}`;
+  const base = deps();
+  const accepting: SignalHttpDeps = {
+    ...base,
+    authenticate: (token, sourceIp) =>
+      base.authenticate(token === valid ? "good.secret" : token, sourceIp),
+  };
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const response = await handleSignalHttpRequest(
+      request({ token: `swda1.${delegation}.${"b".repeat(64)}` }),
+      { waitId: WAIT_ID },
+      `ip-${crypto.randomUUID()}`,
+      accepting,
+    );
+    await response.body?.cancel();
+  }
+  const response = await handleSignalHttpRequest(
+    request({ token: valid, body: "{not json" }),
+    { waitId: WAIT_ID },
+    `ip-${crypto.randomUUID()}`,
+    accepting,
+  );
+  assertEquals(response.status, 400);
+  await response.body?.cancel();
+});
+
 Deno.test("handleSignalHttpRequest: concurrent signals on one valid token all authenticate", async () => {
   resetRateLimitState();
   const base = deps();
