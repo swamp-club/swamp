@@ -180,3 +180,18 @@ Deno.test("withEventBridge handles push after error gracefully", async () => {
   );
   assertEquals(events, ["before-error"]);
 });
+
+Deno.test("withEventBridge: a run that rejects while its consumer holds an event is reported on the next read, not as an unhandled rejection (swamp-club#4574)", async () => {
+  const pushed = Promise.withResolvers<void>();
+  const bridge = withEventBridge<string, void>(async (push) => {
+    push("first");
+    pushed.resolve();
+    await Promise.resolve();
+    throw new Error("the method failed");
+  });
+  assertEquals((await bridge.next()).value, "first");
+  await pushed.promise;
+  // the rejection lands while the consumer has not asked for more
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await assertRejects(() => bridge.next(), Error, "the method failed");
+});

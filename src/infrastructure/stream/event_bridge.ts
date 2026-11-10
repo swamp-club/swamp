@@ -31,6 +31,8 @@ export async function* withEventBridge<TEvent, TResult>(
     .finally(() => {
       queue.close();
     });
+  // awaited once the queue drains; a rejection while an event is held waits
+  promise.catch(() => {});
   try {
     for await (const event of queue) {
       yield event;

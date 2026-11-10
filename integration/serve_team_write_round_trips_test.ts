@@ -20,7 +20,12 @@
 import { join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { AsyncResource } from "node:async_hooks";
-import { assert, assertEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { Command } from "@cliffy/command";
 import { z } from "zod";
@@ -83,6 +88,8 @@ const SLOW_WRITER = "slow-writer";
 const SLOW_CHUNKED_WRITER = "slow-chunked-writer";
 /** two steps that outlast the checkpoint interval, the second chunked */
 const SLOW_WORKFLOW = "two-slow-steps";
+/** two steps in one level, each on its own behavior */
+const PARALLEL_WORKFLOW = "two-parallel-steps";
 
 const PARTITION_READ = "GET partitions/{partition}/commits";
 const CHANGES = "GET changes";
@@ -94,12 +101,31 @@ const HAS = "POST chunks/has";
 const COMMIT = "POST partitions/{partition}/commits";
 /** a flush's commits together, confirmed once, ending the command's lease */
 const BATCH = "POST commits";
+/** a step's start and its lock, sent together in either order */
+const START_AND_LOCK = "start and lock";
+
+/** each adjacent start commit and lock request as one, whichever went first */
+function startsWithLocks(requests: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < requests.length; i++) {
+    const pair = [requests[i], requests[i + 1]].sort().join();
+    if (pair === [COMMIT, LOCK].sort().join()) {
+      out.push(START_AND_LOCK);
+      i++;
+    } else {
+      out.push(requests[i]);
+    }
+  }
+  return out;
+}
 
 /** Over the 8 KiB inline limit, so the version is stored as a chunk. */
 const CHUNKED_BYTES = 16 * 1024;
 
 /** what a slow write waits on before it writes; unset, it does not wait */
 let slowWrite: (() => Promise<void>) | undefined;
+/** called as every write begins, slow or not, with the bytes it writes */
+let onWrite: ((bytes: number) => void) | undefined;
 
 /**
  * serve's thread knows the behavior type with only a read method; the member's
@@ -132,6 +158,7 @@ function registerWriter(type: ModelType): void {
             bytes: number;
             slow: boolean;
           };
+          onWrite?.(bytes);
           if (slow) await slowWrite?.();
           const handle = await context.writeResource!("out", "out", {
             body: "x".repeat(bytes),
@@ -336,6 +363,16 @@ async function withMember(fn: (member: Member) => Promise<void>) {
           ],
         })],
       }));
+      await repos.workflowRepo.save(Workflow.create({
+        name: PARALLEL_WORKFLOW,
+        jobs: [Job.create({
+          name: "main",
+          steps: [
+            step("one", undefined, WRITER),
+            step("two", undefined, CHUNKED_WRITER),
+          ],
+        })],
+      }));
     });
     await fn({ scratch, serve, client, env });
   });
@@ -433,11 +470,10 @@ Deno.test({
             [WORKFLOW],
           );
         const step = [
-          COMMIT, // the step's start, before its lock
-          LOCK,
+          START_AND_LOCK, // the method waits for both
           BATCH, // its data and the run record, ending the lease
         ];
-        assertEquals(await steadyState(member, run), [
+        assertEquals(startsWithLocks(await steadyState(member, run)), [
           CHANGES,
           BATCH, // the run record, the evaluated workflow and the snapshot
           ...step,
@@ -497,15 +533,13 @@ Deno.test({
           await run();
           requests = requestsOf(spans.slice(seen));
         });
-        assertEquals(requests, [
+        assertEquals(startsWithLocks(requests), [
           CHANGES,
           BATCH, // the run record, the evaluated workflow and the snapshot
-          COMMIT, // step one's start, before its lock
-          LOCK,
+          START_AND_LOCK, // step one's start and lock, together
           BATCH, // a paced checkpoint mid-step
           BATCH, // step one's data and the run record, ending the lease
-          COMMIT, // step two's start
-          LOCK,
+          START_AND_LOCK,
           BATCH, // a paced checkpoint mid-step
           HAS,
           BATCH, // step two's chunked data and the run record
@@ -809,5 +843,225 @@ Deno.test({
         );
       }
     });
+  },
+});
+
+Deno.test({
+  name:
+    "team-mode workflow run: a parallel step's method runs only once its start is durable at serve (swamp-club#4319)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // No paced checkpoints, so every commit sent alone mid-run is a start.
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
+    let landedStarts = 0;
+    const early: string[] = [];
+    try {
+      await withMember(async (member) => {
+        const proxy = startProxy(
+          member.serve.origin,
+          async (request, forward) => {
+            const url = new URL(request.url);
+            if (
+              request.method !== "POST" ||
+              !/\/partitions\/[^/]+\/commits$/.test(url.pathname)
+            ) {
+              return undefined;
+            }
+            // held long enough that a method not waiting for it runs first
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            const response = await forward();
+            if (response.ok) landedStarts++;
+            return response;
+          },
+        );
+        try {
+          const proxied = { ...member, env: serveEnv(proxy, "alice-token") };
+          // starts commit in step order, so step N's needs N landed
+          onWrite = (bytes) => {
+            const step = bytes === CHUNKED_BYTES ? 2 : 1;
+            if (landedStarts < step) {
+              early.push(`step ${step} ran with ${landedStarts} starts landed`);
+            }
+          };
+          await runCommand(
+            proxied.scratch,
+            proxied.client,
+            proxied.env,
+            ["workflow", "run"],
+            (root) => {
+              root.command("cmd", workflowRunCommand);
+            },
+            [PARALLEL_WORKFLOW],
+          );
+        } finally {
+          onWrite = undefined;
+          await proxy.close();
+        }
+      });
+      assertEquals(early, []);
+    } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "team-mode workflow run: a step sends its lock request while its start is in flight, with no catch-up of its own",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // No paced checkpoints, so every commit sent alone mid-run is a start.
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
+    const seen: string[] = [];
+    let startsDone = 0;
+    // start N is let go once N lock requests have arrived, before it or after
+    let locks = 0;
+    let starts = 0;
+    const lockWaits: { readonly at: number; readonly arrived: () => void }[] =
+      [];
+    try {
+      await withMember(async (member) => {
+        await methodRun(member, WRITER);
+        const proxy = startProxy(
+          member.serve.origin,
+          async (request, forward) => {
+            const url = new URL(request.url);
+            const start = request.method === "POST" &&
+              /\/partitions\/[^/]+\/commits$/.test(url.pathname);
+            if (request.method === "POST" && url.pathname.endsWith("/locks")) {
+              seen.push(`lock after ${startsDone} starts landed`);
+              locks++;
+              for (const wait of lockWaits.filter((w) => w.at <= locks)) {
+                wait.arrived();
+              }
+            } else if (
+              request.method === "GET" && url.pathname.endsWith("/changes")
+            ) {
+              seen.push("changes");
+            }
+            if (!start) return undefined;
+            // held until the step's lock arrives; a step that sends its lock
+            // only after its start lands is let go by the bound instead
+            const lockArrived = Promise.withResolvers<void>();
+            const at = ++starts;
+            if (locks >= at) lockArrived.resolve();
+            else lockWaits.push({ at, arrived: lockArrived.resolve });
+            let bound: ReturnType<typeof setTimeout> | undefined;
+            await Promise.race([
+              lockArrived.promise,
+              new Promise((resolve) => {
+                bound = setTimeout(resolve, 10_000);
+              }),
+            ]);
+            clearTimeout(bound);
+            const response = await forward();
+            if (response.ok) startsDone++;
+            return response;
+          },
+        );
+        try {
+          const proxied = { ...member, env: serveEnv(proxy, "alice-token") };
+          await runCommand(
+            proxied.scratch,
+            proxied.client,
+            proxied.env,
+            ["workflow", "run"],
+            (root) => {
+              root.command("cmd", workflowRunCommand);
+            },
+            [WORKFLOW],
+          );
+        } finally {
+          await proxy.close();
+        }
+      });
+      assertEquals(seen, [
+        "changes", // before the workflow, its only catch-up
+        // each step's lock goes out before its own start lands
+        "lock after 0 starts landed",
+        "lock after 1 starts landed",
+        "lock after 2 starts landed", // the workflow's report lock
+      ]);
+    } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "team-mode workflow run: a step whose start serve cannot take never runs, and releases the lock it took alongside",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // No paced checkpoints, so every commit sent alone mid-run is a start.
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
+    const seen: string[] = [];
+    let wrote = 0;
+    try {
+      await withMember(async (member) => {
+        await methodRun(member, WRITER);
+        const proxy = startProxy(member.serve.origin, (request) => {
+          const url = new URL(request.url);
+          const route = `${request.method} ${
+            url.pathname.replace(/^.*\/datastore\/[^/]+/, "")
+          }`;
+          seen.push(route);
+          if (
+            request.method === "POST" &&
+            /\/partitions\/[^/]+\/commits$/.test(url.pathname)
+          ) {
+            return Promise.resolve(
+              Response.json({ code: "unavailable", message: "down" }, {
+                status: 503,
+              }),
+            );
+          }
+          return Promise.resolve(undefined);
+        });
+        try {
+          const proxied = { ...member, env: serveEnv(proxy, "alice-token") };
+          onWrite = () => {
+            wrote++;
+          };
+          const error = await assertRejects(
+            () =>
+              runCommand(
+                proxied.scratch,
+                proxied.client,
+                proxied.env,
+                ["workflow", "run"],
+                (root) => {
+                  root.command("cmd", workflowRunCommand);
+                },
+                [WORKFLOW],
+              ),
+            Error,
+          );
+          assertStringIncludes(
+            error.message,
+            "could not commit the start of step one",
+          );
+        } finally {
+          onWrite = undefined;
+          await proxy.close();
+        }
+      });
+      assertEquals(wrote, 0);
+      // the lock taken alongside the refused start is given back, not left to
+      // lapse
+      const lock = seen.findIndex((r) => r.endsWith("/locks"));
+      assert(lock >= 0, `no lock request in ${seen.join(", ")}`);
+      assert(
+        seen.slice(lock + 1).some((r) =>
+          r.startsWith("DELETE ") || r === "POST /commits"
+        ),
+        `the lock was not released: ${seen.join(", ")}`,
+      );
+    } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
   },
 });

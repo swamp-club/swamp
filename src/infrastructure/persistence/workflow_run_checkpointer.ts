@@ -313,6 +313,10 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
     return restored;
   }
 
+  overlapsStarts(): boolean {
+    return this.#usesJournal() && !this.#journalRefused;
+  }
+
   committedLatest(runId: string): boolean {
     const saves = this.#runs.get(runId);
     return saves !== undefined && saves.latest <= this.#committedThrough;

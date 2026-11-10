@@ -85,6 +85,7 @@ import {
   templateScanGlobalArguments,
   trackerStatusForRun,
   WorkflowExecutionService,
+  WorkflowSuspendedError,
 } from "./execution_service.ts";
 import { computeStepsToReset } from "./resume_reset.ts";
 import { NestedRunPendingError } from "./nested_run_link.ts";
@@ -4465,21 +4466,25 @@ class TrackingRunRepository implements WorkflowRunRepository {
   }
 }
 
-/** holds the save of a step start until the iterations behind it have finished */
+/**
+ * holds the save of a step start until the iterations behind it have started:
+ * each waits for its own start before its method, so none can finish first
+ */
 class BacklogRunRepository extends InMemoryWorkflowRunRepository {
   readonly landed: Map<string, string>[] = [];
-  holdUntilSucceeded = 0;
+  holdUntilStarted = 0;
 
   override async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const steps = () => run.jobs.flatMap((job) => job.steps);
-    const expected = this.holdUntilSucceeded;
+    const expected = this.holdUntilStarted;
     if (expected > 0 && steps().some((step) => step.status === "running")) {
-      this.holdUntilSucceeded = 0;
+      this.holdUntilStarted = 0;
       await waitFor(
         () =>
-          steps().filter((step) => step.status === "succeeded").length >=
-            expected,
-        "every iteration to finish behind the held save",
+          steps().filter((step) =>
+            step.status === "running" || step.status === "succeeded"
+          ).length >= expected,
+        "every iteration to start behind the held save",
       );
     }
     this.landed.push(
@@ -4526,7 +4531,7 @@ function assertEventsFollowTheirSave(
   );
 }
 
-Deno.test("execute: a parallel forEach whose iterations all finish behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
+Deno.test("execute: a parallel forEach whose iterations all start behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new BacklogRunRepository();
@@ -4540,7 +4545,7 @@ Deno.test("execute: a parallel forEach whose iterations all finish behind one sa
       undefined,
       new CatalogStore(join(tempDir, "_catalog.db")),
     );
-    runRepo.holdUntilSucceeded = BACKLOG_ITEMS;
+    runRepo.holdUntilStarted = BACKLOG_ITEMS;
 
     let stepEvents = 0;
     let completed: WorkflowRun | undefined;
@@ -4563,7 +4568,7 @@ Deno.test("execute: a parallel forEach whose iterations all finish behind one sa
   });
 });
 
-Deno.test("resume: a failed parallel forEach whose retried iterations all finish behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
+Deno.test("resume: a failed parallel forEach whose retried iterations all start behind one save makes a handful of saves, and each step event follows a save holding it (swamp-club#4470)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new BacklogRunRepository();
@@ -4585,7 +4590,7 @@ Deno.test("resume: a failed parallel forEach whose retried iterations all finish
     assertEquals(failed.status, "failed");
 
     executor.failing.clear();
-    runRepo.holdUntilSucceeded = BACKLOG_ITEMS;
+    runRepo.holdUntilStarted = BACKLOG_ITEMS;
     const savesBefore = runRepo.landed.length;
     let stepEvents = 0;
     let completed: WorkflowRun | undefined;
@@ -24812,8 +24817,9 @@ Deno.test("WorkflowExecutionService: a stopped run whose failed record did not c
 });
 
 Deno.test("WorkflowExecutionService: once a step start cannot be committed, a sibling job running alongside finishes its running step but starts no further step (swamp-club#4319)", async () => {
-  // In a level of two or more jobs the merge drives each job eagerly, so b's
-  // method starts while its start commits: it runs and records its outcome.
+  // In a level of two or more jobs the merge drives each job eagerly, so b
+  // reaches its method while its start commits; it waits for the start, which
+  // fails, so b never runs and stays pending.
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
       name: "stop-parallel-wf",
@@ -24873,8 +24879,98 @@ Deno.test("WorkflowExecutionService: once a step start cannot be committed, a si
     assertEquals(executor.count("side/s2"), 0);
     assertEquals(run?.getJob("side")?.getStep("s1")?.status, "succeeded");
     assertEquals(run?.getJob("side")?.getStep("s2")?.status, "pending");
-    assertEquals(executor.count("main/b"), 1);
-    assertEquals(run?.getJob("main")?.getStep("b")?.status, "succeeded");
+    assertEquals(executor.count("main/b"), 0);
+    assertEquals(run?.getJob("main")?.getStep("b")?.status, "pending");
+  });
+});
+
+Deno.test("WorkflowExecutionService: once one parallel step's start cannot be committed, a sibling whose start save queued behind it never runs either (swamp-club#4574)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "parallel-stop-wf",
+      jobs: [Job.create({
+        name: "main",
+        steps: [modelStep("a"), modelStep("b")],
+      })],
+    });
+    // fails the first save that shows a step running, whichever step it is
+    let failed = false;
+    const checkpointer: RunCheckpointer = {
+      checkpoint: (run) => {
+        const step = run.jobs.flatMap((job) =>
+          job.steps.filter((s) =>
+            s.status === "running"
+          ).map((s) => ({
+            job: job.jobName,
+            step: s.stepName,
+          }))
+        )[0];
+        if (step === undefined || failed) return Promise.resolve();
+        failed = true;
+        return Promise.reject(
+          new StepStartUnrecordedError(new Error("serve is unreachable"), {
+            workflowId: run.workflowId,
+            workflowName: run.workflowName,
+            runId: run.id,
+            stepName: step.step,
+            jobName: step.job,
+          }),
+        );
+      },
+    };
+    const { service, executor } = await setupRetry(tempDir, workflow);
+    service.runCheckpointer = checkpointer;
+
+    const { error } = await runUntilThrown(service.run(workflow.name));
+
+    assert(error instanceof StepStartUnrecordedError);
+    assertEquals(executor.count("main/a"), 0);
+    assertEquals(executor.count("main/b"), 0);
+  });
+});
+
+Deno.test("WorkflowExecutionService: a sibling whose step_started reaches the level after another step's stream threw is refused and never runs, and the level ends (swamp-club#4574)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "closed-queue-wf",
+      // one at a time: b starts only once a's stream has thrown and the
+      // level's queue has closed
+      jobs: [Job.create({
+        name: "main",
+        concurrency: 1,
+        steps: [modelStep("a"), modelStep("b")],
+      })],
+    });
+    class ThrowingExecutor extends CountingStepExecutor {
+      override async execute(
+        step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        if (ctx.stepName === "a") {
+          throw new WorkflowSuspendedError("main", "a", "not a failure");
+        }
+        return await super.execute(step, ctx);
+      }
+    }
+    const executor = new ThrowingExecutor();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      runUntilThrown(service.run(workflow.name)).then(() => "ended"),
+      new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve("hung"), 5_000);
+      }),
+    ]);
+    clearTimeout(timer);
+
+    assertEquals(outcome, "ended");
+    assertEquals(executor.count("main/b"), 0);
   });
 });
 
