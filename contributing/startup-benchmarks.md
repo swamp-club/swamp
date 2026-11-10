@@ -44,6 +44,25 @@ git worktree add ../swamp-base origin/main
 deno run compile --output ../bin/swamp-pr
 ```
 
+### The bundled build
+
+`deno run compile --bundle` runs `deno bundle` with code splitting before
+compiling, so the binary loads a few large chunks instead of every source module.
+Releases still ship the unbundled build. Every npm package stays external, read
+from the `npm:` imports in `deno.json` and the workspace members' configs. The
+bundle lands in `build/bundle/`, which the build removes when it ends, pass or
+fail. Its linked source maps are embedded, so stack traces name source files.
+
+To compare the two builds of one commit, give the bundled binary its own name
+and use it as the second binary in both scripts:
+
+```sh
+deno run compile --output ../bin/swamp-pr
+deno run compile --bundle --output ../bin/swamp-pr-bundled
+deno run cli-parity ../bin/swamp-pr ../bin/swamp-pr-bundled
+deno run bench-startup ../bin/swamp-pr-bundled
+```
+
 ## Benchmark
 
 ```sh

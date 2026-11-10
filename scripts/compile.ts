@@ -20,13 +20,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseArgs } from "@std/cli/parse-args";
+import { parse as parseJsonc } from "@std/jsonc";
 import { join } from "@std/path";
 
 interface CompileOptions {
   output: string;
   target?: string;
   version?: string;
+  bundle: boolean;
 }
+
+// inside the repo, so deno.json and the lockfile resolve the npm externals
+// and the embedded tree keeps the repo root as its root
+export const BUNDLE_DIR = join("build", "bundle");
 
 export const VERSION_FILE = "src/infrastructure/runtime/build_info.ts";
 
@@ -99,6 +105,91 @@ async function downloadDeno(target?: string): Promise<void> {
   }
 }
 
+export interface DenoConfig {
+  imports?: Record<string, string>;
+  workspace?: string[];
+}
+
+export function npmExternals(configs: readonly DenoConfig[]): string[] {
+  const names = new Set<string>();
+  for (const config of configs) {
+    for (const [name, target] of Object.entries(config.imports ?? {})) {
+      if (target.startsWith("npm:")) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+// an empty list would inline every npm package into the bundle
+export function requireNpmExternals(
+  { configs, paths }: { configs: readonly DenoConfig[]; paths: string[] },
+): string[] {
+  const externals = npmExternals(configs);
+  if (externals.length === 0) {
+    throw new Error(
+      `No npm imports found in ${paths.join(", ")}; refusing to bundle ` +
+        "with every npm package inlined",
+    );
+  }
+  return externals;
+}
+
+export async function readWorkspaceConfigs(
+  root: string,
+): Promise<{ configs: DenoConfig[]; paths: string[] }> {
+  const rootPath = join(root, "deno.json");
+  const rootConfig = parseJsonc(await Deno.readTextFile(rootPath)) as DenoConfig;
+  const configs = [rootConfig];
+  const paths = [rootPath];
+  for (const member of rootConfig.workspace ?? []) {
+    const path = join(root, member, "deno.json");
+    const text = await Deno.readTextFile(path).catch((error) => {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    });
+    if (text === undefined) continue;
+    configs.push(parseJsonc(text) as DenoConfig);
+    paths.push(path);
+  }
+  return { configs, paths };
+}
+
+export function bundleArgs(
+  outDir: string,
+  externals: readonly string[],
+): string[] {
+  return [
+    "bundle",
+    "--platform",
+    "deno",
+    "--format",
+    "esm",
+    "--code-splitting",
+    // esbuild renames colliding names; telemetry and serve read
+    // error.constructor.name
+    "--keep-names",
+    "--sourcemap=linked",
+    "--outdir",
+    outDir,
+    // the = form, since --external takes several values and would swallow
+    // the entry
+    ...externals.map((name) => `--external=${name}`),
+    "main.ts",
+  ];
+}
+
+// a linked map is applied only when included; the chunks themselves are
+// reached through the entry's imports, so the directory is not included
+export function sourceMapIncludes(
+  outDir: string,
+  fileNames: readonly string[],
+): string[] {
+  return fileNames
+    .filter((name) => name.endsWith(".map"))
+    .sort()
+    .flatMap((name) => ["--include", join(outDir, name)]);
+}
+
 export interface StampedBuildSteps {
   stamp: () => Promise<void>;
   build: () => Promise<boolean>;
@@ -116,29 +207,37 @@ export async function runStampedBuild(
   }
 }
 
+// never throws, so one failed removal cannot skip the next
+async function removeBuildDir(dir: string, label: string): Promise<void> {
+  try {
+    await Deno.remove(dir, { recursive: true });
+    console.log(`Cleaned up ${label}`);
+  } catch {
+    // Directory may not exist — that's fine
+  }
+}
+
 // undefined content means nothing was stamped, so the file is left alone
 export async function restoreBuildState(
   versionFile: string,
   originalContent: string | undefined,
   denoResourcesDir: string,
+  bundleDir: string,
 ): Promise<void> {
   try {
     if (originalContent !== undefined) {
       await Deno.writeTextFile(versionFile, originalContent);
     }
   } finally {
-    try {
-      await Deno.remove(denoResourcesDir, { recursive: true });
-      console.log("Cleaned up resources/deno/");
-    } catch {
-      // Directory may not exist — that's fine
-    }
+    await removeBuildDir(denoResourcesDir, "resources/deno/");
+    await removeBuildDir(bundleDir, "build/bundle/");
   }
 }
 
 async function main(): Promise<boolean> {
   const args = parseArgs(Deno.args, {
     string: ["output", "target", "version"],
+    boolean: ["bundle"],
     alias: {
       "o": "output",
       "t": "target",
@@ -153,6 +252,7 @@ async function main(): Promise<boolean> {
     output: args.output || "swamp",
     target: args.target,
     version: args.version,
+    bundle: args.bundle,
   };
 
   // stamp the version only when given (CI passes --version); dev builds keep
@@ -174,6 +274,7 @@ async function main(): Promise<boolean> {
     );
   }
   const wroteStamp = stamped !== originalContent;
+  const root = join(import.meta.dirname ?? ".", "..");
 
   return await runStampedBuild({
     stamp: async () => {
@@ -181,26 +282,31 @@ async function main(): Promise<boolean> {
         await Deno.writeTextFile(VERSION_FILE, stamped);
       }
     },
-    build: () => compile(options),
+    build: () => compile(options, root),
     restore: () =>
       restoreBuildState(
         VERSION_FILE,
         wroteStamp ? originalContent : undefined,
-        join(import.meta.dirname ?? ".", "..", "resources", "deno"),
+        join(root, "resources", "deno"),
+        join(root, BUNDLE_DIR),
       ),
   });
 }
 
-async function compile(options: CompileOptions): Promise<boolean> {
-  await downloadDeno(options.target);
+export interface CompileInputs {
+  entry: string;
+  dashboardDistExists: boolean;
+  extraIncludes: readonly string[];
+}
 
+export function compileArgs(
+  options: { output: string; target?: string },
+  inputs: CompileInputs,
+): string[] {
   // individual flags, not --allow-all, to avoid auto-granting future
   // permission categories; Deno.open on device nodes then fails, so
   // extensions use Deno.Command for hardware I/O
-  const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
-    .then(() => true).catch(() => false);
-  const baseCommand = [
-    "deno",
+  const args = [
     "compile",
     "--unstable-bundle",
     // Deno marks listening with SO_REUSEPORT unstable; serve --reuse-port needs it
@@ -221,7 +327,10 @@ async function compile(options: CompileOptions): Promise<boolean> {
     "--include",
     "resources/deno",
     // included only when pre-built; CI builds it before compile
-    ...(dashboardDistExists ? ["--include", "packages/dashboard/dist"] : []),
+    ...(inputs.dashboardDistExists
+      ? ["--include", "packages/dashboard/dist"]
+      : []),
+    ...inputs.extraIncludes,
     "--exclude",
     "agent-constraints",
     "--exclude",
@@ -257,21 +366,62 @@ async function compile(options: CompileOptions): Promise<boolean> {
   ];
 
   if (options.target) {
-    baseCommand.push("--target", options.target);
+    args.push("--target", options.target);
   }
 
-  baseCommand.push("--output", options.output, "main.ts");
+  args.push("--output", options.output, inputs.entry);
+  return args;
+}
 
-  console.log(`Running: ${baseCommand.join(" ")}`);
-
-  const command = new Deno.Command(baseCommand[0], {
-    args: baseCommand.slice(1),
+async function runDeno(args: readonly string[]): Promise<boolean> {
+  console.log(`Running: deno ${args.join(" ")}`);
+  const command = new Deno.Command("deno", {
+    args: [...args],
     stdout: "inherit",
     stderr: "inherit",
   });
-
   const { success } = await command.output();
   return success;
+}
+
+// resolves to the --include flags for the bundle's source maps, or undefined
+// when the bundle failed
+async function bundle(root: string): Promise<string[] | undefined> {
+  const externals = requireNpmExternals(await readWorkspaceConfigs(root));
+  // a leftover from an interrupted build would be embedded with the new one
+  await Deno.remove(join(root, BUNDLE_DIR), { recursive: true }).catch(
+    (error) => {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    },
+  );
+  if (!(await runDeno(bundleArgs(BUNDLE_DIR, externals)))) return undefined;
+  const fileNames: string[] = [];
+  for await (const entry of Deno.readDir(join(root, BUNDLE_DIR))) {
+    if (entry.isFile) fileNames.push(entry.name);
+  }
+  return sourceMapIncludes(BUNDLE_DIR, fileNames);
+}
+
+async function compile(
+  options: CompileOptions,
+  root: string,
+): Promise<boolean> {
+  await downloadDeno(options.target);
+
+  let entry = "main.ts";
+  let extraIncludes: string[] = [];
+  if (options.bundle) {
+    const mapIncludes = await bundle(root);
+    if (mapIncludes === undefined) return false;
+    entry = join(BUNDLE_DIR, "main.js");
+    extraIncludes = mapIncludes;
+  }
+
+  const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
+    .then(() => true).catch(() => false);
+  return await runDeno(
+    compileArgs(options, { entry, dashboardDistExists, extraIncludes }),
+  );
 }
 
 if (import.meta.main) {
