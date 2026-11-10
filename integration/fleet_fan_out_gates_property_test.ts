@@ -277,6 +277,10 @@ class Model {
   /** undefined when refused; reopens from the entry step in unkept lanes, and every held step */
   retry(from: number | undefined): RetryOutcome | undefined {
     if (this.rejected) return undefined;
+    // a gate the run ended without asking stays pending, and a plain retry refuses a pending step
+    if (from === undefined && [...this.gates.values()].includes("pending")) {
+      return undefined;
+    }
     const workers = this.batches.flat();
     const entry = from ?? Math.min(
       ...workers.flatMap((w) =>
@@ -811,6 +815,38 @@ Deno.test({
               { kind: "retryFrom", step: 0 },
               { kind: "approve" },
               { kind: "retryFrom", step: 0 },
+            ],
+          }],
+          // --from leaves no lane for the canary gate to hold, so it ends unasked
+          [{
+            workers: 2,
+            batches: [1, "100%"],
+            maxFailures: null,
+            approve: ["canary"],
+            steps: 1,
+            failing: [0, 1],
+            failingAt: [],
+            actions: [
+              { kind: "approve" },
+              { kind: "disconnect", worker: 1 },
+              { kind: "retryFrom", step: 0 },
+              { kind: "retry" },
+              { kind: "fix" },
+            ],
+          }],
+          // --from apply reopens a lane that kept its failed prepare; an offline
+          // lane halts the rollout before it starts, so the halt holds it once
+          [{
+            workers: 2,
+            batches: [1, 1, "100%"],
+            maxFailures: 0,
+            approve: ["canary"],
+            steps: 2,
+            failing: [],
+            failingAt: [{ worker: 0, step: 0 }],
+            actions: [
+              { kind: "disconnect", worker: 1 },
+              { kind: "retryFrom", step: 1 },
             ],
           }],
         ],
