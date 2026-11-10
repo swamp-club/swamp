@@ -267,6 +267,9 @@ export async function createWorkflowRunDeps(
       );
       service.signalWaits = repoContext.signalWaits ??
         SIGNAL_WAITS_NOT_CONFIGURED;
+      if (repoContext.commitLog !== undefined) {
+        service.reportLock = stepLockHook;
+      }
       // a resume takes the run's lock and its suspension's claim, so two serve
       // instances on one datastore never take over the same run
       service.runClaims = createWorkflowRunClaims(datastoreConfig);

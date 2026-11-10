@@ -2564,6 +2564,12 @@ Limiting uses a semaphore-gated `mergeWithConcurrency()` that wraps the
 existing `merge()` stream combinator. When the limit is unset or above the
 stream count, the unbounded `merge()` path runs with zero overhead.
 
+Each step's writes are made under its behavior's lock. A run's workflow-scope
+reports, which every run of the workflow saves under the same names, are saved
+under the workflow's own lock (model type `workflow`, the workflow's id), so
+overlapping runs, by one member or several, take consecutive report versions
+instead of one being refused as a rewrite of a version already live.
+
 Workflows are YAML files in the repository's top-level `workflows/` directory,
 named `workflows/workflow-{name}.yaml` and validated with Zod. Legacy
 `workflow-{uuid}.yaml` files are also supported. Run output is stored in the

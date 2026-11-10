@@ -60,6 +60,7 @@ import type {
   ServeWorkerRequest,
 } from "./serve_upstream_server_worker.ts";
 import { UNSET_ENV } from "./usecase_sync_fixtures.ts";
+import type { WorkflowReportBarrier } from "./workflow_report_barrier.ts";
 
 /**
  * A team member's grants: read, write and run every behavior, read and
@@ -84,6 +85,11 @@ export interface Serve {
     dataId: string,
     count: number,
   ): Promise<{ versions: readonly number[]; errors: readonly string[] }>;
+  runWorkflow(
+    workflowName: string,
+    initiatedBy: string,
+    barrier?: WorkflowReportBarrier,
+  ): Promise<{ statuses: readonly string[]; errors: readonly string[] }>;
   stop(): Promise<void>;
 }
 
@@ -182,6 +188,9 @@ async function startServe(options: ServeOptions): Promise<Serve> {
   let wroteReply:
     | { versions: readonly number[]; errors: readonly string[] }
     | undefined;
+  let ranReply:
+    | { statuses: readonly string[]; errors: readonly string[] }
+    | undefined;
   worker.onmessage = (event: MessageEvent<ServeWorkerMessage>) => {
     const message = event.data;
     if (message.kind === "loaded") loaded = true;
@@ -189,6 +198,7 @@ async function startServe(options: ServeOptions): Promise<Serve> {
     else if (message.kind === "failed") failed = message.error;
     else if (message.kind === "stopped") stopped = true;
     else if (message.kind === "wrote") wroteReply = message;
+    else if (message.kind === "ran-workflow") ranReply = message;
     else if (message.kind === "compacted") compactedPoint = message.point;
     else if (message.kind === "granted") granted = true;
     else if (message.kind === "restricted") restricted = true;
@@ -307,6 +317,24 @@ async function startServe(options: ServeOptions): Promise<Serve> {
       );
       if (wroteReply === undefined) throw new Error(`serve failed: ${failed}`);
       return wroteReply;
+    },
+    async runWorkflow(workflowName, initiatedBy, barrier) {
+      ranReply = undefined;
+      worker.postMessage(
+        {
+          kind: "run-workflow",
+          workflowName,
+          initiatedBy,
+          ...(barrier === undefined ? {} : { barrier }),
+        } satisfies ServeWorkerRequest,
+      );
+      await waitFor(
+        () => ranReply !== undefined || failed !== undefined,
+        "serve's workflow run",
+        { timeoutMs: 120_000 },
+      );
+      if (ranReply === undefined) throw new Error(`serve failed: ${failed}`);
+      return ranReply;
     },
     async stop() {
       if (terminated) return;

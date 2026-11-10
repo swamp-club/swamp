@@ -34,6 +34,12 @@ import { withServer } from "./serve_datastore_api_harness.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { grant } from "./serve_request_harness.ts";
 import { PolicySnapshot } from "../src/domain/access/policy_snapshot.ts";
+import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
+import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
+import {
+  registerBarrierReport,
+  type WorkflowReportBarrier,
+} from "./workflow_report_barrier.ts";
 
 export interface GrantSpec {
   readonly user?: string;
@@ -59,6 +65,12 @@ export type ServeWorkerRequest =
     readonly dataName: string;
     readonly dataId: string;
     readonly count: number;
+  }
+  | {
+    readonly kind: "run-workflow";
+    readonly workflowName: string;
+    readonly initiatedBy: string;
+    readonly barrier?: WorkflowReportBarrier;
   }
   | { readonly kind: "stop" };
 
@@ -89,6 +101,11 @@ export type ServeWorkerMessage =
     readonly versions: readonly number[];
     readonly errors: readonly string[];
   }
+  | {
+    readonly kind: "ran-workflow";
+    readonly statuses: readonly string[];
+    readonly errors: readonly string[];
+  }
   | { readonly kind: "stopped" }
   | { readonly kind: "failed"; readonly error: string };
 
@@ -105,6 +122,11 @@ let restrict:
   | undefined;
 let setGrants:
   | ((request: Extract<ServeWorkerRequest, { kind: "grants" }>) => void)
+  | undefined;
+let runWorkflow:
+  | ((
+    request: Extract<ServeWorkerRequest, { kind: "run-workflow" }>,
+  ) => Promise<void>)
   | undefined;
 let compact:
   | ((
@@ -270,6 +292,43 @@ async function start(
           { kind: "wrote", versions, errors } satisfies ServeWorkerMessage,
         );
       };
+      runWorkflow = async ({ workflowName, initiatedBy, barrier }) => {
+        if (barrier !== undefined) {
+          registerBarrierReport(
+            barrier.dir,
+            barrier.label,
+            barrier.labels,
+            barrier.waitMs,
+          );
+        }
+        const { ctx } = server;
+        const events: WorkflowRunEvent[] = [];
+        await executeWorkflowWithLocks(
+          ctx.repoDir,
+          ctx.repoContext,
+          ctx.datastoreConfig,
+          { workflowIdOrName: workflowName, initiatedBy },
+          new AbortController().signal,
+          (event) => events.push(event),
+          ctx.syncService,
+          undefined,
+          { syncGate: undefined },
+        );
+        const statuses: string[] = [];
+        const errors: string[] = [];
+        for (const event of events) {
+          if (event.kind === "completed") statuses.push(event.run.status);
+          if (event.kind === "error") errors.push(event.error.message);
+          if (event.kind === "report_failed") errors.push(event.error);
+        }
+        self.postMessage(
+          {
+            kind: "ran-workflow",
+            statuses,
+            errors,
+          } satisfies ServeWorkerMessage,
+        );
+      };
       const stopped = new Promise<void>((resolve) => stop = resolve);
       self.postMessage(
         {
@@ -325,6 +384,10 @@ self.onmessage = (event: MessageEvent<ServeWorkerRequest>) => {
     } catch (error) {
       fail(error);
     }
+  } else if (request.kind === "run-workflow") {
+    (runWorkflow ?? (() => Promise.reject(new Error("serve is not started"))))(
+      request,
+    ).catch(fail);
   } else if (request.kind === "log") {
     (log ?? (() => Promise.reject(new Error("serve is not started"))))()
       .catch(fail);

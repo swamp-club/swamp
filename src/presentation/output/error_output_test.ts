@@ -1514,3 +1514,25 @@ for (
     assertEquals(parsed.stack, undefined);
   });
 }
+
+Deno.test("buildErrorJson: a refused partition carries a stable code and each refusal's reason (swamp-club#4567)", () => {
+  const partition = partitionOf({
+    kind: "model",
+    type: ModelType.create("workflow"),
+    id: "5d0f3a62-8c1e-4b7a-9e2d-3f4a5b6c7d8e",
+  });
+  const json = buildErrorJson(
+    new PartitionsRefusedError([{
+      partition,
+      reason: "version-live",
+      message: "Data report-swamp-workflow-summary version 3 is already " +
+        "live; only an append re-records it",
+      versions: [],
+    }], []),
+  );
+  assertEquals(json.code, "datastore_v3_partitions_refused");
+  assertEquals(json.refusals, [{
+    partition: partition.toString(),
+    reason: "version-live",
+  }]);
+});

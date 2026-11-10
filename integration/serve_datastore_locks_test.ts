@@ -315,3 +315,43 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "datastore locks: a workflow's report lock needs run on the workflow's data owner, not write on the workflow",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const lockKey = `data/workflow/${crypto.randomUUID()}/.lock`;
+    await withServer([
+      grant({
+        actions: ["read", "run"],
+        resource: { kind: "model", pattern: "*" },
+      }),
+      grant({
+        actions: ["read", "run"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ], async (server) => {
+      const taken = await call(server, "POST", "locks", "alice-token", {
+        lockKey,
+      });
+      assertEquals([taken.status, taken.json.lockKey], [201, lockKey]);
+    });
+    await withServer([
+      grant({
+        actions: ["read"],
+        resource: { kind: "model", pattern: "*" },
+      }),
+      grant({
+        actions: ["read", "write", "run"],
+        resource: { kind: "workflow", pattern: "*" },
+      }),
+    ], async (server) => {
+      const refused = await call(server, "POST", "locks", "alice-token", {
+        lockKey,
+      });
+      assertEquals([refused.status, refused.json.code], [403, "forbidden"]);
+    });
+  },
+});

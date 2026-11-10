@@ -403,8 +403,11 @@ Deno.test({
           BATCH, // the run record, the evaluated workflow and the snapshot
           ...step,
           ...step,
+          LOCK, // the workflow's own lock, for its summary report's version
+          HAS,
+          BATCH, // the summary report, ending that lease
           HAS, // the run record, over the inline limit by its end
-          BATCH, // the run's summary report and its final record
+          COMMIT, // the run's final record
         ]);
       });
     } finally {

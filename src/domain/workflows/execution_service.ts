@@ -1362,6 +1362,9 @@ async function flushStepLock(
   }
 }
 
+/** the model type workflow-scope reports save their data under */
+const WORKFLOW_MODEL_TYPE = "workflow";
+
 export interface StepLockResult {
   flush: (written?: readonly WrittenVersion[]) => Promise<void>;
   /**
@@ -3327,6 +3330,12 @@ export class WorkflowExecutionService {
    * without a run tracker, that resume is not refused.
    */
   ownerLiveness?: OwnerLiveness;
+
+  /**
+   * taken around workflow-scope reports where writers allocate report versions
+   * concurrently (a v3 datastore); unset, reports take no lock
+   */
+  reportLock?: StepLockHook;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -7928,6 +7937,7 @@ export class WorkflowExecutionService {
     childService.signalWaits = this.signalWaits;
     childService.runCheckpointer = this.runCheckpointer;
     childService.runWriteFence = this.runWriteFence;
+    childService.reportLock = this.reportLock;
     childService.stoppedRuns = this.stoppedRuns;
 
     let childRun: WorkflowRun | undefined;
@@ -8927,26 +8937,86 @@ export class WorkflowExecutionService {
     }
 
     const bufferedEvents: WorkflowExecutionEvent[] = [];
-    const artifacts = await this.workflowReportRunner.runFor({
-      workflow,
-      workflowRunId: run.id,
-      workflowStatus: run.status === "succeeded" ? "succeeded" : "failed",
-      inputs: run.maskedInputs(),
-      stepExecutions,
-      reportFilterOptions: filterOptions,
-      repoDir: this.repoDir,
-      runLogger: getWorkflowRunLogger(
-        workflow.name,
-        undefined,
-        undefined,
-        run.id,
-      ),
-      unifiedDataRepo: this.dataRepo,
-      definitionRepository: this.definitionRepo,
-      emitEvent: (event: WorkflowExecutionEvent) => {
-        bufferedEvents.push(event);
-      },
-    });
+    const runLogger = getWorkflowRunLogger(
+      workflow.name,
+      undefined,
+      undefined,
+      run.id,
+    );
+    // Every run writes the same report names on the workflow's partition, so
+    // their versions are allocated under its lease, as a step's are under its
+    // behavior's; otherwise an overlapping member's run takes the version first.
+    let reportLock: StepLockResult | undefined;
+    if (this.reportLock) {
+      try {
+        reportLock = await this.reportLock(WORKFLOW_MODEL_TYPE, workflow.id);
+      } catch (error) {
+        const reason = `the workflow's lock could not be taken: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        runLogger.warn("Workflow-scope reports were not run: {reason}", {
+          reason,
+        });
+        yield {
+          kind: "report_failed",
+          reportName: "workflow-scope reports",
+          scope: "workflow",
+          error: reason,
+        };
+        return;
+      }
+    }
+    let artifacts: Awaited<ReturnType<WorkflowReportRunner["runFor"]>> = [];
+    let flushFailure: string | undefined;
+    try {
+      artifacts = await this.workflowReportRunner.runFor({
+        workflow,
+        workflowRunId: run.id,
+        workflowStatus: run.status === "succeeded" ? "succeeded" : "failed",
+        inputs: run.maskedInputs(),
+        stepExecutions,
+        reportFilterOptions: filterOptions,
+        repoDir: this.repoDir,
+        runLogger,
+        unifiedDataRepo: this.dataRepo,
+        definitionRepository: this.definitionRepo,
+        emitEvent: (event: WorkflowExecutionEvent) => {
+          bufferedEvents.push(event);
+        },
+      });
+    } finally {
+      if (reportLock) {
+        try {
+          await reportLock.flush(artifacts.map((artifact) => ({
+            modelType: WORKFLOW_MODEL_TYPE,
+            modelId: workflow.id,
+            dataName: artifact.name,
+            version: artifact.version,
+            dataId: artifact.dataId,
+          })));
+        } catch (error) {
+          flushFailure = `the reports could not be saved: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    // A report that did not land is a failed report, as any report error is:
+    // the run keeps its result and its record names none of them.
+    if (flushFailure !== undefined) {
+      runLogger.warn("{reason}", { reason: flushFailure });
+      artifacts = [];
+      for (const [i, event] of bufferedEvents.entries()) {
+        if (event.kind !== "report_completed") continue;
+        bufferedEvents[i] = {
+          kind: "report_failed",
+          reportName: event.reportName,
+          scope: event.scope,
+          error: flushFailure,
+        };
+      }
+    }
 
     for (const ref of artifacts) {
       run.addWorkflowDataArtifact(ref);

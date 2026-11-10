@@ -25967,3 +25967,129 @@ Deno.test("WorkflowExecutionService.run: a store error checking an assigned id s
   assertNotEquals(run.id as string, assigned);
   assertEquals(run.status, "succeeded");
 });
+
+function reportLockHook(
+  options: { acquireError?: Error; flushError?: Error },
+): {
+  hook: StepLockHook;
+  taken: { modelType: string; modelId: string }[];
+  flushed: (readonly WrittenVersion[] | undefined)[];
+} {
+  const taken: { modelType: string; modelId: string }[] = [];
+  const flushed: (readonly WrittenVersion[] | undefined)[] = [];
+  return {
+    hook: (modelType, modelId) => {
+      taken.push({ modelType, modelId });
+      if (options.acquireError) return Promise.reject(options.acquireError);
+      return Promise.resolve({
+        flush: (versions?: readonly WrittenVersion[]) => {
+          flushed.push(versions);
+          return options.flushError
+            ? Promise.reject(options.flushError)
+            : Promise.resolve();
+        },
+      });
+    },
+    taken,
+    flushed,
+  };
+}
+
+function reportLockService(
+  tempDir: string,
+  hook: StepLockHook,
+): {
+  service: WorkflowExecutionService;
+  workflow: Workflow;
+  ready: Promise<void>;
+} {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const workflow = createSimpleWorkflow();
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    new InMemoryWorkflowRunRepository(),
+    tempDir,
+    new MockStepExecutor(),
+    undefined,
+    new CatalogStore(join(tempDir, "_catalog.db")),
+  );
+  service.reportLock = hook;
+  return { service, workflow, ready: workflowRepo.save(workflow) };
+}
+
+Deno.test("WorkflowExecutionService: workflow-scope reports are saved under the workflow partition's lock, whose flush is told the report versions (swamp-club#4567)", async () => {
+  await withTempDir(async (tempDir) => {
+    const lock = reportLockHook({});
+    const { service, workflow, ready } = reportLockService(tempDir, lock.hook);
+    await ready;
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(lock.taken, [{ modelType: "workflow", modelId: workflow.id }]);
+    assertEquals(lock.flushed.length, 1);
+    const written = lock.flushed[0] ?? [];
+    assertEquals(
+      written.map((version) => version.dataName).sort(),
+      ["report-swamp-workflow-summary", "report-swamp-workflow-summary-json"],
+    );
+    for (const version of written) {
+      assertEquals(version.modelType, "workflow");
+      assertEquals(version.modelId, workflow.id);
+    }
+    assertEquals(
+      run.workflowDataArtifacts.map((ref) => `${ref.name}@${ref.version}`)
+        .sort(),
+      written.map((version) => `${version.dataName}@${version.version}`)
+        .sort(),
+    );
+  });
+});
+
+Deno.test("WorkflowExecutionService: a workflow lock that cannot be taken skips the reports and keeps the run's result (swamp-club#4567)", async () => {
+  await withTempDir(async (tempDir) => {
+    const lock = reportLockHook({ acquireError: new Error("lock timed out") });
+    const { service, workflow, ready } = reportLockService(tempDir, lock.hook);
+    await ready;
+
+    const kinds: string[] = [];
+    let finalRun: WorkflowRun | undefined;
+    for await (const event of service.run(workflow.name)) {
+      kinds.push(event.kind);
+      if (event.kind === "completed") finalRun = event.run;
+    }
+
+    assertEquals(finalRun?.status, "succeeded");
+    assertEquals(kinds.includes("report_completed"), false);
+    assertEquals(kinds.includes("report_failed"), true);
+    assertEquals(finalRun?.workflowDataArtifacts, []);
+    assertEquals(lock.flushed, []);
+  });
+});
+
+Deno.test("WorkflowExecutionService: reports whose flush fails are failed reports, and the run keeps its result and names none of them (swamp-club#4567)", async () => {
+  await withTempDir(async (tempDir) => {
+    const lock = reportLockHook({
+      flushError: new Error("the lease on the workflow lapsed"),
+    });
+    const { service, workflow, ready } = reportLockService(tempDir, lock.hook);
+    await ready;
+
+    const failed: string[] = [];
+    let completed = 0;
+    let finalRun: WorkflowRun | undefined;
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "report_failed") failed.push(event.error);
+      if (event.kind === "report_completed") completed++;
+      if (event.kind === "completed") finalRun = event.run;
+    }
+
+    assertEquals(finalRun?.status, "succeeded");
+    assertEquals(finalRun?.workflowDataArtifacts, []);
+    assertEquals(completed, 0);
+    assertEquals(failed, [
+      "the reports could not be saved: the lease on the workflow lapsed",
+    ]);
+    assertEquals(lock.flushed.length, 1);
+  });
+});
