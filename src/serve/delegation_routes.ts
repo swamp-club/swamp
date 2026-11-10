@@ -25,7 +25,10 @@ import {
   canonicalExternalKey,
   DELEGATED_ACCESS_LIFE_MS,
   delegationStanding,
+  isFinalPhase,
   issueDelegationTokens,
+  type IssuedTokens,
+  redeemFolded,
   refreshDelegation,
   type RefreshOutcome,
   type RefreshRefusalReason,
@@ -44,7 +47,10 @@ import {
   ExternalIdentitySchema,
 } from "../domain/models/access/delegation_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import type { DelegationCapability } from "./delegation_capability_check.ts";
+import {
+  DELEGATION_RELINK_CAPABILITY,
+  type DelegationCapability,
+} from "./delegation_capability_check.ts";
 import {
   type DelegationAuditEvent,
   endLocally,
@@ -104,7 +110,8 @@ export interface DelegationRouteDeps {
   readonly directory: Pick<DelegationDirectory, "all" | "supersededBy">;
   readonly store: DelegationStore;
   readonly client: () => ServeLinkClient | undefined;
-  readonly capability: () => Promise<DelegationCapability>;
+  /** a named capability every live node must advertise; the links baseline when omitted */
+  readonly capability: (name?: string) => Promise<DelegationCapability>;
   readonly followerGate?: FollowerGate;
   readonly leaderLink?: LeaderLink;
   readonly audit?: (event: DelegationAuditRecord) => void;
@@ -397,7 +404,9 @@ async function start(
       "The requested ceiling must be within the integration's ceiling",
     );
   }
-  const team = await deps.capability().catch(() => null);
+  const team = await deps.capability(DELEGATION_RELINK_CAPABILITY).catch(() =>
+    null
+  );
   if (team === null) {
     return httpFailure(
       503,
@@ -556,6 +565,9 @@ async function redeem(
   if (!guarded.result.ok || record === null) {
     return httpFailure(404, "not_found", "No such pending link");
   }
+  if (record.mergedInto !== undefined) {
+    return await redeemRelink(record, record.mergedInto, deps);
+  }
   switch (record.phase) {
     case "awaiting_consent":
     case "reporting":
@@ -574,6 +586,7 @@ async function redeem(
         } satisfies RedeemBody,
       );
     case "issued":
+    case "suspended":
       return httpFailure(
         409,
         "already_redeemed",
@@ -589,7 +602,9 @@ async function redeem(
     case "consented":
       break;
   }
-  const team = await deps.capability().catch(() => null);
+  const team = await deps.capability(DELEGATION_RELINK_CAPABILITY).catch(() =>
+    null
+  );
   if (team === null) {
     return httpFailure(
       503,
@@ -627,6 +642,97 @@ async function redeem(
     outcome: "issued",
   });
   return json(tokensBody(issued.record, issued.tokens));
+}
+
+/** a relink folded into an existing delegation: its tokens, under that delegation's ID */
+async function redeemRelink(
+  pending: DelegationRecord,
+  targetId: string,
+  deps: DelegationRouteDeps,
+): Promise<Response> {
+  const team = await deps.capability(DELEGATION_RELINK_CAPABILITY).catch(() =>
+    null
+  );
+  if (team === null) {
+    return httpFailure(
+      503,
+      "team_unknown",
+      "This serve could not read which nodes are live; retry shortly",
+    );
+  }
+  if (!team.ok) {
+    return httpFailure(
+      409,
+      "team_not_ready",
+      `Every serve node must be upgraded first; not yet: ${
+        team.instances.join(", ")
+      }`,
+    );
+  }
+  const now = deps.now?.() ?? Date.now();
+  type Outcome =
+    | { kind: "issued"; record: DelegationRecord; tokens: IssuedTokens }
+    | { kind: "ended"; cause: string }
+    | { kind: "held"; reason: RefreshRefusalReason }
+    | { kind: "already" };
+  const outcome = await deps.store.transition<Outcome>(
+    targetId,
+    async (current) => {
+      if (current === null || isFinalPhase(current.phase)) {
+        return {
+          write: null,
+          value: { kind: "ended", cause: current?.ended?.cause ?? "ended" },
+        };
+      }
+      if (
+        current.pendingRedeem?.pendingId !== pending.id ||
+        current.pendingRedeem.hash !== pending.redeemHash
+      ) return { write: null, value: { kind: "already" } };
+      if (Date.parse(current.pendingRedeem.expiresAt) <= now) {
+        return { write: null, value: { kind: "ended", cause: "not_redeemed" } };
+      }
+      const standing = delegationStanding(
+        current,
+        now,
+        deps.directory.supersededBy(targetId),
+      );
+      if (
+        standing.kind === "suspended" || standing.kind === "links_unavailable"
+      ) {
+        return { write: null, value: { kind: "held", reason: standing.kind } };
+      }
+      if (standing.kind !== "standing") {
+        return { write: null, value: { kind: "ended", cause: standing.kind } };
+      }
+      const result = await redeemFolded(current, pending.id, now);
+      return {
+        write: result.record,
+        value: { kind: "issued", record: result.record, tokens: result.tokens },
+      };
+    },
+  );
+  switch (outcome.kind) {
+    case "ended":
+      return json(
+        { status: "ended", cause: outcome.cause } satisfies RedeemBody,
+      );
+    case "held":
+      return refreshRefused(outcome.reason);
+    case "already":
+      return httpFailure(
+        409,
+        "already_redeemed",
+        "This link's tokens were already issued",
+      );
+    case "issued":
+      deps.audit?.({
+        action: "tokens_issued",
+        record: outcome.record,
+        outcome: "issued",
+        detail: `relink=${pending.id}`,
+      });
+      return json(tokensBody(outcome.record, outcome.tokens));
+  }
 }
 
 async function refresh(

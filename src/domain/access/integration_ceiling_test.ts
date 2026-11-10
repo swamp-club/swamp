@@ -33,6 +33,7 @@ import {
   INTEGRATION_CEILING_GRANT_ID,
   INTEGRATION_REVOKED_GRANT_ID,
   INTEGRATION_UNKNOWN_GRANT_ID,
+  isConsentRefusal,
 } from "./grant_based_access_decision_service.ts";
 import type { IntegrationStanding } from "./integration_directory.ts";
 import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
@@ -390,4 +391,75 @@ Deno.test("decide: a delegated token can't create or edit a workflow, its trigge
     "deny",
   );
   assertEquals(s.decide(ALICE, "run", DEPLOY)?.effect, "allow");
+});
+
+Deno.test("isConsentRefusal: only a consented-ceiling refusal that grants alone would allow", () => {
+  const consentedRead = {
+    delegations: {
+      standingOf: () => ({
+        kind: "standing" as const,
+        ceiling: ceiling(["read"]),
+      }),
+      recordOf: () => ({ integrationId: "app" }) as DelegationRecord,
+    },
+  };
+  for (const action of ["run", "approve", "signal"] as const) {
+    const s = service(
+      [grant(["run", "read", "approve", "signal"], "workflow", "*")],
+      active(ceiling(["run", "read", "approve", "signal"])),
+      consentedRead,
+    );
+    const refused = s.decide(ALICE, action, DEPLOY);
+    assertEquals(isConsentRefusal(s, ALICE, action, DEPLOY, refused), true);
+  }
+  const noGrant = service(
+    [grant(["read"], "workflow", "*")],
+    active(ceiling(["run", "read"])),
+    consentedRead,
+  );
+  assertEquals(
+    isConsentRefusal(
+      noGrant,
+      ALICE,
+      "run",
+      DEPLOY,
+      noGrant.decide(ALICE, "run", DEPLOY),
+    ),
+    false,
+  );
+  const aboveLive = service(
+    [grant(["run", "read"], "workflow", "*")],
+    active(ceiling(["read"])),
+    consentedRead,
+  );
+  const refused = aboveLive.decide(ALICE, "run", DEPLOY);
+  assertEquals(refused?.grantId, INTEGRATION_CEILING_GRANT_ID);
+  assertEquals(
+    isConsentRefusal(aboveLive, ALICE, "run", DEPLOY, refused),
+    false,
+  );
+  const consentedAll = {
+    delegations: {
+      standingOf: () => ({
+        kind: "standing" as const,
+        ceiling: ceiling(["read", "run"]),
+      }),
+      recordOf: () => ({ integrationId: "app" }) as DelegationRecord,
+    },
+  };
+  const readAllowed = service(
+    [grant(["read"], "workflow", "*")],
+    active(ceiling(["read"])),
+    consentedAll,
+  );
+  assertEquals(
+    isConsentRefusal(
+      readAllowed,
+      ALICE,
+      "read",
+      DEPLOY,
+      readAllowed.decide(ALICE, "read", DEPLOY),
+    ),
+    false,
+  );
 });

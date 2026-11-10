@@ -20,20 +20,34 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  absorbPending,
+  applyClubIdentity,
+  canFold,
   delegationStanding,
   endDelegation,
+  foldConsent,
+  holdDelegation,
   issueDelegationTokens,
   recordApproval,
   recordReported,
+  redeemFolded,
   refreshDelegation,
   refuseDelegation,
+  releaseHold,
   supersessionOf,
 } from "./delegation.ts";
-import { consentedRecord, startedRecord } from "./delegation_test_helpers.ts";
-import type { DelegationRecord } from "../models/access/delegation_model.ts";
+import {
+  consentedRecord,
+  PERSON,
+  startedRecord,
+} from "./delegation_test_helpers.ts";
+import {
+  type DelegationRecord,
+  DelegationSchema,
+} from "../models/access/delegation_model.ts";
 
 const T0 = Date.parse("2026-11-09T00:00:00.000Z");
-const PERSON = { sub: "s", email: "e@x", collectives: [], groups: [] };
+const ANON = { sub: "s", email: "e@x", collectives: [], groups: [] };
 
 type Op =
   | "approve"
@@ -71,7 +85,7 @@ Deno.test("delegation lifecycle: tokens exist only while issued, a refresh never
         for (const op of ops) {
           now += 1000;
           try {
-            if (op === "approve") record = recordApproval(record, PERSON, now);
+            if (op === "approve") record = recordApproval(record, ANON, now);
             if (op === "report") record = recordReported(record, "l", now);
             if (op === "refuse") record = refuseDelegation(record, "r", now);
             if (op === "issue") {
@@ -178,5 +192,162 @@ Deno.test("supersession: ending or removing records never gives a superseded del
       },
     ),
     { numRuns: 300 },
+  );
+});
+
+type SyncOp =
+  | { kind: "feed_end" }
+  | { kind: "people_ended" }
+  | { kind: "people_suspended" }
+  | { kind: "people_active" }
+  | { kind: "people_unknown" }
+  | { kind: "people_known" }
+  | { kind: "client_refused" }
+  | { kind: "client_accepted" }
+  | { kind: "refusal_timeout" }
+  | { kind: "refresh" }
+  | { kind: "relink"; sub: "sub-1" | "sub-2" }
+  | { kind: "redeem_relink" }
+  | { kind: "tick"; ms: number };
+
+const SYNC_OP: fc.Arbitrary<SyncOp> = fc.oneof(
+  fc.constant<SyncOp>({ kind: "feed_end" }),
+  fc.constant<SyncOp>({ kind: "people_ended" }),
+  fc.constant<SyncOp>({ kind: "people_suspended" }),
+  fc.constant<SyncOp>({ kind: "people_active" }),
+  fc.constant<SyncOp>({ kind: "people_unknown" }),
+  fc.constant<SyncOp>({ kind: "people_known" }),
+  fc.constant<SyncOp>({ kind: "client_refused" }),
+  fc.constant<SyncOp>({ kind: "client_accepted" }),
+  fc.constant<SyncOp>({ kind: "refusal_timeout" }),
+  fc.constant<SyncOp>({ kind: "refresh" }),
+  fc.constantFrom<SyncOp>(
+    { kind: "relink", sub: "sub-1" },
+    { kind: "relink", sub: "sub-2" },
+  ),
+  fc.constant<SyncOp>({ kind: "redeem_relink" }),
+  fc.integer({ min: 1, max: 40 * 24 * 3600 }).map((s): SyncOp => ({
+    kind: "tick",
+    ms: s * 1000,
+  })),
+);
+
+Deno.test("delegation sync: across random feed, people, refusal, refresh and relink events, an ended delegation never leaves ended, and a held cause always refuses", async () => {
+  const SUB1 = { ...PERSON, sub: "sub-1" };
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(SYNC_OP, { maxLength: 30 }),
+      async (ops) => {
+        const issued = await issueDelegationTokens(
+          recordReported(recordApproval(startedRecord(), SUB1, T0), "l0", T0),
+          T0,
+        );
+        let record = issued.record;
+        const refresh = issued.tokens.refresh.value;
+        let now = T0;
+        let wasEnded = false;
+        let links = 0;
+        let lastPending: DelegationRecord | undefined;
+        for (const op of ops) {
+          now += 1000;
+          switch (op.kind) {
+            case "feed_end":
+              record = endDelegation(record, "club_ended", now);
+              break;
+            case "people_ended":
+              record = endDelegation(record, "disowned", now);
+              break;
+            case "people_suspended":
+              record = holdDelegation(record, "person_suspended", now);
+              break;
+            case "people_active":
+              record = releaseHold(record, "person_suspended", now);
+              record = applyClubIdentity(record, {
+                ...SUB1,
+                collectives: [],
+              }, now);
+              break;
+            case "people_unknown":
+              record = holdDelegation(record, "club_unknown", now);
+              break;
+            case "people_known":
+              record = releaseHold(record, "club_unknown", now);
+              break;
+            case "client_refused":
+              record = holdDelegation(record, "club_client_refused", now);
+              break;
+            case "client_accepted":
+              record = releaseHold(record, "club_client_refused", now);
+              break;
+            case "refusal_timeout":
+              if (record.hold?.causes.includes("club_client_refused")) {
+                record = endDelegation(record, "club_client_refused", now);
+              }
+              break;
+            case "refresh": {
+              const out = await refreshDelegation(
+                record,
+                refresh,
+                now,
+                delegationStanding(record, now, undefined),
+              );
+              if (out.kind === "refreshed") {
+                assertEquals(record.phase, "issued");
+                record = out.record;
+              }
+              break;
+            }
+            case "relink": {
+              links++;
+              const pending = recordApproval(
+                startedRecord({ id: crypto.randomUUID() }),
+                { ...PERSON, sub: op.sub },
+                now,
+              );
+              const person = { ...PERSON, sub: op.sub };
+              if (canFold(record, pending, person)) {
+                record = foldConsent(record, pending, `l${links}`, person, now);
+                lastPending = absorbPending(pending, record.id, now);
+                assertEquals(lastPending.phase, "ended");
+                assertEquals(
+                  supersessionOf([record, lastPending]).size,
+                  0,
+                );
+              }
+              break;
+            }
+            case "redeem_relink":
+              if (
+                lastPending !== undefined && record.phase === "issued" &&
+                record.pendingRedeem?.pendingId === lastPending.id &&
+                Date.parse(record.pendingRedeem.expiresAt) > now
+              ) {
+                record = (await redeemFolded(record, lastPending.id, now))
+                  .record;
+              }
+              break;
+            case "tick":
+              now += op.ms;
+              break;
+          }
+          DelegationSchema.parse(record);
+          if (record.phase === "ended" || record.phase === "refused") {
+            wasEnded = true;
+          }
+          const standing = delegationStanding(record, now, undefined).kind;
+          if (wasEnded) {
+            assert(record.phase === "ended" || record.phase === "refused");
+            assertEquals(record.tokens, undefined);
+            assertEquals(standing, "ended");
+          }
+          if ((record.hold?.causes.length ?? 0) > 0) {
+            assertEquals(record.phase, "suspended");
+            assert(standing !== "standing");
+          }
+          if (record.phase === "suspended") assert(record.hold !== undefined);
+        }
+      },
+    ),
+    { numRuns: 500 },
   );
 });

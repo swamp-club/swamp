@@ -52,12 +52,14 @@ export interface DelegationEnded {
 }
 
 type Listener = (ended: readonly DelegationEnded[]) => void;
+type PersonListener = (changed: readonly string[]) => void;
 
 const PHASE_RANK: Record<DelegationRecord["phase"], number> = {
   awaiting_consent: 0,
   reporting: 1,
   consented: 2,
   issued: 3,
+  suspended: 3,
   refused: 4,
   ended: 4,
 };
@@ -76,6 +78,7 @@ function combined(a: DelegationRecord, b: DelegationRecord): DelegationRecord {
 export class DelegationDirectory implements DelegationLookup {
   readonly #dataRepo: UnifiedDataRepository;
   readonly #listeners = new Set<Listener>();
+  readonly #personListeners = new Set<PersonListener>();
   readonly #unsubscribers: (() => void)[] = [];
   readonly #retryMs: number;
   readonly #now: () => number;
@@ -140,6 +143,12 @@ export class DelegationDirectory implements DelegationLookup {
     return () => this.#listeners.delete(listener);
   }
 
+  /** standing delegations whose person snapshot changed, for admission to check again */
+  onPersonChanged(listener: PersonListener): () => void {
+    this.#personListeners.add(listener);
+    return () => this.#personListeners.delete(listener);
+  }
+
   /** resolves once a load started after this call has finished; never rejects */
   reload(): Promise<void> {
     this.#reloads = this.#reloads.then(() => this.#reload());
@@ -188,6 +197,9 @@ export class DelegationDirectory implements DelegationLookup {
         this.standingOf(id, nowMs).kind === "standing"
       )
       : [];
+    const persons = new Map(
+      before.map((id) => [id, JSON.stringify(this.#records.get(id)?.person)]),
+    );
     this.#records = read.records;
     this.#unreadable = read.unreadable;
     this.#superseded = supersessionOf([...read.records.values()]);
@@ -198,12 +210,26 @@ export class DelegationDirectory implements DelegationLookup {
         id,
         integrationId: this.#records.get(id)?.integrationId ?? "",
       }));
-    if (ended.length === 0) return;
-    for (const listener of this.#listeners) {
-      try {
-        listener(ended);
-      } catch (error) {
-        logger.error`A delegation change listener failed: ${error}`;
+    const changed = before.filter((id) =>
+      this.standingOf(id, nowMs).kind === "standing" &&
+      JSON.stringify(this.#records.get(id)?.person) !== persons.get(id)
+    );
+    if (ended.length > 0) {
+      for (const listener of this.#listeners) {
+        try {
+          listener(ended);
+        } catch (error) {
+          logger.error`A delegation change listener failed: ${error}`;
+        }
+      }
+    }
+    if (changed.length > 0) {
+      for (const listener of this.#personListeners) {
+        try {
+          listener(changed);
+        } catch (error) {
+          logger.error`A delegation person listener failed: ${error}`;
+        }
       }
     }
   }

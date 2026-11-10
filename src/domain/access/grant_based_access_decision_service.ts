@@ -313,6 +313,32 @@ export function integrationRefusalReason(grantId: string): string | undefined {
   }
 }
 
+/**
+ * a refusal only the person's consent stands behind: the consented ceiling
+ * refused it, and grants alone would allow it, so linking again would help
+ */
+export function isConsentRefusal(
+  service: Pick<AccessDecisionService, "decide">,
+  principal: AccessPrincipal,
+  action: Action,
+  resource: AccessResource,
+  decision: AccessDecision | null,
+): boolean {
+  if (
+    decision?.effect !== "deny" ||
+    decision.grantId !== DELEGATION_CEILING_GRANT_ID
+  ) return false;
+  const person = { ...principal, client: undefined, delegation: undefined };
+  const grants = service.decide(person, action, resource);
+  if (grants !== null) return grants.effect === "allow";
+  return service.decide(person, "admin", {
+    kind: "access",
+    name: "*",
+    fields: {},
+  })
+    ?.effect === "allow";
+}
+
 const MAX_CACHED_FINGERPRINTS = 4096;
 
 export class GrantBasedAccessDecisionService implements AccessDecisionService {

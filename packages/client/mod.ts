@@ -139,7 +139,11 @@
  * A call throws `SwampHttpError` for anything that isn't one of its outcomes.
  * `error.code === "link_ended"` means the person has to link again;
  * `"not_admitted"` means serve refuses them for now and the link works again
- * once they are admitted. Calls are retried only where nothing can happen
+ * once they are admitted; `"link_suspended"` likewise, until swamp-club
+ * vouches for the link again. `"consent_required"` means the person hasn't
+ * consented to that action: start a new link asking for everything the app
+ * needs, and the existing link carries on under the same delegation once they
+ * consent. Calls are retried only where nothing can happen
  * twice: a start with its key and reads, after a lost reply; any call serve
  * refused before acting. Every call takes an `AbortSignal` and has a timeout.
  *

@@ -153,12 +153,22 @@ Deno.test("SwampIntegrationClient.refresh: a refusal says whether the link ended
     refused("mismatch"),
     refused("expired"),
     refused(),
+    refused("suspended"),
+    refused("links_unavailable"),
   ]);
   const c = client(fetch);
   assertEquals(await c.refresh("r"), { kind: "not_admitted" });
   assertEquals(await c.refresh("r"), { kind: "mismatch" });
   assertEquals(await c.refresh("r"), { kind: "link_ended", reason: "expired" });
   assertEquals(await c.refresh("r"), { kind: "link_ended", reason: "unknown" });
+  assertEquals(await c.refresh("r"), {
+    kind: "suspended",
+    reason: "suspended",
+  });
+  assertEquals(await c.refresh("r"), {
+    kind: "suspended",
+    reason: "links_unavailable",
+  });
 });
 
 Deno.test("SwampIntegrationClient.refresh: a lost reply is sent again only once serve has shown it keeps the token, and team_not_ready throws for later", async () => {

@@ -92,9 +92,14 @@ export type RefreshOutcome =
   }
   | {
     kind: "link_ended";
-    reason: Exclude<RefreshRefusalReason, "mismatch" | "not_admitted">;
+    reason: Exclude<
+      RefreshRefusalReason,
+      "mismatch" | "not_admitted" | "suspended" | "links_unavailable"
+    >;
   }
   | { kind: "not_admitted" }
+  /** refused for now, the link kept: the person is suspended, or swamp-club can't vouch for it */
+  | { kind: "suspended"; reason: "suspended" | "links_unavailable" }
   /** the refresh token isn't this link's current one; the link is untouched */
   | { kind: "mismatch" };
 
@@ -262,6 +267,9 @@ export class SwampIntegrationClient {
       const reason = body.reason as RefreshRefusalReason;
       if (reason === "not_admitted") return { kind: "not_admitted" };
       if (reason === "mismatch") return { kind: "mismatch" };
+      if (reason === "suspended" || reason === "links_unavailable") {
+        return { kind: "suspended", reason };
+      }
       return { kind: "link_ended", reason };
     }
     throw errorFrom(reply, ROUTE.refresh);

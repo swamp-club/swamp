@@ -19,22 +19,36 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  absorbPending,
   accessTokenExpiry,
   accessTokenMatches,
+  applyClubIdentity,
+  canFold,
   canonicalExternalKey,
+  CLUB_ORIGINATED_CAUSES,
   DELEGATED_ACCESS_LIFE_MS,
   DELEGATION_MAX_LIFE_MS,
+  DELEGATION_REDEEM_WINDOW_MS,
   delegationStanding,
   DelegationTransitionError,
+  dropExpiredRedeem,
   endDelegation,
+  foldConsent,
+  holdDelegation,
   issueDelegationTokens,
   recordApproval,
   recordClubEnd,
+  recordRetiredLinkEnd,
+  redeemFolded,
   refreshDelegation,
   refuseDelegation,
+  releaseHold,
   supersessionOf,
 } from "./delegation.ts";
-import { DelegationSchema } from "../models/access/delegation_model.ts";
+import {
+  type DelegationRecord,
+  DelegationSchema,
+} from "../models/access/delegation_model.ts";
 import {
   consentedRecord,
   PERSON,
@@ -324,4 +338,280 @@ Deno.test("supersessionOf: an ended newest consent still supersedes the older on
     T0 + 2000,
   );
   assertEquals(supersessionOf([older, newer]).get(older.id), newer.id);
+});
+
+async function issuedRecord(): Promise<DelegationRecord> {
+  return (await issueDelegationTokens(consentedRecord(), T0)).record;
+}
+
+Deno.test("holdDelegation: suspends an issued delegation, adds causes once, and leaves final phases alone", async () => {
+  const record = await issuedRecord();
+  const held = holdDelegation(record, "person_suspended", T0 + 1);
+  DelegationSchema.parse(held);
+  assertEquals(held.phase, "suspended");
+  assertEquals(held.hold?.causes, ["person_suspended"]);
+  assert(held.tokens !== undefined);
+  assert(holdDelegation(held, "person_suspended", T0 + 2) === held);
+  const both = holdDelegation(held, "club_client_refused", T0 + 2);
+  assertEquals(both.hold?.causes, ["person_suspended", "club_client_refused"]);
+  const ended = endDelegation(record, "operator", T0);
+  assert(holdDelegation(ended, "person_suspended", T0) === ended);
+  const refused = refuseDelegation(startedRecord(), "r", T0);
+  assert(holdDelegation(refused, "club_unknown", T0) === refused);
+});
+
+Deno.test("releaseHold: returns to issued only when the last cause clears", async () => {
+  const held = holdDelegation(
+    holdDelegation(await issuedRecord(), "person_suspended", T0),
+    "club_client_refused",
+    T0,
+  );
+  const one = releaseHold(held, "person_suspended", T0 + 1);
+  assertEquals(one.phase, "suspended");
+  assertEquals(one.hold?.causes, ["club_client_refused"]);
+  const none = releaseHold(one, "club_client_refused", T0 + 2);
+  assertEquals(none.phase, "issued");
+  assertEquals(none.hold, undefined);
+  assert(releaseHold(none, "club_unknown", T0) === none);
+});
+
+Deno.test("delegationStanding: a suspended person reads suspended, a club-side hold reads links_unavailable", async () => {
+  const record = await issuedRecord();
+  assertEquals(
+    delegationStanding(
+      holdDelegation(record, "person_suspended", T0),
+      T0,
+      undefined,
+    )
+      .kind,
+    "suspended",
+  );
+  assertEquals(
+    delegationStanding(
+      holdDelegation(record, "club_unknown", T0),
+      T0,
+      undefined,
+    )
+      .kind,
+    "links_unavailable",
+  );
+  assertEquals(
+    delegationStanding(
+      holdDelegation(
+        holdDelegation(record, "club_client_refused", T0),
+        "person_suspended",
+        T0,
+      ),
+      T0,
+      undefined,
+    ).kind,
+    "suspended",
+  );
+});
+
+Deno.test("refreshDelegation: refused while suspended, and succeeds again once the hold clears", async () => {
+  const { record, tokens } = await issueDelegationTokens(consentedRecord(), T0);
+  const held = holdDelegation(record, "person_suspended", T0 + 1);
+  const refused = await refreshDelegation(
+    held,
+    tokens.refresh.value,
+    T0 + 2,
+    delegationStanding(held, T0 + 2, undefined),
+  );
+  assertEquals(refused, { kind: "refused", reason: "suspended" });
+  const clubHeld = holdDelegation(record, "club_client_refused", T0 + 1);
+  const clubRefused = await refreshDelegation(
+    clubHeld,
+    tokens.refresh.value,
+    T0 + 2,
+    delegationStanding(clubHeld, T0 + 2, undefined),
+  );
+  assertEquals(clubRefused, { kind: "refused", reason: "links_unavailable" });
+  const lifted = releaseHold(held, "person_suspended", T0 + 3);
+  const ok = await refreshDelegation(
+    lifted,
+    tokens.refresh.value,
+    T0 + 4,
+    delegationStanding(lifted, T0 + 4, undefined),
+  );
+  assertEquals(ok.kind, "refreshed");
+});
+
+Deno.test("endDelegation: ends a suspended delegation, drops its hold, and never calls back for a club-originated cause", async () => {
+  const held = holdDelegation(await issuedRecord(), "person_suspended", T0);
+  for (const cause of CLUB_ORIGINATED_CAUSES) {
+    const ended = endDelegation(held, cause, T0 + 1);
+    assertEquals(ended.phase, "ended");
+    assertEquals(ended.hold, undefined);
+    assertEquals(ended.tokens, undefined);
+    assertEquals(ended.club.endState, "none");
+  }
+  assertEquals(
+    endDelegation(held, "operator", T0 + 1).club.endState,
+    "pending",
+  );
+});
+
+Deno.test("applyClubIdentity: refreshes the snapshot, ignores another sub, and skips an unchanged one", async () => {
+  const record = await issuedRecord();
+  assert(applyClubIdentity(record, { ...PERSON }, T0) === record);
+  const left = applyClubIdentity(
+    record,
+    { ...PERSON, collectives: [] },
+    T0 + 1,
+  );
+  assertEquals(left.person?.collectives, []);
+  assert(
+    applyClubIdentity(
+      record,
+      { ...PERSON, sub: "other", collectives: [] },
+      T0,
+    ) ===
+      record,
+  );
+  const ended = endDelegation(record, "operator", T0);
+  assert(
+    applyClubIdentity(ended, { ...PERSON, collectives: [] }, T0) === ended,
+  );
+});
+
+function pendingFor(
+  person: typeof PERSON,
+  ceiling: string[],
+  atMs: number,
+): DelegationRecord {
+  const started = startedRecord({ id: crypto.randomUUID() });
+  return recordApproval(
+    {
+      ...started,
+      ceiling: {
+        version: 1,
+        ceiling: [{ actions: ceiling, resource: "workflow:deploy" }],
+      },
+      ceilingDigest: `sha256:${ceiling.join("-")}`,
+      redeemHash: `sha256:${"b".repeat(64)}`,
+    },
+    person,
+    atMs,
+  );
+}
+
+Deno.test("foldConsent: replaces the consented ceiling, keeps the ID, restarts the life and retires the old link", async () => {
+  const target = await issuedRecord();
+  const later = T0 + 5 * 24 * 3600_000;
+  const narrower = pendingFor(PERSON, ["read"], later);
+  const folded = foldConsent(target, narrower, "link-2", PERSON, later);
+  DelegationSchema.parse(folded);
+  assertEquals(folded.id, target.id);
+  assertEquals(folded.ceiling, narrower.ceiling);
+  assertEquals(folded.ceilingDigest, narrower.ceilingDigest);
+  assertEquals(folded.club.linkId, "link-2");
+  assertEquals(folded.club.retiredLinks?.map((l) => [l.linkId, l.endState]), [[
+    "link-1",
+    "pending",
+  ]]);
+  assertEquals(Date.parse(folded.expiresAt!), later + DELEGATION_MAX_LIFE_MS);
+  assertEquals(folded.consentedAt, target.consentedAt);
+  assertEquals(folded.pendingRedeem, {
+    pendingId: narrower.id,
+    hash: narrower.redeemHash,
+    expiresAt: new Date(later + DELEGATION_REDEEM_WINDOW_MS).toISOString(),
+  });
+  assertEquals(folded.tokens, target.tokens);
+  assert(foldConsent(folded, narrower, "link-2", PERSON, later) === folded);
+});
+
+Deno.test("foldConsent: refuses another person, an ended delegation, or another integration", async () => {
+  const target = await issuedRecord();
+  const pending = pendingFor(PERSON, ["run"], T0);
+  const other = { ...PERSON, sub: "sub-2" };
+  assertEquals(canFold(target, pending, other), false);
+  assertThrows(
+    () => foldConsent(target, pending, "link-2", other, T0),
+    DelegationTransitionError,
+  );
+  assertEquals(
+    canFold(endDelegation(target, "operator", T0), pending, PERSON),
+    false,
+  );
+  assertEquals(
+    canFold(target, { ...pending, integrationId: "other-bot" }, PERSON),
+    false,
+  );
+  assertEquals(
+    canFold(holdDelegation(target, "person_suspended", T0), pending, PERSON),
+    true,
+  );
+});
+
+Deno.test("absorbPending: ends the pending record without consent, so it never supersedes", async () => {
+  const target = await issuedRecord();
+  const pending = pendingFor(PERSON, ["run"], T0);
+  const absorbed = absorbPending(pending, target.id, T0 + 1);
+  DelegationSchema.parse(absorbed);
+  assertEquals(absorbed.phase, "ended");
+  assertEquals(absorbed.mergedInto, target.id);
+  assertEquals(absorbed.consentedAt, undefined);
+  assertEquals(absorbed.club.endState, "none");
+  assertEquals(supersessionOf([target, absorbed]).size, 0);
+});
+
+Deno.test("redeemFolded: issues fresh tokens for the existing ID once, and refuses while suspended", async () => {
+  const target = await issuedRecord();
+  const pending = pendingFor(PERSON, ["run"], T0);
+  const folded = foldConsent(target, pending, "link-2", PERSON, T0 + 1);
+  await assertRejects(
+    () =>
+      redeemFolded(
+        holdDelegation(folded, "person_suspended", T0),
+        pending.id,
+        T0,
+      ),
+    DelegationTransitionError,
+  );
+  const { record, tokens } = await redeemFolded(folded, pending.id, T0 + 2);
+  assert(tokens.access.value.startsWith(`swda1.${target.id}.`));
+  assertEquals(record.pendingRedeem, undefined);
+  assert(record.tokens?.refreshHash !== target.tokens?.refreshHash);
+  assertEquals(record.tokens?.previousAccessHash, undefined);
+  await assertRejects(
+    () => redeemFolded(record, pending.id, T0 + 3),
+    DelegationTransitionError,
+  );
+});
+
+Deno.test("recordRetiredLinkEnd: settles one retired link and keeps retrying a failure", async () => {
+  const folded = foldConsent(
+    await issuedRecord(),
+    pendingFor(PERSON, ["run"], T0),
+    "link-2",
+    PERSON,
+    T0,
+  );
+  const failed = recordRetiredLinkEnd(
+    folded,
+    "link-1",
+    { ok: false, error: "down", retryAtMs: T0 + 30_000 },
+    T0,
+  );
+  assertEquals(failed.club.retiredLinks?.[0].endAttempts, 1);
+  assertEquals(failed.club.retiredLinks?.[0].lastEndError, "down");
+  const done = recordRetiredLinkEnd(failed, "link-1", { ok: true }, T0 + 1);
+  assertEquals(done.club.retiredLinks?.[0].endState, "done");
+  assert(recordRetiredLinkEnd(done, "link-1", { ok: true }, T0 + 2) === done);
+});
+
+Deno.test("redeemFolded: a relink not redeemed within the window lapses, and dropExpiredRedeem clears it", async () => {
+  const target = await issuedRecord();
+  const pending = pendingFor(PERSON, ["run"], T0);
+  const folded = foldConsent(target, pending, "link-2", PERSON, T0);
+  const late = T0 + DELEGATION_REDEEM_WINDOW_MS;
+  await assertRejects(
+    () => redeemFolded(folded, pending.id, late),
+    DelegationTransitionError,
+  );
+  assert(dropExpiredRedeem(folded, late - 1) === folded);
+  const dropped = dropExpiredRedeem(folded, late);
+  assertEquals(dropped.pendingRedeem, undefined);
+  assertEquals(dropped.tokens, target.tokens);
 });

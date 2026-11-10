@@ -26,6 +26,11 @@ export const DELEGATION_MODEL_TYPE = ModelType.create("swamp/delegation");
 
 export const DELEGATION_DATA_NAME = "delegation-main";
 
+/** serve's place in swamp-club's link feed, one record per serve, beside the delegations */
+export const DELEGATION_SYNC_ID = "00000000-0000-4000-8000-000000000001";
+export const DELEGATION_SYNC_DATA_NAME = "delegation-sync";
+export const DELEGATION_SYNC_DEFINITION_NAME = "delegation-sync";
+
 export function delegationDefinitionName(id: string): string {
   return `delegation-${id}`;
 }
@@ -38,6 +43,7 @@ export const DelegationPhaseSchema = z.enum([
   "reporting",
   "consented",
   "issued",
+  "suspended",
   "refused",
   "ended",
 ]);
@@ -82,6 +88,24 @@ export const DelegationTokensSchema = z.object({
 
 export const ClubEndStateSchema = z.enum(["none", "pending", "done"]);
 
+export const HoldCauseSchema = z.enum([
+  "person_suspended",
+  "club_client_refused",
+  "club_unknown",
+]);
+
+export type HoldCause = z.infer<typeof HoldCauseSchema>;
+
+const RetiredLinkSchema = z.object({
+  linkId: z.string().min(1).max(200),
+  endState: ClubEndStateSchema,
+  endAttempts: z.number().int().min(0),
+  nextEndAttemptAt: z.string().datetime().optional(),
+  lastEndError: z.string().max(500).optional(),
+});
+
+export type RetiredLink = z.infer<typeof RetiredLinkSchema>;
+
 export const DelegationSchema = z.object({
   id: ID,
   integrationId: z.string().regex(INTEGRATION_ID_PATTERN),
@@ -105,6 +129,9 @@ export const DelegationSchema = z.object({
     endAttempts: z.number().int().min(0),
     nextEndAttemptAt: z.string().datetime().optional(),
     lastEndError: z.string().max(500).optional(),
+    // links a relink replaced; each is ended on swamp-club, and the feed
+    // ignores them unless the person disowns one
+    retiredLinks: z.array(RetiredLinkSchema).max(20).optional(),
   }),
   person: LinkedPersonSchema.optional(),
   consentedAt: z.string().datetime().optional(),
@@ -118,9 +145,33 @@ export const DelegationSchema = z.object({
     cause: z.string().max(100),
     at: z.string().datetime(),
   }).optional(),
+  hold: z.object({
+    causes: z.array(HoldCauseSchema).min(1).max(3),
+    since: z.string().datetime(),
+  }).optional(),
+  // a relink folded into this delegation; redeeming that link issues tokens here
+  pendingRedeem: z.object({
+    pendingId: ID,
+    hash: HASH,
+    expiresAt: z.string().datetime(),
+  }).optional(),
+  // on a pending link a relink absorbed: the delegation it was folded into
+  mergedInto: ID.optional(),
 });
 
 export type DelegationRecord = z.infer<typeof DelegationSchema>;
+
+export const DelegationSyncSchema = z.object({
+  // swamp-club's opaque position; absent, the feed is read from its start
+  cursor: z.string().min(1).max(1000).optional(),
+  clientRefusal: z.object({
+    since: z.string().datetime(),
+    code: z.string().max(64),
+  }).optional(),
+  updatedAt: z.string().datetime(),
+});
+
+export type DelegationSyncRecord = z.infer<typeof DelegationSyncSchema>;
 
 /**
  * no methods: only serve's link service writes these, by direct record writes
@@ -128,12 +179,19 @@ export type DelegationRecord = z.infer<typeof DelegationSchema>;
  */
 export const delegationModel: ModelDefinition = defineModel({
   type: DELEGATION_MODEL_TYPE,
-  version: "2026.11.09.1",
+  version: "2026.11.10.1",
   resources: {
     "delegation": {
       description:
         "A person's link to an integration and its token state, stored as hashes only",
       schema: DelegationSchema,
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+    "sync": {
+      description:
+        "Where this serve has read swamp-club's link feed to, and whether swamp-club refuses its client",
+      schema: DelegationSyncSchema,
       lifetime: "infinite",
       garbageCollection: 5,
     },

@@ -28,6 +28,7 @@ import {
 interface Seen {
   method: string;
   path: string;
+  search: string;
   authorization: string | null;
   body: unknown;
 }
@@ -45,6 +46,7 @@ async function withMock(
       seen.push({
         method: req.method,
         path: url.pathname,
+        search: url.search,
         authorization: req.headers.get("authorization"),
         body: text ? JSON.parse(text) : undefined,
       });
@@ -199,4 +201,123 @@ Deno.test("displaySafeReason: cuts to swamp-club's limit and drops invisible cha
   assertEquals(displaySafeReason("  a\u200bb\nc  "), "a b c");
   assertEquals(displaySafeReason("\u0001"), "refused");
   assertEquals(displaySafeReason("y".repeat(300)).length, MAX_REFUSAL_REASON);
+});
+
+Deno.test("ServeLinkClient: changes passes the cursor and reads a page", async () => {
+  await withMock(
+    () => ({ status: 200, body: { ended: ["l1"], cursor: "c2", more: true } }),
+    async (client, seen) => {
+      assertEquals(await client.changes(undefined), {
+        ended: ["l1"],
+        cursor: "c2",
+        more: true,
+      });
+      await client.changes("a/b=");
+      assertEquals(seen[0].path, "/api/v1/serve/links/changes");
+      assertEquals(seen[0].search, "");
+      assertEquals(seen[1].search, "?since=a%2Fb%3D");
+      assertEquals(seen[0].method, "GET");
+      assertEquals(seen[0].authorization, `Basic ${btoa("client-1:s3cret")}`);
+    },
+  );
+});
+
+Deno.test("ServeLinkClient: an unreadable cursor answers invalid_cursor, a malformed page is unavailable", async () => {
+  await withMock(
+    () => ({ status: 400, body: { error: "invalid_cursor" } }),
+    async (client) => {
+      assertEquals(await client.changes("bad"), "invalid_cursor");
+    },
+  );
+  await withMock(
+    () => ({ status: 200, body: { ended: "l1" } }),
+    async (client) => {
+      const error = await assertRejects(
+        () => client.changes(undefined),
+        ServeLinkError,
+      );
+      assertEquals(error.kind, "unavailable");
+    },
+  );
+});
+
+Deno.test("ServeLinkClient: a refused client is unauthorized with swamp-club's code, and a rate limit is not", async () => {
+  for (
+    const [status, code] of [[401, "invalid_client"], [
+      403,
+      "client_not_collective",
+    ]] as const
+  ) {
+    await withMock(
+      () => ({ status, body: { error: code } }),
+      async (client) => {
+        const error = await assertRejects(
+          () => client.changes(undefined),
+          ServeLinkError,
+        );
+        assertEquals(error.kind, "unauthorized");
+        assertEquals(error.code, code);
+        assert(!error.message.includes("s3cret"));
+      },
+    );
+  }
+  await withMock(
+    () => ({ status: 429, body: { error: "too_many_attempts" } }),
+    async (client) => {
+      const error = await assertRejects(
+        () => client.people(["l1"]),
+        ServeLinkError,
+      );
+      assertEquals(error.kind, "rate_limited");
+    },
+  );
+});
+
+Deno.test("ServeLinkClient: people sends link IDs, reads each state, and drops IDs it didn't ask about", async () => {
+  await withMock(
+    () => ({
+      status: 200,
+      body: {
+        people: [
+          {
+            linkId: "l1",
+            state: "active",
+            identity: {
+              sub: "p1",
+              email: "p@x",
+              username: "p",
+              collectives: [],
+              groups: [],
+            },
+          },
+          { linkId: "l2", state: "suspended" },
+          { linkId: "l3", state: "ended", endedReason: "disowned" },
+          { linkId: "stranger", state: "suspended" },
+        ],
+      },
+    }),
+    async (client, seen) => {
+      const people = await client.people(["l1", "l2", "l3"]);
+      assertEquals(people.map((p) => [p.linkId, p.state]), [
+        ["l1", "active"],
+        ["l2", "suspended"],
+        ["l3", "ended"],
+      ]);
+      assertEquals(seen[0].body, { linkIds: ["l1", "l2", "l3"] });
+      assertEquals(seen[0].path, "/api/v1/serve/links/people");
+    },
+  );
+});
+
+Deno.test("ServeLinkClient: people refuses more IDs than swamp-club takes", async () => {
+  await withMock(
+    () => ({ status: 200, body: { people: [] } }),
+    async (client, seen) => {
+      await assertRejects(
+        () => client.people(Array.from({ length: 201 }, (_, i) => `l${i}`)),
+        RangeError,
+      );
+      assertEquals(seen.length, 0);
+    },
+  );
 });

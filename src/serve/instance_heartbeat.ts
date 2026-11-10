@@ -39,6 +39,7 @@ export const STOPPED_HEARTBEAT_WRITE_TIMEOUT_MS = 5_000;
 export const SERVE_INSTANCE_CAPABILITIES: readonly string[] = [
   "delegation-links-1",
   "delegation-links-2",
+  "delegation-links-3",
 ];
 
 export interface HeartbeatRecord {

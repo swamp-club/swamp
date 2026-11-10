@@ -29,10 +29,59 @@ import type { OutputMode } from "./output.ts";
 
 function stateText(state: string): string {
   if (state === "issued" || state === "consented") return green(state);
-  if (state === "awaiting_consent" || state === "reporting") {
+  if (
+    state === "awaiting_consent" || state === "reporting" ||
+    state === "suspended"
+  ) {
     return yellow(state);
   }
   return red(state);
+}
+
+const HOLD_TEXT: Record<string, string> = {
+  person_suspended: "the person is suspended on Swamp Club",
+  club_client_refused: "Swamp Club refuses this serve's client",
+  club_unknown: "Swamp Club no longer knows this link",
+};
+
+function holdLines(view: DelegationView): string[] {
+  if (!view.hold) return [];
+  return [
+    line("Suspended since", view.hold.since),
+    ...view.hold.causes.map((cause) =>
+      `  ${dim("because")} ${HOLD_TEXT[cause] ?? cause}`
+    ),
+  ];
+}
+
+function relinkLines(view: DelegationView): string[] {
+  const lines: string[] = [];
+  if (view.mergedInto) {
+    lines.push(line("Relinked into", bold(view.mergedInto)));
+  }
+  if (view.relinkPending) {
+    lines.push(
+      line("Relink", yellow("consented, not yet redeemed by the app")),
+    );
+  }
+  for (const link of view.retiredLinks ?? []) {
+    lines.push(
+      line(
+        "Replaced link",
+        `${link.linkId} ${
+          link.endState === "pending"
+            ? yellow(
+              `(Swamp Club not told yet, ${link.endAttempts} attempt(s))`,
+            )
+            : dim("(Swamp Club told it ended)")
+        }`,
+      ),
+    );
+    if (link.endState === "pending" && link.lastEndError) {
+      lines.push(`  ${dim("last error:")} ${red(link.lastEndError)}`);
+    }
+  }
+  return lines;
 }
 
 function personText(view: DelegationView): string {
@@ -81,6 +130,7 @@ function detailLines(view: DelegationView): string[] {
     line("Delegation", bold(view.id)),
     line("Integration", view.integrationId),
     line("State", stateText(view.state)),
+    ...holdLines(view),
     ...(person ? [line("Person", person)] : []),
     ...(external
       ? [
@@ -110,6 +160,7 @@ function detailLines(view: DelegationView): string[] {
       : []),
     ...(view.ceilingDigest ? [line("Ceiling", dim(view.ceilingDigest))] : []),
     ...clubLines(view),
+    ...relinkLines(view),
   ];
 }
 

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isConsentRefusal } from "../../domain/access/grant_based_access_decision_service.ts";
 import type { DelegationStore } from "../delegation_store.ts";
 import type { DelegationAuditRecord } from "../delegation_routes.ts";
 import { delegationOfSessionName } from "../delegated_token_auth.ts";
@@ -667,6 +668,9 @@ export const STREAM_ACCESS_CHANGED_REASON =
 export const TOKEN_REVOKED_REASON = "Session revoked: token revoked";
 export const NOT_ADMITTED_REASON =
   "Session ended: no longer admitted to this server";
+/** a delegated request outside what the person consented to, inside the integration's ceiling */
+export const CONSENT_REQUIRED_CODE = "consent_required";
+
 export const DELEGATION_ENDED_REASON = "Session ended: the link has ended";
 export const DELEGATION_EXPIRED_REASON =
   "Session ended: access token expired, refresh and reconnect";
@@ -1126,6 +1130,8 @@ type AccessOutcome =
     principal: Principal;
     decision: AccessDecision | null;
     groups: readonly string[];
+    /** only the person's consented ceiling refused it; a new link would allow it */
+    consentRequired?: boolean;
   };
 
 export interface AccessCaller {
@@ -1216,7 +1222,15 @@ function decideForCaller(
     }
   }
 
-  return { kind: "refused", principal, decision, groups };
+  const consentRequired = !every &&
+    isConsentRefusal(service, accessPrincipal, action, resource, decision);
+  return {
+    kind: "refused",
+    principal,
+    decision,
+    groups,
+    ...(consentRequired ? { consentRequired } : {}),
+  };
 }
 
 /**
@@ -1470,7 +1484,14 @@ function replyToOutcome(
       // a control-plane record is decided as admin whatever was asked, so the
       // refusal names admin
       const needed = isControlPlaneRecordResource(resource) ? "admin" : action;
-      if (decision && decision.effect === "deny" && every) {
+      if (outcome.consentRequired) {
+        sendError(
+          socket,
+          requestId,
+          CONSENT_REQUIRED_CODE,
+          `Access denied: ${principalStr} has not consented to '${needed}' on ${resource.kind}:${resource.name} through this link; link again to ask for it`,
+        );
+      } else if (decision && decision.effect === "deny" && every) {
         // An operation over every resource is decided per kind, never on a
         // control-plane record, so it names the action it asked for.
         sendError(

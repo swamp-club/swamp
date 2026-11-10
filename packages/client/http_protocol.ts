@@ -249,6 +249,8 @@ export const REFRESH_REFUSAL_REASONS = [
   "expired",
   "superseded",
   "unreadable",
+  "suspended",
+  "links_unavailable",
 ] as const;
 
 export type RefreshRefusalReason = typeof REFRESH_REFUSAL_REASONS[number];

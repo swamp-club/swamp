@@ -64,6 +64,13 @@ export class MockClub {
   recordedLinks = new Set<string>();
   ends: string[] = [];
   failNextReportAfterRecording = false;
+  starts = 0;
+  /** served as the feed, in the order swamp-club ended them */
+  endedFeed: string[] = [];
+  people = new Map<string, unknown>();
+  refuseClient: { status: number; error: string } | undefined;
+  down = false;
+  feedCursors: (string | null)[] = [];
   #server: Deno.HttpServer<Deno.NetAddr>;
 
   constructor() {
@@ -74,18 +81,46 @@ export class MockClub {
           "/api/v1/serve/links",
           "",
         );
-        await req.text();
+        const text = await req.text();
+        if (this.down) {
+          return Response.json({ error: "unavailable" }, { status: 503 });
+        }
+        if (this.refuseClient) {
+          return Response.json({ error: this.refuseClient.error }, {
+            status: this.refuseClient.status,
+          });
+        }
         if (path === "/capabilities") return Response.json({ version: 1 });
-        if (path === "" && req.method === "POST") {
+        if (path === "/changes" && req.method === "GET") {
+          const since = new URL(req.url).searchParams.get("since");
+          this.feedCursors.push(since);
+          const from = since === null ? 0 : Number(since);
           return Response.json({
-            requestId: "request-1",
+            ended: this.endedFeed.slice(from, from + 2),
+            cursor: String(Math.min(this.endedFeed.length, from + 2)),
+            more: from + 2 < this.endedFeed.length,
+          });
+        }
+        if (path === "/people" && req.method === "POST") {
+          const { linkIds } = JSON.parse(text) as { linkIds: string[] };
+          return Response.json({
+            people: linkIds.flatMap((id) => {
+              const view = this.people.get(id);
+              return view ? [{ linkId: id, ...view as object }] : [];
+            }),
+          });
+        }
+        if (path === "" && req.method === "POST") {
+          this.starts++;
+          return Response.json({
+            requestId: `request-${this.starts}`,
             consentUrl: "http://club.test/link?code=consent-code-secret",
             digest: "digest-1",
             expiresIn: 600,
             interval: 1,
           });
         }
-        if (path === "/request-1" && req.method === "GET") {
+        if (/^\/request-\d+$/.test(path) && req.method === "GET") {
           this.statusPolls++;
           return Response.json(
             this.status === "approved"
@@ -97,14 +132,16 @@ export class MockClub {
               : { status: this.status },
           );
         }
-        if (path === "/request-1/report") {
+        const report = path.match(/^\/request-(\d+)\/report$/);
+        if (report) {
           this.reports++;
-          this.recordedLinks.add("link-1");
+          const linkId = `link-${report[1]}`;
+          this.recordedLinks.add(linkId);
           if (this.failNextReportAfterRecording) {
             this.failNextReportAfterRecording = false;
             return Response.json({ error: "unavailable" }, { status: 503 });
           }
-          return Response.json({ ack: true, linkId: "link-1" });
+          return Response.json({ ack: true, linkId });
         }
         if (path.endsWith("/end")) {
           this.ends.push(path);
@@ -138,6 +175,8 @@ export interface Rig {
   serveClock: { offsetMs: number; now: () => number };
   routeDeps: DelegationRouteDeps;
   integrations: Pick<IntegrationDirectory, "credentialOf" | "standingOf">;
+  /** flip to revoke the integration or change its live ceiling */
+  integrationState: { revoked: boolean; ceiling: Ceiling };
   post: (
     route: string,
     body: unknown,
@@ -164,12 +203,18 @@ export async function withRig(
       credentialHash: hash,
       requireEmailMatch: options.requireEmailMatch === true,
     };
+    const integrationState = {
+      revoked: false,
+      ceiling: options.ceiling ?? CEILING,
+    };
     const integrations = {
       credentialOf: (id: string) => id === "slack-bot" ? record : undefined,
       standingOf: (id: string): IntegrationStanding =>
-        id === "slack-bot"
-          ? { kind: "active", ceiling: options.ceiling ?? CEILING }
-          : { kind: "unknown" },
+        id !== "slack-bot"
+          ? { kind: "unknown" }
+          : integrationState.revoked
+          ? { kind: "revoked" }
+          : { kind: "active", ceiling: integrationState.ceiling },
     };
     const directory = new DelegationDirectory(repo.repoContext.unifiedDataRepo);
     await directory.reload();
@@ -258,6 +303,7 @@ export async function withRig(
         serveClock,
         routeDeps,
         integrations,
+        integrationState,
         post,
       });
     } finally {

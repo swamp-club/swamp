@@ -19,12 +19,18 @@
 
 import { assertEquals } from "@std/assert";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
-import { endDelegation, issueDelegationTokens } from "./delegation.ts";
+import {
+  applyClubIdentity,
+  endDelegation,
+  holdDelegation,
+  issueDelegationTokens,
+  releaseHold,
+} from "./delegation.ts";
 import {
   DelegationDirectory,
   type DelegationEnded,
 } from "./delegation_directory.ts";
-import { consentedRecord, T0 } from "./delegation_test_helpers.ts";
+import { consentedRecord, PERSON, T0 } from "./delegation_test_helpers.ts";
 
 interface Row {
   readonly modelId: string;
@@ -133,5 +139,73 @@ Deno.test("DelegationDirectory: onEnded names delegations that lost standing in 
   row.attrs = endDelegation(record, "operator", T0);
   await directory.reload();
   assertEquals(seen, [{ id: record.id, integrationId: "slack-bot" }]);
+  await directory.dispose();
+});
+
+Deno.test("DelegationDirectory: a suspended copy refuses, an ended copy still beats it, and the later write wins over an issued copy", async () => {
+  const record = await issued();
+  const held = holdDelegation(record, "person_suspended", T0 + 1);
+  const later = new DelegationDirectory(
+    repo({
+      rows: [{ modelId: "1", attrs: record }, { modelId: "2", attrs: held }],
+    }),
+    { now: () => T0 + 2 },
+  );
+  await later.reload();
+  assertEquals(later.standingOf(record.id).kind, "suspended");
+  await later.dispose();
+  const lifted = releaseHold(held, "person_suspended", T0 + 3);
+  const relifted = new DelegationDirectory(
+    repo({
+      rows: [{ modelId: "1", attrs: held }, { modelId: "2", attrs: lifted }],
+    }),
+    { now: () => T0 + 4 },
+  );
+  await relifted.reload();
+  assertEquals(relifted.standingOf(record.id).kind, "standing");
+  await relifted.dispose();
+  const ended = new DelegationDirectory(
+    repo({
+      rows: [
+        { modelId: "1", attrs: endDelegation(record, "disowned", T0) },
+        { modelId: "2", attrs: held },
+      ],
+    }),
+    { now: () => T0 + 2 },
+  );
+  await ended.reload();
+  assertEquals(ended.standingOf(record.id).kind, "ended");
+  await ended.dispose();
+});
+
+Deno.test("DelegationDirectory: a hold reaches onEnded, so sockets close as for an end", async () => {
+  const record = await issued();
+  const row: Row = { modelId: "1", attrs: record };
+  const directory = new DelegationDirectory(repo({ rows: [row] }), {
+    now: () => T0,
+  });
+  const seen: DelegationEnded[] = [];
+  directory.onEnded((ended) => seen.push(...ended));
+  await directory.reload();
+  row.attrs = holdDelegation(record, "club_client_refused", T0);
+  await directory.reload();
+  assertEquals(seen, [{ id: record.id, integrationId: "slack-bot" }]);
+  await directory.dispose();
+});
+
+Deno.test("DelegationDirectory: onPersonChanged names standing delegations whose snapshot changed", async () => {
+  const record = await issued();
+  const row: Row = { modelId: "1", attrs: record };
+  const directory = new DelegationDirectory(repo({ rows: [row] }), {
+    now: () => T0,
+  });
+  const seen: string[] = [];
+  directory.onPersonChanged((ids) => seen.push(...ids));
+  await directory.reload();
+  await directory.reload();
+  assertEquals(seen, []);
+  row.attrs = applyClubIdentity(record, { ...PERSON, collectives: [] }, T0);
+  await directory.reload();
+  assertEquals(seen, [record.id]);
   await directory.dispose();
 });
