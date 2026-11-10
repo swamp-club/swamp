@@ -278,3 +278,44 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "workflow report race: serve's own runs flush their reports and release the workflow's lock themselves, so a run right after one takes it at once (swamp-club#4574)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: ALICE_ALL,
+        managedConfig: true,
+      });
+      const alice = await scratch.client("a", { managedConfig: true });
+      const name = "serve-reports";
+      await writeCommand(
+        scratch,
+        alice,
+        serveEnv(serve, "alice-token"),
+        (repos) =>
+          repos.workflowRepo.save(Workflow.create({
+            name,
+            jobs: [Job.create({
+              name: "main",
+              steps: [Step.create({
+                name: "check",
+                task: StepTask.assert("true", "always holds"),
+              })],
+            })],
+          })),
+      );
+      const first = await serve.runWorkflow(name, "user:caller");
+      const second = await serve.runWorkflow(name, "user:caller");
+      assertEquals([...first.errors, ...second.errors], []);
+      assertEquals(
+        [...first.statuses, ...second.statuses],
+        ["succeeded", "succeeded"],
+      );
+      assertEquals(await summaryVersions(serve), [1, 2]);
+    });
+  },
+});

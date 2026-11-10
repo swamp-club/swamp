@@ -1731,6 +1731,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._workflowDataArtifacts.push({ ...artifact });
   }
 
+  /** takes back artifacts added for a commit that did not land */
+  withdrawWorkflowDataArtifacts(artifacts: readonly DataArtifactRef[]): void {
+    const gone = new Set(artifacts.map((a) => `${a.dataId}@${a.version}`));
+    this._workflowDataArtifacts = this._workflowDataArtifacts.filter((a) =>
+      !gone.has(`${a.dataId}@${a.version}`)
+    );
+  }
+
   get logFile(): string | undefined {
     return this._logFile;
   }

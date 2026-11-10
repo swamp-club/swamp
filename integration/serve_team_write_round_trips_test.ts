@@ -479,10 +479,8 @@ Deno.test({
           ...step,
           ...step,
           LOCK, // the workflow's own lock, for its summary report's version
-          HAS,
-          BATCH, // the summary report, ending that lease
-          HAS, // the run record, over the inline limit by its end
-          COMMIT, // the run's final record
+          HAS, // the report and the run record, over the inline limit by its end
+          BATCH, // the summary report and the final record, ending that lease
         ]);
       });
     } finally {
@@ -544,10 +542,8 @@ Deno.test({
           HAS,
           BATCH, // step two's chunked data and the run record
           LOCK, // the workflow's own lock, for its summary report's version
-          HAS,
-          BATCH, // the summary report, ending that lease
-          HAS, // the run record, over the inline limit by its end
-          COMMIT, // the run's final record
+          HAS, // the report and the run record, over the inline limit by its end
+          BATCH, // the summary report and the final record, ending that lease
         ]);
       });
     } finally {

@@ -3322,6 +3322,8 @@ export class WorkflowExecutionService {
   readonly #pendingStarts = new Map<string, PendingStart>();
   /** runs whose event loop has ended: a start made now is never saved */
   readonly #startSavesEnded = new Set<string>();
+  /** runs whose final record the reports' commit carried, for their next save */
+  readonly #finalRecordCommitted = new Set<string>();
 
   /**
    * stops this executor saving a run another owner has taken over, such as when
@@ -8727,6 +8729,15 @@ export class WorkflowExecutionService {
     }
   }
 
+  /** written for the open unit to commit with whatever flushes next */
+  async #stageRunRecord(workflowId: WorkflowId, run: WorkflowRun) {
+    if (this.runWriteFence.isClosed(run.id)) return;
+    await this.runWriteFence.track(
+      run.id,
+      this.runRepo.save(workflowId, run, { fence: this.runWriteFence }),
+    );
+  }
+
   private async saveRun(
     workflowId: WorkflowId,
     run: WorkflowRun,
@@ -8750,6 +8761,7 @@ export class WorkflowExecutionService {
           onRefused: () => {
             refused = true;
           },
+          alreadyStaged: this.#finalRecordCommitted.delete(run.id),
         });
         // Only a save that wrote nothing: one the fence closed just after it
         // wrote may be the final record of a run the new owner leaves alone,
@@ -9149,6 +9161,9 @@ export class WorkflowExecutionService {
     }
     let artifacts: Awaited<ReturnType<WorkflowReportRunner["runFor"]>> = [];
     let flushFailure: string | undefined;
+    // a top-level run that has ended stages its final record naming the
+    // reports, so the reports' commit carries it and ends the lease
+    let staged: typeof artifacts = [];
     try {
       artifacts = await this.workflowReportRunner.runFor({
         workflow,
@@ -9168,6 +9183,23 @@ export class WorkflowExecutionService {
     } finally {
       if (reportLock) {
         try {
+          if (
+            run.parentRun === undefined && artifacts.length > 0 &&
+            run.status !== "running" && run.status !== "pending"
+          ) {
+            staged = artifacts;
+            for (const ref of staged) run.addWorkflowDataArtifact(ref);
+            try {
+              await this.#stageRunRecord(workflow.id, run);
+            } catch (error) {
+              // the record then commits on its own after the reports
+              runLogger.debug("Staging the final record failed: {error}", {
+                error: error instanceof Error ? error.message : String(error),
+              });
+              run.withdrawWorkflowDataArtifacts(staged);
+              staged = [];
+            }
+          }
           await reportLock.flush(artifacts.map((artifact) => ({
             modelType: WORKFLOW_MODEL_TYPE,
             modelId: workflow.id,
@@ -9175,7 +9207,10 @@ export class WorkflowExecutionService {
             version: artifact.version,
             dataId: artifact.dataId,
           })));
+          if (staged.length > 0) this.#finalRecordCommitted.add(run.id);
         } catch (error) {
+          run.withdrawWorkflowDataArtifacts(staged);
+          staged = [];
           flushFailure = `the reports could not be saved: ${
             error instanceof Error ? error.message : String(error)
           }`;
@@ -9200,7 +9235,7 @@ export class WorkflowExecutionService {
     }
 
     for (const ref of artifacts) {
-      run.addWorkflowDataArtifact(ref);
+      if (!staged.includes(ref)) run.addWorkflowDataArtifact(ref);
     }
 
     for (const event of bufferedEvents) {

@@ -1003,3 +1003,49 @@ Deno.test("v3 run takeover: a run shutdown closed but left alone still commits t
     assert(t.run.status !== "running", "the run's final record is its end");
   });
 });
+
+Deno.test("v3 run staging: a run record whose file is ahead of its last commit, as a dropped unit leaves it, still commits on the next save of the same bytes (swamp-club#4574)", async () => {
+  await withAuditedV3Env(async (env) => {
+    const type = registerWriter();
+    const context = await runContext(
+      env,
+      "ahead",
+      type,
+      Definition.create({ name: "writer" }),
+      [writeStep("a")],
+    );
+    const workflow = await context.repo.workflowRepo.findById(
+      context.workflowId as never,
+    );
+    assert(workflow !== null, "the workflow is stored");
+    const run = WorkflowRun.create(workflow);
+    const root = (fn: () => Promise<void>) =>
+      runInCommitLogRoot(
+        { markDirty: context.hook },
+        unitOptions(env.store, env.storage, {
+          signal: AbortSignal.timeout(60_000),
+        }),
+        fn,
+      );
+    const save = () =>
+      context.repo.workflowRunRepo.save(context.workflowId as never, run);
+
+    run.start();
+    await root(save);
+    run.setLogFile(join(context.dir, "run.log"));
+    await assertRejects(() =>
+      root(async () => {
+        await save();
+        throw new Error("the unit is dropped");
+      })
+    );
+    const ahead = await localRecord(context, run.id);
+    const committed = await committedRecord(env, context, run.id);
+    assert(committed !== ahead, "the dropped save left the file ahead");
+
+    await root(save);
+
+    assertEquals(await localRecord(context, run.id), ahead);
+    assertEquals(await committedRecord(env, context, run.id), ahead);
+  });
+});

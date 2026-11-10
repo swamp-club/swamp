@@ -26195,3 +26195,50 @@ Deno.test("WorkflowExecutionService: reports whose flush fails are failed report
     assertEquals(lock.flushed.length, 1);
   });
 });
+
+Deno.test("WorkflowExecutionService: a top-level run saves its final record naming its reports before the report lock flushes, so the reports' commit carries it (swamp-club#4574)", async () => {
+  await withTempDir(async (tempDir) => {
+    const saves: { status: string; reports: string[] }[] = [];
+    class SnapshotRunRepository extends InMemoryWorkflowRunRepository {
+      override save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+        saves.push({
+          status: run.status,
+          reports: run.workflowDataArtifacts.map((ref) => ref.name).sort(),
+        });
+        return super.save(workflowId, run);
+      }
+    }
+    let atFlush: { status: string; reports: string[] } | undefined;
+    const hook: StepLockHook = () =>
+      Promise.resolve({
+        flush: () => {
+          atFlush = saves.at(-1);
+          return Promise.resolve();
+        },
+      });
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      new SnapshotRunRepository(),
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    service.reportLock = hook;
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(atFlush, {
+      status: "succeeded",
+      reports: [
+        "report-swamp-workflow-summary",
+        "report-swamp-workflow-summary-json",
+      ],
+    });
+    assertEquals(run.workflowDataArtifacts.length, 2);
+  });
+});
