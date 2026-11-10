@@ -778,6 +778,30 @@ Deno.test("createCommitLogUnitOfWork: a re-save of a held run supersedes the hel
   );
 });
 
+Deno.test("createCommitLogUnitOfWork: acknowledging another partition's refusals keeps this one's, so the root still holds its run records (swamp-club#4578)", async () => {
+  const { sink, uow } = await refusingModel();
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  uow.acknowledgeRefusals([AUTO]);
+  const error = await assertRejects(
+    () => uow.commit(),
+    PartitionsRefusedError,
+  );
+  assertEquals(error.refusals.map((r) => r.partition.toString()), [
+    MODEL.toString(),
+  ]);
+  assertEquals(sink.commitsOf(runPartition()), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: acknowledging the refused partition by name releases the run records (swamp-club#4578)", async () => {
+  const { sink, uow } = await refusingModel();
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  uow.acknowledgeRefusals([AUTO, MODEL]);
+  await uow.commit();
+  assertEquals(sink.commitsOf(runPartition()).length, 1);
+});
+
 Deno.test("createCommitLogUnitOfWork: an unacknowledged refusal is reported with every later one, and every flush throws until acknowledged (swamp-club#3257)", async () => {
   const { sink, uow } = await refusingModel();
   await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);

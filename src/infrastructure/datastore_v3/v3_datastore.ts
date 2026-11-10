@@ -640,7 +640,6 @@ export interface V3Datastore {
     runRepo: () => WorkflowRunRepository,
     options?: {
       readonly readOnly?: boolean;
-      /** whether serve holds this datastore under a claim naming it */
       readonly claimedByServe?: () => boolean;
     },
   ): CommitLogEngine;

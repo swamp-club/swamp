@@ -247,11 +247,8 @@ function buildRedactSensitiveArgs(
 }
 
 /**
- * promotes lazy-registered reports for every candidate name before getAll(),
- * which excludes lazy entries; otherwise user extension reports from the
- * bundle catalog would be silently filtered out (#1089). Promoted
- * unconditionally, scope-mismatched ones included, since scope is unknown
- * until import; load errors propagate so a broken required bundle fails loudly
+ * before getAll(), which skips lazy entries; scope is unknown until import, so
+ * every candidate is promoted, and a load error propagates
  */
 async function promoteCandidateReports(
   registry: ReportRegistry,

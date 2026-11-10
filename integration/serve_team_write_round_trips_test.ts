@@ -463,7 +463,6 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     await withMember(async (member) => {
-      // as many requests as a lockless read's catch-up and commit
       assertEquals(
         await steadyState(member, () => methodRun(member, WRITER, "peek")),
         [

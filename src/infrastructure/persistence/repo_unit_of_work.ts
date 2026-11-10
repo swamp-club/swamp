@@ -464,7 +464,6 @@ export function lastOpenUnitCheckpointAt(
   return commitLogOf(repoContext)?.lastCheckpointAt?.();
 }
 
-/** serve on a datastore it claimed: members lease its behaviors from serve */
 export function servesClaimedDatastore(
   repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): boolean {

@@ -130,7 +130,6 @@ async function command(
   });
 }
 
-/** the method run of a member on another checkout, in its own thread */
 function memberRun(
   scratch: Scratch,
   serve: Serve,

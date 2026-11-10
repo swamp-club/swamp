@@ -250,7 +250,6 @@ async function lockedSave(
         outputMode: "json",
         ...(options.deferred === true ? { catchUpAtLock: true } : {}),
       });
-      // a read run in team mode takes the behavior's lock as a changing one does
       const run = {
         modelType: serve.modelType.normalized,
         modelId: serve.models.web,

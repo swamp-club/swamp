@@ -1849,11 +1849,6 @@ export function datastoreRootOf(config: DatastoreConfig): string | undefined {
   return isCustomDatastoreConfig(locking) ? undefined : locking.path;
 }
 
-/**
- * when offline, reads and lists are allowed and their partition is registered
- * so what they record queues; anything that changes things needs a live
- * explicit lease on the behavior, by serve's clock
- */
 /** a checkout whose commits go to serve, online or offline */
 export function writesThroughServe(config: DatastoreConfig): boolean {
   const locking = lockingConfigOf(config);
@@ -1861,6 +1856,11 @@ export function writesThroughServe(config: DatastoreConfig): boolean {
     serveUpstreamAt(locking.path) !== undefined;
 }
 
+/**
+ * when offline, reads and lists are allowed and their partition is registered
+ * so what they record queues; anything that changes things needs a live
+ * explicit lease on the behavior, by serve's clock
+ */
 export async function assertOfflineRunAllowed(
   config: DatastoreConfig,
   run: {
@@ -2724,7 +2724,7 @@ async function checkpointStepUnderLease(
     );
   } catch (error) {
     getSwampLogger(["cli", "lock"])
-      .warn`Could not commit this step's writes before releasing its lock at serve; the run's end commit tries again: ${error}`;
+      .warn`Could not commit this step's writes before releasing its lock; the run's end commit tries again: ${error}`;
     return;
   }
   if (outcome === "refused") {
