@@ -83,6 +83,7 @@ export interface ServeSettingsReloaderDeps<S, P> {
   afterCommit(
     candidate: ReloadCandidate<S>,
     applied: readonly AppliedSettingKey[],
+    prepared: P,
   ): void;
   followUps(
     candidate: ReloadCandidate<S>,
@@ -148,7 +149,7 @@ export function createServeSettingsReloader<S, P>(
         });
       }
     }
-    deps.afterCommit(candidate, toApply);
+    deps.afterCommit(candidate, toApply, prepared);
     liveConfig = file;
 
     const followUps = deps.followUps(candidate, prepared, toApply);

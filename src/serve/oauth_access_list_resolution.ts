@@ -93,7 +93,9 @@ export function unresolvedCacheKey(
  * provider usernames never contain a colon, and one that did could spell
  * another entry's cache key
  */
-function notPlainUsernameReason(username: string): string | undefined {
+export function notPlainUsernameReason(
+  username: string,
+): string | undefined {
   if (!username.includes(":")) return undefined;
   if (username.startsWith("group:") || username.startsWith("idp-group:")) {
     return "groups are not supported in --admins / --allowed-users with --auth-mode oauth; list the user names instead";

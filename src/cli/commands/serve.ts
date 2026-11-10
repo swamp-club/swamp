@@ -142,7 +142,15 @@ import {
   overlayAppliedSettings,
   reloadsOnHangup,
 } from "../../serve/serve_settings_reload.ts";
-import { createServeSettingsReloader } from "../../serve/serve_settings_reloader.ts";
+import {
+  createServeSettingsReloader,
+  type ReloadFollowUp,
+} from "../../serve/serve_settings_reloader.ts";
+
+/** what a reload's prepare phase settled before anything changed */
+interface ReloadPrepared {
+  allowedUsers?: AllowedUsersReloadPlan;
+}
 import { emitServeConfigReloaded } from "../../serve/serve_config_reload_audit.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
 import { readProcessStartTime } from "../../infrastructure/process/process_kill.ts";
@@ -555,8 +563,14 @@ import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import {
   registerInstance,
   type RegisterInstanceRequest,
+  resolveUsername,
   sendInstanceHeartbeat,
 } from "../../serve/oauth_client.ts";
+import {
+  allowedUsersPartialReason,
+  type AllowedUsersReloadPlan,
+  planAllowedUsersReload,
+} from "../../serve/serve_access_list_reload.ts";
 import {
   ClubHeartbeatService,
   DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
@@ -4692,6 +4706,12 @@ export const serveCommand = new Command()
     const clubApiKey = authConfig.mode === "oauth"
       ? resolveApiKey() ?? null
       : null;
+    // the name map reload resolves allowed-users against, once startup has it
+    let oauthNameCache: Record<string, string> | undefined;
+    let storeOauthNameCache:
+      | ((cache: Record<string, string>) => Promise<void>)
+      | undefined;
+    let allowedUsersDeferred = false;
     const oauthClientName = merged.oauthClientName ??
       `swamp-serve-${basename(resolvedRepoDir)}-${Deno.hostname()}`.slice(
         0,
@@ -5096,18 +5116,19 @@ export const serveCommand = new Command()
         authConfig.oauthProvider,
       );
 
-      // Written in either mode: dropping a removed name's record is what
-      // lets it be looked up fresh if it is added back.
-      if (resolution.cacheChanged) {
-        await storeResolvedAdmins(
+      storeOauthNameCache = (cache) =>
+        storeResolvedAdmins(
           {
             putVaultSecret: (_v, k, val) =>
               oauthVaultService.put(TOKEN_SECRETS_VAULT_NAME, k, val),
           },
           TOKEN_SECRETS_VAULT_NAME,
-          resolution.cache,
+          cache,
         );
-      }
+      // Written in either mode: dropping a removed name's record is what
+      // lets it be looked up fresh if it is added back.
+      if (resolution.cacheChanged) await storeOauthNameCache(resolution.cache);
+      oauthNameCache = resolution.cache;
 
       authConfig.admins.splice(
         0,
@@ -7021,7 +7042,10 @@ export const serveCommand = new Command()
       collectiveRefreshService = new CollectiveRefreshService({
         intervalMs: groupRefreshMs,
         oauthProvider: authConfig.oauthProvider,
-        groupsField: authConfig.groupsField,
+        // reload changes it; each refresh reads the one in force
+        get groupsField() {
+          return authConfig.groupsField;
+        },
         getUserInfo,
         listActiveTokens: async () => {
           const records = await repoContext.dataQueryService.query(
@@ -7698,9 +7722,31 @@ export const serveCommand = new Command()
     const appliedByOverlay = () => {};
     // validated exactly as startup validates, so a file startup would refuse
     // changes nothing
+    // in place: consumers hold these arrays
+    const replaceList = (target: string[], next: readonly string[]) => {
+      target.length = 0;
+      for (const entry of next) target.push(entry);
+    };
+    // removals always apply; a name not resolvable now waits for the next reload
+    const applyAllowedUsers = (
+      startup: ServeStartupSettings,
+      prepared: ReloadPrepared,
+    ) => {
+      const plan = prepared.allowedUsers;
+      if (!plan) {
+        replaceList(authConfig.allowedUsers, startup.authConfig.allowedUsers);
+        return;
+      }
+      replaceList(authConfig.allowedUsers, plan.allowedUsers);
+      oauthNameCache = plan.cache;
+      allowedUsersDeferred = plan.deferred.length > 0;
+      rememberUsernames(plan.usernamesBySub);
+      const partial = allowedUsersPartialReason(plan);
+      return partial === undefined ? undefined : { partial };
+    };
     const settingsReloader = createServeSettingsReloader<
       ServeStartupSettings,
-      void
+      ReloadPrepared
     >({
       initialConfig: configFile,
       explicitFlags,
@@ -7713,13 +7759,54 @@ export const serveCommand = new Command()
           mergeServeOptions(file, options, explicitFlags),
         ),
       resolve: resolveServeStartupSettings,
-      prepare: () => Promise.resolve(),
+      prepare: async ({ merged: next, startup }, toApply) => {
+        const prepared: ReloadPrepared = {};
+        if (
+          authConfig.mode !== "none" &&
+          (toApply.includes("restrictedModelTypes") ||
+            toApply.includes("restrictedCommands"))
+        ) {
+          for (
+            const finding of findIneffectiveRestrictions({
+              restrictedModelTypes: next.restrictedModelTypes,
+              restrictedCommands: next.restrictedCommands,
+              requestTypes: new Set(serverRequestPayloadFields().keys()),
+              isKnownModelType: (type) => modelRegistry.has(type),
+            })
+          ) {
+            logger.warn("{warning}", { warning: finding.message });
+          }
+        }
+        if (
+          authConfig.mode === "oauth" && oauthNameCache !== undefined &&
+          (toApply.includes("allowedUsers") ||
+            toApply.includes("allowedCollectives"))
+        ) {
+          const apiKey = clubApiKey;
+          prepared.allowedUsers = await planAllowedUsersReload({
+            configured: startup.authConfig.allowedUsers,
+            allowedCollectives: startup.authConfig.allowedCollectives,
+            cache: oauthNameCache,
+            resolve: apiKey
+              ? (name) =>
+                resolveUsername(
+                  authConfig.oauthProvider,
+                  name,
+                  apiKey,
+                  AbortSignal.timeout(10_000),
+                )
+              : null,
+            now: () => new Date().toISOString(),
+          });
+        }
+        return prepared;
+      },
       notRunning: () =>
         scheduledExecution ? {} : {
           triggerOverrides:
             "no scheduler runs on this serve; restart serve with schedule on to change it",
         },
-      pending: () => [],
+      pending: () => allowedUsersDeferred ? ["allowedUsers"] : [],
       appliers: {
         dashboard: ({ merged }) => {
           dashboardDistDir = merged.dashboard ? getDashboardDistDir() : null;
@@ -7754,6 +7841,30 @@ export const serveCommand = new Command()
           dispatchService.setQueueTimeoutMs(startup.queueTimeoutMs),
         triggerOverrides: appliedByReloadStage,
         webhookConfigs: appliedByReloadStage,
+        allowedUsers: ({ startup }, prepared) =>
+          applyAllowedUsers(startup, prepared),
+        allowedCollectives: ({ startup }, prepared) => {
+          replaceList(
+            authConfig.allowedCollectives,
+            startup.authConfig.allowedCollectives,
+          );
+          // an emptied collectives list must close an allowed-users list
+          // whose names are all deferred
+          applyAllowedUsers(startup, prepared);
+        },
+        restrictedModelTypes: ({ startup }) =>
+          replaceList(
+            authConfig.restrictedModelTypes,
+            startup.authConfig.restrictedModelTypes,
+          ),
+        restrictedCommands: ({ startup }) =>
+          replaceList(
+            authConfig.restrictedCommands,
+            startup.authConfig.restrictedCommands,
+          ),
+        groupsField: ({ startup }) => {
+          authConfig.groupsField = startup.authConfig.groupsField;
+        },
       },
       beforeCommit: (report, context) =>
         emitServeConfigReloaded(
@@ -7766,14 +7877,71 @@ export const serveCommand = new Command()
         ),
       // only what was applied, so the config and health views never show a
       // value this process has not adopted
-      afterCommit: ({ merged: nextMerged }, applied) => {
-        connectionCtx.serveOptions = overlayAppliedSettings(
+      afterCommit: ({ merged: nextMerged }, applied, prepared) => {
+        const live = overlayAppliedSettings(
           connectionCtx.serveOptions ?? merged,
           nextMerged,
           applied,
         );
+        connectionCtx.serveOptions = prepared.allowedUsers
+          ? {
+            ...live,
+            allowedUsers: prepared.allowedUsers.namesInForce.join(","),
+          }
+          : live;
       },
-      followUps: () => [],
+      followUps: (_candidate, prepared, applied) => {
+        const followUps: ReloadFollowUp[] = [];
+        const plan = prepared.allowedUsers;
+        const store = storeOauthNameCache;
+        if (plan?.cacheChanged && store) {
+          followUps.push({
+            name: "Saving the resolved user names",
+            run: () => store({ ...plan.cache }),
+          });
+        }
+        const clientId = authConfig.oauthClientId;
+        const apiKey = clubApiKey;
+        if (
+          applied.includes("allowedCollectives") &&
+          authConfig.mode === "oauth" && clientId && apiKey
+        ) {
+          followUps.push({
+            name: "swamp-club re-registration",
+            run: async () => {
+              if (authConfig.allowedCollectives.length === 0) {
+                clubHeartbeatService?.stop();
+                clubHeartbeatService = null;
+                return;
+              }
+              await registerInstance(
+                authConfig.oauthProvider,
+                apiKey,
+                {
+                  oauthClientId: clientId,
+                  instanceId,
+                  collectiveSlugs: [...authConfig.allowedCollectives],
+                  hostname: Deno.hostname(),
+                  version: VERSION,
+                  deploymentMode: deploymentMode.mode,
+                },
+                AbortSignal.timeout(30_000),
+              );
+              if (!clubHeartbeatService) {
+                clubHeartbeatService = new ClubHeartbeatService({
+                  providerUrl: authConfig.oauthProvider,
+                  oauthClientId: clientId,
+                  intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
+                  getAccessToken: () => Promise.resolve(apiKey),
+                  sendHeartbeat: sendInstanceHeartbeat,
+                });
+                clubHeartbeatService.start();
+              }
+            },
+          });
+        }
+        return followUps;
+      },
     });
     const buildServeReloadOptions = (
       webhookContext: WebhookApplyContext,

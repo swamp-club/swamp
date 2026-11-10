@@ -109,23 +109,24 @@ export const SETTING_CATALOGUE = {
     "hot-reload",
     `${NEW_PROCESS}: the signal handler is installed at startup`,
   ),
-  admins: restart("auth.admins", "admins", NOT_YET),
-  allowedCollectives: restart(
+  admins: restart(
+    "auth.admins",
+    "admins",
+    "restart serve to change admins; admin grants are written when serve starts",
+  ),
+  allowedCollectives: applied(
     "auth.allowed-collectives",
     "allowed-collectives",
-    NOT_YET,
   ),
-  allowedUsers: restart("auth.allowed-users", "allowed-users", NOT_YET),
-  groupsField: restart("auth.groups-field", "groups-field", NOT_YET),
-  restrictedModelTypes: restart(
+  allowedUsers: applied("auth.allowed-users", "allowed-users"),
+  groupsField: applied("auth.groups-field", "groups-field"),
+  restrictedModelTypes: applied(
     "auth.restricted-model-types",
     "restricted-model-types",
-    NOT_YET,
   ),
-  restrictedCommands: restart(
+  restrictedCommands: applied(
     "auth.restricted-commands",
     "restricted-commands",
-    NOT_YET,
   ),
   groupRefreshInterval: restart(
     "auth.group-refresh-interval",

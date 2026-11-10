@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { ServeConfigFile } from "./serve_config.ts";
 import {
   diffServeSettings,
@@ -72,14 +72,31 @@ Deno.test("diffServeSettings: a listener setting needs a new process, with the r
   );
 });
 
-Deno.test("diffServeSettings: an auth list is not applied by reload yet", () => {
+Deno.test("diffServeSettings: allowed-users and the restrictions apply on reload; admins need a restart", () => {
   const report = diff(
-    { auth: { mode: "oauth", "allowed-users": ["alice"] } },
-    { auth: { mode: "oauth", "allowed-users": ["alice", "bob"] } },
+    {
+      auth: {
+        mode: "oauth",
+        admins: ["root"],
+        "allowed-users": ["alice"],
+        "restricted-commands": ["datastore.write"],
+      },
+    },
+    {
+      auth: {
+        mode: "oauth",
+        admins: ["root", "newadmin"],
+        "allowed-users": ["alice", "bob"],
+        "restricted-commands": [],
+      },
+    },
   );
-  assertEquals(report.needsRestart.map((r) => r.setting), [
+  assertEquals(report.applied, [
     "auth.allowed-users",
+    "auth.restricted-commands",
   ]);
+  assertEquals(report.needsRestart.map((r) => r.setting), ["auth.admins"]);
+  assertStringIncludes(report.needsRestart[0].reason, "restart serve");
 });
 
 Deno.test("diffServeSettings: a value pinned by a startup flag is overridden, naming the flag", () => {
