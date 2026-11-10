@@ -29,14 +29,17 @@ export function walkVisible(
   return current;
 }
 
+function completionNames(node: AnyCommand): string[] {
+  return [...new Set(node.getCompletions().map((c) => c.name))].sort();
+}
+
 /**
  * each completion name the node answers, mapped to "self" or the path of the
  * ancestor holding it: a command shared between two parents has an unstable path
  */
 export function completionOwners(node: AnyCommand): Record<string, string> {
   const owners: Record<string, string> = {};
-  const names = new Set(node.getCompletions().map((c) => c.name));
-  for (const name of [...names].sort()) {
+  for (const name of completionNames(node)) {
     if (node.getBaseCompletion(name)) {
       owners[name] = "self";
       continue;
@@ -66,5 +69,38 @@ export function completionOwnersUnder(
     }
   };
   visit(node, path);
+  return found;
+}
+
+/** parent is the command before node in the walk, as Cliffy's complete passes it */
+export async function completionValues(
+  node: AnyCommand,
+  parent: AnyCommand | undefined,
+): Promise<Record<string, string[]>> {
+  const values: Record<string, string[]> = {};
+  for (const name of completionNames(node)) {
+    const result = await node.getCompletion(name)?.complete(node, parent);
+    values[name] = (result ?? []).map(String);
+  }
+  return values;
+}
+
+export async function completionValuesUnder(
+  node: AnyCommand,
+  path: readonly string[],
+  parent: AnyCommand | undefined,
+): Promise<Record<string, Record<string, string[]>>> {
+  const found: Record<string, Record<string, string[]>> = {};
+  const visit = async (
+    command: AnyCommand,
+    at: readonly string[],
+    above: AnyCommand | undefined,
+  ) => {
+    found[at.join(" ")] = await completionValues(command, above);
+    for (const child of command.getBaseCommands(false)) {
+      await visit(child, [...at, child.getName()], command);
+    }
+  };
+  await visit(node, path, parent);
   return found;
 }

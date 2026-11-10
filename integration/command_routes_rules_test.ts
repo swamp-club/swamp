@@ -53,7 +53,11 @@ import type {
   RouteWorkerRequest,
   RouteWorkerResponse,
 } from "./command_route_worker.ts";
-import { completionOwners, walkVisible } from "./command_completion_helpers.ts";
+import {
+  completionOwners,
+  completionValues,
+  walkVisible,
+} from "./command_completion_helpers.ts";
 
 const ROUTE_TABLE = join(ROOT, "src", "cli", "root_routes.ts");
 
@@ -366,7 +370,7 @@ Deno.test("command routes: the tree built for a path has the full tree's schema 
   }
 });
 
-Deno.test("command routes: a completion callback's tree resolves each completion from the same command as the full tree", async () => {
+Deno.test("command routes: a completion callback's tree resolves each completion from the same command, to the same values, as the full tree", async () => {
   // snapshot first: every later build re-parents the shared command instances
   const full = await buildCommandTree();
   const primary: string[][] = [[]];
@@ -388,11 +392,16 @@ Deno.test("command routes: a completion callback's tree resolves each completion
   const paths = [...primary, ...aliased];
   assert(primary.length > 100, `only ${primary.length} command paths found`);
   assert(aliased.length > 0, "no route alias reached");
-  const expected = new Map(
-    paths.map((
-      path,
-    ) => [path.join(" "), completionOwners(walkVisible(full, path)!)]),
-  );
+  const parentOf = (root: AnyCommand, path: string[]) =>
+    path.length === 0 ? undefined : walkVisible(root, path.slice(0, -1));
+  const expected = new Map<string, unknown>();
+  for (const path of paths) {
+    const node = walkVisible(full, path)!;
+    expected.set(path.join(" "), {
+      owners: completionOwners(node),
+      values: await completionValues(node, parentOf(full, path)),
+    });
+  }
 
   for (const path of paths) {
     const args = ["completions", "complete", "action", ...path];
@@ -401,10 +410,14 @@ Deno.test("command routes: a completion callback's tree resolves each completion
       selection.kind === "routes" && selection.routes.length <= 2,
       `swamp ${args.join(" ")} loads the full tree`,
     );
-    const node = walkVisible(await buildCommandTree(args), path);
+    const tree = await buildCommandTree(args);
+    const node = walkVisible(tree, path);
     assert(node !== undefined, `swamp ${args.join(" ")}: path missing`);
     assertEquals(
-      completionOwners(node),
+      {
+        owners: completionOwners(node),
+        values: await completionValues(node, parentOf(tree, path)),
+      },
       expected.get(path.join(" ")),
       `swamp ${args.join(" ")}`,
     );
@@ -517,7 +530,7 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
   }
 });
 
-Deno.test("command routes: a completion callback's routes in a fresh module graph resolve each completion from the same command as the full tree", async () => {
+Deno.test("command routes: a completion callback's routes in a fresh module graph resolve each completion from the same command, to the same values, as the full tree", async () => {
   const requests: RouteWorkerRequest[] = [
     ...ROOT_ROUTES.filter((route) => !route.hidden).map((route) => ({
       args: ["completions", "complete", "action", route.name],
@@ -550,6 +563,14 @@ Deno.test("command routes: a completion callback's routes in a fresh module grap
         fullTree.response.completionOwners[path],
         `swamp ${path} (loading ${label}) resolves its completions from ` +
           "different commands than with the full tree",
+      );
+    }
+    for (const [path, values] of Object.entries(response.completionValues)) {
+      assertEquals(
+        values,
+        fullTree.response.completionValues[path],
+        `swamp ${path} (loading ${label}) completes to different values ` +
+          "than with the full tree",
       );
     }
   }
