@@ -742,3 +742,22 @@ Deno.test("ServeLeadership.stop: a follower stopped during its restore follows n
   assertEquals(restores, 1);
   assertEquals(feed.followed.length, followedAtStart);
 });
+
+Deno.test("ServeLeadership.leadUnconfirmed: a leader whose lease the store has not confirmed is unconfirmed; a follower, or a lease that cannot tell, never is", async () => {
+  const { lease, leadership } = setup();
+  assertEquals(leadership.leadUnconfirmed(), false);
+  lease.hold = { fence: 4, lost: false };
+  await leadership.start("writer");
+  try {
+    // a lease without the check is taken as confirmed
+    assertEquals(leadership.leadUnconfirmed(), false);
+    let confirmed = false;
+    (lease as LeadershipLease & { confirmed?: () => boolean }).confirmed = () =>
+      confirmed;
+    assertEquals(leadership.leadUnconfirmed(), true);
+    confirmed = true;
+    assertEquals(leadership.leadUnconfirmed(), false);
+  } finally {
+    await leadership.stop();
+  }
+});

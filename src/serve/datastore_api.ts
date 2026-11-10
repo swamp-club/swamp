@@ -593,7 +593,16 @@ function followerDatastoreRefusal(
   ctx: ConnectionContext,
 ): Promise<Response> | undefined {
   const gate = ctx.followerGate;
-  if (gate === undefined || gate.role === "leader") return undefined;
+  if (gate === undefined) return undefined;
+  if (gate.role === "leader") {
+    // never sent on: a leader that may have been taken over neither answers
+    // from its copy nor changes it
+    return gate.leadUnconfirmed?.() === true
+      ? Promise.resolve(
+        notLeaderResponse(new ServeNotLeaderError(undefined), false),
+      )
+      : undefined;
+  }
   // Leases live on the leader, so listing them is the leader's to answer
   // (swamp-club#4121).
   const reads = (req.method === "GET" && route.kind !== "locks") ||
@@ -1572,14 +1581,17 @@ class DatastoreApi {
     held: number,
   ): Promise<boolean> {
     if (this.#deps.ctx.followerGate?.role !== "follower") return false;
-    const catchUp = this.#deps.ctx.followerCatchUp;
-    if (catchUp === undefined) return false;
     const head = async () =>
       (await this.#v3.commitStore.head(this.#namespace, partition)).seq;
     if (held <= await head()) return false;
+    // With no live feed it cannot tell catching up from a log behind the
+    // copy: it refuses until it follows a leader again or leads, and either
+    // answers then, so a real rewind is still reported as diverged.
+    const catchUp = this.#deps.ctx.followerCatchUp;
+    if (catchUp === undefined) return true;
     const standing = await catchUp();
     if (held <= await head()) return false;
-    return standing === "catching-up";
+    return standing !== "caught-up";
   }
 
   /** `GET changes?cursor={c}&limit=`. */

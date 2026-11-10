@@ -47,6 +47,7 @@ import {
   V3WriterBusyError,
   v3WriterFence,
   type V3WriterFenceStore,
+  v3WriterLeaseConfirmed,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 
@@ -617,5 +618,22 @@ Deno.test("advanceV3WriterLease: a move that fails still lets the hold be releas
     await assertRejects(() => advanceV3WriterLease(dir), Error, "busy");
     await release();
     assertEquals(holdsV3WriterLock(dir), false);
+  });
+});
+
+Deno.test("v3WriterLeaseConfirmed: a hold just taken, and kept renewed, is confirmed; none once released", async () => {
+  await withTempDir(async (dir) => {
+    assertEquals(v3WriterLeaseConfirmed(dir), false);
+    const release = await acquireV3WriterLock(dir, { ttlMs: 300 });
+    try {
+      assert(v3WriterLeaseConfirmed(dir));
+      // past one TTL, the renewals at a third of it keep it confirmed
+      const taken = performance.now();
+      await waitFor(() => performance.now() - taken > 600, "two TTLs passed");
+      assert(v3WriterLeaseConfirmed(dir));
+    } finally {
+      await release();
+    }
+    assertEquals(v3WriterLeaseConfirmed(dir), false);
   });
 });

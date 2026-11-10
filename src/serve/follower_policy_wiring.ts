@@ -75,6 +75,7 @@ export function wireFollowerPolicy(
         return leadership.role;
       },
       leader: () => leadership.leader(),
+      leadUnconfirmed: () => leadership.leadUnconfirmed?.() ?? false,
       isStale: () =>
         leadership.isStale() ||
         (leadership.role === "follower" && !effects.policyKnown()),

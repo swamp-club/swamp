@@ -240,19 +240,18 @@ Deno.test({
       assertEquals(old.status, 200);
       assertEquals(old.json.head, 1);
       assertEquals(waits, 1);
-      // A follower with no leader feed can never say it caught up, so it
-      // answers as before, and the caller judges the head: a refusal it
-      // could not lift would hide a real rewind for good.
+      // A follower with no leader feed, or one whose feed has been down past
+      // the bound (its leader stopped, or a node just deposed), refuses too:
+      // it answers once it follows a leader again or leads itself, so a real
+      // rewind is still reported then.
       server.ctx.followerCatchUp = undefined;
       const noFeed = await readHeld(server, "after=1&limit=1&held=2");
-      assertEquals(noFeed.status, 200);
-      assertEquals(noFeed.json.head, 1);
-      // So does one whose feed has been down past the bound: a refusal it
-      // could not lift would hide a real rewind as well.
+      assertEquals(noFeed.status, 503);
+      assertEquals(noFeed.json.code, SERVE_FOLLOWER_BEHIND_CODE);
       server.ctx.followerCatchUp = () => Promise.resolve("stuck" as const);
       const stuck = await readHeld(server, "after=1&limit=1&held=2");
-      assertEquals(stuck.status, 200);
-      assertEquals(stuck.json.head, 1);
+      assertEquals(stuck.status, 503);
+      assertEquals(stuck.json.code, SERVE_FOLLOWER_BEHIND_CODE);
     });
   },
 });
@@ -326,6 +325,45 @@ Deno.test({
       const hidden = await readHeld(server, "after=0&held=9");
       assertEquals(hidden.status, 404);
       assertEquals(hidden.json.code, "not_found");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "datastore API: a leader whose lease the store has not confirmed within its TTL refuses reads and commits, retryable and naming no leader, until it is confirmed",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      await landCommits(server, 0, 1);
+      let confirmed = false;
+      server.ctx.followerGate = {
+        role: "leader",
+        leader: () => LEADER,
+        isStale: () => false,
+        leadUnconfirmed: () => !confirmed,
+      };
+      const read = await readHeld(server, "after=0");
+      assertEquals(read.status, 503);
+      assertEquals(read.json.code, "serve_not_leader");
+      assertEquals(read.json.leader, undefined);
+      const commit = await post(
+        partitionPath(server),
+        "alice-token",
+        commitBody({
+          expectedSeq: 1,
+          txnId: crypto.randomUUID(),
+          ops: await blobSaveOps(server, "vpc", 2, new Uint8Array(0)),
+          chunks: [],
+        }),
+      );
+      assertEquals(commit.status, 503);
+      assertEquals(commit.json.code, "serve_not_leader");
+      confirmed = true;
+      const answered = await readHeld(server, "after=0");
+      assertEquals(answered.status, 200);
+      assertEquals(answered.json.head, 1);
     });
   },
 });

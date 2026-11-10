@@ -92,6 +92,10 @@ interface Held {
   acquiring?: Promise<void>;
   renewal?: ReturnType<typeof setInterval>;
   renewing?: Promise<void>;
+  /** monotonic time the store last confirmed the lease is this hold's */
+  confirmedAt?: number;
+  ttlMs?: number;
+  renewNow?: () => void;
   retaking?: Promise<void>;
   advancing?: Promise<number | undefined>;
   take?: {
@@ -242,6 +246,7 @@ async function retakeLease(
       : {}),
   });
   entry.hold = hold;
+  entry.confirmedAt = performance.now();
   if (lost !== undefined) {
     logger
       .info`This process took the writer lease of the v3 datastore at ${datastorePath} again, at fence ${hold.fence}`;
@@ -291,6 +296,7 @@ async function advanceHold(
       throw error;
     }
     entry.hold = next;
+    entry.confirmedAt = performance.now();
     advanced = next.fence;
   })();
   // `renewing` never rejects: `endHold` awaits it before it releases the
@@ -578,13 +584,18 @@ function startRenewal(
   ttlMs = entry.take?.ttlMs ?? DEFAULT_LOCK_TTL_MS,
 ): void {
   let reported: WriterLeaseHold | undefined;
-  entry.renewal = setInterval(() => {
+  entry.confirmedAt ??= performance.now();
+  entry.ttlMs = ttlMs;
+  entry.renewNow = () => {
     // One renewal at a time: a slow store must not stack them up.
     if (entry.renewing !== undefined) return;
     const hold = entry.hold;
     if (hold === undefined) return;
     entry.renewing = (async () => {
-      if (hold.lost === undefined && await hold.renew() === "held") return;
+      if (hold.lost === undefined && await hold.renew() === "held") {
+        if (entry.hold === hold) entry.confirmedAt = performance.now();
+        return;
+      }
       if (reported !== hold) {
         reported = hold;
         logger
@@ -607,7 +618,36 @@ function startRenewal(
     }).finally(() => {
       entry.renewing = undefined;
     });
-  }, Math.max(1, Math.floor(ttlMs / 3)));
+  };
+  entry.renewal = setInterval(
+    entry.renewNow,
+    Math.max(1, Math.floor(ttlMs / 3)),
+  );
+}
+
+/**
+ * whether the store confirmed this process's lease within its TTL, the
+ * earliest another writer could take it over; a process stopped past that
+ * (SIGSTOP) must not answer as the writer until a renewal says it still is, so
+ * one is asked for at once
+ */
+export function v3WriterLeaseConfirmed(datastorePath: string): boolean {
+  const entry = held.get(resolve(datastorePath));
+  if (
+    entry === undefined || entry.refs <= 0 || entry.hold === undefined ||
+    entry.hold.lost !== undefined
+  ) {
+    return false;
+  }
+  const ttlMs = entry.ttlMs ?? DEFAULT_LOCK_TTL_MS;
+  if (
+    entry.confirmedAt !== undefined &&
+    performance.now() - entry.confirmedAt < ttlMs
+  ) {
+    return true;
+  }
+  entry.renewNow?.();
+  return false;
 }
 
 function writerLease(
