@@ -22,7 +22,10 @@ import fc from "fast-check";
 import "../src/domain/models/models.ts";
 import { judgeRunRecord } from "../src/domain/datastore_v3/content_bindings.ts";
 import { fanOutGatePrompt } from "../src/domain/workflows/fan_out_gates.ts";
-import type { WorkflowRunData } from "../src/domain/workflows/workflow_run.ts";
+import type {
+  StepRunData,
+  WorkflowRunData,
+} from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { Fleet, type FleetWorker } from "./fleet_harness.ts";
 
@@ -33,15 +36,26 @@ const WEB = { fleet: "web" };
 
 type GateKind = "plan" | "canary";
 type LaneState = "pending" | "succeeded" | "failed" | "held";
+// allowed: failed under allowFailure; skipped: its dependency did not succeed
+type StepState = LaneState | "allowed" | "skipped";
 type GateState = "pending" | "waiting" | "approved" | "rejected" | "held";
+
+// a lane of n steps runs the first n; only verify may fail without failing it
+const LANE_STEPS = [["apply"], ["prepare", "apply"], [
+  "prepare",
+  "apply",
+  "verify",
+]];
+const ALLOW_FAILURE = new Set(["verify"]);
 
 type Action =
   | { kind: "approve" }
   | { kind: "reject" }
   | { kind: "retry" }
-  | { kind: "retryFrom" }
+  | { kind: "retryFrom"; step?: number }
   | { kind: "fix" }
   | { kind: "break"; worker: number }
+  | { kind: "breakAt"; worker: number; step: number }
   | { kind: "disconnect"; worker: number }
   | { kind: "reconnect"; worker: number };
 
@@ -51,12 +65,25 @@ interface Scenario {
   maxFailures: number | null;
   approve: GateKind[];
   failing: number[];
+  // absent: one step, and no failure at a single step
+  steps?: number;
+  failingAt?: { worker: number; step: number }[];
   actions: Action[];
+}
+
+function laneStep(step: string, worker: string): string {
+  return `${step}[${worker}]`;
+}
+
+/** what an accepted retry did, for coverage */
+interface RetryOutcome {
+  // finished steps a reopened lane kept
+  keptSteps: number;
 }
 
 /** the gate semantics, stated independently: it shares no code with the executor */
 class Model {
-  readonly lanes = new Map<string, LaneState>();
+  readonly records = new Map<string, StepState>();
   readonly gates = new Map<GateKind, GateState>();
   readonly dispatches = new Map<string, number>();
   readonly offline = new Set<string>();
@@ -70,15 +97,66 @@ class Model {
     readonly batches: string[][],
     readonly maxFailures: number | null,
     approve: GateKind[],
-    readonly failing: Set<string>,
+    readonly steps: string[],
+    readonly fails: (worker: string, step: string) => boolean,
   ) {
     for (const worker of batches.flat()) {
-      this.lanes.set(worker, "pending");
+      for (const step of steps) {
+        this.records.set(laneStep(step, worker), "pending");
+      }
       this.dispatches.set(worker, 0);
     }
     if (approve.includes("plan")) this.gates.set("plan", "pending");
     if (approve.includes("canary") && batches.length > 1) {
       this.gates.set("canary", "pending");
+    }
+  }
+
+  private states(worker: string): StepState[] {
+    return this.steps.map((step) => this.records.get(laneStep(step, worker))!);
+  }
+
+  lane(worker: string): LaneState {
+    const states = this.states(worker);
+    if (states.includes("failed")) return "failed";
+    if (states.includes("held")) return "held";
+    if (states.includes("pending")) return "pending";
+    return "succeeded";
+  }
+
+  get lanes(): Map<string, LaneState> {
+    return new Map(this.batches.flat().map((w) => [w, this.lane(w)]));
+  }
+
+  private hasPending(worker: string): boolean {
+    return this.states(worker).includes("pending");
+  }
+
+  private kept(worker: string): boolean {
+    return this.states(worker).every((s) =>
+      s === "succeeded" || s === "allowed" || s === "skipped"
+    );
+  }
+
+  private runLane(worker: string): void {
+    let previous: StepState = "succeeded";
+    for (const step of this.steps) {
+      const name = laneStep(step, worker);
+      let state = this.records.get(name)!;
+      if (state === "pending") {
+        if (previous !== "succeeded") {
+          state = "skipped";
+        } else {
+          this.dispatches.set(worker, this.dispatches.get(worker)! + 1);
+          state = !this.fails(worker, step)
+            ? "succeeded"
+            : ALLOW_FAILURE.has(step)
+            ? "allowed"
+            : "failed";
+        }
+        this.records.set(name, state);
+      }
+      previous = state;
     }
   }
 
@@ -94,18 +172,22 @@ class Model {
       this.status = "suspended";
       return;
     }
-    const rerun = new Set(
-      [...this.lanes].filter(([, s]) => s === "pending").map(([w]) => w),
-    );
+    const workers = this.batches.flat();
+    const rerun = new Set(workers.filter((w) => this.hasPending(w)));
     const failed = new Set(
-      [...this.lanes].filter(([w, s]) => s === "failed" && !rerun.has(w))
-        .map(([w]) => w),
+      workers.filter((w) => !rerun.has(w) && this.lane(w) === "failed"),
     );
-    // offline fail: a stored plan's lane whose worker is gone fails unstarted
+    // offline fail: a stored plan's lane whose worker is gone fails its
+    // unstarted steps, verify included, without a dispatch
     if (stored) {
       for (const worker of rerun) {
         if (!this.offline.has(worker)) continue;
-        this.lanes.set(worker, "failed");
+        for (const step of this.steps) {
+          const name = laneStep(step, worker);
+          if (this.records.get(name) === "pending") {
+            this.records.set(name, "failed");
+          }
+        }
         failed.add(worker);
       }
     }
@@ -132,7 +214,7 @@ class Model {
       let paused = false;
       let halted = false;
       for (const worker of batch) {
-        if (this.lanes.get(worker) !== "pending") continue;
+        if (!this.hasPending(worker)) continue;
         if (
           rollout && this.maxFailures !== null &&
           failed.size > this.maxFailures
@@ -147,10 +229,8 @@ class Model {
         started.push(worker);
       }
       for (const worker of started) {
-        this.dispatches.set(worker, this.dispatches.get(worker)! + 1);
-        const outcome = this.failing.has(worker) ? "failed" : "succeeded";
-        this.lanes.set(worker, outcome);
-        if (outcome === "failed") failed.add(worker);
+        this.runLane(worker);
+        if (this.lane(worker) === "failed") failed.add(worker);
       }
       if (paused) {
         this.gates.set("canary", "waiting");
@@ -159,17 +239,23 @@ class Model {
       }
       if (halted) break;
     }
-    const held = order.flat().filter((w) => this.lanes.get(w) === "pending");
+    const held = order.flat().filter((w) => this.hasPending(w));
     if (held.length > 0) {
-      for (const worker of held) this.lanes.set(worker, "held");
+      this.hold();
       if (this.gates.get("canary") === "pending") {
         this.gates.set("canary", "held");
       }
       this.lastHaltFailed = [...failed];
     }
-    this.status = [...this.lanes.values()].some((s) => s !== "succeeded")
+    this.status = workers.some((w) => this.lane(w) !== "succeeded")
       ? "failed"
       : "succeeded";
+  }
+
+  private hold(): void {
+    for (const [name, state] of this.records) {
+      if (state === "pending") this.records.set(name, "held");
+    }
   }
 
   decide(approved: boolean): void {
@@ -181,39 +267,53 @@ class Model {
     }
     this.gates.set(gate, "rejected");
     this.rejected = true;
-    for (const [worker, state] of this.lanes) {
-      if (state === "pending") this.lanes.set(worker, "held");
-    }
+    this.hold();
     for (const [kind, state] of this.gates) {
       if (state === "pending") this.gates.set(kind, "held");
     }
     this.status = "failed";
   }
 
-  /** false when the retry is refused and nothing changes */
-  retry(fromStart: boolean): boolean {
-    if (this.rejected) return false;
-    let kept = 0;
-    for (const [worker, state] of this.lanes) {
-      if (state === "succeeded") kept++;
-      else this.lanes.set(worker, "pending");
+  /** undefined when refused; reopens from the entry step in unkept lanes, and every held step */
+  retry(from: number | undefined): RetryOutcome | undefined {
+    if (this.rejected) return undefined;
+    const workers = this.batches.flat();
+    const entry = from ?? Math.min(
+      ...workers.flatMap((w) =>
+        this.states(w).flatMap((s, i) => s === "failed" ? [i] : [])
+      ),
+    );
+    // a plain retry needs a failed step to enter at
+    if (entry === Infinity) return undefined;
+    const keptLanes = new Set(workers.filter((w) => this.kept(w)));
+    let keptSteps = 0;
+    let reopened = 0;
+    for (const worker of workers) {
+      this.steps.forEach((step, i) => {
+        const name = laneStep(step, worker);
+        const state = this.records.get(name)!;
+        if (!keptLanes.has(worker) && i >= entry) {
+          this.records.set(name, "pending");
+          reopened++;
+        } else if (state === "held") {
+          this.records.set(name, "pending");
+        } else if (!keptLanes.has(worker) && state === "succeeded") {
+          keptSteps++;
+        }
+      });
     }
+    // only --from asks an approved gate again, and only when every lane
+    // step of the job runs again
+    const everyStep = from !== undefined &&
+      reopened === workers.length * this.steps.length;
     for (const [kind, state] of this.gates) {
-      if (state === "held" || (fromStart && kept === 0)) {
-        this.gates.set(kind, "pending");
-      }
+      if (state === "held" || everyStep) this.gates.set(kind, "pending");
     }
     this.run();
-    return true;
+    return { keptSteps };
   }
 }
 
-const LANE: Record<string, LaneState> = {
-  pending: "pending",
-  succeeded: "succeeded",
-  failed: "failed",
-  skipped: "held",
-};
 const GATE: Record<string, GateState> = {
   pending: "pending",
   waiting_approval: "waiting",
@@ -221,6 +321,16 @@ const GATE: Record<string, GateState> = {
   failed: "rejected",
   skipped: "held",
 };
+
+function stepState(step: StepRunData): StepState {
+  if (step.status === "failed") {
+    return step.allowedFailure ? "allowed" : "failed";
+  }
+  if (step.status === "skipped") {
+    return step.settledByAbort ? "held" : "skipped";
+  }
+  return step.status as StepState;
+}
 
 const scenarioArb: fc.Arbitrary<Scenario> = fc.record({
   workers: fc.integer({ min: 2, max: 4 }),
@@ -232,9 +342,17 @@ const scenarioArb: fc.Arbitrary<Scenario> = fc.record({
   ),
   maxFailures: fc.option(fc.integer({ min: 0, max: 2 }), { nil: null }),
   approveSet: fc.subarray<GateKind>(["plan", "canary"], { minLength: 1 }),
+  steps: fc.integer({ min: 1, max: 3 }),
   failing: fc.oneof(
-    { weight: 3, arbitrary: fc.subarray([0, 1, 2, 3], { minLength: 1 }) },
-    { weight: 1, arbitrary: fc.constant<number[]>([]) },
+    { weight: 2, arbitrary: fc.subarray([0, 1, 2, 3], { minLength: 1 }) },
+    { weight: 2, arbitrary: fc.constant<number[]>([]) },
+  ),
+  failingAt: fc.array(
+    fc.record({
+      worker: fc.integer({ min: 0, max: 3 }),
+      step: fc.integer({ min: 0, max: 2 }),
+    }),
+    { maxLength: 3 },
   ),
   actions: fc.array(
     fc.oneof(
@@ -242,12 +360,26 @@ const scenarioArb: fc.Arbitrary<Scenario> = fc.record({
       fc.constant<Action>({ kind: "approve" }),
       fc.constant<Action>({ kind: "reject" }),
       fc.constant<Action>({ kind: "retry" }),
-      fc.constant<Action>({ kind: "retryFrom" }),
-      fc.constant<Action>({ kind: "retryFrom" }),
+      fc.integer({ min: 0, max: 2 }).map((step): Action => ({
+        kind: "retryFrom",
+        step,
+      })),
+      fc.integer({ min: 0, max: 2 }).map((step): Action => ({
+        kind: "retryFrom",
+        step,
+      })),
       fc.constant<Action>({ kind: "fix" }),
       fc.integer({ min: 0, max: 3 }).map((worker): Action => ({
         kind: "break",
         worker,
+      })),
+      fc.record({
+        worker: fc.integer({ min: 0, max: 3 }),
+        step: fc.integer({ min: 0, max: 2 }),
+      }).map(({ worker, step }): Action => ({
+        kind: "breakAt",
+        worker,
+        step,
       })),
       fc.integer({ min: 0, max: 3 }).map((worker): Action => ({
         kind: "disconnect",
@@ -266,17 +398,22 @@ const scenarioArb: fc.Arbitrary<Scenario> = fc.record({
   approve: rest.batches.length > 1 ? approveSet : ["plan"],
 }));
 
-function observed(data: WorkflowRunData) {
+function observed(data: WorkflowRunData, workers: readonly string[]) {
   const job = data.jobs[0];
-  const lanes = new Map<string, LaneState>();
+  const records = new Map<string, StepState>();
   const gates = new Map<GateKind, GateState>();
   for (const step of job.steps) {
     const gate = /^patch\[approve-(plan|canary)\]$/.exec(step.stepName);
-    if (gate) gates.set(gate[1] as GateKind, GATE[step.status]);
-    const lane = /^apply\[(.+)\]$/.exec(step.stepName);
-    if (lane) lanes.set(lane[1], LANE[step.status]);
+    if (gate) {
+      gates.set(gate[1] as GateKind, GATE[step.status]);
+      continue;
+    }
+    const lane = /^[a-z]+\[(.+)\]$/.exec(step.stepName);
+    if (lane && workers.includes(lane[1])) {
+      records.set(step.stepName, stepState(step));
+    }
   }
-  return { status: data.status, lanes, gates };
+  return { status: data.status, records, gates };
 }
 
 interface Coverage {
@@ -289,6 +426,8 @@ interface Coverage {
   approvedFailedCanary: number;
   succeeded: number;
   disconnected: number;
+  partlyFinishedRetry: number;
+  laterFromNoReask: number;
 }
 
 Deno.test({
@@ -306,6 +445,8 @@ Deno.test({
       approvedFailedCanary: 0,
       succeeded: 0,
       disconnected: 0,
+      partlyFinishedRetry: 0,
+      laterFromNoReask: 0,
     };
     await fc.assert(
       fc.asyncProperty(scenarioArb, async (scenario) => {
@@ -318,13 +459,33 @@ Deno.test({
         for (const name of names) {
           fleetWorkers.push(await fleet.addWorker(name, { labels: WEB }));
         }
-        const failing = new Set(
-          scenario.failing.filter((i) => i < names.length).map((i) => names[i]),
+        const steps = LANE_STEPS[(scenario.steps ?? 1) - 1];
+        const failing = new Map<string, Set<string>>(
+          names.map((name) => [name, new Set()]),
         );
+        const breakAt = (worker: number, at: string[]) => {
+          for (const step of at) {
+            failing.get(names[worker % names.length])!.add(step);
+          }
+        };
+        for (const worker of scenario.failing) {
+          if (worker < names.length) breakAt(worker, steps);
+        }
+        for (const { worker, step } of scenario.failingAt ?? []) {
+          if (worker < names.length) {
+            breakAt(worker, [steps[step % steps.length]]);
+          }
+        }
+        // the harness matches a lane step by its dispatched name
         const behave = () => {
           fleetWorkers.forEach((worker) => {
-            worker.behavior = failing.has(worker.name)
-              ? { kind: "fail", error: "broke" }
+            const at = [...failing.get(worker.name)!];
+            worker.behavior = at.length > 0
+              ? {
+                kind: "fail",
+                error: "broke",
+                steps: at.map((step) => laneStep(step, worker.name)),
+              }
               : { kind: "succeed" };
           });
         };
@@ -357,15 +518,24 @@ Deno.test({
               },
             },
             labels: WEB,
-            steps: [{
-              name: "apply",
+            steps: steps.map((name, i) => ({
+              name,
+              ...(i > 0
+                ? {
+                  dependsOn: [{
+                    step: steps[i - 1],
+                    condition: { type: "succeeded" },
+                  }],
+                }
+                : {}),
+              ...(ALLOW_FAILURE.has(name) ? { allowFailure: true } : {}),
               task: {
                 type: "model_method",
                 modelType: fleet.modelType.normalized,
                 modelName: "host-patch",
                 methodName: "run",
               },
-            }],
+            })),
           }],
         });
         const run = await fleet.runWorkflow("gated");
@@ -375,16 +545,17 @@ Deno.test({
           batches,
           scenario.maxFailures,
           scenario.approve,
-          failing,
+          steps,
+          (worker, step) => failing.get(worker)!.has(step),
         );
         model.run();
 
         const check = async (step: string) => {
           const record = await fleet.runRecord(workflow, run.id);
-          const actual = observed(record);
+          const actual = observed(record, names);
           const context = `${step}: ${JSON.stringify(scenario)}`;
           assertEquals(actual.status, model.status, context);
-          assertEquals(actual.lanes, model.lanes, context);
+          assertEquals(actual.records, model.records, context);
           assertEquals(actual.gates, model.gates, context);
           assertEquals(
             new Map(Object.entries(fleet.dispatchCounts())),
@@ -417,13 +588,17 @@ Deno.test({
         for (const [index, action] of scenario.actions.entries()) {
           const step = `action ${index} ${JSON.stringify(action)}`;
           if (action.kind === "fix") {
-            failing.clear();
+            for (const at of failing.values()) at.clear();
             behave();
             continue;
           }
-          if (action.kind === "break") {
-            const name = names[action.worker % names.length];
-            failing.add(name);
+          if (action.kind === "break" || action.kind === "breakAt") {
+            breakAt(
+              action.worker,
+              action.kind === "break"
+                ? steps
+                : [steps[action.step % steps.length]],
+            );
             behave();
             continue;
           }
@@ -468,7 +643,9 @@ Deno.test({
             continue;
           }
           if (model.status !== "failed") continue;
-          const fromStart = action.kind === "retryFrom";
+          const from = action.kind === "retryFrom"
+            ? (action.step ?? 0) % steps.length
+            : undefined;
           const before = JSON.stringify(
             await fleet.runRecord(workflow, run.id),
           );
@@ -477,16 +654,26 @@ Deno.test({
             await fleet.retryRun(
               "gated",
               run.id,
-              fromStart ? { fromStep: "apply" } : {},
+              from !== undefined ? { fromStep: steps[from] } : {},
             );
           } catch {
             refused = true;
           }
-          const reasked = fromStart &&
+          const approvedGate = [...model.gates.values()].includes("approved");
+          const reasked = from === 0 &&
             [...model.lanes.values()].every((s) => s !== "succeeded") &&
-            [...model.gates.values()].includes("approved");
-          const accepted = model.retry(fromStart);
-          assertEquals(refused, !accepted, step);
+            approvedGate;
+          const accepted = model.retry(from);
+          assertEquals(refused, accepted === undefined, step);
+          if (accepted !== undefined && accepted.keptSteps > 0) {
+            coverage.partlyFinishedRetry++;
+          }
+          if (
+            accepted !== undefined && from !== undefined && from > 0 &&
+            approvedGate
+          ) {
+            coverage.laterFromNoReask++;
+          }
           if (refused) {
             coverage.refused++;
             assertEquals(
@@ -572,6 +759,58 @@ Deno.test({
               },
               { kind: "fix" },
               { kind: "approve" },
+            ],
+          }],
+          // a lane failing at apply keeps its prepare on every retry
+          [{
+            workers: 2,
+            batches: ["100%"],
+            maxFailures: null,
+            approve: ["plan"],
+            steps: 3,
+            failing: [],
+            failingAt: [{ worker: 0, step: 1 }],
+            actions: [
+              { kind: "approve" },
+              { kind: "retry" },
+              { kind: "retry" },
+              { kind: "fix" },
+              { kind: "retry" },
+            ],
+          }],
+          // --from a later step re-runs it without asking the approved gates
+          [{
+            workers: 2,
+            batches: [1, "100%"],
+            maxFailures: 1,
+            approve: ["plan", "canary"],
+            steps: 2,
+            failing: [],
+            failingAt: [{ worker: 1, step: 1 }],
+            actions: [
+              { kind: "approve" },
+              { kind: "approve" },
+              { kind: "retryFrom", step: 1 },
+              { kind: "retryFrom", step: 1 },
+              { kind: "fix" },
+              { kind: "retryFrom", step: 1 },
+            ],
+          }],
+          // --from the first step with no lane kept asks the plan gate each time
+          [{
+            workers: 2,
+            batches: ["100%"],
+            maxFailures: null,
+            approve: ["plan"],
+            steps: 2,
+            failing: [0, 1],
+            actions: [
+              { kind: "approve" },
+              { kind: "retryFrom", step: 0 },
+              { kind: "approve" },
+              { kind: "retryFrom", step: 0 },
+              { kind: "approve" },
+              { kind: "retryFrom", step: 0 },
             ],
           }],
         ],

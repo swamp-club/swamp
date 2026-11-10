@@ -33,7 +33,7 @@ import {
   DASHBOARD_SESSION_COOKIE,
   type ServerTokenAuthResult,
 } from "./token_auth.ts";
-import { checkIpBurst } from "./rate_limiter.ts";
+import { checkIpBurst, resetRateLimitState } from "./rate_limiter.ts";
 
 function request(authorization?: string): Request {
   return new Request("http://serve.test/api/v1/request", {
@@ -336,6 +336,7 @@ Deno.test("authenticateHttpCaller: an unknown dashboard session is refused with 
 });
 
 Deno.test("authenticateHttpCaller: a session whose token was revoked is refused and deleted", async () => {
+  resetRateLimitState();
   const store = sessionStore();
   const session = store.add();
   const response = await authenticateHttpCaller(
