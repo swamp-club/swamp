@@ -48,7 +48,7 @@ export const ROOT_GLOBAL_OPTIONS: readonly OptionSpec[] = [
 ];
 
 export const HELP_COMMAND = "help";
-export const COMPLETIONS_COMMAND = "completions";
+const COMPLETIONS_COMMAND = "completions";
 const COMPLETE_SUBCOMMAND = "complete";
 
 const HELP_OPTIONS: readonly OptionSpec[] = [
@@ -153,10 +153,7 @@ function findRoute(
   return routes.find((r) => r.name === word || r.aliases.includes(word));
 }
 
-// Cliffy's complete walks down from the root through visible commands and then
-// reads completions only up the parent chain, so completions and the route its
-// first name picks answer it; complete takes no options, so any dash-led token
-// is left to the full tree's parse
+// complete walks down through visible commands, then reads completions up the parent chain
 function selectCompletionCallback(
   routes: readonly CommandRoute[],
   args: readonly string[],
@@ -171,6 +168,7 @@ function selectCompletionCallback(
     return { kind: "all" };
   }
   const after = args.slice(sub.index + 1);
+  // complete takes no options: a dash-led token is left to the full tree's parse
   if (after.length === 0 || after.some((arg) => arg.startsWith("-"))) {
     return { kind: "all" };
   }
@@ -178,8 +176,8 @@ function selectCompletionCallback(
   if (name === undefined) {
     return { kind: "routes", routes: [completions], rest: [] };
   }
-  // a hidden command, help among them, is refused by the walk with an error
-  // that lists the root's commands, which only the full tree holds
+  // the walk refuses help (no route) and hidden routes with an error listing
+  // the root's commands, which only the full tree holds
   const target = findRoute(routes, name);
   if (
     !target || target.hidden ||

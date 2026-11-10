@@ -470,14 +470,11 @@ async function inBatches<T, R>(
 
 Deno.test("command routes: each route loads alone in a fresh module graph with the full tree's schema and error handlers", async () => {
   const full = await buildCommandTree();
-  const requests: Array<
-    RouteWorkerRequest & { expected: string; hidden: boolean }
-  > = [
+  const requests: Array<RouteWorkerRequest & { expected: string }> = [
     ...ROOT_ROUTES.map((route) => ({
       args: [route.name],
       path: [route.name],
       expected: schemaOf(resolvePath(full, [route.name])!, [route.name]),
-      hidden: route.hidden,
     })),
     ...GROUP_TABLES.flatMap(({ path: group, routes }) =>
       routes.map((route) => {
@@ -486,17 +483,15 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
           args: path,
           path,
           expected: schemaOf(resolvePath(full, path)!, path),
-          hidden: route.hidden,
         };
       })
     ),
-    { args: undefined, path: [], expected: schemaOf(full, []), hidden: false },
+    { args: undefined, path: [], expected: schemaOf(full, []) },
   ];
 
   const results = await inBatches(requests, 4, async (request) => ({
     label: request.args?.join(" ") ?? "the full tree",
     expected: request.expected,
-    hidden: request.hidden,
     response: await inWorker({ args: request.args, path: request.path }),
   }));
 
@@ -520,16 +515,39 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
       );
     }
   }
+});
 
-  // completion.ts shares no command with any route, so a route's own graph
-  // answers for the completion callback that loads it beside completions
-  for (const { label, hidden, response } of results.slice(0, -1)) {
-    assert(response.ok);
-    if (hidden) continue;
+Deno.test("command routes: a completion callback's routes in a fresh module graph resolve each completion from the same command as the full tree", async () => {
+  const requests: RouteWorkerRequest[] = [
+    ...ROOT_ROUTES.filter((route) => !route.hidden).map((route) => ({
+      args: ["completions", "complete", "action", route.name],
+      path: [route.name],
+    })),
+    { args: ["completions", "complete", "action"], path: [] },
+  ];
+  const [fullTree, ...results] = await inBatches(
+    [{ args: undefined, path: [] }, ...requests],
+    4,
+    async (request) => ({
+      label: request.args?.join(" ") ?? "the full tree",
+      response: await inWorker(request),
+    }),
+  );
+  assert(
+    fullTree.response.ok,
+    fullTree.response.ok ? "" : fullTree.response.error,
+  );
+
+  for (const { label, response } of results) {
+    assert(response.ok, `${label}: ${response.ok ? "" : response.error}`);
+    assert(
+      Object.keys(response.completionOwners).length > 0,
+      `${label}: nothing walked`,
+    );
     for (const [path, owners] of Object.entries(response.completionOwners)) {
       assertEquals(
         owners,
-        fullTree.completionOwners[path],
+        fullTree.response.completionOwners[path],
         `swamp ${path} (loading ${label}) resolves its completions from ` +
           "different commands than with the full tree",
       );

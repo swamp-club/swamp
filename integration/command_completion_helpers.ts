@@ -54,7 +54,6 @@ export function completionOwners(node: AnyCommand): Record<string, string> {
   return owners;
 }
 
-/** owners for the node and every visible command under it, keyed by command path */
 export function completionOwnersUnder(
   node: AnyCommand,
   path: readonly string[],
