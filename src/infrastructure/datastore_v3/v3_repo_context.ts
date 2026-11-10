@@ -1045,8 +1045,7 @@ async function takeV3WriterHold(
 /**
  * nothing is marked or replicated: the writer does that; the claim is checked
  * as the lease's hold would, so a serve with another --address is refused here
- * too. Its own predecessor, judged gone, is recovered now so a takeover does
- * not wait on it.
+ * too; its own gone predecessor is recovered now, off the takeover's path
  */
 async function followV3Datastore(
   config: V3DatastoreConfig,

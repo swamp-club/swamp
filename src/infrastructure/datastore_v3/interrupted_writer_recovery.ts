@@ -293,10 +293,8 @@ export async function recoverInterruptedWriter(
 }
 
 /**
- * a team follower recovers before it follows when the marker names a process
- * this host judges gone: only serve writes a claimed checkout and that writer
- * cannot return, so the leader's lease is not needed; any other marker still
- * waits for the lease, taken when the node leads
+ * a follower's own predecessor, judged gone on this host, needs no lease: only
+ * serve writes a claimed checkout and that writer cannot return
  */
 export async function recoverOwnPredecessor(
   handle: V3Datastore,

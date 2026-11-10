@@ -626,10 +626,8 @@ function startRenewal(
 }
 
 /**
- * whether the store confirmed this process's lease within its TTL, the
- * earliest another writer could take it over; a process stopped past that
- * (SIGSTOP) must not answer as the writer until a renewal says it still is, so
- * one is asked for at once
+ * confirmed within its TTL, the earliest another writer could take it over; a
+ * process stopped past that is not, and a renewal is asked for at once
  */
 export function v3WriterLeaseConfirmed(datastorePath: string): boolean {
   const entry = held.get(resolve(datastorePath));

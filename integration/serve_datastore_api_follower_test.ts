@@ -240,10 +240,8 @@ Deno.test({
       assertEquals(old.status, 200);
       assertEquals(old.json.head, 1);
       assertEquals(waits, 1);
-      // A follower with no leader feed, or one whose feed has been down past
-      // the bound (its leader stopped, or a node just deposed), refuses too:
-      // it answers once it follows a leader again or leads itself, so a real
-      // rewind is still reported then.
+      // With no live feed it refuses too: it answers once it follows a
+      // leader again or leads, so a real rewind is still reported then.
       server.ctx.followerCatchUp = undefined;
       const noFeed = await readHeld(server, "after=1&limit=1&held=2");
       assertEquals(noFeed.status, 503);
