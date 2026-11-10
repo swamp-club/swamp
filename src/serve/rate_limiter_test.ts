@@ -73,7 +73,7 @@ Deno.test("failedAttemptKey: every delegated secret keys on its own delegation i
 Deno.test("failedAttemptKey: an integration credential keys on its integration id", () => {
   assertEquals(
     failedAttemptKey(`swi1.slackwater.${HEX}`, "10.0.0.1"),
-    "integration:slackwater|address:10.0.0.1",
+    "integration-credential:slackwater|address:10.0.0.1",
   );
   assertNotEquals(
     failedAttemptKey(`swi1.slackwater.${HEX}`, "10.0.0.1"),
@@ -182,6 +182,16 @@ Deno.test("checkFailedAttempts: different token names are independent", () => {
   }
   assertEquals(checkFailedAttempts("token:worker-a").allowed, false);
   assertEquals(checkFailedAttempts("token:worker-b").allowed, true);
+});
+
+Deno.test("recordFailedAttempt: filling the bucket map never lifts a lockout", () => {
+  resetRateLimitState();
+  const locked = `locked-${crypto.randomUUID()}`;
+  for (let i = 0; i < 5; i++) recordFailedAttempt(locked);
+  assertEquals(checkFailedAttempts(locked).allowed, false);
+  for (let i = 0; i < 10_001; i++) recordFailedAttempt(`spray-${i}`);
+  assertEquals(checkFailedAttempts(locked).allowed, false);
+  resetRateLimitState();
 });
 
 Deno.test("checkFailedAttempts: IP-keyed fallback works like token keys", () => {

@@ -54,6 +54,20 @@ function sweepExpired(buckets: Map<string, RateLimitEntry>): void {
   }
 }
 
+/** a refusing entry outlives fresher ones, so filling the map never lifts a lockout */
+function evictOldest(
+  buckets: Map<string, RateLimitEntry>,
+  maxAttempts: number,
+): void {
+  for (const [key, entry] of buckets) {
+    if (entry.count < maxAttempts) {
+      buckets.delete(key);
+      return;
+    }
+  }
+  buckets.delete(buckets.keys().next().value!);
+}
+
 function checkBucket(
   buckets: Map<string, RateLimitEntry>,
   key: string,
@@ -64,10 +78,7 @@ function checkBucket(
   const entry = buckets.get(key);
   if (!entry || now > entry.resetAt) {
     if (buckets.size >= MAX_ENTRIES) sweepExpired(buckets);
-    if (buckets.size >= MAX_ENTRIES) {
-      const oldest = buckets.keys().next().value!;
-      buckets.delete(oldest);
-    }
+    if (buckets.size >= MAX_ENTRIES) evictOldest(buckets, maxAttempts);
     buckets.set(key, { count: 1, resetAt: now + windowMs });
     return { allowed: true };
   }
@@ -103,7 +114,9 @@ function claimedPrincipal(credential: string): string | undefined {
   const delegated = parseDelegatedSecret(credential);
   if (delegated !== null) return `delegation:${delegated.delegationId}`;
   const integrationId = integrationIdOfCredential(credential);
-  if (integrationId !== undefined) return `integration:${integrationId}`;
+  if (integrationId !== undefined) {
+    return `integration-credential:${integrationId}`;
+  }
   const split = splitServerToken(credential);
   // a reserved prefix that failed to parse names no principal of its own
   if (split === null || RESERVED_TOKEN_NAMES.includes(split.name)) {

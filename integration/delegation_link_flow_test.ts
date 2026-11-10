@@ -433,3 +433,18 @@ Deno.test("delegation links: an integration's own failed credential is refused a
     assertEquals(statuses, [401, 401, 401, 401, 401, 429]);
   });
 });
+
+Deno.test("delegation links: an address spraying made-up integration ids is refused by the IP burst, and a valid credential there still works", async () => {
+  await withRig(async (rig) => {
+    let last = 0;
+    for (let attempt = 0; attempt < 60 && last !== 429; attempt++) {
+      const id = `fake-${crypto.randomUUID().slice(0, 8)}`;
+      last = (await rig.post("links", START_BODY, {
+        credential: `swi1.${id}.${"b".repeat(64)}`,
+      })).status;
+    }
+    assertEquals(last, 429);
+    const started = await rig.post("links", START_BODY);
+    assertEquals(started.status, 201, JSON.stringify(started.body));
+  });
+});

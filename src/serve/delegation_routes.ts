@@ -66,7 +66,11 @@ import {
   tooManyRequests,
 } from "./http_caller_auth.ts";
 import type { LeaderLink } from "./leader_link.ts";
-import { failedAttemptKey, limitFailedAttempts } from "./rate_limiter.ts";
+import {
+  checkIpBurst,
+  failedAttemptKey,
+  limitFailedAttempts,
+} from "./rate_limiter.ts";
 import { type ServeLinkClient, ServeLinkError } from "./serve_link_client.ts";
 import { hasJsonContentType } from "./signal_http.ts";
 import { readBodyWithLimit } from "./webhook.ts";
@@ -257,6 +261,9 @@ export async function handleDelegationRequest(
   if (guarded.limited) return tooManyRequests(guarded.retryAfterSeconds);
   const auth = guarded.result;
   if (!auth.ok) {
+    // only a failure spends the burst, so a valid credential is never refused by it
+    const spent = checkIpBurst(sourceIp);
+    if (!spent.allowed) return tooManyRequests(spent.retryAfterSeconds);
     return httpFailure(
       401,
       "invalid_client",
