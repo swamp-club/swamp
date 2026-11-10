@@ -567,6 +567,8 @@ export interface WebhookServiceDeps {
   acceptsRuns?: () => boolean;
   /** false until serve's startup completes; absent, the node takes runs at once */
   startupComplete?: () => boolean;
+  /** stamped on each queued run, so a peer's boot leaves it to this process */
+  pendingRunOwner?: PendingRunOwner;
   /**
    * a delivery received by a node that takes no runs is passed on raw before
    * verification, so the leader checks the signature and nothing is trusted
@@ -628,6 +630,7 @@ import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
 import { TEAM_PEER_HEADER } from "./peer_auth.ts";
 import { NOT_READY_RETRY_AFTER_SECONDS } from "./serve_admission.ts";
+import type { PendingRunOwner } from "../infrastructure/persistence/run_tracker_store.ts";
 
 interface QueuedWebhookRun {
   lastProgressAt: string;
@@ -1062,6 +1065,9 @@ export class WebhookService {
         traceparent,
         tracestate,
         createdAt: new Date(this.now()).toISOString(),
+        ...(this.deps.pendingRunOwner
+          ? { owner: this.deps.pendingRunOwner }
+          : {}),
       };
       this.deps.runTracker.enqueuePendingRun(pendingEntry);
       if (this.deps.controlPlaneStore) {

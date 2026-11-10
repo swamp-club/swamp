@@ -107,7 +107,7 @@ without it the default file is optional.
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; an extension pull, update, install or rm made through serve reloads it (swamp-club#3594); not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
 | `--remote-only` | `SWAMP_REMOTE_ONLY` | `false` | User steps run only on workers |
-| `--reuse-port` | `SWAMP_REUSE_PORT` | `false` | Listens with `SO_REUSEPORT` and opens the port only once startup completes, so a new process can start beside the old one; the kernel balances connections between them on Linux only, and serve warns elsewhere. Set at startup, not on reload (see Rolling restart) |
+| `--reuse-port` | `SWAMP_REUSE_PORT` | `false` | Listens with `SO_REUSEPORT` and opens the port only once startup completes, so a new process can start beside the old one. Only Linux lets two processes share the port: elsewhere serve warns at startup, and a second serve beside the first fails before startup does any work. Set at startup, not on reload (see Rolling restart) |
 | `--dashboard` | `SWAMP_DASHBOARD` | `false` | Serves `/dashboard/*` when the build embeds the SPA |
 | `--auto-resume` | `SWAMP_AUTO_RESUME` | `false` | Resumes a run once every approval gate is decided and every wait for a signal is settled |
 | `--detach-runs` | — | `false` | Deprecated, no effect: runs are always detached |
@@ -1910,8 +1910,14 @@ old one. The new process listens only once ready, and the old one closes its
 listener as soon as its runs drain (the grace is 0 with `--reuse-port`).
 Connections that land on the old process during its drain get the refusals
 above: `swamp … --server` and `packages/client` retry them, while a webhook
-sender must retry on 503. Overlapping restarts are not supported on a v3
-datastore until team mode, since both processes would need the writer lease.
+sender must retry on 503. Each queued webhook and cron run names the process that queued it
+(instance id, pid and host identity), so a starting process leaves a run whose
+owner still lives to that owner (on this host by its pid, elsewhere by a fresh
+heartbeat), and replays it once the owner has gone, checking every 5 s; a run
+it replays becomes its own (`src/serve/pending_run_owner.ts`). Runs queued by
+an older serve name no owner and are replayed at boot as before. Overlapping
+restarts are not supported on a v3 datastore until team mode, since both
+processes would need the writer lease.
 
 `swamp … --server` retries a refused connection, a 502, 503 or 504 at the
 upgrade, and a `draining` or `not_ready` refusal for up to 30 s before it has

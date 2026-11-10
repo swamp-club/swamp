@@ -40,6 +40,7 @@ import {
   formatCommandTarget,
   implicitServeUrl,
   probeHandshakeStatus,
+  probeServeRestarting,
   readTokenFile,
   remoteGateRefusalUserError,
   requestNewerServerResponse,
@@ -1747,6 +1748,34 @@ Deno.test({
   sanitizeResources: false,
   fn: async () => {
     assertEquals(await probeHandshakeStatus("ws://127.0.0.1:1"), undefined);
+  },
+});
+
+Deno.test({
+  name:
+    "probeServeRestarting: a refused connect or a 502/503/504 reads as restarting, any other status does not",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(
+      await probeServeRestarting(`ws://127.0.0.1:${freePort()}`),
+      true,
+    );
+    for (const [status, restarting] of [[503, true], [401, false]] as const) {
+      const server = Deno.serve(
+        { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+        () => new Response(null, { status }),
+      );
+      try {
+        assertEquals(
+          await probeServeRestarting(`ws://127.0.0.1:${server.addr.port}`),
+          restarting,
+          String(status),
+        );
+      } finally {
+        await server.shutdown();
+      }
+    }
   },
 });
 
@@ -4171,6 +4200,28 @@ Deno.test({
     } finally {
       await server?.shutdown();
     }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a connect that fails without a refusal, such as a DNS failure, is not retried",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const clock = fakeRetryClock();
+    const error = await assertRejects(
+      () =>
+        drainRun(runWorkflowOverServer({
+          server: "ws://nonexistent.invalid:1234",
+          payload: { workflowIdOrName: "wf" },
+          ...clock.options,
+        })),
+      UserError,
+    );
+    assertStringIncludes(error.message, "nonexistent.invalid");
+    assertEquals(clock.delays, []);
+    assertEquals(clock.notices, []);
   },
 });
 

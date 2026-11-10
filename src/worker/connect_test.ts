@@ -383,6 +383,8 @@ class RejectingSocket {
   close(): void {}
 }
 
+const restarting = () => Promise.resolve(true);
+
 function fakeClock() {
   const clock = {
     nowMs: 0,
@@ -410,6 +412,7 @@ Deno.test("runWorker: pre-enrollment failures give up once the retry budget is s
         preEnrollRetryBudgetMs: 10_000,
         now: clock.now,
         sleep: clock.sleep,
+        isServeRestarting: restarting,
         onStatus: (event) => events.push(event),
         createSocket: () => {
           socketCount++;
@@ -427,7 +430,7 @@ Deno.test("runWorker: pre-enrollment failures give up once the retry budget is s
   assertEquals(events.at(-1)?.kind, "stopped");
 });
 
-Deno.test("runWorker: HTTP 401 retries until the retry budget is spent", async () => {
+Deno.test("runWorker: HTTP 401 stops after 3 consecutive attempts", async () => {
   const events: WorkerStatusEvent[] = [];
   const clock = fakeClock();
   let socketCount = 0;
@@ -437,7 +440,6 @@ Deno.test("runWorker: HTTP 401 retries until the retry budget is spent", async (
         url: "ws://test:1",
         token: "ci.s",
         swampVersion: "1.2.3",
-        preEnrollRetryBudgetMs: 3_000,
         now: clock.now,
         sleep: clock.sleep,
         onStatus: (event) => events.push(event),
@@ -450,10 +452,72 @@ Deno.test("runWorker: HTTP 401 retries until the retry budget is spent", async (
       }),
     Error,
   );
-  assertStringIncludes(error.message, "for 3s — giving up");
+  assertStringIncludes(
+    error.message,
+    "connection failed 3 consecutive times before enrollment — giving up",
+  );
   assertStringIncludes(error.message, "401");
   assertEquals(socketCount, 3);
+  assertEquals(clock.sleeps, [1_000, 2_000]);
   assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: a failure serve is not restarting, such as a DNS failure, stops after 3 consecutive attempts", async () => {
+  const clock = fakeClock();
+  const probed: string[] = [];
+  let socketCount = 0;
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        now: clock.now,
+        sleep: clock.sleep,
+        isServeRestarting: (failure) => {
+          probed.push(failure);
+          return Promise.resolve(false);
+        },
+        createSocket: () => {
+          socketCount++;
+          return new RejectingSocket(
+            "NetworkError: failed to connect to WebSocket: dns error",
+          ) as unknown as WebSocket;
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "3 consecutive times");
+  assertStringIncludes(error.message, "dns error");
+  assertEquals(socketCount, 3);
+  assertEquals(probed.length, 3);
+  assertStringIncludes(probed[0], "dns error");
+});
+
+Deno.test("runWorker: a 503 at the upgrade retries until the retry budget is spent", async () => {
+  const clock = fakeClock();
+  let socketCount = 0;
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        preEnrollRetryBudgetMs: 10_000,
+        now: clock.now,
+        sleep: clock.sleep,
+        createSocket: () => {
+          socketCount++;
+          return new RejectingSocket(
+            "failed to connect to WebSocket: Invalid status code: 503",
+          ) as unknown as WebSocket;
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "for 10s — giving up");
+  assertStringIncludes(error.message, "503");
+  assertEquals(socketCount, 5);
 });
 
 Deno.test("runWorker: the default retry budget names minutes when it gives up", async () => {
@@ -466,6 +530,7 @@ Deno.test("runWorker: the default retry budget names minutes when it gives up", 
         swampVersion: "1.2.3",
         now: clock.now,
         sleep: clock.sleep,
+        isServeRestarting: restarting,
         createSocket: () => new RejectingSocket() as unknown as WebSocket,
       }),
     Error,
@@ -492,6 +557,7 @@ Deno.test("runWorker: an enrolled worker rides out a serve restart longer than a
     signal: controller.signal,
     now: clock.now,
     sleep: clock.sleep,
+    isServeRestarting: restarting,
     onStatus: (event) => {
       events.push(event);
       if (event.kind !== "enrolled") return;
@@ -520,7 +586,6 @@ Deno.test("runWorker: an enrolled worker rides out a serve restart longer than a
   assertEquals(result.reason, "shutdown");
   assertEquals(enrolled, 2);
   assertEquals(socketCount, 8);
-  // six refusals, then re-enrolment 91 s of fake time after the drop
   assertEquals(clock.sleeps, [
     1_000,
     2_000,
@@ -574,6 +639,7 @@ Deno.test("runWorker: the retry budget restarts after a successful enrollment", 
     preEnrollRetryBudgetMs: 10_000,
     now: clock.now,
     sleep: clock.sleep,
+    isServeRestarting: restarting,
     onStatus: (event) => {
       events.push(event);
       if (event.kind !== "enrolled") return;
@@ -598,7 +664,7 @@ Deno.test("runWorker: the retry budget restarts after a successful enrollment", 
     },
   });
 
-  // without the reset, the refusal after the drop lands 11 s into a 10 s budget
+  // without the reset, the refusal after the drop exhausts the budget
   await done;
   assertEquals(socketCount, 9);
   assertEquals(enrolled, 2);

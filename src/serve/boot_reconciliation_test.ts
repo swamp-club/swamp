@@ -50,7 +50,10 @@ import type {
   DatastoreSyncOptions,
   DatastoreSyncService,
 } from "../domain/datastore/datastore_sync_service.ts";
-import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
+import type {
+  PendingRunEntry,
+  PendingRunOwner,
+} from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
   signalChange,
@@ -486,9 +489,12 @@ function createReplayHarness(
   const webhookReplays: ReplayedWebhook[] = [];
   const cronReplays: ReplayedCron[] = [];
 
+  const claimed: { id: string; owner: PendingRunOwner }[] = [];
   const runTracker = {
     findAllPendingRuns: () => pending,
     deletePendingRun: (id: string) => deleted.push(id),
+    setPendingRunOwner: (id: string, owner: PendingRunOwner) =>
+      claimed.push({ id, owner }),
   } as unknown as ReplayPendingRunsDeps["runTracker"];
 
   const webhookService = opts.hasWebhook !== false
@@ -534,6 +540,7 @@ function createReplayHarness(
     deleted,
     webhookReplays,
     cronReplays,
+    claimed,
   };
 }
 
@@ -2830,4 +2837,104 @@ Deno.test("webhookReplayTargets: follows routes a reload added after boot", asyn
     routes: new Set(["/hooks/added"]),
   });
   await service.stop();
+});
+
+const LIVE_PEER: PendingRunOwner = { instanceId: "peer-live", pid: 101 };
+const GONE_PEER: PendingRunOwner = { instanceId: "peer-gone", pid: 102 };
+const SELF: PendingRunOwner = { instanceId: "self", pid: 103 };
+const peerAlive = (owner: PendingRunOwner) =>
+  Promise.resolve(owner.instanceId === LIVE_PEER.instanceId);
+
+function cronEntry(id: string, owner?: PendingRunOwner): PendingRunEntry {
+  return {
+    id,
+    source: "cron",
+    workflowIdOrName: "nightly-sync",
+    createdAt: "2026-01-01T00:00:00Z",
+    ...(owner ? { owner } : {}),
+  };
+}
+
+Deno.test("replayPendingRuns: leaves a live peer's run to it and names it deferred", async () => {
+  const h = createReplayHarness([
+    cronEntry("live", LIVE_PEER),
+    cronEntry("gone", GONE_PEER),
+    cronEntry("ownerless"),
+  ]);
+  const deferred = new Set<string>();
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    deferred,
+  });
+
+  assertEquals(count, 2);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["gone", "ownerless"]);
+  assertEquals([...deferred], ["live"]);
+  assertEquals(h.deleted, []);
+});
+
+Deno.test("replayPendingRuns: only replays the named ids, as the deferred sweep does", async () => {
+  const h = createReplayHarness([
+    cronEntry("a", GONE_PEER),
+    cronEntry("b", GONE_PEER),
+  ]);
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    only: new Set(["b"]),
+  });
+
+  assertEquals(count, 1);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["b"]);
+});
+
+Deno.test("replayPendingRuns: a replayed run is claimed for this process, locally and remotely", async () => {
+  const entry = cronEntry("claim-1", GONE_PEER);
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/claim-1": entry,
+  });
+  const h = createReplayHarness([entry]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+
+  await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(h.claimed, [{ id: "claim-1", owner: SELF }]);
+  const stored = JSON.parse(
+    new TextDecoder().decode(
+      controlPlaneStore.data.get("pending-runs/claim-1"),
+    ),
+  );
+  assertEquals(stored.owner, SELF);
+});
+
+Deno.test("replayPendingRuns: a remote entry's owner is read, and one that does not parse is ignored", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/remote-live": cronEntry("remote-live", LIVE_PEER),
+    "pending-runs/remote-bad": {
+      ...cronEntry("remote-bad"),
+      owner: { instanceId: "peer-live", pid: "not a pid" },
+    },
+  });
+  const h = createReplayHarness([], {
+    configuredCronWorkflows: new Set(["nightly-sync"]),
+  });
+  h.deps.controlPlaneStore = controlPlaneStore;
+  const deferred = new Set<string>();
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    deferred,
+  });
+
+  assertEquals(count, 1);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["remote-bad"]);
+  assertEquals([...deferred], ["remote-live"]);
 });

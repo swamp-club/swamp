@@ -142,6 +142,8 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/infrastructure/process/shutdown_handlers_test.ts",
   "src/infrastructure/process/start_instance_probe_test.ts",
   "src/infrastructure/runtime/embedded_deno_runtime_test.ts",
+  // the --reuse-port bind probe: the unit IS the listening socket
+  "src/infrastructure/runtime/reuse_port_check_test.ts",
   "src/infrastructure/runtime/tls_cert_validation_test.ts",
   "src/infrastructure/security/file_security_check_test.ts",
   "src/infrastructure/source/http_source_downloader_test.ts",

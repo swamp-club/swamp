@@ -42,6 +42,7 @@ import {
   withDefaults,
 } from "./stream.ts";
 import { AsyncIterableQueue } from "./queue.ts";
+import { retryAfterDelayMs } from "./http_transport.ts";
 
 export interface SwampClientOptions {
   token?: string;
@@ -60,7 +61,6 @@ export interface SwampClientOptions {
 
 const BACKOFF_BASE_MS = 250;
 const BACKOFF_CAP_MS = 5_000;
-const RETRY_AFTER_JITTER_CAP_MS = 1_000;
 
 // serve refuses these before it starts the run, so a fresh start is safe
 const START_RETRY_CODES = new Set(["draining", "not_ready"]);
@@ -395,7 +395,7 @@ export class SwampClient {
       try {
         yield* queue;
       } finally {
-        this.pending.delete(id);
+        this.settle(id);
       }
       if (refusal === undefined) return;
       await this.waitToRestart(refusal, attempt, deadline);
@@ -409,11 +409,9 @@ export class SwampClient {
     deadline: number,
   ): Promise<void> {
     const after = refusal.retryAfterSeconds;
+    // a Retry-After of 0 would resend with no pause at all
     const delay = after !== undefined
-      ? after * 1000 +
-        Math.floor(
-          this.random() * Math.min(RETRY_AFTER_JITTER_CAP_MS, after * 250),
-        )
+      ? Math.max(BACKOFF_BASE_MS, retryAfterDelayMs(after, this.random))
       : backoffMs(attempt, this.random);
     if (this.now() + delay > deadline) throw refusal;
     await this.sleep(delay);
@@ -456,7 +454,7 @@ export class SwampClient {
         msg.error.details,
         msg.error.retryAfterSeconds,
       );
-      this.pending.delete(msg.id);
+      this.settle(msg.id);
       if (
         pending.refused && !pending.sawEvent && START_RETRY_CODES.has(err.code)
       ) {
@@ -471,7 +469,7 @@ export class SwampClient {
     if (msg.type === "done") {
       // Authoritative terminal frame (servers >= remote-execution). The
       // event-kind heuristics below remain for older servers that lack it.
-      this.pending.delete(msg.id);
+      this.settle(msg.id);
       if (pending.queue) {
         pending.queue.done();
       } else if (pending.kind === "run" && pending.replayedRunId) {
@@ -509,12 +507,12 @@ export class SwampClient {
         event.kind === "completed" || event.kind === "cancelled" ||
         event.kind === "suspended"
       ) {
-        this.pending.delete(msg.id);
+        this.settle(msg.id);
         pending.resolve(
           pending.kind === "run" ? runResult(event as RunTerminal) : event.run,
         );
       } else if (event.kind === "error") {
-        this.pending.delete(msg.id);
+        this.settle(msg.id);
         // deno-lint-ignore no-explicit-any
         const swampError = event.error as any;
         pending.reject(
@@ -532,10 +530,24 @@ export class SwampClient {
     // Request-response: the response type matches the request type and
     // carries a payload (e.g. { type: "workflow.search", id, payload }).
     if ("payload" in msg) {
-      this.pending.delete(msg.id);
+      this.settle(msg.id);
       // deno-lint-ignore no-explicit-any
       pending.resolve((msg as any).payload);
     }
+  }
+
+  // a retired socket closes once the last request on it settles
+  private settle(id: string): void {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    const socket = pending.socket;
+    if (!this.retired.has(socket)) return;
+    for (const other of this.pending.values()) {
+      if (other.socket === socket) return;
+    }
+    this.retired.delete(socket);
+    socket.close();
   }
 
   // A draining serve takes no new runs on this socket, so the next start

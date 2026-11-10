@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/** whether this node takes new run work: refused until startup completes, and again once shutdown begins */
 export type AdmissionPhase = "starting" | "open" | "draining";
 
 export interface AdmissionRefusal {

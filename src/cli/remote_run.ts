@@ -341,7 +341,7 @@ class RetryWindow {
     return this.start === undefined ? 0 : this.now() - this.start;
   }
 
-  /** the wait before the next attempt, or undefined once the budget is spent */
+  /** undefined once the budget is spent */
   nextWait(retryAfterSeconds?: number, fixedMs?: number): number | undefined {
     this.begin();
     const remaining = this.budgetMs - this.elapsedMs();
@@ -410,7 +410,7 @@ function withRetriedFor(err: UserError, window: RetryWindow): UserError {
   return new UserError(`${err.message}${suffix}`, err.code);
 }
 
-/** writes the restart notice once, on the first retry */
+// once per budget window, so a long restart prints one notice
 function restartNotifier(
   timing: RetryTiming,
 ): (server: string, reason: string, budgetMs: number) => void {
@@ -1421,6 +1421,50 @@ export async function probeHandshakeStatus(
   headers: Record<string, string> = {},
   caCerts?: string[],
 ): Promise<number | undefined> {
+  return (await probeHandshake(wsUrl, headers, caCerts)).status;
+}
+
+interface HandshakeProbe {
+  status?: number;
+  refused: boolean;
+}
+
+const REFUSED_PATTERN =
+  /connection refused|ECONNREFUSED|os error (?:61|111|10061)\b/i;
+
+// a WebSocket connect error reads "tcp connect error" for a refusal and a
+// timeout alike; only the fetch error's cause chain names the refusal
+function isConnectionRefused(error: unknown): boolean {
+  for (let e = error, depth = 0; e != null && depth < 5; depth++) {
+    const record = e as { message?: unknown; code?: unknown; cause?: unknown };
+    if (record.code === "ECONNREFUSED") return true;
+    if (
+      typeof record.message === "string" && REFUSED_PATTERN.test(record.message)
+    ) {
+      return true;
+    }
+    e = record.cause;
+  }
+  return false;
+}
+
+/** serve is restarting when nothing listens or a proxy answers 502/503/504 */
+export async function probeServeRestarting(
+  wsUrl: string,
+  headers: Record<string, string> = {},
+  caCerts?: string[],
+): Promise<boolean> {
+  const probe = await probeHandshake(wsUrl, headers, caCerts);
+  return probe.status === undefined
+    ? probe.refused
+    : RESTART_STATUSES.has(probe.status);
+}
+
+async function probeHandshake(
+  wsUrl: string,
+  headers: Record<string, string>,
+  caCerts: string[] | undefined,
+): Promise<HandshakeProbe> {
   let client: Deno.HttpClient | undefined;
   try {
     const effectiveCaCerts = caCerts ?? getEnvCaCerts();
@@ -1448,9 +1492,9 @@ export async function probeHandshakeStatus(
       signal: AbortSignal.timeout(HANDSHAKE_PROBE_TIMEOUT_MS),
     });
     await response.body?.cancel();
-    return response.status;
-  } catch {
-    return undefined;
+    return { status: response.status, refused: false };
+  } catch (error) {
+    return { refused: isConnectionRefused(error) };
   } finally {
     client?.close();
   }
@@ -1546,7 +1590,8 @@ async function diagnoseConnectFailure(
   const sentToken = Object.keys(headers).some((name) =>
     name.toLowerCase() === "authorization"
   );
-  const probed = await probeHandshakeStatus(wsUrl, headers, caCerts);
+  const probe = await probeHandshake(wsUrl, headers, caCerts);
+  const probed = probe.status;
   const message = describeStatuslessFailure(
     wsUrl,
     originalMessage,
@@ -1554,7 +1599,9 @@ async function diagnoseConnectFailure(
     sentToken,
   );
   if (probed === undefined) {
-    return { message, unreachable: "not accepting connections" };
+    return probe.refused
+      ? { message, unreachable: "not accepting connections" }
+      : { message };
   }
   if (RESTART_STATUSES.has(probed)) {
     return { message, unreachable: `HTTP ${probed}` };

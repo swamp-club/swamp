@@ -1262,3 +1262,60 @@ Deno.test("SwampClient - a draining error after a run event, or on a plain reque
     },
   );
 });
+
+async function until(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !condition(); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert(condition(), "condition never held");
+}
+
+Deno.test("SwampClient - a socket retired by a draining refusal closes once its last run settles", async () => {
+  const clock = fakeClock();
+  let held: { id: string; socket: WebSocket } | undefined;
+  let retiredClosed = false;
+  await withRestartingServer(
+    accept,
+    (req, n, socket) => {
+      if (n === 1) {
+        held = { id: req.id, socket };
+        socket.addEventListener("close", () => retiredClosed = true);
+        return;
+      }
+      if (n === 2) {
+        socket.send(JSON.stringify(refusal(req.id, "draining", 0)));
+        return;
+      }
+      socket.send(JSON.stringify(completedRun(req.id)));
+    },
+    clock.options,
+    async (client, received) => {
+      const first = client.workflowRun({ workflowIdOrName: "w" });
+      await until(() => received.length === 1);
+      const second = await client.workflowRun({ workflowIdOrName: "w" });
+      assertEquals(second.outcome, "completed");
+      assertEquals(retiredClosed, false);
+      held!.socket.send(JSON.stringify(completedRun(held!.id)));
+      assertEquals((await first).outcome, "completed");
+      await until(() => retiredClosed);
+    },
+  );
+});
+
+Deno.test("SwampClient - a Retry-After of 0 still waits the backoff base before starting again", async () => {
+  const clock = fakeClock();
+  await withRestartingServer(
+    accept,
+    (req, n, socket) => {
+      socket.send(JSON.stringify(
+        n === 1 ? refusal(req.id, "not_ready", 0) : completedRun(req.id),
+      ));
+    },
+    clock.options,
+    async (client, received) => {
+      await client.workflowRun({ workflowIdOrName: "w" });
+      assertEquals(received.length, 2);
+      assertEquals(clock.sleeps, [250]);
+    },
+  );
+});

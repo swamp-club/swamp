@@ -476,6 +476,12 @@ import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { ServeAdmission } from "../../serve/serve_admission.ts";
+import { checkReusePortListen } from "../../infrastructure/runtime/reuse_port_check.ts";
+import {
+  DeferredReplaySweep,
+  pendingOwnerLiveness,
+} from "../../serve/pending_run_owner.ts";
+import type { PendingRunOwner } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
@@ -650,6 +656,7 @@ import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_
 import {
   checkOpenFileLimit,
   isProcessGone,
+  processHostIdentity,
   tryRaiseOpenFileLimit,
 } from "../../infrastructure/runtime/process.ts";
 import {
@@ -2002,7 +2009,6 @@ export function parseShutdownListenerGrace(
   return parseTimerDuration(raw, "--shutdown-listener-grace");
 }
 
-/** resolves once `graceMs` has passed since `startedAt` */
 export function listenerGraceElapsed(
   startedAt: number,
   graceMs: number,
@@ -2541,7 +2547,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--shutdown-listener-grace <duration:string>",
-    "How long serve keeps listening after /ready turns 503, so load balancers notice first (default: 1s, 0 with --reuse-port, env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
+    "How long serve keeps listening after /ready turns 503, so load balancers notice first; set it above the load balancer's health-check window, never more than --shutdown-drain-timeout (default: 1s, 0 with --reuse-port, env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
   )
   .option(
     "--datastore-poll-interval <duration:string>",
@@ -3476,7 +3482,7 @@ export const serveCommand = new Command()
     "--shutdown-listener-grace <duration:string>",
     "How long shutdown keeps accepting connections after /ready turns 503, so load balancers stop routing here first. " +
       "The listener closes once this has passed and in-flight runs have drained. " +
-      "Raise it above the load balancer's health-check window. Default: 1s, or 0 with --reuse-port (env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
+      "Raise it above the load balancer's health-check window; it never exceeds --shutdown-drain-timeout. Default: 1s, or 0 with --reuse-port (env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
   )
   .option(
     "--datastore-poll-interval <duration:string>",
@@ -3557,7 +3563,7 @@ export const serveCommand = new Command()
   .option(
     "--reuse-port",
     "Listen with SO_REUSEPORT and open the port only once startup completes, so a new serve can start " +
-      "beside the old one before it is stopped. The kernel balances connections across them on Linux only " +
+      "beside the old one before it is stopped. Only Linux lets two processes share the port " +
       "(env: SWAMP_REUSE_PORT)",
   )
   .option(
@@ -3696,6 +3702,9 @@ export const serveCommand = new Command()
         logger.warn("{warning}", { warning: warning.message });
       }
     }
+    if (merged.reusePort) {
+      checkReusePortListen({ port, hostname: host, cert, key });
+    }
     const trustProxy = merged.trustProxy;
 
     if (authConfig.mode === "none" && authConfig.admins.length > 0) {
@@ -3803,7 +3812,7 @@ export const serveCommand = new Command()
 
     if (merged.reusePort && Deno.build.os !== "linux") {
       logger.warn(
-        "--reuse-port: {os} does not balance connections across processes sharing a port, so an overlapping restart may send every connection to one of them",
+        "--reuse-port: only Linux lets two processes share a port, so on {os} a second serve cannot start beside this one",
         { os: Deno.build.os },
       );
     }
@@ -5533,6 +5542,11 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
+    const pendingRunOwner: PendingRunOwner = {
+      instanceId,
+      pid: Deno.pid,
+      host: processHostIdentity(),
+    };
     // the advertised address when given; otherwise the listener's, left out
     // when a wildcard or loopback bind names nothing another host can reach,
     // with an IPv6 literal bracketed for the URL
@@ -6103,6 +6117,10 @@ export const serveCommand = new Command()
     const ac = new AbortController();
     // closes the listener ahead of ac, whose audit sinks must outlive the drain
     const listenerAc = new AbortController();
+    // passes start only after boot replay, which defines replayDeferred
+    const deferredReplay = new DeferredReplaySweep({
+      replay: (ids) => replayDeferred(ids),
+    });
 
     const auditConfig = parseAuditConfig(configFile);
     if (auditConfig) {
@@ -6693,7 +6711,8 @@ export const serveCommand = new Command()
             },
           ),
         pendingRunHook: {
-          enqueue: async (entry) => {
+          enqueue: async (queued) => {
+            const entry = { ...queued, owner: pendingRunOwner };
             runTracker.enqueuePendingRun(entry);
             if (controlPlaneStore) {
               try {
@@ -7256,6 +7275,7 @@ export const serveCommand = new Command()
     const webhookService = new WebhookService({
       acceptsRuns: () => !isFollowing(),
       startupComplete: () => admission.phase !== "starting",
+      pendingRunOwner,
       ...(leaderLink !== undefined ? { leaderLink } : {}),
       repoDir: resolvedRepoDir,
       repoContext,
@@ -8880,6 +8900,11 @@ export const serveCommand = new Command()
       // closing the listener ends every open WebSocket, so it waits for the
       // drain, and for the grace load balancers need to see /ready turn 503;
       // the stages below run meanwhile, so the grace never lengthens shutdown
+      await stages.run(
+        "deferred replay",
+        () => deferredReplay.stop(),
+        "awaited",
+      );
       const listenerClosed = listenerGraceElapsed(
         drainStarted,
         shutdownListenerGraceMs,
@@ -9188,10 +9213,18 @@ export const serveCommand = new Command()
     const configuredCronWorkflows = new Set(
       allWorkflows.filter((w) => w.schedule).map((w) => w.name),
     );
-    const replayPendingAtLead = async (): Promise<void> => {
+    const pendingOwnerAlive = pendingOwnerLiveness({
+      instanceId,
+      ...(controlPlaneStore ? { controlPlaneStore } : {}),
+      ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
+    });
+    const replayPending = async (
+      deferred: Set<string>,
+      only?: ReadonlySet<string>,
+    ): Promise<number> => {
       // read at replay time: a reload may have changed the routes since boot
       const webhookTargets = webhookReplayTargets(webhookService);
-      const replayed = await replayPendingRuns({
+      return await replayPendingRuns({
         runTracker,
         webhookService,
         scheduledExecution: scheduledExecution ?? undefined,
@@ -9199,9 +9232,33 @@ export const serveCommand = new Command()
         configuredWebhookWorkflows: webhookTargets.workflows,
         configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
+        ownerAlive: pendingOwnerAlive,
+        deferred,
+        claimAs: pendingRunOwner,
+        ...(only ? { only } : {}),
       });
+    };
+    const replayDeferred = async (
+      ids: ReadonlySet<string>,
+    ): Promise<ReadonlySet<string>> => {
+      const still = new Set<string>();
+      const replayed = await replayPending(still, ids);
+      if (replayed > 0) {
+        logger
+          .info`Replayed ${replayed} pending run(s) a stopped serve process left`;
+      }
+      return still;
+    };
+    const replayPendingAtLead = async (): Promise<void> => {
+      const deferred = new Set<string>();
+      const replayed = await replayPending(deferred);
       if (replayed > 0) {
         logger.info`Replayed ${replayed} pending run(s) from previous process`;
+      }
+      if (deferred.size > 0) {
+        logger
+          .info`Left ${deferred.size} pending run(s) to the live serve process that queued them; replaying them once it stops`;
+        deferredReplay.start(deferred);
       }
     };
     if (!v3Follows) {
@@ -9956,7 +10013,14 @@ export const serveCommand = new Command()
           ),
       });
     }
-    if (!shuttingDown) server ??= listen();
+    if (!shuttingDown) {
+      try {
+        server ??= listen();
+      } catch (error) {
+        await startShutdown();
+        throw error;
+      }
+    }
     admission.open();
     isReady = true;
     logger.info("Startup complete — /ready is now serving 200");

@@ -44,7 +44,12 @@ import {
   listActiveRunsForInstance,
 } from "./active_run_tracker.ts";
 import { isUuid } from "../domain/models/model_lookup.ts";
-import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
+import {
+  parsePendingRunOwner,
+  type PendingRunEntry,
+  type PendingRunOwner,
+} from "../infrastructure/persistence/run_tracker_store.ts";
+import type { PendingOwnerAlive } from "./pending_run_owner.ts";
 import { isProcessGone } from "../infrastructure/runtime/process.ts";
 import { isSensitiveHeader } from "./webhook.ts";
 import {
@@ -322,6 +327,13 @@ export interface ReplayPendingRunsDeps {
   configuredWebhookWorkflows: ReadonlySet<string>;
   configuredWebhookRoutes: ReadonlySet<string>;
   configuredCronWorkflows: ReadonlySet<string>;
+  /** a run whose owner still lives is left to it and named in `deferred` */
+  ownerAlive?: PendingOwnerAlive;
+  deferred?: Set<string>;
+  /** replays only these ids, as the deferred sweep does */
+  only?: ReadonlySet<string>;
+  /** a replayed run becomes this process's, so no later start replays it again */
+  claimAs?: PendingRunOwner;
 }
 
 export async function replayPendingRuns(
@@ -364,7 +376,9 @@ export async function replayPendingRuns(
             );
             continue;
           }
-          entry = raw as PendingRunEntry;
+          const { owner: rawOwner, ...rest } = raw as Record<string, unknown>;
+          const owner = parsePendingRunOwner(rawOwner);
+          entry = { ...rest, ...(owner ? { owner } : {}) } as PendingRunEntry;
         } catch {
           logger.warn`Discarding corrupt remote pending run at ${key}`;
           await deps.controlPlaneStore.delete(key).catch(
@@ -424,6 +438,14 @@ export async function replayPendingRuns(
 
   let replayed = 0;
   for (const entry of pending) {
+    if (deps.only && !deps.only.has(entry.id)) continue;
+    if (entry.owner && deps.ownerAlive && await deps.ownerAlive(entry.owner)) {
+      deps.deferred?.add(entry.id);
+      continue;
+    }
+    if (deps.claimAs) {
+      await claimPendingRun(deps, entry, remoteSourceKeys.get(entry.id));
+    }
     try {
       if (entry.source === "webhook" && deps.webhookService) {
         if (!deps.configuredWebhookWorkflows.has(entry.workflowIdOrName)) {
@@ -535,6 +557,27 @@ export async function replayPendingRuns(
   }
 
   return replayed;
+}
+
+async function claimPendingRun(
+  deps: ReplayPendingRunsDeps,
+  entry: PendingRunEntry,
+  remoteKey: string | undefined,
+): Promise<void> {
+  const owner = deps.claimAs!;
+  deps.runTracker.setPendingRunOwner(entry.id, owner);
+  if (!deps.controlPlaneStore) return;
+  try {
+    await deps.controlPlaneStore.put(
+      remoteKey ?? `pending-runs/${entry.id}`,
+      new TextEncoder().encode(JSON.stringify({ ...entry, owner })),
+    );
+  } catch (err) {
+    logger.warn("Control-plane owner update failed for {id}: {error}", {
+      id: entry.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export const CLAIM_TTL_MS = 5 * 60 * 1000;
