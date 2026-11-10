@@ -230,9 +230,9 @@ Deno.test(
   },
 );
 
-// only main.ts may import the CLI composition root, and only it may import the
-// route table: any other importer pulls the whole CLI into its module closure,
-// so affectedCommands would name nearly every command
+// only main.ts may import the CLI composition root, and only the composition
+// root may import the route table: any other importer pulls the whole CLI into
+// its module closure, so affectedCommands would name nearly every command
 const CLI_COMPOSITION_ROOT = "src/cli/mod.ts";
 const CLI_ROUTE_TABLE = "src/cli/root_routes.ts";
 

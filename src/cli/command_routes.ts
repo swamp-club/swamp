@@ -30,13 +30,13 @@ export interface CommandRoute {
   load(rest: readonly string[]): Promise<AnyCommand>;
 }
 
-export interface GlobalOptionSpec {
+export interface OptionSpec {
   readonly flags: readonly string[];
   readonly takesValue: boolean;
 }
 
 /** must equal the options `createRootCommand` declares; a fitness rule holds them together */
-export const ROOT_GLOBAL_OPTIONS: readonly GlobalOptionSpec[] = [
+export const ROOT_GLOBAL_OPTIONS: readonly OptionSpec[] = [
   { flags: ["--json"], takesValue: false },
   { flags: ["--log"], takesValue: false },
   { flags: ["--log-level"], takesValue: true },
@@ -49,7 +49,7 @@ export const ROOT_GLOBAL_OPTIONS: readonly GlobalOptionSpec[] = [
 
 export const HELP_COMMAND = "help";
 
-const HELP_OPTIONS: readonly GlobalOptionSpec[] = [
+const HELP_OPTIONS: readonly OptionSpec[] = [
   { flags: ["--include-hidden"], takesValue: false },
 ];
 
@@ -73,8 +73,8 @@ type Scan =
 
 function findSpec(
   arg: string,
-  specs: readonly GlobalOptionSpec[],
-): { spec: GlobalOptionSpec; inlineValue: boolean } | undefined {
+  specs: readonly OptionSpec[],
+): { spec: OptionSpec; inlineValue: boolean } | undefined {
   for (const spec of specs) {
     if (spec.flags.includes(arg)) return { spec, inlineValue: false };
     if (
@@ -94,7 +94,7 @@ function findSpec(
 function scanForWord(
   args: readonly string[],
   start: number,
-  specs: readonly GlobalOptionSpec[],
+  specs: readonly OptionSpec[],
 ): Scan {
   let i = start;
   while (i < args.length) {
@@ -136,11 +136,7 @@ function locate(args: readonly string[]): Located | undefined {
   return { words: [word, args[target.index]], next: target.index + 1 };
 }
 
-/**
- * the words that pick a route: none, the command word, or `help` and the first
- * word of its path; undefined when an option the router does not know comes
- * first
- */
+/** undefined when an option the router does not know comes before the word */
 export function commandWords(
   args: readonly string[],
 ): readonly string[] | undefined {

@@ -17,9 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a fresh module graph per route: the startup graph loads first, as main.ts
-// loads it, then the route's command loads through import() as it does in the
-// binary, so a cycle entered from a new side or a missing side effect shows up
+// a fresh module graph per route, so a cycle entered from a new side shows up
 
 import { type AnyCommand, buildCliSchema } from "../src/cli/cli_schema.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";

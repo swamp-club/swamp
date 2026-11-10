@@ -211,10 +211,11 @@ Deno.test("serve run entries: the ambient root context is captured at startup", 
     /^const \w+ = AsyncLocalStorage\.snapshot\(\);$/m.test(helper),
     "ambient_context.ts must take AsyncLocalStorage.snapshot() at top level",
   );
-  const startup = await staticImportClosure("main.ts");
+  const startup = await staticImportClosure("main.ts", { runtimeOnly: true });
   assert(
     startup.has("src/infrastructure/runtime/ambient_context.ts"),
-    "ambient_context.ts must be reachable from main.ts through static imports",
+    "ambient_context.ts must be reachable from main.ts through static imports " +
+      "that are not type-only",
   );
   const dynamic: string[] = [];
   for await (const path of productionSourceFiles(SRC_DIR)) {

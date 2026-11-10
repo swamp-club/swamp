@@ -131,10 +131,13 @@ export async function collectReferenceEdges(
 }
 
 /**
- * every local module evaluated before any import() runs; type references are
- * followed too, which over-reports rather than miss an edge
+ * the local modules loaded before any import() runs; type-only references are
+ * followed unless runtimeOnly, which over-reports rather than miss an edge
  */
-export async function staticImportClosure(entry: string): Promise<Set<string>> {
+export async function staticImportClosure(
+  entry: string,
+  { runtimeOnly = false }: { runtimeOnly?: boolean } = {},
+): Promise<Set<string>> {
   const seen = new Set<string>([entry]);
   const pending = [entry];
   while (pending.length > 0) {
@@ -142,6 +145,7 @@ export async function staticImportClosure(entry: string): Promise<Set<string>> {
     const source = await Deno.readTextFile(filePath);
     for (const reference of findModuleReferences(filePath, source)) {
       if (reference.kind === "dynamic") continue;
+      if (runtimeOnly && reference.typeOnly) continue;
       const resolved = resolveImport(filePath, reference.specifier);
       if (
         resolved === undefined || seen.has(resolved) ||

@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * the files on the command line are the command files of the deno info graph;
- * every root's file must be among them, so a route whose import() deno info did
- * not record fails here instead of silently dropping out of affectedCommands
- */
-
 import { COMMAND_DIR, type CommandIndex } from "./affected_commands.ts";
 import { ROOT_ROUTES } from "../src/cli/root_routes.ts";
 
@@ -53,6 +47,8 @@ export function buildCommandIndex(
     if (Object.hasOwn(index, name)) {
       problems.push(`${name} is listed twice`);
     } else if (!known.has(module)) {
+      // the files given are the deno info graph's: a missing one means deno info
+      // did not record that route's import(), which would drop it from the index
       problems.push(`${name} names ${module}, which is not in the module graph`);
     } else {
       index[name] = module;

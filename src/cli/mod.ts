@@ -63,6 +63,9 @@ import {
   selectRoute,
 } from "./command_routes.ts";
 import { ROOT_ROUTES } from "./root_routes.ts";
+// snapshots the root async context on evaluation, so it must load at startup
+// and not with a command imported inside the invocation's span
+import "../infrastructure/runtime/ambient_context.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
 import {
@@ -1966,7 +1969,7 @@ async function initTelemetryService(
  * the invoked top-level command alone, or every command when argv is omitted
  * or the router cannot place it
  */
-export function loadCommands(
+function loadCommands(
   args?: readonly string[],
 ): Promise<LoadedCommand[]> {
   if (args === undefined) return loadRoutes(ROOT_ROUTES);
@@ -1980,7 +1983,7 @@ export function loadCommands(
  * kept free of invocation state so the real command tree can be built outside
  * runInvocation; the telemetry redaction fitness test walks it
  */
-export function registerLoadedCommands(
+function registerLoadedCommands(
   cli: AnyCommand,
   loaded: readonly LoadedCommand[],
 ): void {
@@ -2289,9 +2292,9 @@ async function runInvocation(
     setActiveTelemetryContext(telemetryCtx);
   }
 
-  // buildCommandTree must run before registerCommands(cli) because Cliffy
-  // re-parents shared instances to the last tree; hook mode checks locally and,
-  // when blocked, records nothing and exits 0
+  // the gate tree must be built before the real cli registers the same commands
+  // because Cliffy re-parents shared instances to the last tree; hook mode
+  // checks locally and, when blocked, records nothing and exits 0
   const commandTree = hookMode
     ? undefined
     : buildLoadedCommandTree(loadedCommands);
