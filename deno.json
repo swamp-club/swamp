@@ -101,7 +101,7 @@
     "workflows/",
     ".vault-test-vault/",
     "resources/",
-    "build/",
+    "build/bundle/",
     "tools/swamp-eval/",
     ".swamp/",
     ".claude/worktrees/"

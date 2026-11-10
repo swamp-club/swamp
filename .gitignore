@@ -30,7 +30,7 @@ test-repo/
 CLAUDE.local.md
 .envrc
 resources/deno/
-/build/
+/build/bundle/
 /scripts/dist
 /eval-results/
 /.bin/

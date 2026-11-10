@@ -215,6 +215,15 @@ Deno.test("restoreBuildState: tolerates a missing bundle directory", async () =>
   });
 });
 
+Deno.test("restoreBuildState: leaves the bundle directory alone when no bundle was built", async () => {
+  await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
+    await restoreBuildState(versionFile, "original", denoDir, undefined);
+    assertEquals(await Deno.readTextFile(versionFile), "original");
+    assertEquals(await exists(denoDir), false);
+    assertEquals(await exists(join(bundleDir, "main.js")), true);
+  });
+});
+
 Deno.test("restoreBuildState: removes the deno resources and the bundle when the version file write fails", async () => {
   await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
     await Deno.remove(versionFile);

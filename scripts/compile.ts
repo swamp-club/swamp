@@ -217,12 +217,13 @@ async function removeBuildDir(dir: string, label: string): Promise<void> {
   }
 }
 
-// undefined content means nothing was stamped, so the file is left alone
+// undefined content means nothing was stamped, so the file is left alone;
+// an undefined bundleDir means no bundle was built, so the directory is too
 export async function restoreBuildState(
   versionFile: string,
   originalContent: string | undefined,
   denoResourcesDir: string,
-  bundleDir: string,
+  bundleDir: string | undefined,
 ): Promise<void> {
   try {
     if (originalContent !== undefined) {
@@ -230,7 +231,9 @@ export async function restoreBuildState(
     }
   } finally {
     await removeBuildDir(denoResourcesDir, "resources/deno/");
-    await removeBuildDir(bundleDir, "build/bundle/");
+    if (bundleDir !== undefined) {
+      await removeBuildDir(bundleDir, "build/bundle/");
+    }
   }
 }
 
@@ -288,7 +291,7 @@ async function main(): Promise<boolean> {
         VERSION_FILE,
         wroteStamp ? originalContent : undefined,
         join(root, "resources", "deno"),
-        join(root, BUNDLE_DIR),
+        options.bundle ? join(root, BUNDLE_DIR) : undefined,
       ),
   });
 }
