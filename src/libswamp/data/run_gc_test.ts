@@ -503,3 +503,83 @@ Deno.test("runGcPreview: names an auto-definition whose last output its method's
     modelRegistry.invalidateType(type);
   }
 });
+
+Deno.test("runGc: a failed lock release keeps the batch's removals and goes on to the next batch", async () => {
+  const { ModelType } = await import("../../domain/models/model_type.ts");
+  const { YamlOutputRepository } = await import(
+    "../../infrastructure/persistence/yaml_output_repository.ts"
+  );
+  const { YamlEvaluatedDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts"
+  );
+  const { YamlDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_definition_repository.ts"
+  );
+  const { saveAgedAutoDefinition, pathExists } = await import(
+    "../retention/retention_fixture_test_helpers.ts"
+  );
+  const type = ModelType.create("command/shell");
+  await withTempDir(async (dir) => {
+    const autoDir = join(dir, ".swamp", "auto-definitions");
+    const autoRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      autoDir,
+      false,
+    );
+    // one more than a batch, so the drain needs a second batch
+    const saved = [];
+    for (let i = 0; i < 101; i++) {
+      saved.push(
+        await saveAgedAutoDefinition(
+          autoRepo,
+          autoDir,
+          type,
+          `idle-${String(i).padStart(3, "0")}`,
+          40 * 86_400_000,
+        ),
+      );
+    }
+    let releases = 0;
+    const deps = createRunGcDeps(
+      dir,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        autoDefinitionsDir: autoDir,
+        autoDefinitionRepo: autoRepo,
+        outputRepo: new YamlOutputRepository(dir),
+        dataRepo: { findAllForModel: () => Promise.resolve([]) },
+        evaluatedDefinitionRepo: new YamlEvaluatedDefinitionRepository(dir),
+        workflowRepo: { findAll: () => Promise.resolve([]) },
+        tryLockModel: () =>
+          Promise.resolve({
+            release: () => {
+              releases++;
+              return Promise.reject(new Error("release failed"));
+            },
+          }),
+      },
+    );
+    let completed: string[] | undefined;
+    for await (
+      const event of runGc(createMockCtx(), deps, {
+        dryRun: false,
+        workflowRunRetentionDays: 30,
+        outputRetentionDays: 30,
+        autoDefinitionRetentionDays: 5,
+      })
+    ) {
+      if (event.kind === "completed") {
+        completed = event.data.autoDefinitions.map((d) => d.name);
+      }
+    }
+    assertEquals(completed?.length, 101);
+    assert(releases >= 101);
+    for (const { path } of saved) {
+      assertEquals(await pathExists(path), false);
+    }
+  });
+});

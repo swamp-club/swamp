@@ -268,7 +268,11 @@ import {
   type ReservedTagLookups,
   reservedWorkflowRunTag,
 } from "./reserved_workflow_tags.ts";
-import { wordedError } from "../behavior_wording.ts";
+import {
+  wordedError,
+  wordedText,
+  wordedUserError,
+} from "../behavior_wording.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import {
   executionErrorFrom,
@@ -2404,8 +2408,12 @@ export class DefaultStepExecutor implements StepExecutor {
               originalDefinition.id as DefinitionId,
             ) === null
         ) {
-          throw new UserError(
-            `Behavior ${originalDefinition.name} was removed, or removed and created again, while this step waited for its lock: run it again`,
+          throw wordedUserError(
+            wordedText((w) =>
+              `${w.Noun} ${originalDefinition.name} was removed, or replaced ` +
+              `by a new definition with the same name, while this step ` +
+              `waited for its lock: run it again`
+            ),
             "definition_changed_under_lock",
           );
         }
