@@ -50,7 +50,10 @@ import {
 } from "../src/cli/commands/model_method_run.ts";
 import { workflowRunCommand } from "../src/cli/commands/workflow_run.ts";
 import { workflowResumeCommand } from "../src/cli/commands/workflow_resume.ts";
-import { setRunCheckpointIntervalForTesting } from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
+import {
+  firePacedCheckpointsForTesting,
+  setRunCheckpointIntervalForTesting,
+} from "../src/infrastructure/persistence/workflow_run_checkpointer.ts";
 import { dataGetCommand } from "../src/cli/commands/data_get.ts";
 import { dataListCommand } from "../src/cli/commands/data_list.ts";
 import {
@@ -654,7 +657,9 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    setRunCheckpointIntervalForTesting(500);
+    // paced only where a step fires it: a wall-clock interval also lands
+    // between steps and in the reports on a loaded host
+    setRunCheckpointIntervalForTesting(60 * 60 * 1000);
     try {
       await withMember(async (member) => {
         const run = () =>
@@ -673,6 +678,7 @@ Deno.test({
           // a step that outlasts the interval sees a paced checkpoint land
           slowWrite = async () => {
             const before = commitsIn(spans);
+            firePacedCheckpointsForTesting();
             await waitFor(
               () => commitsIn(spans) > before,
               "a paced checkpoint during the step",
