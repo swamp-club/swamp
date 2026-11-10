@@ -251,8 +251,6 @@ async function runScenario(
     assertNoRunHeldTwice(`after ${JSON.stringify(action)}`);
   }
 
-  // once the store behaves, every run left is queued by exactly one live
-  // instance
   const live = instances.filter((i) => i.alive);
   if (live.length === 0) return;
   for (let round = 0; round < 2; round++) {

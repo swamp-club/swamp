@@ -68,7 +68,7 @@ export interface PendingOwnerLivenessDeps {
 /**
  * a peer's queued run is its own while that peer lives: on this kernel by its
  * process, elsewhere by a fresh heartbeat; a missing or stale heartbeat counts
- * as gone, one that cannot be read is judged as an owner with no heartbeat
+ * as gone, one that cannot be read counts as `unjudgedOwner` says
  */
 export function pendingOwnerLiveness(
   deps: PendingOwnerLivenessDeps,

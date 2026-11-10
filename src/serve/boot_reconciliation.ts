@@ -678,6 +678,10 @@ async function claimInControlPlane(
     }
     previous = claimant.instanceId;
   }
+  logger.warn(
+    "Pending run {id} is not replayed: its claims pass through more than {hops} gone instances",
+    { id: entry.id, hops: MAX_CLAIM_HOPS },
+  );
   return false;
 }
 

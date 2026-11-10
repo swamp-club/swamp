@@ -3207,7 +3207,6 @@ Deno.test("replayPendingRuns: claims of runs no longer pending are deleted, and 
   ]);
   assertEquals([...replayedRuns], ["still"]);
 
-  // a pass that does not list the control plane reaps nothing
   controlPlaneStore.data.set(
     "claims/pending-runs/later/peer-gone",
     new TextEncoder().encode(JSON.stringify(claimRecord(SELF))),
@@ -3254,4 +3253,31 @@ Deno.test("replayPendingRuns: with no control plane the replayed set forgets run
   });
 
   assertEquals([...replayedRuns], ["left"]);
+});
+
+Deno.test("replayPendingRuns: a claim chain through more gone instances than the hop limit is left alone", async () => {
+  const entries: Record<string, unknown> = {
+    "pending-runs/long": cronEntry("long", GONE_PEER),
+  };
+  const chain = ["peer-gone", "g1", "g2", "g3", "g4"];
+  for (let i = 0; i < chain.length - 1; i++) {
+    entries[`claims/pending-runs/long/${chain[i]}`] = claimRecord({
+      instanceId: chain[i + 1],
+      pid: 200 + i,
+    });
+  }
+  const controlPlaneStore = createInMemoryControlPlaneStore(entries);
+  const h = sweeper(controlPlaneStore);
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 0);
+  assertEquals(
+    controlPlaneStore.data.has("claims/pending-runs/long/g4"),
+    false,
+  );
 });
