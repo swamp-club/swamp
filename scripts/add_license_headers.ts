@@ -159,19 +159,19 @@ export function applyHeader(content: string): HeaderResult {
     matched++;
   }
 
-  // A // line after the matched run could be damaged header text or a real
-  // comment; rewriting either guess risks a stacked header or a lost comment.
-  const next = lines[matched];
+  const body = lines.slice(matched);
+  while (body.length > 0 && body[0].trim() === "") body.shift();
+
+  // A // line after the matched run, blank lines aside, could be damaged header
+  // text or a real comment; rewriting either guess risks a stacked header or a
+  // lost comment.
   if (
     matched === 0 ||
-    (matched < HEADER_LINES.length && next !== undefined &&
-      next.startsWith("//"))
+    (matched < HEADER_LINES.length && body[0]?.startsWith("//"))
   ) {
     return { kind: "unrepairable", content };
   }
 
-  const body = lines.slice(matched);
-  while (body.length > 0 && body[0].trim() === "") body.shift();
   const repaired = body.length === 0
     ? prefix + HEADER
     : prefix + HEADER + "\n" + body.join("\n");

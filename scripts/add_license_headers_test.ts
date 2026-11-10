@@ -164,6 +164,12 @@ Deno.test("applyHeader: refuses a header below an unrelated first comment", () =
   assertEquals(applyHeader(content), { kind: "unrepairable", content });
 });
 
+Deno.test("applyHeader: refuses a header split by a blank line", () => {
+  const content = HEADER_LINES.slice(0, 10).join("\n") + "\n\n" +
+    HEADER_LINES.slice(11).join("\n") + "\n\n" + BODY;
+  assertEquals(applyHeader(content), { kind: "unrepairable", content });
+});
+
 Deno.test("applyHeader: refuses a full header that sits below a doc block", () => {
   const content = "/** module doc */\n" + HEADER + "\n" + BODY;
   assertEquals(headerStatus(content), "malformed");
