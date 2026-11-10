@@ -25,6 +25,7 @@ import { ActiveRun } from "../../domain/models/active_run.ts";
 import { processHostIdentity } from "../runtime/process.ts";
 import {
   namespacedHostIdentity,
+  parsePendingRunOwner,
   type PendingRunEntry,
   RunTrackerStore,
 } from "./run_tracker_store.ts";
@@ -1622,4 +1623,142 @@ Deno.test("namespacedHostIdentity: refuses a Linux identity that names no pid na
   assertEquals(namespacedHostIdentity("host", "linux"), null);
   assertEquals(namespacedHostIdentity("host", "darwin"), "host");
   assertEquals(namespacedHostIdentity("host", "windows"), "host");
+});
+
+Deno.test("RunTrackerStore: a pending run keeps its owner, and a claim replaces it", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
+  try {
+    const owner = {
+      instanceId: "instance-A",
+      pid: 4242,
+      host: "host-a#4026531836",
+    };
+    store.enqueuePendingRun({
+      id: "owned-1",
+      source: "webhook",
+      workflowIdOrName: "wf",
+      createdAt: new Date().toISOString(),
+      owner,
+    });
+    store.enqueuePendingRun({
+      id: "ownerless-1",
+      source: "cron",
+      workflowIdOrName: "wf",
+      createdAt: new Date().toISOString(),
+    });
+    const read = Object.fromEntries(
+      store.findAllPendingRuns().map((e) => [e.id, e.owner]),
+    );
+    assertEquals(read["owned-1"], owner);
+    assertEquals(read["ownerless-1"], undefined);
+
+    const claimer = { instanceId: "instance-B", pid: 7 };
+    assertEquals(
+      store.claimPendingRun("owned-1", claimer, "instance-C"),
+      false,
+      "a claim from an owner the run no longer has",
+    );
+    assertEquals(store.claimPendingRun("owned-1", claimer, "instance-A"), true);
+    assertEquals(
+      store.findAllPendingRuns().find((e) => e.id === "owned-1")?.owner,
+      claimer,
+    );
+    assertEquals(
+      store.claimPendingRun(
+        "owned-1",
+        { instanceId: "instance-C", pid: 8 },
+        "instance-A",
+      ),
+      false,
+      "a second claimer that read the same gone owner",
+    );
+    assertEquals(
+      store.claimPendingRun("ownerless-1", claimer, undefined),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: v8 migration reads an existing pending run as ownerless", () => {
+  using tempDb = makeTempDb();
+  const path = tempDb.path;
+  const db = new DatabaseSync(path);
+  db.exec(
+    `CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO run_tracker_meta VALUES ('schema_version', '7');
+    CREATE TABLE pending_runs (id TEXT PRIMARY KEY, source TEXT NOT NULL,
+      workflow_id_or_name TEXT NOT NULL, payload TEXT, route TEXT,
+      traceparent TEXT, tracestate TEXT, created_at TEXT NOT NULL,
+      receipt_trace TEXT);
+    INSERT INTO pending_runs (id, source, workflow_id_or_name, created_at)
+      VALUES ('legacy-pending', 'cron', 'wf', '${new Date().toISOString()}');`,
+  );
+  db.close();
+  const store = new RunTrackerStore(path);
+  try {
+    const [legacy] = store.findAllPendingRuns();
+    assertEquals(legacy.id, "legacy-pending");
+    assertEquals(legacy.owner, undefined);
+    store.enqueuePendingRun({
+      id: "after-migration",
+      source: "cron",
+      workflowIdOrName: "wf",
+      createdAt: new Date().toISOString(),
+      owner: { instanceId: "instance-A", pid: 1 },
+    });
+    assertEquals(
+      store.findAllPendingRuns().find((e) => e.id === "after-migration")
+        ?.owner,
+      { instanceId: "instance-A", pid: 1 },
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: a run whose owner does not parse is claimable as ownerless", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
+  try {
+    store.enqueuePendingRun({
+      id: "corrupt-owner",
+      source: "cron",
+      workflowIdOrName: "wf",
+      createdAt: new Date().toISOString(),
+    });
+    const db = new DatabaseSync(tempDb.path);
+    db.prepare("UPDATE pending_runs SET owner = ? WHERE id = ?").run(
+      "{not json",
+      "corrupt-owner",
+    );
+    db.close();
+    assertEquals(
+      store.findAllPendingRuns().find((e) => e.id === "corrupt-owner")?.owner,
+      undefined,
+    );
+    assertEquals(
+      store.claimPendingRun(
+        "corrupt-owner",
+        { instanceId: "instance-B", pid: 7 },
+        undefined,
+      ),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("parsePendingRunOwner: refuses an owner without an instance id or a positive pid", () => {
+  assertEquals(parsePendingRunOwner({ instanceId: "", pid: 1 }), undefined);
+  assertEquals(parsePendingRunOwner({ instanceId: "a", pid: 0 }), undefined);
+  assertEquals(parsePendingRunOwner({ instanceId: "a", pid: 1.5 }), undefined);
+  assertEquals(parsePendingRunOwner("a"), undefined);
+  assertEquals(
+    parsePendingRunOwner({ instanceId: "a", pid: 1, host: 3 }),
+    { instanceId: "a", pid: 1 },
+  );
 });

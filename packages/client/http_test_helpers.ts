@@ -31,6 +31,7 @@ export type Answer =
     text?: string;
   }
   | "network_error"
+  | "connection_refused"
   | "hang";
 
 /** a fetch that answers from a script and records what it was sent */
@@ -54,6 +55,15 @@ export function scriptedFetch(answers: Answer[] | ((sent: Sent) => Answer)): {
     if (answer === undefined) throw new Error("no scripted answer left");
     if (answer === "network_error") {
       return Promise.reject(new TypeError(`fetch failed: ${record.url}`));
+    }
+    if (answer === "connection_refused") {
+      return Promise.reject(
+        new TypeError("fetch failed", {
+          cause: new Error(
+            `error sending request for url (${record.url}): client error (Connect): tcp connect error: Connection refused (os error 61)`,
+          ),
+        }),
+      );
     }
     if (answer === "hang") {
       return new Promise<Response>((_, reject) => {

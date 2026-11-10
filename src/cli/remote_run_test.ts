@@ -40,6 +40,7 @@ import {
   formatCommandTarget,
   implicitServeUrl,
   probeHandshakeStatus,
+  probeServeRestarting,
   readTokenFile,
   remoteGateRefusalUserError,
   requestNewerServerResponse,
@@ -87,6 +88,7 @@ function scriptedServer(
     reply: (frame: Record<string, unknown>) => void,
     socket: WebSocket,
   ) => void,
+  port = 0,
 ): {
   url: string;
   shutdown: () => Promise<void>;
@@ -96,7 +98,7 @@ function scriptedServer(
   const received: unknown[] = [];
   const upgradeUrls: string[] = [];
   const server = Deno.serve(
-    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    { port, hostname: "127.0.0.1", onListen: () => {} },
     (req) => {
       upgradeUrls.push(req.url);
       const { socket, response } = Deno.upgradeWebSocket(req);
@@ -609,15 +611,20 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    await assertRejects(async () => {
+    const clock = fakeRetryClock();
+    const error = await assertRejects(async () => {
       for await (
         const _ of runWorkflowOverServer({
           server: "ws://127.0.0.1:1",
           payload: { workflowIdOrName: "wf" },
+          ...clock.options,
+          restartRetryBudgetMs: 0,
         })
         // deno-lint-ignore no-empty
       ) {}
     }, UserError);
+    assertStringIncludes(error.message, "127.0.0.1:1");
+    assertEquals(clock.delays, []);
   },
 });
 
@@ -1746,6 +1753,34 @@ Deno.test({
 
 Deno.test({
   name:
+    "probeServeRestarting: a refused connect or a 502/503/504 reads as restarting, any other status does not",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(
+      await probeServeRestarting(`ws://127.0.0.1:${freePort()}`),
+      true,
+    );
+    for (const [status, restarting] of [[503, true], [401, false]] as const) {
+      const server = Deno.serve(
+        { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+        () => new Response(null, { status }),
+      );
+      try {
+        assertEquals(
+          await probeServeRestarting(`ws://127.0.0.1:${server.addr.port}`),
+          restarting,
+          String(status),
+        );
+      } finally {
+        await server.shutdown();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
     "remote run: auth rejection shows authentication error when server is healthy",
   sanitizeOps: false,
   sanitizeResources: false,
@@ -1804,6 +1839,7 @@ Deno.test({
         const _ of runWorkflowOverServer({
           server: "ws://127.0.0.1:1",
           payload: { workflowIdOrName: "wf" },
+          restartRetryBudgetMs: 0,
         })
         // deno-lint-ignore no-empty
       ) {}
@@ -1868,6 +1904,7 @@ Deno.test({
           const _ of runWorkflowOverServer({
             server: server.url,
             payload: { workflowIdOrName: "wf" },
+            restartRetryBudgetMs: 0,
           })
           // deno-lint-ignore no-empty
         ) {}
@@ -4076,4 +4113,581 @@ Deno.test("requireGateAttemptCheck: refuses a serve that would drop the attempt,
       await server.shutdown();
     }
   }
+});
+
+function fakeRetryClock(
+  onSleep?: (count: number) => Promise<void> | void,
+): {
+  delays: number[];
+  notices: string[];
+  options: {
+    sleep: (ms: number) => Promise<void>;
+    now: () => number;
+    random: () => number;
+    log: (message: string) => void;
+  };
+} {
+  let now = 0;
+  const delays: number[] = [];
+  const notices: string[] = [];
+  return {
+    delays,
+    notices,
+    options: {
+      sleep: async (ms) => {
+        delays.push(ms);
+        now += ms;
+        await onSleep?.(delays.length);
+      },
+      now: () => now,
+      random: () => 0.5,
+      log: (message) => notices.push(message),
+    },
+  };
+}
+
+function freePort(): number {
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+  listener.close();
+  return port;
+}
+
+function completingRun(runId: string) {
+  return (
+    request: { type: string; id: string },
+    reply: (frame: Record<string, unknown>) => void,
+  ) => {
+    reply({
+      type: "event",
+      id: request.id,
+      event: { kind: "started", runId, workflowName: "wf", seq: 1 },
+    });
+    reply({ type: "done", id: request.id });
+  };
+}
+
+async function drainRun(
+  run: AsyncIterable<{ kind: string }>,
+): Promise<string[]> {
+  const kinds: string[] = [];
+  for await (const event of run) kinds.push(event.kind);
+  return kinds;
+}
+
+Deno.test({
+  name:
+    "remote run: a refused connect before the run starts is retried until serve listens",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const port = freePort();
+    let server: ReturnType<typeof scriptedServer> | undefined;
+    const clock = fakeRetryClock((count) => {
+      if (count === 2) server = scriptedServer(completingRun("run-1"), port);
+    });
+    try {
+      const kinds = await drainRun(runWorkflowOverServer({
+        server: `ws://127.0.0.1:${port}`,
+        payload: { workflowIdOrName: "wf" },
+        ...clock.options,
+      }));
+      assertEquals(kinds, ["started"]);
+      assertEquals(clock.delays, [1000, 2000]);
+      assertEquals(clock.notices.length, 1);
+      assertStringIncludes(clock.notices[0], "is restarting");
+      assertStringIncludes(clock.notices[0], "up to 30s");
+    } finally {
+      await server?.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a connect that fails without a refusal, such as a DNS failure, is not retried",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const clock = fakeRetryClock();
+    const error = await assertRejects(
+      () =>
+        drainRun(runWorkflowOverServer({
+          server: "ws://nonexistent.invalid:1234",
+          payload: { workflowIdOrName: "wf" },
+          ...clock.options,
+        })),
+      UserError,
+    );
+    assertStringIncludes(error.message, "nonexistent.invalid");
+    assertEquals(clock.delays, []);
+    assertEquals(clock.notices, []);
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: the restart notice names the server without its credentials",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const port = freePort();
+    const clock = fakeRetryClock();
+    await assertRejects(() =>
+      drainRun(runWorkflowOverServer({
+        server: `ws://alice:hunter2@127.0.0.1:${port}/?token=secret#frag`,
+        payload: { workflowIdOrName: "wf" },
+        restartRetryBudgetMs: 2_000,
+        ...clock.options,
+      }))
+    );
+    assertEquals(clock.notices.length, 1);
+    assertStringIncludes(clock.notices[0], `127.0.0.1:${port}`);
+    for (const secret of ["alice", "hunter2", "token=", "secret", "#frag"]) {
+      assertEquals(clock.notices[0].includes(secret), false, secret);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a 503 at the WebSocket upgrade before the run starts is retried",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let upgrades = 0;
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        upgrades++;
+        if (upgrades === 1) {
+          return new Response("Service Unavailable", { status: 503 });
+        }
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const request = JSON.parse(event.data as string);
+          completingRun("run-2")(
+            request,
+            (frame) => socket.send(JSON.stringify(frame)),
+          );
+        };
+        return response;
+      },
+    );
+    const clock = fakeRetryClock();
+    try {
+      const kinds = await drainRun(runWorkflowOverServer({
+        server: `ws://127.0.0.1:${server.addr.port}`,
+        payload: { workflowIdOrName: "wf" },
+        ...clock.options,
+      }));
+      assertEquals(kinds, ["started"]);
+      assertEquals(clock.delays, [1000]);
+      assertStringIncludes(clock.notices[0], "HTTP 503");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+for (
+  const [code, retryAfterSeconds, expectedDelay] of [
+    ["draining", 5, 5250],
+    ["draining", undefined, 1000],
+    ["not_ready", 2, 2250],
+  ] as const
+) {
+  Deno.test({
+    name: `remote run: a ${code} refusal${
+      retryAfterSeconds === undefined ? " without retryAfterSeconds" : ""
+    } before the run starts is retried`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      let attempts = 0;
+      const server = scriptedServer((request, reply) => {
+        attempts++;
+        if (attempts === 1) {
+          reply({
+            type: "error",
+            id: request.id,
+            error: {
+              code,
+              message: "serve is restarting",
+              ...(retryAfterSeconds !== undefined && { retryAfterSeconds }),
+            },
+          });
+          return;
+        }
+        completingRun("run-3")(request, reply);
+      });
+      const clock = fakeRetryClock();
+      try {
+        const kinds = await drainRun(runModelMethodOverServer({
+          server: server.url,
+          payload: { modelIdOrName: "m", methodName: "run" },
+          ...clock.options,
+        }));
+        assertEquals(kinds, ["started"]);
+        assertEquals(clock.delays, [expectedDelay]);
+        assertEquals(
+          server.received.map((r) => (r as { type: string }).type),
+          ["model.method.run", "model.method.run"],
+        );
+        assertStringIncludes(clock.notices[0], `(${code})`);
+      } finally {
+        await server.shutdown();
+      }
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "remote run: the refusal that ends the retries keeps the wait serve asked for",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: {
+          code: "draining",
+          message: "serve is shutting down",
+          retryAfterSeconds: 5,
+        },
+      });
+    });
+    const clock = fakeRetryClock();
+    try {
+      const error = await assertRejects(
+        () =>
+          drainRun(runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+            restartRetryBudgetMs: 6_000,
+            ...clock.options,
+          })),
+        ServerResponseError,
+      );
+      assertEquals(error.retryAfterSeconds, 5);
+      assertStringIncludes(error.message, "after retrying for");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a serve still draining when the 30s budget runs out fails with the refusal and how long it retried",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: { code: "draining", message: "serve is shutting down" },
+      });
+    });
+    const clock = fakeRetryClock();
+    try {
+      const error = await assertRejects(
+        () =>
+          drainRun(runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+            ...clock.options,
+          })),
+        ServerResponseError,
+      );
+      assertEquals(error.code, "draining");
+      assertStringIncludes(error.message, "serve is shutting down");
+      assertStringIncludes(error.message, "after retrying for 30s");
+      assertEquals(clock.delays, [1000, 2000, 4000, 8000, 8000, 7000]);
+      assertEquals(clock.notices.length, 1);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a refused connect that outlasts the budget keeps the actionable error and says how long it retried",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const clock = fakeRetryClock();
+    const error = await assertRejects(
+      () =>
+        drainRun(runWorkflowOverServer({
+          server: `ws://127.0.0.1:${freePort()}`,
+          payload: { workflowIdOrName: "wf" },
+          ...clock.options,
+          restartRetryBudgetMs: 3_000,
+        })),
+      UserError,
+    );
+    assertStringIncludes(error.message, "Could not connect to");
+    assertStringIncludes(error.message, "after retrying for 3s");
+    assertEquals(clock.delays, [1000, 2000]);
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a socket that closes after the request was sent is not retried",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply, socket) => {
+      socket.close(1001, "going away");
+    });
+    const clock = fakeRetryClock();
+    try {
+      await assertRejects(
+        () =>
+          drainRun(runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+            ...clock.options,
+          })),
+        UserError,
+        "closed before the run completed",
+      );
+      assertEquals(clock.delays, []);
+      assertEquals(server.received.length, 1);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a reattach survives refused connects while serve restarts, then attaches after the last seen event",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const port = freePort();
+    const first = scriptedServer((request, reply, socket) => {
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "started", runId: "run-r", workflowName: "wf", seq: 1 },
+      });
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "job_started", jobName: "j", seq: 2 },
+      });
+      setTimeout(() => socket.close(1001, "serve shutting down"), 20);
+    }, port);
+    let second: ReturnType<typeof scriptedServer> | undefined;
+    const clock = fakeRetryClock(async (count) => {
+      if (count === 1) await first.shutdown();
+      if (count === 3) {
+        second = scriptedServer((request, reply) => {
+          reply({
+            type: "event",
+            id: request.id,
+            event: { kind: "completed", status: "succeeded", seq: 3 },
+          });
+          reply({ type: "done", id: request.id });
+        }, port);
+      }
+    });
+    try {
+      const kinds = await drainRun(runWorkflowOverServer({
+        server: `ws://127.0.0.1:${port}`,
+        payload: { workflowIdOrName: "wf" },
+        ...clock.options,
+      }));
+      assertEquals(kinds, ["started", "job_started", "completed"]);
+      assertEquals(clock.delays, [1000, 2000, 4000]);
+      assertEquals(clock.notices.length, 1);
+      assertStringIncludes(clock.notices[0], "up to 120s");
+      const attach = second?.received[0] as {
+        type: string;
+        payload: { runId: string; afterSeq: number };
+      };
+      assertEquals(attach.type, "run.attach");
+      assertEquals(attach.payload.runId, "run-r");
+      assertEquals(attach.payload.afterSeq, 2);
+    } finally {
+      await first.shutdown().catch(() => {});
+      await second?.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a reattach that cannot reach serve within its budget names the close reason",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const port = freePort();
+    const first = scriptedServer((request, reply, socket) => {
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "started", runId: "run-g", workflowName: "wf", seq: 1 },
+      });
+      setTimeout(() => socket.close(1001, "serve shutting down"), 20);
+    }, port);
+    const clock = fakeRetryClock(async (count) => {
+      if (count === 1) await first.shutdown();
+    });
+    try {
+      const error = await assertRejects(
+        () =>
+          drainRun(runWorkflowOverServer({
+            server: `ws://127.0.0.1:${port}`,
+            payload: { workflowIdOrName: "wf" },
+            ...clock.options,
+            reattachBudgetMs: 5_000,
+          })),
+        UserError,
+      );
+      assertStringIncludes(error.message, "code 1001: serve shutting down");
+      assertStringIncludes(error.message, "could not reconnect within 5s");
+      assertStringIncludes(error.message, "swamp run history");
+      assertEquals(clock.delays, [1000, 2000, 2000]);
+    } finally {
+      await first.shutdown().catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a 401 on reattach stays fatal and is not retried within the budget",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let upgrades = 0;
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        upgrades++;
+        if (upgrades > 1) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const request = JSON.parse(event.data as string);
+          socket.send(JSON.stringify({
+            type: "event",
+            id: request.id,
+            event: { kind: "started", runId: "run-a", workflowName: "wf" },
+          }));
+          setTimeout(() => socket.close(4002, "Session expired"), 20);
+        };
+        return response;
+      },
+    );
+    const clock = fakeRetryClock();
+    try {
+      await assertRejects(
+        () =>
+          drainRun(runWorkflowOverServer({
+            server: `ws://127.0.0.1:${server.addr.port}`,
+            payload: { workflowIdOrName: "wf" },
+            ...clock.options,
+          })),
+        UserError,
+        "reconnecting failed",
+      );
+      assertEquals(upgrades, 2);
+      assertEquals(clock.delays, [1000]);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test("requestServerResponse: a 503 shutting_down with Retry-After is retried over HTTP", async () => {
+  const calls: { url: string; headers: Headers; body: string }[] = [];
+  const clock = fakeRetryClock();
+  const result = await requestServerResponse<{ data: { name: string } }>(
+    {
+      server: "ws://serve.test:9090",
+      createSocket: socketNeverUsed(),
+      ...clock.options,
+      fetch: fetchAnswering((request) =>
+        calls.length === 1
+          ? Response.json(
+            { code: "shutting_down", message: "serve is shutting down" },
+            { status: 503, headers: { "retry-after": "2" } },
+          )
+          : ndjson({
+            type: "data.get",
+            id: request.id,
+            payload: { data: { name: "d" } },
+          }), calls),
+    },
+    { type: "data.get" },
+  );
+  assertEquals(result.data.name, "d");
+  assertEquals(calls.length, 2);
+  assertEquals(clock.delays, [2250]);
+  assertEquals(clock.notices.length, 1);
+  assertStringIncludes(clock.notices[0], "shutting_down");
+});
+
+Deno.test("requestServerResponse: a 503 shutting_down without Retry-After is not retried", async () => {
+  const calls: { url: string; headers: Headers; body: string }[] = [];
+  const clock = fakeRetryClock();
+  await assertRejects(
+    () =>
+      requestServerResponse(
+        {
+          server: "ws://serve.test:9090",
+          createSocket: socketNeverUsed(),
+          ...clock.options,
+          fetch: fetchAnswering(() =>
+            Response.json(
+              { code: "shutting_down", message: "serve is shutting down" },
+              { status: 503 },
+            ), calls),
+        },
+        { type: "data.get" },
+      ),
+    ServerResponseError,
+    "serve is shutting down",
+  );
+  assertEquals(calls.length, 1);
+  assertEquals(clock.delays, []);
+});
+
+Deno.test("requestServerResponse: a draining frame on the WebSocket is retried", async () => {
+  let attempts = 0;
+  const clock = fakeRetryClock();
+  const result = await requestServerResponse<{ grants: unknown[] }>(
+    {
+      server: "ws://serve.test:9090",
+      ...clock.options,
+      createSocket: answeringSocket((request) =>
+        ++attempts === 1
+          ? {
+            type: "error",
+            id: request.id,
+            error: { code: "draining", message: "draining" },
+          }
+          : {
+            type: "access.grant.list",
+            id: request.id,
+            payload: { grants: [] },
+          }
+      ),
+    },
+    { type: "access.grant.list" },
+  );
+  assertEquals(result.grants, []);
+  assertEquals(attempts, 2);
+  assertEquals(clock.delays, [1000]);
 });

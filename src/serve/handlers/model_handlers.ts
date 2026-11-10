@@ -191,6 +191,7 @@ import {
   pushChangedToRemote,
   recordAuditedDetail,
   recordAuditedResource,
+  refusedAdmission,
   rejectEditWithoutContent,
   resourceDecider,
   resourceReadability,
@@ -202,6 +203,7 @@ import {
   subscribeUntilDetach,
   wasRequestErrored,
 } from "./shared.ts";
+import { DRAINING_RETRY_AFTER_SECONDS } from "../serve_admission.ts";
 import { requestRunVaultScope } from "../run_vault_access_policy.ts";
 import { runGeneratorWithVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
@@ -712,6 +714,7 @@ export async function handleModelMethodRun(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
+  if (refusedAdmission(socket, ctx, requestId)) return;
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     // assigned in the root below, which control flow analysis cannot see
@@ -1102,7 +1105,14 @@ export async function handleModelMethodRun(
         : err.code === "draining"
         ? "Serve is shutting down; try again once it is back"
         : "Too many concurrent runs; wait for active runs to complete";
-      sendError(socket, requestId, err.code, clientMsg);
+      sendError(
+        socket,
+        requestId,
+        err.code,
+        clientMsg,
+        undefined,
+        err.code === "draining" ? DRAINING_RETRY_AFTER_SECONDS : undefined,
+      );
     } else {
       sendError(socket, requestId, "internal_error", "Run registration failed");
     }

@@ -98,6 +98,7 @@ without it the default file is optional.
 | `--heartbeat-interval`, `--stale-ttl`, `--reconciliation-interval` | `SWAMP_HEARTBEAT_INTERVAL`, `SWAMP_STALE_TTL`, `SWAMP_RECONCILIATION_INTERVAL` | 30 s, 90 s, 60 s | `stale-ttl` must be ≥ 2× heartbeat; no effect without a remote control plane |
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--shutdown-drain-timeout` | `SWAMP_SHUTDOWN_DRAIN_TIMEOUT` | 30 s | How long shutdown waits for in-flight runs; `0` aborts at once; in serve.yaml quote the value (`"0"`) |
+| `--shutdown-listener-grace` | `SWAMP_SHUTDOWN_LISTENER_GRACE` | 1 s, `0` with `--reuse-port` | How long shutdown keeps listening after `/ready` turns 503; never more than the drain timeout. Set at startup, not on reload (see Rolling restart) |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
 | `--continuation-sweep-interval` | `SWAMP_CONTINUATION_SWEEP_INTERVAL` | 30 s | How often serve looks for suspended runs that need no further decision and continues them; `0` disables; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-signal-wait-timeout` | `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT` | 1 y | Longest `timeout` a `wait_for_signal` step may ask for on this server; at most one year; a step that asks for more fails when it would start waiting |
@@ -106,6 +107,7 @@ without it the default file is optional.
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; an extension pull, update, install or rm made through serve reloads it (swamp-club#3594); not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
 | `--remote-only` | `SWAMP_REMOTE_ONLY` | `false` | User steps run only on workers |
+| `--reuse-port` | `SWAMP_REUSE_PORT` | `false` | Listens with `SO_REUSEPORT` and opens the port only once startup completes, so a new process can start beside the old one. Only Linux lets two processes share the port: elsewhere serve warns at startup, and a second serve beside the first fails before startup does any work. Set at startup, not on reload (see Rolling restart) |
 | `--dashboard` | `SWAMP_DASHBOARD` | `false` | Serves `/dashboard/*` when the build embeds the SPA |
 | `--auto-resume` | `SWAMP_AUTO_RESUME` | `false` | Resumes a run once every approval gate is decided and every wait for a signal is settled |
 | `--detach-runs` | — | `false` | Deprecated, no effect: runs are always detached |
@@ -225,7 +227,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/auth/dashboard/session` | same-origin browser session (its own guess limit, not the IP burst) | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
-| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes (a team follower's included: its copy and commit effects caught up with the leader, with no timeout, see `design/enablers/datastores.md`) and again (`shutting_down`) once shutdown begins; `/` and `/health` answer `{ status: "ok", version: "1" }` in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
+| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes (a team follower's included: its copy and commit effects caught up with the leader, with no timeout, see `design/enablers/datastores.md`) and again (`shutting_down`) once shutdown begins; `/` and `/health` answer 200 `{ status: "ok", version: "1" }`, or `{ status: "draining", version: "1" }` once shutdown begins (still 200, so a liveness probe never ends a drain), in every auth mode and name no schedule, webhook or setting: the dashboard and `/api/v1/health` show those to a caller who may read them (swamp-club#3842) |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 `/auth/dashboard/session` does not spend the IP burst, so traffic on other
@@ -1665,7 +1667,13 @@ as its instance id. The coordination records:
    exists.
 6. Replays pending runs whose trigger is still configured.
 
-Only then does `/ready` return 200.
+Only then does `/ready` return 200. The listener opens before steps 5 and 6,
+so until they finish a run start or resume is refused with `not_ready`: an
+error frame carrying `retryAfterSeconds: 2`, or 503 with `Retry-After: 2` on
+the action route and to a verified webhook delivery (`ServeAdmission`,
+`src/serve/serve_admission.ts`). Approve, reject and signal are taken. A team
+follower passes requests on to its leader as before. With `--reuse-port` the
+listener opens only after step 6.
 
 **Steady state.** Every 60 s (plus up to 500 ms jitter),
 `reconcileRemoteInterruptedRuns` lists heartbeats and claims each stale peer. A
@@ -1798,7 +1806,16 @@ instance, followed by `swamp serve reload` or a restart (see Known limits).
 
 **Rolling restart.** On SIGTERM an instance stops accepting triggers: `/ready`
 returns 503 `shutting_down`, webhook deliveries get 503 with `Retry-After: 5`,
-and the scheduler stops. Queued webhook and cron runs stay in the run tracker
+run starts and resumes get `draining` (`retryAfterSeconds: 5` on the error
+frame, 503 `shutting_down` with `Retry-After: 5` on the action route), and the
+scheduler stops. Approve, reject and signal are still recorded; the
+continuation sweep resumes their runs after the restart. The listener stays
+open until the in-flight runs have drained and `--shutdown-listener-grace`
+(default 1 s) has passed since SIGTERM, then closes; the stages after the drain
+run meanwhile, so the grace does not lengthen shutdown. Closing it sends every
+open WebSocket a 1001 close, which is why it waits for the drain: a client
+streaming a draining run keeps its events until the run ends, and a worker
+keeps the socket its dispatches use. Queued webhook and cron runs stay in the run tracker
 for the next boot to replay. In-flight webhook (every in-flight
 run, up to `--max-concurrent-webhook-runs`), cron (every in-flight
 scheduled run, up to `--max-concurrent-scheduled-runs`) and API runs then drain
@@ -1883,7 +1900,39 @@ plus the 0.5 s floors of the stages above and of the closing sync and lease
 release), and use a `preStop` sleep so traffic leaves the
 Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
-instance drains. After a stop that pushed everything, peers see no heartbeat,
+instance drains, and while a single instance starts. Set the grace above the
+load balancer's health-check interval times its failure threshold, or keep a
+`preStop` sleep that covers it.
+
+An overlapping restart needs no load balancer on Linux: start the new process
+with `--reuse-port` beside the old one, wait for its `/ready`, then stop the
+old one. The new process listens only once ready, and the old one closes its
+listener as soon as its runs drain (the grace is 0 with `--reuse-port`).
+Connections that land on the old process during its drain get the refusals
+above: `swamp … --server` and `packages/client` retry them, while a webhook
+sender must retry on 503. Each queued webhook and cron run names the process that queued it
+(instance id, pid and host identity), so a starting process leaves a run whose
+owner still lives to that owner (on this host by its pid, elsewhere by a fresh
+heartbeat). Every 5 s for as long as it runs, it reads this checkout's queued
+runs again and replays those whose owner has gone, including runs a peer
+queued after this process started; a run it replays becomes its own
+(`src/serve/pending_run_owner.ts`). Cron fires are claimed once across the
+processes sharing a repository (`fire-records/` with `putIfAbsent`). Runs queued by
+an older serve name no owner and are replayed at boot as before. Without a
+remote control plane there are no heartbeats, so a run whose owner sits on
+another host (another container sharing the checkout) is replayed at boot as
+before and left alone by the sweep. An owner whose pid an unrelated process has
+since taken counts as alive until that process exits; the sweep's control-plane
+calls are bounded, and shutdown waits for a pass in flight only within its
+deadline. Overlapping
+restarts are not supported on a v3 datastore until team mode, since both
+processes would need the writer lease.
+
+`swamp … --server` retries a refused connection, a 502, 503 or 504 at the
+upgrade, and a `draining` or `not_ready` refusal for up to 30 s before it has
+a run id; once it has one it reattaches for up to 120 s. A single instance
+restarting without either can take longer than 30 s, and a start then fails.
+`packages/client` retries the same refusals within its own 30 s budget. After a stop that pushed everything, peers see no heartbeat,
 so nothing is reaped.
 Attached clients get the terminal frame. Nothing is resumed, but
 `swamp run history` shows the final status. If the shutdown handler does not
@@ -1952,9 +2001,9 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   serve reload`) remains available for manual reloads. See [datastores §Managed
   Config](../enablers/datastores.md#managed-config-deployment-architecture) for
   the full deployment guide.
-- **Graceful shutdown.** SIGINT/SIGTERM run the sequence above, then stop the
-  heartbeat, worker gateway, pollers and telemetry, remove the PID file and
-  abort the listener. In `--json` mode each phase is emitted as a
+- **Graceful shutdown.** SIGINT/SIGTERM run the sequence above, closing the
+  listener once runs drain and the listener grace has passed, then stop the
+  heartbeat, worker gateway, pollers and telemetry and remove the PID file. In `--json` mode each phase is emitted as a
   `{ status: "stopping" | "aborting" | "interrupted" | "stopped" }` line, and a
   stage cut off at the shutdown deadline as
   `{ status: "shutdown_stage_timed_out", stage, waitedMs }`.

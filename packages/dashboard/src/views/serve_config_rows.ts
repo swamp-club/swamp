@@ -49,6 +49,7 @@ export function serveConfigRows(payload: unknown): ServeConfigRow[] | null {
     flag("Remote Only", config.remoteOnly),
     flag("Auto Resume", config.autoResume),
     flag("Hot Reload", config.hotReload),
+    flag("Reuse Port", config.reusePort),
     flag("Trust Proxy", config.trustProxy),
   ];
 

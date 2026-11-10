@@ -475,6 +475,14 @@ import { pushNamespaceCounted } from "../../infrastructure/persistence/push_path
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
+import { ServeAdmission } from "../../serve/serve_admission.ts";
+import { checkReusePortListen } from "../../infrastructure/runtime/reuse_port_check.ts";
+import {
+  pendingOwnerLiveness,
+  PendingReplaySweep,
+  withStoreDeadline,
+} from "../../serve/pending_run_owner.ts";
+import type { PendingRunOwner } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
@@ -649,6 +657,7 @@ import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_
 import {
   checkOpenFileLimit,
   isProcessGone,
+  processHostIdentity,
   tryRaiseOpenFileLimit,
 } from "../../infrastructure/runtime/process.ts";
 import {
@@ -1395,9 +1404,14 @@ export function cancelSuccessBody(
   };
 }
 
-/** unauthenticated liveness body; it names no schedule, webhook or setting */
-export function legacyHealthBody(): { status: "ok"; version: "1" } {
-  return { status: "ok", version: "1" };
+/**
+ * unauthenticated liveness body; it names no schedule, webhook or setting. It
+ * stays 200 while draining so a liveness probe never kills a drain
+ */
+export function legacyHealthBody(
+  draining = false,
+): { status: "ok" | "draining"; version: "1" } {
+  return { status: draining ? "draining" : "ok", version: "1" };
 }
 
 function nestedOf(
@@ -1823,6 +1837,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.shutdownDrainTimeout as string,
     );
   }
+  if (options.shutdownListenerGrace) {
+    args.push(
+      "--shutdown-listener-grace",
+      options.shutdownListenerGrace as string,
+    );
+  }
   if (options.datastorePollInterval) {
     args.push(
       "--datastore-poll-interval",
@@ -1852,6 +1872,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.remoteOnly) {
     args.push("--remote-only");
+  }
+  if (options.reusePort) {
+    args.push("--reuse-port");
   }
   if (options.maxConcurrentRuns !== undefined) {
     args.push(
@@ -1973,6 +1996,30 @@ export function isUnreachableBindHost(host: string): boolean {
 }
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
+const DEFAULT_SHUTDOWN_LISTENER_GRACE_MS = 1_000;
+
+// with reuse-port the kernel stops handing this process connections only once
+// it stops listening, and no load balancer needs time to notice
+export function parseShutdownListenerGrace(
+  raw: string | undefined,
+  reusePort: boolean,
+): number {
+  if (raw === undefined) {
+    return reusePort ? 0 : DEFAULT_SHUTDOWN_LISTENER_GRACE_MS;
+  }
+  if (/^0+(ms|mo|[smhdwy])?$/i.test(raw.trim())) return 0;
+  return parseTimerDuration(raw, "--shutdown-listener-grace");
+}
+
+export function listenerGraceElapsed(
+  startedAt: number,
+  graceMs: number,
+  now: () => number = Date.now,
+): Promise<void> {
+  const left = startedAt + graceMs - now();
+  if (left <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, left));
+}
 
 export function parseShutdownDrainTimeout(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
@@ -2107,6 +2154,7 @@ export interface ServeStartupSettings {
   staleTtlMs?: number;
   reconciliationIntervalMs?: number;
   shutdownDrainTimeoutMs: number;
+  shutdownListenerGraceMs: number;
   hydrationTimeoutMs: number;
   datastorePollIntervalMs?: number;
   webhookRoutesPollMs?: number;
@@ -2177,6 +2225,11 @@ export function resolveServeStartupSettings(
 
   const shutdownDrainTimeoutMs = parseShutdownDrainTimeout(
     merged.shutdownDrainTimeout,
+  );
+  // an operator who bounds the drain also bounds how long shutdown lingers
+  const shutdownListenerGraceMs = Math.min(
+    parseShutdownListenerGrace(merged.shutdownListenerGrace, merged.reusePort),
+    shutdownDrainTimeoutMs,
   );
 
   const hydrationTimeoutMs = merged.hydrationTimeout !== undefined
@@ -2279,6 +2332,7 @@ export function resolveServeStartupSettings(
     staleTtlMs,
     reconciliationIntervalMs,
     shutdownDrainTimeoutMs,
+    shutdownListenerGraceMs,
     hydrationTimeoutMs,
     datastorePollIntervalMs,
     ...(webhookRoutesPollMs !== undefined ? { webhookRoutesPollMs } : {}),
@@ -2494,6 +2548,10 @@ const daemonEnableCommand = new Command()
     "How long shutdown waits for in-flight runs before aborting them (default: 30s, 0 aborts at once, env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
   )
   .option(
+    "--shutdown-listener-grace <duration:string>",
+    "How long serve keeps listening after /ready turns 503, so load balancers notice first; set it above the load balancer's health-check window, never more than --shutdown-drain-timeout (default: 1s, 0 with --reuse-port, env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
+  )
+  .option(
     "--datastore-poll-interval <duration:string>",
     "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
@@ -2517,6 +2575,10 @@ const daemonEnableCommand = new Command()
     "--remote-only",
     "Disable local (loopback) execution — all steps must declare placement " +
       "(env: SWAMP_REMOTE_ONLY)",
+  )
+  .option(
+    "--reuse-port",
+    "Listen with SO_REUSEPORT, opening the port only once startup completes, so a new process can start beside the old one (Linux; env: SWAMP_REUSE_PORT)",
   )
   .option(
     "--ws-idle-timeout <duration:string>",
@@ -3419,6 +3481,12 @@ export const serveCommand = new Command()
       "Keep it below the pod's terminationGracePeriodSeconds minus about 25s (env: SWAMP_SHUTDOWN_DRAIN_TIMEOUT)",
   )
   .option(
+    "--shutdown-listener-grace <duration:string>",
+    "How long shutdown keeps accepting connections after /ready turns 503, so load balancers stop routing here first. " +
+      "The listener closes once this has passed and in-flight runs have drained. " +
+      "Raise it above the load balancer's health-check window; it never exceeds --shutdown-drain-timeout. Default: 1s, or 0 with --reuse-port (env: SWAMP_SHUTDOWN_LISTENER_GRACE)",
+  )
+  .option(
     "--datastore-poll-interval <duration:string>",
     "How often to pull config, access data and runtime data from the remote datastore, " +
       "and to check the managedConfig extension lockfile for changes. " +
@@ -3493,6 +3561,12 @@ export const serveCommand = new Command()
     "Disable local (loopback) execution — all steps must declare placement " +
       "and be dispatched to remote workers. Steps without placement will error " +
       "(env: SWAMP_REMOTE_ONLY)",
+  )
+  .option(
+    "--reuse-port",
+    "Listen with SO_REUSEPORT and open the port only once startup completes, so a new serve can start " +
+      "beside the old one before it is stopped. Only Linux lets two processes share the port " +
+      "(env: SWAMP_REUSE_PORT)",
   )
   .option(
     "--dashboard",
@@ -3591,6 +3665,7 @@ export const serveCommand = new Command()
       staleTtlMs,
       reconciliationIntervalMs,
       shutdownDrainTimeoutMs,
+      shutdownListenerGraceMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
       webhookRoutesPollMs,
@@ -3628,6 +3703,9 @@ export const serveCommand = new Command()
       for (const warning of validateEndEntityCert(cert)) {
         logger.warn("{warning}", { warning: warning.message });
       }
+    }
+    if (merged.reusePort) {
+      checkReusePortListen({ port, hostname: host, cert, key });
     }
     const trustProxy = merged.trustProxy;
 
@@ -3734,6 +3812,12 @@ export const serveCommand = new Command()
       }
     }
 
+    if (merged.reusePort && Deno.build.os !== "linux") {
+      logger.warn(
+        "--reuse-port: only Linux lets two processes share a port, so on {os} a second serve cannot start beside this one",
+        { os: Deno.build.os },
+      );
+    }
     const rejectionGuard = installUnhandledRejectionGuard();
 
     const raiseResult = tryRaiseOpenFileLimit();
@@ -5443,6 +5527,7 @@ export const serveCommand = new Command()
 
     const cancelRegistry = new RunCancelRegistry();
     const detachRuns = merged.detachRuns;
+    const admission = new ServeAdmission();
     const activeRunRegistry = new ActiveRunRegistry({
       maxConcurrent: maxConcurrentRuns,
       maxPerPrincipal: maxRunsPerPrincipal,
@@ -5459,6 +5544,11 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
+    const pendingRunOwner: PendingRunOwner = {
+      instanceId,
+      pid: Deno.pid,
+      host: processHostIdentity(),
+    };
     // the advertised address when given; otherwise the listener's, left out
     // when a wildcard or loopback bind names nothing another host can reach,
     // with an IPv6 literal bracketed for the URL
@@ -5975,6 +6065,7 @@ export const serveCommand = new Command()
         authConfig,
         cancelRegistry,
         activeRunRegistry,
+        admission,
         runTracker,
         dispatchService,
         controlPlaneStore,
@@ -6026,6 +6117,12 @@ export const serveCommand = new Command()
     });
 
     const ac = new AbortController();
+    // closes the listener ahead of ac, whose audit sinks must outlive the drain
+    const listenerAc = new AbortController();
+    // passes start only after boot replay, which defines replayLeftByPeers
+    const pendingReplaySweep = new PendingReplaySweep({
+      replay: () => replayLeftByPeers(),
+    });
 
     const auditConfig = parseAuditConfig(configFile);
     if (auditConfig) {
@@ -6616,7 +6713,8 @@ export const serveCommand = new Command()
             },
           ),
         pendingRunHook: {
-          enqueue: async (entry) => {
+          enqueue: async (queued) => {
+            const entry = { ...queued, owner: pendingRunOwner };
             runTracker.enqueuePendingRun(entry);
             if (controlPlaneStore) {
               try {
@@ -7178,6 +7276,8 @@ export const serveCommand = new Command()
     // built with no routes too, so a reload can add the first one
     const webhookService = new WebhookService({
       acceptsRuns: () => !isFollowing(),
+      startupComplete: () => admission.phase !== "starting",
+      pendingRunOwner,
       ...(leaderLink !== undefined ? { leaderLink } : {}),
       repoDir: resolvedRepoDir,
       repoContext,
@@ -7537,32 +7637,36 @@ export const serveCommand = new Command()
       }
       return authenticated;
     };
-    const server = Deno.serve(
-      {
-        port,
-        hostname: host,
-        signal: ac.signal,
-        cert,
-        key,
-        onListen({ hostname, port: listenPort }) {
-          if (isJson) {
-            console.log(JSON.stringify({
-              status: "listening",
-              host: hostname,
-              port: listenPort,
-              url: `${wsScheme}://${hostname}:${listenPort}`,
-              schedulingEnabled: enableSchedule,
-              detachRuns: true,
-              mode: deploymentMode.mode,
-            }));
-          } else {
-            logger.info("WebSocket API server listening on {url}", {
-              url: `${wsScheme}://${hostname}:${listenPort}`,
-            });
-          }
-        },
+    const serveOptions: Deno.ServeTcpOptions & {
+      cert?: string;
+      key?: string;
+    } = {
+      port,
+      hostname: host,
+      signal: listenerAc.signal,
+      reusePort: merged.reusePort,
+      cert,
+      key,
+      onListen({ hostname, port: listenPort }) {
+        if (isJson) {
+          console.log(JSON.stringify({
+            status: "listening",
+            host: hostname,
+            port: listenPort,
+            url: `${wsScheme}://${hostname}:${listenPort}`,
+            schedulingEnabled: enableSchedule,
+            detachRuns: true,
+            mode: deploymentMode.mode,
+          }));
+        } else {
+          logger.info("WebSocket API server listening on {url}", {
+            url: `${wsScheme}://${hostname}:${listenPort}`,
+          });
+        }
       },
-      unscopedHttpHandler(traceHttpRequests(async (req, info) => {
+    };
+    const serveHandler: Deno.ServeHandler<Deno.NetAddr> = unscopedHttpHandler(
+      traceHttpRequests(async (req, info) => {
         // a request a team follower forwarded carries the team's peer token,
         // making the follower a trusted proxy for it
         const resolvedClientAddress = requestClientAddress(
@@ -7640,7 +7744,10 @@ export const serveCommand = new Command()
               const { socket, response } = Deno.upgradeWebSocket(
                 req,
                 extracted.transport === "subprotocol"
-                  ? { ...wsUpgradeOpts, protocol: `bearer.${extracted.token}` }
+                  ? {
+                    ...wsUpgradeOpts,
+                    protocol: `bearer.${extracted.token}`,
+                  }
                   : wsUpgradeOpts,
               );
               markPeerSocket(socket);
@@ -7694,9 +7801,12 @@ export const serveCommand = new Command()
                   "WebSocket dashboard session rejected: unknown session from {ip}",
                   { ip: remoteAddr },
                 );
-                return new Response("Unauthorized: dashboard session expired", {
-                  status: 401,
-                });
+                return new Response(
+                  "Unauthorized: dashboard session expired",
+                  {
+                    status: 401,
+                  },
+                );
               }
               logger.warn(
                 "WebSocket dashboard session rejected: origin mismatch from {ip}",
@@ -7858,7 +7968,10 @@ export const serveCommand = new Command()
             nameLeader: false,
           });
         }
-        const dataPlaneResponse = await dataPlane.handle(req, clientAddress());
+        const dataPlaneResponse = await dataPlane.handle(
+          req,
+          clientAddress(),
+        );
         if (dataPlaneResponse) return dataPlaneResponse;
 
         if (req.method === "POST") {
@@ -7882,9 +7995,12 @@ export const serveCommand = new Command()
             "No-auth HTTP API request rejected: {reason} from {ip}",
             { reason: requestTrust.reason, ip: clientAddress() },
           );
-          const forbidden = new Response(`Forbidden: ${requestTrust.reason}`, {
-            status: 403,
-          });
+          const forbidden = new Response(
+            `Forbidden: ${requestTrust.reason}`,
+            {
+              status: 403,
+            },
+          );
           // refused before handleDatastoreRequest, which opens a datastore route's span
           return matchDatastoreRoute(apiUrl.pathname) === undefined
             ? forbidden
@@ -8223,8 +8339,11 @@ export const serveCommand = new Command()
               info.remoteAddr.hostname,
             );
             if (!auth.ok) return auth.response;
-            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
-            const snapshot = await healthCollector.collect(ac.signal);
+            const reader = createReadAuthorizer(
+              auth.authResult,
+              adminAuthDeps,
+            );
+            const snapshot = await healthCollector.collect(listenerAc.signal);
             return Response.json(
               await healthSnapshotFor(snapshot, reader, healthResources),
             );
@@ -8239,7 +8358,10 @@ export const serveCommand = new Command()
             );
             if (!auth.ok) return auth.response;
             const token = auth.token;
-            const reader = createReadAuthorizer(auth.authResult, adminAuthDeps);
+            const reader = createReadAuthorizer(
+              auth.authResult,
+              adminAuthDeps,
+            );
 
             return createHealthStreamResponse({
               collect: async (signal) =>
@@ -8250,7 +8372,7 @@ export const serveCommand = new Command()
                 ),
               intervalParam: url.searchParams.get("interval"),
               lastEventId: req.headers.get("Last-Event-ID"),
-              serverSignal: ac.signal,
+              serverSignal: listenerAc.signal,
               requestSignal: req.signal,
               // Auth mode none has no token, so there is no session to bind
               // and no per-token cap: that mode is unauthenticated by design.
@@ -8283,7 +8405,7 @@ export const serveCommand = new Command()
               instanceId,
               staleTtlMs,
               serveOptions: merged,
-              signal: ac.signal,
+              signal: listenerAc.signal,
             });
 
             return Response.json({ instances });
@@ -8369,7 +8491,9 @@ export const serveCommand = new Command()
             });
           }
         }
-        let deviceAuthDeps: ReturnType<typeof createDeviceAuthDeps> | undefined;
+        let deviceAuthDeps:
+          | ReturnType<typeof createDeviceAuthDeps>
+          | undefined;
         let deviceRemoteAddr: string | undefined;
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
           deviceRemoteAddr = trustProxy
@@ -8613,7 +8737,7 @@ export const serveCommand = new Command()
         if (req.method === "GET") {
           const url = new URL(req.url);
           if (url.pathname === "/" || url.pathname === "/health") {
-            return Response.json(legacyHealthBody());
+            return Response.json(legacyHealthBody(shuttingDown));
           }
         }
 
@@ -8626,8 +8750,12 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      })),
+      }),
     );
+    const listen = () => Deno.serve(serveOptions, serveHandler);
+    // with reuse-port a process that is not ready must not take a share of
+    // the connections, so it listens only once startup completes
+    let server = merged.reusePort ? undefined : listen();
 
     const hotReload = merged.hotReload;
     const pidPath = hotReload ? swampPath(resolvedRepoDir, "serve.pid") : null;
@@ -8721,6 +8849,9 @@ export const serveCommand = new Command()
       if (shuttingDown) return;
       shuttingDown = true;
       isReady = false;
+      admission.beginDraining();
+      // its pass in flight is waited on below, within the shutdown deadline
+      pendingReplaySweep.halt();
       // stopped first so it lets go of its load in flight instead of competing
       // with the drain; waited on after the drain, which does not wait for that
       // load
@@ -8755,6 +8886,8 @@ export const serveCommand = new Command()
           }
         },
       });
+      // before the drain, so a pass that claims a run cannot race it
+      await stages.run("pending replay sweep", () => pendingReplaySweep.stop());
       const remaining = await runShutdownDrain({
         webhookService,
         scheduledExecution,
@@ -8770,6 +8903,13 @@ export const serveCommand = new Command()
       // a run still registered past the abort grace may still be writing, so on
       // v3 the next command must recover what it leaves uncommitted
       if ((activeRunRegistry?.size ?? 0) > 0) keepV3WriterMarkers();
+      // closing the listener ends every open WebSocket, so it waits for the
+      // drain, and for the grace load balancers need to see /ready turn 503;
+      // the stages below run meanwhile, so the grace never lengthens shutdown
+      const listenerClosed = listenerGraceElapsed(
+        drainStarted,
+        shutdownListenerGraceMs,
+      ).then(() => listenerAc.abort());
       // before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does
       let unpushedRunIds: readonly string[] = [];
@@ -8977,10 +9117,15 @@ export const serveCommand = new Command()
       setRemoteStepDispatcher(null);
       setTokenRefusalNodeState(undefined);
       setRemoteOnlyMode(false);
+      await stages.run("listener", () => listenerClosed, "awaited");
       ac.abort();
       if (pidPath) {
         try {
-          await Deno.remove(pidPath);
+          // an overlapping serve that started after this one owns it now
+          const pidOwner = await Deno.readTextFile(pidPath);
+          if (pidOwner.trim() === String(Deno.pid)) {
+            await Deno.remove(pidPath);
+          }
         } catch {
           // PID file may already be gone
         }
@@ -8989,9 +9134,13 @@ export const serveCommand = new Command()
         console.log(JSON.stringify({ status: "stopped" }));
       }
     };
+    // every trigger shares one run, which the action waits for before closing
+    // the catalog the shutdown stages still use
+    let shutdownRun: Promise<void> | undefined;
+    const startShutdown = () => (shutdownRun ??= shutdown());
     registerShutdownHandler({
       handler: () => {
-        shutdown().catch((e) =>
+        startShutdown().catch((e) =>
           logger.error("Shutdown error: {error}", {
             error: e instanceof Error ? e.message : String(e),
           })
@@ -9004,7 +9153,7 @@ export const serveCommand = new Command()
       // SIGTERM still needs to trigger shutdown on POSIX.
       if (Deno.build.os !== "windows") {
         Deno.addSignalListener("SIGTERM", () => {
-          shutdown().catch((e) =>
+          startShutdown().catch((e) =>
             logger.error("Shutdown error: {error}", {
               error: e instanceof Error ? e.message : String(e),
             })
@@ -9069,21 +9218,69 @@ export const serveCommand = new Command()
     const configuredCronWorkflows = new Set(
       allWorkflows.filter((w) => w.schedule).map((w) => w.name),
     );
-    const replayPendingAtLead = async (): Promise<void> => {
+    // only instances with a remote control plane write heartbeats
+    const heartbeatStore = hasRemoteControlPlane
+      ? controlPlaneStore
+      : undefined;
+    const ownerLiveness = (unjudgedOwner: "alive" | "gone") =>
+      pendingOwnerLiveness({
+        instanceId,
+        unjudgedOwner,
+        ...(heartbeatStore ? { controlPlaneStore: heartbeatStore } : {}),
+        ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
+      });
+    const bootOwnerAlive = ownerLiveness("gone");
+    const sweepOwnerAlive = ownerLiveness("alive");
+    const sweepStore = controlPlaneStore
+      ? withStoreDeadline(controlPlaneStore)
+      : undefined;
+    const replayPending = async (
+      deferred: Set<string>,
+      sweep = false,
+      readRemote = true,
+    ): Promise<number> => {
       // read at replay time: a reload may have changed the routes since boot
       const webhookTargets = webhookReplayTargets(webhookService);
-      const replayed = await replayPendingRuns({
+      return await replayPendingRuns({
         runTracker,
         webhookService,
         scheduledExecution: scheduledExecution ?? undefined,
-        controlPlaneStore,
+        controlPlaneStore: sweep ? sweepStore : controlPlaneStore,
         configuredWebhookWorkflows: webhookTargets.workflows,
         configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
+        ownerAlive: sweep ? sweepOwnerAlive : bootOwnerAlive,
+        deferred,
+        claimAs: pendingRunOwner,
+        sweep,
+        readRemote,
       });
+    };
+    // the control plane is listed on one pass in 12, about once a minute
+    let sweepPasses = 0;
+    const replayLeftByPeers = async (): Promise<void> => {
+      sweepPasses++;
+      const replayed = await replayPending(
+        new Set<string>(),
+        true,
+        sweepPasses % 12 === 0,
+      );
+      if (replayed > 0) {
+        logger
+          .info`Replayed ${replayed} pending run(s) a stopped serve process left`;
+      }
+    };
+    const replayPendingAtLead = async (): Promise<void> => {
+      const deferred = new Set<string>();
+      const replayed = await replayPending(deferred);
       if (replayed > 0) {
         logger.info`Replayed ${replayed} pending run(s) from previous process`;
       }
+      if (deferred.size > 0) {
+        logger
+          .info`Left ${deferred.size} pending run(s) to the live serve process that queued them; replaying them once it stops`;
+      }
+      pendingReplaySweep.start();
     };
     if (!v3Follows) {
       await replayPendingAtLead();
@@ -9346,7 +9543,7 @@ export const serveCommand = new Command()
         // restarts it as a follower; runs outside the leadership tick
         onLostLead: async () => {
           Deno.exitCode = 75;
-          await shutdown();
+          await startShutdown();
         },
       });
       serveLeadership = leadership;
@@ -9841,13 +10038,26 @@ export const serveCommand = new Command()
           ),
       });
     }
-    isReady = true;
-    logger.info("Startup complete — /ready is now serving 200");
+    if (!shuttingDown) {
+      try {
+        server ??= listen();
+      } catch (error) {
+        await startShutdown();
+        throw error;
+      }
+    }
+    admission.open();
+    if (!shuttingDown) {
+      isReady = true;
+      logger.info("Startup complete — /ready is now serving 200");
+    }
 
     runIndexWarmup.start();
     eventLoopLag.start();
 
-    await server.finished;
+    await server?.finished;
+    // shutdown logs its own failure
+    await shutdownRun?.catch(() => {});
 
     repoContext.catalogStore.close();
   })

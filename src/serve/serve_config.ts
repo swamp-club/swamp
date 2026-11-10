@@ -109,6 +109,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   reconciliationInterval: "SWAMP_RECONCILIATION_INTERVAL",
   hydrationTimeout: "SWAMP_HYDRATION_TIMEOUT",
   shutdownDrainTimeout: "SWAMP_SHUTDOWN_DRAIN_TIMEOUT",
+  shutdownListenerGrace: "SWAMP_SHUTDOWN_LISTENER_GRACE",
   datastorePollInterval: "SWAMP_DATASTORE_POLL_INTERVAL",
   continuationSweepInterval: "SWAMP_CONTINUATION_SWEEP_INTERVAL",
   maxSignalWaitTimeout: "SWAMP_MAX_SIGNAL_WAIT_TIMEOUT",
@@ -122,6 +123,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   maxRunDuration: "SWAMP_MAX_RUN_DURATION",
   enableInternalApi: "SWAMP_ENABLE_INTERNAL_API",
   remoteOnly: "SWAMP_REMOTE_ONLY",
+  reusePort: "SWAMP_REUSE_PORT",
   dashboard: "SWAMP_DASHBOARD",
   autoResume: "SWAMP_AUTO_RESUME",
   approveRequiresExplicitGrant: "SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT",
@@ -201,6 +203,7 @@ export interface ServeConfigFile {
   "max-run-duration"?: string;
   "hydration-timeout"?: string;
   "shutdown-drain-timeout"?: string;
+  "shutdown-listener-grace"?: string;
   "datastore-poll-interval"?: string;
   "continuation-sweep-interval"?: string;
   "max-signal-wait-timeout"?: string;
@@ -208,6 +211,7 @@ export interface ServeConfigFile {
   "token-gc-grace-period"?: string;
   "enable-internal-api"?: boolean;
   "remote-only"?: boolean;
+  "reuse-port"?: boolean;
   dashboard?: boolean;
   "auto-resume"?: boolean;
   audit?: {
@@ -330,6 +334,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "max-run-duration",
   "hydration-timeout",
   "shutdown-drain-timeout",
+  "shutdown-listener-grace",
   "datastore-poll-interval",
   "continuation-sweep-interval",
   "max-signal-wait-timeout",
@@ -337,6 +342,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "token-gc-grace-period",
   "enable-internal-api",
   "remote-only",
+  "reuse-port",
   "dashboard",
   "auto-resume",
   "audit",
@@ -579,6 +585,18 @@ function validateConfigValues(
   }
 
   if (
+    raw["reuse-port"] !== undefined &&
+    typeof raw["reuse-port"] !== "boolean"
+  ) {
+    throw configError(
+      path,
+      `Invalid reuse-port in ${path}: expected boolean, got ${typeof raw[
+        "reuse-port"
+      ]}`,
+    );
+  }
+
+  if (
     raw["auto-resume"] !== undefined &&
     typeof raw["auto-resume"] !== "boolean"
   ) {
@@ -605,6 +623,7 @@ function validateConfigValues(
     ["reconciliation-interval", raw["reconciliation-interval"]],
     ["hydration-timeout", raw["hydration-timeout"]],
     ["shutdown-drain-timeout", raw["shutdown-drain-timeout"]],
+    ["shutdown-listener-grace", raw["shutdown-listener-grace"]],
     ["datastore-poll-interval", raw["datastore-poll-interval"]],
     ["continuation-sweep-interval", raw["continuation-sweep-interval"]],
     ["max-signal-wait-timeout", raw["max-signal-wait-timeout"]],
@@ -1073,6 +1092,7 @@ export interface MergedServeOptions {
   maxRunDuration?: string;
   hydrationTimeout?: string;
   shutdownDrainTimeout?: string;
+  shutdownListenerGrace?: string;
   datastorePollInterval?: string;
   continuationSweepInterval?: string;
   maxSignalWaitTimeout?: string;
@@ -1080,6 +1100,7 @@ export interface MergedServeOptions {
   tokenGcGracePeriod?: string;
   enableInternalApi: boolean;
   remoteOnly: boolean;
+  reusePort: boolean;
   dashboard: boolean;
   autoResume: boolean;
 }
@@ -1495,6 +1516,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const shutdownListenerGrace = resolveString(
+    "shutdown-listener-grace",
+    cliOptions.shutdownListenerGrace as string | undefined,
+    config?.["shutdown-listener-grace"],
+    undefined,
+  );
+
   const datastorePollInterval = resolveString(
     "datastore-poll-interval",
     cliOptions.datastorePollInterval as string | undefined,
@@ -1541,6 +1569,13 @@ export function mergeServeOptions(
     "remote-only",
     cliOptions.remoteOnly as boolean,
     config?.["remote-only"],
+    false,
+  );
+
+  const reusePort = resolveBoolean(
+    "reuse-port",
+    cliOptions.reusePort as boolean,
+    config?.["reuse-port"],
     false,
   );
 
@@ -1653,6 +1688,7 @@ export function mergeServeOptions(
     maxRunDuration,
     hydrationTimeout,
     shutdownDrainTimeout,
+    shutdownListenerGrace,
     datastorePollInterval,
     continuationSweepInterval,
     maxSignalWaitTimeout,
@@ -1660,6 +1696,7 @@ export function mergeServeOptions(
     tokenGcGracePeriod,
     enableInternalApi,
     remoteOnly,
+    reusePort,
     dashboard,
     autoResume,
   };

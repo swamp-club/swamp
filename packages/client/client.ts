@@ -42,9 +42,42 @@ import {
   withDefaults,
 } from "./stream.ts";
 import { AsyncIterableQueue } from "./queue.ts";
+import { retryAfterDelayMs } from "./http_transport.ts";
 
 export interface SwampClientOptions {
   token?: string;
+  /**
+   * how long connecting, and starting a run, keep trying while serve refuses
+   * connections or answers that it is starting or draining; defaults to 30 s
+   */
+  retryBudgetMs?: number;
+  /** for tests: waits between attempts */
+  sleep?: (ms: number) => Promise<void>;
+  /** for tests: the source of jitter, in [0, 1) */
+  random?: () => number;
+  /** for tests: the clock the retry budget is measured on */
+  now?: () => number;
+}
+
+const BACKOFF_BASE_MS = 250;
+const BACKOFF_CAP_MS = 5_000;
+
+// serve refuses these before it starts the run, so a fresh start is safe
+const START_RETRY_CODES = new Set(["draining", "not_ready"]);
+
+// Deno reports a refused connection only as a tcp connect error; a 502-504
+// upgrade is a proxy or serve that is restarting
+const CONNECT_RETRY_PATTERN =
+  /tcp connect error|connection refused|ECONNREFUSED|os error (?:61|111|10061)\b|invalid status code:? 50[234]\b/i;
+
+function backoffMs(attempt: number, random: () => number): number {
+  return Math.floor(
+    random() * Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** attempt),
+  );
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // "run" settles into a WorkflowRunResult, "reply" into the event's run or the
@@ -63,6 +96,9 @@ interface PendingRequest {
   // deno-lint-ignore no-explicit-any
   queue?: AsyncIterableQueue<any>;
   replayedRunId?: string;
+  sawEvent?: boolean;
+  /** takes a draining or not_ready refusal that arrives before any event */
+  refused?: (error: SwampClientError) => void;
 }
 
 type RunTerminal = Extract<
@@ -93,34 +129,70 @@ export class SwampClient {
   private socket: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
   private connectPromise: Promise<void> | null = null;
+  private retired = new Set<WebSocket>();
+  private retryBudgetMs: number;
+  private sleep: (ms: number) => Promise<void>;
+  private random: () => number;
+  private now: () => number;
 
   constructor(url: string, options?: SwampClientOptions) {
     this.url = url;
     this.token = options?.token;
+    this.retryBudgetMs = Math.max(0, options?.retryBudgetMs ?? 30_000);
+    this.sleep = options?.sleep ?? defaultSleep;
+    this.random = options?.random ?? Math.random;
+    this.now = options?.now ?? Date.now;
   }
 
   /**
    * Opens the WebSocket connection. Resolves when the connection is ready.
    * Safe to call multiple times — returns the same promise if already connecting.
+   * A refused connection or a 502, 503 or 504 upgrade is tried again with
+   * backoff within `retryBudgetMs`.
    */
   connect(): Promise<void> {
+    return this.connectBy(this.now() + this.retryBudgetMs);
+  }
+
+  // A connect already under way keeps its own deadline.
+  private connectBy(deadline: number): Promise<void> {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return Promise.resolve();
     }
     if (this.connectPromise) return this.connectPromise;
 
-    const promise = new Promise<void>((resolve, reject) => {
+    const promise: Promise<void> = this.openWithRetry(deadline).finally(() => {
+      if (this.connectPromise === promise) this.connectPromise = null;
+    });
+    this.connectPromise = promise;
+    return promise;
+  }
+
+  private async openWithRetry(deadline: number): Promise<void> {
+    for (let attempt = 0;; attempt++) {
+      try {
+        await this.openOnce();
+        return;
+      } catch (error) {
+        if (!CONNECT_RETRY_PATTERN.test((error as Error).message)) throw error;
+        const delay = backoffMs(attempt, this.random);
+        if (this.now() + delay > deadline) throw error;
+        await this.sleep(delay);
+      }
+    }
+  }
+
+  private openOnce(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
       const protocols = this.token ? [`bearer.${this.token}`] : undefined;
       const socket = new WebSocket(this.url, protocols);
 
       socket.onopen = () => {
         this.socket = socket;
-        if (this.connectPromise === promise) this.connectPromise = null;
         resolve();
       };
 
       socket.onerror = (event) => {
-        if (this.connectPromise === promise) this.connectPromise = null;
         const msg = event instanceof ErrorEvent
           ? event.message
           : "WebSocket connection failed";
@@ -135,7 +207,8 @@ export class SwampClient {
       // only the requests sent on it and never touches the newer socket.
       socket.onclose = () => {
         if (this.socket === socket) this.socket = null;
-        if (this.connectPromise === promise) this.connectPromise = null;
+        this.retired.delete(socket);
+        reject(new Error("WebSocket closed before it opened"));
         for (const [id, pending] of this.pending) {
           if (pending.socket !== socket) continue;
           this.pending.delete(id);
@@ -145,14 +218,14 @@ export class SwampClient {
         }
       };
     });
-    this.connectPromise = promise;
-    return promise;
   }
 
   /** Closes the WebSocket connection. */
   close(): void {
     this.socket?.close();
     this.socket = null;
+    for (const socket of this.retired) socket.close();
+    this.retired.clear();
   }
 
   /**
@@ -160,15 +233,18 @@ export class SwampClient {
    * cancelled, suspended at a gate or signal wait, or replayed for a retried
    * `idempotencyKey`. Narrow on `outcome` before reading the run's fields.
    * Optionally dispatches events to partial handlers as they arrive.
+   * A start serve refuses as `draining` or `not_ready` is sent again within
+   * `retryBudgetMs`; a connection lost after the start rejects with
+   * `connection_closed`, since the run may have started.
    */
-  async workflowRun(
+  workflowRun(
     payload: WorkflowRunPayload,
     handlers?: Partial<EventHandlers<WorkflowRunEvent>>,
   ): Promise<WorkflowRunResult> {
-    await this.connect();
-    return this.runRequest(
-      { type: "workflow.run", id: crypto.randomUUID(), payload },
-      handlers,
+    return this.startWithRetry<WorkflowRunResult>(
+      (id) => ({ type: "workflow.run", id, payload }),
+      "run",
+      withDefaults<WorkflowRunEvent>(handlers ?? {}),
     );
   }
 
@@ -176,105 +252,60 @@ export class SwampClient {
    * Resumes a suspended workflow run, typically after its gate was approved,
    * and settles like `workflowRun`: at the next gate or when the run ends.
    */
-  async workflowResume(
+  workflowResume(
     payload: WorkflowResumePayload,
     handlers?: Partial<EventHandlers<WorkflowRunEvent>>,
   ): Promise<WorkflowRunResult> {
-    await this.connect();
-    return this.runRequest(
-      { type: "workflow.resume", id: crypto.randomUUID(), payload },
-      handlers,
+    return this.startWithRetry<WorkflowRunResult>(
+      (id) => ({ type: "workflow.resume", id, payload }),
+      "run",
+      withDefaults<WorkflowRunEvent>(handlers ?? {}),
     );
   }
 
   /**
    * Runs a model method and returns the completed event payload.
    * Optionally dispatches events to partial handlers as they arrive.
+   * Retries a refused start like `workflowRun`.
    */
-  async modelMethodRun(
+  modelMethodRun(
     payload: ModelMethodRunPayload,
     handlers?: Partial<EventHandlers<ModelMethodRunEvent>>,
   ): Promise<ModelMethodRunView> {
-    await this.connect();
-    const request: ServerRequest = {
-      type: "model.method.run",
-      id: crypto.randomUUID(),
-      payload,
-    };
-    return new Promise<ModelMethodRunView>((resolve, reject) => {
-      this.start(request, {
-        kind: "reply",
-        resolve,
-        reject,
-        handlers: withDefaults<ModelMethodRunEvent>(handlers ?? {}),
-      });
-    });
+    return this.startWithRetry<ModelMethodRunView>(
+      (id) => ({ type: "model.method.run", id, payload }),
+      "reply",
+      withDefaults<ModelMethodRunEvent>(handlers ?? {}),
+    );
   }
 
   /**
    * Returns an AsyncIterable of workflow run events. It ends after a
    * terminal event, `suspended` included, or when serve ends the stream.
+   * Retries a refused start like `workflowRun`.
    */
-  async *workflowRunStream(
+  workflowRunStream(
     payload: WorkflowRunPayload,
   ): AsyncGenerator<WorkflowRunEvent> {
-    await this.connect();
-    const id = crypto.randomUUID();
-    const queue = new AsyncIterableQueue<WorkflowRunEvent>();
-
-    this.start({ type: "workflow.run", id, payload }, {
-      kind: "stream",
-      resolve: () => {},
-      reject: (err) => queue.error(err),
-      handlers: withDefaults<WorkflowRunEvent>({}, (event) => {
-        queue.push(event);
-        // an error event ends through reject, so the stream throws after it
-        if (
-          event.kind === "completed" || event.kind === "cancelled" ||
-          event.kind === "suspended"
-        ) {
-          queue.done();
-        }
-      }),
-      queue,
-    });
-
-    try {
-      yield* queue;
-    } finally {
-      this.pending.delete(id);
-    }
+    return this.streamWithRetry<WorkflowRunEvent>(
+      (id) => ({ type: "workflow.run", id, payload }),
+      (event) =>
+        event.kind === "completed" || event.kind === "cancelled" ||
+        event.kind === "suspended",
+    );
   }
 
   /**
    * Returns an AsyncIterable of model method run events.
+   * Retries a refused start like `workflowRun`.
    */
-  async *modelMethodRunStream(
+  modelMethodRunStream(
     payload: ModelMethodRunPayload,
   ): AsyncGenerator<ModelMethodRunEvent> {
-    await this.connect();
-    const id = crypto.randomUUID();
-    const queue = new AsyncIterableQueue<ModelMethodRunEvent>();
-
-    this.start({ type: "model.method.run", id, payload }, {
-      kind: "stream",
-      resolve: () => {},
-      reject: (err) => queue.error(err),
-      handlers: withDefaults<ModelMethodRunEvent>({}, (event) => {
-        queue.push(event);
-        // an error event ends through reject, so the stream throws after it
-        if (event.kind === "completed" || event.kind === "cancelled") {
-          queue.done();
-        }
-      }),
-      queue,
-    });
-
-    try {
-      yield* queue;
-    } finally {
-      this.pending.delete(id);
-    }
+    return this.streamWithRetry<ModelMethodRunEvent>(
+      (id) => ({ type: "model.method.run", id, payload }),
+      (event) => event.kind === "completed" || event.kind === "cancelled",
+    );
   }
 
   /** Cancels a running operation by its request id. */
@@ -309,18 +340,81 @@ export class SwampClient {
     });
   }
 
-  private runRequest(
-    request: ServerRequest,
-    handlers: Partial<EventHandlers<WorkflowRunEvent>> | undefined,
-  ): Promise<WorkflowRunResult> {
-    return new Promise<WorkflowRunResult>((resolve, reject) => {
-      this.start(request, {
-        kind: "run",
-        resolve,
-        reject,
-        handlers: withDefaults<WorkflowRunEvent>(handlers ?? {}),
+  private async startWithRetry<T>(
+    build: (id: string) => ServerRequest,
+    kind: "run" | "reply",
+    // deno-lint-ignore no-explicit-any
+    handlers: EventHandlers<any>,
+  ): Promise<T> {
+    const deadline = this.now() + this.retryBudgetMs;
+    for (let attempt = 0;; attempt++) {
+      await this.connectBy(deadline);
+      const outcome = await new Promise<
+        { value: T } | { refused: SwampClientError }
+      >((resolve, reject) => {
+        this.start(build(crypto.randomUUID()), {
+          kind,
+          resolve: (value: T) => resolve({ value }),
+          reject,
+          refused: (refused) => resolve({ refused }),
+          handlers,
+        });
       });
-    });
+      if ("value" in outcome) return outcome.value;
+      await this.waitToRestart(outcome.refused, attempt, deadline);
+    }
+  }
+
+  private async *streamWithRetry<E extends { kind: string }>(
+    build: (id: string) => ServerRequest,
+    ends: (event: E) => boolean,
+  ): AsyncGenerator<E> {
+    const deadline = this.now() + this.retryBudgetMs;
+    for (let attempt = 0;; attempt++) {
+      await this.connectBy(deadline);
+      const id = crypto.randomUUID();
+      const queue = new AsyncIterableQueue<E>();
+      let refusal: SwampClientError | undefined;
+
+      this.start(build(id), {
+        kind: "stream",
+        resolve: () => {},
+        reject: (err) => queue.error(err),
+        refused: (err) => {
+          refusal = err;
+          queue.done();
+        },
+        handlers: withDefaults<E>({}, (event) => {
+          queue.push(event);
+          // an error event ends through reject, so the stream throws after it
+          if (ends(event)) queue.done();
+        }),
+        queue,
+      });
+
+      try {
+        yield* queue;
+      } finally {
+        this.settle(id);
+      }
+      if (refusal === undefined) return;
+      await this.waitToRestart(refusal, attempt, deadline);
+    }
+  }
+
+  // Throws the refusal when the wait would run past the deadline.
+  private async waitToRestart(
+    refusal: SwampClientError,
+    attempt: number,
+    deadline: number,
+  ): Promise<void> {
+    const after = refusal.retryAfterSeconds;
+    // a Retry-After of 0 would resend with no pause at all
+    const delay = after !== undefined
+      ? Math.max(BACKOFF_BASE_MS, retryAfterDelayMs(after, this.random))
+      : backoffMs(attempt, this.random);
+    if (this.now() + delay > deadline) throw refusal;
+    await this.sleep(delay);
   }
 
   // Registers the request against the socket it is sent on; a send that
@@ -358,16 +452,24 @@ export class SwampClient {
         msg.error.code,
         msg.error.message,
         msg.error.details,
+        msg.error.retryAfterSeconds,
       );
-      this.pending.delete(msg.id);
-      pending.reject(err);
+      this.settle(msg.id);
+      if (
+        pending.refused && !pending.sawEvent && START_RETRY_CODES.has(err.code)
+      ) {
+        if (err.code === "draining") this.retire(pending.socket);
+        pending.refused(err);
+      } else {
+        pending.reject(err);
+      }
       return;
     }
 
     if (msg.type === "done") {
       // Authoritative terminal frame (servers >= remote-execution). The
       // event-kind heuristics below remain for older servers that lack it.
-      this.pending.delete(msg.id);
+      this.settle(msg.id);
       if (pending.queue) {
         pending.queue.done();
       } else if (pending.kind === "run" && pending.replayedRunId) {
@@ -385,6 +487,7 @@ export class SwampClient {
 
     if (msg.type === "event") {
       const event = msg.event;
+      pending.sawEvent = true;
 
       // Dispatch to handler
       const handler = pending.handlers[event.kind];
@@ -404,12 +507,12 @@ export class SwampClient {
         event.kind === "completed" || event.kind === "cancelled" ||
         event.kind === "suspended"
       ) {
-        this.pending.delete(msg.id);
+        this.settle(msg.id);
         pending.resolve(
           pending.kind === "run" ? runResult(event as RunTerminal) : event.run,
         );
       } else if (event.kind === "error") {
-        this.pending.delete(msg.id);
+        this.settle(msg.id);
         // deno-lint-ignore no-explicit-any
         const swampError = event.error as any;
         pending.reject(
@@ -417,6 +520,7 @@ export class SwampClient {
             swampError?.code ?? "unknown",
             swampError?.message ?? "Unknown error",
             swampError?.details,
+            swampError?.retryAfterSeconds,
           ),
         );
       }
@@ -426,10 +530,37 @@ export class SwampClient {
     // Request-response: the response type matches the request type and
     // carries a payload (e.g. { type: "workflow.search", id, payload }).
     if ("payload" in msg) {
-      this.pending.delete(msg.id);
+      this.settle(msg.id);
       // deno-lint-ignore no-explicit-any
       pending.resolve((msg as any).payload);
     }
+  }
+
+  // a retired socket closes once the last request on it settles
+  private settle(id: string): void {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    const socket = pending.socket;
+    if (!this.retired.has(socket)) return;
+    for (const other of this.pending.values()) {
+      if (other.socket === socket) return;
+    }
+    this.retired.delete(socket);
+    socket.close();
+  }
+
+  // A draining serve takes no new runs on this socket, so the next start
+  // opens another; runs already on it finish there.
+  private retire(socket: WebSocket): void {
+    if (this.socket === socket) this.socket = null;
+    for (const pending of this.pending.values()) {
+      if (pending.socket === socket) {
+        this.retired.add(socket);
+        return;
+      }
+    }
+    socket.close();
   }
 
   private send(request: ServerRequest): void {

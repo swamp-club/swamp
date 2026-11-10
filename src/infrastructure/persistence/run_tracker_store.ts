@@ -21,6 +21,17 @@ import { DatabaseSync } from "node:sqlite";
 import { traceCarrier } from "../../domain/remote/observability.ts";
 import { registerTrackedRunSource } from "../../domain/remote/run_progress.ts";
 
+// an owner that cannot be read leaves the entry ownerless, which boot replays
+function ownerOf(value: string | null): { owner?: PendingRunOwner } {
+  if (value === null) return {};
+  try {
+    const owner = parsePendingRunOwner(JSON.parse(value));
+    return owner ? { owner } : {};
+  } catch {
+    return {};
+  }
+}
+
 function parseReceiptTrace(value: string) {
   try {
     return traceCarrier(JSON.parse(value));
@@ -74,7 +85,35 @@ function ownHostIdentity(rowHostname: string): string | null {
 const RETENTION_DAYS = 7;
 /** backstop retention for an interrupted row that no path ever settles */
 const UNSETTLED_RETENTION_DAYS = 90;
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
+
+/** the serve process that queued a pending run, judged before another replays it */
+export interface PendingRunOwner {
+  instanceId: string;
+  pid: number;
+  /** processHostIdentity() of the owner, which places its pid on this kernel */
+  host?: string;
+}
+
+export function parsePendingRunOwner(
+  value: unknown,
+): PendingRunOwner | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const { instanceId, pid, host } = value as Record<string, unknown>;
+  if (typeof instanceId !== "string" || instanceId.length === 0) {
+    return undefined;
+  }
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+    return undefined;
+  }
+  return {
+    instanceId,
+    pid,
+    ...(typeof host === "string" && host.length > 0 ? { host } : {}),
+  };
+}
 
 export interface PendingRunEntry {
   id: string;
@@ -86,6 +125,7 @@ export interface PendingRunEntry {
   tracestate?: string;
   createdAt: string;
   receiptTrace?: { traceparent: string; tracestate?: string };
+  owner?: PendingRunOwner;
 }
 
 interface PendingRunRow {
@@ -98,6 +138,7 @@ interface PendingRunRow {
   tracestate: string | null;
   created_at: string;
   receipt_trace: string | null;
+  owner: string | null;
 }
 
 interface ActiveRunRow {
@@ -294,6 +335,14 @@ export class RunTrackerStore implements RunTrackerRepository {
         this.db.exec("ALTER TABLE active_runs ADD COLUMN host_identity TEXT");
       }
     }
+
+    if (currentVersion < 8) {
+      const columns = this.db.prepare("PRAGMA table_info(pending_runs)")
+        .all() as unknown as { name: string }[];
+      if (columns.length && !columns.some((c) => c.name === "owner")) {
+        this.db.exec("ALTER TABLE pending_runs ADD COLUMN owner TEXT");
+      }
+    }
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -334,7 +383,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         traceparent          TEXT,
         tracestate           TEXT,
         created_at           TEXT NOT NULL,
-        receipt_trace        TEXT
+        receipt_trace        TEXT,
+        owner                TEXT
       );
     `);
   }
@@ -538,8 +588,8 @@ export class RunTrackerStore implements RunTrackerRepository {
 
   enqueuePendingRun(entry: PendingRunEntry): void {
     this.db.prepare(
-      `INSERT INTO pending_runs (id, source, workflow_id_or_name, payload, route, traceparent, tracestate, created_at, receipt_trace)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO pending_runs (id, source, workflow_id_or_name, payload, route, traceparent, tracestate, created_at, receipt_trace, owner)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       entry.id,
       entry.source,
@@ -550,7 +600,33 @@ export class RunTrackerStore implements RunTrackerRepository {
       entry.tracestate ?? null,
       entry.createdAt,
       entry.receiptTrace ? JSON.stringify(entry.receiptTrace) : null,
+      entry.owner ? JSON.stringify(entry.owner) : null,
     );
+  }
+
+  /**
+   * takes the run only from the owner the caller read, so two processes that
+   * judged the same gone owner cannot both replay it
+   */
+  claimPendingRun(
+    id: string,
+    owner: PendingRunOwner,
+    expectedInstanceId: string | undefined,
+  ): boolean {
+    const result = this.db.prepare(
+      // an owner that does not parse was read as none, so it matches none
+      `UPDATE pending_runs SET owner = ?
+       WHERE id = ? AND CASE
+         WHEN owner IS NULL OR NOT json_valid(owner) THEN ? IS NULL
+         ELSE json_extract(owner, '$.instanceId') IS ?
+       END`,
+    ).run(
+      JSON.stringify(owner),
+      id,
+      expectedInstanceId ?? null,
+      expectedInstanceId ?? null,
+    );
+    return Number(result.changes) === 1;
   }
 
   deletePendingRun(id: string): void {
@@ -609,6 +685,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       ...(r.receipt_trace
         ? { receiptTrace: parseReceiptTrace(r.receipt_trace) }
         : {}),
+      ...ownerOf(r.owner),
     }));
   }
 

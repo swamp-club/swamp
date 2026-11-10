@@ -45,6 +45,8 @@ import {
   createTlsHttpClient,
   diagnoseTlsMessage,
   getDefaultHttpClient,
+  probeServeRestarting,
+  RESTART_STATUSES,
 } from "../cli/remote_run.ts";
 
 const logger = getSwampLogger(["worker", "connect"]);
@@ -53,6 +55,9 @@ const REFRESH_FRACTION = 2 / 3;
 
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+
+// long enough to ride out a serve restart; measured from the first failure of a streak
+const PRE_ENROLL_RETRY_BUDGET_MS = 5 * 60_000;
 
 const MAX_PRE_ENROLL_FAILURES = 3;
 
@@ -108,6 +113,10 @@ export interface RunWorkerOptions {
     gatePass: string | undefined,
     serveRefused?: boolean,
   ) => Promise<void>;
+  preEnrollRetryBudgetMs?: number;
+  now?: () => number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  isServeRestarting?: (failure: string) => Promise<boolean>;
 }
 
 interface SessionState {
@@ -231,7 +240,21 @@ async function runWorkerFrom(
 
   let attempt = 0;
   let delayMs = RECONNECT_BASE_DELAY_MS;
-  let consecutivePreEnrollFailures = 0;
+  const budgetMs = options.preEnrollRetryBudgetMs ??
+    PRE_ENROLL_RETRY_BUDGET_MS;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? abortableDelay;
+  let failureStreakStartMs: number | null = null;
+  let otherFailures = 0;
+  let lastFailureRestarting = false;
+  const isServeRestarting = options.isServeRestarting ??
+    ((failure: string) =>
+      serveRestartingFromFailure(
+        failure,
+        options.url,
+        options.headers,
+        options.caCerts,
+      ));
   while (!(options.signal?.aborted ?? false) && drainReason === null) {
     attempt++;
     options.onStatus?.({ kind: "connecting", url: options.url, attempt });
@@ -279,7 +302,9 @@ async function runWorkerFrom(
             }
           },
         }));
-      consecutivePreEnrollFailures = 0;
+      failureStreakStartMs = null;
+      otherFailures = 0;
+      lastFailureRestarting = false;
       options.onStatus?.({ kind: "disconnected", reason: outcome });
       delayMs = RECONNECT_BASE_DELAY_MS;
     } catch (error) {
@@ -295,10 +320,24 @@ async function runWorkerFrom(
         throw error;
       }
       const message = diagnoseTlsMessage(raw) ?? raw;
-      consecutivePreEnrollFailures++;
-      if (consecutivePreEnrollFailures >= MAX_PRE_ENROLL_FAILURES) {
-        const reason =
-          `connection failed ${MAX_PRE_ENROLL_FAILURES} consecutive times before enrollment — giving up (last error: ${message})`;
+      lastFailureRestarting = await isServeRestarting(raw);
+      let giveUp: string | undefined;
+      if (lastFailureRestarting) {
+        otherFailures = 0;
+        const failedAtMs = now();
+        failureStreakStartMs ??= failedAtMs;
+        const elapsedMs = failedAtMs - failureStreakStartMs;
+        if (elapsedMs >= budgetMs) {
+          giveUp = `connection failed before enrollment for ${
+            formatElapsed(elapsedMs)
+          }`;
+        }
+      } else if (++otherFailures >= MAX_PRE_ENROLL_FAILURES) {
+        giveUp =
+          `connection failed ${MAX_PRE_ENROLL_FAILURES} consecutive times before enrollment`;
+      }
+      if (giveUp !== undefined) {
+        const reason = `${giveUp} — giving up (last error: ${message})`;
         logger.error(reason);
         options.onStatus?.({ kind: "stopped", reason });
         throw new Error(reason);
@@ -311,11 +350,15 @@ async function runWorkerFrom(
     ) {
       break;
     }
-    options.onStatus?.({ kind: "retrying", delayMs });
+    // the last sleep is cut short so one final attempt lands at the budget
+    const sleepMs = lastFailureRestarting && failureStreakStartMs !== null
+      ? Math.min(delayMs, budgetMs - (now() - failureStreakStartMs))
+      : delayMs;
+    options.onStatus?.({ kind: "retrying", delayMs: sleepMs });
     await observeExecutionWork("enrollment.retry", {
       "swamp.enrollment.attempt": attempt,
-      "swamp.retry.delay_ms": delayMs,
-    }, () => abortableDelay(delayMs, options.signal));
+      "swamp.retry.delay_ms": sleepMs,
+    }, () => sleep(sleepMs, options.signal));
     delayMs = Math.min(delayMs * 2, RECONNECT_MAX_DELAY_MS);
   }
 
@@ -370,6 +413,26 @@ function isPermanentEnrollmentFailure(error: unknown): boolean {
     message.includes("protocol version") ||
     message.includes("does not exist") ||
     message.includes("allowance exhausted");
+}
+
+// a status the upgrade carried decides; without one only the probe can tell a
+// refusal from a DNS failure or a timeout
+async function serveRestartingFromFailure(
+  failure: string,
+  url: string,
+  headers: Record<string, string> | undefined,
+  caCerts: string[] | undefined,
+): Promise<boolean> {
+  const status = failure.match(/Invalid status code: (\d+)/);
+  if (status) return RESTART_STATUSES.has(Number(status[1]));
+  return await probeServeRestarting(url, headers, caCerts);
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`;
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {

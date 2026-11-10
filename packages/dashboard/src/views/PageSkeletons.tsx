@@ -253,6 +253,7 @@ export const SERVE_CONFIG_KEYS = [
   "Remote Only",
   "Auto Resume",
   "Hot Reload",
+  "Reuse Port",
   "Trust Proxy",
 ];
 

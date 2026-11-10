@@ -45,6 +45,7 @@ Deno.test("serveConfigRows: shows a dash for a missing or misshapen field", () =
     { label: "Remote Only", value: "—", ok: false },
     { label: "Auto Resume", value: "—", ok: false },
     { label: "Hot Reload", value: "—", ok: false },
+    { label: "Reuse Port", value: "—", ok: false },
     { label: "Trust Proxy", value: "—", ok: false },
   ]);
 });

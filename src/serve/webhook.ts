@@ -565,6 +565,10 @@ export interface WebhookServiceDeps {
    * Absent, every node takes runs.
    */
   acceptsRuns?: () => boolean;
+  /** false until serve's startup completes; absent, the node takes runs at once */
+  startupComplete?: () => boolean;
+  /** stamped on each queued run, so a peer's boot leaves it to this process */
+  pendingRunOwner?: PendingRunOwner;
   /**
    * a delivery received by a node that takes no runs is passed on raw before
    * verification, so the leader checks the signature and nothing is trusted
@@ -625,6 +629,8 @@ import type { WebhookAdmissionSnapshot } from "../domain/remote/run_progress.ts"
 import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
 import { TEAM_PEER_HEADER } from "./peer_auth.ts";
+import { NOT_READY_RETRY_AFTER_SECONDS } from "./serve_admission.ts";
+import type { PendingRunOwner } from "../infrastructure/persistence/run_tracker_store.ts";
 
 interface QueuedWebhookRun {
   lastProgressAt: string;
@@ -1014,6 +1020,23 @@ export class WebhookService {
       );
     }
 
+    if (this.deps.startupComplete?.() === false) {
+      this.emit({
+        kind: "webhook_rejected",
+        route: endpoint.route,
+        workflowName: endpoint.workflowIdOrName,
+        reason: "Server starting",
+        sourceIp,
+      });
+      return Response.json(
+        { error: "Server is still starting, try again shortly" },
+        {
+          status: 503,
+          headers: { "retry-after": String(NOT_READY_RETRY_AFTER_SECONDS) },
+        },
+      );
+    }
+
     if (this.runQueue.length >= MAX_QUEUE_DEPTH) {
       this.emit({
         kind: "webhook_rejected",
@@ -1042,6 +1065,9 @@ export class WebhookService {
         traceparent,
         tracestate,
         createdAt: new Date(this.now()).toISOString(),
+        ...(this.deps.pendingRunOwner
+          ? { owner: this.deps.pendingRunOwner }
+          : {}),
       };
       this.deps.runTracker.enqueuePendingRun(pendingEntry);
       if (this.deps.controlPlaneStore) {

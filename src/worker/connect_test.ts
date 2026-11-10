@@ -383,8 +383,25 @@ class RejectingSocket {
   close(): void {}
 }
 
-Deno.test("runWorker: pre-enrollment failures stop after 3 consecutive attempts", async () => {
+const restarting = () => Promise.resolve(true);
+
+function fakeClock() {
+  const clock = {
+    nowMs: 0,
+    sleeps: [] as number[],
+    now: () => clock.nowMs,
+    sleep: (ms: number) => {
+      clock.sleeps.push(ms);
+      clock.nowMs += ms;
+      return Promise.resolve();
+    },
+  };
+  return clock;
+}
+
+Deno.test("runWorker: pre-enrollment failures give up once the retry budget is spent", async () => {
   const events: WorkerStatusEvent[] = [];
+  const clock = fakeClock();
   let socketCount = 0;
   const error = await assertRejects(
     () =>
@@ -392,6 +409,10 @@ Deno.test("runWorker: pre-enrollment failures stop after 3 consecutive attempts"
         url: "ws://test:1",
         token: "ci.s",
         swampVersion: "1.2.3",
+        preEnrollRetryBudgetMs: 10_000,
+        now: clock.now,
+        sleep: clock.sleep,
+        isServeRestarting: restarting,
         onStatus: (event) => events.push(event),
         createSocket: () => {
           socketCount++;
@@ -400,13 +421,18 @@ Deno.test("runWorker: pre-enrollment failures stop after 3 consecutive attempts"
       }),
     Error,
   );
-  assertStringIncludes(error.message, "3 consecutive times");
-  assertEquals(socketCount, 3);
+  assertStringIncludes(
+    error.message,
+    "connection failed before enrollment for 10s — giving up",
+  );
+  assertEquals(clock.sleeps, [1_000, 2_000, 4_000, 3_000]);
+  assertEquals(socketCount, 5);
   assertEquals(events.at(-1)?.kind, "stopped");
 });
 
 Deno.test("runWorker: HTTP 401 stops after 3 consecutive attempts", async () => {
   const events: WorkerStatusEvent[] = [];
+  const clock = fakeClock();
   let socketCount = 0;
   const error = await assertRejects(
     () =>
@@ -414,6 +440,8 @@ Deno.test("runWorker: HTTP 401 stops after 3 consecutive attempts", async () => 
         url: "ws://test:1",
         token: "ci.s",
         swampVersion: "1.2.3",
+        now: clock.now,
+        sleep: clock.sleep,
         onStatus: (event) => events.push(event),
         createSocket: () => {
           socketCount++;
@@ -424,9 +452,149 @@ Deno.test("runWorker: HTTP 401 stops after 3 consecutive attempts", async () => 
       }),
     Error,
   );
-  assertStringIncludes(error.message, "3 consecutive times");
+  assertStringIncludes(
+    error.message,
+    "connection failed 3 consecutive times before enrollment — giving up",
+  );
+  assertStringIncludes(error.message, "401");
   assertEquals(socketCount, 3);
+  assertEquals(clock.sleeps, [1_000, 2_000]);
   assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: a failure serve is not restarting, such as a DNS failure, stops after 3 consecutive attempts", async () => {
+  const clock = fakeClock();
+  const probed: string[] = [];
+  let socketCount = 0;
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        now: clock.now,
+        sleep: clock.sleep,
+        isServeRestarting: (failure) => {
+          probed.push(failure);
+          return Promise.resolve(false);
+        },
+        createSocket: () => {
+          socketCount++;
+          return new RejectingSocket(
+            "NetworkError: failed to connect to WebSocket: dns error",
+          ) as unknown as WebSocket;
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "3 consecutive times");
+  assertStringIncludes(error.message, "dns error");
+  assertEquals(socketCount, 3);
+  assertEquals(probed.length, 3);
+  assertStringIncludes(probed[0], "dns error");
+});
+
+Deno.test("runWorker: a 503 at the upgrade retries until the retry budget is spent", async () => {
+  const clock = fakeClock();
+  let socketCount = 0;
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        preEnrollRetryBudgetMs: 10_000,
+        now: clock.now,
+        sleep: clock.sleep,
+        createSocket: () => {
+          socketCount++;
+          return new RejectingSocket(
+            "failed to connect to WebSocket: Invalid status code: 503",
+          ) as unknown as WebSocket;
+        },
+      }),
+    Error,
+  );
+  assertStringIncludes(error.message, "for 10s — giving up");
+  assertStringIncludes(error.message, "503");
+  assertEquals(socketCount, 5);
+});
+
+Deno.test("runWorker: the default retry budget names minutes when it gives up", async () => {
+  const clock = fakeClock();
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        now: clock.now,
+        sleep: clock.sleep,
+        isServeRestarting: restarting,
+        createSocket: () => new RejectingSocket() as unknown as WebSocket,
+      }),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "connection failed before enrollment for 5m0s — giving up",
+  );
+  assertEquals(Math.max(...clock.sleeps), 30_000);
+});
+
+Deno.test("runWorker: an enrolled worker rides out a serve restart longer than a few seconds", async () => {
+  const events: WorkerStatusEvent[] = [];
+  const clock = fakeClock();
+  const controller = new AbortController();
+  const sockets: FakeSocket[] = [];
+  let socketCount = 0;
+  let enrolled = 0;
+
+  const done = runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    signal: controller.signal,
+    now: clock.now,
+    sleep: clock.sleep,
+    isServeRestarting: restarting,
+    onStatus: (event) => {
+      events.push(event);
+      if (event.kind !== "enrolled") return;
+      enrolled++;
+      const socket = sockets.at(-1)!;
+      if (enrolled === 2) controller.abort();
+      queueMicrotask(() => socket.drop());
+    },
+    createSocket: () => {
+      socketCount++;
+      if (socketCount > 1 && socketCount < 8) {
+        return new RejectingSocket() as unknown as WebSocket;
+      }
+      const socket = new FakeSocket((channel) => {
+        channel.register(
+          RemoteMethod.enroll,
+          () => Promise.resolve(enrollResult("ci")),
+        );
+      });
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  const result = await done;
+  assertEquals(result.reason, "shutdown");
+  assertEquals(enrolled, 2);
+  assertEquals(socketCount, 8);
+  assertEquals(clock.sleeps, [
+    1_000,
+    2_000,
+    4_000,
+    8_000,
+    16_000,
+    30_000,
+    30_000,
+  ]);
 });
 
 Deno.test("runWorker: 'does not exist' enrollment failure stops immediately", async () => {
@@ -455,25 +623,34 @@ Deno.test("runWorker: 'does not exist' enrollment failure stops immediately", as
   assertEquals(events.at(-1)?.kind, "stopped");
 });
 
-Deno.test("runWorker: pre-enrollment failure counter resets after successful enrollment", async () => {
+Deno.test("runWorker: the retry budget restarts after a successful enrollment", async () => {
   const events: WorkerStatusEvent[] = [];
-  let socketCount = 0;
+  const clock = fakeClock();
   const controller = new AbortController();
+  const sockets: FakeSocket[] = [];
+  let socketCount = 0;
+  let enrolled = 0;
 
   const done = runWorker({
     url: "ws://test:1",
     token: "ci.s",
     swampVersion: "1.2.3",
     signal: controller.signal,
+    preEnrollRetryBudgetMs: 10_000,
+    now: clock.now,
+    sleep: clock.sleep,
+    isServeRestarting: restarting,
     onStatus: (event) => {
       events.push(event);
-      if (event.kind === "enrolled") {
-        controller.abort();
-      }
+      if (event.kind !== "enrolled") return;
+      enrolled++;
+      const socket = sockets.at(-1)!;
+      if (enrolled === 2) controller.abort();
+      queueMicrotask(() => socket.drop());
     },
     createSocket: () => {
       socketCount++;
-      if (socketCount <= 2) {
+      if (socketCount !== 5 && socketCount !== 9) {
         return new RejectingSocket() as unknown as WebSocket;
       }
       const socket = new FakeSocket((channel) => {
@@ -482,14 +659,16 @@ Deno.test("runWorker: pre-enrollment failure counter resets after successful enr
           () => Promise.resolve(enrollResult("ci")),
         );
       });
+      sockets.push(socket);
       return socket as unknown as WebSocket;
     },
   });
 
+  // without the reset, the refusal after the drop exhausts the budget
   await done;
-  assertEquals(socketCount, 3);
+  assertEquals(socketCount, 9);
+  assertEquals(enrolled, 2);
   const kinds = events.map((e) => e.kind);
-  assertEquals(kinds.includes("enrolled"), true);
   assertEquals(kinds.at(-1), "stopped");
 });
 

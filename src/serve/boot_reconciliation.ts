@@ -44,7 +44,12 @@ import {
   listActiveRunsForInstance,
 } from "./active_run_tracker.ts";
 import { isUuid } from "../domain/models/model_lookup.ts";
-import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
+import {
+  parsePendingRunOwner,
+  type PendingRunEntry,
+  type PendingRunOwner,
+} from "../infrastructure/persistence/run_tracker_store.ts";
+import type { PendingOwnerAlive } from "./pending_run_owner.ts";
 import { isProcessGone } from "../infrastructure/runtime/process.ts";
 import { isSensitiveHeader } from "./webhook.ts";
 import {
@@ -322,6 +327,15 @@ export interface ReplayPendingRunsDeps {
   configuredWebhookWorkflows: ReadonlySet<string>;
   configuredWebhookRoutes: ReadonlySet<string>;
   configuredCronWorkflows: ReadonlySet<string>;
+  /** a run whose owner still lives is left to it and named in `deferred` */
+  ownerAlive?: PendingOwnerAlive;
+  deferred?: Set<string>;
+  /** the sweep's pass: only runs a gone peer owned; an ownerless one is boot's */
+  sweep?: boolean;
+  /** false skips the control plane's runs, which the sweep reads less often */
+  readRemote?: boolean;
+  /** a replayed run becomes this process's, so no later start replays it again */
+  claimAs?: PendingRunOwner;
 }
 
 export async function replayPendingRuns(
@@ -334,7 +348,7 @@ export async function replayPendingRuns(
   // id
   const pending: PendingRunEntry[] = [...localPending];
   const remoteSourceKeys = new Map<string, string>();
-  if (deps.controlPlaneStore) {
+  if (deps.controlPlaneStore && deps.readRemote !== false) {
     try {
       const remoteKeys = await deps.controlPlaneStore.list("pending-runs/");
       const localIds = new Set(localPending.map((e) => e.id));
@@ -364,7 +378,9 @@ export async function replayPendingRuns(
             );
             continue;
           }
-          entry = raw as PendingRunEntry;
+          const { owner: rawOwner, ...rest } = raw as Record<string, unknown>;
+          const owner = parsePendingRunOwner(rawOwner);
+          entry = { ...rest, ...(owner ? { owner } : {}) } as PendingRunEntry;
         } catch {
           logger.warn`Discarding corrupt remote pending run at ${key}`;
           await deps.controlPlaneStore.delete(key).catch(
@@ -424,6 +440,34 @@ export async function replayPendingRuns(
 
   let replayed = 0;
   for (const entry of pending) {
+    if (deps.sweep && entry.owner === undefined) continue;
+    // a run this process already owns is in its queue, or failed to start
+    if (
+      deps.claimAs !== undefined &&
+      entry.owner?.instanceId === deps.claimAs.instanceId
+    ) continue;
+    if (entry.owner && deps.ownerAlive && await deps.ownerAlive(entry.owner)) {
+      deps.deferred?.add(entry.id);
+      continue;
+    }
+    if (deps.claimAs) {
+      let claimed: boolean;
+      try {
+        claimed = await claimPendingRun(
+          deps,
+          entry,
+          remoteSourceKeys.get(entry.id),
+        );
+      } catch (err) {
+        // left in place for the next pass rather than discarded
+        logger.warn("Could not claim pending run {id}: {error}", {
+          id: entry.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      if (!claimed) continue;
+    }
     try {
       if (entry.source === "webhook" && deps.webhookService) {
         if (!deps.configuredWebhookWorkflows.has(entry.workflowIdOrName)) {
@@ -535,6 +579,37 @@ export async function replayPendingRuns(
   }
 
   return replayed;
+}
+
+// a run only the control plane holds has no compare-and-swap, so it is taken
+// by writing its owner, as replay always took it
+async function claimPendingRun(
+  deps: ReplayPendingRunsDeps,
+  entry: PendingRunEntry,
+  remoteKey: string | undefined,
+): Promise<boolean> {
+  const owner = deps.claimAs!;
+  if (remoteKey === undefined) {
+    const claimed = deps.runTracker.claimPendingRun(
+      entry.id,
+      owner,
+      entry.owner?.instanceId,
+    );
+    if (!claimed) return false;
+  }
+  if (!deps.controlPlaneStore) return true;
+  try {
+    await deps.controlPlaneStore.put(
+      remoteKey ?? `pending-runs/${entry.id}`,
+      new TextEncoder().encode(JSON.stringify({ ...entry, owner })),
+    );
+  } catch (err) {
+    logger.warn("Control-plane owner update failed for {id}: {error}", {
+      id: entry.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return true;
 }
 
 export const CLAIM_TTL_MS = 5 * 60 * 1000;

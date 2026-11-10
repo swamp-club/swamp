@@ -30,6 +30,7 @@ import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import { handleHttpActionRequest } from "../src/serve/http_action_route.ts";
 import { LeaderLink } from "../src/serve/leader_link.ts";
 import { SERVE_ACTION_PATH } from "../src/serve/protocol.ts";
+import { ServeAdmission } from "../src/serve/serve_admission.ts";
 import type { ServerTokenAuthResult } from "../src/serve/token_auth.ts";
 import {
   CALLER,
@@ -103,6 +104,7 @@ async function withTeam(
     stale?: boolean;
     grants?: Grant[];
     fetch?: typeof fetch;
+    followerAdmission?: ServeAdmission;
   } = {},
 ): Promise<void> {
   await withServeRepo(async (repo) => {
@@ -128,6 +130,9 @@ async function withTeam(
         isStale: () => options.stale === true,
       },
       leaderLink,
+      ...(options.followerAdmission
+        ? { admission: options.followerAdmission }
+        : {}),
       feedBarrier: () => {
         barriers++;
         return Promise.resolve();
@@ -173,6 +178,19 @@ function test(name: string, fn: () => Promise<void>): void {
     fn,
   });
 }
+
+test("a follower still starting passes a start on to its leader", async () => {
+  await withTeam(async ({ leader, follower, repo }) => {
+    const name = `forwarded-${crypto.randomUUID()}`;
+    await saveGatedWorkflow(repo, name, "gate");
+    const started = await post(follower, {
+      type: "workflow.run",
+      payload: { workflowIdOrName: name, idempotencyKey: "starting" },
+    });
+    assertEquals(started.status, 202, JSON.stringify(started.body));
+    assert(leader.sourceIps.length > 0, "the leader took the request");
+  }, { followerAdmission: new ServeAdmission() });
+});
 
 test("a start and a decision record the leader's principal and client", async () => {
   await withTeam(async ({ leader, follower, repo, ctx, barriers }) => {

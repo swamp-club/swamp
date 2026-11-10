@@ -182,8 +182,13 @@ Deno.test("serve run entries: serve's HTTP handler starts every request outside 
   const servers = [...serve.matchAll(/Deno\.serve\(/g)];
   assert(servers.length === 1, "serve.ts starts one HTTP server");
   const call = callText(serve, servers[0].index);
+  // a handler passed by name is checked where it is defined
+  const named = /^Deno\.serve\(\s*\w+\s*,\s*(\w+)\s*\)$/.exec(call.trim())?.[1];
+  const handler = named === undefined
+    ? call
+    : new RegExp(`const ${named}\\b[^=]*=\\s*[^;]*`).exec(serve)?.[0] ?? "";
   assert(
-    /\bunscopedHttpHandler\(traceHttpRequests\(/.test(call),
+    /\bunscopedHttpHandler\(\s*traceHttpRequests\(/.test(handler),
     "serve's Deno.serve handler must be wrapped in unscopedHttpHandler",
   );
   assert(

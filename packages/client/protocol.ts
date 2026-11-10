@@ -836,6 +836,8 @@ export interface SerializedError {
   code: string;
   message: string;
   details?: unknown;
+  /** set on draining and not_ready refusals by serves that name a wait */
+  retryAfterSeconds?: number;
 }
 
 /** Generic response payload for request-response operations. */
