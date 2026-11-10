@@ -64,9 +64,10 @@ Deno.test("removePidFileIfOurs: a missing file is not an error", async () => {
   });
 });
 
-const exists = (started?: string): ServePidProbeDeps => ({
+const exists = (started?: string, command?: string): ServePidProbeDeps => ({
   processExists: () => true,
   startTime: () => Promise.resolve(started),
+  command: () => Promise.resolve(command),
 });
 
 Deno.test("writeServePidFiles: serve.pid stays a bare PID and the sidecar records the start time", async () => {
@@ -117,13 +118,18 @@ Deno.test("probeServePid: the same start time is the serve that wrote the files"
 
 Deno.test("probeServePid: a reused pid or a vanished process is a stale file", async () => {
   assertEquals(
-    await probeServePid(4242, { pid: 4242, startTime: "t1" }, exists("t2")),
+    await probeServePid(
+      4242,
+      { pid: 4242, startTime: "t1", executable: "swamp" },
+      exists("t2", "/usr/bin/vim notes.md"),
+    ),
     "reused",
   );
   assertEquals(
     await probeServePid(4242, { pid: 4242, startTime: "t1" }, {
       processExists: () => false,
       startTime: () => Promise.resolve(undefined),
+      command: () => Promise.resolve(undefined),
     }),
     "gone",
   );
@@ -146,4 +152,39 @@ Deno.test("probeServePid: what this machine cannot tell is unknown, never stale"
     await probeServePid(4242, { pid: 4242 }, exists("t1")),
     "unknown",
   );
+});
+
+Deno.test("probeServePid: a serve whose start time moved with a clock step is unknown, never stale", async () => {
+  assertEquals(
+    await probeServePid(
+      4242,
+      { pid: 4242, startTime: "Tue Nov 10 19:46:27 2026", executable: "swamp" },
+      exists(
+        "Tue Nov 10 19:46:31 2026",
+        "/usr/local/bin/swamp serve --port 9090",
+      ),
+    ),
+    "unknown",
+  );
+  // without a recorded executable the command cannot be judged
+  assertEquals(
+    await probeServePid(
+      4242,
+      { pid: 4242, startTime: "t1" },
+      exists("t2", "vim"),
+    ),
+    "unknown",
+  );
+});
+
+Deno.test("removePidFileIfOurs: removes this serve's sidecar even when serve.pid was never written", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "serve.pid");
+    await Deno.writeTextFile(
+      servePidSidecarPath(path),
+      JSON.stringify({ pid: 4242 }),
+    );
+    assertEquals(await removePidFileIfOurs(path, 4242), false);
+    assertEquals(await readServePidSidecar(path), undefined);
+  });
 });

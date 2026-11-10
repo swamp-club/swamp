@@ -1955,17 +1955,19 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   startup.
 - **PID file and reload.** When SIGHUP reloads (above), serve writes `Deno.pid`
   to `.swamp/serve.pid` (a bare PID, so `kill -HUP $(cat …)` and systemd's
-  `PIDFile=` keep working) and the PID with its process start time to
-  `.swamp/serve.pid.json`, installs the SIGHUP handler, and removes both at
-  shutdown while they still name this process (`src/serve/serve_pid_file.ts`).
-  `swamp serve reload` sends the signal locally, or issues the admin-only
-  `serve.reload` request with `--server`, which works on every serve whether or
-  not it was started with `--hot-reload`. Before a local signal it compares
-  the start time `ps` reports for the PID (UTC, C locale) with the sidecar: a
-  different start time or no process refuses the stale file; when this machine
-  cannot tell (no `ps`, busybox `ps`, no sidecar from an older serve) it warns
-  and signals as before. Concurrent reloads are refused while one is in
-  progress.
+  `PIDFile=` keep working) and the PID with its start time and executable name
+  to `.swamp/serve.pid.json`, installs
+  the SIGHUP handler, and removes both at shutdown while they still name this
+  process (`src/serve/serve_pid_file.ts`). `swamp serve reload` sends the
+  signal locally, or issues the admin-only `serve.reload` request with
+  `--server`, which works on every serve whether or not it was started with
+  `--hot-reload`. Before a local signal it checks the PID: no process refuses
+  the stale file, and so does a process with another start time whose command
+  line is not that swamp serve. Linux derives a start time from a boot time
+  that moves when the clock is stepped, so a serve with a moved start time,
+  like anything this machine cannot tell (no `ps`, busybox `ps`, no sidecar
+  from an older serve), gets a warning and the signal as before. Concurrent
+  reloads are refused while one is in progress.
 
   SIGHUP, `serve.reload` and the config poller build their options in one place
   (`buildServeReloadOptions` in `src/cli/commands/serve.ts`), so every trigger
@@ -1991,8 +1993,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   API, run, webhook-run and signal-wait limits, queue, idle, drain and
   listener-grace timeouts, auto-resume, triggers, webhooks and the routes
   directory, `trust-proxy`, `trusted-hosts`, `dispatch-env-allow`,
-  `verify-on-enroll`, the poll, reconciliation, continuation-sweep, token GC
-  and group-refresh intervals of services already running, and in the
+  `verify-on-enroll`, the intervals of services already running (the
+  datastore and routes pollers re-arm at once; reconciliation, the
+  continuation sweep, token GC and group refresh take the new interval after
+  their next run), and in the
   `audit` block the policy, alerts (each rule's window starts again),
   fail-open and sinks. Access lists: allowed-users removals always apply, a
   new name applies once it resolves (from the stored name map, or the club

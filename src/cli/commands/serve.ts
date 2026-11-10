@@ -155,7 +155,10 @@ import {
 
 import { emitServeConfigReloaded } from "../../serve/serve_config_reload_audit.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
-import { readProcessStartTime } from "../../infrastructure/process/process_kill.ts";
+import {
+  readProcessCommand,
+  readProcessStartTime,
+} from "../../infrastructure/process/process_kill.ts";
 import {
   probeServePid,
   processExists,
@@ -2897,7 +2900,11 @@ const reloadCommand = new Command()
     const verdict = await probeServePid(
       pid,
       await readServePidSidecar(pidPath),
-      { processExists, startTime: (p) => readProcessStartTime(p) },
+      {
+        processExists,
+        startTime: (p) => readProcessStartTime(p),
+        command: (p) => readProcessCommand(p),
+      },
     );
     if (verdict === "gone") {
       throw markErrorPaths(
@@ -2911,15 +2918,15 @@ const reloadCommand = new Command()
     if (verdict === "reused") {
       throw markErrorPaths(
         new UserError(
-          "Process " + pid + " started after the serve that wrote " + pidPath +
-            ", so it is another process — stale PID file. Remove it, or reload with --server.",
+          "Process " + pid + " is not the serve that wrote " + pidPath +
+            ": it started at another time and is not a swamp serve — stale PID file. Remove it, or reload with --server.",
         ),
         [pidPath],
       );
     }
     if (verdict === "unknown") {
       logger
-        .warn`Could not confirm process ${pid} is the serve that wrote ${pidPath} (an older serve records no start time, or ps cannot report it); sending SIGHUP anyway. Restarting serve records its start time`;
+        .warn`Could not confirm process ${pid} is the serve that wrote ${pidPath} (an older serve records no start time, ps cannot report it, or the clock was changed since serve started); sending SIGHUP anyway`;
     }
 
     try {
@@ -5195,13 +5202,22 @@ export const serveCommand = new Command()
           ) {
             return {};
           }
-          return JSON.parse(
+          const parsed: unknown = JSON.parse(
             await oauthVaultService.get(
               TOKEN_SECRETS_VAULT_NAME,
               OAUTH_RESOLVED_ADMINS_KEY,
               "serve:oauth-resolve",
             ),
-          ) as Record<string, string>;
+          );
+          // anything but a map of strings is unreadable, not empty
+          if (
+            typeof parsed !== "object" || parsed === null ||
+            Array.isArray(parsed) ||
+            Object.values(parsed).some((value) => typeof value !== "string")
+          ) {
+            return undefined;
+          }
+          return parsed as Record<string, string>;
         } catch {
           return undefined;
         }
@@ -9383,6 +9399,7 @@ export const serveCommand = new Command()
         await writeServePidFiles(pidPath, {
           pid: Deno.pid,
           startTime: await readProcessStartTime(Deno.pid),
+          executable: basename(Deno.execPath()),
         });
         logger.info`SIGHUP reloads this serve, PID file written to ${pidPath}`;
       } catch (err) {

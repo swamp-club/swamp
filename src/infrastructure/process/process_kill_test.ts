@@ -24,6 +24,7 @@ import {
   killChildGroups,
   killProcessTree,
   type PsRunner,
+  readProcessCommand,
   readProcessStartTime,
   sendGracefulStop,
   snapshotChildrenToKill,
@@ -284,5 +285,30 @@ Deno.test({
     assertEquals(await readProcessStartTime(1, failed), undefined);
     assertEquals(await readProcessStartTime(1, empty), undefined);
     assertEquals(await readProcessStartTime(1, missing), undefined);
+  },
+});
+
+Deno.test({
+  name:
+    "readProcessCommand: asks ps for one pid's command line, and says nothing when ps cannot",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const seen: (readonly string[])[] = [];
+    const run: PsRunner = (args) => {
+      seen.push(args);
+      return Promise.resolve({
+        success: true,
+        stdout: "swamp serve --port 9090\n",
+      });
+    };
+    assertEquals(await readProcessCommand(7, run), "swamp serve --port 9090");
+    assertEquals(seen, [["-o", "command=", "-p", "7"]]);
+    assertEquals(
+      await readProcessCommand(
+        7,
+        () => Promise.resolve({ success: false, stdout: "" }),
+      ),
+      undefined,
+    );
   },
 });

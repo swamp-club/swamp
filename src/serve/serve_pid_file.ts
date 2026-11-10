@@ -20,6 +20,8 @@
 export interface ServePidRecord {
   readonly pid: number;
   readonly startTime?: string;
+  /** the serve binary's file name, as its command line shows it */
+  readonly executable?: string;
 }
 
 /** beside serve.pid, which stays a bare PID for kill -HUP and systemd */
@@ -47,9 +49,13 @@ export async function readServePidSidecar(
       await Deno.readTextFile(servePidSidecarPath(pidPath)),
     );
     if (typeof parsed !== "object" || parsed === null) return undefined;
-    const { pid, startTime } = parsed as Record<string, unknown>;
+    const { pid, startTime, executable } = parsed as Record<string, unknown>;
     if (typeof pid !== "number" || !Number.isInteger(pid)) return undefined;
-    return typeof startTime === "string" ? { pid, startTime } : { pid };
+    return {
+      pid,
+      ...(typeof startTime === "string" ? { startTime } : {}),
+      ...(typeof executable === "string" ? { executable } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -61,9 +67,14 @@ export interface ServePidProbeDeps {
   /** false only when no process has the pid; true when one does, even another user's */
   processExists(pid: number): boolean;
   startTime(pid: number): Promise<string | undefined>;
+  command(pid: number): Promise<string | undefined>;
 }
 
-/** unknown when this machine cannot tell; the caller then signals as before */
+/**
+ * unknown when this machine cannot tell, the caller then signalling as before;
+ * Linux derives a start time from a boot time that moves when the clock is
+ * stepped, so a differing start time refuses only a process that is not serve
+ */
 export async function probeServePid(
   pid: number,
   sidecar: ServePidRecord | undefined,
@@ -74,7 +85,13 @@ export async function probeServePid(
   if (sidecar.startTime === undefined) return "unknown";
   const started = await deps.startTime(pid);
   if (started === undefined) return "unknown";
-  return started === sidecar.startTime ? "match" : "reused";
+  if (started === sidecar.startTime) return "match";
+  if (sidecar.executable === undefined) return "unknown";
+  const command = await deps.command(pid);
+  if (command === undefined) return "unknown";
+  return command.includes(sidecar.executable) && /\bserve\b/.test(command)
+    ? "unknown"
+    : "reused";
 }
 
 export function processExists(pid: number): boolean {
@@ -94,6 +111,11 @@ export async function removePidFileIfOurs(
   pidPath: string,
   pid: number,
 ): Promise<boolean> {
+  // a sidecar left by a failed serve.pid write is this serve's too
+  const sidecar = await readServePidSidecar(pidPath);
+  if (sidecar?.pid === pid) {
+    await Deno.remove(servePidSidecarPath(pidPath)).catch(() => {});
+  }
   let content: string;
   try {
     content = await Deno.readTextFile(pidPath);
@@ -101,10 +123,6 @@ export async function removePidFileIfOurs(
     return false;
   }
   if (content.trim() !== String(pid)) return false;
-  const sidecar = await readServePidSidecar(pidPath);
-  if (sidecar?.pid === pid) {
-    await Deno.remove(servePidSidecarPath(pidPath)).catch(() => {});
-  }
   try {
     await Deno.remove(pidPath);
     return true;

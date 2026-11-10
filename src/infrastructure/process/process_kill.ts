@@ -123,6 +123,24 @@ export async function readProcessStartTime(
   }
 }
 
+/** the command line ps reports for `pid`; undefined when ps cannot say */
+export async function readProcessCommand(
+  pid: number,
+  run: PsRunner = runPs,
+): Promise<string | undefined> {
+  if (Deno.build.os === "windows") return undefined;
+  try {
+    const result = await run(["-o", "command=", "-p", String(pid)], {
+      LC_ALL: "C",
+    });
+    if (!result.success) return undefined;
+    const command = result.stdout.trim();
+    return command === "" ? undefined : command;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * a pid later reporting a different start time belongs to another process;
  * undefined where start times cannot be read (Windows, ps failing), and callers

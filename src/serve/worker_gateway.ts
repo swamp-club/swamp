@@ -674,6 +674,8 @@ export class WorkerGateway {
     signal: AbortSignal,
   ): Promise<EnrollResult> {
     const params = parseUntrustedOrThrow(EnrollParamsSchema, rawParams);
+    // one enrollment, one answer, though a reload may change it meanwhile
+    const verifyOnEnroll = this.#options.verifyOnEnroll === true;
 
     if (!isSupportedRemoteProtocolVersion(params.protocolVersion)) {
       throw new RpcError({
@@ -817,9 +819,7 @@ export class WorkerGateway {
       // under verify-on-enroll the worker is unverified until its probe passes,
       // and the durable record says so too so `swamp worker list` matches the
       // pool
-      const initialStatus = this.#options.verifyOnEnroll
-        ? "unverified"
-        : "idle";
+      const initialStatus = verifyOnEnroll ? "unverified" : "idle";
 
       if (reconnecting) {
         existing.channel = state.channel;
@@ -884,7 +884,7 @@ export class WorkerGateway {
         capacity,
         activeDispatchIds: [],
       };
-      if (reconnecting && this.#options.verifyOnEnroll) {
+      if (reconnecting && verifyOnEnroll) {
         entry.status = "unverified";
         // A refusal from before the reconnect is answered by the probe this
         // enrollment starts.
@@ -947,7 +947,7 @@ export class WorkerGateway {
         );
       }
 
-      if (this.#options.verifyOnEnroll && this.#options.verifyWorker) {
+      if (verifyOnEnroll && this.#options.verifyWorker) {
         this.#startEnrollmentVerify(workerName);
       } else {
         const snap = this.#snapshot(entry);
