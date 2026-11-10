@@ -17,12 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * a bundled module's import.meta points at its chunk, not its source file, so
- * resource lookups go through src/infrastructure/runtime/resource_root.ts;
- * pinned by file, with recordDefiningModule allowed wherever it is called
- */
-
 import { assertEquals } from "@std/assert";
 import {
   assertPinnedSet,

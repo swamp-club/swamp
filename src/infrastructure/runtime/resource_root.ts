@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { markErrorPaths } from "../../domain/errors.ts";
 
 // always embedded by the compile script and present in every checkout, so the
 // walk does not depend on how deep this module, or its bundled chunk, sits
@@ -43,10 +44,12 @@ export function findResourceRoot(startDir: string): string {
     if (isDirectory(join(dir, MARKER))) return dir;
     const parent = dirname(dir);
     if (parent === dir) {
-      throw new Error(
-        `No swamp resource root found: no ancestor of ${
-          resolve(startDir)
-        } holds ${MARKER}`,
+      const start = resolve(startDir);
+      throw markErrorPaths(
+        new Error(
+          `No swamp resource root found: no ancestor of ${start} holds ${MARKER}`,
+        ),
+        [start],
       );
     }
     dir = parent;

@@ -33,8 +33,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
     await fn(dir);
   } finally {
     if (Deno.build.os === "windows") {
-      // Best-effort: EBUSY can fire when V8 hasn't released a handle yet.
-      // Temp dir is ephemeral, OS reclaims.
+      // Windows: EBUSY when V8 hasn't released the handle; the OS reclaims the temp dir
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(dir, { recursive: true });
@@ -100,6 +99,6 @@ Deno.test("resourceRoot: resolves to the repository root holding .claude/skills"
   );
 });
 
-Deno.test("resourceRootUrl: matches the source root the unscoped-write diagnostic used before", () => {
+Deno.test("resourceRootUrl: is the repo root as a file URL ending in a slash", () => {
   assertEquals(resourceRootUrl(), new URL("../../../", import.meta.url).href);
 });
