@@ -274,25 +274,39 @@ Deno.test(
 );
 
 // a group table names every subcommand of its group, so any importer other
-// than the group module would depend on the whole group
-const GROUP_ROUTE_TABLES: ReadonlyArray<readonly [string, string]> = [
-  ["src/cli/commands/data.ts", "src/cli/commands/data_routes.ts"],
-  ["src/cli/commands/workflow.ts", "src/cli/commands/workflow_routes.ts"],
+// than its group modules would depend on the whole group
+const GROUP_ROUTE_TABLES: ReadonlyArray<
+  readonly [readonly string[], string]
+> = [
+  [["src/cli/commands/data.ts"], "src/cli/commands/data_routes.ts"],
+  [["src/cli/commands/workflow.ts"], "src/cli/commands/workflow_routes.ts"],
+  [
+    [
+      "src/cli/commands/behavior.ts",
+      "src/cli/commands/model.ts",
+      "src/cli/commands/model_method.ts",
+    ],
+    "src/cli/commands/model_routes.ts",
+  ],
 ];
 
 Deno.test(
-  "collectReferenceEdges: only its group module imports a group route table",
+  "collectReferenceEdges: only its group modules import a group route table",
   async () => {
-    for (const [group, table] of GROUP_ROUTE_TABLES) {
+    for (const [groups, table] of GROUP_ROUTE_TABLES) {
       const edges = await collectReferenceEdges(
         SRC_DIR,
         (resolved) => resolved === table,
       );
       assertEquals(
-        edges,
-        [`${group} -> ${table}`],
-        `Imports of ${table} other than ${group}:\n${edges.join("\n")}\n\n` +
-          `${table} names every subcommand of its group; build the group through ${group}.`,
+        [...edges].sort(),
+        groups.map((group) => `${group} -> ${table}`).sort(),
+        `Imports of ${table} other than ${groups.join(", ")}:\n${
+          edges.join("\n")
+        }\n\n` +
+          `${table} names every subcommand of its group; build the group through ${
+            groups.join(" or ")
+          }.`,
       );
     }
   },

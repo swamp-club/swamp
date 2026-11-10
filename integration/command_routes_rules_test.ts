@@ -33,6 +33,18 @@ import {
 import { ROOT_ROUTES } from "../src/cli/root_routes.ts";
 import { DATA_ROUTES } from "../src/cli/commands/data_routes.ts";
 import { WORKFLOW_ROUTES } from "../src/cli/commands/workflow_routes.ts";
+import {
+  BEHAVIOR_ROUTES,
+  MODEL_METHOD_ROUTES,
+  MODEL_ROUTES,
+} from "../src/cli/commands/model_routes.ts";
+import {
+  BEHAVIOR_GROUP_WORDS,
+  METHOD_LEVEL_WORDS,
+  MODEL_GROUP_WORD,
+  MODEL_METHOD_WORD,
+} from "../src/cli/behavior_twin.ts";
+import { rewriteDirectTypeArgs } from "../src/cli/arg_rewriter.ts";
 import { buildCommandTree, createRootCommand } from "../src/cli/mod.ts";
 import { type AnyCommand, buildCliSchema } from "../src/cli/cli_schema.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
@@ -44,21 +56,37 @@ import type {
 const ROUTE_TABLE = join(ROOT, "src", "cli", "root_routes.ts");
 
 interface GroupTable {
-  readonly group: string;
+  /** the command words from the root to the group */
+  readonly path: readonly string[];
   readonly file: string;
   readonly routes: readonly CommandRoute[];
 }
 
 const GROUP_TABLES: readonly GroupTable[] = [
   {
-    group: "data",
+    path: ["data"],
     file: "src/cli/commands/data_routes.ts",
     routes: DATA_ROUTES,
   },
   {
-    group: "workflow",
+    path: ["workflow"],
     file: "src/cli/commands/workflow_routes.ts",
     routes: WORKFLOW_ROUTES,
+  },
+  {
+    path: ["behavior"],
+    file: "src/cli/commands/model_routes.ts",
+    routes: BEHAVIOR_ROUTES,
+  },
+  {
+    path: ["model"],
+    file: "src/cli/commands/model_routes.ts",
+    routes: MODEL_ROUTES,
+  },
+  {
+    path: ["model", "method"],
+    file: "src/cli/commands/model_routes.ts",
+    routes: MODEL_METHOD_ROUTES,
   },
 ];
 
@@ -121,48 +149,143 @@ Deno.test("command routes: each route's module is the file its load imports", as
 });
 
 Deno.test("command routes: each group row's module is the file its load imports", async () => {
-  for (const { file, routes } of GROUP_TABLES) {
+  const files = [...new Set(GROUP_TABLES.map((table) => table.file))];
+  for (const file of files) {
+    const tables = GROUP_TABLES.filter((table) => table.file === file);
     const path = join(ROOT, file);
     const imported = findModuleReferences(path, await Deno.readTextFile(path))
       .filter((reference) => reference.kind === "dynamic")
       .map((reference) => resolveImport(path, reference.specifier));
+    if (tables.length === 1) {
+      assertEquals(
+        imported,
+        tables[0].routes.map((route) => route.module),
+        `every row of ${file} needs exactly one literal import() of the file ` +
+          "its module field names",
+      );
+      continue;
+    }
+    // shared rows are bound into each table in that spelling's order
     assertEquals(
-      imported,
-      routes.map((route) => route.module),
-      `every row of ${file} needs exactly one literal import() of the file ` +
-        "its module field names",
+      imported.length,
+      new Set(imported).size,
+      `${file} imports a module twice; define each shared row once`,
+    );
+    assertEquals(
+      [...imported].sort(),
+      [
+        ...new Set(
+          tables.flatMap((table) => table.routes.map((route) => route.module)),
+        ),
+      ].sort(),
+      `every shared row of ${file} needs exactly one literal import() of ` +
+        "the file its module field names",
     );
   }
 });
 
 Deno.test("command routes: each group's children in the full tree equal its table", async () => {
   const tree = await buildCommandTree();
-  for (const { group, file, routes } of GROUP_TABLES) {
+  for (const { path, file, routes } of GROUP_TABLES) {
     assertEquals(
-      childrenOf(resolvePath(tree, [group])!),
+      childrenOf(resolvePath(tree, [...path])!),
       tableRows(routes),
-      `${file} must list every swamp ${group} subcommand in registration ` +
-        "order with its aliases and hidden flag; an alias missing from the " +
-        "table makes routing load the whole group",
+      `${file} must list every swamp ${path.join(" ")} subcommand in ` +
+        "registration order with its aliases and hidden flag; an alias " +
+        "missing from the table makes routing load the whole group",
     );
   }
 });
 
+function loadedChildren(tree: AnyCommand, path: readonly string[]) {
+  return resolvePath(tree, [...path])?.getCommands(true).map((
+    c: AnyCommand,
+  ) => c.getName());
+}
+
+/** each group on the way to path holds only the next word of path */
+function assertOnlyPathLoaded(
+  tree: AnyCommand,
+  path: readonly string[],
+  message: string,
+): void {
+  for (let depth = 1; depth < path.length; depth++) {
+    assertEquals(
+      loadedChildren(tree, path.slice(0, depth)),
+      [path[depth]],
+      message,
+    );
+  }
+}
+
 Deno.test("command routes: a subcommand path loads only that subcommand under its group", async () => {
-  for (const { group, routes } of GROUP_TABLES) {
+  for (const { path, routes } of GROUP_TABLES) {
     for (const route of routes) {
       for (const word of [route.name, ...route.aliases]) {
-        for (const args of [[group, word], ["help", group, word]]) {
-          const node = resolvePath(await buildCommandTree(args), [group]);
-          assertEquals(
-            node?.getCommands(true).map((c: AnyCommand) => c.getName()),
-            [route.name],
+        for (const args of [[...path, word], ["help", ...path, word]]) {
+          assertOnlyPathLoaded(
+            await buildCommandTree(args),
+            [...path, route.name],
             `swamp ${args.join(" ")} should load only ${route.module}`,
           );
         }
       }
     }
   }
+});
+
+Deno.test("command routes: a direct-type model method run, once rewritten, loads only run", async () => {
+  const args = rewriteDirectTypeArgs([
+    "model",
+    "@swamp/echo",
+    "method",
+    "run",
+    "echo",
+    "my-def",
+  ]);
+  assertOnlyPathLoaded(
+    await buildCommandTree(args),
+    ["model", "method", "run"],
+    `swamp ${args.join(" ")} should load only model method run`,
+  );
+});
+
+Deno.test("command routes: the behavior twin's word lists agree with the route tables", () => {
+  const names = (routes: readonly CommandRoute[]) => routes.map((r) => r.name);
+  assertEquals(
+    names(MODEL_METHOD_ROUTES),
+    [...METHOD_LEVEL_WORDS],
+    "METHOD_LEVEL_WORDS in src/cli/behavior_twin.ts must name the model " +
+      "method subcommands, in order",
+  );
+  const modelLevel = names(MODEL_ROUTES).filter((name) =>
+    name !== MODEL_METHOD_WORD
+  );
+  assertEquals(
+    modelLevel.filter((name) => METHOD_LEVEL_WORDS.includes(name)),
+    [],
+    "a method-level word must not also be a model subcommand",
+  );
+  assertEquals(
+    [...names(BEHAVIOR_ROUTES)].sort(),
+    [...modelLevel, ...METHOD_LEVEL_WORDS].sort(),
+    "behavior must route the model subcommands and the method-level " +
+      "subcommands, with no method level of its own",
+  );
+  assert(
+    names(MODEL_ROUTES).includes(MODEL_METHOD_WORD),
+    `${MODEL_METHOD_WORD} must be a model subcommand`,
+  );
+  const behaviorRoot = ROOT_ROUTES.find((r) => r.name === "behavior");
+  assertEquals(
+    behaviorRoot && [behaviorRoot.name, ...behaviorRoot.aliases],
+    [...BEHAVIOR_GROUP_WORDS],
+    "BEHAVIOR_GROUP_WORDS must be the behavior route's name and aliases",
+  );
+  assert(
+    ROOT_ROUTES.some((r) => r.name === MODEL_GROUP_WORD),
+    `${MODEL_GROUP_WORD} must be a root route`,
+  );
 });
 
 Deno.test("command routes: the full tree's top-level commands equal the table", async () => {
@@ -295,9 +418,9 @@ Deno.test("command routes: each route loads alone in a fresh module graph with t
       path: [route.name],
       expected: schemaOf(resolvePath(full, [route.name])!, [route.name]),
     })),
-    ...GROUP_TABLES.flatMap(({ group, routes }) =>
+    ...GROUP_TABLES.flatMap(({ path: group, routes }) =>
       routes.map((route) => {
-        const path = [group, route.name];
+        const path = [...group, route.name];
         return {
           args: path,
           path,

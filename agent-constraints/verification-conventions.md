@@ -471,8 +471,11 @@ How to read it:
   imports `mod.ts`, or any file but `mod.ts` imports the table, which would
   put the whole CLI in that file's closure. A group table (`data_routes.ts`,
   `workflow_routes.ts`) is imported only by its group module, so an edit to it
-  selects that group; `data.ts` and `workflow.ts` import
-  `src/cli/command_routes.ts`, so an edit to it selects both groups as well.
+  selects that group. `model_routes.ts` is shared by `behavior.ts`, `model.ts`
+  and `model_method.ts`, so an edit to it, or to any subcommand it names,
+  selects both `behavior` and `model`. Every group module imports
+  `src/cli/command_routes.ts`, so an edit to it selects `data`, `workflow`,
+  `behavior` and `model`.
 
 The rule table is `classifyOutsideGraph` in `scripts/affected_commands.ts`. A
 new top-level directory needs a rule there;

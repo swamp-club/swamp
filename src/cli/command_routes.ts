@@ -159,19 +159,33 @@ export function selectRoute(
   return { kind: "route", route, rest: args.slice(next) };
 }
 
+export interface SubcommandSelection {
+  readonly route: CommandRoute;
+  /** the argv after the subcommand word, so a subgroup can narrow again */
+  readonly rest: readonly string[];
+}
+
 /**
  * undefined loads the whole group: help is not a subcommand, and an option the
  * root does not declare cannot be placed
  */
-export function selectSubcommand(
+export function selectSubcommandWithRest(
   routes: readonly CommandRoute[],
   rest: readonly string[],
-): CommandRoute | undefined {
+): SubcommandSelection | undefined {
   const scan = scanForWord(rest, 0, ROOT_GLOBAL_OPTIONS);
   if (scan.kind !== "word") return undefined;
   const word = rest[scan.index];
   const route = routes.find((r) => r.name === word || r.aliases.includes(word));
-  return route?.needsFullTree ? undefined : route;
+  if (!route || route.needsFullTree) return undefined;
+  return { route, rest: rest.slice(scan.index + 1) };
+}
+
+export function selectSubcommand(
+  routes: readonly CommandRoute[],
+  rest: readonly string[],
+): CommandRoute | undefined {
+  return selectSubcommandWithRest(routes, rest)?.route;
 }
 
 export function loadGroupRoutes(
@@ -179,8 +193,10 @@ export function loadGroupRoutes(
   routes: readonly CommandRoute[],
   rest: readonly string[],
 ): Promise<LoadedCommand[]> {
-  const route = selectSubcommand(routes, rest);
-  return loadRoutes(route ? [route] : routes, [], group);
+  const selection = selectSubcommandWithRest(routes, rest);
+  return selection
+    ? loadRoutes([selection.route], selection.rest, group)
+    : loadRoutes(routes, [], group);
 }
 
 /** sequential, so command modules evaluate in table order on every run */

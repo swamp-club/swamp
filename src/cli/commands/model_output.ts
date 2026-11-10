@@ -28,20 +28,20 @@ import {
 } from "./command_syntax.ts";
 import {
   createModelOutputGetCommand,
+  MODEL_OUTPUT_GET_SYNTAX,
   modelOutputGetAction,
-  modelOutputGetCommand,
 } from "./model_output_get.ts";
 import {
   createModelOutputSearchCommand,
-  modelOutputSearchCommand,
+  MODEL_OUTPUT_SEARCH_SYNTAX,
 } from "./model_output_search.ts";
 import {
   createModelOutputLogsCommand,
-  modelOutputLogsCommand,
+  MODEL_OUTPUT_LOGS_SYNTAX,
 } from "./model_output_logs.ts";
 import {
   createModelOutputDataCommand,
-  modelOutputDataCommand,
+  MODEL_OUTPUT_DATA_SYNTAX,
 } from "./model_output_data.ts";
 
 export interface ModelOutputChildren {
@@ -110,12 +110,12 @@ export function createModelOutputCommand(
   return recordDefiningModule(command, import.meta.url);
 }
 
-export const modelOutputCommand = createModelOutputCommand(
-  MODEL_OUTPUT_SYNTAX,
-  {
-    get: modelOutputGetCommand,
-    search: modelOutputSearchCommand,
-    logs: modelOutputLogsCommand,
-    data: modelOutputDataCommand,
-  },
-);
+/** each leaf carries its legacy constant's preferred spelling, which subcommandSyntax cannot derive */
+export function createLegacyModelOutputCommand() {
+  return createModelOutputCommand(MODEL_OUTPUT_SYNTAX, {
+    get: createModelOutputGetCommand(MODEL_OUTPUT_GET_SYNTAX),
+    search: createModelOutputSearchCommand(MODEL_OUTPUT_SEARCH_SYNTAX),
+    logs: createModelOutputLogsCommand(MODEL_OUTPUT_LOGS_SYNTAX),
+    data: createModelOutputDataCommand(MODEL_OUTPUT_DATA_SYNTAX),
+  });
+}

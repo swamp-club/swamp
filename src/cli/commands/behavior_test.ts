@@ -29,12 +29,9 @@ import { registerCompletionTypes } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
 import { PREFERRED_SPELLING_EXAMPLE } from "./command_syntax.ts";
-import { behaviorCommand, behaviorRunCommand } from "./behavior.ts";
-import { modelCommand } from "./model_create.ts";
-import {
-  modelMethodCommand,
-  modelMethodRunCommand,
-} from "./model_method_run.ts";
+import { createBehaviorCommand } from "./behavior.ts";
+import { createModelCommand } from "./model.ts";
+import { createModelMethodCommand } from "./model_method.ts";
 
 import "../../domain/models/models.ts";
 
@@ -50,8 +47,11 @@ function at(group: AnyCommand, path: string): AnyCommand {
   return command;
 }
 
-const behaviorTree = behaviorCommand as unknown as AnyCommand;
-const modelTree = modelCommand as unknown as AnyCommand;
+const behaviorCommand = await createBehaviorCommand();
+const behaviorTree = behaviorCommand;
+const modelTree = await createModelCommand();
+const behaviorRunCommand = at(behaviorTree, "run");
+const modelMethodRunCommand = at(modelTree, "method run");
 
 function commandPaths(group: AnyCommand, prefix = ""): string[] {
   return group.getCommands(true).flatMap((child: AnyCommand) => {
@@ -139,7 +139,6 @@ Deno.test("behaviorCommand: has the full behavior command set and no method leve
     "type",
   ]);
   assertEquals(behaviorCommand.getCommand("method", true), undefined);
-  assertStrictEquals(behaviorCommand.getCommand("run"), behaviorRunCommand);
 });
 
 Deno.test("behavior commands: the two trees have the same commands, both ways", () => {
@@ -366,16 +365,19 @@ Deno.test("behaviorCommand: the CLI schema lists the full subtree", () => {
   }
 });
 
-function root(): AnyCommand {
+async function root(): Promise<AnyCommand> {
   return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")
-    .command("behavior", behaviorCommand)
-    .command("model", new Command().command("method", modelMethodCommand));
+    .command("behavior", await createBehaviorCommand())
+    .command(
+      "model",
+      new Command().command("method", await createModelMethodCommand()),
+    );
 }
 
 Deno.test("behaviorRunCommand: direct type execution without a definition name rejects with the new syntax", async () => {
   try {
-    await root().parse([
+    await (await root()).parse([
       "behavior",
       "run",
       "@swamp/echo",
@@ -400,7 +402,7 @@ Deno.test("behaviorRunCommand: direct type execution without a definition name r
 
 Deno.test("modelMethodRunCommand: direct type execution error still names the legacy syntax", async () => {
   try {
-    await root().parse([
+    await (await root()).parse([
       "model",
       "method",
       "run",

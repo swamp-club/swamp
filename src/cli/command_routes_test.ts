@@ -27,6 +27,7 @@ import {
   type RouteSelection,
   selectRoute,
   selectSubcommand,
+  selectSubcommandWithRest,
 } from "./command_routes.ts";
 
 function route(
@@ -215,6 +216,56 @@ Deno.test("loadGroupRoutes: loads the selected subcommand alone, or the whole gr
     ),
     ["get", "search", "history"],
   );
+});
+
+Deno.test("selectSubcommandWithRest: passes on the argv after the selected word", () => {
+  const rest = (args: string[]) =>
+    selectSubcommandWithRest(SUBCOMMANDS, args)?.rest;
+  assertEquals(rest(["history", "search", "--limit", "5"]), [
+    "search",
+    "--limit",
+    "5",
+  ]);
+  assertEquals(rest(["--json", "-q", "list", "q"]), ["q"]);
+  assertEquals(rest(["get"]), []);
+});
+
+Deno.test("selectSubcommandWithRest: selects exactly what selectSubcommand selects", () => {
+  const cases: string[][] = [
+    [],
+    ["get", "m"],
+    ["list"],
+    ["--log-level=debug", "history"],
+    ["--log-level", "debug", "history"],
+    ["--", "get"],
+    ["gte"],
+    ["help", "get"],
+    ["--help", "get"],
+    ["--include-hidden", "get"],
+    ["--log-level", "get"],
+  ];
+  for (const args of cases) {
+    assertStrictEquals(
+      selectSubcommandWithRest(SUBCOMMANDS, args)?.route,
+      selectSubcommand(SUBCOMMANDS, args),
+      args.join(" "),
+    );
+  }
+});
+
+Deno.test("loadGroupRoutes: the selected subcommand loads with the argv after its word, the whole group with none", async () => {
+  const seen = new Map<string, readonly string[]>();
+  const recording = SUBCOMMANDS.map((r) =>
+    route(r.name, { aliases: r.aliases }, (rest) => {
+      seen.set(r.name, rest);
+      return Promise.resolve(new Command());
+    })
+  );
+  await loadGroupRoutes("model", recording, ["--json", "history", "run", "x"]);
+  assertEquals([...seen], [["history", ["run", "x"]]]);
+  seen.clear();
+  await loadGroupRoutes("model", recording, ["gte", "run"]);
+  assertEquals([...seen], [["get", []], ["search", []], ["history", []]]);
 });
 
 Deno.test("loadGroupRoutes: a failed import names the group, the subcommand and its module", async () => {

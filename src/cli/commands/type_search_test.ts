@@ -38,8 +38,9 @@ Deno.test("typeSearchCommand has correct description", async () => {
   );
 });
 
-Deno.test("typeSearchCommand is registered as subcommand of modelTypeCommand", async () => {
-  const { modelTypeCommand } = await import("./model_type.ts");
+Deno.test("typeSearchCommand is registered as subcommand of the legacy type group", async () => {
+  const { createLegacyModelTypeCommand } = await import("./model_type.ts");
+  const modelTypeCommand = createLegacyModelTypeCommand();
   const commands = modelTypeCommand.getCommands();
   const searchCmd = commands.find((c: Command) => c.getName() === "search");
   assertEquals(searchCmd !== undefined, true);

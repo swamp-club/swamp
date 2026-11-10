@@ -17,19 +17,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
 import fc from "fast-check";
 import {
   type CommandRoute,
   HELP_COMMAND,
   selectRoute,
-  selectSubcommand,
+  selectSubcommandWithRest,
 } from "./command_routes.ts";
 import { ROOT_ROUTES } from "./root_routes.ts";
 import { DATA_ROUTES } from "./commands/data_routes.ts";
 import { WORKFLOW_ROUTES } from "./commands/workflow_routes.ts";
+import {
+  BEHAVIOR_ROUTES,
+  MODEL_METHOD_ROUTES,
+  MODEL_ROUTES,
+} from "./commands/model_routes.ts";
 import { createRootCommand } from "./mod.ts";
+import type { AnyCommand } from "./cli_schema.ts";
 
 // the real root's options with stand-in children: the router decides only which
 // top-level command Cliffy dispatches to, and the stand-ins record exactly that
@@ -123,41 +129,49 @@ Deno.test("outcome: the stand-in tree reaches a route through globals and help, 
   );
 });
 
+/** keyed by the command words from the root to the group */
 const GROUP_TABLES: ReadonlyMap<string, readonly CommandRoute[]> = new Map([
   ["data", DATA_ROUTES],
   ["workflow", WORKFLOW_ROUTES],
+  ["behavior", BEHAVIOR_ROUTES],
+  ["model", MODEL_ROUTES],
+  ["model method", MODEL_METHOD_ROUTES],
 ]);
 
-// as outcome, but the routed groups are stand-in headers with stand-in
-// subcommands; a header records when its own action runs, the path where
-// groupCommandAction would list a narrowed group's children
+/** the subcommands registered under the group at path */
+type Narrow = (path: readonly string[]) => readonly CommandRoute[];
+
+const fullGroups: Narrow = (path) => GROUP_TABLES.get(path.join(" "))!;
+
 async function groupOutcome(
   routes: readonly CommandRoute[],
-  subcommands: (group: string) => readonly CommandRoute[],
+  narrow: Narrow,
   args: string[],
 ): Promise<string> {
   let reached = "nothing";
-  const root = createRootCommand(false).noExit().throwErrors();
-  for (const route of routes) {
-    const table = GROUP_TABLES.get(route.name);
-    let child = table
+  const standIn = (
+    path: readonly string[],
+    aliases: readonly string[],
+  ): AnyCommand => {
+    const key = path.join(" ");
+    let command: AnyCommand = GROUP_TABLES.has(key)
       ? new Command().action(() => {
-        reached = `${route.name} (group action)`;
+        reached = `${key} (group action)`;
       })
       : new Command().useRawArgs().action(() => {
-        reached = route.name;
+        reached = key;
       });
-    for (const alias of route.aliases) child = child.alias(alias);
-    if (table) {
-      for (const sub of subcommands(route.name)) {
-        let leaf = new Command().useRawArgs().action(() => {
-          reached = `${route.name} ${sub.name}`;
-        });
-        for (const alias of sub.aliases) leaf = leaf.alias(alias);
-        child.command(sub.name, leaf);
+    for (const alias of aliases) command = command.alias(alias);
+    if (GROUP_TABLES.has(key)) {
+      for (const sub of narrow(path)) {
+        command.command(sub.name, standIn([...path, sub.name], sub.aliases));
       }
     }
-    root.command(route.name, child);
+    return command;
+  };
+  const root = createRootCommand(false).noExit().throwErrors();
+  for (const route of routes) {
+    root.command(route.name, standIn([route.name], route.aliases));
   }
   root.command(
     HELP_COMMAND,
@@ -174,6 +188,38 @@ async function groupOutcome(
     return `error: ${error instanceof Error ? error.message : String(error)}`;
   }
   return reached;
+}
+
+interface Narrowed {
+  readonly route: CommandRoute;
+  readonly narrow: Narrow;
+  /** the groups a subcommand was selected under */
+  readonly selectedUnder: readonly string[];
+}
+
+/** selection as the CLI applies it: the root route, then each group in turn */
+function narrowedPath(args: string[]): Narrowed | undefined {
+  const selection = selectRoute(ROOT_ROUTES, args);
+  if (selection.kind === "all") return undefined;
+  const chosen = new Map<string, CommandRoute>();
+  let path = [selection.route.name];
+  let rest = selection.rest;
+  for (;;) {
+    const table = GROUP_TABLES.get(path.join(" "));
+    const sub = table && selectSubcommandWithRest(table, rest);
+    if (!sub) break;
+    chosen.set(path.join(" "), sub.route);
+    path = [...path, sub.route.name];
+    rest = sub.rest;
+  }
+  return {
+    route: selection.route,
+    narrow: (at) => {
+      const picked = chosen.get(at.join(" "));
+      return picked ? [picked] : fullGroups(at);
+    },
+    selectedUnder: [...chosen.keys()],
+  };
 }
 
 const subcommandWord = fc.constantFrom(
@@ -193,61 +239,94 @@ const groupToken = fc.oneof(
     "--bogus",
     "debug",
     "gte",
+    "methd",
     "search",
     "",
   ),
 );
 
-const groupArgs = fc.tuple(
-  fc.constantFrom<string[]>([], ["help"], ["--json"], ["help", "--json"], [
-    "--log-level",
-    "debug",
-  ]),
-  fc.constantFrom(...GROUP_TABLES.keys()),
-  fc.array(groupToken, { maxLength: 5 }),
-).map(([prefix, group, rest]) => [...prefix, group, ...rest]);
+const ROOT_GROUP_WORDS = ROOT_ROUTES
+  .filter((route) => GROUP_TABLES.has(route.name))
+  .flatMap((route) => [route.name, ...route.aliases]);
 
-Deno.test("selectSubcommand: Cliffy's parse ends the same way with only the selected route and subcommand registered", async () => {
+function wordsOf(routes: readonly CommandRoute[]): string[] {
+  return routes.flatMap((r) => [r.name, ...r.aliases]);
+}
+
+/**
+ * walks the real tables, so deep paths like model method history run come up
+ * often; past a leaf it repeats a sibling's word, which is where a wrong rest
+ * would select the wrong subcommand
+ */
+const groupArgs = fc.record({
+  prefix: fc.constantFrom<string[]>([], ["help"], ["--json"], [
+    "help",
+    "--json",
+  ], ["--log-level", "debug"]),
+  root: fc.constantFrom(...ROOT_GROUP_WORDS),
+  steps: fc.array(
+    fc.tuple(fc.nat(), fc.array(groupToken, { maxLength: 2 })),
+    { maxLength: 4 },
+  ),
+  tail: fc.array(groupToken, { maxLength: 2 }),
+}).map(({ prefix, root, steps, tail }) => {
+  const args = [...prefix, root];
+  let group = ROOT_ROUTES.find((r) => wordsOf([r]).includes(root))!.name;
+  let siblings = wordsOf(GROUP_TABLES.get(group)!);
+  for (const [pick, noise] of steps) {
+    args.push(...noise);
+    const table = GROUP_TABLES.get(group);
+    const words = table ? wordsOf(table) : siblings;
+    const word = words[pick % words.length];
+    args.push(word);
+    if (table) {
+      siblings = words;
+      const route = table.find((r) => wordsOf([r]).includes(word))!;
+      group = `${group} ${route.name}`;
+    }
+  }
+  return [...args, ...tail];
+});
+
+Deno.test("selectSubcommandWithRest: Cliffy's parse ends the same way with only the selected path registered, at every group level", async () => {
   await fc.assert(
     fc.asyncProperty(groupArgs, async (args) => {
-      const selection = selectRoute(ROOT_ROUTES, args);
-      if (selection.kind === "all") return;
-      const table = GROUP_TABLES.get(selection.route.name);
-      const sub = table && selectSubcommand(table, selection.rest);
-      const narrowed = await groupOutcome(
-        [selection.route],
-        (group) => sub ? [sub] : GROUP_TABLES.get(group)!,
+      const narrowed = narrowedPath(args);
+      if (!narrowed) return;
+      const outcome = await groupOutcome(
+        [narrowed.route],
+        narrowed.narrow,
         args,
       );
       assertEquals(
-        narrowed,
-        await groupOutcome(
-          ROOT_ROUTES,
-          (group) => GROUP_TABLES.get(group)!,
-          args,
-        ),
+        outcome,
+        await groupOutcome(ROOT_ROUTES, fullGroups, args),
         args.join(" "),
       );
-      if (sub) {
-        assertEquals(
-          narrowed.endsWith("(group action)"),
-          false,
-          `${args.join(" ")}: a selected subcommand reached the group action`,
+      for (const group of narrowed.selectedUnder) {
+        assert(
+          outcome !== `${group} (group action)`,
+          `${args.join(" ")}: a subcommand selected under ${group} ` +
+            "reached its group action",
         );
       }
     }),
-    { numRuns: 1000 },
+    { numRuns: 3000 },
   );
 });
 
-Deno.test("groupOutcome: the stand-in tree reaches a subcommand by alias and the group action with no word", async () => {
-  const all = (group: string) => GROUP_TABLES.get(group)!;
+Deno.test("groupOutcome: the stand-in tree reaches a subcommand by alias and through a subgroup, and each group action with no word", async () => {
+  const reach = (args: string[]) => groupOutcome(ROOT_ROUTES, fullGroups, args);
+  assertEquals(await reach(["workflow", "--json", "list"]), "workflow search");
+  assertEquals(await reach(["data"]), "data (group action)");
+  assertEquals(await reach(["behaviour", "list"]), "behavior search");
   assertEquals(
-    await groupOutcome(ROOT_ROUTES, all, ["workflow", "--json", "list"]),
-    "workflow search",
+    await reach(["--json", "model", "method", "run", "m", "x"]),
+    "model method run",
   );
   assertEquals(
-    await groupOutcome(ROOT_ROUTES, all, ["data"]),
-    "data (group action)",
+    await reach(["help", "model", "method", "run"]),
+    "help model method run",
   );
+  assertEquals(await reach(["model", "method"]), "model method (group action)");
 });

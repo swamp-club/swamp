@@ -42,7 +42,7 @@ import { createDataCommand } from "../src/cli/commands/data.ts";
 import { datastoreCommand } from "../src/cli/commands/datastore.ts";
 import { doctorCommand } from "../src/cli/commands/doctor.ts";
 import { extensionCommand } from "../src/cli/commands/extension.ts";
-import { modelCommand } from "../src/cli/commands/model_create.ts";
+import { createModelCommand } from "../src/cli/commands/model.ts";
 import { runCommand } from "../src/cli/commands/run.ts";
 import { vaultCommand } from "../src/cli/commands/vault.ts";
 import { workerCommand } from "../src/cli/commands/worker.ts";
@@ -353,6 +353,7 @@ function root(): Promise<CliRoot> {
 async function buildRoot(): Promise<CliRoot> {
   const dataCommand = await createDataCommand();
   const workflowCommand = await createWorkflowCommand();
+  const modelCommand = await createModelCommand();
   return registerCompletionTypes(new Command())
     .name("swamp")
     .globalOption("--json", "Output in JSON format (non-interactive)")
