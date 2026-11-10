@@ -220,6 +220,33 @@ Deno.test("pendingOwnerLiveness: with no heartbeats, an owner on another host co
   assertEquals(await boot(PEER), false);
 });
 
+Deno.test("pendingOwnerLiveness: a heartbeat that cannot be read counts as the caller says; a missing one is gone", async () => {
+  const unreadable = {
+    ...storeWith({}),
+    get: () => Promise.reject(new Error("bucket unavailable")),
+  } as ControlPlaneStore;
+  const sweep = (store: ControlPlaneStore) =>
+    pendingOwnerLiveness({
+      instanceId: "self",
+      unjudgedOwner: "alive",
+      ...onHost("host-b", true),
+      controlPlaneStore: store,
+    });
+  const boot = pendingOwnerLiveness({
+    instanceId: "self",
+    unjudgedOwner: "gone",
+    ...onHost("host-b", true),
+    controlPlaneStore: unreadable,
+  });
+  assertEquals(await sweep(unreadable)(PEER), true);
+  assertEquals(await boot(PEER), false);
+  assertEquals(await sweep(storeWith({}))(PEER), false);
+  const stale = storeWith({
+    "heartbeats/peer": heartbeat(new Date(Date.now() - 600_000)),
+  });
+  assertEquals(await sweep(stale)(PEER), false);
+});
+
 Deno.test("withStoreDeadline: a call that stalls is refused once the deadline passes", async () => {
   const stalled = {
     put: () => new Promise<void>(() => {}),

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotStrictEquals,
   assertRejects,
@@ -3040,4 +3041,243 @@ Deno.test("replayPendingRuns: a run another process claimed first is not replaye
   assertEquals(count, 1);
   assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["free"]);
   assertEquals(h.deleted, []);
+});
+
+const PEER_B: PendingRunOwner = { instanceId: "peer-b", pid: 104 };
+
+function sweeper(controlPlaneStore: ControlPlaneStore) {
+  const h = createReplayHarness([], {
+    configuredCronWorkflows: new Set(["nightly-sync"]),
+  });
+  h.deps.controlPlaneStore = controlPlaneStore;
+  return h;
+}
+
+function claimRecord(owner: PendingRunOwner) {
+  return { owner, claimedAt: "2026-01-01T00:00:00Z" };
+}
+
+Deno.test("replayPendingRuns: two instances sweeping one gone peer's control-plane run replay it once", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/race": cronEntry("race", GONE_PEER),
+  });
+  const a = sweeper(controlPlaneStore);
+  const b = sweeper(controlPlaneStore);
+
+  const sweepersAlive = (owner: PendingRunOwner) =>
+    Promise.resolve(owner.instanceId !== GONE_PEER.instanceId);
+  const counts = await Promise.all([
+    replayPendingRuns({ ...a.deps, ownerAlive: sweepersAlive, claimAs: SELF }),
+    replayPendingRuns({
+      ...b.deps,
+      ownerAlive: sweepersAlive,
+      claimAs: PEER_B,
+    }),
+  ]);
+
+  assertEquals(counts[0] + counts[1], 1);
+  assertEquals(a.cronReplays.length + b.cronReplays.length, 1);
+  assert(controlPlaneStore.data.has("claims/pending-runs/race/peer-gone"));
+});
+
+Deno.test("replayPendingRuns: a run in this host's tracker is not replayed when a peer elsewhere claimed it first", async () => {
+  const entry = cronEntry("tracked", GONE_PEER);
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/tracked": entry,
+    "claims/pending-runs/tracked/peer-gone": claimRecord(LIVE_PEER),
+  });
+  const h = createReplayHarness([entry]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+  const deferred = new Set<string>();
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+    deferred,
+  });
+
+  assertEquals(count, 0);
+  assertEquals(h.claimed, [], "the tracker is not claimed after a lost claim");
+  assertEquals([...deferred], ["tracked"]);
+});
+
+Deno.test("replayPendingRuns: a run whose claimant is gone is claimed again from that claimant", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/stranded": cronEntry("stranded", GONE_PEER),
+    "claims/pending-runs/stranded/peer-gone": claimRecord({
+      instanceId: "claimant-gone",
+      pid: 105,
+    }),
+  });
+  const h = sweeper(controlPlaneStore);
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 1);
+  assert(
+    controlPlaneStore.data.has("claims/pending-runs/stranded/claimant-gone"),
+  );
+});
+
+Deno.test("replayPendingRuns: a claim of this process that landed unseen is replayed once, then never again", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/landed": cronEntry("landed", GONE_PEER),
+    "claims/pending-runs/landed/peer-gone": claimRecord(SELF),
+  });
+  const h = sweeper(controlPlaneStore);
+  const replayedRuns = new Set<string>();
+  // the owner write keeps failing, so the entry still names the gone peer
+  controlPlaneStore.put = () => Promise.reject(new Error("bucket unavailable"));
+  const pass = () =>
+    replayPendingRuns({
+      ...h.deps,
+      ownerAlive: peerAlive,
+      claimAs: SELF,
+      replayedRuns,
+    });
+
+  assertEquals(await pass(), 1);
+  assertEquals(await pass(), 0);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["landed"]);
+});
+
+Deno.test("replayPendingRuns: claims that point back to a visited claimant stop the chain", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/loop": cronEntry("loop", GONE_PEER),
+    "claims/pending-runs/loop/peer-gone": claimRecord({
+      instanceId: "x",
+      pid: 1,
+    }),
+    "claims/pending-runs/loop/x": claimRecord(GONE_PEER),
+  });
+  const h = sweeper(controlPlaneStore);
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 0);
+});
+
+Deno.test("replayPendingRuns: an unreadable claim leaves the run for the next pass", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/garbled": cronEntry("garbled", GONE_PEER),
+  });
+  controlPlaneStore.data.set(
+    "claims/pending-runs/garbled/peer-gone",
+    new TextEncoder().encode("not json"),
+  );
+  const h = sweeper(controlPlaneStore);
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 0);
+  assertEquals(h.deleted, []);
+});
+
+Deno.test("replayPendingRuns: claims of runs no longer pending are deleted, and the replayed set forgets them", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/still": cronEntry("still", SELF),
+    "claims/pending-runs/still/peer-gone": claimRecord(SELF),
+    "claims/pending-runs/done/peer-gone": claimRecord(SELF),
+  });
+  const h = sweeper(controlPlaneStore);
+  const replayedRuns = new Set(["still", "done"]);
+
+  await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+    replayedRuns,
+  });
+
+  assertEquals(controlPlaneStore.deleted, [
+    "claims/pending-runs/done/peer-gone",
+  ]);
+  assertEquals([...replayedRuns], ["still"]);
+
+  controlPlaneStore.data.set(
+    "claims/pending-runs/later/peer-gone",
+    new TextEncoder().encode(JSON.stringify(claimRecord(SELF))),
+  );
+  await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+    replayedRuns,
+    readRemote: false,
+  });
+  assertEquals(controlPlaneStore.deleted.length, 1);
+});
+
+Deno.test("replayPendingRuns: a store without putIfAbsent claims by writing the owner", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/plain": cronEntry("plain", GONE_PEER),
+  });
+  delete (controlPlaneStore as { putIfAbsent?: unknown }).putIfAbsent;
+  const h = sweeper(controlPlaneStore);
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 1);
+  assertEquals(
+    [...controlPlaneStore.data.keys()].filter((k) => k.startsWith("claims/")),
+    [],
+  );
+});
+
+Deno.test("replayPendingRuns: with no control plane the replayed set forgets runs no longer pending", async () => {
+  const h = createReplayHarness([cronEntry("left", SELF)]);
+  const replayedRuns = new Set(["left", "finished"]);
+
+  await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+    replayedRuns,
+  });
+
+  assertEquals([...replayedRuns], ["left"]);
+});
+
+Deno.test("replayPendingRuns: a claim chain through more gone instances than the hop limit is left alone", async () => {
+  const entries: Record<string, unknown> = {
+    "pending-runs/long": cronEntry("long", GONE_PEER),
+  };
+  const chain = ["peer-gone", "g1", "g2", "g3", "g4"];
+  for (let i = 0; i < chain.length - 1; i++) {
+    entries[`claims/pending-runs/long/${chain[i]}`] = claimRecord({
+      instanceId: chain[i + 1],
+      pid: 200 + i,
+    });
+  }
+  const controlPlaneStore = createInMemoryControlPlaneStore(entries);
+  const h = sweeper(controlPlaneStore);
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 0);
+  assertEquals(
+    controlPlaneStore.data.has("claims/pending-runs/long/g4"),
+    false,
+  );
 });

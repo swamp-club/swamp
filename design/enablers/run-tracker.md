@@ -350,7 +350,12 @@ presence is replicated through the `ControlPlaneStore`:
 - Each instance writes `active-runs/<instanceId>/<runId>`
   (`src/serve/active_run_tracker.ts`).
 - Cron and webhook pending runs are also written to `pending-runs/<id>`
-  (`src/cli/commands/serve.ts`).
+  (`src/cli/commands/serve.ts`). An instance replays a gone owner's run only
+  after winning `putIfAbsent` on `claims/pending-runs/<id>/<previous owner>`,
+  so peers that judge the same owner gone replay it once; a claimant that is
+  itself gone is claimed from in turn. The pending-run sweep counts an owner
+  whose heartbeat cannot be read as alive (`src/serve/boot_reconciliation.ts`,
+  `src/serve/pending_run_owner.ts`).
 - Boot reconciliation marks runs owned by a dead peer `failed` with reason
   `remote_instance_dead` (`src/serve/boot_reconciliation.ts`).
 
