@@ -110,6 +110,7 @@ import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 import {
   readWriterMarkerFile,
   recoverInterruptedWriter,
+  recoverOwnPredecessor,
   removeOwnWriterMarker,
   writerMarkerPath,
   writeWriterMarker,
@@ -1042,9 +1043,10 @@ async function takeV3WriterHold(
 }
 
 /**
- * nothing is recovered, marked or replicated: the writer does that; the claim
- * is checked as the lease's hold would, so a serve with another --address is
- * refused here too
+ * nothing is marked or replicated: the writer does that; the claim is checked
+ * as the lease's hold would, so a serve with another --address is refused here
+ * too. Its own predecessor, judged gone, is recovered now so a takeover does
+ * not wait on it.
  */
 async function followV3Datastore(
   config: V3DatastoreConfig,
@@ -1052,11 +1054,13 @@ async function followV3Datastore(
   ownerCheck: V3OwnerCheck | undefined,
 ): Promise<void> {
   await ensureV3CopyCurrent(repoDir, config, "read");
+  const handle = v3DatastoreFor(repoDir, config);
   const refusal = claimRefusal(
-    v3DatastoreFor(repoDir, config).commitStore.owner(),
+    handle.commitStore.owner(),
     ownerCheckOf(config, ownerCheck),
   );
   if (refusal !== undefined) throw refusal;
+  await recoverOwnPredecessor(handle, repoDir);
   // Holding no lease, this process must commit nothing from here on, before
   // serve's leadership names the leader: a partition that never saw a fence
   // would take an unfenced commit.

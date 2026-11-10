@@ -292,6 +292,27 @@ export async function recoverInterruptedWriter(
   }
 }
 
+/**
+ * a team follower recovers before it follows when the marker names a process
+ * this host judges gone: only serve writes a claimed checkout and that writer
+ * cannot return, so the leader's lease is not needed; any other marker still
+ * waits for the lease, taken when the node leads
+ */
+export async function recoverOwnPredecessor(
+  handle: V3Datastore,
+  repoDir: string,
+  options: { readonly local?: LocalProcess; readonly signal?: AbortSignal } =
+    {},
+): Promise<string[] | undefined> {
+  const file = await readWriterMarkerFile(repoDir);
+  if (file.kind !== "marker") return undefined;
+  const local = options.local ?? await localProcess();
+  if (writerMarkerState(file.marker, local) !== "interrupted") {
+    return undefined;
+  }
+  return await recover(handle, repoDir, file, "interrupted", options.signal);
+}
+
 function sameMarkerFile(
   current: WriterMarkerFile,
   read: WriterMarkerFile & { readonly kind: "marker" | "unreadable" },
@@ -317,7 +338,48 @@ function describeMarker(
     : "its v3 writer marker is unreadable and names no process";
 }
 
+export const RECOVERY_LOCK_FILE = "recovery.lock";
+
+/**
+ * one recovery of a checkout at a time, whatever lease its process holds: a
+ * follower's boot recovery holds none; taken before the read model's lock
+ */
+async function withCheckoutRecoveryLock<T>(
+  repoDir: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  const dir = readModelStateDir(repoDir);
+  await ensureDir(dir);
+  const lock = await Deno.open(join(dir, RECOVERY_LOCK_FILE), {
+    read: true,
+    write: true,
+    create: true,
+  });
+  try {
+    await lock.lock(true);
+    return await body();
+  } finally {
+    lock.close();
+  }
+}
+
 async function recover(
+  handle: V3Datastore,
+  repoDir: string,
+  file: WriterMarkerFile & { readonly kind: "marker" | "unreadable" },
+  state: "interrupted" | "unknown",
+  signal: AbortSignal | undefined,
+): Promise<string[] | undefined> {
+  return await withCheckoutRecoveryLock(repoDir, async () => {
+    // another process may have recovered it while this one waited
+    if (!sameMarkerFile(await readWriterMarkerFile(repoDir), file)) {
+      return undefined;
+    }
+    return await recoverLocked(handle, repoDir, file, state, signal);
+  });
+}
+
+async function recoverLocked(
   handle: V3Datastore,
   repoDir: string,
   file: WriterMarkerFile & { readonly kind: "marker" | "unreadable" },
