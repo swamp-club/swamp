@@ -43,6 +43,8 @@ interface Options {
   readonly objectRateLimitMs: number;
   readonly sustainedWritesMs: number;
   readonly stepSleepMs: number;
+  readonly seedBatch: number;
+  readonly idleWrites: number;
 }
 
 const GCS_EXTENSION = "@swamp/gcs-datastore";
@@ -65,7 +67,7 @@ function usage(): never {
   [--large-history 20] [--large-kib 64] [--idle-ms 70000] [--cold-rounds 2] \\
   [--clone-rounds 2] [--startup-rounds 6] [--telemetry-latency-ms 300] \\
   [--v2-hydration full,lazy] [--object-rate-limit-ms 1000] \\
-  [--sustained-writes-ms 60000] [--step-sleep-ms 3000]`,
+  [--sustained-writes-ms 60000] [--step-sleep-ms 3000] [--seed-batch 0] [--idle-writes 0]`,
   );
   Deno.exit(2);
 }
@@ -92,6 +94,8 @@ function parseOptions(): Options {
       "sustained-writes-ms",
       "v2-hydration",
       "step-sleep-ms",
+      "seed-batch",
+      "idle-writes",
     ],
     boolean: ["keep", "setup-only"],
     collect: ["binary"],
@@ -114,6 +118,8 @@ function parseOptions(): Options {
       "object-rate-limit-ms": "0",
       "sustained-writes-ms": "0",
       "step-sleep-ms": "3000",
+      "seed-batch": "0",
+      "idle-writes": "0",
     },
   });
   const binaries: Record<string, string> = {};
@@ -154,6 +160,8 @@ function parseOptions(): Options {
     objectRateLimitMs: Number(args["object-rate-limit-ms"]),
     sustainedWritesMs: Number(args["sustained-writes-ms"]),
     stepSleepMs: Number(args["step-sleep-ms"]),
+    seedBatch: Number(args["seed-batch"]),
+    idleWrites: Number(args["idle-writes"]),
   };
 }
 
@@ -920,11 +928,8 @@ async function createTwoStepWorkflow(
   first: string,
   second: string,
 ) {
-  const body = join(member.repo, `${name}.body.yaml`);
-  await Deno.writeTextFile(
-    body,
-    [
-      `name: ${name}`,
+  await createWorkflow(binary, env, member, name, [
+    `name: ${name}`,
       "jobs:",
       "  - name: main",
       "    steps:",
@@ -942,11 +947,46 @@ async function createTwoStepWorkflow(
       "          type: model_method",
       `          modelIdOrName: ${second}`,
       "          methodName: execute",
-      "",
-    ].join("\n"),
-  );
+  ]);
+}
+
+/** a workflow writing one data version per item, to seed history in bulk */
+const SEED_WORKFLOW = "seed";
+
+function seedWorkflowBody(): string[] {
+  return [
+    `name: ${SEED_WORKFLOW}`,
+    "inputs:",
+    "  properties:",
+    "    ids:",
+    "      type: array",
+    "jobs:",
+    "  - name: main",
+    // a few at a time, under serve's per-caller rate limit
+    "    concurrency: 4",
+    "    steps:",
+    "      - name: w-${{ self._index }}",
+    "        forEach:",
+    "          item: id",
+    "          in: ${{ inputs.ids }}",
+    "        task:",
+    "          type: model_method",
+    `          modelIdOrName: ${WRITER}`,
+    "          methodName: execute",
+  ];
+}
+
+async function createWorkflow(
+  binary: string,
+  env: Env,
+  member: Member,
+  name: string,
+  lines: readonly string[],
+) {
+  const body = join(member.repo, `${name}.body.yaml`);
+  await Deno.writeTextFile(body, [...lines, ""].join("\n"));
   // workflow edit opens $EDITOR on the stored file: this one keeps its id and
-  // writes the two steps
+  // writes the body
   const editor = join(member.repo, `write-${name}.sh`);
   await Deno.writeTextFile(
     editor,
@@ -989,6 +1029,7 @@ const COMMANDS: Readonly<Record<string, readonly string[]>> = {
   write: ["model", "method", "run", WRITER, "execute"],
   workflow: ["workflow", "run", WORKFLOW],
   "slow workflow": ["workflow", "run", SLOW_WORKFLOW],
+  "big write": ["model", "method", "run", BIG, "execute"],
   "data get": ["data", "get", WRITER, "result"],
   "data list": ["data", "list", WRITER],
 };
@@ -1114,7 +1155,14 @@ async function measureCold(
   const samples: Sample[] = [];
   for (let round = 0; round < options.coldRounds; round++) {
     console.error(`idling ${options.idleMs} ms for cold reads, round ${round + 1}`);
-    await delay(options.idleMs);
+    const idleStarted = Date.now();
+    // another member writes while the measured ones idle, as a team does
+    for (let i = 0; i < options.idleWrites; i++) {
+      const [, binary, lane] = lanes[0];
+      const writer = lane.members.at(-1)!;
+      await memberRun(binary, env, writer, [...COMMANDS.write]);
+    }
+    await delay(Math.max(0, options.idleMs - (Date.now() - idleStarted)));
     for (const [label, binary, lane] of lanes) {
       for (const member of lane.members) {
         samples.push(
@@ -1422,8 +1470,25 @@ async function seedHistory(
   env: Env,
 ): Promise<void> {
   const member = lane.members[0];
-  for (let i = 0; i < options.history; i++) {
-    await memberRun(binary, env, member, [...COMMANDS.write]);
+  if (options.seedBatch > 0) {
+    await createWorkflow(binary, env, member, SEED_WORKFLOW, seedWorkflowBody());
+    for (let done = 0; done < options.history; done += options.seedBatch) {
+      const ids = Array.from(
+        { length: Math.min(options.seedBatch, options.history - done) },
+        (_, i) => done + i,
+      );
+      await memberRun(binary, env, member, [
+        "workflow",
+        "run",
+        SEED_WORKFLOW,
+        "--input",
+        `ids:json=${JSON.stringify(ids)}`,
+      ]);
+    }
+  } else {
+    for (let i = 0; i < options.history; i++) {
+      await memberRun(binary, env, member, [...COMMANDS.write]);
+    }
   }
   for (let i = 0; i < options.largeHistory; i++) {
     await memberRun(binary, env, member, ["model", "method", "run", BIG, "execute"]);
@@ -1581,6 +1646,66 @@ export function summarizeWorkflows(
         p50(phases.map((p) => p.stepRequests[1] ?? 0))
       } / ${p50(phases.map((p) => p.workflowLevelRequests))}`,
     );
+  }
+  return lines.join("\n");
+}
+
+/** each teardown part's p50 and max, per binary, member and command */
+export function summarizeTeardown(
+  samples: readonly Sample[],
+  options: Pick<Options, "followers" | "farLatencyMs">,
+): string {
+  const lines = ["binary | command | member | part | n | p50 / max ms"];
+  const groups = new Map<string, Map<string, number[]>>();
+  for (const sample of samples) {
+    if (sample.code !== 0) continue;
+    const far = sample.member === "m3" &&
+      (options.followers > 0 || options.farLatencyMs > 0);
+    const key = `${sample.binary} | ${sample.command} | ${far ? "far" : "near"}`;
+    const parts = groups.get(key) ?? new Map<string, number[]>();
+    for (const span of sample.spans) {
+      if (
+        !span.name.startsWith("swamp.cli.teardown") &&
+        !span.name.startsWith("swamp.datastore.v3.close.")
+      ) continue;
+      const ms = span.endMs - span.startMs;
+      parts.set(span.name, [...(parts.get(span.name) ?? []), ms]);
+    }
+    groups.set(key, parts);
+  }
+  for (const [key, parts] of groups) {
+    for (const [part, values] of [...parts].sort()) {
+      lines.push(
+        `${key} | ${part} | ${values.length} | ${
+          Math.round(percentile(values, 50))
+        } / ${Math.round(Math.max(...values))}`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+/** the spans that take longest in a command, p50 of each name's total per sample */
+export function summarizeBreakdown(
+  samples: readonly Sample[],
+  command: string,
+): string {
+  const lines = [`${command}: binary | member | span | n | p50 ms`];
+  const groups = new Map<string, Sample[]>();
+  for (const sample of samples) {
+    if (sample.command !== command || sample.code !== 0) continue;
+    const key = `${sample.binary} | ${sample.member}`;
+    groups.set(key, [...(groups.get(key) ?? []), sample]);
+  }
+  for (const [key, group] of groups) {
+    const names = new Set(group.flatMap((s) => s.spans.map((sp) => sp.name)));
+    const rows = [...names].map((name) => {
+      const totals = group.map((sample) => spanTotal(sample, name));
+      return { name, p50: percentile(totals, 50) };
+    }).sort((a, b) => b.p50 - a.p50).slice(0, 15);
+    for (const row of rows) {
+      lines.push(`${key} | ${row.name} | ${group.length} | ${Math.round(row.p50)}`);
+    }
   }
   return lines.join("\n");
 }
@@ -1850,6 +1975,12 @@ async function main(): Promise<void> {
     );
     console.log(summarize(all, options));
     console.log(summarizeWorkflows(all, options));
+    console.log();
+    console.log(summarizeTeardown(all, options));
+    if (options.coldRounds > 0) {
+      console.log();
+      console.log(summarizeBreakdown(all, "cold data get"));
+    }
     console.log(`\n${summarizeStartup(startups, posts.count)}`);
     console.log(`\n${summarizeClones(clones)}`);
     for (const label of new Set(all.map((s) => s.binary))) {
