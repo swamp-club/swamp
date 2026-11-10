@@ -24,6 +24,7 @@ import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
+import { join } from "@std/path";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
   type Client,
@@ -39,6 +40,10 @@ import type {
   WorkflowRunWorkerMessage,
   WorkflowRunWorkerRequest,
 } from "./serve_upstream_workflow_run_worker.ts";
+import {
+  BARRIER_REPORT,
+  type WorkflowReportBarrier,
+} from "./workflow_report_barrier.ts";
 
 await initializeLogging({});
 
@@ -86,6 +91,11 @@ function runWorkflows(
   client: Client,
   token: string,
   principal: string,
+  options: {
+    workflowName?: string;
+    count?: number;
+    barrier?: WorkflowReportBarrier;
+  } = {},
 ): Promise<Runs> {
   const worker = new Worker(
     new URL("./serve_upstream_workflow_run_worker.ts", import.meta.url).href,
@@ -121,9 +131,12 @@ function runWorkflows(
             SWAMP_SERVE_TIMEOUT_MS: "120000",
           },
           modelType: serve.modelType.normalized,
-          workflowName: WORKFLOW_NAME,
+          workflowName: options.workflowName ?? WORKFLOW_NAME,
           principal,
-          count: RUNS_PER_MEMBER,
+          count: options.count ?? RUNS_PER_MEMBER,
+          ...(options.barrier === undefined
+            ? {}
+            : { barrier: options.barrier }),
         } satisfies WorkflowRunWorkerRequest,
       );
       await waitFor(
@@ -211,3 +224,57 @@ for (
     },
   });
 }
+
+Deno.test({
+  name:
+    "workflow report race: a run through serve and a member's run of one workflow, held together at a report barrier, both succeed with consecutive report versions",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({
+        grants: ALICE_ALL,
+        managedConfig: true,
+      });
+      const alice = await scratch.client("a", { managedConfig: true });
+      const name = "barrier-report";
+      await writeCommand(
+        scratch,
+        alice,
+        serveEnv(serve, "alice-token"),
+        (repos) =>
+          repos.workflowRepo.save(Workflow.create({
+            name,
+            reports: { require: [BARRIER_REPORT] },
+            jobs: [Job.create({
+              name: "main",
+              // no behavior step, so the runs share only the workflow's reports
+              steps: [Step.create({
+                name: "check",
+                task: StepTask.assert("true", "always holds"),
+              })],
+            })],
+          })),
+      );
+      const dir = join(scratch.dir, "barrier");
+      await Deno.mkdir(dir);
+      const labels = ["serve", "member"];
+      // long enough that, without the lock, both runs reach the barrier
+      const barrier = (label: string) => ({ dir, label, labels, waitMs: 5000 });
+      const [fromServe, fromMember] = await Promise.all([
+        serve.runWorkflow(name, "user:caller", barrier("serve")),
+        runWorkflows(scratch, serve, alice, "alice-token", "user:caller", {
+          workflowName: name,
+          count: 1,
+          barrier: barrier("member"),
+        }),
+      ]);
+      assertEquals([...fromServe.errors, ...fromMember.errors], []);
+      assertEquals(
+        [...fromServe.statuses, ...fromMember.statuses],
+        ["succeeded", "succeeded"],
+      );
+      assertEquals(await summaryVersions(serve), [1, 2]);
+    });
+  },
+});

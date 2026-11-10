@@ -26,6 +26,10 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { endCommand, withClientEnv } from "./serve_upstream_fixtures.ts";
+import {
+  registerBarrierReport,
+  type WorkflowReportBarrier,
+} from "./workflow_report_barrier.ts";
 
 export type WorkflowRunWorkerRequest = {
   readonly kind: "run";
@@ -36,6 +40,7 @@ export type WorkflowRunWorkerRequest = {
   readonly workflowName: string;
   readonly principal: string;
   readonly count: number;
+  readonly barrier?: WorkflowReportBarrier;
 };
 
 export type WorkflowRunWorkerMessage =
@@ -67,6 +72,10 @@ async function run(request: WorkflowRunWorkerRequest): Promise<void> {
         },
       },
     });
+  }
+  if (request.barrier !== undefined) {
+    const { dir, label, labels, waitMs } = request.barrier;
+    registerBarrierReport(dir, label, labels, waitMs);
   }
   const statuses: string[] = [];
   const errors: string[] = [];
