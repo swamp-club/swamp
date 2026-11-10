@@ -146,10 +146,20 @@ import {
   createServeSettingsReloader,
   type ReloadFollowUp,
 } from "../../serve/serve_settings_reloader.ts";
+import {
+  alertRulesFrom,
+  type AuditConfigChanges,
+  auditPolicyFrom,
+  diffAuditConfig,
+} from "../../serve/serve_audit_reload.ts";
 
 /** what a reload's prepare phase settled before anything changed */
 interface ReloadPrepared {
   allowedUsers?: AllowedUsersReloadPlan;
+  audit?: {
+    readonly changes: AuditConfigChanges;
+    readonly config: AuditConfig | null;
+  };
 }
 import { emitServeConfigReloaded } from "../../serve/serve_config_reload_audit.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
@@ -425,6 +435,7 @@ import {
   TOKEN_SECRETS_VAULT_NAME,
 } from "../../domain/vaults/control_plane_vault_provider.ts";
 import {
+  type AuditConfig,
   loadServeConfig,
   type MergedServeOptions,
   mergeServeOptions,
@@ -442,12 +453,8 @@ import {
 } from "../../serve/oauth_client_secret_source.ts";
 import {
   type ActorIdentity,
-  type AuditCategory,
   AuditChainState,
   AuditEmitter,
-  type AuditLevel,
-  AuditPolicy,
-  type AuditPolicyRule,
   type AuditSink,
   type AuditStore,
   AuditWal,
@@ -458,7 +465,6 @@ import { WebSocketSink } from "../../serve/audit_sinks/websocket_sink.ts";
 import { WebhookSink } from "../../serve/audit_sinks/webhook_sink.ts";
 import { SyslogSink } from "../../serve/audit_sinks/syslog_sink.ts";
 import {
-  type AlertRuleConfig,
   AlertRuleEngine,
   AuditSinkHotReloader,
   generateHmacKeyBytes,
@@ -6317,16 +6323,7 @@ export const serveCommand = new Command()
           checkpointIntervalMs: auditConfig.flushIntervalMs,
         });
 
-        const policyRules = auditConfig.policyRules.map((r) => ({
-          category: r.category as AuditCategory | undefined,
-          action: r.action,
-          tier: r.tier as AuditPolicyRule["tier"],
-          level: r.level as AuditLevel,
-        }));
-        const policy = new AuditPolicy(
-          policyRules,
-          auditConfig.policyDefaultLevel as AuditLevel,
-        );
+        const policy = auditPolicyFrom(auditConfig);
 
         let highestSeq = -1;
         let highestDigest = "";
@@ -6694,25 +6691,7 @@ export const serveCommand = new Command()
         };
 
         if (auditConfig.alerts.length > 0) {
-          const alertConfigs: AlertRuleConfig[] = auditConfig.alerts.map(
-            (a) => ({
-              name: a.name,
-              description: a.description,
-              match: {
-                category: a.match.category,
-                action: a.match.action,
-                outcome: a.match.outcome,
-                principal: a.match.principal,
-              },
-              threshold: {
-                count: a.threshold.count,
-                windowSeconds: a.threshold["window-seconds"],
-              },
-              action: a.action.type === "webhook"
-                ? { type: "webhook" as const, url: a.action.url! }
-                : { type: "log" as const },
-            }),
-          );
+          const alertConfigs = alertRulesFrom(auditConfig);
           connectionCtx.auditEmitter!.alertEngine = new AlertRuleEngine(
             alertConfigs,
           );
@@ -7759,8 +7738,13 @@ export const serveCommand = new Command()
           mergeServeOptions(file, options, explicitFlags),
         ),
       resolve: resolveServeStartupSettings,
-      prepare: async ({ merged: next, startup }, toApply) => {
+      prepare: async ({ file, merged: next, startup }, toApply, before) => {
         const prepared: ReloadPrepared = {};
+        const nextAudit = parseAuditConfig(file);
+        prepared.audit = {
+          changes: diffAuditConfig(parseAuditConfig(before), nextAudit),
+          config: nextAudit,
+        };
         if (
           authConfig.mode !== "none" &&
           (toApply.includes("restrictedModelTypes") ||
@@ -7807,6 +7791,32 @@ export const serveCommand = new Command()
             "no scheduler runs on this serve; restart serve with schedule on to change it",
         },
       pending: () => allowedUsersDeferred ? ["allowedUsers"] : [],
+      extraChanges: (prepared) =>
+        prepared.audit?.changes ?? { applied: [], needsRestart: [] },
+      // runs after the reload's own audit event, so the old policy decides it
+      commitExtra: (prepared) => {
+        const audit = prepared.audit;
+        const emitter = connectionCtx.auditEmitter;
+        if (!audit?.config || !emitter) return [];
+        const notes: string[] = [];
+        if (audit.changes.applied.includes("audit.policy")) {
+          const policy = auditPolicyFrom(audit.config);
+          emitter.setPolicy(policy);
+          connectionCtx.auditPolicy = policy;
+        }
+        if (audit.changes.applied.includes("audit.alerts")) {
+          emitter.alertEngine = audit.config.alerts.length > 0
+            ? new AlertRuleEngine(alertRulesFrom(audit.config))
+            : undefined;
+          notes.push(
+            "Audit alert rules reloaded; each rule's window and cooldown start again",
+          );
+        }
+        if (audit.changes.applied.includes("audit.fail-open")) {
+          connectionCtx.auditFailOpen = audit.config.failOpen;
+        }
+        return notes;
+      },
       appliers: {
         dashboard: ({ merged }) => {
           dashboardDistDir = merged.dashboard ? getDashboardDistDir() : null;

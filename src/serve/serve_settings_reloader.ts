@@ -69,7 +69,15 @@ export interface ServeSettingsReloaderDeps<S, P> {
   prepare(
     candidate: ReloadCandidate<S>,
     changed: readonly AppliedSettingKey[],
+    before: ServeConfigFile | null,
   ): Promise<P>;
+  /** changes outside the catalogue that prepare settled, for the report */
+  extraChanges?(prepared: P): {
+    readonly applied: readonly string[];
+    readonly needsRestart: readonly { setting: string; reason: string }[];
+  };
+  /** assigns them after the audit event; returns notes for the operator */
+  commitExtra?(prepared: P): readonly string[];
   /** applied settings whose consumer is not running here, with the reason */
   notRunning(): Partial<Record<keyof MergedServeOptions, string>>;
   /** applied settings to re-apply though the file did not change them */
@@ -123,18 +131,21 @@ export function createServeSettingsReloader<S, P>(
     for (const key of deps.pending()) {
       if (!toApply.includes(key)) toApply.push(key);
     }
-    const prepared = await deps.prepare(candidate, toApply);
+    const prepared = await deps.prepare(candidate, toApply, liveConfig);
+    const extra = deps.extraChanges?.(prepared) ??
+      { applied: [], needsRestart: [] };
 
     const needsRestart = changes.needsRestart.map(({ key, reason }) => ({
       setting: settingName(key),
       reason,
     }));
+    for (const entry of extra.needsRestart) needsRestart.push(entry);
     const overridden = changes.overridden.map(({ key, by }) => ({
       setting: settingName(key),
       by,
     }));
     deps.beforeCommit({
-      applied: toApply.map(settingName),
+      applied: [...toApply.map(settingName), ...extra.applied],
       needsRestart,
       overridden,
     }, context);
@@ -149,6 +160,8 @@ export function createServeSettingsReloader<S, P>(
         });
       }
     }
+    for (const setting of extra.applied) applied.push(setting);
+    const notes = deps.commitExtra?.(prepared) ?? [];
     deps.afterCommit(candidate, toApply, prepared);
     liveConfig = file;
 
@@ -157,7 +170,7 @@ export function createServeSettingsReloader<S, P>(
       config: file,
       report: { applied, needsRestart, overridden },
       followUp: async () => {
-        const warnings: string[] = [];
+        const warnings: string[] = [...notes];
         for (const followUp of followUps) {
           try {
             await followUp.run();
