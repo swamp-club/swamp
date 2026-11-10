@@ -8587,9 +8587,11 @@ nothing was taken, so a retry is safe), in one place per surface:
   https or on loopback, is followed for the rest of that read; its reply is
   read only when it names the datastore log the configured serve named, and a
   leader that does not connect, names another log or fails sends the read back
-  to the configured serve. Past the budget the refusal is thrown as a read's.
-  `datastore status`'s probe and the lock listings opt out and answer at once. A partition read from a caller whose copy holds more of the
-  partition than this follower's is refused as behind
+  to the configured serve. Past the budget the refusal is thrown as serve sent
+  it: a stale follower's names the refused read (`reads: true` in its body).
+  `datastore status`'s probe and the lock listings opt out and answer at once.
+  A partition read from a caller whose copy holds more of the partition than
+  this follower's is refused as behind
   (`serve_follower_behind`, see "Team mode: the CLI's serve upstream"), after
   authentication and the read check (swamp-club#4254).
 - Readiness: a node that starts as a follower with a leader feed reports

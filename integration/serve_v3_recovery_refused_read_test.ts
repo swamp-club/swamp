@@ -250,7 +250,14 @@ Deno.test({
         assert(error instanceof UserError);
         assertEquals(error.code, CATCH_UP_UNREACHABLE_CODE);
         assertEquals(exitCodeForError(error), 75);
-        assert(error.message.includes("did not answer"), error.message);
+        assert(
+          error.message.includes("Swamp serve refused the reads commit"),
+          error.message,
+        );
+        assert(
+          /commit \d+ of partition \S+ needs/.test(error.message),
+          error.message,
+        );
         assert(await exists(writerMarkerPath(alice.repoDir)));
 
         refusing = false;

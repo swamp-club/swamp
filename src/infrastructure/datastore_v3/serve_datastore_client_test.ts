@@ -2061,6 +2061,7 @@ function notLeader(
   options: {
     readonly address?: string;
     readonly inFlight?: boolean;
+    readonly reads?: boolean;
     readonly log?: string;
   } = {},
 ): Response {
@@ -2078,6 +2079,7 @@ function notLeader(
       }
       : {}),
     ...(options.inFlight === true ? { inFlight: true } : {}),
+    ...(options.reads === true ? { reads: true } : {}),
   }, {
     status: 503,
     headers: {
@@ -2137,10 +2139,10 @@ Deno.test("ServeDatastoreClient: feed, change and chunk-check reads ride out a f
   });
 });
 
-Deno.test("ServeDatastoreClient: a read refused past the budget throws the refusal, saying it was a read", async () => {
+Deno.test("ServeDatastoreClient: a read refused past the budget throws serve's refusal, a stale copy's saying so", async () => {
   await withRefusalState(async () => {
     const clock = refusalClock();
-    const { client, requests } = clientWith(() => notLeader(), {
+    const { client, requests } = clientWith(() => notLeader({ reads: true }), {
       ...clock,
       readRefusalBudgetMs: 3_000,
     });

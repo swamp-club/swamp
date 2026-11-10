@@ -162,15 +162,6 @@ function followableLeader(
   return leader.origin;
 }
 
-function retryableReadRefusal(
-  error: unknown,
-): ServeNotLeaderError | ServeFollowerBehindError | undefined {
-  const refusal = retryableServeRefusal(error);
-  return refusal instanceof ServeNotLeaderError && !refusal.reads
-    ? new ServeNotLeaderError(refusal.leader, true)
-    : refusal;
-}
-
 /**
  * once a write found serve unreachable, the rest of the command fails at once
  * instead of waiting out a request timeout per call; requests in flight end too
@@ -1567,7 +1558,7 @@ export class ServeDatastoreClient {
         let refusal: ServeNotLeaderError | ServeFollowerBehindError | undefined;
         if (response.status === 503 && isReadSpec(spec)) {
           try {
-            refusal = retryableReadRefusal(
+            refusal = retryableServeRefusal(
               await this.#refusal(response.clone(), routeTemplate(spec.path)),
             );
           } catch (error) {

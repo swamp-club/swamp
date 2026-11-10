@@ -24,7 +24,10 @@ import {
   forwardNeverSent,
   LeaderLink,
   leaderTarget,
+  notLeaderResponse,
 } from "./leader_link.ts";
+import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
+import { serveErrorFromReply } from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { TEAM_PEER_HEADER } from "./peer_auth.ts";
 import { withSpan } from "../infrastructure/tracing/tracer.ts";
 import {
@@ -367,4 +370,23 @@ Deno.test("LeaderLink.forward: a forward outside the datastore API keeps its cal
   );
   assertEquals(await reply.text(), "done");
   forwarder.close();
+});
+
+Deno.test("notLeaderResponse: says whether a read or a write was refused, so the client tells a stale copy from a node that only follows", async () => {
+  for (const reads of [true, false]) {
+    const response = notLeaderResponse(new ServeNotLeaderError(LEADER, reads));
+    const refusal = serveErrorFromReply(
+      response.status,
+      await response.json(),
+      "https://serve.example.com",
+    );
+    assert(refusal instanceof ServeNotLeaderError);
+    assertEquals(refusal.reads, reads);
+    assertEquals(refusal.leader, LEADER);
+  }
+  const unnamed = notLeaderResponse(
+    new ServeNotLeaderError(undefined, true),
+    false,
+  );
+  assertEquals("reads" in await unnamed.json(), false);
 });
