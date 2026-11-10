@@ -48,7 +48,10 @@ import {
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
 } from "../src/cli/repo_context.ts";
-import { resolveConfigTierPath } from "../src/cli/resolve_datastore.ts";
+import {
+  resolveConfigTierPath,
+  resolveSetupConfigExpressions,
+} from "../src/cli/resolve_datastore.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { RepoService } from "../src/domain/repo/repo_service.ts";
@@ -227,9 +230,14 @@ function setupBucket(
   return collect<DatastoreSetupEvent>(
     datastoreSetupExtension(
       createLibSwampContext(),
-      createDatastoreSetupDeps(repoDir, resolveConfigTierPath, {
-        swampVersion: "test-version",
-      }),
+      createDatastoreSetupDeps(
+        repoDir,
+        resolveConfigTierPath,
+        resolveSetupConfigExpressions,
+        {
+          swampVersion: "test-version",
+        },
+      ),
       {
         type: bucket.typeName,
         config: {},

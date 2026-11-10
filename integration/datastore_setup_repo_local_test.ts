@@ -180,7 +180,11 @@ Deno.test("datastore setup: the audit trail, telemetry spool and run logs stay r
     for await (
       const event of datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoDir, () => Promise.resolve(undefined)),
+        createDatastoreSetupDeps(
+          repoDir,
+          () => Promise.resolve(undefined),
+          (_repoDir, value) => Promise.resolve(value),
+        ),
         { datastorePath: datastore, repoDir, skipMigration: false },
       )
     ) {

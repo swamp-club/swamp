@@ -52,6 +52,7 @@ import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.t
 import {
   RENAMED_DATASTORE_TYPES,
   resolveConfigTierPath,
+  resolveSetupConfigExpressions,
 } from "../resolve_datastore.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -225,9 +226,14 @@ const datastoreSetupFilesystemCommand = new Command()
       : resolve(repoDir, expandedPath);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath, {
-      swampVersion: VERSION,
-    });
+    const deps = createDatastoreSetupDeps(
+      repoDir,
+      resolveConfigTierPath,
+      resolveSetupConfigExpressions,
+      {
+        swampVersion: VERSION,
+      },
+    );
     const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
     await consumeStream(
@@ -406,9 +412,14 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
     await resolveDatastoreForRepo(resolveRepoDir(options.repoDir));
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath, {
-    swampVersion: VERSION,
-  });
+  const deps = createDatastoreSetupDeps(
+    repoDir,
+    resolveConfigTierPath,
+    resolveSetupConfigExpressions,
+    {
+      swampVersion: VERSION,
+    },
+  );
   const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
   const hydrationStrategy = options.hydrationStrategy as
@@ -701,6 +712,7 @@ export const datastoreSetupCommand = new Command()
       const deps = createDatastoreSetupDeps(
         resolvedRepoDir,
         resolveConfigTierPath,
+        resolveSetupConfigExpressions,
       );
       const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
@@ -744,6 +756,7 @@ export const datastoreSetupCommand = new Command()
       const deps = createDatastoreSetupDeps(
         resolvedRepoDir,
         resolveConfigTierPath,
+        resolveSetupConfigExpressions,
       );
       const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 

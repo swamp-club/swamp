@@ -33,7 +33,10 @@ import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
-import { resolveConfigTierPath } from "../src/cli/resolve_datastore.ts";
+import {
+  resolveConfigTierPath,
+  resolveSetupConfigExpressions,
+} from "../src/cli/resolve_datastore.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
@@ -151,9 +154,14 @@ async function withJoiningCheckout(
     const setup = await collect<DatastoreSetupEvent>(
       datastoreSetupFilesystem(
         createLibSwampContext(),
-        createDatastoreSetupDeps(repoA, resolveConfigTierPath, {
-          swampVersion: "test-version",
-        }),
+        createDatastoreSetupDeps(
+          repoA,
+          resolveConfigTierPath,
+          resolveSetupConfigExpressions,
+          {
+            swampVersion: "test-version",
+          },
+        ),
         { datastorePath, repoDir: repoA, skipMigration: false, format: 3 },
       ),
     );

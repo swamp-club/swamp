@@ -24,6 +24,7 @@ import {
   RENAMED_DATASTORE_TYPES,
   resolveConfigTierPath,
   resolveDatastoreConfig,
+  resolveSetupConfigExpressions,
 } from "./resolve_datastore.ts";
 import {
   type CustomDatastoreConfig,
@@ -40,7 +41,11 @@ import {
   type AutoResolveOutputPort,
   ExtensionAutoResolver,
 } from "../domain/extensions/extension_auto_resolver.ts";
-import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
+import {
+  type RepoMarkerData,
+  RepoMarkerRepository,
+} from "../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../domain/repo/repo_path.ts";
 import { z } from "zod";
 import { UserError } from "../domain/errors.ts";
 import {
@@ -1169,5 +1174,80 @@ Deno.test("resolveDatastoreConfig: a datastore written through serve never resol
         autoResolve: false,
       })
     );
+  });
+});
+
+async function withMarkerRepo(
+  datastore: RepoMarkerData["datastore"],
+  fn: (repoDir: string) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-setup-expr-" });
+  try {
+    await new RepoMarkerRepository().write(RepoPath.create(repoDir), {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "aaaaaaaa-bbbb-1ccc-9ddd-eeeeeeeeeeee",
+      ...(datastore ? { datastore } : {}),
+    });
+    await fn(repoDir);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(
+      Deno.build.os === "windows" ? () => {} : (e) => {
+        throw e;
+      },
+    );
+  }
+}
+
+Deno.test("resolveSetupConfigExpressions: resolves env expressions in the config", async () => {
+  await withMockedEnv({ SWAMP_TEST_SETUP_SECRET: "s3cret" }, async () => {
+    await withMarkerRepo(undefined, async (repoDir) => {
+      const resolved = await resolveSetupConfigExpressions(repoDir, {
+        auth: { clientSecret: "${{ env.SWAMP_TEST_SETUP_SECRET }}" },
+        prefix: "swamp",
+      });
+      assertEquals(resolved, {
+        auth: { clientSecret: "s3cret" },
+        prefix: "swamp",
+      });
+    });
+  });
+});
+
+Deno.test("resolveSetupConfigExpressions: an unset env variable fails as it does at load", async () => {
+  await withMockedEnv({ SWAMP_TEST_SETUP_UNSET: undefined }, async () => {
+    await withMarkerRepo(undefined, async (repoDir) => {
+      await assertRejects(
+        () =>
+          resolveSetupConfigExpressions(repoDir, {
+            clientSecret: "${{ env.SWAMP_TEST_SETUP_UNSET }}",
+          }),
+        UserError,
+        'Environment variable "SWAMP_TEST_SETUP_UNSET" is not set or empty',
+      );
+    });
+  });
+});
+
+Deno.test("resolveSetupConfigExpressions: the marker's managedConfig refuses vault expressions", async () => {
+  await withMarkerRepo(
+    { type: "filesystem", path: ".swamp", managedConfig: true },
+    async (repoDir) => {
+      await assertRejects(
+        () =>
+          resolveSetupConfigExpressions(repoDir, {
+            clientSecret: "${{ vault.get(infra, client-secret) }}",
+          }),
+        UserError,
+        "not supported when managedConfig is enabled",
+      );
+    },
+  );
+});
+
+Deno.test("resolveSetupConfigExpressions: a config without expressions is returned unchanged", async () => {
+  await withMarkerRepo(undefined, async (repoDir) => {
+    const config = { bucket: "my-bucket", nested: { list: ["a", 1, true] } };
+    assertEquals(await resolveSetupConfigExpressions(repoDir, config), config);
   });
 });

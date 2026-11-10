@@ -313,6 +313,16 @@ datastore:
   configs in the datastore tier and would create a circular dependency. Use
   environment variables instead.
 
+**Setup.** `datastore setup extension` resolves the expressions in `--config`
+the same way, with the repo's `managedConfig` deciding whether vault expressions
+are allowed, and validates, verifies and migrates against the resolved values.
+It writes the expressions, not their values, to `.swamp.yaml`, so a secret
+never reaches disk. The resolver reaches the libswamp setup generator through
+`DatastoreSetupDeps.resolveConfigExpressions`. Setup through serve refuses a
+config that holds expressions instead of resolving them: the config is client
+text, and resolving it would read the server's environment and vaults for the
+client without checking it may read them.
+
 ## Configuration
 
 ### Resolution Priority

@@ -1991,6 +1991,7 @@ export {
   type DatastoreSetupFilesystemInput,
   type DatastoreSetupWarningData,
   type ManagedConfigTierInspection,
+  type ResolveConfigExpressions,
   type ResolveConfigTierPath,
 } from "./datastores/setup.ts";
 export {

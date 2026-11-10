@@ -111,7 +111,11 @@ async function runSetup(
   const events = await collect<DatastoreSetupEvent>(
     datastoreSetupExtension(
       createLibSwampContext(),
-      createDatastoreSetupDeps(repoDir, () => Promise.resolve(undefined)),
+      createDatastoreSetupDeps(
+        repoDir,
+        () => Promise.resolve(undefined),
+        (_repoDir, value) => Promise.resolve(value),
+      ),
       {
         type: typeName,
         config: { bucket: "test-bucket" },

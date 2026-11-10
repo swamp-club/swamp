@@ -205,6 +205,8 @@ export type V3TargetState =
 
 export interface DatastoreSetupDeps {
   requireUpgradedRepo: (repoDir: string) => Promise<void>;
+  /** throws a UserError for an expression that cannot or may not resolve */
+  resolveConfigExpressions: ResolveConfigExpressions;
   /**
    * throws a UserError when a subdirectory a v3 checkout would materialise
    * records in links out of its cache root
@@ -961,8 +963,25 @@ export async function* datastoreSetupExtension(
         return;
       }
 
+      let config: Record<string, unknown>;
+      try {
+        config = await deps.resolveConfigExpressions(
+          input.repoDir,
+          input.config,
+        );
+      } catch (err) {
+        yield {
+          kind: "error",
+          error: {
+            code: "validation_failed",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        };
+        return;
+      }
+
       if (typeInfo.configSchema) {
-        const result = typeInfo.configSchema.safeParse(input.config);
+        const result = typeInfo.configSchema.safeParse(config);
         if (!result.success) {
           yield {
             kind: "error",
@@ -976,7 +995,7 @@ export async function* datastoreSetupExtension(
         }
       }
 
-      const provider = typeInfo.createProvider(input.config);
+      const provider = typeInfo.createProvider(config);
       const cachePath = provider.resolveCachePath?.(input.repoDir) ??
         join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
 
@@ -984,7 +1003,7 @@ export async function* datastoreSetupExtension(
       try {
         targetEngine = await deps.assertDatastoreFormat(input.repoDir, {
           type: input.type,
-          config: input.config,
+          config,
           datastorePath: provider.resolveDatastorePath(input.repoDir),
           cachePath,
           ...(input.namespace ? { namespace: input.namespace } : {}),
@@ -1346,6 +1365,8 @@ export async function* datastoreSetupExtension(
       if (errors.length === 0 || onlyTimeouts) {
         const persistedConfig: Record<string, unknown> = {
           type: input.type,
+          // the expressions, never what they resolved to: a vault secret must
+          // not reach .swamp.yaml
           config: input.config,
         };
         if (input.hydrationStrategy) {
@@ -1802,13 +1823,21 @@ export type ResolveConfigTierPath = (
   marker: RepoMarkerData,
 ) => Promise<string | undefined>;
 
+/** supplied by the caller because reading env and vaults is a CLI concern */
+export type ResolveConfigExpressions = (
+  repoDir: string,
+  config: Record<string, unknown>,
+) => Promise<Record<string, unknown>>;
+
 /**
  * required so every caller decides, through the same datastore resolution the
- * CLI uses at startup, whether the repo's .swamp/config is the config tier
+ * CLI uses at startup, whether the repo's .swamp/config is the config tier and
+ * what the expressions in a setup's config resolve to
  */
 export function createDatastoreSetupDeps(
   _repoDir: string,
   resolveConfigTierPath: ResolveConfigTierPath,
+  resolveConfigExpressions: ResolveConfigExpressions,
   options: {
     /** Recorded as `writtenBy` in a v3 datastore's format marker. */
     readonly swampVersion?: string;
@@ -1816,6 +1845,7 @@ export function createDatastoreSetupDeps(
 ): DatastoreSetupDeps {
   return {
     requireUpgradedRepo,
+    resolveConfigExpressions,
     assertV3CacheContained: assertV3CacheSubdirsContained,
     verifyPath: async (path: string) => {
       const verifier = new FilesystemDatastoreVerifier(path);
