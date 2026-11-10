@@ -104,6 +104,7 @@ export function notLeaderResponse(
         ? { leader: refusal.leader }
         : {}),
       ...(refusal.inFlight ? { inFlight: true } : {}),
+      ...(nameLeader && refusal.reads ? { reads: true } : {}),
     },
     { status: 503, headers: { "Retry-After": "5" } },
   );

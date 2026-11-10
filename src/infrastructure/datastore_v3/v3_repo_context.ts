@@ -139,7 +139,11 @@ import {
   WriterFencedError,
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { isNetworkFailure } from "./network_failure.ts";
-import { ReadModelCatchUpUnreachableError } from "../../domain/datastore_v3/read_model.ts";
+import {
+  ReadModelCatchUpUnreachableError,
+  RECOVERY_FAILED_CODE,
+  refusedByServe,
+} from "../../domain/datastore_v3/read_model.ts";
 import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
 import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
 import { storageNamespaceOf } from "../../domain/datastore_v3/chunk_store.ts";
@@ -1249,15 +1253,22 @@ async function recoverAndMark(
     // cut off from the storage, the recovery is retried by the next command;
     // the hold gives the failure its code
     if (!(error instanceof UserError) && isNetworkFailure(error)) throw error;
+    // serve refused its reads past the client's wait: the marker stays and the
+    // next command resumes
+    if (refusedByServe(error)) {
+      throw new ReadModelCatchUpUnreachableError(error as Error);
+    }
     // a stopped command: the marker stays, so the next command resumes
     if (commandStopSignal().aborted) throw error;
     const markerPath = writerMarkerPath(repoDir);
     const recoveryError = markErrorPaths(
       new UserError(
         `Recovering ${repoDir} after a swamp process ended without finishing ` +
-          `its v3 datastore writes failed: ${errorMessage(error)}. Fix the ` +
-          `cause and run the command again. To give up the recovery and keep ` +
-          `the checkout's files as they are, delete ${markerPath}.`,
+          `its v3 datastore writes failed: ${
+            errorMessage(error).replace(/\.+$/, "")
+          }. Fix the cause and run the command again. To give up the recovery ` +
+          `and keep the checkout's files as they are, delete ${markerPath}.`,
+        RECOVERY_FAILED_CODE,
       ),
       [repoDir, markerPath],
     );

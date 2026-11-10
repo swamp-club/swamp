@@ -191,3 +191,12 @@ export class ServeFollowerBehindError extends UserError {
     this.name = "ServeFollowerBehindError";
   }
 }
+
+/** a refusal that changed nothing and that serve answers once it leads again */
+export function retryableServeRefusal(
+  error: unknown,
+): ServeNotLeaderError | ServeFollowerBehindError | undefined {
+  if (error instanceof ServeFollowerBehindError) return error;
+  if (error instanceof ServeNotLeaderError && !error.inFlight) return error;
+  return undefined;
+}

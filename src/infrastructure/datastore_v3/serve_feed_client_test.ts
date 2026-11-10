@@ -328,3 +328,61 @@ Deno.test("watchServeFeed: a catch-up that does not stop when aborted, such as o
     never.resolve();
   });
 });
+
+Deno.test("watchServeFeed: a frame dispatched after stop reads nothing the command has closed and starts no catch-up", async () => {
+  const socket = {
+    readyState: WebSocket.OPEN as number,
+    onopen: null as null | (() => void),
+    onmessage: null as null | ((event: { data: string }) => void),
+    onclose: null as null | (() => void),
+    onerror: null as null | (() => void),
+    sent: [] as string[],
+    send(data: string) {
+      this.sent.push(data);
+    },
+    close() {
+      this.readyState = WebSocket.CLOSING;
+    },
+  };
+  let reads = 0;
+  let catchUps = 0;
+  const watch = watchServeFeed({
+    target: {
+      serverUrl: "http://127.0.0.1:1",
+      token: undefined,
+      caCerts: undefined,
+      extraHeaders: {},
+    },
+    catchUp: () => {
+      catchUps++;
+      return Promise.resolve();
+    },
+    appliedCursor: () => {
+      reads++;
+      throw new Error("The team mode state file is closed");
+    },
+    openSocket: () => socket as unknown as WebSocket,
+  });
+  // as a frame queued before close() reaches them
+  const opened = socket.onopen!;
+  const delivered = socket.onmessage!;
+  await watch.stop();
+  opened();
+  delivered({
+    data: JSON.stringify({
+      type: "commits.head",
+      id: "head",
+      payload: { cursor: 7 },
+    }),
+  });
+  delivered({
+    data: JSON.stringify({
+      type: "commits.subscribe",
+      id: "feed",
+      payload: { changes: [{ cursor: 8, commit: {} }] },
+    }),
+  });
+  assertEquals(reads, 0);
+  assertEquals(catchUps, 0);
+  assertEquals(socket.sent, []);
+});

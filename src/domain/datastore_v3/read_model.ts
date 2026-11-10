@@ -26,6 +26,11 @@
 import { UserError } from "../errors.ts";
 import { UNREADABLE_CONTENT_CODE } from "../datastore/unreadable_content.ts";
 import type { BlobRef } from "./blob_ref.ts";
+import {
+  retryableServeRefusal,
+  type ServeFollowerBehindError,
+  ServeNotLeaderError,
+} from "./serve_leader.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";
 
@@ -67,7 +72,69 @@ export class ReadModelApplyError extends Error {
   }
 }
 
+/** serve refused a read the commit needs; it applies once serve answers */
+export class ReadModelApplyRefusedError extends ReadModelApplyError {
+  readonly code: string;
+
+  constructor(
+    namespace: string,
+    partition: string,
+    seq: number,
+    refusal: ServeNotLeaderError | ServeFollowerBehindError,
+  ) {
+    super(namespace, partition, seq, refusal.message, { cause: refusal });
+    this.name = "ReadModelApplyRefusedError";
+    this.code = refusal.code;
+  }
+}
+
 export const CATCH_UP_UNREACHABLE_CODE = "datastore_v3_catch_up_unreachable";
+
+/** a refusal anywhere in its causes, as recovery wraps what it meets */
+export function refusedByServe(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    if (
+      current instanceof ReadModelApplyRefusedError ||
+      retryableServeRefusal(current) !== undefined
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+function refusedCatchUpMessage(cause: Error): string {
+  let apply: ReadModelApplyRefusedError | undefined;
+  let refusal: ServeNotLeaderError | ServeFollowerBehindError | undefined;
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    if (current instanceof ReadModelApplyRefusedError) apply ??= current;
+    refusal ??= retryableServeRefusal(current);
+    current = current.cause;
+  }
+  const reads = apply === undefined
+    ? "this checkout's reads"
+    : `the reads commit ${apply.seq} of partition ${apply.partition}${
+      apply.namespace === "" ? "" : ` in namespace ${apply.namespace}`
+    } needs`;
+  const leader = refusal instanceof ServeNotLeaderError &&
+      refusal.leader !== undefined
+    ? ` The leader is serve instance ${refusal.leader.instanceId}${
+      refusal.leader.address !== undefined
+        ? ` at ${refusal.leader.address}`
+        : ""
+    }.`
+    : "";
+  return `Swamp serve refused ${reads} while this checkout was brought up ` +
+    `to date, as it does while the datastore's leader changes, so nothing ` +
+    `more was changed.${leader} The next command finishes bringing it up to ` +
+    `date once serve answers; run this one again then.`;
+}
+
+/** an interrupted writer's recovery that a retry alone will not finish */
+export const RECOVERY_FAILED_CODE = "datastore_v3_recovery_failed";
 
 /**
  * nothing was changed: commits before a failed one stay applied and the cursor
@@ -76,10 +143,12 @@ export const CATCH_UP_UNREACHABLE_CODE = "datastore_v3_catch_up_unreachable";
 export class ReadModelCatchUpUnreachableError extends UserError {
   constructor(cause: Error) {
     super(
-      `Swamp could not reach the datastore's storage while bringing this ` +
-        `checkout up to date (${cause.message}), so nothing was changed. ` +
-        `The next command finishes bringing it up to date once the ` +
-        `datastore is reachable; run this one again then.`,
+      refusedByServe(cause)
+        ? refusedCatchUpMessage(cause)
+        : `Swamp could not reach the datastore's storage while bringing this ` +
+          `checkout up to date (${cause.message}), so nothing was changed. ` +
+          `The next command finishes bringing it up to date once the ` +
+          `datastore is reachable; run this one again then.`,
       CATCH_UP_UNREACHABLE_CODE,
     );
     this.name = "ReadModelCatchUpUnreachableError";

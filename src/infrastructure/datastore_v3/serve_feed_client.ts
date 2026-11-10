@@ -93,6 +93,7 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
   };
   // a serve catch-up includes the local one, so a pending one is never downgraded
   const catchUp = (kind: "serve" | "local" = "serve", wanted?: number) => {
+    if (stopped) return;
     if (kind === "local" && options.catchUpLocally === undefined) return;
     if (running !== undefined) {
       if (again !== "serve") again = kind;
@@ -134,11 +135,14 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
       return;
     }
     const current = socket;
+    // a frame that arrived before close() is still dispatched, after the
+    // command may have closed the state the handlers read
     current.onopen = () => {
+      if (stopped) return;
       current.send(JSON.stringify({ type: "commits.head", id: "head" }));
     };
     current.onmessage = (event) => {
-      if (typeof event.data !== "string") return;
+      if (stopped || typeof event.data !== "string") return;
       let frame: {
         type?: unknown;
         id?: unknown;
@@ -209,6 +213,10 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
       stopped = true;
       stopping.abort();
       if (timer !== undefined) clearTimeout(timer);
+      if (socket !== undefined) {
+        socket.onopen = null;
+        socket.onmessage = null;
+      }
       if (socket !== undefined && socket.readyState <= WebSocket.OPEN) {
         try {
           socket.close(1000, "command finished");

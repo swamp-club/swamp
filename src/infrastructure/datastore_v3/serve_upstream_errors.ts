@@ -520,7 +520,11 @@ export function serveErrorFromReply(
         new TextEncoder().encode(JSON.stringify(fields.leader)),
       )
       : undefined;
-    return new ServeNotLeaderError(leader, false, fields.inFlight === true);
+    return new ServeNotLeaderError(
+      leader,
+      fields.reads === true,
+      fields.inFlight === true,
+    );
   }
   // a follower behind the caller's copy refused a read while it catches up:
   // retryable, never divergence, and nothing landed

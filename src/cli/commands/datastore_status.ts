@@ -232,8 +232,13 @@ export const datastoreStatusCommand = withRemoteOptions(
             }
             const client = binding.client();
             try {
-              // Bounded by the client's own per-request timeout.
-              return await client.listLocks("", new AbortController().signal);
+              // bounded by the client's per-request timeout, and answered at
+              // once while serve fails over
+              return await client.listLocks(
+                "",
+                new AbortController().signal,
+                { retryRefusals: false },
+              );
             } finally {
               client.close();
             }
