@@ -21,6 +21,7 @@ import { join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { AsyncResource } from "node:async_hooks";
 import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { Command } from "@cliffy/command";
 import { z } from "zod";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -78,6 +79,10 @@ const REQUEST_SPAN = "swamp.datastore.v3.serve.request";
 const WRITER = "writer";
 const CHUNKED_WRITER = "chunked-writer";
 const WORKFLOW = "two-steps";
+const SLOW_WRITER = "slow-writer";
+const SLOW_CHUNKED_WRITER = "slow-chunked-writer";
+/** two steps that outlast the checkpoint interval, the second chunked */
+const SLOW_WORKFLOW = "two-slow-steps";
 
 const PARTITION_READ = "GET partitions/{partition}/commits";
 const CHANGES = "GET changes";
@@ -93,6 +98,9 @@ const BATCH = "POST commits";
 /** Over the 8 KiB inline limit, so the version is stored as a chunk. */
 const CHUNKED_BYTES = 16 * 1024;
 
+/** what a slow write waits on before it writes; unset, it does not wait */
+let slowWrite: (() => Promise<void>) | undefined;
+
 /**
  * serve's thread knows the behavior type with only a read method; the member's
  * thread swaps in one whose method writes a single data version
@@ -102,7 +110,10 @@ function registerWriter(type: ModelType): void {
   modelRegistry.register({
     type,
     version: "2026.01.01.1",
-    globalArguments: z.object({ bytes: z.number().int().default(16) }),
+    globalArguments: z.object({
+      bytes: z.number().int().default(16),
+      slow: z.boolean().default(false),
+    }),
     resources: {
       out: {
         description: "One data version per run",
@@ -117,7 +128,11 @@ function registerWriter(type: ModelType): void {
         kind: "update",
         arguments: z.object({}),
         execute: async (_args, context) => {
-          const { bytes } = context.globalArgs as { bytes: number };
+          const { bytes, slow } = context.globalArgs as {
+            bytes: number;
+            slow: boolean;
+          };
+          if (slow) await slowWrite?.();
           const handle = await context.writeResource!("out", "out", {
             body: "x".repeat(bytes),
           });
@@ -270,10 +285,10 @@ async function withMember(fn: (member: Member) => Promise<void>) {
       managedConfig: true,
     });
     const env = serveEnv(serve, "alice-token");
-    const step = (name: string, after?: string) =>
+    const step = (name: string, after?: string, model = WRITER) =>
       Step.create({
         name,
-        task: StepTask.modelMethod(WRITER, "write"),
+        task: StepTask.modelMethod(model, "write"),
         ...(after === undefined ? {} : {
           dependsOn: [{ step: after, condition: TriggerCondition.succeeded() }],
         }),
@@ -290,11 +305,35 @@ async function withMember(fn: (member: Member) => Promise<void>) {
           globalArguments: { bytes: CHUNKED_BYTES },
         }),
       );
+      await repos.definitionRepo.save(
+        serve.modelType,
+        Definition.create({
+          name: SLOW_WRITER,
+          globalArguments: { slow: true },
+        }),
+      );
+      await repos.definitionRepo.save(
+        serve.modelType,
+        Definition.create({
+          name: SLOW_CHUNKED_WRITER,
+          globalArguments: { bytes: CHUNKED_BYTES, slow: true },
+        }),
+      );
       await repos.workflowRepo.save(Workflow.create({
         name: WORKFLOW,
         jobs: [Job.create({
           name: "main",
           steps: [step("one"), step("two", "one")],
+        })],
+      }));
+      await repos.workflowRepo.save(Workflow.create({
+        name: SLOW_WORKFLOW,
+        jobs: [Job.create({
+          name: "main",
+          steps: [
+            step("one", undefined, SLOW_WRITER),
+            step("two", "one", SLOW_CHUNKED_WRITER),
+          ],
         })],
       }));
     });
@@ -411,6 +450,74 @@ Deno.test({
         ]);
       });
     } finally {
+      setRunCheckpointIntervalForTesting(undefined);
+    }
+  },
+});
+
+/** commits sent alone or together, a paced checkpoint's included */
+function commitsIn(spans: readonly ReadableSpan[]): number {
+  return requestsOf(spans).filter((r) => r === COMMIT || r === BATCH).length;
+}
+
+Deno.test({
+  name:
+    "team-mode workflow run: steps that outlast the checkpoint interval, one with a chunked output, have their requests to serve pinned",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    setRunCheckpointIntervalForTesting(500);
+    try {
+      await withMember(async (member) => {
+        const run = () =>
+          runCommand(
+            member.scratch,
+            member.client,
+            member.env,
+            ["workflow", "run"],
+            (root) => {
+              root.command("cmd", workflowRunCommand);
+            },
+            [SLOW_WORKFLOW],
+          );
+        let requests: string[] = [];
+        await withCapturedSpans(async (spans) => {
+          // a step that outlasts the interval sees a paced checkpoint land
+          slowWrite = async () => {
+            const before = commitsIn(spans);
+            await waitFor(
+              () => commitsIn(spans) > before,
+              "a paced checkpoint during the step",
+            );
+          };
+          await methodRun(member, WRITER);
+          await methodRun(member, CHUNKED_WRITER);
+          await run();
+          const seen = spans.length;
+          await run();
+          requests = requestsOf(spans.slice(seen));
+        });
+        assertEquals(requests, [
+          CHANGES,
+          BATCH, // the run record, the evaluated workflow and the snapshot
+          COMMIT, // step one's start, before its lock
+          LOCK,
+          BATCH, // a paced checkpoint mid-step
+          BATCH, // step one's data and the run record, ending the lease
+          COMMIT, // step two's start
+          LOCK,
+          BATCH, // a paced checkpoint mid-step
+          HAS,
+          BATCH, // step two's chunked data and the run record
+          LOCK, // the workflow's own lock, for its summary report's version
+          HAS,
+          BATCH, // the summary report, ending that lease
+          HAS, // the run record, over the inline limit by its end
+          COMMIT, // the run's final record
+        ]);
+      });
+    } finally {
+      slowWrite = undefined;
       setRunCheckpointIntervalForTesting(undefined);
     }
   },
