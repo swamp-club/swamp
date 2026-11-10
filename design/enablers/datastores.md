@@ -5852,14 +5852,55 @@ leave every checkout with the same records.
   lock, so a writer that starts then waits for the replay, and a stalled
   writer the recovery takes over is fenced before any file is touched.
 
-  Every recovery is a full rebuild. A targeted recovery, checking only what
-  the writer could have touched, was withdrawn (swamp-club#4512): a name's
-  catalog rows are a function of its whole committed op history (a
-  `data.gc` expiry drops rows its live versions still hold), so they cannot
-  be re-projected from the read model's state; an exact version must replay
-  each touched partition's history.
+  **A recovery is targeted where it can be (swamp-club#4581).** An
+  interrupted writer's recovery and a dropped unit's recovery
+  (`recoverDroppedWork`, run in the same command's teardown) rebuild only the
+  data names the work could have touched; serve's boot recovery of a killed
+  predecessor takes the same path. The two reasons a targeted recovery was
+  withdrawn on swamp-club#4512 are answered:
+  - **A name's catalog rows depend on its whole op history** (a `data.gc`
+    expiry drops rows its live versions still hold). Each touched name is
+    re-projected from its partition's compacted base plus the partition's
+    later commits (`catalogActionsForNames`, beside `projectCatalog`), which
+    is the same action stream a full rebuild applies to that name; the
+    replay's live versions must equal the state's `data_versions` or the
+    recovery falls back.
+  - **A dead writer may leave catalog rows for uncommitted data.** SQLite
+    triggers on `catalog` and `catalog_renames` record every name any
+    writer changes in `catalog_dirty`; the read model's own committed applies
+    skip them, and never clear a name a writer left dirty. A clean teardown
+    forgets the dirty names except those of outbox entries not yet landed,
+    which stay pinned until a later teardown finds them landed: a refused or
+    abandoned entry's rows are rebuilt by the next recovery.
 
-  Under the read model's lock, recovery deletes the
+  Files are not re-projected per partition: which commit a file shows is
+  decided across partitions by feed position. They are put back from the
+  read model's state, which only commits build (`#restoreFiles`; content of a
+  compacted commit is read from its base record, checked by hash).
+
+  The touched names are the dirty names, the names of dropped directories,
+  and the names of unowned, changed or missing keys found by one walk
+  (`#scanSince`); every key a commit decided under a touched name is checked.
+  A targeted recovery catches the feed up from its cursor and never loads the
+  whole compacted base; it writes no rebuild marker, and each partition's
+  names are cleared, re-projected and forgotten in one catalog batch, so a
+  stopped one is simply run again.
+
+  It falls back to the full rebuild below, naming the reason on the recover
+  span (`swamp.datastore.v3.readmodel.recover.fallback`; the path is
+  `targeted`, `full` or `resumed`): dirty tracking missing or installed after
+  the marker's start (the first recovery after an upgrade), a rebuild already
+  in progress, a view change or restore, the state reset in this section, the
+  compaction point past the cursor, a touched scope over a quarter of the
+  data names, the history commits or the owned files (`MAX_TARGETED_SHARE`,
+  each above a floor), a base that moved while read, a seq
+  or live-version mismatch, a file it cannot restore, or an admin merge or
+  rename that kept file mtimes (`datastore namespace` sets
+  `full_recovery_required`). It repairs what changed since the marker's start
+  plus every dirty name; an owned file outside those names rewritten with an
+  old mtime is left as it is, which a full rebuild would fix.
+
+  The full rebuild: under the read model's lock, recovery deletes the
   catalog rows of the data commits carry, keeping the rows of data the
   datastore's `directories` or `exclude` keep local, which no replay could
   rebuild, and keeping the catalog marked populated, so no reader backfills
@@ -5900,9 +5941,10 @@ leave every checkout with the same records.
   spellings apart, an unowned decomposed sibling of an owned composed name
   is therefore kept too, a stray file rather than a removed record. Stored
   keys are not normalised. The marker goes last, so a recovery cut short runs again in full.
-  While the replay runs, a process reading the catalog directly sees it empty
-  or partial; that lasts one recovery, after a crash, and is the price of
-  never backfilling it from disk. A recovery that keeps failing (a file it
+  While a full replay runs, a process reading the catalog directly sees it
+  empty or partial; that lasts one recovery, after a crash, and is the price
+  of never backfilling it from disk. A targeted recovery swaps one
+  partition's names at a time and never empties the catalog. A recovery that keeps failing (a file it
   cannot remove, say) fails each writing command with a `UserError` naming
   the marker, which a user deletes to keep the checkout's files as they are.
   A marker from another host, or one naming a process that is still
@@ -8002,8 +8044,21 @@ that happens.
   (swamp-club#4559 reversed swamp-club#4254's rule that it answered as
   before). A read that names no `held` (from a CLI before it) is answered as
   before.
+- **Repaired** (swamp-club#4581, F43). A copy refused as `behind` or
+  `other-commit` first re-sends its outbox, then re-reads the answering
+  node's partition from the start. Only when that fresh head is past the
+  diverged seq does it repair: commits the leader holds under the same txnId
+  are read back at the leader's seq, and another writer's commits the leader
+  lacks are dropped; a commit this checkout landed that the leader lacks is
+  a lost acknowledged write and fails as `serve_acknowledged_commit_lost`,
+  dropping nothing. The drop and the feed reset are recorded in a durable
+  repair note before anything changes, so an interrupted repair finishes on
+  the next catch-up; the read model is then rebuilt in full. A `behind` copy
+  during the seconds after a takeover is never repaired: the leader's head
+  is not yet past it.
 - **Refused.** Another log id, a head below the commit's seq, or another
-  `txnId` at that seq fails the command with `serve_upstream_diverged`.
+  `txnId` at that seq that the repair did not resolve, fails the command with
+  `serve_upstream_diverged`.
   - It is a user error, not exit 75.
   - The message names the address and the copy's directory, and says to
     start a fresh copy by moving the directory aside, so commits not yet sent
@@ -8663,6 +8718,23 @@ that finds a higher fence loses the lead as before. The check reads a
 monotonic clock, so a step of the wall clock never trips it. That clock stops
 while a VM is suspended, so a suspend is not caught: a VM resumed past the
 TTL answers as the leader until its next renewal, at most a third of the TTL.
+
+The gate is checked again where it matters (swamp-club#4581, F43). A commit
+that passed it before the process stopped re-checks the lease's confirmation
+inside its append stage, under the forwarded-commit lock, just before the
+local append: an unconfirmed lease refuses it as `serve_not_leader` with
+nothing landed, while a loss the renewal already saw keeps its
+`datastore_v3_writer_fenced` refusal. A follower takes over no sooner than the
+TTL plus the clock skew after the last confirmation, so a commit can still slip
+through only if the process stops for that margin between the check and the
+append. The WebSocket commit feed (`commits.head`, `commits.subscribe`) is
+refused on an unconfirmed leader too (`followerRefusal`), so no member is fed
+a commit the next leader's lineage never had; a confirmed leader's feed was
+already bounded by its published mark. A commit whose replication confirm
+fails with `writer_fenced` is answered `503` with its seq (may land); the
+member's commit sink checks the current leader for its txnId, sends it again
+under the same txnId when it is absent, and serve answers a re-send of a
+landed txnId from the commit it landed, so the write lands once.
 
 With two nodes on one host, a test arrangement, the follower was not seen to
 take a stopped leader's lease before the leader resumed; across hosts the
