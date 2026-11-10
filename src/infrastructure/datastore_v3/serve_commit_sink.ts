@@ -114,7 +114,7 @@ export interface ServeCommitSinkOptions {
   >;
   readonly catchUp:
     & Pick<ServeCatchUp, "catchUpPartition" | "headOf" | "recordServeHead">
-    & Partial<Pick<ServeCatchUp, "applyStamped">>;
+    & Partial<Pick<ServeCatchUp, "applyStamped" | "recordLanded">>;
   readonly chunkCache: Pick<DatastoreStorage, "get">;
   readonly outbox: CommitOutbox;
   readonly sweepBatch?: () => Promise<void>;
@@ -332,6 +332,7 @@ export function createServeCommitSink(
   ): Promise<CommitStoreAppendResult> => {
     neverSent.delete(commit.txnId);
     carriedFailures.delete(commit.txnId);
+    catchUp.recordLanded?.(commit.namespace, commit.partition, commit.txnId);
     if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
       const landed = commit.ops.flatMap((op) =>
         op.kind === "data-version"
@@ -728,15 +729,25 @@ export function createServeCommitSink(
       );
       return Math.max(copy, floor?.highWater ?? 0, queued);
     },
+    // one this checkout counts as landed is never dropped by a repair
     landedSeq: async (namespace, partition, txnId) => {
+      const landed = (seq: number | undefined) => {
+        if (seq !== undefined) {
+          catchUp.recordLanded?.(namespace, partition, txnId);
+        }
+        return seq;
+      };
       const local = await commitStore.landedSeq(namespace, partition, txnId);
-      if (local !== undefined || neverSent.delete(txnId)) return local;
+      if (local !== undefined) return landed(local);
+      if (neverSent.delete(txnId)) return local;
       // offline, nothing was sent, so serve cannot hold it
       if (options.offline?.() !== undefined) return local;
       // It may have landed at serve after the reply was lost: read the
       // partition. A failure is the caller's: the commit may land later.
       await catchUp.catchUpPartition(namespace, partition, options.signal());
-      return await commitStore.landedSeq(namespace, partition, txnId);
+      return landed(
+        await commitStore.landedSeq(namespace, partition, txnId),
+      );
     },
     append: async (commit) => {
       // offline for the rest of the command: never sent, only queued, and only

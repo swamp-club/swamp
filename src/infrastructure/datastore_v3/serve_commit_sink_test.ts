@@ -995,3 +995,29 @@ Deno.test("createServeCommitSink: a serve whose route refuses batches as unknown
     ]);
   });
 });
+
+Deno.test("createServeCommitSink: a commit serve acknowledges, or one a recovery finds landed, is recorded as this checkout's (swamp-club#4581)", async () => {
+  await withCheckout(async ({ state, serve, sink }) => {
+    const landed = modelCommit(1, [await savePut("a", 1)]);
+    await sink.append(landed);
+    const found = modelCommit(2, [await savePut("b", 1)]);
+    serve.postFaults.push({ kind: "maybe" });
+    await assertRejects(() => sink.append(found), ServeUnreachableError);
+    const refused = modelCommit(3, [await savePut("c", 1)]);
+    serve.postFaults.push({ kind: "never" });
+    await assertRejects(() => sink.append(refused), ServeUnreachableError);
+
+    assertEquals([...state.acknowledged("", MODEL.toString())], [
+      landed.txnId,
+    ]);
+    assertEquals(await sink.outbox!.landedSeq!("", MODEL, found.txnId), 2);
+    assertEquals(
+      await sink.outbox!.landedSeq!("", MODEL, refused.txnId),
+      undefined,
+    );
+    assertEquals(
+      new Set(state.acknowledged("", MODEL.toString())),
+      new Set([landed.txnId, found.txnId]),
+    );
+  });
+});

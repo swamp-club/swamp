@@ -271,8 +271,9 @@ function fencedMessage(
     return takenOver +
       (fence !== undefined ? ` while this one held fence ${fence}` : "") +
       ", after this command had published its changes to the datastore's " +
-      "replica. They may still appear: the writer that took over may " +
-      "restore them. Check whether they did before running the command again.";
+      "replica. They appear only if the writer that took over restored " +
+      "after they were published, which it may not have. Check whether " +
+      "they did before running the command again.";
   }
   return (reason === "released"
     ? "This swamp process's writer lease on the v3 datastore was released " +

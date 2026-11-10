@@ -179,6 +179,23 @@ export type CompactedBaseEntry =
     readonly ownership: FileOwnership;
   };
 
+/** One data name's part of a partition's compacted base. */
+export interface BaseDataName {
+  readonly versions: readonly LiveDataVersion[];
+  readonly catalogRows: readonly DataMetadata[];
+  readonly forward: string | undefined;
+}
+
+/**
+ * Some data names' part of one partition's compacted base, read in one
+ * transaction with the partition's compacted seq (0 when never compacted).
+ * A name the base does not hold is absent.
+ */
+export interface PartitionBase {
+  readonly compactedSeq: number;
+  readonly names: ReadonlyMap<string, BaseDataName>;
+}
+
 /**
  * A data name's version marks (swamp-club#4006): the greatest version ever
  * recorded and the versions recorded then removed, which are never handed
@@ -251,6 +268,27 @@ export interface CompactionReport {
   readonly released: number;
   /** Compacted txnIds forgotten; present when `pruneTxnsBefore` was given. */
   readonly prunedTxns?: number;
+}
+
+/**
+ * a serve-mode copy's repair: it drops the commits of one partition its serve's
+ * lineage does not hold, which only a follower copy may do
+ */
+export interface ObservedCopyRepair {
+  /** one write transaction; the dropped commits, none when already dropped */
+  dropObservedFrom(
+    namespace: string,
+    partition: PartitionKey,
+    fromSeq: number,
+  ): Promise<readonly Commit[]>;
+}
+
+/** a drop the copy can never make: its kept state could not be rebuilt */
+export class ObservedDropRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ObservedDropRefusedError";
+  }
 }
 
 /**
@@ -374,6 +412,24 @@ export interface CommitStore {
     after: string | undefined,
     limit: number,
   ): Promise<CompactedBasePage>;
+
+  /**
+   * The compacted base of `names` in one partition, with the partition's
+   * compacted seq, in one read: a name's history is this plus the partition's
+   * commits from the compacted seq on.
+   */
+  readPartitionBase(
+    namespace: string,
+    partition: PartitionKey,
+    names: readonly string[],
+  ): Promise<PartitionBase>;
+
+  /** One record of a partition's compacted base, undefined when it holds none. */
+  readBaseRecord(
+    namespace: string,
+    partition: PartitionKey,
+    key: string,
+  ): Promise<BaseRecord | undefined>;
 
   /**
    * Waits for appends already started, then closes the store. Every other

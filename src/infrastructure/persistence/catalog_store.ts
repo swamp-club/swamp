@@ -245,6 +245,86 @@ export interface CatalogWriter {
     modelId: string,
     dataName: string,
   ): void;
+  /** rows and forwards of the names that `clears` clears, as clearRows judges them */
+  clearNames(
+    names: readonly CatalogDataName[],
+    clears: (row: CatalogRowKey) => boolean,
+  ): void;
+  /** the names stop being dirty, and lose their pins */
+  forgetDirty(names: readonly CatalogDataName[]): void;
+}
+
+export interface CatalogDataName {
+  readonly namespace: string;
+  readonly type_normalized: string;
+  readonly model_id: string;
+  readonly data_name: string;
+}
+
+/** a dirty name held by a commit not known to have landed */
+export interface CatalogDirtyPin extends CatalogDataName {
+  readonly partition: string;
+  readonly txn_id: string;
+}
+
+const DIRTY_TRACKED_TABLES = ["catalog", "catalog_renames"] as const;
+
+const DIRTY_TRIGGER_NAMES = DIRTY_TRACKED_TABLES.flatMap((table) =>
+  ["insert", "update", "delete"].map((event) => `${table}_dirty_${event}`)
+);
+
+const DIRTY_TRIGGER_COUNT = DIRTY_TRIGGER_NAMES.length;
+
+/**
+ * set only inside the read model's own transactions, which no other connection
+ * can see, so committed work marks nothing and a crash leaves no flag
+ */
+const DIRTY_SUPPRESSED_KEY = "dirty_suppressed";
+
+const DIRTY_ON =
+  `NOT EXISTS (SELECT 1 FROM catalog_meta WHERE key = '${DIRTY_SUPPRESSED_KEY}')`;
+
+function dirtyInsert(row: "NEW" | "OLD"): string {
+  return `INSERT OR IGNORE INTO catalog_dirty (namespace, type_normalized, model_id, data_name) VALUES (${row}.namespace, ${row}.type_normalized, ${row}.model_id, ${row}.data_name);`;
+}
+
+/**
+ * every write to a name's rows marks it, whichever connection makes it, so a
+ * recovery finds rows a writer left uncommitted
+ */
+const DIRTY_TRACKING_SQL = `
+  CREATE TABLE IF NOT EXISTS catalog_dirty (
+    namespace       TEXT NOT NULL,
+    type_normalized TEXT NOT NULL,
+    model_id        TEXT NOT NULL,
+    data_name       TEXT NOT NULL,
+    PRIMARY KEY (namespace, type_normalized, model_id, data_name)
+  );
+  CREATE TABLE IF NOT EXISTS catalog_dirty_pins (
+    namespace       TEXT NOT NULL,
+    type_normalized TEXT NOT NULL,
+    model_id        TEXT NOT NULL,
+    data_name       TEXT NOT NULL,
+    partition       TEXT NOT NULL,
+    txn_id          TEXT NOT NULL,
+    PRIMARY KEY (namespace, type_normalized, model_id, data_name, partition, txn_id)
+  );
+  ${
+  DIRTY_TRACKED_TABLES.map((table) => `
+  CREATE TRIGGER IF NOT EXISTS ${table}_dirty_insert AFTER INSERT ON ${table}
+    WHEN ${DIRTY_ON} BEGIN ${dirtyInsert("NEW")} END;
+  CREATE TRIGGER IF NOT EXISTS ${table}_dirty_update AFTER UPDATE ON ${table}
+    WHEN ${DIRTY_ON} BEGIN ${dirtyInsert("OLD")} ${dirtyInsert("NEW")} END;
+  CREATE TRIGGER IF NOT EXISTS ${table}_dirty_delete AFTER DELETE ON ${table}
+    WHEN ${DIRTY_ON} BEGIN ${dirtyInsert("OLD")} END;`).join("")
+}
+`;
+
+const DIRTY_NAME_WHERE =
+  "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
+
+function dataNameArgs(name: CatalogDataName): string[] {
+  return [name.namespace, name.type_normalized, name.model_id, name.data_name];
 }
 
 /**
@@ -1308,6 +1388,171 @@ export class CatalogStore {
   }
 
   /**
+   * never in createSchema, so a catalog no read model takes over keeps its
+   * schema; triggers a migration dropped come back with a new start time
+   */
+  ensureDirtyTracking(now: number): void {
+    if (this.dirtyTrackingSince() !== undefined) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (
+        this.#dirtyTriggers() !== DIRTY_TRIGGER_COUNT ||
+        this.readMeta("dirty_tracking_since") === undefined
+      ) {
+        this.db.exec(DIRTY_TRACKING_SQL);
+        this.writeMeta("dirty_tracking_since", String(now));
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** undefined when the triggers are missing: no dirty name can be trusted */
+  dirtyTrackingSince(): number | undefined {
+    if (this.#dirtyTriggers() !== DIRTY_TRIGGER_COUNT) return undefined;
+    const since = this.readMeta("dirty_tracking_since");
+    return since === undefined ? undefined : Number(since);
+  }
+
+  #dirtyTriggers(): number {
+    return (this.#prepareCached(
+      `SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name IN (${
+        DIRTY_TRIGGER_NAMES.map((name) => `'${name}'`).join(", ")
+      })`,
+    ).get() as { n: number }).n;
+  }
+
+  #hasDirtyTable(): boolean {
+    return this.#prepareCached(
+      "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'catalog_dirty'",
+    ).get() !== undefined;
+  }
+
+  dirtyNames(): CatalogDataName[] {
+    if (!this.#hasDirtyTable()) return [];
+    return this.db.prepare(
+      "SELECT namespace, type_normalized, model_id, data_name FROM catalog_dirty ORDER BY 1, 2, 3, 4",
+    ).all() as unknown as CatalogDataName[];
+  }
+
+  dirtyPins(): CatalogDirtyPin[] {
+    if (!this.#hasDirtyTable()) return [];
+    return this.db.prepare(
+      "SELECT namespace, type_normalized, model_id, data_name, partition, txn_id FROM catalog_dirty_pins ORDER BY 1, 2, 3, 4, 5, 6",
+    ).all() as unknown as CatalogDirtyPin[];
+  }
+
+  forgetDirty(names: readonly CatalogDataName[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#forgetDirtyNames(names);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #forgetDirtyNames(names: readonly CatalogDataName[]): void {
+    if (names.length === 0 || !this.#hasDirtyTable()) return;
+    const dirty = this.#prepareCached(
+      `DELETE FROM catalog_dirty WHERE ${DIRTY_NAME_WHERE}`,
+    );
+    const pins = this.#prepareCached(
+      `DELETE FROM catalog_dirty_pins WHERE ${DIRTY_NAME_WHERE}`,
+    );
+    for (const name of names) {
+      dirty.run(...dataNameArgs(name));
+      pins.run(...dataNameArgs(name));
+    }
+  }
+
+  /** what a full rebuild leaves: no name dirty, and no full recovery owed */
+  forgetAllDirty(): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.#hasDirtyTable()) {
+        this.db.exec(
+          "DELETE FROM catalog_dirty; DELETE FROM catalog_dirty_pins;",
+        );
+      }
+      this.db.prepare(
+        "DELETE FROM catalog_meta WHERE key = 'full_recovery_required'",
+      ).run();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * a clean teardown's: pins the names of commits not landed yet, drops the
+   * pins of landed ones, and forgets every dirty name no pin holds
+   */
+  releaseDirty(
+    pins: readonly CatalogDirtyPin[],
+    landed: readonly { readonly partition: string; readonly txn_id: string }[],
+  ): void {
+    if (!this.#hasDirtyTable()) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const pin = this.#prepareCached(
+        "INSERT OR IGNORE INTO catalog_dirty_pins (namespace, type_normalized, model_id, data_name, partition, txn_id) VALUES (?, ?, ?, ?, ?, ?)",
+      );
+      for (const p of pins) {
+        pin.run(...dataNameArgs(p), p.partition, p.txn_id);
+      }
+      const unpin = this.#prepareCached(
+        "DELETE FROM catalog_dirty_pins WHERE partition = ? AND txn_id = ?",
+      );
+      for (const l of landed) unpin.run(l.partition, l.txn_id);
+      this.db.exec(
+        "DELETE FROM catalog_dirty WHERE NOT EXISTS (SELECT 1 FROM catalog_dirty_pins AS p " +
+          "WHERE p.namespace = catalog_dirty.namespace AND p.type_normalized = catalog_dirty.type_normalized " +
+          "AND p.model_id = catalog_dirty.model_id AND p.data_name = catalog_dirty.data_name)",
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** files were copied in keeping their times: only a full recovery sees them */
+  markFullRecoveryRequired(): void {
+    this.writeMeta("full_recovery_required", "1");
+  }
+
+  fullRecoveryRequired(): boolean {
+    return this.readMeta("full_recovery_required") === "1";
+  }
+
+  #clearNames(
+    names: readonly CatalogDataName[],
+    clears: (row: CatalogRowKey) => boolean,
+  ): void {
+    const rows = this.#prepareCached(
+      `SELECT version FROM catalog WHERE ${DIRTY_NAME_WHERE}`,
+    );
+    const deleteRow = this.#prepareCached(
+      `DELETE FROM catalog WHERE ${DIRTY_NAME_WHERE} AND version = ?`,
+    );
+    const deleteRename = this.#prepareCached(
+      `DELETE FROM catalog_renames WHERE ${DIRTY_NAME_WHERE}`,
+    );
+    for (const name of names) {
+      const args = dataNameArgs(name);
+      for (const { version } of rows.all(...args) as { version: number }[]) {
+        if (clears({ ...name, version })) deleteRow.run(...args, version);
+      }
+      if (clears(name)) deleteRename.run(...args);
+    }
+  }
+
+  /**
    * no-op without a tracker; best effort since the data is already committed:
    * an unwritable token only delays other repositories noticing, and must not
    * fail the write
@@ -1492,7 +1737,13 @@ export class CatalogStore {
    * transaction; commits once apply returns, rolls back and rethrows on a
    * throw, instead of one transaction per action
    */
-  applyInTransaction(apply: (writer: CatalogWriter) => void): void {
+  applyInTransaction(
+    apply: (writer: CatalogWriter) => void,
+    options: {
+      /** committed work, which marks no name dirty and clears none */
+      readonly committed?: boolean;
+    } = {},
+  ): void {
     const writer: CatalogWriter = {
       upsertNewVersion: (row) => this.#upsertNewVersionRows(row),
       removeVersion: (
@@ -1516,10 +1767,23 @@ export class CatalogStore {
       recordRename: (row) => this.recordRename(row),
       removeRename: (namespace, typeNormalized, modelId, dataName) =>
         this.removeRename(namespace, typeNormalized, modelId, dataName),
+      clearNames: (names, clears) => this.#clearNames(names, clears),
+      forgetDirty: (names) => this.#forgetDirtyNames(names),
     };
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const suppress = options.committed === true;
+      if (suppress) {
+        this.#prepareCached(
+          "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES (?, '1')",
+        ).run(DIRTY_SUPPRESSED_KEY);
+      }
       apply(writer);
+      if (suppress) {
+        this.#prepareCached("DELETE FROM catalog_meta WHERE key = ?").run(
+          DIRTY_SUPPRESSED_KEY,
+        );
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -1648,10 +1912,14 @@ export class CatalogStore {
     try {
       const ddl = this.db.prepare(
         `SELECT sql FROM sqlite_master
-         WHERE sql IS NOT NULL AND type IN ('table', 'index', 'trigger', 'view')
+         WHERE sql IS NOT NULL AND type IN ('table', 'index', 'view')
          ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END`,
       ).all() as { sql: string }[];
       for (const { sql } of ddl) dst.exec(sql);
+      // after the rows, so copying them marks no name dirty
+      const triggers = this.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND type = 'trigger'",
+      ).all() as { sql: string }[];
 
       const tables = this.db.prepare(
         `SELECT name FROM sqlite_master
@@ -1663,6 +1931,7 @@ export class CatalogStore {
         for (const { name } of tables) {
           this.copyTableRows(dst, name);
         }
+        for (const { sql } of triggers) dst.exec(sql);
         dst.exec("COMMIT");
       } catch (error) {
         dst.exec("ROLLBACK");

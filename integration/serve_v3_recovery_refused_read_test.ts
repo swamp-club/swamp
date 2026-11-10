@@ -35,6 +35,10 @@ import {
 } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { thisKernelIdentity } from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import {
+  findSpan,
+  withCapturedSpans,
+} from "../src/infrastructure/tracing/span_test_helpers.ts";
 import { exitCodeForError } from "../src/presentation/output/error_output.ts";
 import {
   type Client,
@@ -69,7 +73,10 @@ const DATA_ID = "7d0c6a8e-3b1f-4c2a-9e5d-1f2a3b4c5d6e";
 /** past the inline limit, so the record is stored as a chunk */
 const LARGE = "x".repeat(20_000);
 
-async function plantInterruptedWriter(repoDir: string): Promise<string> {
+async function plantInterruptedWriter(
+  repoDir: string,
+  since = 0,
+): Promise<string> {
   const kernel = await thisKernelIdentity();
   const path = writerMarkerPath(repoDir);
   await Deno.mkdir(dirname(path), { recursive: true });
@@ -79,20 +86,26 @@ async function plantInterruptedWriter(repoDir: string): Promise<string> {
       hostname: Deno.hostname(),
       pid: 4242,
       process: { ...kernel, host: `${kernel.host}#pid:[4026532999]` },
-      since: 0,
+      since,
     }),
   );
   return path;
 }
 
 /** as an interrupted writer leaves it: the file no longer holds the commit */
-async function tearRecordFile(repoDir: string): Promise<void> {
+async function tearRecordFile(
+  repoDir: string,
+  modifiedAt?: Date,
+): Promise<string> {
   for await (const entry of walk(repoDir, { includeDirs: false })) {
     if (entry.isSymlink) continue;
     const text = await Deno.readTextFile(entry.path).catch(() => "");
     if (!text.includes(LARGE)) continue;
     await Deno.writeTextFile(entry.path, text.slice(0, 100));
-    return;
+    if (modifiedAt !== undefined) {
+      await Deno.utime(entry.path, modifiedAt, modifiedAt);
+    }
+    return entry.path;
   }
   throw new Error(`No file in ${repoDir} holds the chunked record`);
 }
@@ -133,7 +146,10 @@ async function interruptedMember(
   scratch: Scratch,
   serve: Serve,
   proxyOrigin: string,
-): Promise<{ alice: Client; env: Record<string, string | undefined> }> {
+  since = 0,
+): Promise<
+  { alice: Client; env: Record<string, string | undefined>; torn: string }
+> {
   const bob = await scratch.client("b");
   const alice = await scratch.client("a");
   const env = serveEnv({ origin: proxyOrigin }, "alice-token");
@@ -161,9 +177,12 @@ async function interruptedMember(
     ),
     1,
   );
-  await plantInterruptedWriter(alice.repoDir);
-  await tearRecordFile(alice.repoDir);
-  return { alice, env };
+  await plantInterruptedWriter(alice.repoDir, since);
+  const torn = await tearRecordFile(
+    alice.repoDir,
+    since === 0 ? undefined : new Date(since + 1_000),
+  );
+  return { alice, env, torn };
 }
 
 async function saveSmall(
@@ -213,6 +232,58 @@ Deno.test({
         assertEquals(await saveSmall(scratch, serve, alice, env), 1);
         assertEquals(refused, 2);
         assertEquals(await exists(writerMarkerPath(alice.repoDir)), false);
+      } finally {
+        await proxy.close();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve recovery: a targeted recovery whose chunk read serve refuses as not the leader rides out the refusal, puts the torn file back and completes in one command (swamp-club#4581)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      let refusing = false;
+      let refused = 0;
+      const proxy = startProxy(serve.origin, async (request, forward) => {
+        if (!refusing || !isChunkRead(request) || refused >= 2) {
+          return undefined;
+        }
+        refused++;
+        return await notLeader(forward);
+      });
+      try {
+        // the dead writer started well after the checkout's tracking did
+        const { alice, env, torn } = await interruptedMember(
+          scratch,
+          serve,
+          proxy.origin,
+          Date.now() + 60_000,
+        );
+        refusing = true;
+        await withCapturedSpans(async (spans) => {
+          assertEquals(await saveSmall(scratch, serve, alice, env), 1);
+          const recover = findSpan(
+            spans,
+            "swamp.datastore.v3.readmodel.recover",
+          );
+          assertEquals(
+            recover.attributes["swamp.datastore.v3.readmodel.recover.path"],
+            "targeted",
+            String(
+              recover.attributes[
+                "swamp.datastore.v3.readmodel.recover.fallback"
+              ],
+            ),
+          );
+        });
+        assertEquals(refused, 2);
+        assertEquals(await exists(writerMarkerPath(alice.repoDir)), false);
+        assert((await Deno.readTextFile(torn)).includes(LARGE));
       } finally {
         await proxy.close();
       }

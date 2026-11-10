@@ -28,9 +28,15 @@ import { join, SEPARATOR } from "@std/path";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import {
+  dataKey,
+  MemoryStorage,
   modelPartition,
   savePut,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
+import { readModelStateDir } from "./record_path_guard.ts";
+import { SqliteReadModel } from "./sqlite_read_model.ts";
+import { v3CacheRoot } from "./v3_datastore.ts";
 import { runPartition, runPut } from "./commit_log_test_helpers.ts";
 import type { ObservedBaseEntry } from "../../domain/datastore_v3/observed_base.ts";
 import {
@@ -42,7 +48,9 @@ import {
   serveLogCheck,
 } from "./serve_catch_up.ts";
 import {
+  SERVE_ACKNOWLEDGED_COMMIT_LOST_CODE,
   SERVE_UPSTREAM_DIVERGED_CODE,
+  ServeAcknowledgedCommitLostError,
   ServeCommitsCompactedError,
   ServeReplyTooLargeError,
   ServeUpstreamDivergedError,
@@ -56,10 +64,12 @@ import {
 import {
   FakeServe,
   removeTempDir,
+  SERVE_AT,
   SERVE_URL,
   serveStamped,
 } from "./serve_upstream_test_helpers.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
+import { ObservedDropRefusedError } from "../../domain/datastore_v3/commit_store.ts";
 
 const MODEL = modelPartition();
 const OTHER = runPartition();
@@ -1423,5 +1433,476 @@ Deno.test("ServeCatchUp.catchUp: a fresh copy appends a page of commits in share
     const used = store.appendTransactions - before;
     // up to 64 commits share one transaction
     assert(used <= Math.ceil(200 / 64), `${used} transactions for 200`);
+  });
+});
+
+interface Repairing {
+  readonly catchUp: ServeCatchUp;
+  readonly resends: number[];
+  readonly replays: number[];
+}
+
+/** a catch-up through `serve` that repairs a diverged copy */
+function repairing(
+  serve: FakeServe,
+  checkout: Pick<Checkout, "dir" | "store" | "state">,
+  options: {
+    readonly resend?: () => Promise<void>;
+    readonly rebuild?: (since: number) => Promise<void>;
+  } = {},
+): Repairing {
+  const resends: number[] = [];
+  const replays: number[] = [];
+  const catchUp = new ServeCatchUp({
+    client: serve,
+    commitStore: checkout.store,
+    state: checkout.state,
+    copyDir: checkout.dir,
+    namespace: "",
+    lockCopy: () => Promise.resolve(() => Promise.resolve()),
+    repair: {
+      resendOutbox: async () => {
+        resends.push(serve.partitionReads.length);
+        await options.resend?.();
+      },
+      ready: () => true,
+      rebuildReadModel: async (since) => {
+        replays.push(since);
+        await options.rebuild?.(since);
+      },
+      principal: () => "carol@example.com",
+    },
+  });
+  return { catchUp, resends, replays };
+}
+
+/**
+ * the copy follows a fenced old leader that fed it MODEL commits 1 and 2, then
+ * `orphans` the new leader never held
+ */
+async function followOldLeader(
+  checkout: Pick<Checkout, "dir" | "store" | "state">,
+  orphans: readonly Commit[],
+): Promise<void> {
+  const old = new FakeServe();
+  old.land(await other(1));
+  old.land(await other(2));
+  for (const orphan of orphans) old.land(orphan);
+  await through(old, checkout).catchUp(signal());
+}
+
+/** the new leader: MODEL commits 1 through `head`, held by the lineage */
+async function newLeader(head: number): Promise<FakeServe> {
+  const serve = new FakeServe();
+  serve.checksAnchors = true;
+  for (let seq = 1; seq <= head; seq++) serve.land(await other(seq));
+  return serve;
+}
+
+async function copyTxnIds(store: SqliteCommitStore, partition = MODEL) {
+  return (await store.readPartition("", partition, 1, 10_000)).map((c) =>
+    `${c.commit.seq}:${c.commit.txnId}`
+  );
+}
+
+function serveTxnIds(serve: FakeServe, partition = MODEL): string[] {
+  const txnIds: string[] = [];
+  for (let seq = 1; seq <= serve.head(partition); seq++) {
+    txnIds.push(`${seq}:${serve.commitAt(partition, seq)!.txnId}`);
+  }
+  return txnIds;
+}
+
+Deno.test("ServeCatchUp.catchUp: a copy holding another writer's commit serve's leader lacks, with the leader's head past it, is repaired to match the leader (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    assertEquals(state.feedAnchor()?.txnId, "another-3");
+    const leader = await newLeader(4);
+    leader.land(await other(1, OTHER));
+    const { catchUp, resends, replays } = repairing(leader, {
+      dir,
+      store,
+      state,
+    });
+
+    await catchUp.catchUp(signal());
+
+    assertEquals(await copyTxnIds(store), serveTxnIds(leader));
+    assertEquals(await copySeqs(store, OTHER), [1]);
+    assertEquals(resends.length, 1, "the outbox was sent first");
+    assertEquals(replays.length, 1, "the read model replays in full");
+    assertEquals(state.pendingRepair(), undefined);
+    assertEquals(state.feedCursor(), leader.feed.length);
+    assertEquals(state.feedAnchor()?.txnId, "other-1");
+    assertEquals(state.serveHead("", MODEL.toString()), 4);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a repair the copy's store can never make leaves the copy refused as before, not stuck rerunning it (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    const leader = await newLeader(4);
+    // as a compacted partition whose only snapshot is past the drop refuses
+    const refusing = new Proxy(store, {
+      get(target, property, receiver) {
+        if (property === "dropObservedFrom") {
+          return () =>
+            Promise.reject(new ObservedDropRefusedError("cannot drop"));
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const { catchUp, replays } = repairing(leader, {
+      dir,
+      store: refusing,
+      state,
+    });
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await assertRejects(
+        () => catchUp.catchUp(signal()),
+        ServeUpstreamDivergedError,
+      );
+      assertEquals(error.divergence.kind, "other-commit");
+      assertEquals(state.pendingRepair(), undefined);
+    }
+    assertEquals(replays.length, 0);
+    assertEquals(await copyTxnIds(store), [
+      "1:other-1",
+      "2:other-2",
+      "3:another-3",
+    ]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a leader behind the copy is still refused until its head moves past the diverged commit (swamp-club#4581, swamp-club#4254)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    const leader = await newLeader(2);
+    const { catchUp, replays } = repairing(leader, { dir, store, state });
+
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+
+    assertEquals(error.divergence, { kind: "behind", serveHead: 2 });
+    assertEquals(await copyTxnIds(store), [
+      "1:other-1",
+      "2:other-2",
+      "3:another-3",
+    ]);
+    assertEquals(replays.length, 0);
+    assertEquals(state.feedAnchor()?.txnId, "another-3");
+
+    leader.land(await other(3));
+    // at the diverged seq is not past it
+    await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals(replays.length, 0);
+
+    leader.land(await other(4));
+    await catchUp.catchUp(signal());
+    assertEquals(await copyTxnIds(store), serveTxnIds(leader));
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a diverged commit serve acknowledged to this checkout is refused with its own code and nothing is dropped (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [
+      await another(3),
+      await another(4),
+    ]);
+    const leader = await newLeader(5);
+    const { catchUp, replays } = repairing(leader, { dir, store, state });
+    catchUp.recordLanded("", MODEL, "another-4");
+    const cursor = state.feedCursor();
+
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeAcknowledgedCommitLostError,
+    );
+
+    assertEquals(error.code, SERVE_ACKNOWLEDGED_COMMIT_LOST_CODE);
+    assertEquals(error.lost, [
+      { seq: 4, txnId: "another-4", acknowledged: true },
+    ]);
+    assertStringIncludes(error.message, "another-4");
+    assertStringIncludes(error.message, dir);
+    assertEquals(await copyTxnIds(store), [
+      "1:other-1",
+      "2:other-2",
+      "3:another-3",
+      "4:another-4",
+    ]);
+    assertEquals(replays.length, 0);
+    assertEquals(state.pendingRepair(), undefined);
+    assertEquals(state.feedCursor(), cursor);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a commit the leader holds at another seq is kept, at the leader's seq (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [
+      await another(3),
+      await another(4),
+    ]);
+    const leader = await newLeader(3);
+    // the re-sent write landed one seq on at the leader
+    leader.land(serveStamped(4, [await savePut("b3", 1)], MODEL, "another-3"));
+    leader.land(await other(5));
+    const { catchUp } = repairing(leader, { dir, store, state });
+    // acknowledged, but the leader holds it: not a lost write
+    catchUp.recordLanded("", MODEL, "another-3");
+
+    await catchUp.catchUp(signal());
+
+    assertEquals(await copyTxnIds(store), [
+      "1:other-1",
+      "2:other-2",
+      "3:other-3",
+      "4:another-3",
+      "5:other-5",
+    ]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: the outbox is sent before the divergence is judged, and a send that lands it resolves the divergence with nothing dropped (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    const mine = serveStamped(3, [await savePut("mine", 1)], MODEL, "mine-3");
+    await followOldLeader({ dir, store, state }, [mine]);
+    const leader = await newLeader(2);
+    const { catchUp, resends, replays } = repairing(
+      leader,
+      { dir, store, state },
+      {
+        resend: async () => {
+          leader.land(mine);
+          leader.land(await other(4));
+        },
+      },
+    );
+
+    await catchUp.catchUp(signal());
+
+    assertEquals(resends, [0], "sent before serve's partition was read");
+    assertEquals(replays.length, 0, "nothing was dropped");
+    assertEquals(await copyTxnIds(store), [
+      "1:other-1",
+      "2:other-2",
+      "3:mine-3",
+      "4:other-4",
+    ]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a copy that follows another log entirely is refused as before, never repaired (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    const leader = await newLeader(5);
+    leader.changesFault = new ServeUpstreamDivergedError(
+      SERVE_URL,
+      dir,
+      undefined,
+      { kind: "other-log", copyLogId: "log-a", serveLogId: "log-b" },
+    );
+    const { catchUp, resends, replays } = repairing(leader, {
+      dir,
+      store,
+      state,
+    });
+
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+
+    assertEquals(error.code, SERVE_UPSTREAM_DIVERGED_CODE);
+    assertStringIncludes(error.message, `move ${dir} aside`);
+    assertEquals(resends.length, 0);
+    assertEquals(replays.length, 0);
+    assertEquals((await copySeqs(store)).length, 3);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a repair cut short after the drop leaves the cursor where it was, and the next catch-up finishes it (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    const leader = await newLeader(4);
+    const cursor = state.feedCursor();
+    const drop = store.dropObservedFrom.bind(store);
+    let cut = true;
+    store.dropObservedFrom = async (namespace, partition, fromSeq) => {
+      const dropped = await drop(namespace, partition, fromSeq);
+      if (cut) throw new Error("power cut");
+      return dropped;
+    };
+    const { catchUp, replays } = repairing(leader, { dir, store, state });
+
+    await assertRejects(() => catchUp.catchUp(signal()), Error, "power cut");
+
+    assertEquals(await copySeqs(store), [1, 2]);
+    assertEquals(state.pendingRepair()?.fromSeq, 3);
+    assertEquals(state.feedCursor(), cursor, "the cursor never moved");
+    assertEquals(state.feedAnchor()?.txnId, "another-3");
+
+    cut = false;
+    await catchUp.catchUp(signal());
+
+    assertEquals(await copyTxnIds(store), serveTxnIds(leader));
+    assertEquals(state.pendingRepair(), undefined);
+    assertEquals(replays.length, 1, "the read model is rebuilt once dropped");
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a repaired copy's read model matches a fresh copy's of the leader (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    const repoDir = join(dir, "repo");
+    const readModelOf = (commitStore: SqliteCommitStore, root: string) =>
+      SqliteReadModel.open({
+        commitStore,
+        chunkStore: new ChunkStore(new MemoryStorage()),
+        cacheRoot: (ns) => v3CacheRoot(root, ns),
+        stateDir: readModelStateDir(root),
+        follower: true,
+      });
+    const readModel = readModelOf(store, repoDir);
+    const freshDir = join(dir, "fresh");
+    await Deno.mkdir(freshDir);
+    const freshStore = SqliteCommitStore.open(join(freshDir, "commits.db"), {
+      follower: true,
+    });
+    const freshState = ServeUpstreamState.open(
+      join(freshDir, "serve_upstream.db"),
+    );
+    const freshRepo = join(freshDir, "repo");
+    const freshModel = readModelOf(freshStore, freshRepo);
+    try {
+      await followOldLeader({ dir, store, state }, [await another(3)]);
+      await readModel.catchUp(signal());
+      assertEquals(
+        await Deno.readTextFile(
+          join(
+            v3CacheRoot(repoDir, ""),
+            ...dataKey("b3", 1).toString().split("/"),
+          ),
+        ),
+        "b3@1",
+      );
+      const leader = await newLeader(4);
+      const { catchUp } = repairing(leader, { dir, store, state }, {
+        rebuild: async (since) => {
+          await readModel.recover("", {
+            since,
+            admits: () => true,
+            signal: signal(),
+          });
+        },
+      });
+
+      await catchUp.catchUp(signal());
+      await readModel.catchUp(signal());
+      await through(leader, {
+        dir: freshDir,
+        store: freshStore,
+        state: freshState,
+      }).catchUp(signal());
+      await freshModel.catchUp(signal());
+
+      const live = async (model: SqliteReadModel) =>
+        (await model.liveRecords("", MODEL)).map((record) =>
+          record.key.toString()
+        ).sort();
+      assertEquals(await live(readModel), await live(freshModel));
+      for (const key of await live(freshModel)) {
+        assertEquals(
+          await Deno.readTextFile(
+            join(v3CacheRoot(repoDir, ""), ...key.split("/")),
+          ),
+          await Deno.readTextFile(
+            join(v3CacheRoot(freshRepo, ""), ...key.split("/")),
+          ),
+        );
+      }
+      await assertRejects(() =>
+        Deno.stat(
+          join(
+            v3CacheRoot(repoDir, ""),
+            ...dataKey("b3", 1).toString().split("/"),
+          ),
+        ), Deno.errors.NotFound);
+    } finally {
+      await readModel.close();
+      await freshModel.close();
+      freshState.close();
+      await freshStore.close();
+    }
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a diverged commit by this checkout's principal from before acknowledgements were kept is refused, never dropped (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    // the copy kept acknowledgements only from after serve stamped it
+    state.acknowledgedFrom = () => Date.parse(SERVE_AT);
+    const leader = await newLeader(4);
+    const catchUp = new ServeCatchUp({
+      client: leader,
+      commitStore: store,
+      state,
+      copyDir: dir,
+      namespace: "",
+      lockCopy: () => Promise.resolve(() => Promise.resolve()),
+      repair: {
+        ready: () => true,
+        resendOutbox: () => Promise.resolve(),
+        rebuildReadModel: () => Promise.resolve(),
+        principal: () => "bob@example.com",
+      },
+    });
+
+    const error = await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeAcknowledgedCommitLostError,
+    );
+
+    assertEquals(error.lost, [
+      { seq: 3, txnId: "another-3", acknowledged: false },
+    ]);
+    assertEquals((await copySeqs(store)).length, 3);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a repair is left to the next catch-up while this process has work under way (swamp-club#4581)", async () => {
+  await withCheckout(async ({ dir, store, state }) => {
+    await followOldLeader({ dir, store, state }, [await another(3)]);
+    const leader = await newLeader(4);
+    let ready = false;
+    const catchUp = new ServeCatchUp({
+      client: leader,
+      commitStore: store,
+      state,
+      copyDir: dir,
+      namespace: "",
+      lockCopy: () => Promise.resolve(() => Promise.resolve()),
+      repair: {
+        ready: () => ready,
+        resendOutbox: () => Promise.resolve(),
+        rebuildReadModel: () => Promise.resolve(),
+      },
+    });
+
+    await assertRejects(
+      () => catchUp.catchUp(signal()),
+      ServeUpstreamDivergedError,
+    );
+    assertEquals((await copySeqs(store)).length, 3);
+
+    ready = true;
+    await catchUp.catchUp(signal());
+    assertEquals(await copyTxnIds(store), serveTxnIds(leader));
   });
 });

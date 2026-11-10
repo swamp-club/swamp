@@ -224,6 +224,54 @@ function divergenceOf(
     : `${at}, and serve holds another commit at that seq`;
 }
 
+export const SERVE_ACKNOWLEDGED_COMMIT_LOST_CODE =
+  "serve_acknowledged_commit_lost";
+
+export interface ServeLostCommit {
+  readonly seq: number;
+  readonly txnId: string;
+  /** false for a commit from before this checkout kept acknowledgements */
+  readonly acknowledged: boolean;
+}
+
+/**
+ * serve's lineage lacks a commit it acknowledged to this checkout: repairing
+ * the diverged copy would drop it, so the copy is kept as it is
+ */
+export class ServeAcknowledgedCommitLostError extends UserError {
+  declare readonly code: typeof SERVE_ACKNOWLEDGED_COMMIT_LOST_CODE;
+
+  constructor(
+    readonly serveUrl: string,
+    readonly copyDir: string,
+    readonly partition: string,
+    readonly lost: readonly ServeLostCommit[],
+    readonly serveHead: number,
+  ) {
+    const named = lost.map((commit) => `seq ${commit.seq} (${commit.txnId})`)
+      .join(", ");
+    const unsure = lost.some((commit) => !commit.acknowledged)
+      ? " Some may be commits this checkout landed before it kept a record " +
+        "of what serve acknowledged to it."
+      : "";
+    super(
+      `Serve at ${serveUrl} does not hold ${
+        lost.length === 1 ? "a commit" : `${lost.length} commits`
+      } of partition ${partition} that it acknowledged to this checkout: ` +
+        `${named}; serve's head for that partition is ${serveHead}.` +
+        `${unsure} Swamp does not repair this checkout's copy at ${copyDir}, ` +
+        `since that would drop them. The serve that acknowledged them may ` +
+        `have lost its lead before passing them on. Write the changes again ` +
+        `if they are still wanted, then move ${copyDir} aside to start a ` +
+        `fresh copy from this serve; commits not yet sent to serve stay in ` +
+        `the moved copy's outbox.`,
+      SERVE_ACKNOWLEDGED_COMMIT_LOST_CODE,
+    );
+    this.name = "ServeAcknowledgedCommitLostError";
+    markErrorPaths(this, [copyDir]);
+  }
+}
+
 export const SERVE_UPSTREAM_UPGRADE_REQUIRED_CODE =
   "serve_upstream_upgrade_required";
 

@@ -107,7 +107,11 @@ import {
 import { BrokenLineageMoveGuard } from "../../domain/datastore_v3/broken_lineage_move.ts";
 import { isLineageBroken } from "../../domain/datastore_v3/replica_verification.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
+import { catalogNamesOfCommit } from "../../domain/datastore_v3/name_history_replay.ts";
+import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import type { DirtyNamePin } from "./v3_catalog.ts";
 import {
+  holdsOwnWriterMarker,
   readWriterMarkerFile,
   recoverInterruptedWriter,
   recoverOwnPredecessor,
@@ -1821,6 +1825,51 @@ async function releaseAfterFailure(
 }
 
 /**
+ * a clean end leaves dirty only the names of outbox entries not found landed;
+ * never fails the teardown, as a name left dirty only widens a later recovery
+ */
+async function releaseDirtyNames(
+  handle: V3Datastore,
+  checkout: string,
+): Promise<void> {
+  try {
+    if (!await holdsOwnWriterMarker(checkout)) return;
+    const listing = await handle.outbox.entries();
+    // an entry that cannot be read names no names to keep
+    if (listing.unreadable.length > 0) return;
+    const pins: DirtyNamePin[] = [];
+    for (const { commit } of listing.entries) {
+      const identity = commit.partition.identity;
+      if (identity.kind !== "model") continue;
+      for (const name of catalogNamesOfCommit(commit)) {
+        pins.push({
+          namespace: commit.namespace,
+          type: identity.type,
+          modelId: identity.id,
+          name,
+          partition: commit.partition.toString(),
+          txnId: commit.txnId,
+        });
+      }
+    }
+    // the copy, not serve: a commit serve landed but the copy lacks only widens
+    // the next recovery
+    await handle.readModel.releaseDirtyNames(
+      pins,
+      async (pin) =>
+        await handle.commitStore.landedSeq(
+          pin.namespace,
+          PartitionKey.parse(pin.partition),
+          pin.txnId,
+        ) !== undefined,
+    );
+  } catch (error) {
+    logger
+      .debug`Forgetting the catalog names ${checkout} left dirty failed; a later recovery repairs them: ${error}`;
+  }
+}
+
+/**
  * a process that lost its lease, a checkout with a unit still open, or a
  * recovery that fails keeps the writer marker instead, so the next command
  * recovers. Never fails the teardown
@@ -1894,6 +1943,7 @@ export async function closeV3Datastores(
   // has cleared it.
   const shutdownDeadline = v3ClosingDeadline();
   const pending = releases.splice(0);
+  const marked = new Set(markedCheckouts.keys());
   markedCheckouts.clear();
   commandStartMarks.clear();
   serveHolds.clear();
@@ -1990,6 +2040,13 @@ export async function closeV3Datastores(
   // the stores close.
   for (const { key, handle, current } of dropped) {
     await recoverDroppedWork(key, handle, current, unreachable);
+  }
+  // before the stores close; a checkout whose marker stays keeps its names
+  for (const [key, handle] of entries) {
+    const checkout = key.split("\0")[0];
+    if (!marked.has(key) || keepsMarker(checkout)) continue;
+    if (handle.droppedWork() !== undefined) continue;
+    await releaseDirtyNames(handle, checkout);
   }
   // once the command's own commits were confirmed, a closing sync that fails
   // covers only what was committed since: kept in commits.db, it replicates

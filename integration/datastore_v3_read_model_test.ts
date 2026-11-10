@@ -347,6 +347,8 @@ Deno.test("read model: a page's catalog actions land in one catalog transaction 
   await withV3Env(async (env) => {
     await appendScenario(env);
     const store = new CatalogStore(catalogV3Path(env));
+    // installed once per catalog, before any page
+    store.ensureDirtyTracking(0);
     const transactions = countTransactions(store);
     const readModel = env.openReadModel({ catalog: new V3Catalog(store) });
     try {

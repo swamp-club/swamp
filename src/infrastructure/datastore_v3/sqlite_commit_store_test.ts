@@ -52,6 +52,7 @@ import {
 import {
   CommitsCompactedError,
   InvalidBasePageTokenError,
+  ObservedDropRefusedError,
 } from "../../domain/datastore_v3/commit_store.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
 import { metadata as fixtureMetadata } from "../../domain/datastore_v3/v3_test_helpers.ts";
@@ -1978,5 +1979,120 @@ Deno.test("SqliteCommitStore.readCompactedBase: a token it never handed out is r
         InvalidBasePageTokenError,
       );
     }
+  });
+});
+
+Deno.test("SqliteCommitStore.dropObservedFrom: drops a follower partition's commits from a seq, takes the head back, replaces the snapshot past it and leaves other partitions (swamp-club#4581)", async () => {
+  await withStore(async (store, path) => {
+    for (const seq of [1, 2, 3, 4, 5]) await store.append(await save(seq));
+    await store.append(leaseCommit(1, 2));
+    assertEquals(
+      rawRows(
+        path,
+        `SELECT seq FROM partition_snapshots WHERE partition = '${modelPartition()}'`,
+      ),
+      [{ seq: 3 }],
+    );
+
+    const dropped = await store.dropObservedFrom("", modelPartition(), 3);
+
+    assertEquals(dropped.map((commit) => commit.seq), [3, 4, 5]);
+    assertEquals((await store.head("", modelPartition())).seq, 2);
+    assertEquals(
+      (await store.readPartition("", modelPartition(), 1, 10)).map((c) =>
+        c.commit.seq
+      ),
+      [1, 2],
+    );
+    assertEquals(
+      rawRows(
+        path,
+        `SELECT seq FROM partition_snapshots WHERE partition = '${modelPartition()}'`,
+      ),
+      [{ seq: 2 }],
+    );
+    assertEquals((await store.head("", otherPartition())).seq, 1);
+    assertEquals(
+      await store.landedSeq("", modelPartition(), dropped[0].txnId),
+      undefined,
+    );
+    // the leader's commit at the dropped seq appends where the dropped one was
+    assertEquals(await store.append(await save(3)), {
+      kind: "appended",
+      seq: 3,
+    });
+    assertEquals(await store.dataHighWater("", modelPartition(), "a"), 3);
+    // dropping again past the head drops nothing
+    assertEquals(await store.dropObservedFrom("", modelPartition(), 4), []);
+  }, { follower: true, snapshotInterval: 3 });
+});
+
+Deno.test("SqliteCommitStore.dropObservedFrom: a solo store refuses it, and a compacted seq cannot be dropped (swamp-club#4581)", async () => {
+  await withStore(async (store) => {
+    await store.append(await save(1));
+    await assertRejects(
+      () => store.dropObservedFrom("", modelPartition(), 1),
+      Error,
+      "only a serve-mode copy",
+    );
+    assertEquals((await store.head("", modelPartition())).seq, 1);
+  });
+  await withStore(async (store) => {
+    for (const seq of [1, 2, 3]) await store.append(await save(seq));
+    await store.compactHistory(2);
+    await assertRejects(
+      () => store.dropObservedFrom("", modelPartition(), 2),
+      ObservedDropRefusedError,
+    );
+    assertEquals((await store.head("", modelPartition())).seq, 3);
+  }, { follower: true });
+});
+
+Deno.test("SqliteCommitStore.readPartitionBase: reads only the names asked for, with the partition's compacted seq, and omits a name the base does not hold (swamp-club#4581)", async () => {
+  await withStore(async (store) => {
+    assertEquals(
+      await store.readPartitionBase("", modelPartition(), ["a"]),
+      { compactedSeq: 0, names: new Map() },
+    );
+    await store.append(
+      modelCommit(1, [await savePut("a", 1), versionOp("a", 1)]),
+    );
+    await store.append(
+      modelCommit(2, [await savePut("b", 1), versionOp("b", 1)]),
+    );
+    await store.append(
+      modelCommit(3, [await savePut("a", 2), versionOp("a", 2)]),
+    );
+    await store.compactHistory(Number.MAX_SAFE_INTEGER);
+    await store.append(
+      modelCommit(4, [await savePut("a", 3), versionOp("a", 3)]),
+    );
+    const base = await store.readPartitionBase("", modelPartition(), [
+      "a",
+      "missing",
+    ]);
+    assertEquals(base.compactedSeq, 3);
+    assertEquals([...base.names.keys()], ["a"]);
+    const a = base.names.get("a")!;
+    assertEquals(a.versions.map((v) => v.version), [1, 2]);
+    assertEquals(a.catalogRows.map((m) => m.version), [1, 2]);
+    assertEquals(a.forward, undefined);
+    assertEquals(
+      (await store.readBaseRecord(
+        "",
+        modelPartition(),
+        dataKey("a", 2).toString(),
+      ))
+        ?.sha256 !== undefined,
+      true,
+    );
+    assertEquals(
+      await store.readBaseRecord(
+        "",
+        modelPartition(),
+        dataKey("a", 3).toString(),
+      ),
+      undefined,
+    );
   });
 });

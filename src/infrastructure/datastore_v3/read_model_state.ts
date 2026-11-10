@@ -1221,53 +1221,66 @@ export class ReadModelState {
   }
 
   unsyncedFiles(): UnsyncedFile[] {
-    return this.#snapshot(() => this.#expectedFilesOf("unsynced_keys"));
+    return this.#snapshot(() =>
+      expectedFilesOf(
+        this.#db.prepare(expectedFilesSql("unsynced_keys")).all() as unknown[],
+      )
+    );
   }
 
-  #expectedFilesOf(table: string): UnsyncedFile[] {
-    const rows = this.#db.prepare(`
-        SELECT u.namespace, u.record_key, m.present, m.owner, m.mark,
-          r.sha256, r.blob, r.access, x.record_key AS unreadable
-        FROM ${table} u
-        LEFT JOIN materialised_keys m
-          ON m.namespace = u.namespace AND m.record_key = u.record_key
-        LEFT JOIN live_records r
-          ON r.namespace = u.namespace AND r.partition = m.owner
-          AND r.record_key = u.record_key
-        LEFT JOIN unreadable_records x
-          ON x.namespace = u.namespace AND x.record_key = u.record_key
-        ORDER BY u.namespace, u.record_key
-      `).all() as unknown as {
-      namespace: string;
-      record_key: string;
-      present: number | null;
-      owner: string | null;
-      mark: number | null;
-      sha256: string | null;
-      blob: string | null;
-      access: string | null;
-      unreadable: string | null;
-    }[];
-    return rows.map((row): UnsyncedFile => {
-      const { namespace, record_key } = row;
-      if (row.present !== 1 || row.unreadable !== null) {
-        return { namespace, record_key, expect: "absent" };
-      }
-      if (row.sha256 === null) {
-        return { namespace, record_key, expect: "unknown" };
-      }
-      return {
-        namespace,
-        record_key,
-        expect: "present",
-        sha256: row.sha256,
-        owner: row.owner!,
-        mark: row.mark!,
-        ...(row.blob === null
-          ? {}
-          : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
-        ...accessOf(row.access),
-      };
+  /** what each key's file should hold, as the reboot check reads it */
+  expectedFiles(namespace: string, keys: readonly string[]): UnsyncedFile[] {
+    return this.#snapshot(() => {
+      const select = this.#db.prepare(
+        expectedFilesSql("(SELECT ? AS namespace, ? AS record_key)"),
+      );
+      return expectedFilesOf(
+        keys.flatMap((key) => select.all(namespace, key) as unknown[]),
+      );
+    });
+  }
+
+  liveNameCount(): number {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT COUNT(*) AS count FROM (SELECT DISTINCT namespace, partition, name FROM data_versions)",
+    ).get() as { count: number }).count;
+  }
+
+  presentKeys(namespace: string): Set<string> {
+    this.#requireOpen();
+    return new Set(
+      (this.#db.prepare(
+        "SELECT record_key FROM materialised_keys WHERE namespace = ? AND present = 1",
+      ).all(namespace) as { record_key: string }[]).map((row) =>
+        row.record_key
+      ),
+    );
+  }
+
+  /**
+   * keys under `prefix/` any commit decided, present or removed: a replay
+   * leaves each as the state says, a primary-key range
+   */
+  decidedKeysUnder(namespace: string, prefix: string): string[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT record_key FROM materialised_keys WHERE namespace = ? AND record_key > ? AND record_key < ? ORDER BY record_key",
+    ).all(namespace, `${prefix}/`, `${prefix}0`) as { record_key: string }[])
+      .map((row) => row.record_key);
+  }
+
+  liveVersions(
+    namespace: string,
+    partition: string,
+    name: string,
+  ): LiveDataVersion[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT metadata FROM data_versions WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    ).all(namespace, partition, name) as { metadata: string }[]).map((row) => {
+      const metadata = DataMetadataSchema.parse(JSON.parse(row.metadata));
+      return { version: metadata.version, metadata };
     });
   }
 
@@ -1684,4 +1697,55 @@ function rollbackQuietly(db: DatabaseSync): void {
   } catch {
     // The caller rethrows the original error.
   }
+}
+
+function expectedFilesSql(source: string): string {
+  return `
+        SELECT u.namespace, u.record_key, m.present, m.owner, m.mark,
+          r.sha256, r.blob, r.access, x.record_key AS unreadable
+        FROM ${source} u
+        LEFT JOIN materialised_keys m
+          ON m.namespace = u.namespace AND m.record_key = u.record_key
+        LEFT JOIN live_records r
+          ON r.namespace = u.namespace AND r.partition = m.owner
+          AND r.record_key = u.record_key
+        LEFT JOIN unreadable_records x
+          ON x.namespace = u.namespace AND x.record_key = u.record_key
+        ORDER BY u.namespace, u.record_key
+      `;
+}
+
+function expectedFilesOf(found: readonly unknown[]): UnsyncedFile[] {
+  const rows = found as {
+    namespace: string;
+    record_key: string;
+    present: number | null;
+    owner: string | null;
+    mark: number | null;
+    sha256: string | null;
+    blob: string | null;
+    access: string | null;
+    unreadable: string | null;
+  }[];
+  return rows.map((row): UnsyncedFile => {
+    const { namespace, record_key } = row;
+    if (row.present !== 1 || row.unreadable !== null) {
+      return { namespace, record_key, expect: "absent" };
+    }
+    if (row.sha256 === null) {
+      return { namespace, record_key, expect: "unknown" };
+    }
+    return {
+      namespace,
+      record_key,
+      expect: "present",
+      sha256: row.sha256,
+      owner: row.owner!,
+      mark: row.mark!,
+      ...(row.blob === null
+        ? {}
+        : { blob: BlobRef.fromJSON(JSON.parse(row.blob)) }),
+      ...accessOf(row.access),
+    };
+  });
 }

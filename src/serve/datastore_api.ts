@@ -218,6 +218,7 @@ import {
 } from "./datastore_locks.ts";
 import { LEASE_RECORD_NOT_REMOVED_CODE } from "../domain/datastore_v3/persisted_lease.ts";
 import { ServeNotLeaderError } from "../domain/datastore_v3/serve_leader.ts";
+import { holdsCurrentV3WriterLease } from "../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { followerBehindResponse, notLeaderResponse } from "./leader_link.ts";
 
 const logger = getSwampLogger(["serve", "datastore-api"]);
@@ -266,9 +267,26 @@ export const MAX_VOUCH_COMMITS = 10_000;
  */
 type Vouch = "vouched" | "refused" | "undecided";
 
+let commitStageBarrier: ((stage: string) => Promise<void>) | undefined;
+
+/** awaited before each named commit stage and before the replication confirm */
+export function setCommitStageBarrierForTesting(
+  barrier: ((stage: string) => Promise<void>) | undefined,
+): void {
+  commitStageBarrier = barrier;
+}
+
 /** carries no names or keys */
 function commitStage<T>(stage: string, fn: () => Promise<T>): Promise<T> {
-  return withSpan(`swamp.serve.datastore.commit.${stage}`, {}, () => fn());
+  const barrier = commitStageBarrier;
+  return withSpan(
+    `swamp.serve.datastore.commit.${stage}`,
+    {},
+    barrier === undefined ? () => fn() : async () => {
+      await barrier(stage);
+      return await fn();
+    },
+  );
 }
 
 /**
@@ -1209,6 +1227,9 @@ class DatastoreApi {
     const ctx = this.#deps.ctx;
     const confirmReplicated = ctx.confirmReplicated?.bind(ctx);
     if (confirmReplicated === undefined) return undefined;
+    if (commitStageBarrier !== undefined) {
+      await commitStageBarrier("confirm_replicated");
+    }
     try {
       await withSpan(
         "swamp.serve.datastore.confirm_replicated",
@@ -1469,8 +1490,12 @@ class DatastoreApi {
       }
       const lease = this.#leaseOpFor(partition, envelope.lease);
       if (lease === "lost") return { leaseLost: true as const };
-      const result = await commitStage("append", () =>
-        commitForwarded(
+      const result = await commitStage("append", async () => {
+        // a request that passed the entry gate before this process stopped
+        // appends only while its lease is confirmed by time; a follower takes
+        // over no sooner than TTL plus the clock skew after that confirmation
+        if (this.#leadUnconfirmed()) return undefined;
+        return await commitForwarded(
           this.#v3,
           {
             ...request,
@@ -1478,9 +1503,14 @@ class DatastoreApi {
             stored: carried,
           },
           signal,
-        ));
+        );
+      });
+      if (result === undefined) return { leadUnconfirmed: true as const };
       return { result };
     });
+    if ("leadUnconfirmed" in landed) {
+      return notLeaderResponse(new ServeNotLeaderError(undefined), false);
+    }
     if ("adoptionPending" in landed) return adoptionPendingResponse();
     if ("contentChanged" in landed) {
       return failure(
@@ -1509,6 +1539,13 @@ class DatastoreApi {
       () => this.#afterCommit(partition),
     );
     return { partition, result, ...(warning === undefined ? {} : { warning }) };
+  }
+
+  /** a loss the renewal already saw keeps its own fenced refusal */
+  #leadUnconfirmed(): boolean {
+    const gate = this.#deps.ctx.followerGate;
+    return gate?.role === "leader" && gate.leadUnconfirmed?.() === true &&
+      holdsCurrentV3WriterLease(this.#v3.datastorePath);
   }
 
   /** `GET partitions/{p}/commits?after={seq}&limit=`. */

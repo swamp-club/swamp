@@ -29,9 +29,20 @@ import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
-import { type Op, tombstoneOp } from "../../domain/datastore_v3/op.ts";
+import {
+  dataVersionOp,
+  type Op,
+  putOp,
+  tombstoneOp,
+} from "../../domain/datastore_v3/op.ts";
+import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
+import { createIntent, modelRef } from "../../domain/datastore_v3/intent.ts";
+import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
+import { mergeDirInto } from "../persistence/directory_merge.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
+  base64,
   blobPut,
   dataKey,
   deleteVersion,
@@ -50,6 +61,8 @@ import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import { ReadModelApplyError } from "../../domain/datastore_v3/read_model.ts";
 import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
+import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
+import { Data } from "../../domain/data/data.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
 import {
   SqliteCommitStore,
@@ -61,9 +74,12 @@ import {
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
+  TARGETED_COMMITS_FLOOR,
+  TARGETED_FILES_FLOOR,
+  TARGETED_NAMES_FLOOR,
 } from "./sqlite_read_model.ts";
 import type { SpellingFolding } from "./spelling_folding.ts";
-import { catalogRow, V3Catalog } from "./v3_catalog.ts";
+import { catalogRow, requireFullV3Recovery, V3Catalog } from "./v3_catalog.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 
 interface Env {
@@ -908,39 +924,883 @@ Deno.test("SqliteReadModel.recover: a stopped view-change rebuild is never resum
   });
 });
 
-Deno.test({
-  name:
-    "SqliteReadModel.recover: a targeted recovery leaves a name a committed expiry removed as a full rebuild does (swamp-club#4512 follow-up: targeted recovery, the gate for its exact per-partition re-projection)",
-  ignore: true,
-  fn: async () => {
-    await withEnv(async (env) => {
-      const { since, clock } = await interruptedCheckout(env);
+Deno.test("SqliteReadModel.recover: a targeted recovery leaves a name a committed expiry removed, and rows a dead writer left uncommitted, as a full rebuild does (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await env.append(RECOVERY_COMMITS + 1, "", [
+      tombstoneOp({
+        intent: modelIntent({ kind: "data.gc", name: "r5" }),
+        key: RecordKey.create(
+          `data/${MODEL_TYPE.normalized}/${MODEL_ID}/r5/latest`,
+        ),
+      }),
+    ]);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    const uncommitted = env.contentPath("", "r5", 2);
+    await writeLocal(uncommitted, "uncommitted");
+    await touchAfter(uncommitted, since);
+    // rows the repository writes before it stages, never committed
+    const writer = new CatalogStore(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      writer.upsertNewVersion(
+        catalogRow(
+          "",
+          MODEL_TYPE.normalized,
+          MODEL_ID,
+          DataMetadataSchema.parse(metadata("r7", 2)),
+        ),
+      );
+      writer.recordRename({
+        namespace: "",
+        type_normalized: MODEL_TYPE.normalized,
+        model_id: MODEL_ID,
+        data_name: "r30",
+        renamed_to: "elsewhere",
+      });
+      writer.remove("", MODEL_TYPE.normalized, MODEL_ID, "r3");
+    } finally {
+      writer.close();
+    }
+    const { targeted, full, path } = await targetedMatchesFullRebuild(
+      env,
+      since,
+      clock,
+    );
+    assertEquals(path, "targeted");
+    assertEquals(targeted, full);
+    const versions = targeted
+      .filter((row) => typeof row[2] === "number")
+      .map((row) => `${row[1]}@${row[2]}`);
+    for (const kept of ["r3@1", "r7@1", "r30@1"]) {
+      assert(versions.includes(kept), kept);
+    }
+    for (const gone of ["r5@1", "r5@2", "r7@2"]) {
+      assert(!versions.includes(gone), gone);
+    }
+    assertEquals(targeted.filter((row) => row[3] === "r30"), []);
+  });
+});
+
+/** a targeted recovery's path, fallback and counts, from its span */
+async function recoverWithSpan(
+  readModel: SqliteReadModel,
+  options: Parameters<SqliteReadModel["recover"]>[1],
+): Promise<{
+  removed: string[];
+  attributes: Record<string, unknown>;
+  spanNames: string[];
+}> {
+  let removed: string[] = [];
+  let attributes: Record<string, unknown> = {};
+  let spanNames: string[] = [];
+  await withCapturedSpans(async (spans) => {
+    removed = await readModel.recover("", options);
+    const span = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
+    attributes = Object.fromEntries(
+      Object.entries(span.attributes).map(([key, value]) => [
+        key.replace("swamp.datastore.v3.readmodel.recover.", ""),
+        value,
+      ]),
+    );
+    spanNames = spans.map((s) => s.name);
+  });
+  return { removed, attributes, spanNames };
+}
+
+function targetedOptions(since: number) {
+  return {
+    since,
+    admits: () => true,
+    signal: signal(),
+    entry: "interrupted_writer" as const,
+    targeted: true,
+  };
+}
+
+function proxied<T extends object>(
+  target: T,
+  overrides: Partial<Record<keyof T, unknown>>,
+): T {
+  return new Proxy(target, {
+    get(inner, property) {
+      if (property in overrides) {
+        return overrides[property as keyof T];
+      }
+      const value = Reflect.get(inner, property, inner);
+      return typeof value === "function" ? value.bind(inner) : value;
+    },
+  });
+}
+
+function writeUncommittedRow(
+  env: Env,
+  name: string,
+  version: number,
+): Promise<void> {
+  const writer = new CatalogStore(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+  );
+  try {
+    writer.upsertNewVersion(
+      catalogRow(
+        "",
+        MODEL_TYPE.normalized,
+        MODEL_ID,
+        DataMetadataSchema.parse(metadata(name, version)),
+      ),
+    );
+  } finally {
+    writer.close();
+  }
+  return Promise.resolve();
+}
+
+Deno.test("SqliteReadModel.recover: a targeted recovery records what it touched, and repairs an owned file torn or removed, from the commit or the compacted base (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    // r1 was compacted, r30 was not
+    const compacted = env.contentPath("", "r1", 1);
+    const stored = env.contentPath("", "r30", 1);
+    await Deno.writeTextFile(compacted, "torn");
+    await touchAfter(compacted, since);
+    await Deno.remove(stored);
+    await writeUncommittedRow(env, "r12", 2);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes, spanNames } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["fallback"], undefined);
+      assertEquals(attributes["dirty_names"], 1);
+      assertEquals(attributes["touched_names"], 3);
+      assertEquals(attributes["touched_partitions"], 1);
+      assertEquals(attributes["files_restored"], 2);
+      assertEquals(attributes["files_removed"], 0);
+      assert(typeof attributes["scan_ms"] === "number");
+      for (
+        const child of ["scan", "restore", "reproject"].map((name) =>
+          `swamp.datastore.v3.readmodel.recover.${name}`
+        )
+      ) {
+        assert(spanNames.includes(child), child);
+      }
+      assert(!spanNames.includes("swamp.datastore.v3.readmodel.load_base"));
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(compacted), "r1@1");
+    assertEquals(await readOrAbsent(stored), "r30@1");
+    assertEquals(env.catalogRows().length, RECOVERY_COMMITS);
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a targeted recovery run again after it repaired everything finds nothing dirty (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await readModel.recover("", targetedOptions(since));
+      const again = await recoverWithSpan(readModel, targetedOptions(since));
+      assertEquals(again.attributes["path"], "targeted");
+      assertEquals(again.attributes["dirty_names"], 0);
+      assertEquals(again.attributes["touched_names"], 0);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a targeted recovery stopped between partitions leaves the finished ones repaired and their names clean, and running it again repairs the rest (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const other = "3f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4c";
+    const otherPartition = partitionOf({
+      kind: "model",
+      type: MODEL_TYPE,
+      id: other,
+    });
+    await env.store.append(
+      modelCommit(1, await opsOfModel(other, "o1", 1), {
+        partition: otherPartition,
+        txnId: "other-1",
+      }),
+    );
+    let readModel = env.open({ clock, pageSize: 5 });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    await writeUncommittedRow(env, "r12", 2);
+    const writer = new CatalogStore(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      writer.remove("", MODEL_TYPE.normalized, other, "o1");
+    } finally {
+      writer.close();
+    }
+    const stop = new AbortController();
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    // stopped once the first partition's names are re-projected
+    const catalog = proxied(inner, {
+      commitBatch: () => {
+        inner.commitBatch();
+        stop.abort();
+      },
+    });
+    readModel = env.open({ catalog, clock, pageSize: 5 });
+    try {
+      await assertRejects(() =>
+        readModel.recover("", {
+          ...targetedOptions(since),
+          signal: stop.signal,
+        })
+      );
+    } finally {
+      await readModel.close();
+    }
+    const dirty = new CatalogStore(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      assertEquals(dirty.dirtyNames().length, 1, "one partition finished");
+    } finally {
+      dirty.close();
+    }
+    readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["touched_names"], 1);
+    } finally {
+      await readModel.close();
+    }
+    const rows = env.catalogRows().map((row) => `${row[1]}@${row[2]}`);
+    assert(rows.includes("o1@1"));
+    assert(!rows.includes("r12@2"));
+  });
+});
+
+Deno.test("SqliteReadModel.recover: an outbox entry that landed keeps its rows and files, and a refused one's rows are removed by the next targeted recovery (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    // two entries queued offline: their rows are written before staging
+    await writeUncommittedRow(env, "r7", 2);
+    await writeUncommittedRow(env, "r9", 2);
+    const pin = (name: string, txnId: string) => ({
+      namespace: "",
+      type: MODEL_TYPE.normalized,
+      modelId: MODEL_ID,
+      name,
+      partition: modelPartition().toString(),
+      txnId,
+    });
+    let readModel = env.open({ clock, pageSize: 5 });
+    try {
+      // the command ends cleanly with both entries in the outbox
+      await readModel.releaseDirtyNames(
+        [pin("r7", "landing"), pin("r9", "refused")],
+        () => Promise.resolve(false),
+      );
+      // the first lands later; the second is refused and leaves the outbox
+      await env.store.append(
+        modelCommit(RECOVERY_COMMITS + 1, [
+          await savePut("r7", 2),
+          versionOp("r7", 2),
+        ], { txnId: "landing" }),
+      );
+      await readModel.catchUp(signal());
+      await readModel.releaseDirtyNames(
+        [],
+        async (held) =>
+          await env.store.landedSeq("", modelPartition(), held.txnId) !==
+            undefined,
+      );
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["touched_names"], 1);
+    } finally {
+      await readModel.close();
+    }
+    const rows = env.catalogRows().map((row) => `${row[1]}@${row[2]}`);
+    assert(rows.includes("r7@2"), "the landed entry's row stays");
+    assert(!rows.includes("r9@2"), "the refused entry's row is removed");
+    assertEquals(await readOrAbsent(env.contentPath("", "r7", 2)), "r7@2");
+    readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const before = env.catalogRows();
+      await readModel.recover("", {
+        since,
+        admits: () => true,
+        signal: signal(),
+      });
+      assertEquals(env.catalogRows(), before, "as a full rebuild leaves it");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel: applying commits leaves no name dirty, while a repository write in the same process still marks its name (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    await interruptedCheckout(env);
+    const path = join(readModelStateDir(env.repoDir), CATALOG_V3_FILE);
+    const dirty = () => {
+      const store = new CatalogStore(path);
+      try {
+        return store.dirtyNames().map((name) => name.data_name);
+      } finally {
+        store.close();
+      }
+    };
+    assertEquals(dirty(), [], "the catch-up and its base load marked nothing");
+    const catalog = new CatalogStore(path);
+    const readModel = env.open({ pageSize: 5 });
+    try {
       await env.append(RECOVERY_COMMITS + 1, "", [
-        tombstoneOp({
-          intent: modelIntent({ kind: "data.gc", name: "r5" }),
-          key: RecordKey.create(
-            `data/${MODEL_TYPE.normalized}/${MODEL_ID}/r5/latest`,
-          ),
-        }),
+        await savePut("r3", 2),
+        versionOp("r3", 2),
       ]);
-      const readModel = env.open({ clock, pageSize: 5 });
+      await readModel.catchUp(signal());
+      assertEquals(dirty(), []);
+      const repo = new FileSystemUnifiedDataRepository(
+        env.repoDir,
+        undefined,
+        catalog,
+      );
+      await repo.save(
+        MODEL_TYPE,
+        MODEL_ID,
+        Data.create({
+          name: "written",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource" },
+          ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+        }),
+        new TextEncoder().encode("{}"),
+      );
+      assertEquals(dirty(), ["written"]);
+      await env.append(RECOVERY_COMMITS + 2, "", [
+        await savePut("written", 1),
+        versionOp("written", 1),
+      ]);
+      await readModel.catchUp(signal());
+      assertEquals(dirty(), ["written"], "committed work clears no name");
+    } finally {
+      await readModel.close();
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a targeted recovery touching more than a quarter of the data names runs in full, and one under the cap stays targeted (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const ops: Op[] = [];
+    for (let i = 0; i < 800; i++) {
+      ops.push(await savePut(`n${i}`, 1), versionOp(`n${i}`, 1));
+    }
+    await env.append(1, "", ops);
+    let readModel = env.open({ clock: () => new Date(1_000) });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    const since = Date.now() + 60_000;
+    for (let i = 0; i < TARGETED_NAMES_FLOOR + 200; i++) {
+      await writeUncommittedRow(env, `n${i}`, 2);
+    }
+    readModel = env.open();
+    try {
+      const capped = await recoverWithSpan(readModel, targetedOptions(since));
+      assertEquals(capped.attributes["path"], "full");
+      assertEquals(capped.attributes["fallback"], "scope_too_large");
+    } finally {
+      await readModel.close();
+    }
+    for (let i = 0; i < 50; i++) await writeUncommittedRow(env, `n${i}`, 2);
+    readModel = env.open();
+    try {
+      const under = await recoverWithSpan(readModel, targetedOptions(since));
+      assertEquals(under.attributes["path"], "targeted");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a targeted recovery that would read more than a quarter of the applied commits runs in full, and one under the floor stays targeted (swamp-club#4581)", async () => {
+  for (
+    const [commits, path] of [
+      [TARGETED_COMMITS_FLOOR + 200, "full"],
+      [TARGETED_COMMITS_FLOOR - 100, "targeted"],
+    ] as const
+  ) {
+    await withEnv(async (env) => {
+      for (let seq = 1; seq <= commits; seq++) {
+        await env.append(seq, "", [
+          await savePut("a", seq),
+          versionOp("a", seq),
+        ]);
+      }
+      const readModel = env.open({ clock: () => new Date(1_000) });
       try {
         await readModel.catchUp(signal());
       } finally {
         await readModel.close();
       }
-      const uncommitted = env.contentPath("", "r5", 2);
-      await writeLocal(uncommitted, "uncommitted");
-      await touchAfter(uncommitted, since);
-      const { targeted, full, path } = await targetedMatchesFullRebuild(
-        env,
-        since,
-        clock,
-      );
-      assertEquals(path, "targeted");
-      assertEquals(targeted, full);
+      const since = Date.now() + 60_000;
+      await writeUncommittedRow(env, "a", commits + 1);
+      const reopened = env.open();
+      try {
+        const result = await recoverWithSpan(
+          reopened,
+          targetedOptions(since),
+        );
+        assertEquals(result.attributes["path"], path, `${commits} commits`);
+        if (path === "full") {
+          assertEquals(result.attributes["fallback"], "scope_too_large");
+        }
+      } finally {
+        await reopened.close();
+      }
     });
+  }
+});
+
+Deno.test("SqliteReadModel.recover: a targeted recovery whose files changed, appeared or went missing past the cap runs in full, and one under it stays targeted (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const ops: Op[] = [];
+    for (let i = 0; i < 800; i++) {
+      ops.push(await savePut(`k${i}`, 1), versionOp(`k${i}`, 1));
+    }
+    await env.append(1, "", ops);
+    let readModel = env.open({ clock: () => new Date(1_000) });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    const since = Date.now() + 60_000;
+    const tear = async (count: number) => {
+      for (let i = 0; i < count; i++) {
+        const path = env.contentPath("", `k${i}`, 1);
+        await Deno.writeTextFile(path, "torn");
+        await touchAfter(path, since);
+      }
+    };
+    await tear(TARGETED_FILES_FLOOR + 100);
+    readModel = env.open();
+    try {
+      const capped = await recoverWithSpan(readModel, targetedOptions(since));
+      assertEquals(capped.attributes["path"], "full");
+      assertEquals(capped.attributes["fallback"], "scope_too_large");
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(env.contentPath("", "k0", 1)), "k0@1");
+    await tear(100);
+    readModel = env.open();
+    try {
+      const under = await recoverWithSpan(readModel, targetedOptions(since));
+      assertEquals(under.attributes["path"], "targeted");
+      assertEquals(under.attributes["files_restored"], 100);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+async function opsOfModel(
+  id: string,
+  name: string,
+  version: number,
+): Promise<Op[]> {
+  const prefix = `data/${MODEL_TYPE.normalized}/${id}/${name}/${version}`;
+  return [
+    await putOp({
+      intent: createIntent({
+        kind: "data.save",
+        name,
+        version,
+        model: modelRef(MODEL_TYPE, id),
+      }),
+      key: RecordKey.create(`${prefix}/raw`),
+      inline: base64(`${name}@${version}`),
+    }),
+    dataVersionOp({
+      key: RecordKey.create(`${prefix}/metadata.yaml`),
+      metadata: metadata(name, version),
+    }),
+  ];
+}
+
+const FALLBACKS: readonly {
+  readonly reason: string;
+  readonly arrange: (
+    env: Env,
+    since: number,
+  ) => Promise<
+    {
+      readonly since?: number;
+      readonly options?: Partial<SqliteReadModelOptions>;
+      readonly recover?: Partial<
+        Parameters<SqliteReadModel["recover"]>[1]
+      >;
+    } | void
+  >;
+}[] = [
+  {
+    reason: "not_requested",
+    arrange: () => Promise.resolve({ recover: { targeted: false } }),
   },
+  {
+    reason: "entry",
+    arrange: () => Promise.resolve({ recover: { entry: "view_change" } }),
+  },
+  {
+    reason: "dirty_tracking_missing",
+    arrange: (env) =>
+      Promise.resolve({
+        options: {
+          catalog: proxied(
+            V3Catalog.open(
+              join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+            ),
+            { dirtyTracking: () => undefined },
+          ),
+        },
+      }),
+  },
+  {
+    // a trigger a migration dropped comes back with a new start
+    reason: "dirty_tracking_recent",
+    arrange: (env) => {
+      const db = new DatabaseSync(
+        join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+      );
+      try {
+        db.exec("DROP TRIGGER catalog_dirty_insert");
+      } finally {
+        db.close();
+      }
+      return Promise.resolve();
+    },
+  },
+  {
+    reason: "dirty_tracking_recent",
+    arrange: () => Promise.resolve({ since: Date.now() }),
+  },
+  {
+    reason: "full_recovery_required",
+    arrange: async (env) => {
+      const moved = join(env.repoDir, "moved");
+      await writeLocal(join(moved, "data", "x"), "x");
+      await mergeDirInto(moved, join(env.repoDir, "elsewhere"));
+      requireFullV3Recovery(env.repoDir);
+    },
+  },
+  {
+    reason: "state_reset",
+    arrange: (env) => {
+      const readModel = env.open();
+      try {
+        readModel.markReplayPending();
+      } finally {
+        readModel.close();
+      }
+      return Promise.resolve();
+    },
+  },
+  {
+    reason: "behind_compaction",
+    arrange: async (env) => {
+      await env.append(RECOVERY_COMMITS + 1, "", [
+        await savePut("late", 1),
+        versionOp("late", 1),
+      ]);
+      await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    },
+  },
+  {
+    reason: "unknown_name",
+    arrange: (env) => {
+      const db = new DatabaseSync(
+        join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+      );
+      try {
+        db.prepare(
+          "INSERT INTO catalog_dirty (namespace, type_normalized, model_id, data_name) VALUES ('', 'Not A Type', ?, 'x')",
+        ).run(MODEL_ID);
+      } finally {
+        db.close();
+      }
+      return Promise.resolve();
+    },
+  },
+  {
+    reason: "seq_not_reached",
+    arrange: async (env) => {
+      await writeUncommittedRow(env, "r30", 2);
+      return {
+        options: {
+          commitStore: proxied(env.store, {
+            readPartition: async (
+              ...args: Parameters<SqliteCommitStore["readPartition"]>
+            ) =>
+              (await env.store.readPartition(...args)).filter((change) =>
+                change.commit.seq !== RECOVERY_COMMITS
+              ),
+          }),
+        },
+      };
+    },
+  },
+  {
+    reason: "versions_mismatch",
+    arrange: async (env) => {
+      await writeUncommittedRow(env, "r1", 2);
+      return {
+        options: {
+          commitStore: proxied(env.store, {
+            readPartitionBase: async (
+              ...args: Parameters<SqliteCommitStore["readPartitionBase"]>
+            ) => ({
+              ...(await env.store.readPartitionBase(...args)),
+              names: new Map(),
+            }),
+          }),
+        },
+      };
+    },
+  },
+  {
+    reason: "base_compacted",
+    arrange: async (env) => {
+      await writeUncommittedRow(env, "r30", 2);
+      return {
+        options: {
+          commitStore: proxied(env.store, {
+            readPartition: () =>
+              Promise.reject(new CommitsCompactedError(20, "compacted")),
+          }),
+        },
+      };
+    },
+  },
+  {
+    reason: "restore_failed",
+    arrange: async (env, since) => {
+      const torn = env.contentPath("", "r1", 1);
+      await Deno.writeTextFile(torn, "torn");
+      await touchAfter(torn, since);
+      return {
+        options: {
+          commitStore: proxied(env.store, {
+            readBaseRecord: () => Promise.resolve(undefined),
+          }),
+        },
+      };
+    },
+  },
+  {
+    reason: "error",
+    arrange: async (env) => {
+      await writeUncommittedRow(env, "r30", 2);
+      return {
+        options: {
+          commitStore: proxied(env.store, {
+            readPartitionBase: () => Promise.reject(new Error("disk on fire")),
+          }),
+        },
+      };
+    },
+  },
+];
+
+for (const [index, { reason, arrange }] of FALLBACKS.entries()) {
+  Deno.test(`SqliteReadModel.recover: a recovery asked to be targeted runs in full and says why: ${reason} (${index}, swamp-club#4581)`, async () => {
+    await withEnv(async (env) => {
+      const { since, clock } = await interruptedCheckout(env);
+      await writeUncommittedRow(env, "r12", 2);
+      const arranged = await arrange(env, since) ?? {};
+      const readModel = env.open({ clock, pageSize: 5, ...arranged.options });
+      try {
+        const { attributes } = await recoverWithSpan(readModel, {
+          ...targetedOptions(arranged.since ?? since),
+          ...arranged.recover,
+        });
+        assertEquals(attributes["path"], "full");
+        assertEquals(attributes["fallback"], reason);
+      } finally {
+        await readModel.close();
+      }
+      const rows = env.catalogRows().map((row) => `${row[1]}@${row[2]}`);
+      assert(!rows.includes("r12@2"), "the full rebuild dropped the row");
+      assert(rows.includes("r12@1"));
+    });
+  });
+}
+
+Deno.test("SqliteReadModel.recover: a full rebuild forgets every dirty name and the owed full recovery, so the next one is targeted (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    requireFullV3Recovery(env.repoDir);
+    await writeUncommittedRow(env, "r12", 2);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const first = await recoverWithSpan(readModel, targetedOptions(since));
+      assertEquals(first.attributes["fallback"], "full_recovery_required");
+      const next = await recoverWithSpan(readModel, targetedOptions(since));
+      assertEquals(next.attributes["path"], "targeted");
+      assertEquals(next.attributes["dirty_names"], 0);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a refusal from serve during a targeted recovery is rethrown, never turned into a full rebuild (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    let cleared = 0;
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    const catalog = proxied(inner, {
+      clear: (admits: (key: string) => boolean) => {
+        cleared++;
+        return inner.clear(admits);
+      },
+    });
+    const readModel = env.open({
+      clock,
+      pageSize: 5,
+      catalog,
+      commitStore: proxied(env.store, {
+        readPartitionBase: () =>
+          Promise.reject(new ServeNotLeaderError(undefined, true)),
+      }),
+    });
+    try {
+      await assertRejects(
+        () => readModel.recover("", targetedOptions(since)),
+        ServeNotLeaderError,
+      );
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(cleared, 0);
+  });
+});
+
+Deno.test("SqliteReadModel.recover: an interrupted writer after a long history over many models recovers one dirty name without the compacted base, the catalog clear or any other partition (swamp-club#4581)", async () => {
+  await withEnv(async (env) => {
+    const ids = Array.from(
+      { length: 30 },
+      (_, i) => `6f1c2a3b-4d5e-4f60-8a7b-${String(i).padStart(12, "0")}`,
+    );
+    const seqs = new Map<string, number>();
+    for (let n = 0; n < 1_000; n++) {
+      const id = ids[n % ids.length];
+      const seq = (seqs.get(id) ?? 0) + 1;
+      seqs.set(id, seq);
+      await env.store.append(
+        modelCommit(seq, await opsOfModel(id, `n${n % 7}`, seq), {
+          partition: partitionOf({ kind: "model", type: MODEL_TYPE, id }),
+          txnId: `w-${n}`,
+        }),
+      );
+      if (n === 600) await env.store.compactHistory(Number.MAX_SAFE_INTEGER);
+    }
+    let readModel = env.open({ pageSize: 100 });
+    try {
+      await readModel.catchUp(signal());
+    } finally {
+      await readModel.close();
+    }
+    const since = Date.now() + 60_000;
+    const expected = env.catalogRows();
+    const writer = new CatalogStore(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      writer.remove("", MODEL_TYPE.normalized, ids[3], "n3");
+    } finally {
+      writer.close();
+    }
+    assert(env.catalogRows().length < expected.length);
+    const partitionsRead = new Set<string>();
+    let baseReads = 0;
+    const store = proxied(env.store, {
+      readCompactedBase: (
+        ...args: Parameters<SqliteCommitStore["readCompactedBase"]>
+      ) => {
+        baseReads++;
+        return env.store.readCompactedBase(...args);
+      },
+      readPartition: (
+        ...args: Parameters<SqliteCommitStore["readPartition"]>
+      ) => {
+        partitionsRead.add(args[1].toString());
+        return env.store.readPartition(...args);
+      },
+    });
+    let cleared = 0;
+    const inner = V3Catalog.open(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    const catalog = proxied(inner, {
+      clear: (admits: (key: string) => boolean) => {
+        cleared++;
+        return inner.clear(admits);
+      },
+    });
+    readModel = env.open({
+      commitStore: store,
+      catalog,
+      clock: () => new Date(since + 60_000),
+      pageSize: 100,
+    });
+    try {
+      const { attributes, spanNames } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["touched_names"], 1);
+      assertEquals(attributes["touched_partitions"], 1);
+      assert(!spanNames.includes("swamp.datastore.v3.readmodel.load_base"));
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(baseReads, 0);
+    assertEquals(partitionsRead.size, 1);
+    assertEquals(cleared, 0);
+    assertEquals(env.catalogRows(), expected);
+  });
 });
 
 Deno.test("SqliteReadModel: a compacted base's keys the checkout's directories leave out are never written or catalogued (swamp-club#3691)", async () => {

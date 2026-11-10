@@ -246,13 +246,13 @@ Deno.test({
       assertEquals((await read(b)).commits, 3, "the takeover saw no zombie");
       await paused;
       // The zombie resumes: it syncs and publishes on its old lineage, and
-      // its lease check fails. It is told its changes may still appear,
-      // not that nothing was committed.
+      // its lease check fails. It is told its changes may or may not
+      // appear, not that nothing was committed.
       const closed = await assertRejects(() => a.send({ kind: "close" }));
       assertEquals((closed as MachineError).code, WRITER_FENCED_CODE);
       assertStringIncludes(
         (closed as MachineError).message,
-        "They may still appear",
+        "They appear only if",
       );
       const c = await world.machine("c");
       assertEquals((await read(c)).commits, 3);

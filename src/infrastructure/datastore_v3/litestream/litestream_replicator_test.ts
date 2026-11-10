@@ -1082,7 +1082,7 @@ Deno.test({
         WriterFencedError,
       );
       assertEquals(published.code, WRITER_FENCED_CODE);
-      assertStringIncludes(published.message, "They may still appear");
+      assertStringIncludes(published.message, "They appear only if");
       const unpublished = await assertRejects(
         () => handle.sync(5_000),
         V3ReplicationError,

@@ -98,6 +98,24 @@ export class PartitionKey {
     return key;
   }
 
+  /** from a type already normalized, as catalog rows and record keys hold it */
+  static forModel(type: string, id: string): PartitionKey {
+    let normalized: string;
+    try {
+      normalized = ModelType.create(type).normalized;
+    } catch {
+      throw new Error(`Not a model type: ${type}`);
+    }
+    if (normalized !== type) {
+      throw new Error(`Model type is not normalized: ${type}`);
+    }
+    return PartitionKey.fromIdentity(BUILD, {
+      kind: "model",
+      type,
+      id: canonicalUuid(id, "model id"),
+    });
+  }
+
   get kind(): PartitionIdentity["kind"] {
     return this.identity.kind;
   }

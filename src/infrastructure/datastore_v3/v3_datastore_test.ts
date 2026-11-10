@@ -108,6 +108,7 @@ import { Data } from "../../domain/data/data.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
+import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { YamlOutputRepository } from "../persistence/yaml_output_repository.ts";
 import { ServeCommitRefusedError } from "./serve_upstream_errors.ts";
@@ -1461,6 +1462,89 @@ function dataNamed(name: string): Data {
     ownerDefinition: { ownerType: "manual", ownerRef: "test" },
   });
 }
+
+Deno.test("openV3Datastore: dropped work is recovered targeted, rebuilding only the names this command wrote (swamp-club#4581)", async () => {
+  await withTempDir(async (dir) => {
+    await initializeV3Datastore(join(dir, "datastore"), "test");
+    const repoDir = join(dir, "a");
+    // tracking that started long before this command
+    const tracked = new CatalogStore(v3CatalogPath(repoDir));
+    try {
+      tracked.ensureDirtyTracking(0);
+    } finally {
+      tracked.close();
+    }
+    const handle = openV3Datastore({
+      repoDir,
+      datastorePath: join(dir, "datastore"),
+    });
+    const hook = () => Promise.resolve();
+    const engine = handle.engineFor(hook, () => {
+      throw new Error("no run repository needed");
+    });
+    const catalog = new CatalogStore(v3CatalogPath(repoDir));
+    const data = new FileSystemUnifiedDataRepository(
+      repoDir,
+      swampPath(repoDir, "data"),
+      catalog,
+      hook,
+      undefined,
+      SOLO_NAMESPACE,
+      true,
+    );
+    const bytes = new TextEncoder().encode("v");
+    try {
+      // a writing command catches up when it starts
+      await handle.catchUp();
+      await engine.runRoot(
+        {},
+        () => data.save(MODEL_TYPE, MODEL_ID, dataNamed("kept"), bytes),
+      );
+      await engine.runRoot(
+        {},
+        () => data.save(MODEL_TYPE, MODEL_ID, dataNamed("lost"), bytes),
+      );
+      await engine.runRoot(
+        { disposition: () => "discard" },
+        () => data.save(MODEL_TYPE, MODEL_ID, dataNamed("lost"), bytes),
+      );
+      const versions = () =>
+        [...catalog.iterate()].map((row) => `${row.data_name}@${row.version}`)
+          .sort();
+      assertEquals(versions(), ["kept@1", "lost@1", "lost@2"]);
+      await withCapturedSpans(async (spans) => {
+        assertEquals(await handle.recoverDroppedWork(), "recovered");
+        const span = findSpan(spans, "swamp.datastore.v3.readmodel.recover");
+        assertEquals(
+          span.attributes["swamp.datastore.v3.readmodel.recover.entry"],
+          "dropped_work",
+        );
+        assertEquals(
+          span.attributes["swamp.datastore.v3.readmodel.recover.path"],
+          "targeted",
+          String(
+            span.attributes["swamp.datastore.v3.readmodel.recover.fallback"],
+          ),
+        );
+        assertEquals(
+          span.attributes["swamp.datastore.v3.readmodel.recover.touched_names"],
+          // the kept saves' rows stay dirty until the command ends cleanly
+          2,
+        );
+      });
+      assertEquals(versions(), ["kept@1", "lost@1"]);
+      assertEquals(
+        (await Array.fromAsync(
+          Deno.readDir(data.getDataNameDir(MODEL_TYPE, MODEL_ID, "lost")),
+        )).map((entry) => entry.name).sort(),
+        ["1", "latest"],
+      );
+    } finally {
+      catalog.close();
+      await handle.close();
+    }
+  });
+});
 
 for (const name of [".kubeconfig", "kubeconfig"]) {
   Deno.test(`openV3Datastore: a dropped save of data ${name} is swept, leaving the versions the datastore holds (swamp-club#3736)`, async () => {
