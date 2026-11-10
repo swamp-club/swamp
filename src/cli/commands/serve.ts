@@ -5805,6 +5805,17 @@ export const serveCommand = new Command()
           deploymentMode: deploymentMode.mode,
         }
         : undefined;
+    // a reload changes the collectives, so every registration sends the ones in force
+    const clubRegistrationNow = (
+      oauthClientId: string,
+    ): RegisterInstanceRequest => ({
+      oauthClientId,
+      instanceId,
+      collectiveSlugs: [...authConfig.allowedCollectives],
+      hostname: Deno.hostname(),
+      version: VERSION,
+      deploymentMode: deploymentMode.mode,
+    });
     if (clubRegistration !== undefined && clubApiKey) {
       try {
         await registerInstance(
@@ -7403,7 +7414,7 @@ export const serveCommand = new Command()
           registerInstance(
             authConfig.oauthProvider,
             accessToken,
-            clubRegistration,
+            clubRegistrationNow(clubRegistration.oauthClientId),
             signal,
           ),
       });
@@ -8145,23 +8156,24 @@ export const serveCommand = new Command()
               await registerInstance(
                 authConfig.oauthProvider,
                 apiKey,
-                {
-                  oauthClientId: clientId,
-                  instanceId,
-                  collectiveSlugs: [...authConfig.allowedCollectives],
-                  hostname: Deno.hostname(),
-                  version: VERSION,
-                  deploymentMode: deploymentMode.mode,
-                },
+                clubRegistrationNow(clientId),
                 AbortSignal.timeout(30_000),
               );
               if (!clubHeartbeatService) {
                 clubHeartbeatService = new ClubHeartbeatService({
                   providerUrl: authConfig.oauthProvider,
                   oauthClientId: clientId,
+                  instanceId,
                   intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
                   getAccessToken: () => Promise.resolve(apiKey),
                   sendHeartbeat: sendInstanceHeartbeat,
+                  reregister: (accessToken, signal) =>
+                    registerInstance(
+                      authConfig.oauthProvider,
+                      accessToken,
+                      clubRegistrationNow(clientId),
+                      signal,
+                    ),
                 });
                 clubHeartbeatService.start();
               }
