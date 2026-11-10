@@ -138,7 +138,6 @@ const GROUP_TABLES: ReadonlyMap<string, readonly CommandRoute[]> = new Map([
   ["model method", MODEL_METHOD_ROUTES],
 ]);
 
-/** the subcommands registered under the group at path */
 type Narrow = (path: readonly string[]) => readonly CommandRoute[];
 
 const fullGroups: Narrow = (path) => GROUP_TABLES.get(path.join(" "))!;
@@ -193,7 +192,6 @@ async function groupOutcome(
 interface Narrowed {
   readonly route: CommandRoute;
   readonly narrow: Narrow;
-  /** the groups a subcommand was selected under */
   readonly selectedUnder: readonly string[];
 }
 
@@ -253,11 +251,8 @@ function wordsOf(routes: readonly CommandRoute[]): string[] {
   return routes.flatMap((r) => [r.name, ...r.aliases]);
 }
 
-/**
- * walks the real tables, so deep paths like model method history run come up
- * often; past a leaf it repeats a sibling's word, which is where a wrong rest
- * would select the wrong subcommand
- */
+// walks the real tables so deep paths come up often; past a leaf it repeats a
+// sibling's word, where a wrong rest would select the wrong subcommand
 const groupArgs = fc.record({
   prefix: fc.constantFrom<string[]>([], ["help"], ["--json"], [
     "help",

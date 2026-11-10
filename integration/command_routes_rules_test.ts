@@ -165,7 +165,6 @@ Deno.test("command routes: each group row's module is the file its load imports"
       );
       continue;
     }
-    // shared rows are bound into each table in that spelling's order
     assertEquals(
       imported.length,
       new Set(imported).size,
@@ -203,7 +202,6 @@ function loadedChildren(tree: AnyCommand, path: readonly string[]) {
   ) => c.getName());
 }
 
-/** each group on the way to path holds only the next word of path */
 function assertOnlyPathLoaded(
   tree: AnyCommand,
   path: readonly string[],
