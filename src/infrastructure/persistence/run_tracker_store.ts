@@ -604,11 +604,28 @@ export class RunTrackerStore implements RunTrackerRepository {
     );
   }
 
-  setPendingRunOwner(id: string, owner: PendingRunOwner): void {
-    this.db.prepare("UPDATE pending_runs SET owner = ? WHERE id = ?").run(
+  /**
+   * takes the run only from the owner the caller read, so two processes that
+   * judged the same gone owner cannot both replay it
+   */
+  claimPendingRun(
+    id: string,
+    owner: PendingRunOwner,
+    expectedInstanceId: string | undefined,
+  ): boolean {
+    const result = this.db.prepare(
+      `UPDATE pending_runs SET owner = ?
+       WHERE id = ? AND (
+         (owner IS NULL AND ? IS NULL) OR
+         json_extract(owner, '$.instanceId') = ?
+       )`,
+    ).run(
       JSON.stringify(owner),
       id,
+      expectedInstanceId ?? null,
+      expectedInstanceId ?? null,
     );
+    return Number(result.changes) === 1;
   }
 
   deletePendingRun(id: string): void {

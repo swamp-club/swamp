@@ -330,11 +330,10 @@ export interface ReplayPendingRunsDeps {
   /** a run whose owner still lives is left to it and named in `deferred` */
   ownerAlive?: PendingOwnerAlive;
   deferred?: Set<string>;
-  /**
-   * the sweep's pass: this checkout's runs only, and only those a gone peer
-   * owned, since an ownerless run is boot's to replay
-   */
+  /** the sweep's pass: only runs a gone peer owned; an ownerless one is boot's */
   sweep?: boolean;
+  /** false skips the control plane's runs, which the sweep reads less often */
+  readRemote?: boolean;
   /** a replayed run becomes this process's, so no later start replays it again */
   claimAs?: PendingRunOwner;
 }
@@ -349,7 +348,7 @@ export async function replayPendingRuns(
   // id
   const pending: PendingRunEntry[] = [...localPending];
   const remoteSourceKeys = new Map<string, string>();
-  if (deps.controlPlaneStore && !deps.sweep) {
+  if (deps.controlPlaneStore && deps.readRemote !== false) {
     try {
       const remoteKeys = await deps.controlPlaneStore.list("pending-runs/");
       const localIds = new Set(localPending.map((e) => e.id));
@@ -451,10 +450,25 @@ export async function replayPendingRuns(
       deps.deferred?.add(entry.id);
       continue;
     }
-    try {
-      if (deps.claimAs) {
-        await claimPendingRun(deps, entry, remoteSourceKeys.get(entry.id));
+    if (deps.claimAs) {
+      let claimed: boolean;
+      try {
+        claimed = await claimPendingRun(
+          deps,
+          entry,
+          remoteSourceKeys.get(entry.id),
+        );
+      } catch (err) {
+        // left in place for the next pass rather than discarded
+        logger.warn("Could not claim pending run {id}: {error}", {
+          id: entry.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
       }
+      if (!claimed) continue;
+    }
+    try {
       if (entry.source === "webhook" && deps.webhookService) {
         if (!deps.configuredWebhookWorkflows.has(entry.workflowIdOrName)) {
           await discardEntry(
@@ -567,14 +581,23 @@ export async function replayPendingRuns(
   return replayed;
 }
 
+// a run only the control plane holds has no compare-and-swap, so it is taken
+// by writing its owner, as replay always took it
 async function claimPendingRun(
   deps: ReplayPendingRunsDeps,
   entry: PendingRunEntry,
   remoteKey: string | undefined,
-): Promise<void> {
+): Promise<boolean> {
   const owner = deps.claimAs!;
-  deps.runTracker.setPendingRunOwner(entry.id, owner);
-  if (!deps.controlPlaneStore) return;
+  if (remoteKey === undefined) {
+    const claimed = deps.runTracker.claimPendingRun(
+      entry.id,
+      owner,
+      entry.owner?.instanceId,
+    );
+    if (!claimed) return false;
+  }
+  if (!deps.controlPlaneStore) return true;
   try {
     await deps.controlPlaneStore.put(
       remoteKey ?? `pending-runs/${entry.id}`,
@@ -586,6 +609,7 @@ async function claimPendingRun(
       error: err instanceof Error ? err.message : String(err),
     });
   }
+  return true;
 }
 
 export const CLAIM_TTL_MS = 5 * 60 * 1000;

@@ -493,8 +493,10 @@ function createReplayHarness(
   const runTracker = {
     findAllPendingRuns: () => pending,
     deletePendingRun: (id: string) => deleted.push(id),
-    setPendingRunOwner: (id: string, owner: PendingRunOwner) =>
-      claimed.push({ id, owner }),
+    claimPendingRun: (id: string, owner: PendingRunOwner) => {
+      claimed.push({ id, owner });
+      return true;
+    },
   } as unknown as ReplayPendingRunsDeps["runTracker"];
 
   const webhookService = opts.hasWebhook !== false
@@ -2875,7 +2877,7 @@ Deno.test("replayPendingRuns: leaves a live peer's run to it and names it deferr
   assertEquals(h.deleted, []);
 });
 
-Deno.test("replayPendingRuns: a sweep pass replays only runs a gone peer owned, and reads no remote runs", async () => {
+Deno.test("replayPendingRuns: a sweep pass replays only runs a gone peer owned, and skips the control plane unless asked", async () => {
   const controlPlaneStore = createInMemoryControlPlaneStore({
     "pending-runs/remote-gone": cronEntry("remote-gone", GONE_PEER),
   });
@@ -2890,10 +2892,19 @@ Deno.test("replayPendingRuns: a sweep pass replays only runs a gone peer owned, 
     ...h.deps,
     ownerAlive: peerAlive,
     sweep: true,
+    readRemote: false,
   });
 
   assertEquals(count, 1);
   assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["gone"]);
+
+  const remote = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    sweep: true,
+  });
+  assertEquals(remote, 2);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId).at(-1), "remote-gone");
 });
 
 Deno.test("replayPendingRuns: a run a peer queued after boot is replayed by a later pass once the peer has gone", async () => {
@@ -2988,10 +2999,11 @@ Deno.test("replayPendingRuns: a claim that fails to write skips its run, not the
     cronEntry("good", GONE_PEER),
   ]);
   const runTracker = h.deps.runTracker as unknown as {
-    setPendingRunOwner: (id: string, owner: PendingRunOwner) => void;
+    claimPendingRun: (id: string, owner: PendingRunOwner) => boolean;
   };
-  runTracker.setPendingRunOwner = (id) => {
+  runTracker.claimPendingRun = (id) => {
     if (id === "bad-claim") throw new Error("database is locked");
+    return true;
   };
 
   const count = await replayPendingRuns({
@@ -3002,4 +3014,30 @@ Deno.test("replayPendingRuns: a claim that fails to write skips its run, not the
 
   assertEquals(count, 1);
   assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["good"]);
+  assertEquals(
+    h.deleted,
+    [],
+    "a run whose claim failed stays for the next pass",
+  );
+});
+
+Deno.test("replayPendingRuns: a run another process claimed first is not replayed", async () => {
+  const h = createReplayHarness([
+    cronEntry("taken", GONE_PEER),
+    cronEntry("free", GONE_PEER),
+  ]);
+  const runTracker = h.deps.runTracker as unknown as {
+    claimPendingRun: (id: string, owner: PendingRunOwner) => boolean;
+  };
+  runTracker.claimPendingRun = (id) => id !== "taken";
+
+  const count = await replayPendingRuns({
+    ...h.deps,
+    ownerAlive: peerAlive,
+    claimAs: SELF,
+  });
+
+  assertEquals(count, 1);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["free"]);
+  assertEquals(h.deleted, []);
 });

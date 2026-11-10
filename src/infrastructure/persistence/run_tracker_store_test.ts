@@ -1654,10 +1654,28 @@ Deno.test("RunTrackerStore: a pending run keeps its owner, and a claim replaces 
     assertEquals(read["ownerless-1"], undefined);
 
     const claimer = { instanceId: "instance-B", pid: 7 };
-    store.setPendingRunOwner("owned-1", claimer);
+    assertEquals(
+      store.claimPendingRun("owned-1", claimer, "instance-C"),
+      false,
+      "a claim from an owner the run no longer has",
+    );
+    assertEquals(store.claimPendingRun("owned-1", claimer, "instance-A"), true);
     assertEquals(
       store.findAllPendingRuns().find((e) => e.id === "owned-1")?.owner,
       claimer,
+    );
+    assertEquals(
+      store.claimPendingRun(
+        "owned-1",
+        { instanceId: "instance-C", pid: 8 },
+        "instance-A",
+      ),
+      false,
+      "a second claimer that read the same gone owner",
+    );
+    assertEquals(
+      store.claimPendingRun("ownerless-1", claimer, undefined),
+      true,
     );
   } finally {
     store.close();

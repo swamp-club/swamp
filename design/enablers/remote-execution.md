@@ -1812,11 +1812,13 @@ connection error with two guards:
   like `expired-runners` cannot make a retryable failure permanent. On a
   permanent failure the worker stops at once with a clear error.
 
-- **Retry budget.** Otherwise the worker keeps retrying with exponential
-  backoff (1 s doubling to 30 s) and gives up only once 5 minutes
+- **Retry budget.** A failure that looks like serve restarting (a refused
+  connection, or a 502, 503 or 504 at the upgrade, `probeServeRestarting`) is
+  retried with exponential backoff (1 s doubling to 30 s) until 5 minutes
   (`PRE_ENROLL_RETRY_BUDGET_MS`) have passed since the first failure of the
   current streak; the last sleep is shortened so one final attempt lands at the
-  budget. The streak resets whenever a `connectOnce` attempt returns normally
+  budget. Any other failure (a 401 or 403, a DNS failure, a timeout) gives up
+  after 3 consecutive attempts (`MAX_PRE_ENROLL_FAILURES`). The streak resets whenever a `connectOnce` attempt returns normally
   (after an enrolled session ends), so blips during an established session do
   not accumulate. This lets an enrolled worker ride out a `swamp serve` restart
   that refuses connections for several seconds or minutes.

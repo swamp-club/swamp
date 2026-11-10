@@ -34,10 +34,13 @@ export function checkReusePortListen(options: {
       reusePort: true,
     }).close();
   } catch (error) {
+    const hint = error instanceof Deno.errors.AddrInUse
+      ? "; a process listening there without --reuse-port blocks an overlapping start"
+      : "";
     throw new UserError(
       `--reuse-port: cannot listen on ${options.hostname}:${options.port} (${
         error instanceof Error ? error.message : String(error)
-      }); a process listening there without --reuse-port blocks an overlapping start`,
+      })${hint}`,
     );
   }
   if (options.cert !== undefined && options.key !== undefined) {

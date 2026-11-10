@@ -9117,7 +9117,11 @@ export const serveCommand = new Command()
       ac.abort();
       if (pidPath) {
         try {
-          await Deno.remove(pidPath);
+          // an overlapping serve that started after this one owns it now
+          const pidOwner = await Deno.readTextFile(pidPath);
+          if (pidOwner.trim() === String(Deno.pid)) {
+            await Deno.remove(pidPath);
+          }
         } catch {
           // PID file may already be gone
         }
@@ -9218,6 +9222,7 @@ export const serveCommand = new Command()
     const replayPending = async (
       deferred: Set<string>,
       sweep = false,
+      readRemote = true,
     ): Promise<number> => {
       // read at replay time: a reload may have changed the routes since boot
       const webhookTargets = webhookReplayTargets(webhookService);
@@ -9233,10 +9238,18 @@ export const serveCommand = new Command()
         deferred,
         claimAs: pendingRunOwner,
         sweep,
+        readRemote,
       });
     };
+    // the control plane is listed on one pass in 12, about once a minute
+    let sweepPasses = 0;
     const replayLeftByPeers = async (): Promise<void> => {
-      const replayed = await replayPending(new Set<string>(), true);
+      sweepPasses++;
+      const replayed = await replayPending(
+        new Set<string>(),
+        true,
+        sweepPasses % 12 === 0,
+      );
       if (replayed > 0) {
         logger
           .info`Replayed ${replayed} pending run(s) a stopped serve process left`;
