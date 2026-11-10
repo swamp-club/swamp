@@ -19,9 +19,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
-import { stampBuildInfo, VERSION_FILE } from "./compile.ts";
+import {
+  restoreBuildState,
+  runStampedBuild,
+  stampBuildInfo,
+  VERSION_FILE,
+} from "./compile.ts";
 
 const buildInfoPath = join(
   dirname(fromFileUrl(import.meta.url)),
@@ -54,7 +64,10 @@ Deno.test("stampBuildInfo: leaves a constant whose value is not given untouched"
   const source = await Deno.readTextFile(buildInfoPath);
 
   const shaOnly = stampBuildInfo(source, { sha: "abc1234" });
-  assertEquals(shaOnly.match(VERSION_LINE)?.[0], source.match(VERSION_LINE)?.[0]);
+  assertEquals(
+    shaOnly.match(VERSION_LINE)?.[0],
+    source.match(VERSION_LINE)?.[0],
+  );
   assertNotEquals(shaOnly, source);
 
   assertEquals(stampBuildInfo(source, {}), source);
@@ -74,4 +87,116 @@ Deno.test("stampBuildInfo: throws when a requested constant is missing", () => {
     Error,
     "no GIT_SHA constant",
   );
+});
+
+function recordingSteps(
+  build: () => Promise<boolean>,
+  stamp: () => Promise<void> = () => Promise.resolve(),
+) {
+  const calls: string[] = [];
+  return {
+    calls,
+    steps: {
+      stamp: async () => {
+        calls.push("stamp");
+        await stamp();
+      },
+      build: async () => {
+        calls.push("build");
+        return await build();
+      },
+      restore: () => {
+        calls.push("restore");
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+Deno.test("runStampedBuild: restores and reports failure when the build fails", async () => {
+  const { calls, steps } = recordingSteps(() => Promise.resolve(false));
+  assertEquals(await runStampedBuild(steps), false);
+  assertEquals(calls, ["stamp", "build", "restore"]);
+});
+
+Deno.test("runStampedBuild: restores and reports success when the build succeeds", async () => {
+  const { calls, steps } = recordingSteps(() => Promise.resolve(true));
+  assertEquals(await runStampedBuild(steps), true);
+  assertEquals(calls, ["stamp", "build", "restore"]);
+});
+
+Deno.test("runStampedBuild: restores and rethrows when the build throws", async () => {
+  const { calls, steps } = recordingSteps(() =>
+    Promise.reject(new Error("download failed"))
+  );
+  await assertRejects(() => runStampedBuild(steps), Error, "download failed");
+  assertEquals(calls, ["stamp", "build", "restore"]);
+});
+
+Deno.test("runStampedBuild: restores without building when the stamp throws", async () => {
+  const { calls, steps } = recordingSteps(
+    () => Promise.resolve(true),
+    () => Promise.reject(new Error("stamp failed")),
+  );
+  await assertRejects(() => runStampedBuild(steps), Error, "stamp failed");
+  assertEquals(calls, ["stamp", "restore"]);
+});
+
+async function exists(path: string): Promise<boolean> {
+  return await Deno.stat(path).then(() => true).catch(() => false);
+}
+
+async function withBuildTree(
+  run: (paths: { versionFile: string; denoDir: string }) => Promise<void>,
+): Promise<void> {
+  const root = await Deno.makeTempDir({ prefix: "compile-restore-" });
+  try {
+    const versionFile = join(root, "build_info.ts");
+    const denoDir = join(root, "resources", "deno");
+    await Deno.writeTextFile(versionFile, 'export const GIT_SHA = "stamped";');
+    await Deno.mkdir(denoDir, { recursive: true });
+    await Deno.writeTextFile(join(denoDir, "version.txt"), "2.9.8");
+    await run({ versionFile, denoDir });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("restoreBuildState: rewrites the version file and removes the deno resources", async () => {
+  await withBuildTree(async ({ versionFile, denoDir }) => {
+    await restoreBuildState(versionFile, "original", denoDir);
+    assertEquals(await Deno.readTextFile(versionFile), "original");
+    assertEquals(await exists(denoDir), false);
+  });
+});
+
+Deno.test("restoreBuildState: leaves the version file alone when nothing was stamped", async () => {
+  await withBuildTree(async ({ versionFile, denoDir }) => {
+    await restoreBuildState(versionFile, undefined, denoDir);
+    assertEquals(
+      await Deno.readTextFile(versionFile),
+      'export const GIT_SHA = "stamped";',
+    );
+    assertEquals(await exists(denoDir), false);
+  });
+});
+
+Deno.test("restoreBuildState: tolerates missing deno resources", async () => {
+  await withBuildTree(async ({ versionFile, denoDir }) => {
+    await Deno.remove(denoDir, { recursive: true });
+    await restoreBuildState(versionFile, "original", denoDir);
+    assertEquals(await Deno.readTextFile(versionFile), "original");
+  });
+});
+
+Deno.test("restoreBuildState: removes the deno resources when the version file write fails", async () => {
+  await withBuildTree(async ({ versionFile, denoDir }) => {
+    await Deno.remove(versionFile);
+    await Deno.mkdir(versionFile);
+    // the error class differs by platform, so only the rejection is asserted
+    await assertRejects(() =>
+      restoreBuildState(versionFile, "original", denoDir)
+    );
+    assertEquals(await exists(denoDir), false);
+  });
 });
