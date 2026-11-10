@@ -30,6 +30,7 @@ import {
   BUNDLE_DIR,
   bundleArgs,
   compileArgs,
+  inlinedNpmPackages,
   npmExternals,
   readWorkspaceConfigs,
   requireNpmExternals,
@@ -312,6 +313,79 @@ Deno.test("npmExternals: collects npm import names across configs, sorted and de
   );
 });
 
+Deno.test("npmExternals: treats every package.json dependency as external", () => {
+  assertEquals(
+    npmExternals([
+      { imports: { "zod": "npm:zod@4" } },
+      {
+        dependencies: { "d3-force": "^3.0.0" },
+        devDependencies: { "vite": "^6.0.0" },
+        optionalDependencies: { "fsevents": "^2.3.3" },
+        peerDependencies: { "react": "^19.0.0" },
+      },
+    ]),
+    ["d3-force", "fsevents", "react", "vite", "zod"],
+  );
+});
+
+Deno.test("readWorkspaceConfigs: reads deno.jsonc and package.json members and expands glob entries", async () => {
+  const root = await Deno.makeTempDir({ prefix: "compile-workspace-" });
+  try {
+    const write = async (path: string, text: string) => {
+      await Deno.mkdir(dirname(join(root, path)), { recursive: true });
+      await Deno.writeTextFile(join(root, path), text);
+    };
+    await write(
+      "deno.json",
+      JSON.stringify({
+        workspace: ["packages/*", "explicit"],
+        imports: { "zod": "npm:zod@4" },
+      }),
+    );
+    await write(
+      "packages/a/deno.jsonc",
+      '// comment\n{ "imports": { "ink": "npm:ink@6" } }',
+    );
+    await write(
+      "packages/b/package.json",
+      JSON.stringify({ dependencies: { "d3-force": "^3" } }),
+    );
+    await write(
+      "explicit/deno.json",
+      JSON.stringify({ imports: { "yaml": "npm:yaml@2" } }),
+    );
+    const { configs, paths } = await readWorkspaceConfigs(root);
+    assertEquals(npmExternals(configs), ["d3-force", "ink", "yaml", "zod"]);
+    assertEquals(paths.length, 4);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("readWorkspaceConfigs: refuses a root without a deno.json or deno.jsonc", async () => {
+  const root = await Deno.makeTempDir({ prefix: "compile-workspace-" });
+  try {
+    await assertRejects(() => readWorkspaceConfigs(root), Error, "No deno.json");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("inlinedNpmPackages: names packages whose files the bundle inlined", () => {
+  assertEquals(
+    inlinedNpmPackages([
+      "../../src/cli/mod.ts",
+      "../../../.cache/deno/remote/https/jsr.io/@std/path/1.1.4/join.ts",
+      "../../../.cache/deno/npm/registry.npmjs.org/emojilib/2.4.0/index.js",
+      "../../../.cache/deno/npm/registry.npmjs.org/@scope/pkg/1.0.0/a.js",
+      "../../node_modules/.deno/zod@4.6.7/node_modules/zod/index.js",
+      "..\\..\\node_modules\\@win\\pkg\\index.js",
+    ]),
+    ["@scope/pkg", "@win/pkg", "emojilib", "zod"],
+  );
+  assertEquals(inlinedNpmPackages(["../../src/main.ts"]), []);
+});
+
 Deno.test("requireNpmExternals: refuses an empty list and names the configs read", () => {
   assertThrows(
     () =>
@@ -326,7 +400,7 @@ Deno.test("requireNpmExternals: refuses an empty list and names the configs read
 
 Deno.test("readWorkspaceConfigs: the repo config yields the npm packages the CLI imports", async () => {
   const externals = requireNpmExternals(await readWorkspaceConfigs(repoRoot));
-  for (const name of ["zod", "ink", "react/jsx-runtime"]) {
+  for (const name of ["zod", "ink", "react/jsx-runtime", "d3-force"]) {
     assertEquals(externals.includes(name), true, `${name} is not external`);
   }
 });

@@ -20,8 +20,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parseArgs } from "@std/cli/parse-args";
+import { expandGlob } from "@std/fs";
 import { parse as parseJsonc } from "@std/jsonc";
-import { join } from "@std/path";
+import { isGlob, join } from "@std/path";
 
 interface CompileOptions {
   output: string;
@@ -110,11 +111,33 @@ export interface DenoConfig {
   workspace?: string[];
 }
 
-export function npmExternals(configs: readonly DenoConfig[]): string[] {
+export interface PackageJson {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+}
+
+export type ImportSource = DenoConfig | PackageJson;
+
+export function npmExternals(sources: readonly ImportSource[]): string[] {
   const names = new Set<string>();
-  for (const config of configs) {
-    for (const [name, target] of Object.entries(config.imports ?? {})) {
-      if (target.startsWith("npm:")) names.add(name);
+  for (const source of sources) {
+    if ("imports" in source) {
+      for (const [name, target] of Object.entries(source.imports ?? {})) {
+        if (target.startsWith("npm:")) names.add(name);
+      }
+    }
+    const pkg = source as PackageJson;
+    for (
+      const deps of [
+        pkg.dependencies,
+        pkg.devDependencies,
+        pkg.optionalDependencies,
+        pkg.peerDependencies,
+      ]
+    ) {
+      for (const name of Object.keys(deps ?? {})) names.add(name);
     }
   }
   return [...names].sort();
@@ -122,7 +145,7 @@ export function npmExternals(configs: readonly DenoConfig[]): string[] {
 
 // an empty list would inline every npm package into the bundle
 export function requireNpmExternals(
-  { configs, paths }: { configs: readonly DenoConfig[]; paths: string[] },
+  { configs, paths }: { configs: readonly ImportSource[]; paths: string[] },
 ): string[] {
   const externals = npmExternals(configs);
   if (externals.length === 0) {
@@ -134,24 +157,69 @@ export function requireNpmExternals(
   return externals;
 }
 
+async function readOptional(path: string): Promise<string | undefined> {
+  return await Deno.readTextFile(path).catch((error) => {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  });
+}
+
+async function memberDirs(root: string, member: string): Promise<string[]> {
+  if (!isGlob(member)) return [join(root, member)];
+  const dirs: string[] = [];
+  for await (const entry of expandGlob(member, { root, includeDirs: true })) {
+    if (entry.isDirectory) dirs.push(entry.path);
+  }
+  return dirs.sort();
+}
+
 export async function readWorkspaceConfigs(
   root: string,
-): Promise<{ configs: DenoConfig[]; paths: string[] }> {
-  const rootPath = join(root, "deno.json");
-  const rootConfig = parseJsonc(await Deno.readTextFile(rootPath)) as DenoConfig;
-  const configs = [rootConfig];
-  const paths = [rootPath];
+): Promise<{ configs: ImportSource[]; paths: string[] }> {
+  const configs: ImportSource[] = [];
+  const paths: string[] = [];
+  const read = async (dir: string): Promise<DenoConfig | undefined> => {
+    let denoConfig: DenoConfig | undefined;
+    for (const name of ["deno.json", "deno.jsonc"]) {
+      const text = await readOptional(join(dir, name));
+      if (text === undefined) continue;
+      denoConfig = parseJsonc(text) as DenoConfig;
+      configs.push(denoConfig);
+      paths.push(join(dir, name));
+      break;
+    }
+    const pkg = await readOptional(join(dir, "package.json"));
+    if (pkg !== undefined) {
+      configs.push(JSON.parse(pkg) as PackageJson);
+      paths.push(join(dir, "package.json"));
+    }
+    return denoConfig;
+  };
+  const rootConfig = await read(root);
+  if (rootConfig === undefined) {
+    throw new Error(`No deno.json or deno.jsonc in ${root}`);
+  }
   for (const member of rootConfig.workspace ?? []) {
-    const path = join(root, member, "deno.json");
-    const text = await Deno.readTextFile(path).catch((error) => {
-      if (error instanceof Deno.errors.NotFound) return undefined;
-      throw error;
-    });
-    if (text === undefined) continue;
-    configs.push(parseJsonc(text) as DenoConfig);
-    paths.push(path);
+    for (const dir of await memberDirs(root, member)) await read(dir);
   }
   return { configs, paths };
+}
+
+const NPM_SOURCE =
+  /[\\/](?:registry\.npmjs\.org|node_modules)[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)[\\/]/g;
+
+// npm files sit under the npm cache or node_modules, so a map source there
+// is a package the bundle inlined instead of leaving external
+export function inlinedNpmPackages(sources: readonly string[]): string[] {
+  const names = new Set<string>();
+  for (const source of sources) {
+    let last: string | undefined;
+    for (const match of source.matchAll(NPM_SOURCE)) last = match[1];
+    if (last !== undefined && !last.startsWith(".")) {
+      names.add(last.replace("\\", "/"));
+    }
+  }
+  return [...names].sort();
 }
 
 export function bundleArgs(
@@ -376,15 +444,36 @@ export function compileArgs(
   return args;
 }
 
+const FORWARDED_SIGNALS: Deno.Signal[] = Deno.build.os === "windows"
+  ? ["SIGINT", "SIGBREAK"]
+  : ["SIGINT", "SIGTERM", "SIGHUP"];
+
 async function runDeno(args: readonly string[]): Promise<boolean> {
   console.log(`Running: deno ${args.join(" ")}`);
-  const command = new Deno.Command("deno", {
+  const child = new Deno.Command("deno", {
     args: [...args],
     stdout: "inherit",
     stderr: "inherit",
-  });
-  const { success } = await command.output();
-  return success;
+  }).spawn();
+  // a signal aimed at this process alone would otherwise leave the child
+  // writing build output after the cleanup has run
+  const stop = () => {
+    try {
+      child.kill();
+    } catch {
+      // already exited
+    }
+  };
+  for (const signal of FORWARDED_SIGNALS) {
+    Deno.addSignalListener(signal, stop);
+  }
+  try {
+    return (await child.status).success;
+  } finally {
+    for (const signal of FORWARDED_SIGNALS) {
+      Deno.removeSignalListener(signal, stop);
+    }
+  }
 }
 
 // resolves to the --include flags for the bundle's source maps, or undefined
@@ -399,8 +488,24 @@ async function bundle(root: string): Promise<string[] | undefined> {
   );
   if (!(await runDeno(bundleArgs(BUNDLE_DIR, externals)))) return undefined;
   const fileNames: string[] = [];
+  const sources: string[] = [];
   for await (const entry of Deno.readDir(join(root, BUNDLE_DIR))) {
-    if (entry.isFile) fileNames.push(entry.name);
+    if (!entry.isFile) continue;
+    fileNames.push(entry.name);
+    if (entry.name.endsWith(".map")) {
+      const map = JSON.parse(
+        await Deno.readTextFile(join(root, BUNDLE_DIR, entry.name)),
+      ) as { sources?: string[] };
+      sources.push(...(map.sources ?? []));
+    }
+  }
+  const inlined = inlinedNpmPackages(sources);
+  if (inlined.length > 0) {
+    throw new Error(
+      `The bundle inlined npm packages that should stay external: ` +
+        `${inlined.join(", ")}. Declare them in a workspace deno.json, ` +
+        "deno.jsonc or package.json.",
+    );
   }
   return sourceMapIncludes(BUNDLE_DIR, fileNames);
 }
