@@ -182,13 +182,25 @@ export interface FollowerGate {
   leadUnconfirmed?(): boolean;
 }
 
+const FEED_REQUESTS: ReadonlySet<string> = new Set([
+  "commits.head",
+  "commits.subscribe",
+]);
+
 export function followerRefusal(
   type: string,
   gate: FollowerGate | undefined,
   // the leader decides, so what it supports is only its own to answer
   forLeader = false,
 ): ServeNotLeaderError | undefined {
-  if (gate === undefined || gate.role === "leader") return undefined;
+  if (gate === undefined) return undefined;
+  if (gate.role === "leader") {
+    // as the datastore API does: a leader that may have been taken over
+    // feeds no commit
+    return FEED_REQUESTS.has(type) && gate.leadUnconfirmed?.() === true
+      ? new ServeNotLeaderError(undefined)
+      : undefined;
+  }
   if (forLeader || !FOLLOWER_READ_REQUESTS.has(type)) {
     return new ServeNotLeaderError(gate.leader());
   }

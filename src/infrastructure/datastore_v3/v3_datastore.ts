@@ -89,6 +89,7 @@ import {
   ServeCatchUp,
   serveLogCheck,
 } from "./serve_catch_up.ts";
+import { v3WriterFence } from "./v3_writer_lock.ts";
 import {
   createServeCommitSink,
   type ServeUpstreamCommitStore,
@@ -177,7 +178,10 @@ import {
   type OutboxCommitSink,
 } from "./outbox_commit_sink.ts";
 import { SqliteCommitOutbox } from "./sqlite_commit_outbox.ts";
-import { registerOwnCommitWriter } from "./commit_outbox_recovery.ts";
+import {
+  recoverCommitOutbox,
+  registerOwnCommitWriter,
+} from "./commit_outbox_recovery.ts";
 import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
@@ -930,6 +934,30 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       state: serveState,
       copyDir: dirname(commitsDbPath),
       namespace,
+      repair: {
+        // a unit of this process may have files and outbox entries in flight,
+        // which a rebuild's sweep or a resend would disturb
+        ready: () => units.open === 0,
+        // under the copy's writer lease, which the repair holds
+        resendOutbox: async (signal) => {
+          const fence = v3WriterFence(dirname(commitsDbPath));
+          if (serveSink === undefined || fence === undefined) return;
+          await recoverCommitOutbox({
+            outbox,
+            commitStore: serveSink.upstream,
+            chunkStore,
+            ...(offlineFlushPort !== undefined
+              ? { offline: offlineFlushPort }
+              : {}),
+          }, { fence, writer, forwarded: true, signal });
+        },
+        // a full rebuild; a targeted one of the repaired partition is a later
+        // step
+        rebuildReadModel: async (since, signal) => {
+          await readModel.recover(namespace, { since, admits, signal });
+        },
+        principal: () => serveState.checkedPrincipal(),
+      },
     })
     : undefined;
   const serveSink = serveClient !== undefined && serveCatchUp !== undefined

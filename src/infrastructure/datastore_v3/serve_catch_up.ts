@@ -23,6 +23,7 @@
  * unapplied and a diverging head or anchor is refused
  */
 
+import { minOf } from "../../domain/array_extrema.ts";
 import { join } from "@std/path";
 import { resolveLockTimeoutMs } from "../../domain/datastore/datastore_config.ts";
 import { Commit } from "../../domain/datastore_v3/commit.ts";
@@ -36,9 +37,11 @@ import type {
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
 import {
+  ServeAcknowledgedCommitLostError,
   ServeCommitsCompactedError,
   type ServeDivergedCommit,
   type ServeDivergence,
+  type ServeLostCommit,
   ServeReplyTooLargeError,
   ServeUpstreamDivergedError,
   ServeUpstreamError,
@@ -48,9 +51,11 @@ import {
   ACCESS_RESET_COOLDOWN_MS,
   accessResetDue,
   type ServeCopyAccess,
+  type ServeCopyRepair,
   type ServeFeedAnchor,
   type ServeUpstreamState,
 } from "./serve_upstream_state.ts";
+import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
 import {
   ObservedBaseStaging,
   type SqliteCommitStore,
@@ -144,6 +149,30 @@ export const OBSERVED_BASE_STAGING_PREFIX = "base_staging";
 
 const loadsInProcess = new Map<string, Promise<void>>();
 
+/** distinct divergences one catch-up repairs before it refuses */
+export const MAX_REPAIRS_PER_CATCH_UP = 3;
+
+/**
+ * a commit stamped this close after acknowledgements began to be kept may be
+ * one acknowledged before, on a serve whose clock runs ahead
+ */
+const ACKNOWLEDGED_CLOCK_SLACK_MS = 60 * 60 * 1000;
+
+/** what a repair of a diverged copy needs beyond the copy and serve */
+export interface ServeCopyRepairPort {
+  /** false while work under way in this process could be disturbed by one */
+  ready(): boolean;
+  /** lands or settles what the checkout queued, before serve is judged again */
+  resendOutbox(signal: AbortSignal): Promise<void>;
+  /**
+   * the read model's full rebuild, sweeping files no commit owns written from
+   * `since`; the seam for a targeted rebuild of the repaired partition
+   */
+  rebuildReadModel(since: number, signal: AbortSignal): Promise<void>;
+  /** the principal this checkout writes as, when serve named it */
+  principal?(): string | undefined;
+}
+
 export interface ServeCatchUpOptions {
   readonly client: Pick<
     ServeDatastoreClient,
@@ -151,7 +180,12 @@ export interface ServeCatchUpOptions {
   >;
   readonly commitStore: Pick<
     SqliteCommitStore,
-    "append" | "head" | "headIdentity" | "installObservedBase"
+    | "append"
+    | "head"
+    | "headIdentity"
+    | "installObservedBase"
+    | "readPartition"
+    | "dropObservedFrom"
   >;
   readonly state: Pick<
     ServeUpstreamState,
@@ -162,6 +196,14 @@ export interface ServeCatchUpOptions {
     | "recordServeHead"
     | "recordBaseLoaded"
     | "basePoint"
+    | "repairs"
+    | "pendingRepair"
+    | "beginRepair"
+    | "resetFeedForRepair"
+    | "finishRepair"
+    | "acknowledged"
+    | "acknowledgedFrom"
+    | "recordAcknowledged"
   >;
   readonly copyDir: string;
   /**
@@ -176,6 +218,8 @@ export interface ServeCatchUpOptions {
    * and joins.
    */
   readonly lockCopy?: () => Promise<() => Promise<void>>;
+  /** without it a diverged copy is refused, never repaired */
+  readonly repair?: ServeCopyRepairPort;
 }
 
 export interface ServeCatchUpReport {
@@ -189,7 +233,10 @@ export class ServeCatchUp {
   readonly #copyDir: string;
   readonly #namespace: string;
   readonly #lockCopy: () => Promise<() => Promise<void>>;
+  readonly #repair: ServeCopyRepairPort | undefined;
   #feed: Promise<ServeCatchUpReport> | undefined;
+  /** a catch-up inside a repair refuses a divergence rather than repairing it */
+  #repairing = 0;
 
   constructor(options: ServeCatchUpOptions) {
     this.#client = options.client;
@@ -202,6 +249,7 @@ export class ServeCatchUp {
         acquireV3WriterLock(options.copyDir, {
           maxWaitMs: resolveLockTimeoutMs(),
         }));
+    this.#repair = options.repair;
   }
 
   /**
@@ -230,7 +278,11 @@ export class ServeCatchUp {
       "swamp.datastore.v3.serve.catchup",
       {},
       async (span) => {
-        const report = await this.#catchUpFeed(signal, delivered);
+        const report = await this.#repairingDivergence(
+          signal,
+          (repaired) =>
+            this.#catchUpFeed(signal, repaired ? undefined : delivered),
+        );
         span.setAttribute("swamp.datastore.v3.commits", report.applied);
         return report;
       },
@@ -264,6 +316,7 @@ export class ServeCatchUp {
       signal.throwIfAborted();
       const cursor = this.#state.feedCursor();
       const basePoint = this.#state.basePoint();
+      const repairs = this.#state.repairs();
       let read;
       try {
         const given = first;
@@ -347,6 +400,7 @@ export class ServeCatchUp {
           page.cursor,
           last === undefined ? undefined : anchorOf(last),
           basePoint,
+          repairs,
         )
       ) {
         continue;
@@ -582,7 +636,11 @@ export class ServeCatchUp {
     return withSpan(
       "swamp.datastore.v3.serve.catchup_partition",
       {},
-      () => this.#catchUpPartitionLoading(namespace, partition, signal),
+      () =>
+        this.#repairingDivergence(
+          signal,
+          () => this.#catchUpPartitionLoading(namespace, partition, signal),
+        ),
     );
   }
 
@@ -696,6 +754,360 @@ export class ServeCatchUp {
 
   recordServeHead(namespace: string, partition: PartitionKey, seq: number) {
     this.#state.recordServeHead(namespace, partition.toString(), seq);
+  }
+
+  /**
+   * a commit serve acknowledged to this checkout, which a repair never drops; a
+   * failed record is warned of, since the commit landed
+   */
+  recordLanded(namespace: string, partition: PartitionKey, txnId: string) {
+    try {
+      this.#state.recordAcknowledged(namespace, partition.toString(), txnId);
+    } catch (error) {
+      logger
+        .warn`Could not record that serve acknowledged commit ${txnId} of partition ${partition.toString()}; a later repair of this checkout's copy may not know it is this checkout's: ${error}`;
+    }
+  }
+
+  /**
+   * runs `run`, repairing a divergence it meets when the rule allows and running
+   * it again; `repaired` says the copy was repaired since the first run
+   */
+  async #repairingDivergence<T>(
+    signal: AbortSignal,
+    run: (repaired: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (
+      this.#repair === undefined || this.#repairing > 0 ||
+      !this.#repair.ready()
+    ) {
+      return await run(false);
+    }
+    await this.#resumeRepair(signal);
+    for (let repairs = 0;; repairs++) {
+      try {
+        return await run(repairs > 0);
+      } catch (error) {
+        if (
+          !(error instanceof ServeUpstreamDivergedError) ||
+          repairs >= MAX_REPAIRS_PER_CATCH_UP ||
+          !await this.#repairDiverged(error, signal)
+        ) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  /** finishes a repair a command noted and was cut short in */
+  async #resumeRepair(signal: AbortSignal): Promise<void> {
+    const repair = this.#repair;
+    if (repair === undefined || this.#state.pendingRepair() === undefined) {
+      return;
+    }
+    signal.throwIfAborted();
+    this.#repairing++;
+    try {
+      const release = await this.#lockCopy();
+      try {
+        const pending = this.#state.pendingRepair();
+        if (pending === undefined) return;
+        await withSpan(
+          "swamp.datastore.v3.serve.repair",
+          {
+            ...repairAttributes(pending),
+            "swamp.datastore.v3.repair.resumed": true,
+          },
+          () => this.#applyRepair(pending, repair, signal),
+        );
+        logger
+          .warn`Finished repairing this checkout's copy of partition ${pending.partition} at ${this.#copyDir}, cut short earlier: its commits from seq ${pending.fromSeq} were dropped, and it reads on from serve, whose head for the partition was ${pending.serveHead}.`;
+      } finally {
+        await release();
+      }
+    } finally {
+      this.#repairing--;
+    }
+  }
+
+  /**
+   * true when the copy was repaired, or serve's answer now holds what the copy
+   * does; false keeps the refusal
+   * @throws ServeAcknowledgedCommitLostError when a repair would drop a commit
+   *   serve acknowledged to this checkout
+   */
+  async #repairDiverged(
+    error: ServeUpstreamDivergedError,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const repair = this.#repair;
+    const diverged = error.commit;
+    // another log entirely is never repaired: the copy may hold what a restore
+    // needs
+    if (
+      repair === undefined || diverged === undefined ||
+      error.divergence.kind === "other-log"
+    ) {
+      return false;
+    }
+    this.#repairing++;
+    try {
+      const release = await this.#lockCopy();
+      try {
+        return await withSpan(
+          "swamp.datastore.v3.serve.repair",
+          {
+            "swamp.datastore.v3.partition": diverged.partition,
+            "swamp.datastore.v3.repair.diverged_seq": diverged.seq,
+            "swamp.datastore.v3.repair.divergence": error.divergence.kind,
+          },
+          (span) => this.#repairLocked(diverged, repair, signal, span),
+        );
+      } finally {
+        await release();
+      }
+    } finally {
+      this.#repairing--;
+    }
+  }
+
+  async #repairLocked(
+    diverged: ServeDivergedCommit,
+    repair: ServeCopyRepairPort,
+    signal: AbortSignal,
+    span: { setAttribute(key: string, value: string | number): unknown },
+  ): Promise<boolean> {
+    const pending = this.#state.pendingRepair();
+    if (pending !== undefined) {
+      await this.#applyRepair(pending, repair, signal);
+      span.setAttribute("swamp.datastore.v3.repair.outcome", "resumed");
+      return true;
+    }
+    try {
+      await repair.resendOutbox(signal);
+    } catch (resendError) {
+      signal.throwIfAborted();
+      // what lands only once the copy is repaired waits in the outbox
+      if (!(resendError instanceof ServeUpstreamDivergedError)) {
+        logger
+          .debug`Could not send this checkout's outbox before judging its diverged copy: ${resendError}`;
+        span.setAttribute("swamp.datastore.v3.repair.outcome", "outbox-failed");
+        return false;
+      }
+    }
+    const namespace = diverged.namespace;
+    const partition = PartitionKey.parse(diverged.partition);
+    let serve;
+    try {
+      serve = await this.#readServePartition(namespace, partition, signal);
+    } catch (readError) {
+      signal.throwIfAborted();
+      logger
+        .debug`Could not read partition ${diverged.partition} from serve to judge this checkout's diverged copy: ${readError}`;
+      span.setAttribute("swamp.datastore.v3.repair.outcome", "unread");
+      return false;
+    }
+    span.setAttribute("swamp.datastore.v3.repair.serve_head", serve.head);
+    // A serve not past the diverged commit may be one still catching up after
+    // a takeover: it is refused until it moves past.
+    if (serve.head <= diverged.seq) {
+      span.setAttribute("swamp.datastore.v3.repair.outcome", "not-past");
+      return false;
+    }
+    const copy = await this.#copyCommits(namespace, partition);
+    const start = Math.max(copy.from, serve.from);
+    const first = copy.commits.find((commit) =>
+      commit.seq >= start && serve.bySeq.get(commit.seq) !== commit.txnId
+    );
+    if (first === undefined) {
+      span.setAttribute("swamp.datastore.v3.repair.outcome", "held");
+      return true;
+    }
+    // where the copy parts from serve cannot be told below serve's compaction
+    if (
+      first.seq === start && serve.from > copy.from &&
+      copy.commits.some((commit) => commit.seq < start)
+    ) {
+      span.setAttribute("swamp.datastore.v3.repair.outcome", "compacted");
+      return false;
+    }
+    const acknowledged = this.#state.acknowledged(
+      namespace,
+      diverged.partition,
+    );
+    const keptFrom = this.#state.acknowledgedFrom();
+    const principal = repair.principal?.();
+    const lost: ServeLostCommit[] = [];
+    const dropped: Commit[] = [];
+    for (const commit of copy.commits) {
+      if (commit.seq < first.seq || serve.txnIds.has(commit.txnId)) continue;
+      if (acknowledged.has(commit.txnId)) {
+        lost.push({ seq: commit.seq, txnId: commit.txnId, acknowledged: true });
+      } else if (mayBeUnrecordedOwn(commit, keptFrom, principal)) {
+        lost.push({
+          seq: commit.seq,
+          txnId: commit.txnId,
+          acknowledged: false,
+        });
+      } else {
+        dropped.push(commit);
+      }
+    }
+    if (lost.length > 0) {
+      span.setAttribute("swamp.datastore.v3.repair.outcome", "acknowledged");
+      throw new ServeAcknowledgedCommitLostError(
+        this.#client.baseUrl,
+        this.#copyDir,
+        diverged.partition,
+        lost,
+        serve.head,
+      );
+    }
+    const stamped = copy.commits.filter((commit) => commit.seq >= first.seq)
+      .map((commit) => Date.parse(commit.at))
+      .filter((at) => Number.isFinite(at));
+    const planned: ServeCopyRepair = {
+      namespace,
+      partition: diverged.partition,
+      fromSeq: first.seq,
+      serveHead: serve.head,
+      // the copy took them after serve stamped them, give or take its clock
+      since: stamped.length === 0
+        ? 0
+        : Math.max(0, minOf(stamped)! - ACKNOWLEDGED_CLOCK_SLACK_MS),
+    };
+    this.#state.beginRepair(planned);
+    const removed = await this.#applyRepair(planned, repair, signal);
+    span.setAttribute("swamp.datastore.v3.repair.outcome", "repaired");
+    span.setAttribute("swamp.datastore.v3.repair.from_seq", first.seq);
+    span.setAttribute("swamp.datastore.v3.repair.dropped", dropped.length);
+    span.setAttribute(
+      "swamp.datastore.v3.repair.reread",
+      removed - dropped.length,
+    );
+    logger
+      .warn`Repaired this checkout's copy at ${this.#copyDir}: serve at ${this.#client.baseUrl} does not hold ${dropped.length} commits of partition ${diverged.partition} the copy took from seq ${first.seq} (${
+      dropped.map((commit) => `seq ${commit.seq} ${commit.txnId}`).join(", ")
+    }), so they were dropped; serve's head for the partition is ${serve.head}, and the copy reads on from it.`;
+    return true;
+  }
+
+  /**
+   * the drop is one transaction and the feed reset another, then the read
+   * model is rebuilt: cut short anywhere, the noted repair runs again from
+   * where it stood
+   */
+  async #applyRepair(
+    repair: ServeCopyRepair,
+    port: ServeCopyRepairPort,
+    signal: AbortSignal,
+  ): Promise<number> {
+    let removed = 0;
+    if (repair.dropped !== true) {
+      removed = (await this.#commitStore.dropObservedFrom(
+        repair.namespace,
+        PartitionKey.parse(repair.partition),
+        repair.fromSeq,
+      )).length;
+      this.#state.resetFeedForRepair();
+    }
+    await port.rebuildReadModel(repair.since, signal);
+    this.#state.finishRepair();
+    return removed;
+  }
+
+  /** a fresh read of serve's whole partition, past any compaction */
+  async #readServePartition(
+    namespace: string,
+    partition: PartitionKey,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly head: number;
+    readonly from: number;
+    readonly bySeq: ReadonlyMap<number, string>;
+    readonly txnIds: ReadonlySet<string>;
+  }> {
+    const held = (await this.#commitStore.head(namespace, partition)).seq;
+    const bySeq = new Map<number, string>();
+    const txnIds = new Set<string>();
+    let after = 0;
+    let from = 1;
+    let limit = SERVE_PARTITION_PAGE;
+    for (;;) {
+      signal.throwIfAborted();
+      const at = after;
+      let read;
+      try {
+        read = await pageAtMost(
+          `partition ${partition}`,
+          at,
+          limit,
+          (size) =>
+            this.#client.partitionCommits(partition, at, signal, size, held),
+        );
+      } catch (error) {
+        if (
+          error instanceof ServeCommitsCompactedError &&
+          error.compactedSeq !== undefined && error.compactedSeq > after
+        ) {
+          after = error.compactedSeq;
+          from = after + 1;
+          continue;
+        }
+        throw error;
+      }
+      limit = read.limit;
+      const head = read.page.head;
+      let last = after;
+      for (const raw of read.page.commits) {
+        const commit = await Commit.fromJSON(raw);
+        if (
+          commit.namespace !== namespace || !commit.partition.equals(partition)
+        ) {
+          throw foreignCommit(`a read of partition ${partition}`, commit);
+        }
+        bySeq.set(commit.seq, commit.txnId);
+        txnIds.add(commit.txnId);
+        last = Math.max(last, commit.seq);
+      }
+      const next = Math.max(last, Math.min(after + limit, head));
+      if (next >= head || next <= after) return { head, from, bySeq, txnIds };
+      after = next;
+    }
+  }
+
+  /** the copy's commits of a partition past its own compaction */
+  async #copyCommits(
+    namespace: string,
+    partition: PartitionKey,
+  ): Promise<{ readonly from: number; readonly commits: readonly Commit[] }> {
+    const commits: Commit[] = [];
+    let from = 1;
+    let next = 1;
+    for (;;) {
+      let page;
+      try {
+        page = await this.#commitStore.readPartition(
+          namespace,
+          partition,
+          next,
+          SERVE_PARTITION_PAGE,
+        );
+      } catch (error) {
+        if (
+          error instanceof CommitsCompactedError &&
+          error.compactedSeq !== undefined && error.compactedSeq >= next
+        ) {
+          next = error.compactedSeq + 1;
+          from = next;
+          continue;
+        }
+        throw error;
+      }
+      if (page.length === 0) return { from, commits };
+      for (const change of page) commits.push(change.commit);
+      next = page[page.length - 1].commit.seq + 1;
+    }
   }
 
   async #applyInOrder(commit: Commit, signal: AbortSignal): Promise<number> {
@@ -911,6 +1323,34 @@ function removeStagingFiles(copyDir: string): void {
       Deno.removeSync(join(copyDir, entry.name));
     }
   }
+}
+
+function repairAttributes(
+  repair: ServeCopyRepair,
+): Record<string, string | number> {
+  return {
+    "swamp.datastore.v3.partition": repair.partition,
+    "swamp.datastore.v3.repair.from_seq": repair.fromSeq,
+    "swamp.datastore.v3.repair.serve_head": repair.serveHead,
+  };
+}
+
+/**
+ * a commit from before this copy kept acknowledgements, by this checkout's
+ * principal or one it cannot tell, may be one serve acknowledged to it
+ */
+function mayBeUnrecordedOwn(
+  commit: Commit,
+  keptFrom: number | undefined,
+  principal: string | undefined,
+): boolean {
+  if (keptFrom === undefined) return false;
+  const at = Date.parse(commit.at);
+  if (Number.isFinite(at) && at >= keptFrom + ACKNOWLEDGED_CLOCK_SLACK_MS) {
+    return false;
+  }
+  return principal === undefined || commit.principal === undefined ||
+    commit.principal === principal;
 }
 
 function sameRequest(a: CatchUpRequest, b: CatchUpRequest): boolean {

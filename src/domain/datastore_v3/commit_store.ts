@@ -263,6 +263,19 @@ export interface CompactionReport {
  * A process holds one writer per store. Two processes writing one store is a
  * bug, which the writer lease prevents.
  */
+/**
+ * a serve-mode copy's repair: it drops the commits of one partition its serve's
+ * lineage does not hold, which only a follower copy may do
+ */
+export interface ObservedCopyRepair {
+  /** one write transaction; the dropped commits, none when already dropped */
+  dropObservedFrom(
+    namespace: string,
+    partition: PartitionKey,
+    fromSeq: number,
+  ): Promise<readonly Commit[]>;
+}
+
 export interface CommitStore {
   /**
    * Appends a commit to its namespace's partition. Refuses with

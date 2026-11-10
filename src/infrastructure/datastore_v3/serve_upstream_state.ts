@@ -110,7 +110,49 @@ const MIGRATIONS: readonly string[] = [
      mode TEXT NOT NULL,
      principal TEXT
    );`,
+  // the commits serve acknowledged to this checkout, which a repair never
+  // drops; a repair under way; a count of finished ones, which fences a
+  // catch-up that read before one; and since when a copy that read the feed
+  // before acknowledgements were kept has kept them (epoch ms)
+  `CREATE TABLE IF NOT EXISTS acknowledged (
+     namespace TEXT NOT NULL,
+     partition TEXT NOT NULL,
+     txn_id TEXT NOT NULL,
+     landed_at INTEGER NOT NULL,
+     PRIMARY KEY (namespace, partition, txn_id)
+   );
+   CREATE TABLE IF NOT EXISTS repair (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     namespace TEXT NOT NULL,
+     partition TEXT NOT NULL,
+     from_seq INTEGER NOT NULL,
+     serve_head INTEGER NOT NULL,
+     since INTEGER NOT NULL,
+     dropped INTEGER NOT NULL DEFAULT 0
+   );
+   ALTER TABLE copy ADD COLUMN repairs INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE copy ADD COLUMN acks_from INTEGER;
+   UPDATE copy SET acks_from = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+     WHERE EXISTS (SELECT 1 FROM feed);`,
 ];
+
+/**
+ * how long an acknowledgement is kept: a copy reads serve's feed on every
+ * command, so a commit serve lost is met long before
+ */
+export const ACKNOWLEDGED_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/** a repair of one partition that dropped what serve's lineage lacks */
+export interface ServeCopyRepair {
+  readonly namespace: string;
+  readonly partition: string;
+  readonly fromSeq: number;
+  readonly serveHead: number;
+  /** files the read model wrote from this time (epoch ms) may be the dropped commits' */
+  readonly since: number;
+  /** the commits are dropped and the feed reset; the read model is not yet rebuilt */
+  readonly dropped?: boolean;
+}
 
 export interface ServeFeedAnchor {
   readonly namespace: string;
@@ -220,6 +262,7 @@ export class ServeUpstreamState {
     cursor: number,
     anchor?: ServeFeedAnchor,
     basePoint?: number,
+    repairs?: number,
   ): boolean {
     this.#assertOpen();
     assertSeqLike(cursor, "feed cursor");
@@ -228,8 +271,11 @@ export class ServeUpstreamState {
     this.#transaction(() => {
       this.#assertSameCopy();
       // A page applied to a copy another process has since replaced with a
-      // base is not in the copy: the cursor stays the base's.
-      if (basePoint !== undefined && this.basePoint() !== basePoint) {
+      // base, or repaired, is read from before the repair: the cursor stays.
+      if (
+        (basePoint !== undefined && this.basePoint() !== basePoint) ||
+        (repairs !== undefined && this.repairs() !== repairs)
+      ) {
         advanced = false;
         return;
       }
@@ -325,6 +371,135 @@ export class ServeUpstreamState {
       for (const head of heads) {
         upsert.run(head.namespace, head.partition, head.seq);
       }
+    });
+  }
+
+  repairs(): number {
+    this.#assertOpen();
+    return (this.#db.prepare("SELECT repairs FROM copy WHERE id = 1")
+      .get() as { repairs: number } | undefined)?.repairs ?? 0;
+  }
+
+  /**
+   * records a commit serve acknowledged to this checkout; ones older than the
+   * retention are forgotten
+   */
+  recordAcknowledged(
+    namespace: string,
+    partition: string,
+    txnId: string,
+    at: number = Date.now(),
+  ): void {
+    this.#assertOpen();
+    this.#transaction(() => {
+      this.#db.prepare(
+        `INSERT INTO acknowledged (namespace, partition, txn_id, landed_at)
+         VALUES (?, ?, ?, ?) ON CONFLICT (namespace, partition, txn_id)
+         DO UPDATE SET landed_at = MAX(landed_at, excluded.landed_at)`,
+      ).run(namespace, partition, txnId, at);
+      this.#db.prepare("DELETE FROM acknowledged WHERE landed_at < ?").run(
+        at - ACKNOWLEDGED_RETENTION_MS,
+      );
+    });
+  }
+
+  acknowledged(namespace: string, partition: string): Set<string> {
+    this.#assertOpen();
+    const rows = this.#db.prepare(
+      "SELECT txn_id FROM acknowledged WHERE namespace = ? AND partition = ?",
+    ).all(namespace, partition) as { txn_id: string }[];
+    return new Set(rows.map((row) => row.txn_id));
+  }
+
+  /**
+   * since when this copy has kept acknowledgements; undefined when it always
+   * has
+   */
+  acknowledgedFrom(): number | undefined {
+    this.#assertOpen();
+    return (this.#db.prepare("SELECT acks_from FROM copy WHERE id = 1")
+      .get() as { acks_from: number | null } | undefined)?.acks_from ??
+      undefined;
+  }
+
+  pendingRepair(): ServeCopyRepair | undefined {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      `SELECT namespace, partition, from_seq, serve_head, since, dropped
+       FROM repair WHERE id = 1`,
+    ).get() as {
+      namespace: string;
+      partition: string;
+      from_seq: number;
+      serve_head: number;
+      since: number;
+      dropped: number;
+    } | undefined;
+    return row === undefined ? undefined : {
+      namespace: row.namespace,
+      partition: row.partition,
+      fromSeq: row.from_seq,
+      serveHead: row.serve_head,
+      since: row.since,
+      ...(row.dropped !== 0 ? { dropped: true } : {}),
+    };
+  }
+
+  /**
+   * noted before the copy drops anything, so a cut-short repair is finished by
+   * the next catch-up; a catch-up that read before it no longer moves the
+   * cursor
+   */
+  beginRepair(repair: ServeCopyRepair): void {
+    this.#assertOpen();
+    assertSeqLike(repair.fromSeq, "repair seq");
+    assertSeqLike(repair.serveHead, "serve head");
+    this.#transaction(() => {
+      this.#assertSameCopy();
+      this.#db.prepare(
+        `INSERT OR REPLACE INTO repair (id, namespace, partition, from_seq,
+           serve_head, since, dropped) VALUES (1, ?, ?, ?, ?, ?, 0)`,
+      ).run(
+        repair.namespace,
+        repair.partition,
+        repair.fromSeq,
+        repair.serveHead,
+        repair.since,
+      );
+      this.#db.exec("UPDATE copy SET repairs = repairs + 1 WHERE id = 1");
+    });
+  }
+
+  /**
+   * one transaction once the copy dropped the commits: the feed reads again
+   * from the loaded base with no anchor, since the cursor may have passed
+   * commits serve's lineage holds, and serve's head for the partition is the
+   * one the repair read. The note stays until the read model is rebuilt
+   */
+  resetFeedForRepair(): void {
+    this.#assertOpen();
+    this.#transaction(() => {
+      this.#assertSameCopy();
+      const repair = this.pendingRepair();
+      if (repair === undefined || repair.dropped === true) return;
+      this.#db.exec(
+        `UPDATE feed SET cursor = (SELECT base_point FROM copy WHERE id = 1),
+           anchor_namespace = NULL, anchor_partition = NULL,
+           anchor_seq = NULL, anchor_txn_id = NULL WHERE id = 1;
+         UPDATE copy SET repairs = repairs + 1 WHERE id = 1;
+         UPDATE repair SET dropped = 1 WHERE id = 1;`,
+      );
+      this.#db.prepare(
+        `INSERT INTO serve_heads (namespace, partition, seq) VALUES (?, ?, ?)
+         ON CONFLICT (namespace, partition) DO UPDATE SET seq = excluded.seq`,
+      ).run(repair.namespace, repair.partition, repair.serveHead);
+    });
+  }
+
+  finishRepair(): void {
+    this.#assertOpen();
+    this.#transaction(() => {
+      this.#db.exec("DELETE FROM repair WHERE id = 1");
     });
   }
 
@@ -538,7 +713,7 @@ export class ServeUpstreamState {
     this.#assertOpen();
     this.#transaction(() => {
       this.#db.exec(
-        "DELETE FROM feed; DELETE FROM serve_heads; " +
+        "DELETE FROM feed; DELETE FROM serve_heads; DELETE FROM repair; " +
           "UPDATE copy SET log_id = NULL, base_point = 0, " +
           "copy_id = lower(hex(randomblob(16))), " +
           "access_built = NULL, access_seen = NULL;",

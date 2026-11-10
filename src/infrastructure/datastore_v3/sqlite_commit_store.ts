@@ -74,6 +74,7 @@ import {
   type CompactionReport,
   type DataNameMarks,
   InvalidBasePageTokenError,
+  type ObservedCopyRepair,
   type PartitionHead,
   type PartitionLeaseMarks,
 } from "../../domain/datastore_v3/commit_store.ts";
@@ -715,7 +716,7 @@ interface CommitRow {
  * savepoint of its own so it keeps its own result or refusal. At most
  * {@link GROUP_COMMIT_MAX_COMMITS} share one.
  */
-export class SqliteCommitStore implements CommitStore {
+export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #db: DatabaseSync;
   readonly #cachedPartitions: number;
   readonly #snapshotInterval: number;
@@ -2552,6 +2553,133 @@ export class SqliteCommitStore implements CommitStore {
       for (const { cacheKey } of heads) this.#cache.delete(cacheKey);
     }
     return { removed: rows.length };
+  }
+
+  /**
+   * Drops `partition`'s commits from seq `fromSeq` up, as if this follower copy
+   * never observed them: their chunk references go, the head falls back to the
+   * highest seq kept, and a snapshot past it is replaced by one at it.
+   */
+  dropObservedFrom(
+    namespace: string,
+    partition: PartitionKey,
+    fromSeq: number,
+  ): Promise<readonly Commit[]> {
+    if (this.#closed) return Promise.reject(closedError());
+    if (!this.#follower) {
+      return Promise.reject(
+        new Error(
+          "Internal error: only a serve-mode copy of a v3 datastore drops the commits it observed",
+        ),
+      );
+    }
+    try {
+      requirePositive(fromSeq, "fromSeq");
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.#enqueue(() =>
+      this.#dropObserved(namespace, partition, fromSeq)
+    )
+      .finally(() => this.#notifyHeadMoved(true));
+  }
+
+  async #dropObserved(
+    namespace: string,
+    key: PartitionKey,
+    fromSeq: number,
+  ): Promise<readonly Commit[]> {
+    const name = key.toString();
+    const cacheKey = cacheKeyOf(namespace, name);
+    const selectFrom = this.#db.prepare(
+      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
+        "WHERE namespace = ? AND partition = ? AND seq >= ? ORDER BY seq",
+    );
+    const rows = this.#readTransaction(() => {
+      const compacted = this.#compactedSeq(namespace, name);
+      if (fromSeq <= compacted) {
+        throw new CommitsCompactedError(
+          this.#point(),
+          `Partition ${name} is compacted through seq ${compacted}; its commits from seq ${fromSeq} cannot be dropped`,
+          compacted,
+        );
+      }
+      return selectFrom.all(namespace, name, fromSeq) as unknown as CommitRow[];
+    });
+    if (rows.length === 0) return [];
+    const commits: Commit[] = [];
+    for (const row of rows) commits.push(await parseRow(row));
+    const keep = this.#highestSeqBelow(namespace, key, fromSeq);
+    const stored = this.#selectSnapshot.get(namespace, name) as
+      | { seq: number; body: string }
+      | undefined;
+    // A compacted partition replays from its snapshot: one past `keep` leaves
+    // nothing to rebuild the kept state from.
+    if (
+      stored !== undefined && stored.seq > keep &&
+      this.#compactedSeq(namespace, name) > 0
+    ) {
+      throw new Error(
+        `Partition ${name} of commits.db cannot drop its commits from seq ${fromSeq}: its only snapshot is past them and its earlier commits were compacted`,
+      );
+    }
+    const rebuilt = await this.#rebuild(namespace, key, keep);
+    if (rebuilt.seq !== keep) {
+      throw new Error(
+        `Partition ${name} changed in commits.db while its commits were dropped: another process is writing the store`,
+      );
+    }
+    const now = Date.now();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const again = selectFrom.all(namespace, name, fromSeq) as unknown as {
+        cursor: number;
+      }[];
+      if (
+        again.length !== rows.length ||
+        again.some((row, at) => row.cursor !== rows[at].cursor)
+      ) {
+        throw new Error(
+          `Partition ${name} changed in commits.db while its commits were dropped: another process is writing the store`,
+        );
+      }
+      for (const commit of commits) {
+        this.#base.releaseRefs(namespace, name, commit.chunkRefs(), now);
+      }
+      this.#db.prepare(
+        "DELETE FROM commits WHERE namespace = ? AND partition = ? AND seq >= ?",
+      ).run(namespace, name, fromSeq);
+      if (keep === 0 && this.#compactedSeq(namespace, name) === 0) {
+        this.#db.prepare(
+          "DELETE FROM partition_heads WHERE namespace = ? AND partition = ?",
+        ).run(namespace, name);
+      } else {
+        this.#upsertHead.run(
+          namespace,
+          name,
+          rebuilt.seq,
+          rebuilt.highestFence ?? null,
+        );
+      }
+      this.#db.prepare(
+        "DELETE FROM partition_snapshots WHERE namespace = ? AND partition = ? AND seq > ?",
+      ).run(namespace, name, keep);
+      if (stored !== undefined && stored.seq > keep && keep > 0) {
+        this.#upsertSnapshot.run(
+          namespace,
+          name,
+          keep,
+          JSON.stringify(rebuilt.snapshot()),
+        );
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      throw error;
+    } finally {
+      this.#cache.delete(cacheKey);
+    }
+    return commits;
   }
 
   /**

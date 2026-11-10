@@ -46,6 +46,11 @@ async function withTempDir(
   }
 }
 
+/** takes a file back to the schema before acknowledgements were kept */
+const UNDO_ACKNOWLEDGEMENTS = `DROP TABLE acknowledged; DROP TABLE repair;
+  ALTER TABLE copy DROP COLUMN repairs;
+  ALTER TABLE copy DROP COLUMN acks_from;`;
+
 Deno.test("ServeUpstreamState: starts at cursor 0 with no serve heads", async () => {
   await withTempDir((dir) => {
     const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
@@ -386,7 +391,7 @@ Deno.test("ServeUpstreamState: a file at schema version 3 upgrades with no acces
     const id = made.copyId();
     made.close();
     const db = new DatabaseSync(path);
-    db.exec(`DROP TABLE contact;
+    db.exec(`${UNDO_ACKNOWLEDGEMENTS} DROP TABLE contact;
        ALTER TABLE copy DROP COLUMN access_built;
        ALTER TABLE copy DROP COLUMN access_seen;
        ALTER TABLE copy DROP COLUMN access_reset_at;
@@ -548,7 +553,9 @@ Deno.test("ServeUpstreamState: a file at schema version 4 upgrades with no conta
     const path = join(dir, "serve_upstream.db");
     ServeUpstreamState.open(path).close();
     const db = new DatabaseSync(path);
-    db.exec(`DROP TABLE contact; PRAGMA user_version=4;`);
+    db.exec(
+      `${UNDO_ACKNOWLEDGEMENTS} DROP TABLE contact; PRAGMA user_version=4;`,
+    );
     db.close();
     const state = ServeUpstreamState.open(path);
     try {
@@ -600,14 +607,14 @@ Deno.test("ServeUpstreamState.initiator: unseen until recorded, kept across a re
   });
 });
 
-Deno.test("ServeUpstreamState: a file one schema older upgrades with no initiator recorded", async () => {
+Deno.test("ServeUpstreamState: a file from before run initiators upgrades with no initiator recorded", async () => {
   await withTempDir((dir) => {
     const path = join(dir, "serve_upstream.db");
     ServeUpstreamState.open(path).close();
     const db = new DatabaseSync(path);
-    db.exec("DROP TABLE initiator");
+    db.exec(`${UNDO_ACKNOWLEDGEMENTS} DROP TABLE initiator`);
     db.exec(
-      `PRAGMA user_version = ${SERVE_UPSTREAM_STATE_SCHEMA_VERSION - 1}`,
+      `PRAGMA user_version = ${SERVE_UPSTREAM_STATE_SCHEMA_VERSION - 2}`,
     );
     db.close();
     const state = ServeUpstreamState.open(path);
@@ -615,6 +622,83 @@ Deno.test("ServeUpstreamState: a file one schema older upgrades with no initiato
       assertEquals(state.initiator(), undefined);
     } finally {
       state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: a repair resets the feed to the loaded base with no anchor, sets serve's head, and fences a catch-up that read before it (swamp-club#4581)", async () => {
+  await withTempDir((dir) => {
+    const state = ServeUpstreamState.open(join(dir, "serve_upstream.db"));
+    try {
+      state.recordBaseLoaded(4, []);
+      state.advanceFeedCursor(9, {
+        namespace: "",
+        partition: "model/a",
+        seq: 6,
+        txnId: "orphan",
+      });
+      state.recordServeHead("", "model/a", 8);
+      const before = state.repairs();
+      const repair = {
+        namespace: "",
+        partition: "model/a",
+        fromSeq: 5,
+        serveHead: 7,
+        since: 1000,
+      };
+
+      state.beginRepair(repair);
+      assertEquals(state.pendingRepair(), repair);
+      assertEquals(state.feedCursor(), 9, "noting moves nothing");
+      // a catch-up that read before the repair began
+      assertEquals(state.advanceFeedCursor(12, undefined, 4, before), false);
+      state.resetFeedForRepair();
+      assertEquals(state.pendingRepair(), { ...repair, dropped: true });
+      assertEquals(state.feedCursor(), 4);
+      assertEquals(state.feedAnchor(), undefined);
+      assertEquals(state.serveHead("", "model/a"), 7);
+      // a reset is applied once, even when asked again
+      state.advanceFeedCursor(5, undefined, 4, state.repairs());
+      state.resetFeedForRepair();
+      assertEquals(state.feedCursor(), 5);
+      state.finishRepair();
+      assertEquals(state.pendingRepair(), undefined);
+    } finally {
+      state.close();
+    }
+  });
+});
+
+Deno.test("ServeUpstreamState: acknowledged commits are kept per partition, and a copy that read the feed before they were kept says since when (swamp-club#4581)", async () => {
+  await withTempDir((dir) => {
+    const path = join(dir, "serve_upstream.db");
+    const fresh = ServeUpstreamState.open(join(dir, "fresh.db"));
+    try {
+      fresh.recordAcknowledged("", "model/a", "t1", 10_000_000_000_000);
+      fresh.recordAcknowledged("", "model/b", "t2", 10_000_000_000_000);
+      assertEquals([...fresh.acknowledged("", "model/a")], ["t1"]);
+      assertEquals(fresh.acknowledgedFrom(), undefined);
+    } finally {
+      fresh.close();
+    }
+    const state = ServeUpstreamState.open(path);
+    state.advanceFeedCursor(3);
+    state.close();
+    // the file as the release before acknowledgements were kept left it
+    const db = new DatabaseSync(path);
+    db.exec(
+      `${UNDO_ACKNOWLEDGEMENTS}
+       PRAGMA user_version = ${SERVE_UPSTREAM_STATE_SCHEMA_VERSION - 1};`,
+    );
+    db.close();
+    const before = Date.now();
+    const migrated = ServeUpstreamState.open(path);
+    try {
+      const from = migrated.acknowledgedFrom();
+      assert(from !== undefined && from >= before - 1000, String(from));
+      assertEquals(migrated.feedCursor(), 3);
+    } finally {
+      migrated.close();
     }
   });
 });

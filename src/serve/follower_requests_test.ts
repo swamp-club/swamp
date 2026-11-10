@@ -157,3 +157,16 @@ Deno.test("followerRefusal: a version check for the leader is forwarded, and onl
   );
   assertEquals(followerRefusal("server.version", undefined, true), undefined);
 });
+
+Deno.test("followerRefusal: a leader whose lease is unconfirmed feeds no commit and still answers everything else (swamp-club#4581)", () => {
+  const unconfirmed = { ...gate("leader"), leadUnconfirmed: () => true };
+  for (const type of ["commits.head", "commits.subscribe"]) {
+    const refusal = followerRefusal(type, unconfirmed);
+    assertInstanceOf(refusal, ServeNotLeaderError);
+    assertEquals(refusal.leader, undefined);
+  }
+  assertEquals(followerRefusal("data.get", unconfirmed), undefined);
+  assertEquals(followerRefusal("workflow.run", unconfirmed), undefined);
+  const confirmed = { ...gate("leader"), leadUnconfirmed: () => false };
+  assertEquals(followerRefusal("commits.head", confirmed), undefined);
+});
