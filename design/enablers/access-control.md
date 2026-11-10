@@ -238,9 +238,10 @@ see [Workflow execution context](#workflow-execution-context). A ceiling allowin
   integration token cannot name a secret through them.
 - **A run already started carries on** after its integration is narrowed or revoked,
   including one suspended at a gate. Resuming one by request needs `run` under the
-  caller's own ceiling, so someone else can still resume it. An automatic resume
-  after a gate needs the deciding token's ceiling to cover the parent; otherwise
-  it waits for someone to resume it.
+  caller's own ceiling, so someone else can still resume it, held to their own
+  vault access and without adding inputs (see [Run-time rule](#run-time-rule)).
+  An automatic resume after a gate needs the deciding token's ceiling to cover
+  the parent; otherwise it waits for someone to resume it.
 
 ### The record
 
@@ -540,7 +541,9 @@ OAuth mode the operator must configure at least one of:
 If neither is set, the server refuses to start rather than admit anyone.
 
 Admission is checked when a person signs in with device login and when they
-consent to an integration link. It is checked again, against the lists in force
+consent to an integration link. swamp-club lets only members of the serve's
+collective decide its links, so `--allowed-users` admits a non-member to device
+login but never through a link. It is checked again, against the lists in force
 and the credential's recorded collectives, every time a credential issued to a
 person is used:
 
@@ -1987,8 +1990,21 @@ with local groups only, as trigger authorization does.
 **Resumes.** A workflow run persists its triggering principal (kind, id and
 token binding) and that membership snapshot. Every resume — approve-then-resume,
 a parent's auto-resume, detached or attached — is scoped by the persisted
-principal and snapshot, never by the approver or the resumer, who is still
-authorized to resume as before. A run triggered from a server-token session
+principal and snapshot, never widened by the approver or the resumer. Anyone
+with `run` may still resume another person's run, but a resume a caller asks
+for is also held to that caller's own vault access, so a vault is used only if
+both the person who started the run and the resumer may use it; an access
+admin resuming keeps exactly the run's scope, and a starter resuming their own
+run is also held to their current session's memberships. A child run started during such a
+resume still records the run's principal. Only the person who started the run,
+or an access admin, may add inputs on resume: inputs are write-once and later
+continuations act on them with the starter's access, so anyone else sending
+inputs is refused (`resumeRefusal: inputs_refused`, 403 `resume_inputs_refused`
+on the action route) before anything runs. A delegated caller counts as the
+person, and an admin acting through an integration is not an admin here.
+Serve's own continuations (after an approval or a signal, by the sweep, and of
+a parent after its child) add no inputs and stay held to the run's principal
+alone. A run triggered from a server-token session
 stays bound to that token: live and on resume, the token record is
 re-validated, so once the token is revoked, re-minted or deleted every vault
 operation is refused while the policy holds any vault grant. Expiry alone does

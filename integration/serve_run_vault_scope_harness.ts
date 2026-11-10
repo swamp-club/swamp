@@ -26,6 +26,8 @@ import {
   type PolicySnapshotLoader,
 } from "../src/domain/access/policy_snapshot_loader.ts";
 import type { Principal } from "../src/domain/access/principal.ts";
+import type { DelegationLookup } from "../src/domain/access/delegation_directory.ts";
+import type { DelegationRecord } from "../src/domain/models/access/delegation_model.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import type { Group } from "../src/domain/models/access/group_model.ts";
@@ -47,7 +49,9 @@ import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import {
   type ConnectionContext,
   removeConnection,
+  setConnectionClient,
   setConnectionCollectives,
+  setConnectionDelegation,
   setConnectionToken,
   type TokenSessionBinding,
 } from "../src/serve/handlers/shared.ts";
@@ -59,11 +63,13 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { YamlVaultConfigRepository } from "../src/infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
+  CONSENTED_TO_EVERYTHING,
   createServeCtx,
   type Frame,
   sendRequest,
   type ServeCtxOptions,
   type ServeRepo,
+  WIDEST_CEILING,
   withServeRepo,
 } from "./serve_request_harness.ts";
 
@@ -151,8 +157,16 @@ function decisionService(
 ): GrantBasedAccessDecisionService {
   return new GrantBasedAccessDecisionService(
     new PolicySnapshot(grants, groups, createConditionEvaluator()),
+    { integrations: WIDEST_CEILING, delegations: LINKS_OF_TEST_APP },
   );
 }
+
+export const TEST_APP_CLIENT = "integration:test-app";
+
+const LINKS_OF_TEST_APP: DelegationLookup = {
+  standingOf: (id) => CONSENTED_TO_EVERYTHING.standingOf(id),
+  recordOf: () => ({ integrationId: "test-app" }) as DelegationRecord,
+};
 
 export async function createVault(
   repoDir: string,
@@ -540,6 +554,7 @@ export async function approveAs(
 export interface SessionSetup {
   idpGroups?: string[];
   token?: TokenSessionBinding;
+  delegation?: { client: string; id: string };
 }
 
 export async function sendAs(
@@ -562,6 +577,10 @@ export async function sendAs(
     setConnectionCollectives(socket, [], session.idpGroups);
   }
   if (session.token) setConnectionToken(socket, session.token);
+  if (session.delegation) {
+    setConnectionClient(socket, session.delegation.client);
+    setConnectionDelegation(socket, session.delegation.id);
+  }
   const active = new Map<string, AbortController>();
   try {
     handleMessage(

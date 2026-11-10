@@ -624,3 +624,68 @@ test("one person's rate limit through a follower leaves another's alone", async 
     assertEquals(fine.status, 200, JSON.stringify(fine.body));
   }, { grants: [reads(person), reads(other)] });
 });
+
+test("a resume forwarded to the leader is decided as the resumer, not the person who started the run", async () => {
+  const forBob = grant({
+    subject: { kind: "user", name: "person-bob" },
+    actions: ["read", "run", "approve"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  await withTeam(async ({ leader, follower, repo, ctx }) => {
+    const name = `noted-${crypto.randomUUID()}`;
+    const workflow = Workflow.create({
+      name,
+      inputs: { properties: { note: { type: "string" } } },
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "gate",
+          task: StepTask.manualApproval("Approve"),
+        })],
+      })],
+    });
+    await repo.repoContext.workflowRepo.save(workflow);
+    const started = await post(follower, {
+      type: "workflow.run",
+      payload: { workflowIdOrName: name, idempotencyKey: crypto.randomUUID() },
+    });
+    assertEquals(started.status, 202, JSON.stringify(started.body));
+    await waitFor(
+      () => (ctx.activeRunRegistry?.size ?? 0) === 0,
+      "the run left the registry",
+    );
+    const runId = started.body.data.runId as string;
+    const run = await storedRun(repo, name, runId);
+    assertEquals(run.initiatedBy, `user:${CALLER.id}`);
+    const approved = await post(follower, {
+      type: "workflow.approve",
+      payload: {
+        workflowIdOrName: name,
+        runId,
+        stepName: "gate",
+        suspendedAt: run.getJob("main")!.getStep("gate")!.startedAt!
+          .toISOString(),
+      },
+    }, "person-bob.secret");
+    assertEquals(approved.status, 200, JSON.stringify(approved.body));
+    const resumeWithNote = {
+      type: "workflow.resume",
+      payload: { workflowIdOrName: name, runId, inputs: { note: "x" } },
+    };
+
+    const before = leader.sourceIps.length;
+    const refused = await post(follower, resumeWithNote, "person-bob.secret");
+    assertEquals(refused.status, 403, JSON.stringify(refused.body));
+    assertEquals(refused.body.code, "resume_inputs_refused");
+    assert(leader.sourceIps.length > before, "the leader decided it");
+    assertEquals((await storedRun(repo, name, runId)).status, "suspended");
+
+    const own = await post(follower, resumeWithNote);
+    assertEquals(own.status, 202, JSON.stringify(own.body));
+    await waitFor(
+      async () => (await storedRun(repo, name, runId)).status === "succeeded",
+      "the starter's resume finishes",
+    );
+    assertEquals((await storedRun(repo, name, runId)).inputs.note, "x");
+  }, { grants: [everyAction(), forBob] });
+});

@@ -178,6 +178,13 @@ Deno.test("actionFailure: pinned codes and statuses", () => {
     ],
     [
       "workflow.resume",
+      "workflow_resume_failed",
+      { resumeRefusal: "inputs_refused" },
+      403,
+      "resume_inputs_refused",
+    ],
+    [
+      "workflow.resume",
       "run_not_suspended",
       undefined,
       409,
