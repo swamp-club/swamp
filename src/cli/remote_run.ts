@@ -1432,6 +1432,7 @@ interface HandshakeProbe {
   refused: boolean;
 }
 
+// kept in step with isConnectionRefused in packages/client, which src cannot import
 const REFUSED_PATTERN =
   /connection refused|ECONNREFUSED|os error (?:61|111|10061)\b/i;
 

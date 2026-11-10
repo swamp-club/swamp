@@ -1913,8 +1913,11 @@ above: `swamp … --server` and `packages/client` retry them, while a webhook
 sender must retry on 503. Each queued webhook and cron run names the process that queued it
 (instance id, pid and host identity), so a starting process leaves a run whose
 owner still lives to that owner (on this host by its pid, elsewhere by a fresh
-heartbeat), and replays it once the owner has gone, checking every 5 s; a run
-it replays becomes its own (`src/serve/pending_run_owner.ts`). Runs queued by
+heartbeat). Every 5 s for as long as it runs, it reads this checkout's queued
+runs again and replays those whose owner has gone, including runs a peer
+queued after this process started; a run it replays becomes its own
+(`src/serve/pending_run_owner.ts`). Cron fires are claimed once across the
+processes sharing a repository (`fire-records/` with `putIfAbsent`). Runs queued by
 an older serve name no owner and are replayed at boot as before. Overlapping
 restarts are not supported on a v3 datastore until team mode, since both
 processes would need the writer lease.

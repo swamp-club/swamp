@@ -330,8 +330,11 @@ export interface ReplayPendingRunsDeps {
   /** a run whose owner still lives is left to it and named in `deferred` */
   ownerAlive?: PendingOwnerAlive;
   deferred?: Set<string>;
-  /** replays only these ids, as the deferred sweep does */
-  only?: ReadonlySet<string>;
+  /**
+   * the sweep's pass: this checkout's runs only, and only those a gone peer
+   * owned, since an ownerless run is boot's to replay
+   */
+  sweep?: boolean;
   /** a replayed run becomes this process's, so no later start replays it again */
   claimAs?: PendingRunOwner;
 }
@@ -346,7 +349,7 @@ export async function replayPendingRuns(
   // id
   const pending: PendingRunEntry[] = [...localPending];
   const remoteSourceKeys = new Map<string, string>();
-  if (deps.controlPlaneStore) {
+  if (deps.controlPlaneStore && !deps.sweep) {
     try {
       const remoteKeys = await deps.controlPlaneStore.list("pending-runs/");
       const localIds = new Set(localPending.map((e) => e.id));
@@ -438,7 +441,7 @@ export async function replayPendingRuns(
 
   let replayed = 0;
   for (const entry of pending) {
-    if (deps.only && !deps.only.has(entry.id)) continue;
+    if (deps.sweep && entry.owner === undefined) continue;
     // a run this process already owns is in its queue, or failed to start
     if (
       deps.claimAs !== undefined &&

@@ -65,12 +65,15 @@ Deno.test({
 });
 
 Deno.test("checkReusePortListen: a certificate and key that do not load fail before startup", () => {
-  assertThrows(() =>
-    checkReusePortListen({
-      port: 0,
-      hostname: "127.0.0.1",
-      cert: "not a certificate",
-      key: "not a key",
-    })
+  assertThrows(
+    () =>
+      checkReusePortListen({
+        port: 0,
+        hostname: "127.0.0.1",
+        cert: "not a certificate",
+        key: "not a key",
+      }),
+    UserError,
+    "do not load",
   );
 });

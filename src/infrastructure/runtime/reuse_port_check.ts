@@ -41,11 +41,19 @@ export function checkReusePortListen(options: {
     );
   }
   if (options.cert !== undefined && options.key !== undefined) {
-    Deno.listenTls({
-      port: 0,
-      hostname: "127.0.0.1",
-      cert: options.cert,
-      key: options.key,
-    }).close();
+    try {
+      Deno.listenTls({
+        port: 0,
+        hostname: "127.0.0.1",
+        cert: options.cert,
+        key: options.key,
+      }).close();
+    } catch (error) {
+      throw new UserError(
+        `--reuse-port: the TLS certificate and key do not load (${
+          error instanceof Error ? error.message : String(error)
+        })`,
+      );
+    }
   }
 }

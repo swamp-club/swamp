@@ -21,8 +21,8 @@ import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
-  DeferredReplaySweep,
   pendingOwnerLiveness,
+  PendingReplaySweep,
 } from "./pending_run_owner.ts";
 
 const PEER = { instanceId: "peer", pid: 4242, host: "host-a" };
@@ -133,62 +133,73 @@ Deno.test("pendingOwnerLiveness: an owner with no host is judged by its heartbea
   assertEquals(await alive({ instanceId: "peer", pid: 4242 }), true);
 });
 
-Deno.test("DeferredReplaySweep: passes until nothing is left deferred, then stops on its own", async () => {
-  const passes: string[][] = [];
-  let ownerGone = false;
-  const sweep = new DeferredReplaySweep({
-    intervalMs: 1,
-    replay: (ids) => {
-      passes.push([...ids]);
-      return Promise.resolve(ownerGone ? new Set<string>() : new Set(ids));
+function manualTimer() {
+  const queued: (() => void)[] = [];
+  return {
+    schedule: (run: () => void) => queued.push(run),
+    cancel: () => queued.splice(0),
+    queued,
+    fire: () => queued.shift()?.(),
+  };
+}
+
+Deno.test("PendingReplaySweep: passes again after each pass until stopped", async () => {
+  const timer = manualTimer();
+  let passes = 0;
+  const sweep = new PendingReplaySweep({
+    replay: () => {
+      passes++;
+      return Promise.resolve();
     },
+    schedule: timer.schedule,
+    cancel: timer.cancel,
   });
-  sweep.start(new Set(["a", "b"]));
-  await waitFor(() => passes.length >= 2, "two passes while the owner lives");
-  ownerGone = true;
-  await waitFor(() => sweep.pending.size === 0, "the sweep emptied");
-  const settled = passes.length;
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assertEquals(passes.length, settled);
-  assertEquals(passes[0], ["a", "b"]);
+  sweep.start();
+  sweep.start();
+  assertEquals(timer.queued.length, 1);
+  timer.fire();
+  await waitFor(() => timer.queued.length === 1, "the next pass scheduled");
+  timer.fire();
+  await waitFor(() => passes === 2, "two passes ran");
+  await sweep.stop();
+  assertEquals(timer.queued.length, 0);
+});
+
+Deno.test("PendingReplaySweep: a pass that throws does not end the sweep", async () => {
+  const timer = manualTimer();
+  let passes = 0;
+  const sweep = new PendingReplaySweep({
+    replay: () => {
+      passes++;
+      return Promise.reject(new Error("database is locked"));
+    },
+    schedule: timer.schedule,
+    cancel: timer.cancel,
+  });
+  sweep.start();
+  timer.fire();
+  await waitFor(() => timer.queued.length === 1, "rescheduled after a failure");
+  assertEquals(passes, 1);
   await sweep.stop();
 });
 
-Deno.test("DeferredReplaySweep: stop waits for a pass in flight and schedules no more", async () => {
+Deno.test("PendingReplaySweep: stop waits for a pass in flight and schedules no more", async () => {
+  const timer = manualTimer();
   const gate = Promise.withResolvers<void>();
-  let passes = 0;
   let finished = false;
-  const sweep = new DeferredReplaySweep({
-    intervalMs: 1,
-    replay: async (ids) => {
-      passes++;
+  const sweep = new PendingReplaySweep({
+    replay: async () => {
       await gate.promise;
       finished = true;
-      return new Set(ids);
     },
+    schedule: timer.schedule,
+    cancel: timer.cancel,
   });
-  sweep.start(new Set(["a"]));
-  await waitFor(() => passes === 1, "a pass started");
+  sweep.start();
+  timer.fire();
   const stopping = sweep.stop();
   gate.resolve();
   await stopping;
   assertEquals(finished, true);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assertEquals(passes, 1);
-});
-
-Deno.test("DeferredReplaySweep: a later start adds to what it waits on", async () => {
-  const seen: string[][] = [];
-  const sweep = new DeferredReplaySweep({
-    intervalMs: 1,
-    replay: (ids) => {
-      seen.push([...ids].sort());
-      return Promise.resolve(new Set<string>());
-    },
-  });
-  sweep.start(new Set(["a"]));
-  sweep.start(new Set(["b"]));
-  await waitFor(() => seen.length >= 1, "a pass ran");
-  assertEquals(seen[0], ["a", "b"]);
-  await sweep.stop();
+  assertEquals(timer.queued.length, 0);
 });

@@ -478,8 +478,8 @@ import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { ServeAdmission } from "../../serve/serve_admission.ts";
 import { checkReusePortListen } from "../../infrastructure/runtime/reuse_port_check.ts";
 import {
-  DeferredReplaySweep,
   pendingOwnerLiveness,
+  PendingReplaySweep,
 } from "../../serve/pending_run_owner.ts";
 import type { PendingRunOwner } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -6117,9 +6117,9 @@ export const serveCommand = new Command()
     const ac = new AbortController();
     // closes the listener ahead of ac, whose audit sinks must outlive the drain
     const listenerAc = new AbortController();
-    // passes start only after boot replay, which defines replayDeferred
-    const deferredReplay = new DeferredReplaySweep({
-      replay: (ids) => replayDeferred(ids),
+    // passes start only after boot replay, which defines replayLeftByPeers
+    const pendingReplaySweep = new PendingReplaySweep({
+      replay: () => replayLeftByPeers(),
     });
 
     const auditConfig = parseAuditConfig(configFile);
@@ -8848,8 +8848,6 @@ export const serveCommand = new Command()
       shuttingDown = true;
       isReady = false;
       admission.beginDraining();
-      // a pass during the drain would claim runs this process can no longer start
-      await deferredReplay.stop();
       // stopped first so it lets go of its load in flight instead of competing
       // with the drain; waited on after the drain, which does not wait for that
       // load
@@ -8866,6 +8864,8 @@ export const serveCommand = new Command()
         logger.info`Shutting down, aborting in-flight runs immediately...`;
       }
       const drainStarted = Date.now();
+      // a pass during the drain would claim runs this process can no longer start
+      await pendingReplaySweep.stop();
       // every later stage takes its bound from this one deadline, so neither a
       // slow bucket nor a stalled background pass holds shutdown past the drain
       // timeout plus a fixed margin
@@ -9217,7 +9217,7 @@ export const serveCommand = new Command()
     });
     const replayPending = async (
       deferred: Set<string>,
-      only?: ReadonlySet<string>,
+      sweep = false,
     ): Promise<number> => {
       // read at replay time: a reload may have changed the routes since boot
       const webhookTargets = webhookReplayTargets(webhookService);
@@ -9232,19 +9232,15 @@ export const serveCommand = new Command()
         ownerAlive: pendingOwnerAlive,
         deferred,
         claimAs: pendingRunOwner,
-        ...(only ? { only } : {}),
+        sweep,
       });
     };
-    const replayDeferred = async (
-      ids: ReadonlySet<string>,
-    ): Promise<ReadonlySet<string>> => {
-      const still = new Set<string>();
-      const replayed = await replayPending(still, ids);
+    const replayLeftByPeers = async (): Promise<void> => {
+      const replayed = await replayPending(new Set<string>(), true);
       if (replayed > 0) {
         logger
           .info`Replayed ${replayed} pending run(s) a stopped serve process left`;
       }
-      return still;
     };
     const replayPendingAtLead = async (): Promise<void> => {
       const deferred = new Set<string>();
@@ -9255,8 +9251,8 @@ export const serveCommand = new Command()
       if (deferred.size > 0) {
         logger
           .info`Left ${deferred.size} pending run(s) to the live serve process that queued them; replaying them once it stops`;
-        deferredReplay.start(deferred);
       }
+      pendingReplaySweep.start();
     };
     if (!v3Follows) {
       await replayPendingAtLead();

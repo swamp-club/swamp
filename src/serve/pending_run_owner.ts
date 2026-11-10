@@ -67,61 +67,62 @@ export function pendingOwnerLiveness(
   };
 }
 
-export const DEFERRED_REPLAY_INTERVAL_MS = 5_000;
+export const PENDING_REPLAY_INTERVAL_MS = 5_000;
 
-export interface DeferredReplayDeps {
-  /** replays what it can of `ids`, returning the ids still deferred */
-  replay: (ids: ReadonlySet<string>) => Promise<ReadonlySet<string>>;
+export interface PendingReplaySweepDeps {
+  /** one pass over the runs a gone peer left; a pass that throws is retried */
+  replay: () => Promise<void>;
   intervalMs?: number;
+  schedule?: (run: () => void, ms: number) => number;
+  cancel?: (handle: number) => void;
 }
 
-/** replays the runs boot left to a live peer once that peer has gone */
-export class DeferredReplaySweep {
-  readonly #deps: DeferredReplayDeps;
-  #pending: ReadonlySet<string> = new Set();
-  #timer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * a peer sharing this repo can queue runs until it exits, so the sweep keeps
+ * looking for as long as this process runs
+ */
+export class PendingReplaySweep {
+  readonly #deps: PendingReplaySweepDeps;
+  #handle: number | undefined;
   #inFlight: Promise<void> | undefined;
   #stopped = false;
 
-  constructor(deps: DeferredReplayDeps) {
+  constructor(deps: PendingReplaySweepDeps) {
     this.#deps = deps;
   }
 
-  get pending(): ReadonlySet<string> {
-    return this.#pending;
-  }
-
-  /** adds to what the sweep waits on; a later start keeps the earlier ids */
-  start(ids: ReadonlySet<string>): void {
-    this.#pending = new Set([...this.#pending, ...ids]);
-    if (this.#timer === undefined && this.#inFlight === undefined) {
-      this.#schedule();
-    }
+  start(): void {
+    if (this.#stopped || this.#handle !== undefined || this.#inFlight) return;
+    this.#schedule();
   }
 
   async stop(): Promise<void> {
     this.#stopped = true;
-    if (this.#timer !== undefined) clearTimeout(this.#timer);
-    this.#timer = undefined;
+    if (this.#handle !== undefined) {
+      (this.#deps.cancel ?? clearTimeout)(this.#handle);
+    }
+    this.#handle = undefined;
     await this.#inFlight;
   }
 
   #schedule(): void {
-    if (this.#stopped || this.#pending.size === 0) return;
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
-      this.#inFlight = this.#tick().finally(() => {
+    if (this.#stopped) return;
+    const schedule = this.#deps.schedule ??
+      ((run: () => void, ms: number) => Number(setTimeout(run, ms)));
+    this.#handle = schedule(() => {
+      this.#handle = undefined;
+      this.#inFlight = this.#pass().finally(() => {
         this.#inFlight = undefined;
+        this.#schedule();
       });
-    }, this.#deps.intervalMs ?? DEFERRED_REPLAY_INTERVAL_MS);
+    }, this.#deps.intervalMs ?? PENDING_REPLAY_INTERVAL_MS);
   }
 
-  async #tick(): Promise<void> {
+  async #pass(): Promise<void> {
     try {
-      this.#pending = await this.#deps.replay(this.#pending);
+      await this.#deps.replay();
     } catch {
-      // a failed pass keeps the set for the next one
+      // the next pass reads the pending runs again
     }
-    this.#schedule();
   }
 }

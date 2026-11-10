@@ -2875,20 +2875,47 @@ Deno.test("replayPendingRuns: leaves a live peer's run to it and names it deferr
   assertEquals(h.deleted, []);
 });
 
-Deno.test("replayPendingRuns: only replays the named ids, as the deferred sweep does", async () => {
+Deno.test("replayPendingRuns: a sweep pass replays only runs a gone peer owned, and reads no remote runs", async () => {
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/remote-gone": cronEntry("remote-gone", GONE_PEER),
+  });
   const h = createReplayHarness([
-    cronEntry("a", GONE_PEER),
-    cronEntry("b", GONE_PEER),
+    cronEntry("gone", GONE_PEER),
+    cronEntry("live", LIVE_PEER),
+    cronEntry("ownerless"),
   ]);
+  h.deps.controlPlaneStore = controlPlaneStore;
 
   const count = await replayPendingRuns({
     ...h.deps,
     ownerAlive: peerAlive,
-    only: new Set(["b"]),
+    sweep: true,
   });
 
   assertEquals(count, 1);
-  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["b"]);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["gone"]);
+});
+
+Deno.test("replayPendingRuns: a run a peer queued after boot is replayed by a later pass once the peer has gone", async () => {
+  const pending: PendingRunEntry[] = [];
+  const h = createReplayHarness(pending, {
+    configuredCronWorkflows: new Set(["nightly-sync"]),
+  });
+  let peerLives = true;
+  const ownerAlive = () => Promise.resolve(peerLives);
+
+  assertEquals(await replayPendingRuns({ ...h.deps, ownerAlive }), 0);
+  pending.push(cronEntry("late", GONE_PEER));
+  assertEquals(
+    await replayPendingRuns({ ...h.deps, ownerAlive, sweep: true }),
+    0,
+  );
+  peerLives = false;
+  assertEquals(
+    await replayPendingRuns({ ...h.deps, ownerAlive, sweep: true }),
+    1,
+  );
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["late"]);
 });
 
 Deno.test("replayPendingRuns: a replayed run is claimed for this process, locally and remotely", async () => {
