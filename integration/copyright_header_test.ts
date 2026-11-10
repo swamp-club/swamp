@@ -18,86 +18,29 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { walk } from "@std/fs/walk";
-import { join, relative, SEPARATOR } from "@std/path";
+import { join, relative } from "@std/path";
+import { collectFiles, headerStatus } from "../scripts/add_license_headers.ts";
 
-const HEADER_MARKER = "// Swamp, an Automation Framework";
-
-const SKIP_DIRS = new Set([
-  "experiments",
-  ".agents",
-  ".claude",
-  ".github",
-  ".jj",
-  "node_modules",
-  ".git",
-]);
-
-// Directories walked for .ts/.tsx sources. `extensions/` and `packages/` hold
-// first-party TypeScript that ships with the repo and is covered by the same
-// licence as src/.
-const WALK_DIRS = ["src", "integration", "scripts", "extensions", "packages"];
-
-/**
- * match the repo-relative path split on the native separator: an absolute-path
- * regex missed on Windows and skipped the whole tree when the checkout sat
- * under a skipped name
- */
-function isSkipped(repoRelativePath: string): boolean {
-  return repoRelativePath.split(SEPARATOR).some((seg) => SKIP_DIRS.has(seg));
-}
-
-function hasHeader(content: string): boolean {
-  const lines = content.split("\n");
-  const firstContentLine = lines[0].startsWith("#!") ? lines[2] : lines[0];
-  return firstContentLine === HEADER_MARKER;
-}
-
-Deno.test("hasHeader: all TypeScript files have the AGPLv3 copyright header", async () => {
+Deno.test("headerStatus: all TypeScript files carry the full AGPLv3 copyright header", async () => {
   const root = join(import.meta.dirname!, "..");
   const missing: string[] = [];
+  const malformed: string[] = [];
 
-  for (const dir of WALK_DIRS) {
-    const dirPath = join(root, dir);
-    try {
-      for await (
-        const entry of walk(dirPath, {
-          exts: [".ts", ".tsx"],
-          includeDirs: false,
-        })
-      ) {
-        const rel = relative(root, entry.path);
-        if (isSkipped(rel)) continue;
-        const content = await Deno.readTextFile(entry.path);
-        if (!hasHeader(content)) {
-          missing.push(rel);
-        }
-      }
-    } catch (err) {
-      if (!(err instanceof Deno.errors.NotFound)) {
-        throw err;
-      }
-    }
+  for (const file of await collectFiles(root)) {
+    const status = headerStatus(await Deno.readTextFile(file));
+    if (status === "missing") missing.push(relative(root, file));
+    if (status === "malformed") malformed.push(relative(root, file));
   }
 
-  for await (const entry of Deno.readDir(root)) {
-    if (
-      entry.isFile &&
-      (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx"))
-    ) {
-      const filePath = join(root, entry.name);
-      const content = await Deno.readTextFile(filePath);
-      if (!hasHeader(content)) {
-        missing.push(entry.name);
-      }
-    }
-  }
-
+  const list = (files: string[]) => files.map((f) => `  - ${f}`).join("\n");
   assertEquals(
-    missing.length,
-    0,
-    `The following ${missing.length} file(s) are missing the AGPLv3 copyright header.\n` +
-      `Run \`deno run license-headers\` to fix, or see FILE-LICENSE-TEMPLATE.md.\n\n` +
-      missing.sort().map((f) => `  - ${f}`).join("\n"),
+    [...missing, ...malformed],
+    [],
+    `${missing.length} file(s) are missing the AGPLv3 copyright header and ` +
+      `${malformed.length} have a malformed one.\n` +
+      `Run \`deno run license-headers\` to fix them. A header it reports as ` +
+      `unrepairable must be fixed by hand against HEADER in ` +
+      `scripts/add_license_headers.ts.\n\n` +
+      `Missing:\n${list(missing)}\n\nMalformed:\n${list(malformed)}`,
   );
 });

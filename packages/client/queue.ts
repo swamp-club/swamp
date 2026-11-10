@@ -3,7 +3,7 @@
 //
 // This file is part of Swamp.
 //
-// Swamp is free software: you can redistribute it and\/or modify
+// Swamp is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License version 3
 // as published by the Free Software Foundation, with the Swamp
 // Extension and Definition Exception (found in the "COPYING-EXCEPTION"
@@ -15,7 +15,7 @@
 // GNU Affero General Public License for more details.
 //
 // You should have received a copy of the GNU Affero General Public License
-// along with Swamp.  If not, see <https:\/\/www.gnu.org\/licenses\/>.
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
  * Simple async iterable queue for bridging push-based WebSocket events
