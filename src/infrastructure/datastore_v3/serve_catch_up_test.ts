@@ -1362,3 +1362,66 @@ Deno.test("ServeCatchUp.catchUp: a page asked for where the copy no longer stand
     assertEquals(await copySeqs(store, MODEL), [1]);
   });
 });
+
+Deno.test("ServeCatchUp.catchUp: a page sent with a lock and overtaken by the feed is applied from where the copy now stands, without reading it again (swamp-club#4574)", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 3; seq++) serve.land(await other(seq));
+    const asked = catchUp.request();
+    const page = await serve.changes(asked.cursor, signal(), 10);
+    // the feed moves the copy past the first commit meanwhile
+    const feed = await serve.changes(asked.cursor, signal(), 1);
+    await catchUp.catchUp(signal(), {
+      requested: asked,
+      page: { ...feed, more: false },
+    });
+    assertEquals(await copySeqs(store, MODEL), [1]);
+    const reads = serve.requests.changes;
+    const partitionReads = serve.requests.partitionCommits;
+
+    await catchUp.catchUp(signal(), { requested: asked, page });
+
+    assertEquals(await copySeqs(store, MODEL), [1, 2, 3]);
+    assertEquals(serve.requests.changes, reads);
+    assertEquals(serve.requests.partitionCommits, partitionReads);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: an overtaken page whose entry at the copy's cursor is another commit is not used", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 2; seq++) serve.land(await other(seq));
+    const asked = catchUp.request();
+    const page = await serve.changes(asked.cursor, signal(), 10);
+    const feed = await serve.changes(asked.cursor, signal(), 1);
+    await catchUp.catchUp(signal(), {
+      requested: asked,
+      page: { ...feed, more: false },
+    });
+    const reads = serve.requests.changes;
+    // the copy's commit at that cursor is not the page's
+    const forged = {
+      ...page,
+      changes: page.changes.map((change, i) =>
+        i === 0 ? { ...change, cursor: change.cursor + 1000 } : change
+      ),
+    };
+
+    await catchUp.catchUp(signal(), { requested: asked, page: forged });
+
+    assertEquals(serve.requests.changes, reads + 1);
+    assertEquals(await copySeqs(store, MODEL), [1, 2]);
+  });
+});
+
+Deno.test("ServeCatchUp.catchUp: a fresh copy appends a page of commits in shared transactions, not one each (swamp-club#4574)", async () => {
+  await withCheckout(async ({ store, serve, catchUp }) => {
+    for (let seq = 1; seq <= 200; seq++) serve.land(await other(seq));
+    const before = store.appendTransactions;
+
+    await catchUp.catchUp(signal());
+
+    assertEquals((await copySeqs(store, MODEL)).length, 200);
+    const used = store.appendTransactions - before;
+    // up to 64 commits share one transaction
+    assert(used <= Math.ceil(200 / 64), `${used} transactions for 200`);
+  });
+});

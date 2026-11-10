@@ -26,6 +26,7 @@ import {
   appendToOpenUnitOfWork,
   checkpointOpenUnitOfWork,
   commitsThroughCommitLog,
+  lastOpenUnitCheckpointAt,
   rootCommittedBeforeThrowing,
 } from "./repo_unit_of_work.ts";
 import {
@@ -146,16 +147,38 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
       this.#trailingTimer = undefined;
     }
     if (!atOnce && this.#trailingTimer !== undefined) return;
-    const wait = this.#lastStarted + this.#intervalMs - this.#now();
+    const wait = this.#dueIn();
     if (atOnce || wait <= 0) {
       await this.#schedule();
       return;
     }
     // Started inside the save's unit scope, so the timer's checkpoint finds
     // the run's open units as the save would.
+    this.#armTrailing(wait);
+  }
+
+  /**
+   * from the last commit of the run's record, by a checkpoint or by a flush
+   * such as a step's batch; a step start alone does not carry the record
+   */
+  #dueIn(): number {
+    const flushed = lastOpenUnitCheckpointAt(this.#repoContext) ??
+      Number.NEGATIVE_INFINITY;
+    return Math.max(this.#lastStarted, flushed) + this.#intervalMs -
+      this.#now();
+  }
+
+  /** a flush that lands while it waits pushes the checkpoint back */
+  #armTrailing(wait: number): void {
+    const armedAfter = lastOpenUnitCheckpointAt(this.#repoContext);
     this.#trailingTimer = setTimeout(() => {
       this.#trailingTimer = undefined;
-      this.#trailing = this.#schedule();
+      const flushed = lastOpenUnitCheckpointAt(this.#repoContext);
+      const left = flushed !== undefined && flushed !== armedAfter
+        ? flushed + this.#intervalMs - this.#now()
+        : 0;
+      if (left > 0 && !this.#closed) this.#armTrailing(left);
+      else this.#trailing = this.#schedule();
     }, wait);
   }
 
@@ -311,6 +334,10 @@ export class WorkflowRunCheckpointer implements RunCheckpointer {
       }`;
     }
     return restored;
+  }
+
+  overlapsStarts(): boolean {
+    return this.#usesJournal() && !this.#journalRefused;
   }
 
   committedLatest(runId: string): boolean {

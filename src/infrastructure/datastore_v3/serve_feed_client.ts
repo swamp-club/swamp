@@ -30,6 +30,8 @@ import type { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstre
 const logger = getSwampLogger(["datastore", "v3", "serve-feed"]);
 
 const MAX_BACKOFF_MS = 30_000;
+/** a catch-up still writing when the command ends is left to the next one */
+const STOP_WAIT_MS = 500;
 
 export interface ServeFeedWatch {
   stop(): Promise<void>;
@@ -54,6 +56,7 @@ export interface ServeFeedWatchOptions {
    */
   readonly ready?: (signal: AbortSignal) => Promise<void>;
   readonly openSocket?: (url: string, headers: Headers) => WebSocket;
+  readonly stopWaitMs?: number;
 }
 
 export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
@@ -213,7 +216,17 @@ export function watchServeFeed(options: ServeFeedWatchOptions): ServeFeedWatch {
           // Already closing.
         }
       }
-      await running;
+      if (running !== undefined) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const bound = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, options.stopWaitMs ?? STOP_WAIT_MS);
+        });
+        try {
+          await Promise.race([running, bound]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       httpClient?.close();
     },
   };

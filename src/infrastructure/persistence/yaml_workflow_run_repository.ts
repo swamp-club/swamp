@@ -1023,17 +1023,22 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         options.onRefused?.();
         return;
       }
-      await atomicWriteTextFile(path, content);
-      // A stream of the file just written: a later save of the run in the
-      // same unit supersedes it before it is read.
-      await stageTyped(this.markDirty, () => [
-        new RunChanges(workflowId, run.id).write(
-          created ? "run.create" : "run.update",
-          this.keyOf(path),
-          async () => (await Deno.open(path)).readable,
-          fence === undefined ? undefined : () => fence.isTakenOver(run.id),
-        ),
-      ]);
+      const unchanged = options.alreadyStaged === true &&
+        typedStagingActive(this.markDirty) && !created &&
+        await readTextIfExists(path) === content;
+      if (!unchanged) {
+        await atomicWriteTextFile(path, content);
+        // A stream of the file just written: a later save of the run in the
+        // same unit supersedes it before it is read.
+        await stageTyped(this.markDirty, () => [
+          new RunChanges(workflowId, run.id).write(
+            created ? "run.create" : "run.update",
+            this.keyOf(path),
+            async () => (await Deno.open(path)).readable,
+            fence === undefined ? undefined : () => fence.isTakenOver(run.id),
+          ),
+        ]);
+      }
 
       await this.updateIndexEntry(workflowId, run, path, content);
 
@@ -2762,6 +2767,15 @@ async function fileExists(path: string): Promise<boolean> {
     return true;
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+async function readTextIfExists(path: string): Promise<string | undefined> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
     throw error;
   }
 }

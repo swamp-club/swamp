@@ -897,6 +897,8 @@ export interface StepExecutionContext {
   emitEvent?: (event: WorkflowExecutionEvent) => void;
   forEachVariable?: ForEachBinding;
   forEachIndex?: number;
+  /** resolves once the step's start is recorded; rejects with StepStartUnrecordedError */
+  startRecorded?: () => Promise<void>;
   authoredExpressions: ReadonlySet<string>;
   /**
    * a direct-execution step validates the definition built from evaluated
@@ -957,6 +959,11 @@ export interface StepExecutionContext {
 
 export interface StepExecutor {
   execute(step: Step, ctx: StepExecutionContext): Promise<unknown>;
+  /**
+   * awaits ctx.startRecorded itself, after sending its lock request and before
+   * any side effect; any other executor gets the start awaited before it runs
+   */
+  readonly awaitsStartRecorded?: boolean;
 }
 
 /**
@@ -1416,6 +1423,7 @@ export interface StepExecutorDeps {
 }
 
 export class DefaultStepExecutor implements StepExecutor {
+  readonly awaitsStartRecorded = true;
   private readonly validationService = new DefaultModelValidationService();
   private readonly reportRunner = new MethodReportRunner();
   private readonly _directTypeResolver?: DirectTypeResolver;
@@ -2394,6 +2402,9 @@ export class DefaultStepExecutor implements StepExecutor {
       // a step queued on a sibling's lock must not start its side effect once
       // the run is cancelled; inside the try so the finally still releases
       ctx.signal.throwIfAborted();
+      // the start was saved while the lock was requested; the method runs only
+      // once it is recorded, and an unrecorded one releases the lock here
+      await ctx.startRecorded?.();
       if (this.stepLockHook) {
         // removed or replaced between its lookup and this lock; by name first,
         // which reads one file, by id only when that misses
@@ -3304,6 +3315,17 @@ export class WorkflowExecutionService {
   stoppedRuns = new Set<string>();
 
   /**
+   * a step's start save, by run, job, step and forEach iteration: the step
+   * makes the entry as it starts, the run's event loop gives it the save, and
+   * the step awaits it before its method, after sending its lock request
+   */
+  readonly #pendingStarts = new Map<string, PendingStart>();
+  /** runs whose event loop has ended: a start made now is never saved */
+  readonly #startSavesEnded = new Set<string>();
+  /** runs whose final record the reports' commit carried, for their next save */
+  readonly #finalRecordCommitted = new Set<string>();
+
+  /**
    * stops this executor saving a run another owner has taken over, such as when
    * serve shutdown marks an aborted run interrupted; defaults to never closing
    */
@@ -4084,13 +4106,17 @@ export class WorkflowExecutionService {
           );
         });
         for await (
-          const event of mergeWithConcurrency(
-            jobStreams,
-            jobConcurrency,
-            levelSignal,
-            // Each started job runs on to its own cleanup and completion, as
-            // a job alone in its level does.
-            { finishStartedOnAbort: true },
+          const event of this.#savingStarts(
+            mergeWithConcurrency(
+              jobStreams,
+              jobConcurrency,
+              levelSignal,
+              // Each started job runs on to its own cleanup and completion,
+              // as a job alone in its level does.
+              { finishStartedOnAbort: true },
+            ),
+            workflow.id,
+            run,
           )
         ) {
           if (event.kind === "model_resolved") {
@@ -4101,11 +4127,6 @@ export class WorkflowExecutionService {
               modelId: event.modelId,
               methodName: event.methodName,
             });
-          } else if (event.kind === "step_started") {
-            // Saved so a run whose owner is killed mid-step still shows the
-            // step started: `workflow cancel` settles it from this record,
-            // and interrupting the run marks it unknown rather than pending.
-            await this.saveRunForEvent(workflow.id, run, event);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
@@ -5051,11 +5072,15 @@ export class WorkflowExecutionService {
           );
         });
         for await (
-          const event of mergeWithConcurrency(
-            jobStreams,
-            jobConcurrency,
-            levelSignal,
-            { finishStartedOnAbort: true },
+          const event of this.#savingStarts(
+            mergeWithConcurrency(
+              jobStreams,
+              jobConcurrency,
+              levelSignal,
+              { finishStartedOnAbort: true },
+            ),
+            workflow.id,
+            existingRun,
           )
         ) {
           if (event.kind === "model_resolved") {
@@ -5066,11 +5091,6 @@ export class WorkflowExecutionService {
               modelId: event.modelId,
               methodName: event.methodName,
             });
-          } else if (event.kind === "step_started") {
-            // Saved so a run whose owner is killed mid-step still shows the
-            // step started: `workflow cancel` settles it from this record,
-            // and interrupting the run marks it unknown rather than pending.
-            await this.saveRunForEvent(workflow.id, existingRun, event);
           } else if (event.kind === "step_completed") {
             const key = `${event.jobId}:${event.stepId}`;
             stepStatuses.set(key, "succeeded");
@@ -6682,7 +6702,9 @@ export class WorkflowExecutionService {
     let liveOutputs:
       | Pick<ResolvedStepOutputs, "outputs" | "sources">
       | undefined;
+    let startDelivered = false;
     try {
+      this.#expectStart(run, job.name, stepName, forEachIndex);
       // Yielded inside the try so a consumer that stops here still ends the
       // step span in the finally below.
       yield {
@@ -6692,8 +6714,13 @@ export class WorkflowExecutionService {
         forEachTemplate,
         forEachIndex,
       };
+      startDelivered = true;
 
       const task = step.task.data;
+      // a behavior's step awaits its start after sending its lock request
+      if (task.type !== "model_method") {
+        await this.#awaitStart(run.id, job.name, stepName, forEachIndex);
+      }
 
       if (reenterNestedWait) {
         liveOutputs = yield* this.settleNestedWait(
@@ -7242,6 +7269,8 @@ export class WorkflowExecutionService {
           step,
           forEachVariable: forEachVar,
           forEachIndex,
+          startRecorded: () =>
+            this.#awaitStart(run.id, job.name, stepName, forEachIndex),
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
@@ -7389,6 +7418,16 @@ export class WorkflowExecutionService {
         forEachIndex,
       };
     } catch (error) {
+      // a step that failed before awaiting its start fails only once it is
+      // recorded; an unrecorded start stops the run instead
+      try {
+        await this.#awaitStart(run.id, job.name, stepName, forEachIndex);
+      } catch (startError) {
+        if (startError instanceof StepStartUnrecordedError) {
+          stepSpan.end();
+          throw startError;
+        }
+      }
       if (
         error instanceof WorkflowSuspendedError ||
         error instanceof StepStartUnrecordedError
@@ -7461,6 +7500,13 @@ export class WorkflowExecutionService {
       // Do not re-throw: merge() continues draining all step generators
       // (allSettled semantics). The job generator tracks failure via step_failed events.
     } finally {
+      // closed at its start's yield before the loop took it: nothing will save
+      // the start, so it is refused here rather than waited for
+      if (!startDelivered) {
+        this.#dropUndeliveredStart(run, job.name, stepName, forEachIndex);
+      }
+      // a step that returned before awaiting its start still waits for it
+      await this.#awaitStart(run.id, job.name, stepName, forEachIndex);
       if (
         stepExprContext?.steps &&
         (stepRun.status === "succeeded" || stepRun.status === "failed" ||
@@ -8155,11 +8201,13 @@ export class WorkflowExecutionService {
     const dataWrites = options.inFlightMethodRuns?.dataWrites;
     const execution = runWithRejectionReport(
       createRejectionReport(),
-      () =>
-        this.executor.execute(
+      async () => {
+        if (!this.executor.awaitsStartRecorded) await ctx.startRecorded?.();
+        return await this.executor.execute(
           step,
           dataWrites ? { ...ctx, inFlightDataWrites: dataWrites } : ctx,
-        ),
+        );
+      },
     );
     return options.inFlightMethodRuns?.track(execution) ?? execution;
   }
@@ -8554,6 +8602,142 @@ export class WorkflowExecutionService {
     });
   }
 
+  #expectStart(
+    run: WorkflowRun,
+    jobName: string,
+    stepName: string,
+    forEachIndex: number | undefined,
+  ): void {
+    let resolve: ((save: Promise<void>) => void) | undefined;
+    const saved = new Promise<void>((r) => {
+      resolve = (save) => r(save);
+    });
+    // the step awaits it once its lock request returns, maybe after it fails
+    saved.catch(() => {});
+    const entry: PendingStart = {
+      workflowId: run.workflowId,
+      workflowName: run.workflowName,
+      runId: run.id,
+      jobName,
+      stepName,
+      saved,
+      resolve,
+    };
+    this.#pendingStarts.set(
+      startKeyOf(run.id, jobName, stepName, forEachIndex),
+      entry,
+    );
+    if (this.#startSavesEnded.has(run.id)) refuseStart(entry);
+  }
+
+  #dropUndeliveredStart(
+    run: WorkflowRun,
+    jobName: string,
+    stepName: string,
+    forEachIndex: number | undefined,
+  ): void {
+    const key = startKeyOf(run.id, jobName, stepName, forEachIndex);
+    const entry = this.#pendingStarts.get(key);
+    if (entry?.resolve === undefined) return;
+    run.getJob(jobName)?.getStep(stepName)?.revertUnrecordedStart();
+    refuseStart(entry);
+    this.#pendingStarts.delete(key);
+  }
+
+  /** rejects with StepStartUnrecordedError when the start did not commit */
+  async #awaitStart(
+    runId: string,
+    jobName: string,
+    stepName: string,
+    forEachIndex: number | undefined,
+  ): Promise<void> {
+    const key = startKeyOf(runId, jobName, stepName, forEachIndex);
+    const entry = this.#pendingStarts.get(key);
+    if (entry === undefined) return;
+    // left in place until settled: the loop finds it by key to give it the save
+    try {
+      await entry.saved;
+    } finally {
+      if (this.#pendingStarts.get(key) === entry) {
+        this.#pendingStarts.delete(key);
+      }
+    }
+  }
+
+  /**
+   * yields a step start once a save holding it landed, asking for the step's
+   * next event meanwhile so its lock request overlaps the save; each save is
+   * awaited before the next event, and a failed one stops the run here
+   */
+  async *#savingStarts(
+    events: AsyncIterable<WorkflowExecutionEvent>,
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    this.#startSavesEnded.delete(run.id);
+    const iterator = events[Symbol.asyncIterator]();
+    let next: Promise<IteratorResult<WorkflowExecutionEvent>> | undefined;
+    let finished = false;
+    try {
+      while (true) {
+        const result = await (next ?? iterator.next());
+        next = undefined;
+        if (result.done) {
+          finished = true;
+          break;
+        }
+        const event = result.value;
+        // Saved so a run whose owner is killed mid-step still shows the step
+        // started: `workflow cancel` settles it from this record, and
+        // interrupting the run marks it unknown rather than pending.
+        const entry = event.kind === "step_started"
+          ? this.#pendingStarts.get(
+            startKeyOf(run.id, event.jobId, event.stepId, event.forEachIndex),
+          )
+          : undefined;
+        if (event.kind === "step_started" && entry?.resolve !== undefined) {
+          const save = this.saveRunForEvent(workflowId, run, event);
+          save.catch(() => {});
+          entry.resolve(save);
+          entry.resolve = undefined;
+          if (this.runCheckpointer.overlapsStarts?.() === true) {
+            next = iterator.next();
+            next.catch(() => {});
+          }
+          await save;
+        } else if (event.kind === "step_started") {
+          await this.saveRunForEvent(workflowId, run, event);
+        }
+        yield event;
+      }
+    } finally {
+      // A loop left early never saves the starts still to come, including
+      // those of steps still draining: they stop before their methods.
+      if (!finished) this.#startSavesEnded.add(run.id);
+      for (const entry of this.#pendingStarts.values()) {
+        if (entry.runId !== run.id || entry.resolve === undefined) continue;
+        run.getJob(entry.jobName)?.getStep(entry.stepName)
+          ?.revertUnrecordedStart();
+        refuseStart(entry);
+      }
+      // as a for-await left early would, once the step asked for ahead ends
+      if (!finished) {
+        await next?.catch(() => {});
+        // a stream that throws as it closes never hides the error leaving here
+        await iterator.return?.()?.catch(() => {});
+      }
+    }
+  }
+
+  /** written for the open unit to commit with whatever flushes next */
+  async #stageRunRecord(workflowId: WorkflowId, run: WorkflowRun) {
+    if (this.runWriteFence.isClosed(run.id)) return;
+    await this.runWriteFence.track(
+      run.id,
+      this.runRepo.save(workflowId, run, { fence: this.runWriteFence }),
+    );
+  }
+
   private async saveRun(
     workflowId: WorkflowId,
     run: WorkflowRun,
@@ -8577,6 +8761,7 @@ export class WorkflowExecutionService {
           onRefused: () => {
             refused = true;
           },
+          alreadyStaged: this.#finalRecordCommitted.delete(run.id),
         });
         // Only a save that wrote nothing: one the fence closed just after it
         // wrote may be the final record of a run the new owner leaves alone,
@@ -8976,6 +9161,9 @@ export class WorkflowExecutionService {
     }
     let artifacts: Awaited<ReturnType<WorkflowReportRunner["runFor"]>> = [];
     let flushFailure: string | undefined;
+    // a top-level run that has ended stages its final record naming the
+    // reports, so the reports' commit carries it and ends the lease
+    let staged: typeof artifacts = [];
     try {
       artifacts = await this.workflowReportRunner.runFor({
         workflow,
@@ -8995,6 +9183,23 @@ export class WorkflowExecutionService {
     } finally {
       if (reportLock) {
         try {
+          if (
+            run.parentRun === undefined && artifacts.length > 0 &&
+            run.status !== "running" && run.status !== "pending"
+          ) {
+            staged = artifacts;
+            for (const ref of staged) run.addWorkflowDataArtifact(ref);
+            try {
+              await this.#stageRunRecord(workflow.id, run);
+            } catch (error) {
+              // the record then commits on its own after the reports
+              runLogger.debug("Staging the final record failed: {error}", {
+                error: error instanceof Error ? error.message : String(error),
+              });
+              run.withdrawWorkflowDataArtifacts(staged);
+              staged = [];
+            }
+          }
           await reportLock.flush(artifacts.map((artifact) => ({
             modelType: WORKFLOW_MODEL_TYPE,
             modelId: workflow.id,
@@ -9002,7 +9207,10 @@ export class WorkflowExecutionService {
             version: artifact.version,
             dataId: artifact.dataId,
           })));
+          if (staged.length > 0) this.#finalRecordCommitted.add(run.id);
         } catch (error) {
+          run.withdrawWorkflowDataArtifacts(staged);
+          staged = [];
           flushFailure = `the reports could not be saved: ${
             error instanceof Error ? error.message : String(error)
           }`;
@@ -9027,7 +9235,7 @@ export class WorkflowExecutionService {
     }
 
     for (const ref of artifacts) {
-      run.addWorkflowDataArtifact(ref);
+      if (!staged.includes(ref)) run.addWorkflowDataArtifact(ref);
     }
 
     for (const event of bufferedEvents) {
@@ -9189,4 +9397,42 @@ function settleStoppedJobs(error: unknown, run: WorkflowRun): void {
       job.markUnknown();
     }
   }
+}
+
+function startKeyOf(
+  runId: string,
+  jobName: string,
+  stepName: string,
+  forEachIndex: number | undefined,
+): string {
+  return JSON.stringify([runId, jobName, stepName, forEachIndex ?? null]);
+}
+
+interface PendingStart {
+  readonly workflowId: string;
+  readonly workflowName: string;
+  readonly runId: string;
+  readonly jobName: string;
+  readonly stepName: string;
+  readonly saved: Promise<void>;
+  resolve?: (save: Promise<void>) => void;
+}
+
+/** a start its run's loop will never save: the step stops before its method */
+function refuseStart(entry: PendingStart): void {
+  const refused = Promise.reject(
+    new StepStartUnrecordedError(
+      new Error("the run stopped before this step's start was saved"),
+      {
+        workflowId: entry.workflowId,
+        workflowName: entry.workflowName,
+        runId: entry.runId,
+        stepName: entry.stepName,
+        jobName: entry.jobName,
+      },
+    ),
+  );
+  refused.catch(() => {});
+  entry.resolve?.(refused);
+  entry.resolve = undefined;
 }

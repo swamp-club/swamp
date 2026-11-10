@@ -377,6 +377,21 @@ export function commitLogParentFor(
   return state.isOpen() ? candidate : nearestOpenAncestor(state.parent);
 }
 
+/** the open root a checkpoint from `candidate` commits, as checkpointFrom does */
+export function commitLogRootFor(
+  markDirty: MarkDirtyHook,
+  candidate: UnitOfWork | undefined,
+): UnitOfWork | undefined {
+  let unit = commitLogParentFor(markDirty, candidate);
+  while (unit !== undefined) {
+    const state = states.get(unit);
+    if (state === undefined) return undefined;
+    if (state.parent === undefined) return unit;
+    unit = nearestOpenAncestor(state.parent);
+  }
+  return undefined;
+}
+
 function nearestOpenAncestor(
   parent: UnitOfWork | undefined,
 ): UnitOfWork | undefined {

@@ -26,6 +26,11 @@ export interface RunCheckpointer {
    */
   checkpoint(run: WorkflowRun): Promise<void>;
   committedLatest?(runId: string): boolean;
+  /**
+   * true when a step's start commits remotely, so the step's lock request is
+   * worth sending while it does; otherwise the start is saved first
+   */
+  overlapsStarts?(): boolean;
 }
 
 export const NO_RUN_CHECKPOINTS: RunCheckpointer = {

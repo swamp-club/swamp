@@ -1871,7 +1871,11 @@ async function recoverDroppedWork(
 export async function closeV3Datastores(
   options: { readonly storageUnreachable?: boolean } = {},
 ): Promise<void> {
-  await Promise.all(feedWatches.splice(0).map((watch) => watch.stop()));
+  await withSpan(
+    "swamp.datastore.v3.close.feed_stop",
+    {},
+    () => Promise.all(feedWatches.splice(0).map((watch) => watch.stop())),
+  );
   closeServeLockClients();
   let unreachable = options.storageUnreachable === true;
   // Serve's shutdown deadline, kept for the release once the sync's turn
@@ -1995,24 +1999,31 @@ export async function closeV3Datastores(
   restoredCopies.clear();
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
-  const closed = await Promise.allSettled(
-    handles.map((handle) => handle.close()),
+  const closed = await withSpan(
+    "swamp.datastore.v3.close.stores",
+    {},
+    () => Promise.allSettled(handles.map((handle) => handle.close())),
   );
   // The sidecars go after the stores, the lease after the sidecars.
   const unheld = await Promise.allSettled(
     held.flat().map((use) => use.release()),
   );
-  const released = await Promise.allSettled(
-    pending.map((release) =>
-      unreachable
-        ? boundedRelease(release, teardownTiming.releaseBoundMs)
-        : shutdownDeadline !== undefined
-        ? boundedRelease(
-          release,
-          shutdownDeadline.remaining(SHUTDOWN_RELEASE_BOUND_MS),
-        )
-        : release()
-    ),
+  const released = await withSpan(
+    "swamp.datastore.v3.close.releases",
+    {},
+    () =>
+      Promise.allSettled(
+        pending.map((release) =>
+          unreachable
+            ? boundedRelease(release, teardownTiming.releaseBoundMs)
+            : shutdownDeadline !== undefined
+            ? boundedRelease(
+              release,
+              shutdownDeadline.remaining(SHUTDOWN_RELEASE_BOUND_MS),
+            )
+            : release()
+        ),
+      ),
   );
   keepMarkers = false;
   keptMarkers.clear();

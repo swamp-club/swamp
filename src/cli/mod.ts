@@ -2750,25 +2750,32 @@ async function runInvocation(
       );
 
       if (telemetryCtx) {
-        try {
-          await telemetryCtx.service.recordSuccess(
-            telemetryInvocation,
-            startTime,
-          );
+        await withSpan("swamp.cli.teardown.telemetry", {}, async () => {
+          try {
+            await telemetryCtx.service.recordSuccess(
+              telemetryInvocation,
+              startTime,
+            );
 
-          await sendTelemetryAtCommandEnd(telemetryCtx, { succeeded: true });
-        } catch {
-          // Best effort — never break the CLI for telemetry failures
-        }
+            await sendTelemetryAtCommandEnd(telemetryCtx, { succeeded: true });
+          } catch {
+            // Best effort — never break the CLI for telemetry failures
+          }
+        });
       }
 
       // Re-register the macOS autoupdate job once per installed version, as
       // launchd can refuse a binary that replaced itself. Never from update.
       let schedulerRefreshed = false;
       if (!isDevBuild(VERSION) && commandInfo.command !== "update") {
-        const refresh = await refreshAutoupdateSchedulerIfOwed(
-          createAutoupdateRefreshDeps(),
-          VERSION,
+        const refresh = await withSpan(
+          "swamp.cli.teardown.autoupdate_refresh",
+          {},
+          () =>
+            refreshAutoupdateSchedulerIfOwed(
+              createAutoupdateRefreshDeps(),
+              VERSION,
+            ),
         );
         schedulerRefreshed = refresh.outcome === "refreshed";
         if (
@@ -2798,139 +2805,149 @@ async function runInvocation(
             inboxDeps ? showInboxNotice(inboxDeps) : Promise.resolve(null),
         }));
 
-      if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
-        const outputMode = getOutputModeFromArgs(args);
-        const commandName = commandInfo.command;
+      await withSpan("swamp.cli.teardown.update_check", {}, async () => {
+        if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
+          const outputMode = getOutputModeFromArgs(args);
+          const commandName = commandInfo.command;
 
-        if (
-          postCommandNoticesAllowed(outputMode, quietRequested) &&
-          commandName !== "update"
-        ) {
-          try {
-            const prefsRepo = new UpdatePreferencesFileRepository();
-            const prefs = await prefsRepo.read();
+          if (
+            postCommandNoticesAllowed(outputMode, quietRequested) &&
+            commandName !== "update"
+          ) {
+            try {
+              const prefsRepo = new UpdatePreferencesFileRepository();
+              const prefs = await prefsRepo.read();
 
-            if (prefs.enabled) {
-              let logPath: string | undefined;
-              if (Deno.build.os === "darwin") {
-                const installedMode = await detectInstalledLaunchdMode();
-                if (installedMode === "daemon") {
-                  logPath = autoupdateLogPath("daemon");
+              if (prefs.enabled) {
+                let logPath: string | undefined;
+                if (Deno.build.os === "darwin") {
+                  const installedMode = await detectInstalledLaunchdMode();
+                  if (installedMode === "daemon") {
+                    logPath = autoupdateLogPath("daemon");
+                  }
+                } else if (Deno.build.os === "linux") {
+                  const installedMode = await detectInstalledLinuxMode();
+                  if (installedMode === "daemon") {
+                    logPath = cronLogPath("daemon");
+                  }
                 }
-              } else if (Deno.build.os === "linux") {
-                const installedMode = await detectInstalledLinuxMode();
-                if (installedMode === "daemon") {
-                  logPath = cronLogPath("daemon");
-                }
-              }
-              const logRepo = new AutoupdateLogFileRepository(logPath);
-              const entries = await logRepo.readAll();
-              let prefsChanged = false;
-              const updatedPrefs = { ...prefs };
+                const logRepo = new AutoupdateLogFileRepository(logPath);
+                const entries = await logRepo.readAll();
+                let prefsChanged = false;
+                const updatedPrefs = { ...prefs };
 
-              if (prefs.notifiedVersion !== VERSION) {
-                const lastUpdate = entries.findLast((e) =>
-                  e.outcome === "updated" && e.versionAfter
-                );
-                if (lastUpdate && lastUpdate.versionAfter === VERSION) {
-                  console.error(
-                    `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+                if (prefs.notifiedVersion !== VERSION) {
+                  const lastUpdate = entries.findLast((e) =>
+                    e.outcome === "updated" && e.versionAfter
                   );
-                }
-                updatedPrefs.notifiedVersion = VERSION;
-                prefsChanged = true;
-              }
-
-              const lastEntry = entries.length > 0
-                ? entries[entries.length - 1]
-                : null;
-              if (
-                lastEntry?.outcome === "error" && lastEntry.error &&
-                lastEntry.error.toLowerCase().includes("permission denied")
-              ) {
-                const lastWarned = updatedPrefs.lastPermissionWarning;
-                const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-                if (!lastWarned || new Date(lastWarned).getTime() < oneDayAgo) {
-                  const binaryPath = Deno.execPath();
-                  console.error(
-                    `\n⚠ Background autoupdate is failing: ${binaryPath} is not writable by your user.` +
-                      `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) ${binaryPath}\` to fix.` +
-                      `\n  Run \`swamp doctor install\` for a full installation health check.` +
-                      `\n  Disable with: swamp update --setup-auto disable`,
-                  );
-                  updatedPrefs.lastPermissionWarning = new Date().toISOString();
+                  if (lastUpdate && lastUpdate.versionAfter === VERSION) {
+                    console.error(
+                      `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+                    );
+                  }
+                  updatedPrefs.notifiedVersion = VERSION;
                   prefsChanged = true;
                 }
+
+                const lastEntry = entries.length > 0
+                  ? entries[entries.length - 1]
+                  : null;
+                if (
+                  lastEntry?.outcome === "error" && lastEntry.error &&
+                  lastEntry.error.toLowerCase().includes("permission denied")
+                ) {
+                  const lastWarned = updatedPrefs.lastPermissionWarning;
+                  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+                  if (
+                    !lastWarned || new Date(lastWarned).getTime() < oneDayAgo
+                  ) {
+                    const binaryPath = Deno.execPath();
+                    console.error(
+                      `\n⚠ Background autoupdate is failing: ${binaryPath} is not writable by your user.` +
+                        `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) ${binaryPath}\` to fix.` +
+                        `\n  Run \`swamp doctor install\` for a full installation health check.` +
+                        `\n  Disable with: swamp update --setup-auto disable`,
+                    );
+                    updatedPrefs.lastPermissionWarning = new Date()
+                      .toISOString();
+                    prefsChanged = true;
+                  }
+                }
+
+                // the update banner is suppressed while autoupdate is on, so a
+                // dead scheduler is otherwise invisible; throttled, and skipped
+                // right after a refresh, which starts a fresh check
+                const now = new Date();
+                if (
+                  lastEntry && shouldWarnStaleAutoupdate({
+                    lastEntry,
+                    cadence: prefs.cadence,
+                    lastStaleWarning: updatedPrefs.lastStaleWarning,
+                    schedulerJustRefreshed: schedulerRefreshed,
+                    now,
+                  })
+                ) {
+                  console.error(
+                    `\n⚠ Background autoupdate has not checked for updates in ${
+                      lastCheckAgeDays(lastEntry, now)
+                    } days (since ${lastEntry.timestamp}).` +
+                      `\n  Run \`swamp doctor install\` to see why.`,
+                  );
+                  updatedPrefs.lastStaleWarning = now.toISOString();
+                  prefsChanged = true;
+                }
+
+                if (prefsChanged && configDirOwned) {
+                  // merge onto a fresh read so a concurrent scheduler refresh's
+                  // fields are not rolled back
+                  await prefsRepo.write(
+                    withNoticeFields(await prefsRepo.read(), updatedPrefs),
+                  );
+                }
               }
 
-              // the update banner is suppressed while autoupdate is on, so a
-              // dead scheduler is otherwise invisible; throttled, and skipped
-              // right after a refresh, which starts a fresh check
-              const now = new Date();
-              if (
-                lastEntry && shouldWarnStaleAutoupdate({
-                  lastEntry,
-                  cadence: prefs.cadence,
-                  lastStaleWarning: updatedPrefs.lastStaleWarning,
-                  schedulerJustRefreshed: schedulerRefreshed,
-                  now,
-                })
-              ) {
-                console.error(
-                  `\n⚠ Background autoupdate has not checked for updates in ${
-                    lastCheckAgeDays(lastEntry, now)
-                  } days (since ${lastEntry.timestamp}).` +
-                    `\n  Run \`swamp doctor install\` to see why.`,
+              // Skip the "run swamp update" banner if autoupdate handles it
+              if (!prefs.enabled) {
+                const cacheRepo = new UpdateCheckCacheFileRepository();
+                const checker = new HttpUpdateChecker();
+                const service = new UpdateNotificationService(
+                  VERSION,
+                  cacheRepo,
+                  checker,
                 );
-                updatedPrefs.lastStaleWarning = now.toISOString();
-                prefsChanged = true;
-              }
 
-              if (prefsChanged && configDirOwned) {
-                // merge onto a fresh read so a concurrent scheduler refresh's
-                // fields are not rolled back
-                await prefsRepo.write(
-                  withNoticeFields(await prefsRepo.read(), updatedPrefs),
-                );
+                const notification = await service.getNotification();
+                if (notification) {
+                  renderUpdateNotification(notification);
+                }
+
+                const platform = Platform.detect();
+                service.backgroundCheck(platform);
               }
+            } catch {
+              // Silently ignore — never break the CLI for update checks
             }
-
-            // Skip the "run swamp update" banner if autoupdate handles it
-            if (!prefs.enabled) {
-              const cacheRepo = new UpdateCheckCacheFileRepository();
-              const checker = new HttpUpdateChecker();
-              const service = new UpdateNotificationService(
-                VERSION,
-                cacheRepo,
-                checker,
-              );
-
-              const notification = await service.getNotification();
-              if (notification) {
-                renderUpdateNotification(notification);
-              }
-
-              const platform = Platform.detect();
-              service.backgroundCheck(platform);
-            }
-          } catch {
-            // Silently ignore — never break the CLI for update checks
           }
         }
-      }
+      });
 
       // last, and outside the update check's env guard, so nothing hides it
-      await finishAccountNotice({
-        poll: accountNoticePoll,
-        eligible: accountNotice.eligible,
-        outputMode: getOutputModeFromArgs(args),
-        quiet: quietRequested,
-        succeeded: commandSucceeded(Deno.exitCode),
-        show: () =>
-          accountNoticeDeps
-            ? showAccountNotice(accountNoticeDeps)
-            : Promise.resolve(null),
-      });
+      await withSpan(
+        "swamp.cli.teardown.account_notice",
+        {},
+        () =>
+          finishAccountNotice({
+            poll: accountNoticePoll,
+            eligible: accountNotice.eligible,
+            outputMode: getOutputModeFromArgs(args),
+            quiet: quietRequested,
+            succeeded: commandSucceeded(Deno.exitCode),
+            show: () =>
+              accountNoticeDeps
+                ? showAccountNotice(accountNoticeDeps)
+                : Promise.resolve(null),
+          }),
+      );
     });
   } catch (error) {
     // release the datastore lock even on failure. flushDatastoreSync can throw,

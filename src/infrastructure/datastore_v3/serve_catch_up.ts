@@ -245,13 +245,18 @@ export class ServeCatchUp {
     delivered: DeliveredCatchUp | undefined,
   ): Promise<ServeCatchUpReport> {
     const anchor = this.#state.feedAnchor();
-    let first = delivered !== undefined &&
-        sameRequest(delivered.requested, this.request())
-      ? delivered
+    const overtaken = delivered !== undefined &&
+        !sameRequest(delivered.requested, this.request())
+      ? await this.#overtakenPart(delivered)
       : undefined;
+    let first = overtaken ??
+      (delivered !== undefined &&
+          sameRequest(delivered.requested, this.request())
+        ? delivered
+        : undefined);
     // The anchor is checked before any page is applied: by serve with the
     // first page where it can, by a read of its own otherwise.
-    let anchorChecked = anchor === undefined;
+    let anchorChecked = anchor === undefined || overtaken !== undefined;
     let applied = 0;
     let limit = SERVE_PARTITION_PAGE;
     let loads = 0;
@@ -315,9 +320,15 @@ export class ServeCatchUp {
       }
       let last: Commit | undefined;
       try {
-        for (const commit of commits) {
-          applied += await this.#applyInOrder(commit, signal);
-          last = commit;
+        const grouped = await this.#appendContiguous(commits, signal);
+        if (grouped !== undefined) {
+          applied += grouped;
+          last = commits.at(-1);
+        } else {
+          for (const commit of commits) {
+            applied += await this.#applyInOrder(commit, signal);
+            last = commit;
+          }
         }
       } catch (error) {
         if (
@@ -342,6 +353,31 @@ export class ServeCatchUp {
       }
       if (!page.more) return { applied };
     }
+  }
+
+  /**
+   * the rest of a page the feed overtook, when the page holds the copy's own
+   * anchor commit at its cursor, which checks the anchor as serve would
+   */
+  async #overtakenPart(
+    delivered: DeliveredCatchUp,
+  ): Promise<DeliveredCatchUp | undefined> {
+    const page = delivered.page;
+    const anchor = this.#state.feedAnchor();
+    if (page === undefined || anchor === undefined) return undefined;
+    const cursor = this.#state.feedCursor();
+    const at = page.changes.findIndex((change) => change.cursor === cursor);
+    if (at < 0) return undefined;
+    const commit = await Commit.fromJSON(page.changes[at].commit);
+    if (!sameAnchor(anchorOf(commit), anchor)) return undefined;
+    return {
+      requested: this.request(),
+      page: {
+        changes: page.changes.slice(at + 1),
+        cursor: page.cursor,
+        more: page.more,
+      },
+    };
   }
 
   async #loadBase(
@@ -819,6 +855,39 @@ export class ServeCatchUp {
     );
   }
 
+  /**
+   * a page that follows on from every partition's head with no gap, appended
+   * back to back so the store commits it in shared transactions; undefined
+   * when a gap needs the in-order path, before anything is appended
+   */
+  async #appendContiguous(
+    commits: readonly Commit[],
+    signal: AbortSignal,
+  ): Promise<number | undefined> {
+    const heads = new Map<string, number>();
+    const appends: Commit[] = [];
+    for (const commit of commits) {
+      const key = JSON.stringify([
+        commit.namespace,
+        commit.partition.toString(),
+      ]);
+      let head = heads.get(key);
+      if (head === undefined) {
+        head =
+          (await this.#commitStore.head(commit.namespace, commit.partition))
+            .seq;
+      }
+      if (commit.seq > head + 1) return undefined;
+      if (commit.seq === head + 1) appends.push(commit);
+      heads.set(key, Math.max(head, commit.seq));
+    }
+    signal.throwIfAborted();
+    const results = await Promise.all(
+      appends.map((commit) => this.#commitStore.append(commit)),
+    );
+    return results.filter((result) => result.kind === "appended").length;
+  }
+
   async #append(commit: Commit): Promise<boolean> {
     const local =
       (await this.#commitStore.head(commit.namespace, commit.partition))
@@ -845,11 +914,17 @@ function removeStagingFiles(copyDir: string): void {
 }
 
 function sameRequest(a: CatchUpRequest, b: CatchUpRequest): boolean {
-  return a.cursor === b.cursor &&
-    a.anchor?.namespace === b.anchor?.namespace &&
-    a.anchor?.partition === b.anchor?.partition &&
-    a.anchor?.seq === b.anchor?.seq &&
-    a.anchor?.txnId === b.anchor?.txnId;
+  return a.cursor === b.cursor && sameAnchor(a.anchor, b.anchor);
+}
+
+function sameAnchor(
+  a: CatchUpRequest["anchor"],
+  b: CatchUpRequest["anchor"],
+): boolean {
+  return a?.namespace === b?.namespace &&
+    a?.partition === b?.partition &&
+    a?.seq === b?.seq &&
+    a?.txnId === b?.txnId;
 }
 
 function anchorOf(commit: Commit): ServeFeedAnchor {

@@ -2302,3 +2302,28 @@ Deno.test("SqliteReadModel.catchUp: a page of new commits fetches no chunk for a
     );
   });
 });
+
+Deno.test("SqliteReadModel.close: a catch-up still under way when the command ends holds close no longer than its bound, and the stores close once it settles (swamp-club#4574)", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const readModel = env.open();
+    const stateDir = readModelStateDir(env.repoDir);
+    await Deno.mkdir(stateDir, { recursive: true });
+    // another command holds the read model, so the catch-up queues behind it
+    const held = await Deno.open(join(stateDir, READ_MODEL_LOCK_FILE), {
+      read: true,
+      write: true,
+      create: true,
+    });
+    await held.lock(true);
+    const stop = new AbortController();
+    const catchingUp = readModel.catchUp(stop.signal).catch((error) => error);
+    try {
+      await readModel.close(10);
+    } finally {
+      stop.abort();
+      held.close();
+    }
+    await catchingUp;
+  });
+});

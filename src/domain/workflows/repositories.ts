@@ -64,6 +64,12 @@ export interface RunSaveOptions {
    */
   readonly fence?: Pick<RunWriteFence, "isClosed" | "isTakenOver">;
   readonly onRefused?: () => void;
+  /**
+   * the caller had these bytes committed already, so the same bytes again
+   * stage nothing; without it a save always stages, since a file can be ahead
+   * of its last commit after a dropped unit
+   */
+  readonly alreadyStaged?: boolean;
 }
 
 export interface WorkflowRunRepository {

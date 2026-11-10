@@ -920,3 +920,56 @@ Deno.test("WorkflowRunCheckpointer.committedLatest: true only once a checkpoint 
   assertEquals(checkpointer.committedLatest(run.id), false);
   await checkpointer.close();
 });
+
+Deno.test("WorkflowRunCheckpointer: a flush of the open unit, such as a step's batch, restarts the interval, so a save soon after it checkpoints no sooner than one interval later (swamp-club#4574)", async () => {
+  let flushedAt: number | undefined = undefined;
+  const commitLog = {
+    ...engine(() => Promise.resolve("committed" as const)),
+    lastCheckpointAt: () => flushedAt,
+  };
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 50,
+    now: () => now,
+  });
+  const run = newRun();
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+  // a step's batch carried the run record at 40
+  flushedAt = 40;
+  now = 60;
+  await checkpointer.checkpoint(run);
+  assertEquals(commitLog.calls(), 1);
+  await checkpointer.close();
+  assertEquals(commitLog.calls(), 1);
+});
+
+Deno.test("WorkflowRunCheckpointer: a flush landing while a trailing checkpoint waits pushes it back to one interval after the flush (swamp-club#4574)", async () => {
+  let flushedAt: number | undefined = undefined;
+  let reads = 0;
+  const commitLog = {
+    ...engine(() => Promise.resolve("committed" as const)),
+    lastCheckpointAt: () => {
+      reads++;
+      return flushedAt;
+    },
+  };
+  let now = 0;
+  const checkpointer = new WorkflowRunCheckpointer({ commitLog }, {
+    intervalMs: 50,
+    now: () => now,
+  });
+  const run = newRun();
+  await checkpointer.checkpoint(run);
+  now = 10;
+  await checkpointer.checkpoint(run);
+  const armed = reads;
+  flushedAt = 30;
+  now = 30;
+  // the timer read the new flush when it fired, and armed again from it
+  await waitFor(() => reads >= armed + 2, "the trailing timer firing");
+  assertEquals(commitLog.calls(), 1);
+  now = 80;
+  await waitFor(() => commitLog.calls() === 2, "the pushed-back checkpoint");
+  await checkpointer.close();
+});

@@ -56,6 +56,8 @@ export interface CommitLogEngine {
   checkpointOpenUnit(
     options?: { readonly release?: string },
   ): Promise<OpenUnitCheckpoint>;
+  /** epoch ms of the caller's open unit's last commit of what it had staged */
+  lastCheckpointAt?(): number | undefined;
   /**
    * commits the changes at once as their own commit, leaving what the open
    * unit has staged; throws when the commit fails or is refused
@@ -447,6 +449,12 @@ export async function storedVersionOf(
 ): Promise<PutExpect | undefined> {
   if (markDirty === undefined) return undefined;
   return await engines.get(markDirty)?.storedVersion?.(partition, key);
+}
+
+export function lastOpenUnitCheckpointAt(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+): number | undefined {
+  return commitLogOf(repoContext)?.lastCheckpointAt?.();
 }
 
 export async function checkpointOpenUnitOfWork(
