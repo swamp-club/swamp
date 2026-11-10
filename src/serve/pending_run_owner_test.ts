@@ -17,12 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
   pendingOwnerLiveness,
   PendingReplaySweep,
+  withStoreDeadline,
 } from "./pending_run_owner.ts";
 
 const PEER = { instanceId: "peer", pid: 4242, host: "host-a" };
@@ -201,5 +202,46 @@ Deno.test("PendingReplaySweep: stop waits for a pass in flight and schedules no 
   gate.resolve();
   await stopping;
   assertEquals(finished, true);
+  assertEquals(timer.queued.length, 0);
+});
+
+Deno.test("pendingOwnerLiveness: with no heartbeats, an owner on another host counts as the caller says", async () => {
+  const sweep = pendingOwnerLiveness({
+    instanceId: "self",
+    unjudgedOwner: "alive",
+    ...onHost("host-b", true),
+  });
+  const boot = pendingOwnerLiveness({
+    instanceId: "self",
+    unjudgedOwner: "gone",
+    ...onHost("host-b", true),
+  });
+  assertEquals(await sweep(PEER), true);
+  assertEquals(await boot(PEER), false);
+});
+
+Deno.test("withStoreDeadline: a call that stalls is refused once the deadline passes", async () => {
+  const stalled = {
+    put: () => new Promise<void>(() => {}),
+    get: () => new Promise<Uint8Array | null>(() => {}),
+    delete: () => new Promise<void>(() => {}),
+    list: () => new Promise<string[]>(() => {}),
+  } as ControlPlaneStore;
+  const bounded = withStoreDeadline(stalled, 5);
+  await assertRejects(() => bounded.get("heartbeats/peer"), Error, "timed out");
+  await assertRejects(() => bounded.list("pending-runs/"), Error, "timed out");
+});
+
+Deno.test("PendingReplaySweep: halt stops further passes at once", () => {
+  const timer = manualTimer();
+  const sweep = new PendingReplaySweep({
+    replay: () => Promise.resolve(),
+    schedule: timer.schedule,
+    cancel: timer.cancel,
+  });
+  sweep.start();
+  sweep.halt();
+  assertEquals(timer.queued.length, 0);
+  sweep.start();
   assertEquals(timer.queued.length, 0);
 });

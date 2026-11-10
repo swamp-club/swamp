@@ -480,6 +480,7 @@ import { checkReusePortListen } from "../../infrastructure/runtime/reuse_port_ch
 import {
   pendingOwnerLiveness,
   PendingReplaySweep,
+  withStoreDeadline,
 } from "../../serve/pending_run_owner.ts";
 import type { PendingRunOwner } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -8848,6 +8849,8 @@ export const serveCommand = new Command()
       shuttingDown = true;
       isReady = false;
       admission.beginDraining();
+      // its pass in flight is waited on below, within the shutdown deadline
+      pendingReplaySweep.halt();
       // stopped first so it lets go of its load in flight instead of competing
       // with the drain; waited on after the drain, which does not wait for that
       // load
@@ -8864,8 +8867,6 @@ export const serveCommand = new Command()
         logger.info`Shutting down, aborting in-flight runs immediately...`;
       }
       const drainStarted = Date.now();
-      // a pass during the drain would claim runs this process can no longer start
-      await pendingReplaySweep.stop();
       // every later stage takes its bound from this one deadline, so neither a
       // slow bucket nor a stalled background pass holds shutdown past the drain
       // timeout plus a fixed margin
@@ -8884,6 +8885,8 @@ export const serveCommand = new Command()
           }
         },
       });
+      // before the drain, so a pass that claims a run cannot race it
+      await stages.run("pending replay sweep", () => pendingReplaySweep.stop());
       const remaining = await runShutdownDrain({
         webhookService,
         scheduledExecution,
@@ -9214,11 +9217,22 @@ export const serveCommand = new Command()
     const configuredCronWorkflows = new Set(
       allWorkflows.filter((w) => w.schedule).map((w) => w.name),
     );
-    const pendingOwnerAlive = pendingOwnerLiveness({
-      instanceId,
-      ...(controlPlaneStore ? { controlPlaneStore } : {}),
-      ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
-    });
+    // only instances with a remote control plane write heartbeats
+    const heartbeatStore = hasRemoteControlPlane
+      ? controlPlaneStore
+      : undefined;
+    const ownerLiveness = (unjudgedOwner: "alive" | "gone") =>
+      pendingOwnerLiveness({
+        instanceId,
+        unjudgedOwner,
+        ...(heartbeatStore ? { controlPlaneStore: heartbeatStore } : {}),
+        ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
+      });
+    const bootOwnerAlive = ownerLiveness("gone");
+    const sweepOwnerAlive = ownerLiveness("alive");
+    const sweepStore = controlPlaneStore
+      ? withStoreDeadline(controlPlaneStore)
+      : undefined;
     const replayPending = async (
       deferred: Set<string>,
       sweep = false,
@@ -9230,11 +9244,11 @@ export const serveCommand = new Command()
         runTracker,
         webhookService,
         scheduledExecution: scheduledExecution ?? undefined,
-        controlPlaneStore,
+        controlPlaneStore: sweep ? sweepStore : controlPlaneStore,
         configuredWebhookWorkflows: webhookTargets.workflows,
         configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
-        ownerAlive: pendingOwnerAlive,
+        ownerAlive: sweep ? sweepOwnerAlive : bootOwnerAlive,
         deferred,
         claimAs: pendingRunOwner,
         sweep,
@@ -10028,8 +10042,10 @@ export const serveCommand = new Command()
       }
     }
     admission.open();
-    isReady = true;
-    logger.info("Startup complete — /ready is now serving 200");
+    if (!shuttingDown) {
+      isReady = true;
+      logger.info("Startup complete — /ready is now serving 200");
+    }
 
     runIndexWarmup.start();
     eventLoopLag.start();

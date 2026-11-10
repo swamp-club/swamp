@@ -1719,6 +1719,39 @@ Deno.test("RunTrackerStore: v8 migration reads an existing pending run as ownerl
   }
 });
 
+Deno.test("RunTrackerStore: a run whose owner does not parse is claimable as ownerless", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path);
+  try {
+    store.enqueuePendingRun({
+      id: "corrupt-owner",
+      source: "cron",
+      workflowIdOrName: "wf",
+      createdAt: new Date().toISOString(),
+    });
+    const db = new DatabaseSync(tempDb.path);
+    db.prepare("UPDATE pending_runs SET owner = ? WHERE id = ?").run(
+      "{not json",
+      "corrupt-owner",
+    );
+    db.close();
+    assertEquals(
+      store.findAllPendingRuns().find((e) => e.id === "corrupt-owner")?.owner,
+      undefined,
+    );
+    assertEquals(
+      store.claimPendingRun(
+        "corrupt-owner",
+        { instanceId: "instance-B", pid: 7 },
+        undefined,
+      ),
+      true,
+    );
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("parsePendingRunOwner: refuses an owner without an instance id or a positive pid", () => {
   assertEquals(parsePendingRunOwner({ instanceId: "", pid: 1 }), undefined);
   assertEquals(parsePendingRunOwner({ instanceId: "a", pid: 0 }), undefined);

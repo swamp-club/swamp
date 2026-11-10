@@ -614,11 +614,12 @@ export class RunTrackerStore implements RunTrackerRepository {
     expectedInstanceId: string | undefined,
   ): boolean {
     const result = this.db.prepare(
+      // an owner that does not parse was read as none, so it matches none
       `UPDATE pending_runs SET owner = ?
-       WHERE id = ? AND (
-         (owner IS NULL AND ? IS NULL) OR
-         json_extract(owner, '$.instanceId') = ?
-       )`,
+       WHERE id = ? AND CASE
+         WHEN owner IS NULL OR NOT json_valid(owner) THEN ? IS NULL
+         ELSE json_extract(owner, '$.instanceId') IS ?
+       END`,
     ).run(
       JSON.stringify(owner),
       id,

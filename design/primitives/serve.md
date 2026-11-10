@@ -1918,7 +1918,13 @@ runs again and replays those whose owner has gone, including runs a peer
 queued after this process started; a run it replays becomes its own
 (`src/serve/pending_run_owner.ts`). Cron fires are claimed once across the
 processes sharing a repository (`fire-records/` with `putIfAbsent`). Runs queued by
-an older serve name no owner and are replayed at boot as before. Overlapping
+an older serve name no owner and are replayed at boot as before. Without a
+remote control plane there are no heartbeats, so a run whose owner sits on
+another host (another container sharing the checkout) is replayed at boot as
+before and left alone by the sweep. An owner whose pid an unrelated process has
+since taken counts as alive until that process exits; the sweep's control-plane
+calls are bounded, and shutdown waits for a pass in flight only within its
+deadline. Overlapping
 restarts are not supported on a v3 datastore until team mode, since both
 processes would need the writer lease.
 

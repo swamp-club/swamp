@@ -23,13 +23,42 @@ import {
   processHostIdentity,
 } from "../infrastructure/runtime/process.ts";
 import type { PendingRunOwner } from "../infrastructure/persistence/run_tracker_store.ts";
+import { withDeadline } from "../infrastructure/persistence/datastore_format_marker_reader.ts";
 import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
+
+/** a control-plane call made for the sweep, which must never hold shutdown */
+export const PENDING_REPLAY_STORE_TIMEOUT_MS = 5_000;
+
+/** the same store with every call bounded, for work that must not stall */
+export function withStoreDeadline(
+  store: ControlPlaneStore,
+  ms = PENDING_REPLAY_STORE_TIMEOUT_MS,
+): ControlPlaneStore {
+  return {
+    put: (key, data) => withDeadline(() => store.put(key, data), ms),
+    get: (key) => withDeadline((signal) => store.get(key, { signal }), ms),
+    delete: (key) => withDeadline(() => store.delete(key), ms),
+    list: (prefix) => withDeadline(() => store.list(prefix), ms),
+    ...(store.putIfAbsent
+      ? {
+        putIfAbsent: (key: string, data: Uint8Array) =>
+          withDeadline(() => store.putIfAbsent!(key, data), ms),
+      }
+      : {}),
+  };
+}
 
 export type PendingOwnerAlive = (owner: PendingRunOwner) => Promise<boolean>;
 
 export interface PendingOwnerLivenessDeps {
   instanceId: string;
+  /** set only where serve instances write heartbeats */
   controlPlaneStore?: ControlPlaneStore;
+  /**
+   * how an owner on another host counts when no heartbeat can tell: boot
+   * replays it as it always has, the sweep leaves it alone
+   */
+  unjudgedOwner?: "alive" | "gone";
   staleTtlMs?: number;
   hostIdentity?: () => string;
   isGone?: (pid: number) => boolean;
@@ -54,9 +83,12 @@ export function pendingOwnerLiveness(
       return owner.pid !== ownPid && !isGone(owner.pid);
     }
     const store = deps.controlPlaneStore;
-    if (!store) return false;
+    if (!store) return deps.unjudgedOwner === "alive";
     try {
-      const data = await store.get(`heartbeats/${owner.instanceId}`);
+      const data = await withDeadline(
+        () => store.get(`heartbeats/${owner.instanceId}`),
+        PENDING_REPLAY_STORE_TIMEOUT_MS,
+      );
       if (!data) return false;
       const record = InstanceHeartbeatService.parseRecord(data);
       return record !== null &&
@@ -96,12 +128,17 @@ export class PendingReplaySweep {
     this.#schedule();
   }
 
-  async stop(): Promise<void> {
+  /** stops further passes at once; a pass already running finishes */
+  halt(): void {
     this.#stopped = true;
     if (this.#handle !== undefined) {
       (this.#deps.cancel ?? clearTimeout)(this.#handle);
     }
     this.#handle = undefined;
+  }
+
+  async stop(): Promise<void> {
+    this.halt();
     await this.#inFlight;
   }
 
