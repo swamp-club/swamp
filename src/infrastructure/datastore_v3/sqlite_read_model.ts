@@ -137,6 +137,9 @@ export const READ_MODEL_STATE_FILE = "_read_model_v3.db";
 
 export const READ_MODEL_LOCK_FILE = "read_model.lock";
 
+/** how long a command's end waits for a catch-up under way */
+const CLOSE_WAIT_MS = 500;
+
 export const AT_RISK_DIR = "at-risk";
 
 export const DEFAULT_AT_RISK_COPY_BYTES = 1024 * 1024 * 1024;
@@ -1042,12 +1045,32 @@ export class SqliteReadModel implements ReadModel {
     return read();
   }
 
-  async close(): Promise<void> {
+  /**
+   * a catch-up still writing after waitMs is left to finish: the stores close
+   * once it settles, and the next command catches up whatever it did not
+   */
+  async close(waitMs = CLOSE_WAIT_MS): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    await this.#queue;
-    this.#catalog.close();
-    this.#state.close();
+    const closeStores = () => {
+      this.#catalog.close();
+      this.#state.close();
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      this.#queue.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), waitMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (settled) {
+      closeStores();
+      return;
+    }
+    this.#queue.then(closeStores).catch((error) => {
+      logger.debug`Closing the read model after its catch-up failed: ${error}`;
+    });
   }
 
   /**

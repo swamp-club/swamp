@@ -305,3 +305,26 @@ Deno.test("watchServeFeed: with a ready gate, a head's catch-up waits for it, th
     });
   }
 });
+
+Deno.test("watchServeFeed: a catch-up that does not stop when aborted, such as one fsyncing a large file, holds the watch's stop no longer than its bound (swamp-club#4574)", async () => {
+  await withServe([], async (url) => {
+    let started = false;
+    const never = Promise.withResolvers<void>();
+    const watch = watchServeFeed({
+      target: {
+        serverUrl: url,
+        token: undefined,
+        caCerts: undefined,
+        extraHeaders: {},
+      },
+      catchUp: () => {
+        started = true;
+        return never.promise;
+      },
+      stopWaitMs: 10,
+    });
+    await waitFor(() => started, "the head's catch-up under way");
+    await watch.stop();
+    never.resolve();
+  });
+});
