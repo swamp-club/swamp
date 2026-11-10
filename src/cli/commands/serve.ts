@@ -139,6 +139,7 @@ import {
 } from "../../serve/webhook_reload.ts";
 import {
   diffServeSettings,
+  overlayAppliedSettings,
   reloadsOnHangup,
 } from "../../serve/serve_settings_reload.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
@@ -2801,6 +2802,12 @@ const reloadCommand = new Command()
       }
 
       renderer.render(response);
+      // a CI step that edits serve.yaml and reloads must see the refusal
+      if (response.configRejected) {
+        throw new UserError(
+          "The server refused serve.yaml, so nothing in it was applied",
+        );
+      }
       return;
     }
 
@@ -2841,6 +2848,8 @@ const reloadCommand = new Command()
     }
 
     logger.info`Sent SIGHUP to serve process ${pid}`;
+    logger
+      .info`The serve log lists what the reload applied; reload with --server to see it here`;
   });
 
 async function checkTokenSecretsKey(
@@ -4485,7 +4494,7 @@ export const serveCommand = new Command()
         baselineLockfileHash: bootLockfileHash,
         extensionReloader: async () => {
           // the shared options exist once serve is listening; a poll before
-          // then reloads extensions only, as before
+          // then reloads extensions only
           const result = await performServeReload(
             resolvedRepoDir,
             extensionLockfilePath,
@@ -7627,7 +7636,12 @@ export const serveCommand = new Command()
           maxTimeoutSeconds: next.maxSignalWaitTimeoutSeconds,
         };
       }
-      connectionCtx.serveOptions = nextMerged;
+      // only what was applied, so the config and health views never show a
+      // value this process has not adopted
+      connectionCtx.serveOptions = overlayAppliedSettings(
+        connectionCtx.serveOptions ?? merged,
+        nextMerged,
+      );
     };
     // validated exactly as startup validates, so a file startup would refuse
     // changes nothing
@@ -8874,8 +8888,16 @@ export const serveCommand = new Command()
       : null;
 
     if (reloadOnHangup && pidPath) {
-      await Deno.writeTextFile(pidPath, String(Deno.pid));
-      logger.info`SIGHUP reloads this serve, PID file written to ${pidPath}`;
+      try {
+        await Deno.writeTextFile(pidPath, String(Deno.pid));
+        logger.info`SIGHUP reloads this serve, PID file written to ${pidPath}`;
+      } catch (err) {
+        // --hot-reload asked for the local reload; without it a read-only repo
+        // must not stop a serve that only gained the option
+        if (hotReload) throw err;
+        logger
+          .warn`Could not write ${pidPath}, so swamp serve reload works here only with --server: ${err}`;
+      }
 
       Deno.addSignalListener("SIGHUP", () => {
         if (isReloading()) {

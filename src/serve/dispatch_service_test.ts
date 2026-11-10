@@ -3624,3 +3624,18 @@ Deno.test("DispatchService: a worker gone before its frame is built sends the st
   assertEquals(platforms, ["linux"]);
   assertEquals(h.dispatchCalls.length, 1);
 });
+
+Deno.test("DispatchService.setQueueTimeoutMs: a new dispatch uses the reloaded serve-level timeout", async () => {
+  const h = createHarness({ queueTimeoutMs: 600_000 });
+  h.service.setQueueTimeoutMs(100);
+  await assertRejects(
+    () =>
+      h.service.executeRemote(
+        stepRequest({
+          placement: { labels: { gpu: "true" }, platform: "linux" },
+        }),
+      ),
+    Error,
+    "Timed out waiting for a worker matching",
+  );
+});

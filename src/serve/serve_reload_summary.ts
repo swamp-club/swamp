@@ -33,7 +33,11 @@ export function summarizeServeReload(
   result: ServeReloadResponse,
 ): ServeReloadSummary {
   if (!result.success) {
-    return { info: [], warn: [], error: [...result.errors] };
+    // a failed local refresh still applied the config; say what it applied
+    const lines = result.settings
+      ? settingsReportLines(result.settings)
+      : { info: [], warn: [] };
+    return { info: lines.info, warn: lines.warn, error: [...result.errors] };
   }
   const info: string[] = [`Reloaded ${result.reloadedCount} extension type(s)`];
   const warn: string[] = [];
@@ -67,7 +71,6 @@ export function summarizeServeReload(
   };
 }
 
-/** One line per applied group, one warning per setting reload did not apply. */
 export function settingsReportLines(
   settings: ServeReloadSettingsReport,
 ): { info: string[]; warn: string[] } {

@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import type { ServeConfigFile } from "./serve_config.ts";
 import {
   diffServeSettings,
+  overlayAppliedSettings,
   reloadsOnHangup,
   SETTING_CATALOGUE,
 } from "./serve_settings_reload.ts";
@@ -66,7 +67,7 @@ Deno.test("diffServeSettings: a listener setting needs a new process, with the r
   assertEquals(report.applied, []);
   assertEquals(report.needsRestart.map((r) => r.setting), ["port"]);
   assertEquals(
-    report.needsRestart[0].reason.startsWith("needs a new process"),
+    report.needsRestart[0].reason.includes("needs a new process"),
     true,
   );
 });
@@ -149,4 +150,27 @@ Deno.test("reloadsOnHangup: never on Windows, which has no SIGHUP", () => {
     reloadsOnHangup({ os: "windows", hotReload: true, stdinIsTerminal: false }),
     false,
   );
+});
+
+Deno.test("overlayAppliedSettings: takes only applied settings from the reloaded file", () => {
+  const current = {
+    port: 9090,
+    allowedUsers: ["alice", "bob"],
+    dashboard: false,
+    maxConcurrentRuns: 5,
+  } as unknown as Parameters<typeof overlayAppliedSettings>[0];
+  const next = {
+    port: 9191,
+    allowedUsers: ["alice"],
+    dashboard: true,
+    maxConcurrentRuns: 9,
+  } as unknown as Parameters<typeof overlayAppliedSettings>[1];
+  const live = overlayAppliedSettings(current, next) as unknown as Record<
+    string,
+    unknown
+  >;
+  assertEquals(live.port, 9090);
+  assertEquals(live.allowedUsers, ["alice", "bob"]);
+  assertEquals(live.dashboard, true);
+  assertEquals(live.maxConcurrentRuns, 9);
 });

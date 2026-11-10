@@ -24,7 +24,6 @@ import {
   type ServeConfigFile,
 } from "./serve_config.ts";
 
-/** How a reload treats a change to one setting. */
 export type SettingReloadClass =
   | "applied"
   | "restart"
@@ -40,7 +39,7 @@ export interface SettingCatalogueEntry {
   readonly reason?: string;
 }
 
-const NEW_PROCESS = "needs a new process";
+const NEW_PROCESS = "restart serve to change it; it needs a new process";
 const NOT_YET = "not applied by reload yet; restart serve to change it";
 
 /**
@@ -343,4 +342,24 @@ export function reloadsOnHangup(options: {
 }): boolean {
   if (options.os === "windows") return false;
   return options.hotReload || !options.stdinIsTerminal;
+}
+
+/**
+ * The options in force after a reload: the current ones with only the
+ * applied-class settings taken from the reloaded file, since a restart-class
+ * change has not been adopted by this process.
+ */
+export function overlayAppliedSettings(
+  current: MergedServeOptions,
+  next: MergedServeOptions,
+): MergedServeOptions {
+  const live: Record<string, unknown> = { ...current };
+  for (
+    const key of Object.keys(SETTING_CATALOGUE) as (keyof MergedServeOptions)[]
+  ) {
+    if (SETTING_CATALOGUE[key].reloadClass === "applied") {
+      live[key] = next[key];
+    }
+  }
+  return live as unknown as MergedServeOptions;
 }

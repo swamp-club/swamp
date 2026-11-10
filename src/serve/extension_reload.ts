@@ -944,6 +944,7 @@ async function runServeReload(
     }
 
     let configReadFailed = false;
+    let configRejected = false;
     let settings: SettingsReloadReport | undefined;
     let config: ServeConfigFile | null = null;
     if (options?.settingsReloader) {
@@ -957,6 +958,7 @@ async function runServeReload(
             (err instanceof Error ? err.message : String(err)),
         );
         configReadFailed = true;
+        configRejected = true;
       }
     } else if (options?.triggerOverrideUpdater || options?.webhookUpdater) {
       config = await readServeConfigFile(repoDir, options?.configPath).catch(
@@ -1030,6 +1032,7 @@ async function runServeReload(
       webhooksReloaded,
       ...(auditSinks !== undefined ? { auditSinks } : {}),
       ...(settings ? { settings } : {}),
+      ...(configRejected ? { configRejected: true } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
       errors,
     };

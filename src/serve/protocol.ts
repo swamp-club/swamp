@@ -1406,6 +1406,8 @@ export interface ServeReloadResponse {
   auditSinks?: number;
   /** what the serve.yaml edit changed, setting by setting */
   settings?: ServeReloadSettingsReport;
+  /** serve.yaml failed the startup checks, so nothing in it was applied */
+  configRejected?: boolean;
   /** changes the reload left unapplied, with the reason and the fix */
   warnings?: string[];
   errors: string[];

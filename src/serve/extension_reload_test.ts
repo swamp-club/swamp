@@ -2563,6 +2563,7 @@ Deno.test("performServeReload: a refused config file changes no setting, trigger
     );
     assertEquals([triggers, webhooks, audit], [0, 0, 0]);
     assertEquals(result.settings, undefined);
+    assertEquals(result.configRejected, true);
     assertStringIncludes(
       result.errors[0],
       "Serve config not applied, nothing changed",
