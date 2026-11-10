@@ -99,22 +99,44 @@ async function downloadDeno(target?: string): Promise<void> {
   }
 }
 
-async function cleanupDenoResources(): Promise<void> {
-  const denoDir = join(
-    import.meta.dirname ?? ".",
-    "..",
-    "resources",
-    "deno",
-  );
+export interface StampedBuildSteps {
+  stamp: () => Promise<void>;
+  build: () => Promise<boolean>;
+  restore: () => Promise<void>;
+}
+
+export async function runStampedBuild(
+  steps: StampedBuildSteps,
+): Promise<boolean> {
   try {
-    await Deno.remove(denoDir, { recursive: true });
-    console.log("Cleaned up resources/deno/");
-  } catch {
-    // Directory may not exist — that's fine
+    await steps.stamp();
+    return await steps.build();
+  } finally {
+    await steps.restore();
   }
 }
 
-async function main() {
+// undefined content means nothing was stamped, so the file is left alone
+export async function restoreBuildState(
+  versionFile: string,
+  originalContent: string | undefined,
+  denoResourcesDir: string,
+): Promise<void> {
+  try {
+    if (originalContent !== undefined) {
+      await Deno.writeTextFile(versionFile, originalContent);
+    }
+  } finally {
+    try {
+      await Deno.remove(denoResourcesDir, { recursive: true });
+      console.log("Cleaned up resources/deno/");
+    } catch {
+      // Directory may not exist — that's fine
+    }
+  }
+}
+
+async function main(): Promise<boolean> {
   const args = parseArgs(Deno.args, {
     string: ["output", "target", "version"],
     alias: {
@@ -152,105 +174,108 @@ async function main() {
     );
   }
   const wroteStamp = stamped !== originalContent;
-  if (wroteStamp) {
-    await Deno.writeTextFile(VERSION_FILE, stamped);
+
+  return await runStampedBuild({
+    stamp: async () => {
+      if (wroteStamp) {
+        await Deno.writeTextFile(VERSION_FILE, stamped);
+      }
+    },
+    build: () => compile(options),
+    restore: () =>
+      restoreBuildState(
+        VERSION_FILE,
+        wroteStamp ? originalContent : undefined,
+        join(import.meta.dirname ?? ".", "..", "resources", "deno"),
+      ),
+  });
+}
+
+async function compile(options: CompileOptions): Promise<boolean> {
+  await downloadDeno(options.target);
+
+  // individual flags, not --allow-all, to avoid auto-granting future
+  // permission categories; Deno.open on device nodes then fails, so
+  // extensions use Deno.Command for hardware I/O
+  const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
+    .then(() => true).catch(() => false);
+  const baseCommand = [
+    "deno",
+    "compile",
+    "--unstable-bundle",
+    // Deno marks listening with SO_REUSEPORT unstable; serve --reuse-port needs it
+    "--unstable-net",
+    // the dashboard's build packages stay in the workspace but never ship
+    "--exclude-unused-npm",
+    "--allow-read",
+    "--allow-write",
+    "--allow-env",
+    "--allow-run",
+    "--allow-sys",
+    "--allow-net",
+    // ffi is for libc/libproc calls: raising the fd limit, the auth gate's
+    // ancestry check, and /proc and sysctl reads for writer liveness.
+    "--allow-ffi",
+    "--include",
+    ".claude/skills",
+    "--include",
+    "resources/deno",
+    // included only when pre-built; CI builds it before compile
+    ...(dashboardDistExists ? ["--include", "packages/dashboard/dist"] : []),
+    "--exclude",
+    "agent-constraints",
+    "--exclude",
+    ".agents",
+    "--exclude",
+    ".claude/skills/ddd",
+    "--exclude",
+    ".claude/skills/github-pr",
+    "--exclude",
+    ".claude/skills/jujutsu",
+    "--exclude",
+    ".claude/skills/issue-lifecycle",
+    "--exclude",
+    ".claude/skills/skill-creator",
+    "--exclude",
+    ".claude/skills/terminal-output",
+    "--exclude",
+    ".github",
+    "--exclude",
+    ".vault-test-vault",
+    "--exclude",
+    "design",
+    "--exclude",
+    "evals",
+    "--exclude",
+    "integration",
+    "--exclude",
+    "scripts",
+    "--exclude",
+    "verification",
+    "--exclude",
+    "workflows",
+  ];
+
+  if (options.target) {
+    baseCommand.push("--target", options.target);
   }
 
-  try {
-    await downloadDeno(options.target);
+  baseCommand.push("--output", options.output, "main.ts");
 
-    // individual flags, not --allow-all, to avoid auto-granting future
-    // permission categories; Deno.open on device nodes then fails, so
-    // extensions use Deno.Command for hardware I/O
-    const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
-      .then(() => true).catch(() => false);
-    const baseCommand = [
-      "deno",
-      "compile",
-      "--unstable-bundle",
-      // Deno marks listening with SO_REUSEPORT unstable; serve --reuse-port needs it
-      "--unstable-net",
-      // the dashboard's build packages stay in the workspace but never ship
-      "--exclude-unused-npm",
-      "--allow-read",
-      "--allow-write",
-      "--allow-env",
-      "--allow-run",
-      "--allow-sys",
-      "--allow-net",
-      // ffi is for libc/libproc calls: raising the fd limit, the auth gate's
-      // ancestry check, and /proc and sysctl reads for writer liveness.
-      "--allow-ffi",
-      "--include",
-      ".claude/skills",
-      "--include",
-      "resources/deno",
-      // included only when pre-built; CI builds it before compile
-      ...(dashboardDistExists
-        ? ["--include", "packages/dashboard/dist"]
-        : []),
-      "--exclude",
-      "agent-constraints",
-      "--exclude",
-      ".agents",
-      "--exclude",
-      ".claude/skills/ddd",
-      "--exclude",
-      ".claude/skills/github-pr",
-      "--exclude",
-      ".claude/skills/jujutsu",
-      "--exclude",
-      ".claude/skills/issue-lifecycle",
-      "--exclude",
-      ".claude/skills/skill-creator",
-      "--exclude",
-      ".claude/skills/terminal-output",
-      "--exclude",
-      ".github",
-      "--exclude",
-      ".vault-test-vault",
-      "--exclude",
-      "design",
-      "--exclude",
-      "evals",
-      "--exclude",
-      "integration",
-      "--exclude",
-      "scripts",
-      "--exclude",
-      "verification",
-      "--exclude",
-      "workflows",
-    ];
+  console.log(`Running: ${baseCommand.join(" ")}`);
 
-    if (options.target) {
-      baseCommand.push("--target", options.target);
-    }
+  const command = new Deno.Command(baseCommand[0], {
+    args: baseCommand.slice(1),
+    stdout: "inherit",
+    stderr: "inherit",
+  });
 
-    baseCommand.push("--output", options.output, "main.ts");
-
-    console.log(`Running: ${baseCommand.join(" ")}`);
-
-    const command = new Deno.Command(baseCommand[0], {
-      args: baseCommand.slice(1),
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-
-    const { success } = await command.output();
-
-    if (!success) {
-      Deno.exit(1);
-    }
-  } finally {
-    if (wroteStamp) {
-      await Deno.writeTextFile(VERSION_FILE, originalContent);
-    }
-
-    await cleanupDenoResources();
-  }
+  const { success } = await command.output();
+  return success;
 }
 
 if (import.meta.main) {
-  await main();
+  if (!(await main())) {
+    Deno.exit(1);
+  }
 }

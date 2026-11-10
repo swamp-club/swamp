@@ -86,9 +86,10 @@ individual workflow; `integration/toolchain_pins_rules_test.ts` fails on drift.
 workflows exit 127.
 
 `deno run compile` stamps the git SHA into
-`src/infrastructure/runtime/build_info.ts` and restores it when the build
-succeeds. After a failed build, `git diff` that file and restore only the stamp
-before reporting a clean tree or retrying.
+`src/infrastructure/runtime/build_info.ts` and restores it, and removes
+`resources/deno`, whether the build passes or fails. A build that is interrupted
+(Ctrl-C or killed) can still leave the stamp; run `git diff` on that file and
+restore only the stamp before reporting a clean tree or retrying.
 
 During development, use these commands for quick feedback:
 
