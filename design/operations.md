@@ -21,8 +21,11 @@ something a primitive depends on, move it to `enablers/` and give it an
   then keeps the lock for 30 s, draining entries later commands spool, so a
   burst of commands starts one sender rather than one full swamp process
   each. It exits once that linger passes with nothing new, five minutes after
-  it started, when a send fails or when another sender took the lock; a lock
-  not touched for 60 s was left by a dead sender and is taken over. Each
+  it started, or when another sender took the lock; a lock not touched for
+  60 s was left by a dead sender and is taken over. After a failed send it
+  sends nothing more but keeps the lock for one linger, so an ingest that
+  refuses or never answers costs one sender per linger, not one per command
+  (swamp-club#4580). A command with no distinct id starts no sender. Each
   entry records the repo id and distinct id of the command that spooled it,
   and the sender sends those, so a sender draining other commands' entries
   never reports them as its own; entries from before that stamp fall back to

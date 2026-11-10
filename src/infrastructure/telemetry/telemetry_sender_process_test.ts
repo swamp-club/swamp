@@ -29,6 +29,7 @@ import { JsonTelemetryRepository } from "../persistence/json_telemetry_repositor
 import { JsonTelemetryFlushRecordRepository } from "../persistence/json_telemetry_flush_record_repository.ts";
 import {
   claimSenderLock,
+  drainAndLinger,
   drainTelemetrySpool,
   heartbeatSenderLock,
   hostSenderCommand,
@@ -79,7 +80,9 @@ async function spool(dir: string, count: number): Promise<void> {
 class RecordingSender implements TelemetrySender {
   readonly batches: string[][] = [];
   failAfter = Infinity;
+  attempts = 0;
   sendBatch(entries: TelemetryEntry[]): Promise<TelemetryFlushResult> {
+    this.attempts++;
     if (this.batches.length >= this.failAfter) {
       return Promise.resolve({ ok: false, reason: "HTTP 503" });
     }
@@ -223,5 +226,87 @@ Deno.test("drainTelemetrySpool: stops at a failed send, and when the lock is los
       { sent: 0, ok: true },
     );
     assertEquals(lost.batches.length, 0);
+  });
+});
+
+/** a clock that only moves when the sender sleeps; each sleep runs onSleep */
+function lingerClock(
+  onSleep: (sleeps: number) => Promise<void> = () => Promise.resolve(),
+) {
+  let clock = 0;
+  let sleeps = 0;
+  return {
+    lingerMs: 30_000,
+    pollMs: 1_000,
+    now: () => clock,
+    sleep: async (ms: number) => {
+      clock += ms;
+      await onSleep(++sleeps);
+    },
+    sleeps: () => sleeps,
+  };
+}
+
+Deno.test("drainAndLinger: a failed first send keeps the lock for a linger and sends nothing more", async () => {
+  await withDir(async (dir) => {
+    await spool(dir, 3);
+    const failing = new RecordingSender();
+    failing.failAfter = 0;
+    let heartbeats = 0;
+    const clock = lingerClock(() => spool(dir, 1));
+    await drainAndLinger({
+      service: serviceAt(dir),
+      sender: failing,
+      distinctId: "user-1",
+      keepFlushed: false,
+      heartbeat: () => Promise.resolve(++heartbeats > 0),
+      ...clock,
+    });
+    assertEquals(failing.attempts, 1);
+    assertEquals(clock.sleeps(), 30);
+    // one before the first batch, then one per poll of the hold
+    assertEquals(heartbeats, 1 + 30);
+  });
+});
+
+Deno.test("drainAndLinger: a send that fails during the linger holds the lock for a fresh linger", async () => {
+  await withDir(async (dir) => {
+    await spool(dir, 1);
+    const sender = new RecordingSender();
+    sender.failAfter = 1;
+    const clock = lingerClock(async (sleeps) => {
+      if (sleeps <= 10) await spool(dir, 1);
+    });
+    await drainAndLinger({
+      service: serviceAt(dir),
+      sender,
+      distinctId: "user-1",
+      keepFlushed: false,
+      heartbeat: () => Promise.resolve(true),
+      ...clock,
+    });
+    assertEquals(sender.batches.length, 1);
+    assertEquals(sender.attempts, 2);
+    assertEquals(clock.sleeps(), 1 + 30);
+  });
+});
+
+Deno.test("drainAndLinger: a sender holding the lock after a failed send stops once the lock is lost", async () => {
+  await withDir(async (dir) => {
+    await spool(dir, 1);
+    const failing = new RecordingSender();
+    failing.failAfter = 0;
+    let heartbeats = 0;
+    const clock = lingerClock();
+    await drainAndLinger({
+      service: serviceAt(dir),
+      sender: failing,
+      distinctId: "user-1",
+      keepFlushed: false,
+      heartbeat: () => Promise.resolve(++heartbeats <= 4),
+      ...clock,
+    });
+    assertEquals(failing.attempts, 1);
+    assertEquals(clock.sleeps(), 4);
   });
 });
