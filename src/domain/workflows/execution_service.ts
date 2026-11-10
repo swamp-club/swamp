@@ -8928,14 +8928,23 @@ export class WorkflowExecutionService {
       try {
         reportLock = await this.reportLock(WORKFLOW_MODEL_TYPE, workflow.id);
       } catch (error) {
-        runLogger.warn(
-          "Workflow-scope reports were not run: the workflow's lock could not be taken: {error}",
-          { error: error instanceof Error ? error.message : String(error) },
-        );
+        const reason = `the workflow's lock could not be taken: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        runLogger.warn("Workflow-scope reports were not run: {reason}", {
+          reason,
+        });
+        yield {
+          kind: "report_failed",
+          reportName: "workflow-scope reports",
+          scope: "workflow",
+          error: reason,
+        };
         return;
       }
     }
     let artifacts: Awaited<ReturnType<WorkflowReportRunner["runFor"]>> = [];
+    let flushFailure: string | undefined;
     try {
       artifacts = await this.workflowReportRunner.runFor({
         workflow,
@@ -8954,13 +8963,35 @@ export class WorkflowExecutionService {
       });
     } finally {
       if (reportLock) {
-        await reportLock.flush(artifacts.map((artifact) => ({
-          modelType: WORKFLOW_MODEL_TYPE,
-          modelId: workflow.id,
-          dataName: artifact.name,
-          version: artifact.version,
-          dataId: artifact.dataId,
-        })));
+        try {
+          await reportLock.flush(artifacts.map((artifact) => ({
+            modelType: WORKFLOW_MODEL_TYPE,
+            modelId: workflow.id,
+            dataName: artifact.name,
+            version: artifact.version,
+            dataId: artifact.dataId,
+          })));
+        } catch (error) {
+          flushFailure = `the reports could not be saved: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
+      }
+    }
+
+    // A report that did not land is a failed report, as any report error is:
+    // the run keeps its result and its record names none of them.
+    if (flushFailure !== undefined) {
+      runLogger.warn("{reason}", { reason: flushFailure });
+      artifacts = [];
+      for (const [i, event] of bufferedEvents.entries()) {
+        if (event.kind !== "report_completed") continue;
+        bufferedEvents[i] = {
+          kind: "report_failed",
+          reportName: event.reportName,
+          scope: event.scope,
+          error: flushFailure,
+        };
       }
     }
 
