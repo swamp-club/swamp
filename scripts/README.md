@@ -68,7 +68,9 @@ the dashboard's build packages stay out of the binary.
 the release workflow checks all five before anything uploads.
 
 Each limit is a release build's size plus about 15 MB, in megabytes (1,000,000
-bytes). A release build includes the dashboard, which `verify-build` does not
+bytes). Release builds are bundled, with their source maps embedded; the
+unbundled `--no-bundle` build of the same commit is about 4 MB larger and still
+fits, so rolling back the default needs no limit change. A release build includes the dashboard, which `verify-build` does not
 build, so set limits from
 `deno run build-dashboard && deno run compile --target <target>`. When a size
 increase is intended, raise the limit in the same change so reviewers see it. A

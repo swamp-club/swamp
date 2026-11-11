@@ -21,6 +21,12 @@ fires regardless of pass/fail.
 All steps use `command/shell` which correctly fails on non-zero exit code —
 lint, test, and compile failures are reported accurately.
 
+The `compile` step runs `deno task compile`, which builds the bundled binary —
+the build every release ships — and `binary-size` checks it against the host
+target's limit. It does not build the `--no-bundle` fallback; compare the two
+with `deno run cli-parity` by hand when a change could make them differ (see
+`contributing/startup-benchmarks.md`).
+
 The `run-tests` step skips type checking, because `type-check` covers every file
 and `compile` depends on it. The step is capped at 15 minutes, and a normal run
 takes about 5. A cap failure means the run stalled or the machine is overloaded,

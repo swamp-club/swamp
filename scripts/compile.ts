@@ -365,10 +365,13 @@ export async function restoreBuildState(
   }
 }
 
-async function main(): Promise<boolean> {
-  const args = parseArgs(Deno.args, {
+// a misspelled --no-bundle must fail the build, not ship the bundled one
+export function parseCompileOptions(argv: readonly string[]): CompileOptions {
+  const refused: string[] = [];
+  const args = parseArgs([...argv], {
     string: ["output", "target", "version"],
     boolean: ["bundle"],
+    negatable: ["bundle"],
     alias: {
       "o": "output",
       "t": "target",
@@ -376,18 +379,34 @@ async function main(): Promise<boolean> {
     },
     default: {
       "output": "swamp",
+      // rollback: set this to false to ship the unbundled build again
+      "bundle": true,
+    },
+    unknown: (arg) => {
+      refused.push(arg);
+      return false;
     },
   });
-
-  // every path below is the repo root's, so the script runs from any directory
-  const root = await Deno.realPath(join(import.meta.dirname ?? ".", ".."));
-  const versionFile = join(root, VERSION_FILE);
-  const options: CompileOptions = {
+  if (refused.length > 0) {
+    throw new Error(
+      `Unknown argument(s): ${refused.join(", ")}. compile.ts accepts ` +
+        "--output (-o), --target (-t), --version (-v) and --no-bundle.",
+    );
+  }
+  return {
     output: resolve(args.output || "swamp"),
     target: args.target,
     version: args.version,
     bundle: args.bundle,
   };
+}
+
+async function main(): Promise<boolean> {
+  const options = parseCompileOptions(Deno.args);
+
+  // every path below is the repo root's, so the script runs from any directory
+  const root = await Deno.realPath(join(import.meta.dirname ?? ".", ".."));
+  const versionFile = join(root, VERSION_FILE);
 
   // stamp the version only when given (CI passes --version); dev builds keep
   // the source default, so the original is saved to restore after compile
@@ -407,6 +426,9 @@ async function main(): Promise<boolean> {
       "No --version provided; using source-default version (dev build)",
     );
   }
+  console.log(
+    options.bundle ? "Build: bundled" : "Build: unbundled (--no-bundle)",
+  );
   const wroteStamp = stamped !== originalContent;
 
   const runner = new BuildRunner();

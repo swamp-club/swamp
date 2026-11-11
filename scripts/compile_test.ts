@@ -35,6 +35,7 @@ import {
   inlinedNpmPackages,
   npmExternals,
   type PackageJson,
+  parseCompileOptions,
   readWorkspaceConfigs,
   requireNpmExternals,
   requireRepoSources,
@@ -602,6 +603,76 @@ Deno.test("compileArgs: the bundled build compiles the bundle entry and includes
       assertEquals(BUNDLE_DIR.startsWith(args[i + 1]), false, args[i + 1]);
     }
   }
+});
+
+Deno.test("parseCompileOptions: no flags builds the bundled binary named swamp", () => {
+  assertEquals(parseCompileOptions([]), {
+    output: resolve("swamp"),
+    target: undefined,
+    version: undefined,
+    bundle: true,
+  });
+});
+
+Deno.test("parseCompileOptions: --no-bundle selects the unbundled build", () => {
+  assertEquals(parseCompileOptions(["--no-bundle"]).bundle, false);
+});
+
+Deno.test("parseCompileOptions: --bundle is still accepted and bundles", () => {
+  assertEquals(parseCompileOptions(["--bundle"]).bundle, true);
+});
+
+Deno.test("parseCompileOptions: passes output, target and version through, long and short", () => {
+  const expected = {
+    output: resolve(join("dist", "swamp")),
+    target: "aarch64-apple-darwin",
+    version: "20990101.000000.0-sha.abc1234",
+    bundle: true,
+  };
+  assertEquals(
+    parseCompileOptions([
+      "--output",
+      join("dist", "swamp"),
+      "--target",
+      expected.target,
+      "--version",
+      expected.version,
+    ]),
+    expected,
+  );
+  assertEquals(
+    parseCompileOptions([
+      "-o",
+      join("dist", "swamp"),
+      "-t",
+      expected.target,
+      "-v",
+      expected.version,
+    ]),
+    expected,
+  );
+  assertEquals(
+    parseCompileOptions([`--output=${join("dist", "swamp")}`]).output,
+    expected.output,
+  );
+});
+
+Deno.test("parseCompileOptions: refuses a misspelled fallback flag instead of bundling", () => {
+  for (const flag of ["--nobundle", "--no-bundel", "--unbundled"]) {
+    assertThrows(
+      () => parseCompileOptions([flag]),
+      Error,
+      `Unknown argument(s): ${flag}`,
+    );
+  }
+});
+
+Deno.test("parseCompileOptions: refuses a positional argument", () => {
+  assertThrows(
+    () => parseCompileOptions(["main.ts"]),
+    Error,
+    "Unknown argument(s): main.ts",
+  );
 });
 
 function fakeChild(): BuildChild & {
