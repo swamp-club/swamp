@@ -1,9 +1,9 @@
 {
   "maxMegabytes": {
-    "x86_64-unknown-linux-gnu": 307,
-    "aarch64-unknown-linux-gnu": 297,
-    "x86_64-apple-darwin": 285,
-    "aarch64-apple-darwin": 257,
-    "x86_64-pc-windows-msvc": 284
+    "x86_64-unknown-linux-gnu": 306,
+    "aarch64-unknown-linux-gnu": 296,
+    "x86_64-apple-darwin": 284,
+    "aarch64-apple-darwin": 256,
+    "x86_64-pc-windows-msvc": 283
   }
 }

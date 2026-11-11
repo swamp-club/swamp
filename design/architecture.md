@@ -107,11 +107,13 @@ per-repo hooks so the agent's commands are audited
 
 ## One binary, four runtime roles
 
-`swamp` compiles to a single Deno binary. `scripts/compile.ts` also embeds a
-second Deno runtime for bundling extensions, the bundled skills, and the
-dashboard build (only if `packages/dashboard/dist` exists at compile time). Only
-npm packages reachable from `main.ts` are embedded, and per-target size limits
-guard against a jump. The subcommand decides the role:
+`swamp` compiles to a single Deno binary, from a code-split `deno bundle` of
+`main.ts` with its source maps embedded so stack traces name source files
+(`--no-bundle` builds from `main.ts` directly). `scripts/compile.ts` also
+embeds a second Deno runtime for bundling extensions, the bundled skills, and
+the dashboard build (only if `packages/dashboard/dist` exists at compile time).
+Only npm packages reachable from `main.ts` are embedded, and per-target size
+limits guard against a jump. The subcommand decides the role:
 
 | Role                     | Runs as                                              | Owns                                                                                             |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |

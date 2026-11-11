@@ -1,6 +1,6 @@
 ---
 audience: maintainer
-last-verified: 2026-11-10 @ c7f34885
+last-verified: 2026-11-11 @ 3fb0c65c
 ---
 
 # Startup benchmark and CLI parity
@@ -16,8 +16,10 @@ Two scripts back every change to how the CLI loads its commands:
 
 - Every PR in the lazy command loading plan. Quote the benchmark for the base
   commit and the PR side by side, and run parity with the base binary first.
-- Any Deno version bump, once the bundled build ships. A new Deno can move the
-  code cache or change startup cost without any swamp change.
+- Any Deno version bump. A new Deno can move the code cache or change startup
+  cost without any swamp change, and the bundler's output depends on the Deno
+  pinned in `.tool-versions`. Run `cli-parity` between the `--no-bundle` and
+  default builds of the bumped commit, and `bench-startup` on both.
 
 Neither script gates CI. The numbers vary with the machine, so compare binaries
 measured in one session on one machine.
@@ -46,25 +48,31 @@ deno run compile --output ../bin/swamp-pr
 
 ### The bundled build
 
-`deno run compile --bundle` runs `deno bundle` with code splitting before
-compiling, so the binary loads a few large chunks instead of every source module.
-Releases still ship the unbundled build. Every npm package stays external: the
+`deno run compile` runs `deno bundle` with code splitting before compiling, so
+the binary loads a few large chunks instead of every source module. This is the
+default, and releases ship it. `deno run compile --no-bundle` builds the
+unbundled binary from `main.ts`; it stays as the fallback until one Deno version
+bump has shipped bundled, and rolling back is flipping the `bundle` default in
+`parseCompileOptions` in `scripts/compile.ts`. The script refuses any argument
+it does not know, so a misspelled `--no-bundle` fails instead of bundling. Every
+npm package stays external: the
 list comes from the `npm:` imports in the root's and each workspace member's
 `deno.json` or `deno.jsonc`, plus their `package.json` dependencies, and the
 build fails if the bundle's source maps show a file from Deno's npm cache (any
 registry) or a `node_modules` directory, which means a package was inlined
-anyway. The bundle lands in `build/bundle/`, which a `--bundle` build removes
-when it ends, pass or fail. Its linked source maps are embedded, so stack traces
+anyway. The bundle lands in `build/bundle/`, which a bundled build removes when
+it ends, pass or fail. Its linked source maps are embedded, so stack traces
 name source files.
 
-To compare the two builds of one commit, give the bundled binary its own name
-and use it as the second binary in both scripts:
+To compare the two builds of one commit, give the unbundled binary its own name
+and use it as the first binary in both scripts:
 
 ```sh
+deno run compile --no-bundle --output ../bin/swamp-pr-unbundled
 deno run compile --output ../bin/swamp-pr
-deno run compile --bundle --output ../bin/swamp-pr-bundled
-deno run cli-parity ../bin/swamp-pr ../bin/swamp-pr-bundled
-deno run bench-startup ../bin/swamp-pr-bundled
+deno run cli-parity ../bin/swamp-pr-unbundled ../bin/swamp-pr
+deno run bench-startup ../bin/swamp-pr-unbundled
+deno run bench-startup ../bin/swamp-pr
 ```
 
 ## Benchmark

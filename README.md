@@ -245,7 +245,11 @@ which deno
 ```
 
 To change the Deno version, edit `.tool-versions` and update the `Dockerfile` to
-match — `integration/toolchain_pins_rules_test.ts` fails if they drift.
+match — `integration/toolchain_pins_rules_test.ts` fails if they drift. Releases
+ship the bundled build, and the bundler's output depends on the pinned Deno, so
+a bump also runs `deno run cli-parity` between the `--no-bundle` and default
+builds of the bumped commit and `deno run bench-startup` on both; see
+[contributing/startup-benchmarks.md](contributing/startup-benchmarks.md).
 
 ### Commands
 
