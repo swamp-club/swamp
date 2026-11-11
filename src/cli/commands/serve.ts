@@ -7458,6 +7458,7 @@ export const serveCommand = new Command()
     const webhookService = new WebhookService({
       acceptsRuns: () => !isFollowing(),
       startupComplete: () => admission.phase !== "starting",
+      shuttingDown: () => admission.phase === "draining",
       pendingRunOwner,
       ...(leaderLink !== undefined ? { leaderLink } : {}),
       repoDir: resolvedRepoDir,
@@ -9430,10 +9431,12 @@ export const serveCommand = new Command()
       if (shuttingDown) return;
       shuttingDown = true;
       isReady = false;
+      // in the same turn as shuttingDown, with no await before it: once /ready
+      // answers shutting_down, no trigger may be acknowledged
+      admission.beginDraining();
       // a stale file would point swamp serve reload at whatever process
       // reuses this pid
       if (pidPath) await removePidFileIfOurs(pidPath, Deno.pid);
-      admission.beginDraining();
       // its pass in flight is waited on below, within the shutdown deadline
       pendingReplaySweep.halt();
       // stopped first so it lets go of its load in flight instead of competing

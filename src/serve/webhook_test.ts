@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { LeaderLink } from "./leader_link.ts";
+import { ServeAdmission } from "./serve_admission.ts";
 import {
   currentVaultAccess,
   RunVaultAccess,
@@ -2707,5 +2708,79 @@ Deno.test("WebhookService.setMaxConcurrentRuns: a lowered limit lets running run
     () => service.queueStatus("/hooks/gh").active === 0,
     "all runs settled",
   );
+  await service.stop();
+});
+
+Deno.test("handleRequest: once admission begins draining, a delivery behind an in-flight run is turned away before drain() runs", async () => {
+  const enqueued: string[] = [];
+  const admission = new ServeAdmission();
+  admission.open();
+  const { service, runs } = await concurrentService({
+    shuttingDown: () => admission.phase === "draining",
+    runTracker: {
+      enqueuePendingRun: (entry: { id: string }) => enqueued.push(entry.id),
+      deletePendingRun: () => {},
+    } as unknown as RunTrackerStore,
+  });
+  await service.handleRequest(await signedDeliveryTo("/hooks/gh", "{}"));
+  await waitFor(() => runs.length === 1, "first run in flight");
+
+  admission.beginDraining();
+  const res = await service.handleRequest(
+    await signedDeliveryTo("/hooks/gh", "{}"),
+  );
+
+  assertEquals(res?.status, 503);
+  assertEquals(res?.headers.get("retry-after"), "5");
+  await res?.body?.cancel();
+  assertEquals(enqueued.length, 1);
+  runs[0].release();
+  await service.stop();
+});
+
+Deno.test("handleRequest: shutdown beginning after the entry check turns the verified delivery away", async () => {
+  const enqueued: string[] = [];
+  let checks = 0;
+  const { service, runs } = await concurrentService({
+    shuttingDown: () => checks++ > 0,
+    runTracker: {
+      enqueuePendingRun: (entry: { id: string }) => enqueued.push(entry.id),
+      deletePendingRun: () => {},
+    } as unknown as RunTrackerStore,
+  });
+
+  const res = await service.handleRequest(
+    await signedDeliveryTo("/hooks/gh", "{}"),
+  );
+
+  assertEquals(res?.status, 503);
+  assertEquals(res?.headers.get("retry-after"), "5");
+  await res?.body?.cancel();
+  assertEquals(enqueued.length, 0);
+  for (const run of runs) run.release();
+  await service.stop();
+});
+
+Deno.test("handleRequest: the shutdown gate accepts a delivery while admission is open", async () => {
+  const enqueued: string[] = [];
+  const admission = new ServeAdmission();
+  admission.open();
+  const { service, runs } = await concurrentService({
+    shuttingDown: () => admission.phase === "draining",
+    runTracker: {
+      enqueuePendingRun: (entry: { id: string }) => enqueued.push(entry.id),
+      deletePendingRun: () => {},
+    } as unknown as RunTrackerStore,
+  });
+
+  const res = await service.handleRequest(
+    await signedDeliveryTo("/hooks/gh", "{}"),
+  );
+
+  assertEquals(res?.status, 200);
+  await res?.body?.cancel();
+  assertEquals(enqueued.length, 1);
+  await waitFor(() => runs.length === 1, "run started");
+  runs[0].release();
   await service.stop();
 });
