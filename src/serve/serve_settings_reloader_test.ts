@@ -237,6 +237,6 @@ Deno.test("createServeSettingsReloader: a sweep that runs only at boot reports a
   assertEquals(outcome.report.needsRestart, [{
     setting: "continuation-sweep-interval",
     reason:
-      "the continuation sweep runs only at boot on this datastore, so its interval has no effect here",
+      "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this",
   }]);
 });

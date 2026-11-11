@@ -323,7 +323,6 @@ export function classifyServeSettingChanges(
   return { applied: appliedKeys, needsRestart, overridden };
 }
 
-/** why reload cannot apply a continuation sweep interval here, or none */
 export function continuationSweepReloadReason(sweep: {
   readonly running: boolean;
   readonly bootPassOnly: boolean;
@@ -334,7 +333,7 @@ export function continuationSweepReloadReason(sweep: {
   }
   // a restart on this datastore runs the boot pass alone again
   if (sweep.bootPassOnly) {
-    return "the continuation sweep runs only at boot on this datastore, so its interval has no effect here";
+    return "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
   }
   if (!sweep.staysOn) {
     return "turning the continuation sweep off needs a restart";

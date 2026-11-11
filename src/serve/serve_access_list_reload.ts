@@ -225,7 +225,7 @@ export async function planAllowedUsersReload(
   };
 }
 
-/** the subjects of the resolved admins, as the allowed-users list holds them */
+/** only user principals become subjects; any other admin admits no one here */
 export function adminSubjectsOf(admins: readonly string[]): string[] {
   const subjects: string[] = [];
   for (const admin of admins) {

@@ -584,9 +584,10 @@ reload reports it. A list that removals and waiting names leave empty, with no
 collectives, holds only the admins' resolved ids (or, with no admins, an entry
 that matches no one), so admission stays closed rather than opening to
 everyone, and an admin can still fix the file and reload remotely. A file that
-empties both lists is refused, as at startup. Admins are not reloaded: changing `--admins` needs a restart. Each
-instance applies the lists it reloaded, so in a team a removed person is
-admitted by an instance until that instance reloads.
+empties both lists is refused, as at startup. Admins are not reloaded: changing
+`--admins` needs a restart. Each instance applies the lists it reloaded, so in
+a team a removed person is admitted by an instance until that instance
+reloads.
 
 Implementation: `src/domain/access/admission.ts`,
 `src/serve/token_admission.ts`.

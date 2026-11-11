@@ -244,7 +244,7 @@ Deno.test("continuationSweepReloadReason: a sweep that runs only at boot cannot 
     "turning the continuation sweep off needs a restart",
   );
   const bootOnly =
-    "the continuation sweep runs only at boot on this datastore, so its interval has no effect here";
+    "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
   assertEquals(reason(true, true, true), bootOnly);
   assertEquals(reason(true, true, false), bootOnly);
 });
