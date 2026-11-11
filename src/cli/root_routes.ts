@@ -31,7 +31,8 @@ export const ROOT_ROUTES: readonly RootRoute[] = [
     hidden: false,
     module: "src/cli/commands/access.ts",
     needsFullTree: false,
-    load: async () => (await import("./commands/access.ts")).accessCommand,
+    load: async (rest) =>
+      (await import("./commands/access.ts")).createAccessCommand(rest),
   },
   {
     name: "version",
@@ -99,7 +100,8 @@ export const ROOT_ROUTES: readonly RootRoute[] = [
     hidden: false,
     module: "src/cli/commands/vault.ts",
     needsFullTree: false,
-    load: async () => (await import("./commands/vault.ts")).vaultCommand,
+    load: async (rest) =>
+      (await import("./commands/vault.ts")).createVaultCommand(rest),
   },
   {
     name: "data",
@@ -215,8 +217,8 @@ export const ROOT_ROUTES: readonly RootRoute[] = [
     hidden: false,
     module: "src/cli/commands/extension.ts",
     needsFullTree: false,
-    load: async () =>
-      (await import("./commands/extension.ts")).extensionCommand,
+    load: async (rest) =>
+      (await import("./commands/extension.ts")).createExtensionCommand(rest),
   },
   {
     name: "summarise",
@@ -236,8 +238,8 @@ export const ROOT_ROUTES: readonly RootRoute[] = [
     hidden: false,
     module: "src/cli/commands/datastore.ts",
     needsFullTree: false,
-    load: async () =>
-      (await import("./commands/datastore.ts")).datastoreCommand,
+    load: async (rest) =>
+      (await import("./commands/datastore.ts")).createDatastoreCommand(rest),
   },
   {
     name: "doctor",

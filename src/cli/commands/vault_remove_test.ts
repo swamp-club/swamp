@@ -19,10 +19,13 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { vaultRemoveCommand } from "./vault_remove.ts";
-import { vaultCommand } from "./vault.ts";
+import { createVaultCommand } from "./vault.ts";
 
-Deno.test("vaultRemoveCommand: is registered as swamp vault remove", () => {
-  assertEquals(vaultCommand.getCommand("remove"), vaultRemoveCommand);
+Deno.test("vaultRemoveCommand: is registered as swamp vault remove", async () => {
+  assertEquals(
+    (await createVaultCommand()).getCommand("remove"),
+    vaultRemoveCommand,
+  );
 });
 
 Deno.test("vaultRemoveCommand: takes one vault name and no key", () => {

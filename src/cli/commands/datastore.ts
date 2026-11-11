@@ -18,71 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { AnyCommand } from "../cli_schema.ts";
+import { loadGroupRoutes } from "../command_routes.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { datastoreStatusCommand } from "./datastore_status.ts";
-import { datastoreSetupCommand } from "./datastore_setup.ts";
-import { datastoreSyncCommand } from "./datastore_sync.ts";
-import { datastoreLockCommand } from "./datastore_lock.ts";
-import { datastoreCompactCommand } from "./datastore_compact.ts";
-import { datastoreCatalogPullCommand } from "./datastore_catalog_pull.ts";
-import { datastoreMigrateIndexCommand } from "./datastore_migrate_index.ts";
-import {
-  datastoreNamespaceMigrateCommand,
-  datastoreNamespaceSetCommand,
-  datastoreNamespaceUnsetCommand,
-} from "./datastore_namespace.ts";
-import { datastoreNamespacesCommand } from "./datastore_namespaces.ts";
-import { datastoreTypeSearchCommand } from "./datastore_type_search.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
-import { datastoreConfigMigrateCommand } from "./datastore_config_migrate.ts";
-import { datastoreGcCommand } from "./datastore_gc.ts";
-import { datastoreClaimCommand } from "./datastore_claim.ts";
-import { datastoreReleaseCommand } from "./datastore_release.ts";
-import { datastoreQuarantineCommand } from "./datastore_quarantine.ts";
+import { DATASTORE_ROUTES } from "./datastore_routes.ts";
 
-export const datastoreTypeCommand = new Command()
-  .name("type")
-  .description("Inspect datastore types")
-  .action(groupCommandAction)
-  .command("search", datastoreTypeSearchCommand);
-
-const datastoreCatalogCommand = new Command()
-  .name("catalog")
-  .description("Manage datastore catalog")
-  .action(groupCommandAction)
-  .command("pull", datastoreCatalogPullCommand);
-
-const datastoreNamespaceCommand = new Command()
-  .name("namespace")
-  .description("Manage datastore namespace")
-  .action(groupCommandAction)
-  .command("set", datastoreNamespaceSetCommand)
-  .command("unset", datastoreNamespaceUnsetCommand)
-  .command("migrate", datastoreNamespaceMigrateCommand)
-  .command("list", datastoreNamespacesCommand);
-
-export const datastoreCommand = new Command()
-  .description("Manage datastore configuration")
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("type", datastoreTypeCommand)
-  .command("status", datastoreStatusCommand)
-  .command("setup", datastoreSetupCommand)
-  .command("sync", datastoreSyncCommand)
-  .command("lock", datastoreLockCommand)
-  .command("quarantine", datastoreQuarantineCommand)
-  .command("compact", datastoreCompactCommand)
-  .command("gc", datastoreGcCommand)
-  .command("claim", datastoreClaimCommand)
-  .command("release", datastoreReleaseCommand)
-  .command("migrate-index", datastoreMigrateIndexCommand)
-  .command("catalog", datastoreCatalogCommand)
-  .command("namespace", datastoreNamespaceCommand)
-  .command(
-    "config",
-    new Command()
-      .name("config")
-      .description("Manage datastore-managed configuration")
-      .action(groupCommandAction)
-      .command("migrate", datastoreConfigMigrateCommand),
-  );
+/** rest, the argv after the group word, narrows the group to one subcommand */
+export async function createDatastoreCommand(
+  rest: readonly string[] = [],
+): Promise<AnyCommand> {
+  const group: AnyCommand = new Command()
+    .name("datastore")
+    .description(
+      "Manage datastore configuration",
+    )
+    .error(unknownCommandErrorHandler)
+    .action(groupCommandAction);
+  const loaded = await loadGroupRoutes("datastore", DATASTORE_ROUTES, rest);
+  for (const { name, command } of loaded) group.command(name, command);
+  return group;
+}

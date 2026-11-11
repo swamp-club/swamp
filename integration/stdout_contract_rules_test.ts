@@ -24,7 +24,7 @@ import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { VALUE_ONLY_STDOUT_COMMANDS } from "../src/cli/stdout_contract.ts";
 import { inviteCommand } from "../src/cli/commands/invite.ts";
 import { firstRuleCommand } from "../src/cli/commands/invite_link.ts";
-import { vaultCommand } from "../src/cli/commands/vault.ts";
+import { createVaultCommand } from "../src/cli/commands/vault.ts";
 import { workerCommand } from "../src/cli/commands/worker.ts";
 
 // Importing the command modules pulls in the CLI command tree, which needs
@@ -45,7 +45,7 @@ type Resolvable = AnyCommand & {
  */
 const ROOTS: Record<string, Resolvable> = {
   invite: inviteCommand as unknown as Resolvable,
-  vault: vaultCommand as unknown as Resolvable,
+  vault: await createVaultCommand() as unknown as Resolvable,
   "first-rule": firstRuleCommand as unknown as Resolvable,
   worker: workerCommand as unknown as Resolvable,
 };

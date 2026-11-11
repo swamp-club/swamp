@@ -133,11 +133,14 @@ Each invocation loads only the top-level command it runs, through its row in
 `completions`); a new top-level command gets a row there, and startup code never
 imports a command module statically. The row also carries the command's short
 description and argument syntax, so root help lists every command without
-loading any. The `data` and `workflow` groups load only the subcommand argv
-names, through their own tables (`data_routes.ts`, `workflow_routes.ts`); a new
-subcommand of either gets a row there. `behavior`,
-`model` and `model method` do the same through `model_routes.ts`, which defines
-each shared subcommand once and lists it in each spelling's own order.
+loading any. The `data`, `workflow`, `extension`, `vault` and `datastore`
+groups load only the subcommand argv names, through their own tables
+(`data_routes.ts`, `workflow_routes.ts`, `extension_routes.ts`,
+`vault_routes.ts`, `datastore_routes.ts`); a new subcommand of any of them gets
+a row there. `access` and `access token` do the same through `access_routes.ts`.
+`behavior`, `model` and `model method` do the same through `model_routes.ts`,
+which defines each shared subcommand once and lists it in each spelling's own
+order.
 
 The dependency rule is `cli → libswamp → domain ← infrastructure`, never the
 reverse. `integration/ddd_layer_rules_test.ts` enforces it for new code and
