@@ -175,6 +175,7 @@ import { resolveModelType } from "../../domain/extensions/extension_auto_resolve
 import {
   canonicalKeyPath,
   dataArgumentKeys,
+  definitionInputsReadAsData,
   dottedKeyPath,
   type KeyPath,
   omitKeyPaths,
@@ -729,9 +730,23 @@ async function runDataInputPaths(
   }
   const method = modelDef?.methods[payload.methodName];
   if (!method) return paths;
+  const inputs = payload.inputs ?? {};
+  const definitionInputKeys = Object.keys(
+    (definition?.definition.inputs as
+      | { properties?: Record<string, unknown> }
+      | undefined)?.properties ?? {},
+  );
+  const spliced = definition
+    ? definitionInputsReadAsData(
+      method.arguments,
+      definition.definition.getMethodArguments(payload.methodName),
+      definitionInputKeys,
+    ).filter((name) => Object.hasOwn(inputs, name)).map((name) => [name])
+    : [];
   return [
     ...paths,
-    ...dataArgumentKeys(method.arguments, payload.inputs ?? {}),
+    ...dataArgumentKeys(method.arguments, inputs),
+    ...spliced,
   ];
 }
 

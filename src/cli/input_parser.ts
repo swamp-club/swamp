@@ -223,13 +223,17 @@ export function assertNoDataInputOverlap(
   data: DataInputs,
 ): void {
   for (const key of data.keys) {
+    // set at the key, or a prefix holds a value the merge would replace
     let current: unknown = inputs;
     let present = true;
     for (const part of key.split(".")) {
       if (
         current === null || typeof current !== "object" ||
-        !Object.hasOwn(current, part)
+        Array.isArray(current)
       ) {
+        break;
+      }
+      if (!Object.hasOwn(current, part)) {
         present = false;
         break;
       }

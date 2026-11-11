@@ -21,11 +21,21 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
 import {
   assertNoDataGlobalArguments,
-  dataArgumentPaths,
+  canonicalKeyPath,
+  dataArgumentKeys,
+  definitionInputsReadAsData,
+  keysToPath,
 } from "./data_field_extractor.ts";
+
+function dataArgumentPaths(
+  schema: z.ZodTypeAny,
+  args: Record<string, unknown>,
+): string[] {
+  return dataArgumentKeys(schema, args).map((keys) => keysToPath(keys));
+}
 import { ModelType } from "./model_type.ts";
 
-Deno.test("dataArgumentPaths: reports a marked top-level argument and leaves others out", () => {
+Deno.test("dataArgumentKeys: reports a marked top-level argument and leaves others out", () => {
   const schema = z.object({
     name: z.string(),
     payload: z.string().meta({ data: true }),
@@ -39,7 +49,7 @@ Deno.test("dataArgumentPaths: reports a marked top-level argument and leaves oth
   );
 });
 
-Deno.test("dataArgumentPaths: reports nested, optional, array and record fields as concrete paths", () => {
+Deno.test("dataArgumentKeys: reports nested, optional, array and record fields as concrete paths", () => {
   const schema = z.object({
     body: z.object({ text: z.string().meta({ data: true }), n: z.number() }),
     notes: z.array(z.string().meta({ data: true })).optional(),
@@ -67,12 +77,12 @@ Deno.test("dataArgumentPaths: reports nested, optional, array and record fields 
   );
 });
 
-Deno.test("dataArgumentPaths: a marker on the arguments object makes every argument data", () => {
+Deno.test("dataArgumentKeys: a marker on the arguments object makes every argument data", () => {
   const schema = z.object({ a: z.string() }).meta({ data: true });
   assertEquals(dataArgumentPaths(schema, { a: "x" }), [""]);
 });
 
-Deno.test("dataArgumentPaths: reports nothing for absent values or data: false", () => {
+Deno.test("dataArgumentKeys: reports nothing for absent values or data: false", () => {
   const schema = z.object({
     payload: z.string().meta({ data: true }).optional(),
     other: z.string().meta({ data: false }),
@@ -104,4 +114,33 @@ Deno.test("assertNoDataGlobalArguments: refuses a data marker in global argument
     type,
     globalArguments: z.object({ a: z.string() }),
   });
+});
+
+Deno.test("canonicalKeyPath: reads a segment under an array as its index and refuses what is not there", () => {
+  const value = { items: ["a", { b: 1 }], body: { text: "t" } };
+  assertEquals(canonicalKeyPath(value, ["items", "0"]), ["items", 0]);
+  assertEquals(canonicalKeyPath(value, ["items", "1", "b"]), ["items", 1, "b"]);
+  assertEquals(canonicalKeyPath(value, ["body", "text"]), ["body", "text"]);
+  assertEquals(canonicalKeyPath(value, ["items", "2"]), undefined);
+  assertEquals(canonicalKeyPath(value, ["items", "01"]), undefined);
+  assertEquals(canonicalKeyPath(value, ["body", "text", "x"]), undefined);
+  assertEquals(canonicalKeyPath(value, ["missing"]), undefined);
+});
+
+Deno.test("definitionInputsReadAsData: names the definition inputs a marked argument's source reads", () => {
+  const schema = z.object({
+    payload: z.string().meta({ data: true }),
+    note: z.string(),
+  });
+  assertEquals(
+    definitionInputsReadAsData(schema, {
+      payload: '${{ inputs.text }} and ${{ inputs["other"] }}',
+      note: "${{ inputs.plain }}",
+    }, ["text", "other", "plain"]).sort(),
+    ["other", "text"],
+  );
+  assertEquals(
+    definitionInputsReadAsData(schema, { payload: "${{ inputs.text }}" }, []),
+    [],
+  );
 });

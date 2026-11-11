@@ -19,6 +19,7 @@
 
 import type { z } from "zod";
 import { indexPath, keyPath } from "../expressions/provenance_map.ts";
+import { extractInputReferences } from "../expressions/expression_parser.ts";
 import {
   type FieldMetadata,
   findFieldMetadata,
@@ -55,11 +56,22 @@ export function dataArgumentKeys(
   return [...seen.values()];
 }
 
-export function dataArgumentPaths(
-  schema: z.ZodTypeAny,
-  args: Record<string, unknown>,
+/**
+ * the definition inputs a marked argument's own source reads through inputs.*,
+ * which are data wherever they are spliced; serve and the run share this
+ */
+export function definitionInputsReadAsData(
+  argumentsSchema: z.ZodTypeAny,
+  sourceArguments: Record<string, unknown>,
+  definitionInputKeys: readonly string[],
 ): string[] {
-  return dataArgumentKeys(schema, args).map((keys) => keysToPath(keys));
+  const names = new Set<string>();
+  for (const keys of dataArgumentKeys(argumentsSchema, sourceArguments)) {
+    for (const name of extractInputReferences(valueAt(sourceArguments, keys))) {
+      if (definitionInputKeys.includes(name)) names.add(name);
+    }
+  }
+  return [...names];
 }
 
 export function keysToPath(keys: KeyPath, base = ""): string {

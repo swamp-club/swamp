@@ -1188,7 +1188,7 @@ async function runMethodViaServer(
         );
       }
     }
-    if (dataInputs.keys.length > 0) {
+    if (dataInputs.keys.length > 0 && !literalInputs) {
       // asked of the leader, which runs it; a follower only relays
       const version = await requestServerResponse<
         { version: string; capabilities?: string[] }

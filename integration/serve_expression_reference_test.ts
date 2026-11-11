@@ -27,6 +27,7 @@ import { ModelType } from "../src/domain/models/model_type.ts";
 import {
   Definition,
   type DefinitionData,
+  type InputsSchema,
 } from "../src/domain/definitions/definition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
@@ -655,6 +656,72 @@ Deno.test("serve expressions: text the handler skipped never evaluates, even whe
           });
           assert(errorFrame(missing), "a key naming no value is refused");
           assertEquals(notes.length, 2);
+        });
+      });
+    },
+  );
+});
+
+Deno.test("serve expressions: a definition input a marked argument reads is data, unauthorized and unevaluated, while one an unmarked argument reads is still checked", async () => {
+  await withMockedEnv(
+    { SWAMP_EXPR_SENTINEL_RUN: "sentinel-4649-splice" },
+    async () => {
+      await withEchoType(async (echoType, notes) => {
+        await withFixtures(async (f) => {
+          const inputs: InputsSchema = {
+            type: "object",
+            properties: { text: { type: "string" } },
+            required: ["text"],
+          };
+          for (
+            const [name, method] of [["splice-data", "echoData"], [
+              "splice-plain",
+              "echo",
+            ]]
+          ) {
+            await f.repo.repoContext.definitionRepo.save(
+              echoType,
+              Definition.create({
+                name,
+                globalArguments: {},
+                inputs,
+                methods: {
+                  [method]: { arguments: { note: "${{ inputs.text }}" } },
+                },
+              }),
+            );
+          }
+          const runOnly = createServeCtx(f.repo, [
+            grant({
+              actions: ["read", "run"],
+              resource: { kind: "model", pattern: "*" },
+            }),
+            ...GRANTS.slice(2),
+          ]);
+          const text = "plan ${{ env.SWAMP_EXPR_SENTINEL_RUN }}";
+          assertAllowed(
+            await sendRequest(
+              runOnly,
+              request("model.method.run", {
+                modelIdOrName: "splice-data",
+                methodName: "echoData",
+                inputs: { text },
+              }),
+            ),
+            "spliced into a marked argument",
+          );
+          assertRefused(
+            await sendRequest(
+              runOnly,
+              request("model.method.run", {
+                modelIdOrName: "splice-plain",
+                methodName: "echo",
+                inputs: { text },
+              }),
+            ),
+            "spliced into an unmarked argument",
+          );
+          assertEquals(notes, [text]);
         });
       });
     },

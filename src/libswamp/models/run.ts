@@ -95,10 +95,10 @@ import {
 import {
   canonicalKeyPath,
   dataArgumentKeys,
+  definitionInputsReadAsData,
   type KeyPath,
   keysToPath,
   omitKeyPaths,
-  valueAt,
 } from "../../domain/models/data_field_extractor.ts";
 import { attachBindingProvenance } from "../../domain/expressions/splice_origin.ts";
 import {
@@ -1288,9 +1288,7 @@ export async function* modelMethodRun(
               });
               // A whole argument typed with --input is the operator's own
               // command text, so it runs as written; runtime splices into it
-              // stay data.
-              // a marked argument or data input stays data inside it; a marked
-              // arguments object makes every override data
+              // stay data, as do marked arguments and data inputs.
               const wholeData = dataPaths.some((keys) => keys.length === 0);
               const placementProvenance = input.literalInputs
                 ? executedProvenance
@@ -2275,12 +2273,14 @@ function markedDataPaths(
     ...dataArgumentKeys(argumentsSchema, overrides),
     ...dataInputPaths,
   ];
-  for (const keys of dataArgumentKeys(argumentsSchema, sourceArguments)) {
-    for (const name of extractInputReferences(valueAt(sourceArguments, keys))) {
-      if (callerInputKeys.has(name) && definitionInputKeys.includes(name)) {
-        paths.push([name]);
-      }
-    }
+  for (
+    const name of definitionInputsReadAsData(
+      argumentsSchema,
+      sourceArguments,
+      definitionInputKeys,
+    )
+  ) {
+    if (callerInputKeys.has(name)) paths.push([name]);
   }
   return paths;
 }

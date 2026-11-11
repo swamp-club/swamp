@@ -688,6 +688,17 @@ Deno.test("assertNoDataInputOverlap: refuses a key another input source sets, at
   );
   assertNoDataInputOverlap({ body: { note: "n" } }, data);
   assertNoDataInputOverlap({}, data);
+  assertThrows(
+    () => assertNoDataInputOverlap({ body: "hello" }, data),
+    UserError,
+    "given both by --input-data",
+  );
+  assertThrows(
+    () =>
+      assertNoDataInputOverlap({ tags: [] }, { values: {}, keys: ["tags.0"] }),
+    UserError,
+    "given both by --input-data",
+  );
 });
 
 Deno.test("withDataInputs: merges the data inputs into every set and refuses a set that names one", () => {
