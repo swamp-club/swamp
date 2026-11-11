@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { Command } from "@cliffy/command";
 import type { AnyCommand } from "./cli_schema.ts";
 
 export interface CommandRoute {
@@ -28,6 +29,14 @@ export interface CommandRoute {
   readonly needsFullTree: boolean;
   /** `rest` is the argv after the command word, for routes that load part of a group */
   load(rest: readonly string[]): Promise<AnyCommand>;
+}
+
+/** a top-level row also carries what root help prints, so root help loads no command */
+export interface RootRoute extends CommandRoute {
+  /** the first line of the command's description */
+  readonly shortDescription: string;
+  /** Cliffy's arguments definition, e.g. `[path:string]` */
+  readonly arguments?: string;
 }
 
 export interface OptionSpec {
@@ -55,8 +64,13 @@ const HELP_OPTIONS: readonly OptionSpec[] = [
   { flags: ["--include-hidden"], takesValue: false },
 ];
 
+// Cliffy's own help option on every command
+const HELP_FLAGS: OptionSpec = { flags: ["-h", "--help"], takesValue: false };
+
 export type RouteSelection =
   | { readonly kind: "all" }
+  /** the root's own help or action, which needs only each row's metadata */
+  | { readonly kind: "rootHelp" }
   | {
     readonly kind: "routes";
     /** in table order */
@@ -192,10 +206,17 @@ function selectCompletionCallback(
   };
 }
 
+// the scan also ends at --, whose positionals the root refuses: full tree
+function isRootHelp(args: readonly string[]): boolean {
+  return !args.includes("--") &&
+    scanForWord(args, 0, [...ROOT_GLOBAL_OPTIONS, HELP_FLAGS]).kind === "end";
+}
+
 export function selectRoute(
   routes: readonly CommandRoute[],
   args: readonly string[],
 ): RouteSelection {
+  if (isRootHelp(args)) return { kind: "rootHelp" };
   const located = locate(args);
   if (!located || located.words.length === 0) return { kind: "all" };
   const { words, next } = located;
@@ -246,6 +267,21 @@ export function loadGroupRoutes(
   return selection
     ? loadRoutes([selection.route], selection.rest, group)
     : loadRoutes(routes, [], group);
+}
+
+/** stand-ins carrying only what root help lists; no route's module is imported */
+export function stubCommands(routes: readonly RootRoute[]): LoadedCommand[] {
+  return routes.map((route) => {
+    let command: AnyCommand = new Command().description(
+      route.shortDescription,
+    );
+    if (route.arguments !== undefined) {
+      command = command.arguments(route.arguments);
+    }
+    for (const alias of route.aliases) command = command.alias(alias);
+    if (route.hidden) command = command.hidden();
+    return { name: route.name, command };
+  });
 }
 
 /** sequential, so command modules evaluate in table order on every run */

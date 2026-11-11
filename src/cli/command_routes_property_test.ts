@@ -23,6 +23,7 @@ import fc from "fast-check";
 import {
   type CommandRoute,
   HELP_COMMAND,
+  ROOT_GLOBAL_OPTIONS,
   selectRoute,
   selectSubcommandWithRest,
 } from "./command_routes.ts";
@@ -130,7 +131,7 @@ Deno.test("selectRoute: Cliffy's parse ends the same way with only the selected 
   await fc.assert(
     fc.asyncProperty(fc.array(token, { maxLength: 6 }), async (args) => {
       const selection = selectRoute(ROOT_ROUTES, args);
-      if (selection.kind === "all") return;
+      if (selection.kind !== "routes") return;
       assertEquals(
         await outcome(selection.routes, args),
         await outcome(ROOT_ROUTES, args),
@@ -139,6 +140,36 @@ Deno.test("selectRoute: Cliffy's parse ends the same way with only the selected 
     }),
     { numRuns: 1000 },
   );
+});
+
+const ROOT_HELP_OPTIONS = new Set([
+  ...ROOT_GLOBAL_OPTIONS.flatMap((spec) => spec.flags),
+  "-h",
+  "--help",
+]);
+const ROUTE_WORDS = new Set(ROOT_ROUTES.flatMap((r) => [r.name, ...r.aliases]));
+
+Deno.test("selectRoute: root help only when argv holds no word, no -- and no option outside the root's globals and help", () => {
+  let rootHelp = 0;
+  const withHelp = fc.oneof(token, fc.constantFrom("-h", "--help", "-qh"));
+  fc.assert(
+    fc.property(fc.array(withHelp, { maxLength: 6 }), (args) => {
+      if (selectRoute(ROOT_ROUTES, args).kind !== "rootHelp") return;
+      rootHelp++;
+      for (const [i, arg] of args.entries()) {
+        const valueOf = args[i - 1] === "--log-level";
+        assert(arg !== "--" && arg !== HELP_COMMAND, args.join(" "));
+        assert(!ROUTE_WORDS.has(arg) || valueOf, args.join(" "));
+        assert(
+          valueOf || arg.startsWith("--log-level=") ||
+            ROOT_HELP_OPTIONS.has(arg),
+          args.join(" "),
+        );
+      }
+    }),
+    { numRuns: 1000 },
+  );
+  assert(rootHelp > 20, `only ${rootHelp} of 1000 argv were root help`);
 });
 
 const callbackArgs = fc.tuple(
@@ -171,7 +202,7 @@ Deno.test("selectRoute: a completion callback's parse ends the same way with onl
   await fc.assert(
     fc.asyncProperty(callbackArgs, async (args) => {
       const selection = selectRoute(ROOT_ROUTES, args);
-      if (selection.kind === "all") return;
+      if (selection.kind !== "routes") return;
       routed++;
       assertEquals(
         await outcome(selection.routes, args),
@@ -283,7 +314,7 @@ interface Narrowed {
 /** selection as the CLI applies it: the root route, then each group in turn */
 function narrowedPath(args: string[]): Narrowed | undefined {
   const selection = selectRoute(ROOT_ROUTES, args);
-  if (selection.kind === "all") return undefined;
+  if (selection.kind !== "routes") return undefined;
   const chosen = new Map<string, CommandRoute>();
   const root = selection.routes.find((r) => GROUP_TABLES.has(r.name)) ??
     selection.routes[0];

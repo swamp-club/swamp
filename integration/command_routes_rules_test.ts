@@ -301,15 +301,44 @@ Deno.test("command routes: the full tree's top-level commands equal the table", 
       name: command.getName(),
       aliases: command.getAliases(),
       hidden: !visible.has(command),
+      shortDescription: command.getShortDescription(),
+      arguments: command.getArgsDefinition(),
     }));
   assertEquals(
     registered,
-    ROOT_ROUTES.map(({ name, aliases, hidden }) => ({
-      name,
-      aliases: [...aliases],
-      hidden,
+    ROOT_ROUTES.map((route) => ({
+      name: route.name,
+      aliases: [...route.aliases],
+      hidden: route.hidden,
+      shortDescription: route.shortDescription,
+      arguments: route.arguments,
     })),
+    "Root help prints each command from its row in src/cli/root_routes.ts " +
+      "without loading it: when a top-level command's description, " +
+      "arguments, aliases or visibility change, update its row to match",
   );
+});
+
+Deno.test("command routes: root help from the table prints what the full tree prints", async () => {
+  // snapshot first: every later build re-parents the shared command instances
+  const full = await buildCommandTree();
+  const expected = {
+    short: full.getHelp({ long: false }),
+    long: full.getHelp({ long: true }),
+    visible: full.getCommands(false).map((command) => command.getName()),
+  };
+  for (const args of [["--help"], ["-h"], []]) {
+    const tree = await buildCommandTree(args);
+    assertEquals(
+      {
+        short: tree.getHelp({ long: false }),
+        long: tree.getHelp({ long: true }),
+        visible: tree.getCommands(false).map((command) => command.getName()),
+      },
+      expected,
+      `swamp ${args.join(" ")}`,
+    );
+  }
 });
 
 Deno.test("command routes: no command module is in the static import closure of main.ts", async () => {

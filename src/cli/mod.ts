@@ -61,6 +61,7 @@ import {
   type LoadedCommand,
   loadRoutes,
   selectRoute,
+  stubCommands,
 } from "./command_routes.ts";
 import { ROOT_ROUTES } from "./root_routes.ts";
 // snapshots the root async context on evaluation, so it must load at startup
@@ -1966,17 +1967,22 @@ async function initTelemetryService(
 }
 
 /**
- * the routes the router selects for argv, or every command when argv is
- * omitted or the router cannot place it
+ * the routes the router selects for argv, stand-ins for root help, or every
+ * command when argv is omitted or the router cannot place it
  */
 function loadCommands(
   args?: readonly string[],
 ): Promise<LoadedCommand[]> {
   if (args === undefined) return loadRoutes(ROOT_ROUTES);
   const selection = selectRoute(ROOT_ROUTES, args);
-  return selection.kind === "all"
-    ? loadRoutes(ROOT_ROUTES)
-    : loadRoutes(selection.routes, selection.rest);
+  switch (selection.kind) {
+    case "all":
+      return loadRoutes(ROOT_ROUTES);
+    case "rootHelp":
+      return Promise.resolve(stubCommands(ROOT_ROUTES));
+    case "routes":
+      return loadRoutes(selection.routes, selection.rest);
+  }
 }
 
 /**

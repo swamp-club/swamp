@@ -24,10 +24,12 @@ import {
   commandWords,
   loadGroupRoutes,
   loadRoutes,
+  type RootRoute,
   type RouteSelection,
   selectRoute,
   selectSubcommand,
   selectSubcommandWithRest,
+  stubCommands,
 } from "./command_routes.ts";
 
 function route(
@@ -118,11 +120,54 @@ Deno.test("selectRoute: picks the invoked route by name or alias, passing on the
   assertEquals(rest(["--json", "data", "get", "x"]), ["get", "x"]);
 });
 
-Deno.test("selectRoute: the full tree for no word, an unknown word or an unknown option", () => {
-  assertEquals(selectRoute(ROUTES, []), { kind: "all" });
+Deno.test("selectRoute: the full tree for an unknown word or an unknown option", () => {
   assertEquals(selectRoute(ROUTES, ["versoin"]), { kind: "all" });
-  assertEquals(selectRoute(ROUTES, ["--help"]), { kind: "all" });
+  assertEquals(selectRoute(ROUTES, ["--repo-dir", "x"]), { kind: "all" });
   assertEquals(selectRoute(ROUTES, ["--", "version"]), { kind: "all" });
+});
+
+Deno.test("selectRoute: root help for no word, with only root globals and help flags", () => {
+  for (
+    const args of [
+      [],
+      ["--help"],
+      ["-h"],
+      ["--json"],
+      ["-q"],
+      ["--json", "--help"],
+      ["-h", "--log-level", "debug"],
+      ["--log-level=debug", "--no-color", "--help"],
+    ]
+  ) {
+    assertEquals(
+      selectRoute(ROUTES, args),
+      { kind: "rootHelp" },
+      args.join(" "),
+    );
+  }
+});
+
+Deno.test("selectRoute: not root help for --, an option it cannot place, or a word", () => {
+  for (
+    const args of [
+      ["--"],
+      ["--help", "--"],
+      ["-qh"],
+      ["--help=x"],
+      ["--log-level", "--help"],
+      ["--version"],
+      ["--help", "--repo-dir", "x"],
+      ["help"],
+      ["--help", "version"],
+      ["version", "--help"],
+    ]
+  ) {
+    assertEquals(
+      selectRoute(ROUTES, args).kind === "rootHelp",
+      false,
+      args.join(" "),
+    );
+  }
 });
 
 Deno.test("selectRoute: the full tree for bare help and for a route that needs it", () => {
@@ -362,5 +407,57 @@ Deno.test("loadGroupRoutes: a failed import names the group, the subcommand and 
     () => loadGroupRoutes("data", [failing], ["get"]),
     Error,
     "Failed to load the data get command from src/cli/commands/data_get.ts: Module not found",
+  );
+});
+
+Deno.test("stubCommands: carries each row's name, aliases, arguments, description and hidden flag, in table order, without loading", () => {
+  const refuse = () => Promise.reject(new Error("loaded"));
+  const rows: RootRoute[] = [
+    {
+      ...route("init", {}, refuse),
+      shortDescription: "Initialize",
+      arguments: "[path:string]",
+    },
+    {
+      ...route("behavior", { aliases: ["behaviour"] }, refuse),
+      shortDescription: "Run behaviors",
+    },
+    { ...route("audit", { hidden: true }, refuse), shortDescription: "Audit" },
+  ];
+  const stubs = stubCommands(rows);
+  const parent = new Command();
+  for (const { name, command } of stubs) parent.command(name, command);
+  const visible = new Set(parent.getCommands(false));
+  assertEquals(
+    stubs.map(({ name, command }) => ({
+      name,
+      aliases: command.getAliases(),
+      args: command.getArgsDefinition(),
+      description: command.getShortDescription(),
+      hidden: !visible.has(command),
+    })),
+    [
+      {
+        name: "init",
+        aliases: [],
+        args: "[path:string]",
+        description: "Initialize",
+        hidden: false,
+      },
+      {
+        name: "behavior",
+        aliases: ["behaviour"],
+        args: undefined,
+        description: "Run behaviors",
+        hidden: false,
+      },
+      {
+        name: "audit",
+        aliases: [],
+        args: undefined,
+        description: "Audit",
+        hidden: true,
+      },
+    ],
   );
 });

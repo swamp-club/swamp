@@ -113,7 +113,8 @@ deno run cli-parity ../bin/swamp-base ../bin/swamp-pr
 
 It compares stdout, stderr and exit code for:
 
-- `--help`, `help` and `help --include-hidden`
+- `--help`, `-h`, `help` and `help --include-hidden`
+- bare `swamp`, `--json` and `--json --help`, which root help also answers
 - `<path> --help` and `help <path>` for every command path in the first binary's
   `help --include-hidden` output, hidden ones included
 - `completions bash`, `zsh` and `fish`
