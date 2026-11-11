@@ -278,6 +278,23 @@ Deno.test("PipeWriter.skippedStepLine: includes guard expression when provided",
   });
 });
 
+Deno.test("PipeWriter.skippedStepLine: includes the forEach collection when provided", () => {
+  noColor(() => {
+    const pipe = new PipeWriter(["main"]);
+    const line = pipe.skippedStepLine(
+      "main",
+      "fan",
+      "empty forEach",
+      undefined,
+      "data.query(\"modelName == 'producer'\")",
+    );
+    assertEquals(
+      line,
+      ` main │ skipped fan (empty forEach) · in: data.query("modelName == 'producer'")`,
+    );
+  });
+});
+
 Deno.test("PipeWriter.skippedStepLine: omits the reason when not provided", () => {
   noColor(() => {
     const pipe = new PipeWriter(["main"]);

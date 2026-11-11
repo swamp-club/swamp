@@ -162,8 +162,10 @@ export type WorkflowRunEvent =
     kind: "step_skipped";
     jobId: string;
     stepId: string;
-    reason?: "guarded" | "dependency";
+    reason?: "guarded" | "dependency" | "empty_collection";
     guardExpression?: string;
+    /** the authored forEach.in text of a step whose collection was empty */
+    collectionExpression?: string;
     guardResult?: unknown;
     forEachTemplate?: string;
     forEachIndex?: number;

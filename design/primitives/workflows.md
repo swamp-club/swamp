@@ -3649,6 +3649,24 @@ lines never pass through the console guard of a concurrently running method.
 Debug-level logging (`--log-level debug`) shows the guard expression and its
 result for both skipped and non-skipped steps.
 
+### Empty forEach collections
+
+A forEach step whose `forEach.in` resolves to no items stays in the run as a
+`skipped` step instead of being dropped, so the run shows it and dependents read
+`skipped` (a `skipped` condition matches, `succeeded` does not). Its
+`step_skipped` event carries `reason: "empty_collection"` and
+`collectionExpression`, the authored `forEach.in` text:
+
+```
+   main │ skipped fan (empty forEach) · in: data.query("modelName == 'producer'")
+```
+
+In `--json` mode the same fields go to stderr as one line, as guarded skips do.
+The persisted step records no `skipReason`: a new skip kind would make older
+binaries refuse the run record. `forEach.in` resolves at job start, so
+`swamp workflow validate` warns when it reads `data`, `model` or `file` and its
+step depends on a step in the same job.
+
 ## Data Output Overrides with Vary Dimensions
 
 Steps can set `vary` on `dataOutputOverrides` to keep data separate per

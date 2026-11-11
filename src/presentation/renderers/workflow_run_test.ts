@@ -944,6 +944,38 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped plain steps name the step", async
   ]);
 });
 
+Deno.test("ConsoleWorkflowRunRenderer: an empty forEach names the step and its collection", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "fan",
+      reason: "empty_collection",
+      collectionExpression: "inputs.items",
+    },
+    { kind: "job_completed", jobId: "main", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(skippedLines(lines), [
+    "main │ skipped fan (empty forEach) · in: inputs.items",
+  ]);
+});
+
 Deno.test("ConsoleWorkflowRunRenderer: skipped forEach iterations name the expanded step", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "test-pipeline",
@@ -1254,6 +1286,41 @@ Deno.test("JsonWorkflowRunRenderer: step_skipped guarded writes guard fields to 
       'data.latest("checker", "result").attributes.exitCode == 0',
     );
     assertEquals(parsed.guardResult, true);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+Deno.test("JsonWorkflowRunRenderer: step_skipped empty_collection writes the collection to stderr", () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (msg: string) => stdout.push(msg);
+  console.error = (msg: string) => stderr.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-pipeline",
+    });
+    const handler = renderer.handlers().step_skipped;
+    handler({
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "fan",
+      reason: "empty_collection",
+      collectionExpression: "data.query(\"modelName == 'producer'\")",
+    });
+    assertEquals(stdout.length, 0);
+    assertEquals(stderr.length, 1);
+    assertEquals(JSON.parse(stderr[0]), {
+      step: "fan",
+      job: "main",
+      status: "skipped",
+      reason: "empty_collection",
+      collectionExpression: "data.query(\"modelName == 'producer'\")",
+    });
   } finally {
     console.log = originalLog;
     console.error = originalError;

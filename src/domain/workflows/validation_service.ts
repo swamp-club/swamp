@@ -54,12 +54,14 @@ import {
   isAssertExprPath,
 } from "../expressions/expression_parser.ts";
 import type { SecretMisuseFinding } from "../models/validation_service.ts";
-import { literalCallTexts } from "../expressions/cel_grammar.ts";
+import { freeRoots, literalCallTexts } from "../expressions/cel_grammar.ts";
 import {
   isForeignExpression,
   refusedOccurrenceLine,
   storedTextRefusal,
 } from "../expressions/swamp_namespaces.ts";
+
+const STORED_DATA_ROOTS = ["data", "model", "file"];
 
 export class WorkflowValidationResult {
   private constructor(
@@ -273,6 +275,8 @@ export class DefaultWorkflowValidationService
     results.push(...this.validateAffinityPlacement(workflow));
 
     results.push(...this.validateGuardExpressionTypes(workflow));
+
+    results.push(...this.validateForEachSameJobDataReads(workflow));
 
     results.push(...this.validateWritesPlacement(workflow));
 
@@ -1457,6 +1461,60 @@ export class DefaultWorkflowValidationService
       }
     }
 
+    return results;
+  }
+
+  /**
+   * forEach.in resolves at job start, so stored data a same-job upstream step
+   * writes is not there yet; a dependsOn kept only for ordering is a false hit
+   */
+  private validateForEachSameJobDataReads(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+    for (const job of workflow.jobs) {
+      const byName = new Map(job.steps.map((s) => [s.name, s]));
+      for (const step of job.steps) {
+        if (!step.forEach) continue;
+        const readsStoredData = extractExpressions(step.forEach.in).some(
+          (expr) => {
+            const roots = freeRoots(expr.celExpression);
+            return roots !== undefined &&
+              STORED_DATA_ROOTS.some((root) => roots.has(root));
+          },
+        );
+        if (!readsStoredData) continue;
+
+        const upstream: string[] = [];
+        const seen = new Set<string>([step.name]);
+        const pending = [...step.getDependencyNames()];
+        while (pending.length > 0) {
+          const name = pending.shift()!;
+          if (seen.has(name)) continue;
+          seen.add(name);
+          const dependency = byName.get(name);
+          if (!dependency) continue;
+          upstream.push(name);
+          pending.push(...dependency.getDependencyNames());
+        }
+        if (upstream.length === 0) continue;
+
+        const named = upstream.length === 1
+          ? `step '${upstream[0]}' runs`
+          : `steps ${upstream.map((name) => `'${name}'`).join(", ")} run`;
+        results.push(
+          WorkflowValidationResult.warning(
+            `forEach.in in job '${job.name}' step '${step.name}'`,
+            `forEach.in reads stored data but resolves when job '${job.name}' ` +
+              `starts, before ${named}, so it cannot see data written ` +
+              `there in this run and may expand to no items. Move step ` +
+              `'${step.name}' to a job that depends on job '${job.name}', or ` +
+              `iterate a fixed collection and skip unwanted iterations with ` +
+              `a guard (a truthy guard skips the iteration)`,
+          ),
+        );
+      }
+    }
     return results;
   }
 }
