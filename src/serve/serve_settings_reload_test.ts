@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { ServeConfigFile } from "./serve_config.ts";
 import {
+  continuationSweepReloadReason,
   diffServeSettings,
   overlayAppliedSettings,
   reloadsOnHangup,
@@ -225,4 +226,28 @@ Deno.test("diffServeSettings: stale-ttl and heartbeat-interval stay restart-only
     ["heartbeat-interval", "stale-ttl"],
   );
   assertStringIncludes(report.needsRestart[0].reason, "liveness");
+});
+
+Deno.test("continuationSweepReloadReason: a sweep that runs only at boot cannot take a new interval, but turning it off still needs a restart", () => {
+  const reason = (
+    running: boolean,
+    bootPassOnly: boolean,
+    staysOn: boolean,
+  ) => continuationSweepReloadReason({ running, bootPassOnly, staysOn });
+  assertEquals(reason(true, false, true), undefined);
+  assertEquals(
+    reason(false, false, true),
+    "the continuation sweep is not running on this serve; restart serve to start it",
+  );
+  assertEquals(
+    reason(true, false, false),
+    "turning the continuation sweep off needs a restart",
+  );
+  const bootOnly =
+    "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
+  assertEquals(reason(true, true, true), bootOnly);
+  assertEquals(
+    reason(true, true, false),
+    "turning the continuation sweep off needs a restart",
+  );
 });

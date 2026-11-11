@@ -139,6 +139,7 @@ import {
   type WebhookRouteTableDeps,
 } from "../../serve/webhook_reload.ts";
 import {
+  continuationSweepReloadReason,
   overlayAppliedSettings,
   reloadsOnHangup,
 } from "../../serve/serve_settings_reload.ts";
@@ -569,6 +570,7 @@ import {
   sendInstanceHeartbeat,
 } from "../../serve/oauth_client.ts";
 import {
+  adminSubjectsOf,
   allowedUsersPartialReason,
   type AllowedUsersReloadPlan,
   planAllowedUsersReload,
@@ -5908,6 +5910,7 @@ export const serveCommand = new Command()
     let retentionGcService: RetentionGcService | undefined;
     let serverTokenGcService: ServerTokenGcService | undefined;
     let continuationSweepService: ContinuationSweepService | undefined;
+    let continuationSweepBootPassOnly = false;
     const runIndexWarmup = new RunIndexWarmup({
       listWorkflowIds: async () =>
         (await listWorkflows(repoContext.workflowRepo)).map((w) => w.id),
@@ -7852,6 +7855,7 @@ export const serveCommand = new Command()
             configured: startup.authConfig.allowedUsers,
             previouslyConfigured: allowedUsersConfigured,
             allowedCollectives: startup.authConfig.allowedCollectives,
+            adminSubjects: adminSubjectsOf(authConfig.admins),
             stored: stored ?? oauthNameCache,
             cache: oauthNameCache,
             resolve: apiKey
@@ -7899,11 +7903,11 @@ export const serveCommand = new Command()
             : !stays
             ? `turning ${service} off needs a restart`
             : undefined;
-        const sweep = startOrStop(
-          continuationSweepService !== undefined,
-          startup.continuationSweepIntervalMs > 0,
-          "the continuation sweep",
-        );
+        const sweep = continuationSweepReloadReason({
+          running: continuationSweepService !== undefined,
+          bootPassOnly: continuationSweepBootPassOnly,
+          staysOn: startup.continuationSweepIntervalMs > 0,
+        });
         if (sweep) reasons.continuationSweepInterval = sweep;
         const tokenGc = startOrStop(
           serverTokenGcService !== undefined,
@@ -10563,6 +10567,7 @@ export const serveCommand = new Command()
       // and nothing in a record says so, so later passes run only where each
       // run can be compared with the remote first
       const bootPassOnly = runRecordsSynced && !repoContext.runRecordCurrency;
+      continuationSweepBootPassOnly = bootPassOnly;
       if (bootPassOnly) {
         logger.info(
           "Continuation sweep runs once, at boot: this datastore cannot be read without replacing this instance's run records, so later passes could resume a run from a copy that is out of date. Runs are still continued when a signal arrives here",

@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { UsernameNotFoundError } from "./oauth_client.ts";
 import {
+  adminSubjectsOf,
   allowedUsersPartialReason,
   CLOSED_ALLOWED_USERS_ENTRY,
   planAllowedUsersReload,
@@ -32,14 +33,18 @@ const NOW = "2026-11-10T00:00:00.000Z";
 type PlanInput = Parameters<typeof planAllowedUsersReload>[0];
 
 function planFor(
-  input: Omit<PlanInput, "stored" | "previouslyConfigured"> & {
-    stored?: PlanInput["stored"];
-    previouslyConfigured?: PlanInput["previouslyConfigured"];
-  },
+  input:
+    & Omit<PlanInput, "stored" | "previouslyConfigured" | "adminSubjects">
+    & {
+      stored?: PlanInput["stored"];
+      previouslyConfigured?: PlanInput["previouslyConfigured"];
+      adminSubjects?: PlanInput["adminSubjects"];
+    },
 ) {
   return planAllowedUsersReload({
     stored: {},
     previouslyConfigured: [],
+    adminSubjects: [],
     ...input,
   });
 }
@@ -260,6 +265,62 @@ Deno.test("planAllowedUsersReload: lookups run a few at a time under one deadlin
   });
   assertEquals(tooMany.allowedUsers, []);
   assertEquals(tooMany.deferred.length, 10);
+});
+
+Deno.test("planAllowedUsersReload: a list left closed admits the admins and no one else", async () => {
+  const plan = await planFor({
+    configured: ["ghost"],
+    previouslyConfigured: ["alice"],
+    allowedCollectives: [],
+    adminSubjects: ["sub-root"],
+    cache: { "allowed:alice": "sub-a" },
+    ...lookup({}, ["ghost"]),
+    now: () => NOW,
+  });
+  assertEquals(plan.closed, true);
+  assertEquals(plan.allowedUsers, ["sub-root"]);
+  assertEquals(plan.namesInForce, []);
+  assertEquals(
+    checkAdmission("sub-root", [], [], plan.allowedUsers).admitted,
+    true,
+  );
+  assertEquals(
+    checkAdmission("sub-a", [], [], plan.allowedUsers).admitted,
+    false,
+  );
+  assertEquals(
+    allowedUsersPartialReason(plan)?.endsWith(
+      "admission stays closed to all but the admins",
+    ),
+    true,
+  );
+});
+
+Deno.test("planAllowedUsersReload: an admitted list never gains the admins", async () => {
+  const plan = await planFor({
+    configured: ["alice"],
+    allowedCollectives: [],
+    adminSubjects: ["sub-root"],
+    cache: { "allowed:alice": "sub-a" },
+    resolve: null,
+    now: () => NOW,
+  });
+  assertEquals(plan.closed, false);
+  assertEquals(plan.allowedUsers, ["sub-a"]);
+});
+
+Deno.test("adminSubjectsOf: keeps the ids of user principals and drops the rest", () => {
+  assertEquals(
+    adminSubjectsOf([
+      "user:sub-root",
+      "worker:w1",
+      "service:scheduler",
+      "root",
+      "user:",
+      "user:sub:with:colons",
+    ]),
+    ["sub-root", "sub:with:colons"],
+  );
 });
 
 Deno.test("readStoredNameMap: reads through list and get, which every vault provider has", async () => {

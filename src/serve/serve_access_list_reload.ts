@@ -24,10 +24,11 @@ import {
   usernameOf,
 } from "./oauth_access_list_resolution.ts";
 import { UsernameNotFoundError } from "./oauth_client.ts";
+import { parsePrincipal } from "../domain/access/principal.ts";
 
 /**
  * Stands in for an allowed-users list that removals and deferred names left
- * empty, so admission stays closed: no subject or principal id contains NUL.
+ * empty on a serve with no admins: no subject or principal id contains NUL.
  */
 export const CLOSED_ALLOWED_USERS_ENTRY = "\u0000no-user-admitted";
 
@@ -36,6 +37,8 @@ export interface AllowedUsersReloadInput {
   /** the names this instance had configured before the reload */
   readonly previouslyConfigured: readonly string[];
   readonly allowedCollectives: readonly string[];
+  /** a closed list admits only these, so an admin can still fix and reload */
+  readonly adminSubjects: readonly string[];
   /** read from the vault now, so a peer's records since startup count */
   readonly stored: Readonly<Record<string, string>>;
   readonly cache: Readonly<Record<string, string>>;
@@ -207,7 +210,11 @@ export async function planAllowedUsersReload(
   const closed = allowedUsers.length === 0 && input.configured.length > 0 &&
     input.allowedCollectives.length === 0;
   return {
-    allowedUsers: closed ? [CLOSED_ALLOWED_USERS_ENTRY] : allowedUsers,
+    allowedUsers: !closed
+      ? allowedUsers
+      : input.adminSubjects.length > 0
+      ? [...input.adminSubjects]
+      : [CLOSED_ALLOWED_USERS_ENTRY],
     namesInForce,
     usernamesBySub,
     deferred,
@@ -216,6 +223,20 @@ export async function planAllowedUsersReload(
     cacheChanged: !sameEntries(input.stored, cache),
     closed,
   };
+}
+
+/** only user principals become subjects; any other admin admits no one here */
+export function adminSubjectsOf(admins: readonly string[]): string[] {
+  const subjects: string[] = [];
+  for (const admin of admins) {
+    try {
+      const principal = parsePrincipal(admin);
+      if (principal.kind === "user") subjects.push(principal.id);
+    } catch {
+      // an unparseable entry admits no one
+    }
+  }
+  return subjects;
 }
 
 function sameEntries(
@@ -247,7 +268,9 @@ export function allowedUsersPartialReason(
     );
   }
   if (plan.closed) {
-    parts.push("no listed user is admitted, so admission stays closed");
+    parts.push(
+      "no listed user is admitted, so admission stays closed to all but the admins",
+    );
   }
   return parts.length > 0 ? parts.join("; ") : undefined;
 }
