@@ -21,6 +21,7 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import {
   DOCTOR_REGISTRY_ORDER,
   type DoctorExtensionsEvent,
+  type DoctorMissingExtension,
   type DoctorOverallStatus,
   type DoctorRegistryName,
   type DoctorRegistryResult,
@@ -58,6 +59,64 @@ function summaryLine(status: DoctorOverallStatus): string {
       return green(bold("OVERALL: PASS"));
     case "fail":
       return red(bold("OVERALL: FAIL"));
+  }
+}
+
+function remedyLine(m: DoctorMissingExtension): string {
+  switch (m.remedy) {
+    case "install":
+      return "Run 'swamp extension install' to restore it.";
+    case "deleteAndAutoResolve":
+      return `Delete ${
+        m.removeToReinstall?.join(", ") ?? m.expectedPath
+      } and the auto-resolver reinstalls it on next use.`;
+    case "nextUse":
+      return "The auto-resolver installs it the next time one of its types is needed.";
+  }
+}
+
+function missingExtensionLines(
+  m: DoctorMissingExtension,
+  bullet: string,
+): string[] {
+  const more = m.missingFileCount - m.missingFiles.length;
+  const files = m.missingFiles.join(", ") +
+    (more > 0 ? dim(` (+${more} more)`) : "");
+  return [
+    `  ${bullet} ${bold(m.name)}  ${m.state}  ${dim(m.expectedPath)}`,
+    `    ${dim("missing:")} ${files}`,
+    `    ${dim("→")} ${remedyLine(m)}`,
+  ];
+}
+
+function renderMissingExtensionsLog(
+  missing: readonly DoctorMissingExtension[],
+): void {
+  const failing = missing.filter((m) => !m.installsOnNextUse);
+  const advisory = missing.filter((m) => m.installsOnNextUse);
+  if (failing.length > 0) {
+    const lines = [
+      `\n${red("✗")} ${
+        bold(`${failing.length} pinned extension(s) missing from disk:`)
+      }`,
+    ];
+    for (const m of failing) {
+      for (const line of missingExtensionLines(m, red("•"))) lines.push(line);
+    }
+    writeOutput(lines.join("\n"));
+  }
+  if (advisory.length > 0) {
+    const lines = [
+      `\n${dim("•")} ${
+        bold(
+          `${advisory.length} pinned extension(s) not on disk, installed on next use (advisory, not failures):`,
+        )
+      }`,
+    ];
+    for (const m of advisory) {
+      for (const line of missingExtensionLines(m, dim("•"))) lines.push(line);
+    }
+    writeOutput(lines.join("\n"));
   }
 }
 
@@ -284,6 +343,8 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           }
         }
 
+        renderMissingExtensionsLog(e.report.missingExtensions);
+
         if (e.report.orphanFiles.length > 0) {
           writeOutput(
             `\n${yellow("⚠")} ${
@@ -394,8 +455,13 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           .filter((r) => r.status === "pass").length;
         const failCount = Object.values(e.report.registries)
           .filter((r) => r.status === "fail").length;
+        const missingCount = e.report.missingExtensions
+          .filter((m) => !m.installsOnNextUse).length;
+        const missingTerm = missingCount > 0
+          ? `, ${missingCount} missing pinned extension(s)`
+          : "";
         writeOutput(
-          `\n${passCount} passed, ${failCount} failed — ${
+          `\n${passCount} passed, ${failCount} failed${missingTerm} — ${
             summaryLine(e.report.overallStatus)
           }`,
         );
@@ -459,6 +525,7 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           toState: t.toState,
           reason: t.reason,
         }));
+        output.missingExtensions = e.report.missingExtensions;
         if (this.#denoPath) {
           output.denoPath = this.#denoPath;
         }

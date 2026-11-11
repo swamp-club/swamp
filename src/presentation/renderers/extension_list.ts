@@ -125,6 +125,11 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
           if (ext.onDiskVersion) {
             line += `  (on disk v${ext.onDiskVersion})`;
           }
+          if (ext.missing) {
+            line += ext.missing === "absent"
+              ? "  (absent on disk)"
+              : "  (truncated on disk)";
+          }
           logger.info("{line}", { line });
           if (ext.onDiskVersion) {
             // An auto-resolved entry is reinstalled by the auto-resolver;
@@ -147,6 +152,12 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
               logger.info("  {file}", { file });
             }
           }
+        }
+        if (exts.some((ext) => ext.missing && !ext.autoResolved)) {
+          logger.warn("{line}", {
+            line: "Pinned extensions marked absent or truncated are not " +
+              "fully on disk. Run 'swamp extension install' to restore them.",
+          });
         }
         if (exts.some((ext) => ext.autoResolved)) {
           // update, rm and install act on the team's lockfile only, so the

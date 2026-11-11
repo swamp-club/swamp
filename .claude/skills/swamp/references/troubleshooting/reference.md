@@ -50,6 +50,7 @@ reach for it last.
 | Audit log empty / hooks not firing                   | Tier 1 → `swamp doctor audit`                               |
 | Extension behavior/vault/datastore/report not loaded | Tier 1 → `swamp doctor extensions`                          |
 | `swamp-warning:` line on stderr                      | Tier 1 → `swamp doctor extensions`                          |
+| Pinned extension missing from disk                   | Tier 1 → `swamp doctor extensions`                          |
 | CI preflight needs to gate on integration health     | Tier 1 → either doctor with `--json`                        |
 | v3 record unreadable / marker lost after crash       | Tier 1 → `swamp doctor datastores`                          |
 | Record reads `content: {}` / not found after crash   | Tier 1 → `swamp doctor datastores --repair`                 |

@@ -163,6 +163,99 @@ export async function isAbsentFromDisk(
   return true;
 }
 
+const LOCKFILE_RETRY_DELAY_MS = 75;
+
+const waitBeforeRetryDefault = () =>
+  new Promise<void>((r) => setTimeout(r, LOCKFILE_RETRY_DELAY_MS));
+
+export async function readInstalledEntriesWithRetry(
+  resolvedLockfilePath: string,
+  localLockfilePath?: string,
+  waitBeforeRetry: () => Promise<void> = waitBeforeRetryDefault,
+): Promise<InstalledEntries> {
+  try {
+    return await readInstalledEntries(resolvedLockfilePath, localLockfilePath);
+  } catch (error) {
+    // The managed lockfile is a datastore cache file that a sync pull can
+    // rewrite non-atomically; one short retry rides that out.
+    if (!(error instanceof SyntaxError)) throw error;
+    await waitBeforeRetry();
+    return await readInstalledEntries(resolvedLockfilePath, localLockfilePath);
+  }
+}
+
+export const MISSING_FILES_SAMPLE_SIZE = 3;
+
+export type MissingPulledExtensionState = "absent" | "truncated";
+
+export interface MissingPulledExtension {
+  name: string;
+  state: MissingPulledExtensionState;
+  /** repo-relative, forward slashes */
+  expectedPath: string;
+  /** the first MISSING_FILES_SAMPLE_SIZE missing files, forward slashes */
+  missingFiles: string[];
+  missingFileCount: number;
+  autoResolved: boolean;
+  /** the auto-resolver reinstalls it the next time one of its types is needed */
+  installsOnNextUse: boolean;
+}
+
+function toForwardSlashes(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
+async function isMissing(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return false;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound;
+  }
+}
+
+/**
+ * entries with a missing tracked source file, in lockfile order. Lockfiles are
+ * repo-controlled: a name outside the pulled root is skipped and a path outside
+ * the repo is never statted. Bundle output is regenerable and ignored.
+ */
+export async function findMissingPulledExtensions(
+  repoDir: string,
+  installed: InstalledEntries,
+  localLockfilePath: string | undefined,
+): Promise<MissingPulledExtension[]> {
+  const pulledRoot = resolvePulledExtensionsRoot(repoDir);
+  const found: MissingPulledExtension[] = [];
+  for (const [name, entry] of Object.entries(installed.entries)) {
+    if (!isContained(name, pulledRoot)) continue;
+    const missing: string[] = [];
+    for (const file of trackedFiles(entry)) {
+      if (isBundleArtifactPath(file) || !isContained(file, repoDir)) continue;
+      if (await isMissing(join(repoDir, file))) {
+        missing.push(toForwardSlashes(file));
+      }
+    }
+    if (missing.length === 0) continue;
+    const autoResolved = installed.localOnly.has(name);
+    const absent = await isAbsentFromDisk(repoDir, name, entry);
+    found.push({
+      name,
+      state: absent ? "absent" : "truncated",
+      expectedPath: toForwardSlashes(
+        relative(repoDir, join(pulledRoot, name)),
+      ),
+      missingFiles: missing.slice(0, MISSING_FILES_SAMPLE_SIZE),
+      missingFileCount: missing.length,
+      autoResolved,
+      // a team checkout's shared lockfile lists every extension the team
+      // pulled; one this checkout never installed awaits the auto-resolver
+      installsOnNextUse: absent &&
+        (autoResolved || localLockfilePath !== undefined),
+    });
+  }
+  return found;
+}
+
 function trackedFiles(entry: unknown): string[] {
   if (typeof entry !== "object" || entry === null) return [];
   const { files } = entry as { files?: unknown };

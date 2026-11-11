@@ -591,6 +591,13 @@ Two more optional fields appear whether or not enrichment ran
   place does not block the reinstall: the auto-resolver writes the skill back
   into it. The log-mode
   remedy line names these paths.
+- `missing` (`absent` or `truncated`) and `missingFiles` mark an entry whose
+  tracked source files are not on disk: nothing of it remains, or only some of
+  its files do. Log mode shows `(absent on disk)` or `(truncated on disk)` on
+  the row and a footer naming `swamp extension install`. The classification is
+  `findMissingPulledExtensions`
+  (`src/infrastructure/persistence/installed_entries.ts`), the same one the
+  startup warning and `doctor extensions` use.
 
 ### `swamp extension outdated`
 
@@ -4005,6 +4012,23 @@ losers. Each warning keeps the category it was raised with
 are advisory and never change `overallStatus`. The CLI and the serve admin
 handler build these through the same helpers, `toDoctorWarnings` and
 `extensionMemberDoctorDeps`.
+
+**Missing pinned extensions:** the report's `missingExtensions` array, always
+present, lists every lockfile entry whose tracked source files are not on disk,
+with its `state` (`absent` or `truncated`), `expectedPath`, a sample of
+`missingFiles`, `missingFileCount` and a `remedy`. An entry the auto-resolver
+reinstalls on next use (`installsOnNextUse: true`: gone entirely, and either
+auto-resolved or in a checkout with a transitional in-repo lockfile) is
+advisory. Any other entry makes `overallStatus` `fail` with every registry still
+passing, so a clean result means every pin is on disk. Because `.swamp/` is
+gitignored and the lockfile is committed, a fresh clone of a repo without a
+managed config fails until `swamp extension install` runs. The entries are
+exactly those the startup warning names, through the shared
+`findMissingPulledExtensions`; lockfile paths outside the repo are never
+statted. A lockfile that stays unreadable after one retry becomes a
+`LockfileUnreadable` warning rather than a failed run. The CLI and the serve
+admin handler wire it through `missingExtensionsDoctorDep`. `--repair` does not
+restore missing extensions; `swamp extension install` does.
 
 ## Lazy Per-Bundle Loading
 

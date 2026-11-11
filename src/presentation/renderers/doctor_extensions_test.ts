@@ -94,6 +94,7 @@ function buildPassReport(): DoctorExtensionsReport {
     recentTransitions: [],
     warnings: [],
     memberCollisions: [],
+    missingExtensions: [],
   };
 }
 
@@ -111,6 +112,7 @@ function buildFailReport(): DoctorExtensionsReport {
     recentTransitions: [],
     warnings: [],
     memberCollisions: [],
+    missingExtensions: [],
   };
 }
 
@@ -184,6 +186,7 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
       recentTransitions: [],
       warnings: [],
       memberCollisions: [],
+      missingExtensions: [],
     };
     await handlers.completed({ kind: "completed", report: reversed });
   });
@@ -245,6 +248,7 @@ Deno.test(
         recentTransitions: [],
         warnings: [],
         memberCollisions: [],
+        missingExtensions: [],
       };
       await handlers.completed({ kind: "completed", report });
     });
@@ -284,6 +288,7 @@ Deno.test(
         recentTransitions: [],
         warnings: [],
         memberCollisions: [],
+        missingExtensions: [],
       };
       for (
         const reg of [
@@ -555,3 +560,110 @@ Deno.test(
     );
   },
 );
+
+function missingReport(): DoctorExtensionsReport {
+  return {
+    ...buildPassReport(),
+    overallStatus: "fail",
+    missingExtensions: [
+      {
+        name: "@example/missing",
+        state: "absent",
+        expectedPath: ".swamp/pulled-extensions/@example/missing",
+        missingFiles: [
+          ".swamp/pulled-extensions/@example/missing/a.ts",
+          ".swamp/pulled-extensions/@example/missing/b.ts",
+          ".swamp/pulled-extensions/@example/missing/c.ts",
+        ],
+        missingFileCount: 5,
+        installsOnNextUse: false,
+        remedy: "install",
+      },
+      {
+        name: "@example/later",
+        state: "absent",
+        expectedPath: ".swamp/pulled-extensions/@example/later",
+        missingFiles: [".swamp/pulled-extensions/@example/later/m.yaml"],
+        missingFileCount: 1,
+        installsOnNextUse: true,
+        remedy: "nextUse",
+      },
+    ],
+  };
+}
+
+Deno.test("doctor_extensions log renderer: a missing pinned extension renders as a failure, one installed on next use as advisory", async () => {
+  const out = stripAnsiCode(
+    await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("log");
+      await r.handlers().completed({
+        kind: "completed",
+        report: missingReport(),
+      });
+    }),
+  );
+
+  assertStringIncludes(out, "1 pinned extension(s) missing from disk:");
+  assertStringIncludes(
+    out,
+    "@example/missing  absent  .swamp/pulled-extensions/@example/missing",
+  );
+  assertStringIncludes(out, "(+2 more)");
+  assertStringIncludes(out, "Run 'swamp extension install' to restore it.");
+  assertStringIncludes(
+    out,
+    "1 pinned extension(s) not on disk, installed on next use (advisory, not failures):",
+  );
+  assertStringIncludes(out, "@example/later");
+  assertStringIncludes(
+    out,
+    "5 passed, 0 failed, 1 missing pinned extension(s) — OVERALL: FAIL",
+  );
+});
+
+Deno.test("doctor_extensions log renderer: no missing extensions leaves the summary line unchanged", async () => {
+  const out = stripAnsiCode(
+    await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("log");
+      await r.handlers().completed({
+        kind: "completed",
+        report: buildPassReport(),
+      });
+    }),
+  );
+
+  assertFalse(out.includes("pinned extension"));
+  assertStringIncludes(out, "5 passed, 0 failed — OVERALL: PASS");
+});
+
+Deno.test("doctor_extensions json renderer: missingExtensions is always present, after the existing keys", async () => {
+  const empty = JSON.parse(
+    await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json");
+      await r.handlers().completed({
+        kind: "completed",
+        report: buildPassReport(),
+      });
+    }),
+  );
+  assertEquals(empty.missingExtensions, []);
+  const keys = Object.keys(empty);
+  assertEquals(keys.indexOf("missingExtensions"), keys.length - 1);
+
+  const r = createDoctorExtensionsRenderer("json");
+  const parsed = JSON.parse(
+    await captureStdout(async () => {
+      await r.handlers().completed({
+        kind: "completed",
+        report: missingReport(),
+      });
+    }),
+  );
+  assertEquals(r.overallStatus, "fail");
+  assertEquals(parsed.overallStatus, "fail");
+  assertEquals(
+    parsed.missingExtensions.map((m: { name: string }) => m.name),
+    ["@example/missing", "@example/later"],
+  );
+  assertEquals(parsed.missingExtensions[0].missingFileCount, 5);
+});

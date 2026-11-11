@@ -17,12 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
+  findMissingPulledExtensions,
   isAbsentFromDisk,
   pathsToRemoveForReinstall,
   readInstalledEntries,
+  readInstalledEntriesWithRetry,
   transitionalInstalledNames,
   transitionalLocalLockfilePath,
 } from "./installed_entries.ts";
@@ -374,5 +376,209 @@ Deno.test("readInstalledEntries: an auto-resolve lockfile written on Windows rea
     } else {
       await Deno.remove(repo, { recursive: true });
     }
+  }
+});
+
+async function removeTempDir(dir: string): Promise<void> {
+  if (Deno.build.os === "windows") {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  } else {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+async function writeRepoFile(repo: string, rel: string): Promise<void> {
+  const path = join(repo, rel);
+  await Deno.mkdir(join(path, ".."), { recursive: true });
+  await Deno.writeTextFile(path, "x");
+}
+
+const pulled = (name: string, file: string) =>
+  `.swamp/pulled-extensions/${name}/${file}`;
+
+Deno.test("findMissingPulledExtensions: classifies absent and truncated entries in lockfile order, skips intact ones", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    await writeRepoFile(repo, pulled("@a/intact", "manifest.yaml"));
+    await writeRepoFile(repo, pulled("@a/truncated", "manifest.yaml"));
+    const entries = {
+      "@a/intact": {
+        ...entry("1"),
+        files: [pulled("@a/intact", "manifest.yaml")],
+      },
+      "@a/absent": {
+        ...entry("1"),
+        files: [pulled("@a/absent", "manifest.yaml")],
+      },
+      "@a/truncated": {
+        ...entry("1"),
+        files: [
+          pulled("@a/truncated", "manifest.yaml"),
+          pulled("@a/truncated", "models/m.ts"),
+        ],
+      },
+    };
+
+    const found = await findMissingPulledExtensions(
+      repo,
+      { entries, localOnly: new Set() },
+      undefined,
+    );
+
+    assertEquals(found, [
+      {
+        name: "@a/absent",
+        state: "absent",
+        expectedPath: ".swamp/pulled-extensions/@a/absent",
+        missingFiles: [pulled("@a/absent", "manifest.yaml")],
+        missingFileCount: 1,
+        autoResolved: false,
+        installsOnNextUse: false,
+      },
+      {
+        name: "@a/truncated",
+        state: "truncated",
+        expectedPath: ".swamp/pulled-extensions/@a/truncated",
+        missingFiles: [pulled("@a/truncated", "models/m.ts")],
+        missingFileCount: 1,
+        autoResolved: false,
+        installsOnNextUse: false,
+      },
+    ]);
+  } finally {
+    await removeTempDir(repo);
+  }
+});
+
+Deno.test("findMissingPulledExtensions: an absent entry installs on next use only when the auto-resolver covers it", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    await writeRepoFile(repo, pulled("@a/local-truncated", "manifest.yaml"));
+    const entries = {
+      "@a/shared": {
+        ...entry("1"),
+        files: [pulled("@a/shared", "manifest.yaml")],
+      },
+      "@a/local": {
+        ...entry("1"),
+        files: [pulled("@a/local", "manifest.yaml")],
+      },
+      "@a/local-truncated": {
+        ...entry("1"),
+        files: [
+          pulled("@a/local-truncated", "manifest.yaml"),
+          pulled("@a/local-truncated", "models/m.ts"),
+        ],
+      },
+    };
+    const localOnly = new Set(["@a/local", "@a/local-truncated"]);
+    const summarize = (found: { name: string; installsOnNextUse: boolean }[]) =>
+      Object.fromEntries(found.map((m) => [m.name, m.installsOnNextUse]));
+
+    assertEquals(
+      summarize(
+        await findMissingPulledExtensions(
+          repo,
+          { entries, localOnly },
+          undefined,
+        ),
+      ),
+      { "@a/local": true, "@a/local-truncated": false, "@a/shared": false },
+    );
+    assertEquals(
+      summarize(
+        await findMissingPulledExtensions(
+          repo,
+          { entries, localOnly },
+          join(repo, ".swamp", "config", "upstream_extensions.json"),
+        ),
+      ),
+      { "@a/local": true, "@a/local-truncated": false, "@a/shared": true },
+    );
+  } finally {
+    await removeTempDir(repo);
+  }
+});
+
+Deno.test("findMissingPulledExtensions: ignores bundle output, paths outside the repo and names outside the pulled root", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const entries = {
+      "@a/bundle-only": {
+        ...entry("1"),
+        files: [".swamp/bundles/abc/x.js"],
+      },
+      "@a/outside": {
+        ...entry("1"),
+        files: ["../outside-the-repo/x.ts", "/nonexistent-swamp-test/x.ts"],
+      },
+      "../../escape": {
+        ...entry("1"),
+        files: [pulled("@a/x", "manifest.yaml")],
+      },
+      "@a/no-files": entry("1"),
+    };
+
+    assertEquals(
+      await findMissingPulledExtensions(
+        repo,
+        { entries, localOnly: new Set() },
+        undefined,
+      ),
+      [],
+    );
+  } finally {
+    await removeTempDir(repo);
+  }
+});
+
+Deno.test("findMissingPulledExtensions: samples the first three missing files and counts them all", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const files = [1, 2, 3, 4, 5].map((n) => pulled("@a/many", `m${n}.ts`));
+    const [found] = await findMissingPulledExtensions(
+      repo,
+      {
+        entries: { "@a/many": { ...entry("1"), files } },
+        localOnly: new Set(),
+      },
+      undefined,
+    );
+
+    assertEquals(found.missingFiles, files.slice(0, 3));
+    assertEquals(found.missingFileCount, 5);
+  } finally {
+    await removeTempDir(repo);
+  }
+});
+
+Deno.test("readInstalledEntriesWithRetry: retries a torn read once, then gives up", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfile = join(repo, "upstream_extensions.json");
+    await Deno.writeTextFile(lockfile, "{ torn");
+    let waits = 0;
+
+    const { entries } = await readInstalledEntriesWithRetry(
+      lockfile,
+      undefined,
+      async () => {
+        waits++;
+        await Deno.writeTextFile(
+          lockfile,
+          JSON.stringify({ "@a/x": entry("1") }),
+        );
+      },
+    );
+    assertEquals(Object.keys(entries), ["@a/x"]);
+    assertEquals(waits, 1);
+
+    await Deno.writeTextFile(lockfile, "{ torn");
+    await assertRejects(
+      () => readInstalledEntriesWithRetry(lockfile, undefined, async () => {}),
+      SyntaxError,
+    );
+  } finally {
+    await removeTempDir(repo);
   }
 });

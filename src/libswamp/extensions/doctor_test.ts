@@ -29,10 +29,12 @@ import {
   doctorExtensions,
   type DoctorExtensionsDeps,
   type DoctorExtensionsEvent,
+  type DoctorMissingExtension,
   type DoctorRegistryDeps,
   type DoctorRegistryName,
   type DoctorWarning,
   extensionMemberDoctorDeps,
+  missingExtensionsDoctorDep,
   toDoctorWarnings,
 } from "./doctor.ts";
 import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
@@ -880,5 +882,167 @@ Deno.test("extensionMemberDoctorDeps: collisions come from the attach record, no
     modelRegistry.invalidateType(type);
     removeAttachedExtensionsForType(type);
     resetExtensionLoadWarnings();
+  }
+});
+
+function missingEntry(
+  overrides: Partial<DoctorMissingExtension> = {},
+): DoctorMissingExtension {
+  return {
+    name: "@a/gone",
+    state: "absent",
+    expectedPath: ".swamp/pulled-extensions/@a/gone",
+    missingFiles: [".swamp/pulled-extensions/@a/gone/manifest.yaml"],
+    missingFileCount: 1,
+    installsOnNextUse: false,
+    remedy: "install",
+    ...overrides,
+  };
+}
+
+async function completedReport(deps: DoctorExtensionsDeps) {
+  const events = await collect(doctorExtensions(deps));
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  return completed.report;
+}
+
+Deno.test("doctorExtensions: an absent or truncated pinned extension fails the run while every registry passes", async () => {
+  resetExtensionLoadWarnings();
+  for (const state of ["absent", "truncated"] as const) {
+    const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
+    const missing = [missingEntry({ state })];
+    deps.findMissingExtensions = () => Promise.resolve({ missing });
+
+    const report = await completedReport(deps);
+
+    assertEquals(report.overallStatus, "fail");
+    assertEquals(report.missingExtensions, missing);
+    for (const registry of DOCTOR_REGISTRY_ORDER) {
+      assertEquals(report.registries[registry].status, "pass");
+    }
+  }
+});
+
+Deno.test("doctorExtensions: a pinned extension installed on next use is reported but leaves the run passing", async () => {
+  resetExtensionLoadWarnings();
+  const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
+  const missing = [
+    missingEntry({ installsOnNextUse: true, remedy: "nextUse" }),
+  ];
+  deps.findMissingExtensions = () => Promise.resolve({ missing });
+
+  const report = await completedReport(deps);
+
+  assertEquals(report.overallStatus, "pass");
+  assertEquals(report.missingExtensions, missing);
+});
+
+Deno.test("doctorExtensions: missingExtensions is empty without the dependency, and a read warning joins the warnings", async () => {
+  resetExtensionLoadWarnings();
+  const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
+  assertEquals((await completedReport(deps)).missingExtensions, []);
+
+  const warning: DoctorWarning = {
+    sourcePath: "/repo/upstream_extensions.json",
+    category: "LockfileUnreadable",
+    message: "Cannot check pinned extensions on disk: torn",
+  };
+  deps.findMissingExtensions = () => Promise.resolve({ missing: [], warning });
+  const report = await completedReport(deps);
+  assertEquals(report.overallStatus, "pass");
+  assertEquals(report.warnings, [warning]);
+});
+
+Deno.test("missingExtensionsDoctorDep: names the remedy for each entry, sorted by name", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_doctor_missing_" });
+  try {
+    const lockfile = join(repo, "cache", "upstream_extensions.json");
+    const local = join(repo, ".swamp", "config", "upstream_extensions.json");
+    const file = (name: string, rel: string) =>
+      `.swamp/pulled-extensions/${name}/${rel}`;
+    await Deno.mkdir(join(repo, "cache"), { recursive: true });
+    await Deno.mkdir(join(repo, ".swamp", "config"), { recursive: true });
+    await Deno.mkdir(join(repo, ".swamp", "pulled-extensions", "@a", "local"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(repo, file("@a/local", "manifest.yaml")),
+      "x",
+    );
+    await Deno.writeTextFile(
+      lockfile,
+      JSON.stringify({
+        "@z/team": {
+          version: "1",
+          pulledAt: "x",
+          files: [file("@z/team", "manifest.yaml")],
+        },
+      }),
+    );
+    await Deno.writeTextFile(
+      local,
+      JSON.stringify({
+        "@a/local": {
+          version: "1",
+          pulledAt: "x",
+          files: [
+            file("@a/local", "manifest.yaml"),
+            file("@a/local", "models/m.ts"),
+          ],
+        },
+      }),
+    );
+
+    const { findMissingExtensions } = missingExtensionsDoctorDep(
+      repo,
+      lockfile,
+      local,
+    );
+    const { missing, warning } = await findMissingExtensions!();
+
+    assertEquals(warning, undefined);
+    assertEquals(
+      missing.map((m) => [m.name, m.state, m.remedy, m.installsOnNextUse]),
+      [
+        ["@a/local", "truncated", "deleteAndAutoResolve", false],
+        ["@z/team", "absent", "nextUse", true],
+      ],
+    );
+    assertEquals(missing[0].removeToReinstall, [
+      ".swamp/pulled-extensions/@a/local",
+    ]);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repo, { recursive: true });
+    }
+  }
+});
+
+Deno.test("missingExtensionsDoctorDep: a lockfile that stays unreadable becomes a warning", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "swamp_doctor_missing_" });
+  try {
+    const lockfile = join(repo, "upstream_extensions.json");
+    await Deno.writeTextFile(lockfile, "{ torn");
+
+    const { findMissingExtensions } = missingExtensionsDoctorDep(
+      repo,
+      lockfile,
+      undefined,
+      { waitBeforeRetry: () => Promise.resolve() },
+    );
+    const { missing, warning } = await findMissingExtensions!();
+
+    assertEquals(missing, []);
+    assertEquals(warning?.category, "LockfileUnreadable");
+    assertEquals(warning?.sourcePath, lockfile);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repo, { recursive: true });
+    }
   }
 });

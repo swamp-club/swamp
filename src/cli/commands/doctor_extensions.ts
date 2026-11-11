@@ -41,6 +41,7 @@ import {
   type DoctorRegistryDeps,
   type DoctorRescanSkipped,
   extensionMemberDoctorDeps,
+  missingExtensionsDoctorDep,
   toDoctorWarnings,
 } from "../../libswamp/extensions/doctor.ts";
 import {
@@ -92,7 +93,10 @@ import {
   isExtensionBackedDatastore,
 } from "../../infrastructure/persistence/managed_config_lockfile.ts";
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { transitionalInstalledNames } from "../../infrastructure/persistence/installed_entries.ts";
+import {
+  transitionalInstalledNames,
+  transitionalLocalLockfilePath,
+} from "../../infrastructure/persistence/installed_entries.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { promptConfirmation } from "../prompt_helpers.ts";
@@ -231,6 +235,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
           report: {
             ...remoteReport,
             memberCollisions: remoteReport.memberCollisions ?? [],
+            missingExtensions: remoteReport.missingExtensions ?? [],
           },
         };
       })(),
@@ -424,6 +429,11 @@ export const doctorExtensionsCommand = withRemoteOptions(
             getWarnings: () => toDoctorWarnings(getExtensionLoadWarnings()),
             resetWarnings: resetExtensionLoadWarnings,
             ...extensionMemberDoctorDeps(sharedCatalog),
+            ...missingExtensionsDoctorDep(
+              repoDir,
+              lockfilePath,
+              transitionalLocalLockfilePath(repoDir, marker, lockfilePath),
+            ),
             runRepair: repair && !rescanSkipped
               ? async (aggregateReport) => {
                 if (needsPrompt) {

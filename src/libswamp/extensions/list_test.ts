@@ -260,3 +260,54 @@ Deno.test("extensionList reports a recorded published channel, and ignores a han
   assertEquals(exact.channel, undefined);
   assertEquals("publishedChannel" in edited, false);
 });
+
+Deno.test("createExtensionListDeps marks a pinned entry whose files are not on disk as missing", async () => {
+  await withTempDir(async (dir) => {
+    const lockfile = join(dir, "upstream_extensions.json");
+    const file = (name: string, rel: string) =>
+      `.swamp/pulled-extensions/${name}/${rel}`;
+    await Deno.writeTextFile(
+      lockfile,
+      JSON.stringify({
+        "@ns/absent": {
+          version: "1",
+          pulledAt: "x",
+          files: [file("@ns/absent", "manifest.yaml")],
+        },
+        "@ns/truncated": {
+          version: "1",
+          pulledAt: "x",
+          files: [
+            file("@ns/truncated", "manifest.yaml"),
+            file("@ns/truncated", "models/m.ts"),
+          ],
+        },
+        "@ns/intact": {
+          version: "1",
+          pulledAt: "x",
+          files: [file("@ns/intact", "manifest.yaml")],
+        },
+      }),
+    );
+    const pulled = resolvePulledExtensionsRoot(dir);
+    for (const name of ["@ns/truncated", "@ns/intact"]) {
+      await Deno.mkdir(join(pulled, name), { recursive: true });
+      await Deno.writeTextFile(
+        join(pulled, name, "manifest.yaml"),
+        `name: "${name}"\nversion: "1"\n`,
+      );
+    }
+
+    const exts = await listed(await createExtensionListDeps(dir, lockfile));
+    assertEquals(
+      exts.map((e) => [e.name, e.missing, e.missingFiles]),
+      [
+        ["@ns/absent", "absent", [file("@ns/absent", "manifest.yaml")]],
+        ["@ns/intact", undefined, undefined],
+        ["@ns/truncated", "truncated", [
+          file("@ns/truncated", "models/m.ts"),
+        ]],
+      ],
+    );
+  });
+});

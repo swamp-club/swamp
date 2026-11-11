@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   assertModelsDirEnvConsistent,
+  checkForMissingPulledExtensions,
   commandNeedsLoaderSetup,
   type DeferredWarning,
   defersExtensionCatalog,
@@ -1052,4 +1053,84 @@ Deno.test("runsLocallyWithServeUpstream: extension install and pull run in a for
   } finally {
     resetServeUpstreamCommandPath();
   }
+});
+
+async function withRepoDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+const pulledFile = (name: string) =>
+  `.swamp/pulled-extensions/${name}/manifest.yaml`;
+
+Deno.test("checkForMissingPulledExtensions: warns for a shared entry gone from disk, naming install", async () => {
+  await withRepoDir(async (dir) => {
+    const lockfile = join(dir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfile,
+      JSON.stringify({
+        "@a/gone": {
+          version: "1",
+          pulledAt: "x",
+          files: [pulledFile("@a/gone")],
+        },
+        "@a/outside": {
+          version: "1",
+          pulledAt: "x",
+          files: ["../outside-the-repo/x.ts"],
+        },
+      }),
+    );
+    const warnings: DeferredWarning[] = [];
+
+    await checkForMissingPulledExtensions(
+      dir,
+      lockfile,
+      undefined,
+      (w) => warnings.push(w),
+    );
+
+    assertEquals(warnings, [{
+      kind: "extensions",
+      file: lockfile,
+      error:
+        "1 pulled extension(s) have missing source files: @a/gone (e.g. .swamp/pulled-extensions/@a/gone/manifest.yaml). Run 'swamp extension install' to restore them.",
+    }]);
+  });
+});
+
+Deno.test("checkForMissingPulledExtensions: a shared entry gone from disk awaits the auto-resolver when a transitional lockfile exists", async () => {
+  await withRepoDir(async (dir) => {
+    const lockfile = join(dir, "cache", "upstream_extensions.json");
+    const local = join(dir, ".swamp", "config", "upstream_extensions.json");
+    await Deno.mkdir(join(dir, "cache"), { recursive: true });
+    await Deno.writeTextFile(
+      lockfile,
+      JSON.stringify({
+        "@a/gone": {
+          version: "1",
+          pulledAt: "x",
+          files: [pulledFile("@a/gone")],
+        },
+      }),
+    );
+    const warnings: DeferredWarning[] = [];
+
+    await checkForMissingPulledExtensions(
+      dir,
+      lockfile,
+      local,
+      (w) => warnings.push(w),
+    );
+
+    assertEquals(warnings, []);
+  });
 });
