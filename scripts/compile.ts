@@ -71,10 +71,11 @@ export function stampBuildInfo(
   return stamped;
 }
 
-async function getGitSha(): Promise<string> {
+async function getGitSha(root: string): Promise<string> {
   try {
     const cmd = new Deno.Command("git", {
       args: ["rev-parse", "--short", "HEAD"],
+      cwd: root,
       stdout: "piped",
       stderr: "null",
     });
@@ -86,7 +87,10 @@ async function getGitSha(): Promise<string> {
   }
 }
 
-async function downloadDeno(target?: string): Promise<void> {
+async function downloadDeno(
+  root: string,
+  target?: string,
+): Promise<void> {
   const downloadArgs = ["run", "-A", "scripts/download_deno.ts"];
   if (target) {
     downloadArgs.push("--target", target);
@@ -95,6 +99,7 @@ async function downloadDeno(target?: string): Promise<void> {
   console.log(`Downloading embedded deno runtime...`);
   const command = new Deno.Command("deno", {
     args: downloadArgs,
+    cwd: root,
     stdout: "inherit",
     stderr: "inherit",
   });
@@ -263,9 +268,10 @@ function nodeModulesPackage(path: string): string | undefined {
   return at === -1 ? undefined : packageAt(segments.slice(at + 1));
 }
 
-async function npmCacheDir(): Promise<string> {
+async function npmCacheDir(root: string): Promise<string> {
   const { success, stdout } = await new Deno.Command("deno", {
     args: ["info", "--json"],
+    cwd: root,
     stdout: "piped",
     stderr: "inherit",
   }).output();
@@ -372,8 +378,11 @@ async function main(): Promise<boolean> {
     },
   });
 
+  // every path below is the repo root's, so the script runs from any directory
+  const root = await Deno.realPath(join(import.meta.dirname ?? ".", ".."));
+  const versionFile = join(root, VERSION_FILE);
   const options: CompileOptions = {
-    output: args.output || "swamp",
+    output: resolve(args.output || "swamp"),
     target: args.target,
     version: args.version,
     bundle: args.bundle,
@@ -381,8 +390,8 @@ async function main(): Promise<boolean> {
 
   // stamp the version only when given (CI passes --version); dev builds keep
   // the source default, so the original is saved to restore after compile
-  const originalContent = await Deno.readTextFile(VERSION_FILE);
-  const sha = await getGitSha();
+  const originalContent = await Deno.readTextFile(versionFile);
+  const sha = await getGitSha(root);
   const stamped = stampBuildInfo(originalContent, {
     version: options.version,
     sha,
@@ -398,18 +407,17 @@ async function main(): Promise<boolean> {
     );
   }
   const wroteStamp = stamped !== originalContent;
-  const root = join(import.meta.dirname ?? ".", "..");
 
   return await runStampedBuild({
     stamp: async () => {
       if (wroteStamp) {
-        await Deno.writeTextFile(VERSION_FILE, stamped);
+        await Deno.writeTextFile(versionFile, stamped);
       }
     },
     build: () => compile(options, root),
     restore: () =>
       restoreBuildState(
-        VERSION_FILE,
+        versionFile,
         wroteStamp ? originalContent : undefined,
         join(root, "resources", "deno"),
         options.bundle ? join(root, BUNDLE_DIR) : undefined,
@@ -501,10 +509,14 @@ const FORWARDED_SIGNALS: Deno.Signal[] = Deno.build.os === "windows"
   ? ["SIGINT", "SIGBREAK"]
   : ["SIGINT", "SIGTERM", "SIGHUP"];
 
-async function runDeno(args: readonly string[]): Promise<boolean> {
+async function runDeno(
+  args: readonly string[],
+  cwd: string,
+): Promise<boolean> {
   console.log(`Running: deno ${args.join(" ")}`);
   const child = new Deno.Command("deno", {
     args: [...args],
+    cwd,
     stdout: "inherit",
     stderr: "inherit",
   }).spawn();
@@ -536,7 +548,9 @@ async function bundle(root: string): Promise<string[] | undefined> {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     },
   );
-  if (!(await runDeno(bundleArgs(BUNDLE_DIR, externals)))) return undefined;
+  if (!(await runDeno(bundleArgs(BUNDLE_DIR, externals), root))) {
+    return undefined;
+  }
   const fileNames: string[] = [];
   const sources: string[] = [];
   for await (const entry of Deno.readDir(join(root, BUNDLE_DIR))) {
@@ -552,7 +566,7 @@ async function bundle(root: string): Promise<string[] | undefined> {
   // map sources hold resolved paths, so every base they meet must be resolved
   const realRoot = await Deno.realPath(root);
   const realBundleDir = await Deno.realPath(join(root, BUNDLE_DIR));
-  const npmCache = await npmCacheDir();
+  const npmCache = await npmCacheDir(root);
   const realNpmCache = await Deno.realPath(npmCache).catch((error) => {
     if (error instanceof Deno.errors.NotFound) return npmCache;
     throw error;
@@ -577,7 +591,7 @@ async function compile(
   options: CompileOptions,
   root: string,
 ): Promise<boolean> {
-  await downloadDeno(options.target);
+  await downloadDeno(root, options.target);
 
   let entry = "main.ts";
   let extraIncludes: string[] = [];
@@ -588,10 +602,12 @@ async function compile(
     extraIncludes = mapIncludes;
   }
 
-  const dashboardDistExists = await Deno.stat("packages/dashboard/dist")
-    .then(() => true).catch(() => false);
+  const dashboardDistExists = await Deno.stat(
+    join(root, "packages", "dashboard", "dist"),
+  ).then(() => true).catch(() => false);
   return await runDeno(
     compileArgs(options, { entry, dashboardDistExists, extraIncludes }),
+    root,
   );
 }
 
