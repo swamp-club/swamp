@@ -37,6 +37,27 @@ import {
 import { createRootCommand } from "./mod.ts";
 import type { AnyCommand } from "./cli_schema.ts";
 
+// complete walks visible commands from the root as Cliffy's does, so a callback
+// tree missing completions or the command it names ends differently
+function completionsStandIn(record: (walked: string) => void): AnyCommand {
+  return new Command().action(() => record("completions"))
+    .command(
+      "complete",
+      new Command()
+        .noGlobals()
+        .arguments("<action:string> [command...:string]")
+        .action(function (_options: unknown, ...words: string[]) {
+          let at: AnyCommand = this.getMainCommand();
+          for (const name of words.slice(1)) {
+            const next = at.getCommand(name, false);
+            if (!next) throw new Error(`no completion command ${name}`);
+            at = next;
+          }
+          record(`complete at ${at.getPath()}`);
+        }),
+    );
+}
+
 // the real root's options with stand-in children: the router decides only which
 // top-level command Cliffy dispatches to, and the stand-ins record exactly that
 async function outcome(
@@ -46,10 +67,13 @@ async function outcome(
   let reached = "nothing";
   const root = createRootCommand(false).noExit().throwErrors();
   for (const route of routes) {
-    let child = new Command().useRawArgs().action(() => {
-      reached = route.name;
-    });
+    let child: AnyCommand = route.name === "completions"
+      ? completionsStandIn((walked) => reached = walked)
+      : new Command().useRawArgs().action(() => {
+        reached = route.name;
+      });
     for (const alias of route.aliases) child = child.alias(alias);
+    if (route.hidden) child = child.hidden();
     root.command(route.name, child);
   }
   root.command(
@@ -95,22 +119,83 @@ const token = fc.oneof(
     "debug",
     "versoin",
     "get",
+    "completions",
+    "complete",
+    "model_name",
     "",
   ),
 );
 
-Deno.test("selectRoute: Cliffy's parse ends the same way with only the selected route registered", async () => {
+Deno.test("selectRoute: Cliffy's parse ends the same way with only the selected routes registered", async () => {
   await fc.assert(
     fc.asyncProperty(fc.array(token, { maxLength: 6 }), async (args) => {
       const selection = selectRoute(ROOT_ROUTES, args);
       if (selection.kind === "all") return;
       assertEquals(
-        await outcome([selection.route], args),
+        await outcome(selection.routes, args),
         await outcome(ROOT_ROUTES, args),
         args.join(" "),
       );
     }),
     { numRuns: 1000 },
+  );
+});
+
+const callbackArgs = fc.tuple(
+  fc.constantFrom<string[]>([], [], ["--json"], ["--log-level", "debug"], [
+    "--bogus",
+  ]),
+  fc.constantFrom<string[]>([], [], [], ["--json"], ["--"]),
+  fc.constantFrom("model_name", "workflow_name", "x", "--json"),
+  fc.array(
+    fc.oneof(
+      { weight: 4, arbitrary: routeWord },
+      {
+        weight: 1,
+        arbitrary: fc.constantFrom(HELP_COMMAND, "get", "bogus", "--", ""),
+      },
+    ),
+    { maxLength: 3 },
+  ),
+).map(([before, between, action, names]) => [
+  ...before,
+  "completions",
+  ...between,
+  "complete",
+  action,
+  ...names,
+]);
+
+Deno.test("selectRoute: a completion callback's parse ends the same way with only the selected routes registered", async () => {
+  let routed = 0;
+  await fc.assert(
+    fc.asyncProperty(callbackArgs, async (args) => {
+      const selection = selectRoute(ROOT_ROUTES, args);
+      if (selection.kind === "all") return;
+      routed++;
+      assertEquals(
+        await outcome(selection.routes, args),
+        await outcome(ROOT_ROUTES, args),
+        args.join(" "),
+      );
+    }),
+    { numRuns: 1000 },
+  );
+  assert(routed > 300, `only ${routed} of 1000 callbacks were routed`);
+});
+
+Deno.test("outcome: the stand-in completions walks visible commands and refuses an unknown one", async () => {
+  assertEquals(
+    await outcome(ROOT_ROUTES, ["completions", "complete", "x", "behaviour"]),
+    "complete at swamp behavior",
+  );
+  assertEquals(
+    await outcome(ROOT_ROUTES, ["completions", "complete", "x"]),
+    "complete at swamp",
+  );
+  assertEquals(
+    await outcome(ROOT_ROUTES, ["completions", "complete", "x", "audit"]),
+    "error: no completion command audit",
   );
 });
 
@@ -190,7 +275,7 @@ async function groupOutcome(
 }
 
 interface Narrowed {
-  readonly route: CommandRoute;
+  readonly routes: readonly CommandRoute[];
   readonly narrow: Narrow;
   readonly selectedUnder: readonly string[];
 }
@@ -200,7 +285,9 @@ function narrowedPath(args: string[]): Narrowed | undefined {
   const selection = selectRoute(ROOT_ROUTES, args);
   if (selection.kind === "all") return undefined;
   const chosen = new Map<string, CommandRoute>();
-  let path = [selection.route.name];
+  const root = selection.routes.find((r) => GROUP_TABLES.has(r.name)) ??
+    selection.routes[0];
+  let path = [root.name];
   let rest = selection.rest;
   for (;;) {
     const table = GROUP_TABLES.get(path.join(" "));
@@ -211,7 +298,7 @@ function narrowedPath(args: string[]): Narrowed | undefined {
     rest = sub.rest;
   }
   return {
-    route: selection.route,
+    routes: selection.routes,
     narrow: (at) => {
       const picked = chosen.get(at.join(" "));
       return picked ? [picked] : fullGroups(at);
@@ -289,7 +376,7 @@ Deno.test("selectSubcommandWithRest: Cliffy's parse ends the same way with only 
       const narrowed = narrowedPath(args);
       if (!narrowed) return;
       const outcome = await groupOutcome(
-        [narrowed.route],
+        narrowed.routes,
         narrowed.narrow,
         args,
       );

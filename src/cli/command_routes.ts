@@ -48,6 +48,8 @@ export const ROOT_GLOBAL_OPTIONS: readonly OptionSpec[] = [
 ];
 
 export const HELP_COMMAND = "help";
+const COMPLETIONS_COMMAND = "completions";
+const COMPLETE_SUBCOMMAND = "complete";
 
 const HELP_OPTIONS: readonly OptionSpec[] = [
   { flags: ["--include-hidden"], takesValue: false },
@@ -56,8 +58,9 @@ const HELP_OPTIONS: readonly OptionSpec[] = [
 export type RouteSelection =
   | { readonly kind: "all" }
   | {
-    readonly kind: "route";
-    readonly route: CommandRoute;
+    readonly kind: "routes";
+    /** in table order */
+    readonly routes: readonly CommandRoute[];
     readonly rest: readonly string[];
   };
 
@@ -143,6 +146,52 @@ export function commandWords(
   return locate(args)?.words;
 }
 
+function findRoute(
+  routes: readonly CommandRoute[],
+  word: string,
+): CommandRoute | undefined {
+  return routes.find((r) => r.name === word || r.aliases.includes(word));
+}
+
+// complete walks down through visible commands, then reads completions up the parent chain
+function selectCompletionCallback(
+  routes: readonly CommandRoute[],
+  args: readonly string[],
+  start: number,
+): RouteSelection {
+  const completions = findRoute(routes, COMPLETIONS_COMMAND);
+  const sub = scanForWord(args, start, ROOT_GLOBAL_OPTIONS);
+  if (
+    !completions || sub.kind !== "word" ||
+    args[sub.index] !== COMPLETE_SUBCOMMAND
+  ) {
+    return { kind: "all" };
+  }
+  const after = args.slice(sub.index + 1);
+  // complete takes no options: a dash-led token is left to the full tree's parse
+  if (after.length === 0 || after.some((arg) => arg.startsWith("-"))) {
+    return { kind: "all" };
+  }
+  const name = after[1];
+  if (name === undefined) {
+    return { kind: "routes", routes: [completions], rest: [] };
+  }
+  // the walk refuses help (no route) and hidden routes with an error listing
+  // the root's commands, which only the full tree holds
+  const target = findRoute(routes, name);
+  if (
+    !target || target.hidden ||
+    (target.needsFullTree && target !== completions)
+  ) {
+    return { kind: "all" };
+  }
+  return {
+    kind: "routes",
+    routes: routes.filter((r) => r === completions || r === target),
+    rest: after.slice(2),
+  };
+}
+
 export function selectRoute(
   routes: readonly CommandRoute[],
   args: readonly string[],
@@ -150,13 +199,13 @@ export function selectRoute(
   const located = locate(args);
   if (!located || located.words.length === 0) return { kind: "all" };
   const { words, next } = located;
+  if (words[0] === COMPLETIONS_COMMAND) {
+    return selectCompletionCallback(routes, args, next);
+  }
   if (words[0] === HELP_COMMAND && words.length < 2) return { kind: "all" };
-  const target = words[words.length - 1];
-  const route = routes.find((r) =>
-    r.name === target || r.aliases.includes(target)
-  );
+  const route = findRoute(routes, words[words.length - 1]);
   if (!route || route.needsFullTree) return { kind: "all" };
-  return { kind: "route", route, rest: args.slice(next) };
+  return { kind: "routes", routes: [route], rest: args.slice(next) };
 }
 
 export interface SubcommandSelection {

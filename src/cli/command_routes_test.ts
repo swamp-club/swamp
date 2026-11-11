@@ -50,12 +50,21 @@ const ROUTES = [
   route("behavior", { aliases: ["behaviour"] }),
   route("summarise", { aliases: ["summarize"] }),
   route("data"),
+  route("audit", { hidden: true }),
   route("completions", { needsFullTree: true }),
+  route("issue"),
 ];
 
 function selected(args: string[]): string | undefined {
   const selection: RouteSelection = selectRoute(ROUTES, args);
-  return selection.kind === "route" ? selection.route.name : undefined;
+  return selection.kind === "routes"
+    ? selection.routes.map((r) => r.name).join(",")
+    : undefined;
+}
+
+function rest(args: string[]): readonly string[] | undefined {
+  const selection = selectRoute(ROUTES, args);
+  return selection.kind === "routes" ? selection.rest : undefined;
 }
 
 Deno.test("commandWords: skips root globals before and after the command word", () => {
@@ -106,11 +115,7 @@ Deno.test("selectRoute: picks the invoked route by name or alias, passing on the
   assertEquals(selected(["version"]), "version");
   assertEquals(selected(["behaviour", "run"]), "behavior");
   assertEquals(selected(["summarize"]), "summarise");
-  const selection = selectRoute(ROUTES, ["--json", "data", "get", "x"]);
-  assertEquals(
-    selection.kind === "route" ? selection.rest : undefined,
-    ["get", "x"],
-  );
+  assertEquals(rest(["--json", "data", "get", "x"]), ["get", "x"]);
 });
 
 Deno.test("selectRoute: the full tree for no word, an unknown word or an unknown option", () => {
@@ -133,11 +138,90 @@ Deno.test("selectRoute: help with a path loads the route its first word names", 
   assertEquals(selected(["help", "data", "get"]), "data");
   assertEquals(selected(["help", "behaviour"]), "behavior");
   assertEquals(selectRoute(ROUTES, ["help", "bogus"]), { kind: "all" });
-  const selection = selectRoute(ROUTES, ["help", "data", "get"]);
+  assertEquals(rest(["help", "data", "get"]), ["get"]);
+});
+
+Deno.test("selectRoute: a completion callback loads completions and the route its first name picks, in table order", () => {
   assertEquals(
-    selection.kind === "route" ? selection.rest : undefined,
-    ["get"],
+    selected(["completions", "complete", "model_name", "behavior", "get"]),
+    "behavior,completions",
   );
+  assertEquals(
+    selected(["completions", "complete", "model_name", "behaviour", "get"]),
+    "behavior,completions",
+  );
+  assertEquals(
+    selected(["completions", "complete", "x", "summarize"]),
+    "summarise,completions",
+  );
+  assertEquals(
+    selected(["completions", "complete", "x", "issue"]),
+    "completions,issue",
+  );
+  assertEquals(
+    rest(["completions", "complete", "model_name", "behavior", "get", "x"]),
+    ["get", "x"],
+  );
+});
+
+Deno.test("selectRoute: a completion callback with no name, or naming completions, loads completions alone", () => {
+  assertEquals(
+    selected(["completions", "complete", "model_name"]),
+    "completions",
+  );
+  assertEquals(rest(["completions", "complete", "model_name"]), []);
+  assertEquals(
+    selected(["completions", "complete", "x", "completions", "bash"]),
+    "completions",
+  );
+});
+
+Deno.test("selectRoute: root globals may precede completions and complete in a callback", () => {
+  assertEquals(
+    selected(["--json", "completions", "complete", "x", "data"]),
+    "data,completions",
+  );
+  assertEquals(
+    selected(["completions", "--log-level", "debug", "complete", "x", "data"]),
+    "data,completions",
+  );
+});
+
+Deno.test("selectRoute: the full tree for a callback naming an unknown, hidden or help command", () => {
+  assertEquals(selectRoute(ROUTES, ["completions", "complete", "x", "bogus"]), {
+    kind: "all",
+  });
+  assertEquals(selectRoute(ROUTES, ["completions", "complete", "x", "audit"]), {
+    kind: "all",
+  });
+  assertEquals(selectRoute(ROUTES, ["completions", "complete", "x", "help"]), {
+    kind: "all",
+  });
+});
+
+Deno.test("selectRoute: the full tree for any option or -- after complete, or no action", () => {
+  for (
+    const args of [
+      ["completions", "complete"],
+      ["completions", "complete", "--json", "x", "data"],
+      ["completions", "complete", "x", "--", "data"],
+      ["completions", "complete", "x", "data", "--json"],
+      ["completions", "complete", "-h"],
+      ["completions", "--bogus", "complete", "x", "data"],
+    ]
+  ) {
+    assertEquals(selectRoute(ROUTES, args), { kind: "all" }, args.join(" "));
+  }
+});
+
+Deno.test("selectRoute: the full tree for completions generating a script", () => {
+  for (const shell of ["bash", "zsh", "fish", "powershell"]) {
+    assertEquals(selectRoute(ROUTES, ["completions", shell]), { kind: "all" });
+  }
+  assertEquals(selectRoute(ROUTES, ["completions"]), { kind: "all" });
+  assertEquals(selectRoute(ROUTES, ["completions", "--", "complete"]), {
+    kind: "all",
+  });
 });
 
 Deno.test("loadRoutes: loads in table order and passes the rest to each load", async () => {
