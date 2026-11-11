@@ -18,8 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { relative } from "@std/path";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
+import {
+  findDuplicateJsonKey,
+  type JsonPathSegment,
+} from "./json_duplicate_keys.ts";
 import { isBundleArtifactPath } from "./paths.ts";
 
 export interface UpstreamExtensionEntry {
@@ -102,9 +107,17 @@ export function canonicalLockfileEntry<T>(entry: T): T {
   ) as T;
 }
 
+/** the key comes from a repo-controlled file, so it is printed escaped */
+function renderSegment(segment: JsonPathSegment): string {
+  return typeof segment === "number"
+    ? `[${segment}]`
+    : escapeControlCharacters(JSON.stringify(segment));
+}
+
 /**
- * invalid JSON or a non-object throws a SyntaxError naming the file, so callers
- * treat both as the same corrupt lockfile
+ * invalid JSON, a repeated key at any depth or a non-object throws a
+ * SyntaxError naming the file, so callers treat all three as the same corrupt
+ * lockfile
  */
 export async function readUpstreamExtensions(
   lockfilePath: string,
@@ -129,6 +142,20 @@ export async function readUpstreamExtensions(
         }`,
       ),
       [lockfilePath, ...errorPaths(error)],
+    );
+  }
+  const duplicate = findDuplicateJsonKey(content);
+  if (duplicate !== undefined) {
+    const key = renderSegment(duplicate.key);
+    throw markErrorPaths(
+      new SyntaxError(
+        duplicate.path.length === 0
+          ? `Lockfile ${lockfilePath} lists ${key} more than once`
+          : `Lockfile ${lockfilePath} repeats key ${key} in ${
+            duplicate.path.map(renderSegment).join(" > ")
+          }`,
+      ),
+      [lockfilePath],
     );
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
