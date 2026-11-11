@@ -92,6 +92,17 @@ export function probePayload(): Record<string, unknown> {
 }
 
 /**
+ * The page shows when the viewer can read a top-level session or a Swampify
+ * candidate set; with neither there is nothing to show.
+ */
+export function agentSessionsPageVisible(
+  sessions: number,
+  candidateSets: number,
+): boolean {
+  return sessions > 0 || candidateSets > 0;
+}
+
+/**
  * The list predicate: top-level sessions, and with a repo, those whose
  * `repo` tag is it. Sessions written before the tag existed pass too, and
  * `filterRows` keeps those whose summary names the repo. A repo the record

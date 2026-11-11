@@ -175,3 +175,34 @@ their output. The agent then reads a few example sessions per candidate.
 
 Where the data then goes is the user's choice, as for any repo data: kept
 local, synced to a datastore, or served with `swamp serve`.
+
+## The panel
+
+The dashboard's [Agent sessions page](./agent-sessions.md#the-page) shows a
+Swampify panel above its session list whenever the viewer can read a candidate
+set. Its requests are in `packages/dashboard/src/client/swampify.ts`, and
+`integration/swampify_panel_test.ts` sends them through serve's handlers.
+
+- **What it reads.** One list per item kind, by type tag with
+  `SWAMPIFY_LIST_SELECT`, so no body loads until the panel opens the set and
+  the offer that `newestSwampifyItem` picks. Comparisons are listed once and
+  grouped by their `optionId` tag, the newest per option by the same rule; a
+  comparison's body is read only when it is opened.
+- **What it shows.** The offer first, when there is one: its state, what read
+  the sessions, and each option with the candidates it stands for, the pick
+  and the target. Then the set's window, scope and owner, and its candidates
+  by rank, each opening to its ranges, excerpts, session refs and the offer's
+  reason for leaving it out. A session ref links to that session when the page
+  has loaded it, and is plain text otherwise.
+- **Computes nothing.** It shows the ranges, counts, rates and break-even the
+  writers stored, and only formats them; the thin flag comes from the summary
+  tag.
+- **Text only.** Labels, excerpts, steps, option names, reasons and notes are
+  rendered as text, never as markup or links; the only links are the session
+  refs, built from the checked data name.
+- **Skips.** An item a reader skips shows the reader's note, never its content.
+  With the set skipped, an offer's candidates show as not readable.
+- **Access.** Under `swamp serve`, `data.query` drops what the viewer may not
+  read before its limit, so an unreadable comparison leaves its option showing
+  as not compared, and the panel adds no access logic of its own. It ignores
+  the page's repo and session filters, since an assessment spans repos.

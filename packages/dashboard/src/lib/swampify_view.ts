@@ -1,0 +1,212 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+/**
+ * What the Swampify panel shows, joined from the items as they are. Nothing
+ * here computes a figure: the panel shows the ranges, counts and rates the
+ * writers stored, and only formats them.
+ */
+
+import { agentSessionDataName } from "./agent_sessions/record.ts";
+import {
+  SWAMPIFY_THIN_BELOW,
+  type SwampifyCandidate,
+  type SwampifyCandidateSet,
+  type SwampifyCandidateSetSummary,
+  type SwampifyOffer,
+  type SwampifyOfferOption,
+  type SwampifyRange,
+} from "./agent_sessions/swampify.ts";
+import { formatCompactCount, formatDuration } from "./format.ts";
+
+export type SwampifyConsidered = SwampifyOffer["considered"][number];
+
+/** An option's candidate as the shown set knows it. */
+export type OptionCandidate =
+  | { readonly state: "found"; readonly candidate: SwampifyCandidate }
+  | { readonly state: "missing"; readonly id: string }
+  | { readonly state: "unreadable"; readonly id: string };
+
+export interface OptionView {
+  readonly option: SwampifyOfferOption;
+  readonly candidates: readonly OptionCandidate[];
+  readonly picked: boolean;
+}
+
+export interface OfferView {
+  readonly offer: SwampifyOffer;
+  /**
+   * The offer names a candidate set other than the one shown: a later
+   * assessment replaced the set it was built from.
+   */
+  readonly earlier: boolean;
+  readonly options: readonly OptionView[];
+}
+
+function sameInstant(a: string, b: string): boolean {
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  return !Number.isNaN(x) && x === y;
+}
+
+/**
+ * Joins the offer to the shown set. `set` is null when the set did not read,
+ * and its candidates are then unreadable rather than missing;
+ * `setGeneratedAt` is the shown set's tag, known even when its body is not.
+ */
+export function offerView(
+  offer: SwampifyOffer,
+  set: SwampifyCandidateSet | null,
+  setGeneratedAt: string | undefined,
+): OfferView {
+  const byId = new Map(set?.candidates.map((c) => [c.id, c]) ?? []);
+  const pickedId = offer.state.kind === "picked" ||
+      offer.state.kind === "built"
+    ? offer.state.optionId
+    : undefined;
+  return {
+    offer,
+    earlier: setGeneratedAt !== undefined &&
+      !sameInstant(offer.candidateSet.generatedAt, setGeneratedAt),
+    options: offer.options.map((option) => ({
+      option,
+      picked: option.id === pickedId,
+      candidates: option.candidateIds.map((id): OptionCandidate => {
+        if (set === null) return { state: "unreadable", id };
+        const candidate = byId.get(id);
+        return candidate
+          ? { state: "found", candidate }
+          : { state: "missing", id };
+      }),
+    })),
+  };
+}
+
+/** Why the offer left each considered candidate out, by candidate id. */
+export function consideredById(
+  offer: SwampifyOffer | null,
+): ReadonlyMap<string, SwampifyConsidered> {
+  return new Map(offer?.considered.map((c) => [c.candidateId, c]) ?? []);
+}
+
+/** The option each offered candidate belongs to, by candidate id. */
+export function optionByCandidate(
+  offer: SwampifyOffer | null,
+): ReadonlyMap<string, SwampifyOfferOption> {
+  const map = new Map<string, SwampifyOfferOption>();
+  for (const option of offer?.options ?? []) {
+    for (const id of option.candidateIds) map.set(id, option);
+  }
+  return map;
+}
+
+export type SetFullness = "empty" | "thin" | "full";
+
+/** From the summary's `thin` when it reads, else the contract's threshold. */
+export function setFullness(
+  set: SwampifyCandidateSet,
+  summary: SwampifyCandidateSetSummary | undefined,
+): SetFullness {
+  if (set.candidates.length === 0) return "empty";
+  const thin = summary?.thin ?? set.candidates.length < SWAMPIFY_THIN_BELOW;
+  return thin ? "thin" : "full";
+}
+
+/**
+ * The data name of the session a ref names, when that session is in the
+ * list the page loaded; null otherwise, and for a ref the record would
+ * refuse.
+ */
+export function sessionRefTarget(
+  ref: { readonly harness: string; readonly sessionId: string },
+  loaded: ReadonlySet<string>,
+): string | null {
+  let name: string;
+  try {
+    name = agentSessionDataName(ref.harness, ref.sessionId);
+  } catch {
+    return null;
+  }
+  return loaded.has(name) ? name : null;
+}
+
+export const KIND_LABEL: Readonly<Record<SwampifyCandidate["kind"], string>> = {
+  "prompt-repeat": "Repeated prompt",
+  "call-sequence": "Call sequence",
+  "covered-cli": "CLI run directly",
+  "headless-job": "Headless job",
+};
+
+export const CONSIDERED_LABEL: Readonly<
+  Record<SwampifyConsidered["reason"], string>
+> = {
+  "not-a-chore": "Not a chore",
+  "merged": "Merged",
+  "low-value": "Low value",
+};
+
+/** A stored share from 0 to 1, as a whole percent. */
+export function formatRate(rate: number): string {
+  return `${Math.round(rate * 100)}%`;
+}
+
+/** "min – max" of a stored range, in the given format. */
+export function formatSpread(
+  range: SwampifyRange,
+  format: (n: number) => string = formatCompactCount,
+): string {
+  return range.min === range.max
+    ? format(range.min)
+    : `${format(range.min)} – ${format(range.max)}`;
+}
+
+export function formatTokens(n: number): string {
+  return formatCompactCount(Math.round(n));
+}
+
+export { formatDuration };
+
+/** Break-even as stored: a count or a span of counts, or never. */
+export function formatBreakEven(
+  breakEven: { readonly low: number | null; readonly high: number | null },
+): string {
+  if (breakEven.low === null) return "Never pays back";
+  // low is against whole turns and high against the chore's own calls
+  if (breakEven.high === null) {
+    return `After ${
+      formatCompactCount(breakEven.low)
+    } runs against whole turns; never against the chore's own calls`;
+  }
+  if (breakEven.high === breakEven.low) {
+    return `After ${formatCompactCount(breakEven.low)} runs`;
+  }
+  return `After ${formatCompactCount(breakEven.low)} – ${
+    formatCompactCount(breakEven.high)
+  } runs`;
+}
+
+const USD = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 2,
+});
+
+export function formatUsd(amount: number): string {
+  return USD.format(amount);
+}

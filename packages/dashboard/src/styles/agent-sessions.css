@@ -1105,3 +1105,284 @@
     scroll-behavior: auto;
   }
 }
+
+/* Swampify panel (views/agent_sessions/Swampify*.tsx). */
+.as-swampify {
+  margin-bottom: 16px;
+}
+
+.as-sw-head {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.as-sw-head h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.as-sw-set-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.as-sw-sub {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  margin-top: 6px;
+}
+
+.as-sw-skip,
+.as-sw-earlier {
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+
+.as-sw-offer {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.as-sw-offer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+
+.as-sw-offer-head h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.as-sw-state,
+.as-sw-picked {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+.as-sw-state-picked,
+.as-sw-state-built,
+.as-sw-picked {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.as-sw-reading {
+  margin: 6px 0 10px;
+}
+
+.as-sw-options {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  padding: 0;
+}
+
+.as-sw-option {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface);
+  font-size: 0.85rem;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+.as-sw-option[data-picked="true"] {
+  border-color: var(--accent);
+}
+
+.as-sw-option-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.as-sw-option-head h4 {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.as-sw-option p {
+  margin: 4px 0;
+}
+
+.as-sw-outline,
+.as-sw-option-candidates,
+.as-sw-excerpts,
+.as-sw-refs {
+  padding-left: 18px;
+  margin: 2px 0 4px;
+  font-size: 0.8rem;
+}
+
+.as-sw-refs {
+  list-style: none;
+  padding-left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.as-sw-compare {
+  margin-top: 8px;
+  font-size: 0.8rem;
+}
+
+.as-sw-compare-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+
+.as-sw-compare-body {
+  margin-top: 8px;
+  overflow-x: auto;
+}
+
+.as-sw-compare-table caption,
+.as-sw-ranges caption {
+  text-align: left;
+  padding-bottom: 4px;
+}
+
+.as-sw-spread {
+  font-size: 0.75rem;
+}
+
+.as-sw-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin-top: 8px;
+  font-size: 0.8rem;
+}
+
+.as-sw-dl dt {
+  color: var(--text-2);
+}
+
+.as-sw-label {
+  font-size: 0.85rem;
+  color: var(--text-1);
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.as-sw-detail-row > td {
+  background: var(--surface-inset);
+}
+
+.as-sw-detail {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 12px 24px;
+  padding: 6px 4px;
+}
+
+@media (max-width: 720px) {
+  .as-sw-detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.as-sw-ranges {
+  font-size: 0.8rem;
+  border-collapse: collapse;
+}
+
+.as-sw-ranges th,
+.as-sw-ranges td {
+  padding: 2px 8px;
+}
+
+.as-sw-ranges th[scope="row"] {
+  text-align: left;
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+.as-sw-evidence {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.as-sw-excerpt {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface);
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--text-1);
+  margin: 2px 0;
+}
+
+.as-sw-option[data-wide="true"] {
+  grid-column: 1 / -1;
+}
+
+.as-sw-compare-table th,
+.as-sw-compare-table td {
+  padding: 4px 10px;
+}
+
+.as-sw-compare-table th[scope="row"],
+.as-sw-ranges th[scope="row"] {
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: inherit;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.as-sw-table-wrap {
+  overflow-x: auto;
+}
+
+.as-sw-candidates {
+  width: 100%;
+  min-width: 760px;
+  table-layout: fixed;
+}
+
+.as-sw-candidates col.as-sw-c-narrow {
+  width: 52px;
+}
+
+.as-sw-candidates col.as-sw-c-num {
+  width: 72px;
+}
+
+.as-sw-candidates col.as-sw-c-seen {
+  width: 112px;
+}
+
+.as-sw-detail {
+  overflow-x: auto;
+}
+
+.as-sw-candidates .as-sw-refs a {
+  color: var(--accent);
+  text-decoration: underline;
+}

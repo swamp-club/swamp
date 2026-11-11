@@ -252,8 +252,9 @@ interface SidebarProps {
   health: HealthSnapshot | null;
   approvalCount: number;
   /**
-   * True when the viewer can read at least one agent session. The Agent
-   * sessions item shows only then; see the comment on the item.
+   * True when the viewer can read at least one agent session or Swampify
+   * candidate set. The Agent sessions item shows only then; see the comment
+   * on the item.
    */
   agentSessionsVisible?: boolean;
   /** False once serve said it runs without an audit log. */
@@ -510,8 +511,8 @@ export function Sidebar({
         {
           // Hidden, not "Off": this deliberately departs from the faded
           // items operationsOff() gives (swamp-club#4155). A Preview page
-          // shows only when the viewer can read session data; with none,
-          // there is nothing to turn on here. Hiding is not access control:
+          // shows only when the viewer can read session or Swampify data;
+          // with none, there is nothing to turn on here. Hiding is not access control:
           // the route still answers a direct URL, and every request it
           // sends is read-gated by serve.
           agentSessionsVisible && (
