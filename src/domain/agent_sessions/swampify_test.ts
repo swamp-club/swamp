@@ -466,6 +466,29 @@ Deno.test("SwampifyOfferV1Schema: merged needs into, naming another candidate in
   );
 });
 
+Deno.test("SwampifyOfferV1Schema: merged never names a merged candidate, so merges cannot cycle", () => {
+  assertEquals(
+    offerInvalidAt(offer({
+      reading: { ...offer().reading, candidates: 3 },
+      considered: [
+        { candidateId: ID_B, reason: "merged", into: ID_C },
+        { candidateId: ID_C, reason: "merged", into: ID_B },
+      ],
+    })),
+    "considered.0.into",
+  );
+  assertEquals(
+    readSwampifyOffer(offer({
+      reading: { ...offer().reading, candidates: 3 },
+      considered: [
+        { candidateId: ID_B, reason: "merged", into: ID_C },
+        { candidateId: ID_C, reason: "low-value" },
+      ],
+    })).kind,
+    "record",
+  );
+});
+
 Deno.test("SwampifyOfferV1Schema: offered and considered add up to the candidates read", () => {
   assertEquals(
     offerInvalidAt(offer({ reading: { ...offer().reading, candidates: 3 } })),

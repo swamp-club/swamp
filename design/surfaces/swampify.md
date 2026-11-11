@@ -113,7 +113,11 @@ link and the candidate ids when it writes.
 They are the record's rules:
 
 - every object is strict, and every string and list is bounded
-  (`SWAMPIFY_LIMITS`); counts carry true totals and only lists are capped;
+  (`SWAMPIFY_LIMITS`); counts carry true totals and only lists are capped.
+  The caps were sized on a heavy machine: 368 interactive and 20,759 headless
+  sessions in 30 days, whose largest repeat spanned 585 sessions. An excerpt's
+  300 characters cover a prompt's first line, whose median is 40 characters and
+  p99 465;
 - `schemaVersion` is on every item, and a new field is a new version;
 - each item has a reader that never throws and returns the item or a skip,
   `newer`, `older` or `invalid`, whose note names field paths, never values;
@@ -144,8 +148,8 @@ An item that passes its JSON Schema can still be skipped as `invalid`:
   sessions, nor sessions occurrences; candidate ids are unique in a set;
 - in an offer, option ids are unique; a candidate appears once across all
   options and `considered`, and those together number `reading.candidates`;
-  `merged` names, in `into`, another candidate the offer holds, and only
-  `merged` has `into`; `picked` and `built` name an option that exists;
+  `merged` names, in `into`, another candidate the offer holds that is not
+  itself merged, so merges never form a cycle, and only `merged` has `into`; `picked` and `built` name an option that exists;
   `candidateSet.generatedAt <= createdAt <= updatedAt`, and `pickedAt`,
   `builtAt` and `declinedAt` fall between `createdAt` and `updatedAt`, with
   `pickedAt <= builtAt`;

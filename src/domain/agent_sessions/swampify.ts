@@ -76,11 +76,7 @@ export const SWAMPIFY_COMPARISON_QUERY_PREDICATE =
 export const SWAMPIFY_LIST_SELECT =
   `{"name": name, "modelName": modelName, "tags": tags}`;
 
-/**
- * sized on a heavy machine: 368 interactive and 20,759 headless sessions in
- * 30 days, whose largest repeat spanned 585 sessions; counts carry true
- * totals and only lists are capped
- */
+/** counts carry true totals; only lists are capped */
 export const SWAMPIFY_LIMITS = {
   harnessLength: 32,
   sessionIdLength: 128,
@@ -91,7 +87,6 @@ export const SWAMPIFY_LIMITS = {
   candidates: 100,
   sessionRefs: 50,
   excerpts: 5,
-  // interactive prompts' first lines: median 40 characters, p99 465
   excerptLength: 300,
   minSteps: 2,
   steps: 8,
@@ -379,7 +374,7 @@ export const SwampifyOfferOptionSchema = z.strictObject({
   ),
 });
 
-/** into names the offered or considered candidate a merged one was folded into */
+/** into names the candidate a merged one was folded into, never a merged one */
 export const SwampifyConsideredSchema = z.strictObject({
   candidateId: SwampifyCandidateIdSchema,
   reason: z.enum(["not-a-chore", "merged", "low-value"]),
@@ -472,11 +467,18 @@ export const SwampifyOfferV1Schema = z.strictObject({
   offer.considered.forEach((considered, i) =>
     claim(considered.candidateId, ["considered", i, "candidateId"])
   );
+  // into never names a merged candidate, so merges cannot form a cycle
+  const merged = new Set(
+    offer.considered.filter((c) => c.reason === "merged").map((c) =>
+      c.candidateId
+    ),
+  );
   offer.considered.forEach((considered, i) => {
-    if (considered.into !== undefined && !candidateIds.has(considered.into)) {
+    if (considered.into === undefined) return;
+    if (!candidateIds.has(considered.into) || merged.has(considered.into)) {
       ctx.addIssue({
         code: "custom",
-        message: "merged into a candidate the offer does not hold",
+        message: "merged into a candidate the offer does not hold unmerged",
         path: ["considered", i, "into"],
       });
     }
@@ -892,10 +894,8 @@ export interface SwampifyListRow {
 }
 
 /**
- * the item a reader shows: newest by the given time tag, compared as instants
- * so a tag not written by toISOString still sorts; ties go to the swampify
- * behavior, then modelName, then name; rows that cannot be opened or whose tag
- * does not parse are passed over
+ * newest by time tag, compared as instants; ties go to the swampify behavior,
+ * then modelName, then name; unopenable or undated rows are passed over
  */
 export function newestSwampifyItem<T extends SwampifyListRow>(
   rows: readonly T[],
