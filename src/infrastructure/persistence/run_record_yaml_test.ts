@@ -23,8 +23,8 @@ import { writeRunRecordYaml } from "./run_record_yaml.ts";
 
 const char = (code: number) => String.fromCharCode(code);
 // YAML 1.2 c-printable, plus the line feed the writer emits between lines.
-// deno-lint-ignore no-control-regex
 const YAML_PRINTABLE =
+  // deno-lint-ignore no-control-regex
   /^[\x09\x0a\x0d\x20-\x7e\x85\xa0-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]*$/u;
 
 function roundTrip(record: Record<string, unknown>): unknown {

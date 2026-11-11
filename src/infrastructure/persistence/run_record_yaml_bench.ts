@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { RESERVED_TAG_PREFIX } from "../../domain/data/data.ts";
 import { writeRunRecordYaml } from "./run_record_yaml.ts";
 
 const workflowId = crypto.randomUUID();
@@ -40,7 +41,7 @@ function step(index: number): Record<string, unknown> {
     job: "main",
     step: stepName,
     initiatedBy: "user:bench",
-    "_swamp.kind": type,
+    [`${RESERVED_TAG_PREFIX}kind`]: type,
   });
   const artifacts = [
     { dataId: resourceId, name: "result", version: 1, tags: tags("resource") },

@@ -26,8 +26,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { writeRunRecordYaml } from "./run_record_yaml.ts";
 
 const char = (code: number) => String.fromCharCode(code);
-// deno-lint-ignore no-control-regex
 const YAML_PRINTABLE =
+  // deno-lint-ignore no-control-regex
   /^[\x09\x0a\x0d\x20-\x7e\x85\xa0-\ud7ff\ue000-\ufffd\u{10000}-\u{10ffff}]*$/u;
 
 const RESERVED = ["true", "false", "null", "yes", "no", "on", "off", "y", "n"];
