@@ -2145,8 +2145,8 @@ const warmups = new Map<
 >();
 
 /**
- * opens the pooled connection to serve while the command still starts, so
- * its first request does not wait for TCP and TLS; once per serve
+ * opens the connection the command's serve requests reuse while it still
+ * starts, so its first request does not wait for TCP and TLS; once per serve
  */
 export function warmServeConnection(
   target: ServeUpstreamTarget,
@@ -2173,6 +2173,10 @@ export function warmServeConnection(
     () => {},
   );
   warmups.set(key, { abort, done });
+}
+
+export async function serveWarmupsSettledForTesting(): Promise<void> {
+  await Promise.all([...warmups.values()].map(({ done }) => done));
 }
 
 /** a warm-up still connecting is cut off: it never holds a command open */

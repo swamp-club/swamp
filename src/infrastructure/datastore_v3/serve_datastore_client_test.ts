@@ -82,6 +82,7 @@ import {
   serveRequestDeadlineMs,
   serveRequestTimeoutMs,
   serveResponseDeadlineMs,
+  serveWarmupsSettledForTesting,
   warmServeConnection,
 } from "./serve_datastore_client.ts";
 import { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
@@ -2476,7 +2477,6 @@ const TEST_CA = [
   "-----END CERTIFICATE-----",
 ].join("\n");
 
-/** a plain-HTTP serve recording each request's client port */
 function portServe(
   hold?: Promise<void>,
 ): {
@@ -2516,10 +2516,7 @@ Deno.test("serveDatastoreClientFor: a command's clients of one serve under a pri
   const own = serveDatastoreClientFor(target, "", { ownConnection: true });
   try {
     warmServeConnection(target);
-    await waitFor(
-      () => serve.requests.length === 1,
-      "the warm-up reached serve",
-    );
+    await serveWarmupsSettledForTesting();
     await endServeWarmups();
     await a.changes(0, signal());
     await b.changes(0, signal());

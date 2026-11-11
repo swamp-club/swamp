@@ -733,7 +733,6 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #follower: boolean;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
-  /** Partitions rebuilt from the file; see {@link rebuilds}. */
   #rebuilds = 0;
   /** {@link onHeadMoved}'s listeners. */
   readonly #headListeners = new Set<(replaced: boolean) => void>();
@@ -917,7 +916,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return this.#appendTransactions;
   }
 
-  /** How many partitions this store has rebuilt from the file; for tests. */
+  /** for tests */
   get rebuilds(): number {
     return this.#rebuilds;
   }

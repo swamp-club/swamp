@@ -194,7 +194,6 @@ Deno.test("ServeCatchUp.catchUp: a new command applying serve's commits to parti
     serve.land(await other(31, OTHER));
     serve.land(await other(32));
 
-    // A new command's store holds no partition.
     const fresh = SqliteCommitStore.open(join(dir, "commits.db"), {
       follower: true,
     });
