@@ -88,30 +88,24 @@ async function getGitSha(root: string): Promise<string> {
 }
 
 async function downloadDeno(
+  runner: BuildRunner,
   root: string,
   target?: string,
-): Promise<void> {
+): Promise<boolean> {
   const downloadArgs = ["run", "-A", "scripts/download_deno.ts"];
   if (target) {
     downloadArgs.push("--target", target);
   }
 
   console.log(`Downloading embedded deno runtime...`);
-  const command = new Deno.Command("deno", {
-    args: downloadArgs,
-    cwd: root,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-
-  const { success } = await command.output();
-  if (!success) {
-    throw new Error("Failed to download deno binary for embedding");
-  }
+  if (await runner.run(downloadArgs, root)) return true;
+  if (runner.interrupted) return false;
+  throw new Error("Failed to download deno binary for embedding");
 }
 
 export interface DenoConfig {
   imports?: Record<string, string>;
+  scopes?: Record<string, Record<string, string>>;
   workspace?: string[];
 }
 
@@ -127,11 +121,13 @@ export type ImportSource = DenoConfig | PackageJson;
 export function npmExternals(sources: readonly ImportSource[]): string[] {
   const names = new Set<string>();
   for (const source of sources) {
-    if ("imports" in source) {
-      // a package.json "imports" field can hold condition objects
+    const deno = source as DenoConfig;
+    // a package.json "imports" field can hold condition objects
+    const maps = [deno.imports, ...Object.values(deno.scopes ?? {})];
+    for (const map of maps) {
       for (
         const [name, target] of Object.entries(
-          (source.imports ?? {}) as Record<string, unknown>,
+          (map ?? {}) as Record<string, unknown>,
         )
       ) {
         if (typeof target === "string" && target.startsWith("npm:")) {
@@ -216,6 +212,11 @@ export async function readWorkspaceConfigs(
   return { configs, paths };
 }
 
+// relative() yields an absolute path across Windows drives
+function isOutside(rel: string, path: string): boolean {
+  return rel === ".." || rel.startsWith(`..${SEPARATOR}`) || rel === path;
+}
+
 function packageAt(segments: readonly string[]): string | undefined {
   const [first, second] = segments;
   if (first === undefined || first.startsWith(".")) return undefined;
@@ -232,7 +233,7 @@ export function inlinedNpmPackages(
   for (const source of sources) {
     const path = resolve(bundleDir, source);
     const inCache = relative(npmCache, path);
-    const name = !inCache.startsWith("..") && inCache !== path
+    const name = !isOutside(inCache, path)
       ? packageAt(inCache.split(SEPARATOR).slice(1))
       : nodeModulesPackage(path);
     if (name !== undefined) names.add(name);
@@ -247,7 +248,7 @@ export function requireRepoSources(
 ): void {
   const within = (base: string, path: string) => {
     const rel = relative(base, path);
-    return rel !== "" && !rel.startsWith("..") && rel !== path;
+    return rel !== "" && !isOutside(rel, path);
   };
   // a URL or specifier resolves to a junk path under the bundle dir itself
   const inRepo = sources.some((source) => {
@@ -408,21 +409,23 @@ async function main(): Promise<boolean> {
   }
   const wroteStamp = stamped !== originalContent;
 
-  return await runStampedBuild({
-    stamp: async () => {
-      if (wroteStamp) {
-        await Deno.writeTextFile(versionFile, stamped);
-      }
-    },
-    build: () => compile(options, root),
-    restore: () =>
-      restoreBuildState(
-        versionFile,
-        wroteStamp ? originalContent : undefined,
-        join(root, "resources", "deno"),
-        options.bundle ? join(root, BUNDLE_DIR) : undefined,
-      ),
-  });
+  const runner = new BuildRunner();
+  return await withInterruptGuard(runner, () =>
+    runStampedBuild({
+      stamp: async () => {
+        if (wroteStamp) {
+          await Deno.writeTextFile(versionFile, stamped);
+        }
+      },
+      build: () => compile(runner, options, root),
+      restore: () =>
+        restoreBuildState(
+          versionFile,
+          wroteStamp ? originalContent : undefined,
+          join(root, "resources", "deno"),
+          options.bundle ? join(root, BUNDLE_DIR) : undefined,
+        ),
+    }));
 }
 
 export interface CompileInputs {
@@ -509,38 +512,76 @@ const FORWARDED_SIGNALS: Deno.Signal[] = Deno.build.os === "windows"
   ? ["SIGINT", "SIGBREAK"]
   : ["SIGINT", "SIGTERM", "SIGHUP"];
 
-async function runDeno(
-  args: readonly string[],
-  cwd: string,
-): Promise<boolean> {
-  console.log(`Running: deno ${args.join(" ")}`);
-  const child = new Deno.Command("deno", {
+export interface BuildChild {
+  readonly status: Promise<{ success: boolean }>;
+  kill(): void;
+}
+
+export type SpawnDeno = (args: readonly string[], cwd: string) => BuildChild;
+
+const spawnDeno: SpawnDeno = (args, cwd) =>
+  new Deno.Command("deno", {
     args: [...args],
     cwd,
     stdout: "inherit",
     stderr: "inherit",
   }).spawn();
-  // else a signal to this process alone leaves the child writing after cleanup
-  const stop = () => {
+
+// an interrupt stops the running child and fails every later step, so the
+// restore runs after the child has exited instead of the signal killing us
+export class BuildRunner {
+  #interrupted = false;
+  #child: BuildChild | undefined;
+
+  constructor(private readonly spawn: SpawnDeno = spawnDeno) {}
+
+  get interrupted(): boolean {
+    return this.#interrupted;
+  }
+
+  interrupt(): void {
+    this.#interrupted = true;
     try {
-      child.kill();
+      this.#child?.kill();
     } catch {
       // already exited
     }
-  };
-  for (const signal of FORWARDED_SIGNALS) {
-    Deno.addSignalListener(signal, stop);
   }
-  try {
-    return (await child.status).success;
-  } finally {
-    for (const signal of FORWARDED_SIGNALS) {
-      Deno.removeSignalListener(signal, stop);
+
+  async run(args: readonly string[], cwd: string): Promise<boolean> {
+    if (this.#interrupted) return false;
+    console.log(`Running: deno ${args.join(" ")}`);
+    const child = this.spawn(args, cwd);
+    this.#child = child;
+    try {
+      return (await child.status).success && !this.#interrupted;
+    } finally {
+      this.#child = undefined;
     }
   }
 }
 
-async function bundle(root: string): Promise<string[] | undefined> {
+async function withInterruptGuard<T>(
+  runner: BuildRunner,
+  work: () => Promise<T>,
+): Promise<T> {
+  const interrupt = () => runner.interrupt();
+  for (const signal of FORWARDED_SIGNALS) {
+    Deno.addSignalListener(signal, interrupt);
+  }
+  try {
+    return await work();
+  } finally {
+    for (const signal of FORWARDED_SIGNALS) {
+      Deno.removeSignalListener(signal, interrupt);
+    }
+  }
+}
+
+async function bundle(
+  runner: BuildRunner,
+  root: string,
+): Promise<string[] | undefined> {
   const externals = requireNpmExternals(await readWorkspaceConfigs(root));
   // a leftover from an interrupted build would be embedded with the new one
   await Deno.remove(join(root, BUNDLE_DIR), { recursive: true }).catch(
@@ -548,7 +589,7 @@ async function bundle(root: string): Promise<string[] | undefined> {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     },
   );
-  if (!(await runDeno(bundleArgs(BUNDLE_DIR, externals), root))) {
+  if (!(await runner.run(bundleArgs(BUNDLE_DIR, externals), root))) {
     return undefined;
   }
   const fileNames: string[] = [];
@@ -571,6 +612,7 @@ async function bundle(root: string): Promise<string[] | undefined> {
     if (error instanceof Deno.errors.NotFound) return npmCache;
     throw error;
   });
+  if (runner.interrupted) return undefined;
   requireRepoSources(sources, { bundleDir: realBundleDir, root: realRoot });
   const inlined = inlinedNpmPackages(sources, {
     bundleDir: realBundleDir,
@@ -588,15 +630,16 @@ async function bundle(root: string): Promise<string[] | undefined> {
 }
 
 async function compile(
+  runner: BuildRunner,
   options: CompileOptions,
   root: string,
 ): Promise<boolean> {
-  await downloadDeno(root, options.target);
+  if (!(await downloadDeno(runner, root, options.target))) return false;
 
   let entry = "main.ts";
   let extraIncludes: string[] = [];
   if (options.bundle) {
-    const mapIncludes = await bundle(root);
+    const mapIncludes = await bundle(runner, root);
     if (mapIncludes === undefined) return false;
     entry = join(BUNDLE_DIR, "main.js");
     extraIncludes = mapIncludes;
@@ -605,7 +648,7 @@ async function compile(
   const dashboardDistExists = await Deno.stat(
     join(root, "packages", "dashboard", "dist"),
   ).then(() => true).catch(() => false);
-  return await runDeno(
+  return await runner.run(
     compileArgs(options, { entry, dashboardDistExists, extraIncludes }),
     root,
   );

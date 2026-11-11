@@ -27,6 +27,8 @@ import {
 } from "@std/assert";
 import { dirname, fromFileUrl, join, relative, resolve } from "@std/path";
 import {
+  type BuildChild,
+  BuildRunner,
   BUNDLE_DIR,
   bundleArgs,
   compileArgs,
@@ -330,6 +332,18 @@ Deno.test("npmExternals: treats every package.json dependency as external", () =
   );
 });
 
+Deno.test("npmExternals: reads npm mappings under scopes", () => {
+  assertEquals(
+    npmExternals([{
+      imports: { "zod": "npm:zod@4" },
+      scopes: {
+        "./vendor/": { "yaml": "npm:yaml@2", "local": "./local.ts" },
+      },
+    }]),
+    ["yaml", "zod"],
+  );
+});
+
 Deno.test("npmExternals: ignores a package.json imports field that holds condition objects", () => {
   const pkg = {
     imports: { "#dep": { node: "dep-node", default: "./dep.js" } },
@@ -395,6 +409,7 @@ Deno.test("inlinedNpmPackages: names packages from the npm cache of any registry
       from(npmCache, "registry.npmjs.org", "emojilib", "2.4.0", "index.js"),
       from(npmCache, "npm.example.com", "@scope", "pkg", "1.0.0", "a.js"),
       from(npmCache, "localhost_4873", "yaml", "2.9.0", "index.js"),
+      from(npmCache, "..odd-host", "croner", "9.1.0", "index.js"),
       from(
         resolve("repo"),
         "node_modules",
@@ -405,7 +420,7 @@ Deno.test("inlinedNpmPackages: names packages from the npm cache of any registry
         "index.js",
       ),
     ], { bundleDir, npmCache }),
-    ["@scope/pkg", "emojilib", "yaml", "zod"],
+    ["@scope/pkg", "croner", "emojilib", "yaml", "zod"],
   );
 });
 
@@ -587,4 +602,82 @@ Deno.test("compileArgs: the bundled build compiles the bundle entry and includes
       assertEquals(BUNDLE_DIR.startsWith(args[i + 1]), false, args[i + 1]);
     }
   }
+});
+
+function fakeChild(): BuildChild & {
+  finish(success: boolean): void;
+  kills: number;
+} {
+  let resolveStatus: (status: { success: boolean }) => void = () => {};
+  const child = {
+    status: new Promise<{ success: boolean }>((resolve) => {
+      resolveStatus = resolve;
+    }),
+    kills: 0,
+    kill() {
+      child.kills++;
+      resolveStatus({ success: false });
+    },
+    finish(success: boolean) {
+      resolveStatus({ success });
+    },
+  };
+  return child;
+}
+
+Deno.test("BuildRunner: reports the child's result and the directory it ran in", async () => {
+  const spawned: { args: readonly string[]; cwd: string }[] = [];
+  const child = fakeChild();
+  const runner = new BuildRunner((args, cwd) => {
+    spawned.push({ args, cwd });
+    return child;
+  });
+  const running = runner.run(["compile"], "/repo");
+  child.finish(true);
+  assertEquals(await running, true);
+  assertEquals(spawned, [{ args: ["compile"], cwd: "/repo" }]);
+  assertEquals(runner.interrupted, false);
+});
+
+Deno.test("BuildRunner: an interrupt stops the running child and fails the step", async () => {
+  const child = fakeChild();
+  const runner = new BuildRunner(() => child);
+  const running = runner.run(["bundle"], "/repo");
+  runner.interrupt();
+  assertEquals(await running, false);
+  assertEquals(child.kills, 1);
+  assertEquals(runner.interrupted, true);
+});
+
+Deno.test("BuildRunner: a child that succeeds after an interrupt still fails the step", async () => {
+  const child = fakeChild();
+  child.kill = () => {};
+  const runner = new BuildRunner(() => child);
+  const running = runner.run(["compile"], "/repo");
+  runner.interrupt();
+  child.finish(true);
+  assertEquals(await running, false);
+});
+
+Deno.test("BuildRunner: after an interrupt no further step spawns", async () => {
+  let spawns = 0;
+  const runner = new BuildRunner(() => {
+    spawns++;
+    return fakeChild();
+  });
+  runner.interrupt();
+  assertEquals(await runner.run(["compile"], "/repo"), false);
+  assertEquals(spawns, 0);
+});
+
+Deno.test("BuildRunner: an interrupt tolerates a child that has already exited", async () => {
+  const child = fakeChild();
+  child.kill = () => {
+    throw new Error("process already exited");
+  };
+  const runner = new BuildRunner(() => child);
+  const running = runner.run(["compile"], "/repo");
+  runner.interrupt();
+  child.finish(true);
+  assertEquals(await running, false);
 });
