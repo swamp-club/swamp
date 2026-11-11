@@ -143,18 +143,13 @@ async function rows(
 
 const NEWER_SET_AT = "2026-11-11T09:00:00.000Z";
 
-/**
- * `swampify` holds a set, the built offer and the first option's comparison;
- * `elsewhere` holds a newer set; `private` holds a newer offer and the second
- * option's comparison. The reader may read the first two behaviors only.
- * Returns the content paths of every body.
- */
 async function withSwampify(
   fn: (repo: ServeRepo, bodies: readonly string[]) => Promise<void>,
 ): Promise<void> {
   await withServeRepo(async (repo) => {
     const swampify = await saveModel(repo, "swampify");
     const elsewhere = await saveModel(repo, "elsewhere");
+    // private holds the newer offer and a comparison READ_SHOWN cannot read
     const hidden = await saveModel(repo, "private");
     const set = fixtureCandidateSet();
     const newerSet = fixtureCandidateSet({ generatedAt: NEWER_SET_AT });

@@ -512,9 +512,9 @@ export function Sidebar({
           // Hidden, not "Off": this deliberately departs from the faded
           // items operationsOff() gives (swamp-club#4155). A Preview page
           // shows only when the viewer can read session or Swampify data;
-          // with none, there is nothing to turn on here. Hiding is not access control:
-          // the route still answers a direct URL, and every request it
-          // sends is read-gated by serve.
+          // with none, there is nothing to turn on here. Hiding is not
+          // access control: the route still answers a direct URL, and every
+          // request it sends is read-gated by serve.
           agentSessionsVisible && (
             <NavItem
               label="Agent sessions"
