@@ -19,7 +19,7 @@
 
 import { lockHolderName } from "./lock_holder_name.ts";
 import { hostname } from "node:os";
-import { dirname, join } from "@std/path";
+import { basename, dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import type {
   DistributedLock,
@@ -52,6 +52,8 @@ const DEFAULT_MAX_WAIT_MS = 60_000;
 const DEFAULT_LOCK_PATH = ".datastore.lock";
 const DEFAULT_MAX_BACKOFF_MS = 8_000;
 const JITTER_FACTOR = 0.25;
+/** each level is reached only by a claimant crashing mid-reclaim */
+const MAX_CLAIM_DEPTH = 4;
 
 export interface FileLockOptions extends LockOptions {
   maxBackoffMs?: number;
@@ -190,6 +192,75 @@ export async function createLockFileExclusive(
   }
 }
 
+export interface LockFileHandle {
+  write(bytes: Uint8Array): Promise<void>;
+  close(): void;
+}
+
+/**
+ * the file operations lock creation, stale reclaim and forceRelease go
+ * through; create and write are separate so a just-created empty file can be
+ * observed
+ */
+export interface LockFileOps {
+  readState(path: string, ttlMs: number): Promise<LockFileState>;
+  /** null when a file is already at the path */
+  createExclusive(path: string): Promise<LockFileHandle | null>;
+  remove(path: string): Promise<void>;
+}
+
+export const fsLockFileOps: LockFileOps = {
+  readState: readLockFileState,
+  createExclusive: async (path) => {
+    const file = await createLockFileExclusive(
+      path,
+      Deno.build.os === "windows",
+    );
+    if (!file) return null;
+    return {
+      write: async (bytes) => {
+        await file.write(bytes);
+      },
+      close: () => file.close(),
+    };
+  },
+  remove: (path) => Deno.remove(path),
+};
+
+type PresentLockFileState = Exclude<LockFileState, { kind: "absent" }>;
+
+/**
+ * derived only from what one read returned, so every waiter that read the same
+ * file derives the same identity
+ */
+function lockFileIdentity(state: PresentLockFileState): string {
+  if (state.kind === "unreadable") return `unreadable:${state.mtimeMs}`;
+  return state.info.nonce
+    ? `nonce:${state.info.nonce}`
+    : `record:${JSON.stringify(state.info)}`;
+}
+
+/**
+ * shaped like an atomic-write temp file so the datastore's checkout-local rules
+ * and temp sweeps already treat it as transient
+ */
+export async function reclaimClaimName(
+  lockFileName: string,
+  identity: string,
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`${lockFileName}\n${identity}`),
+  );
+  const hex = Array.from(
+    new Uint8Array(digest).subarray(0, 16),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `.${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${
+    hex.slice(16, 20)
+  }-${hex.slice(20, 32)}.tmp`;
+}
+
 /**
  * staleness: if acquiredAt + ttlMs < now the holder is assumed crashed; the
  * heartbeat rewrites the file every ttlMs/3
@@ -214,7 +285,11 @@ export class FileLock implements DistributedLock {
   private skipping: readonly string[] | undefined;
   private rewrites: Promise<unknown> = Promise.resolve();
 
-  constructor(basePath: string, options?: FileLockOptions) {
+  constructor(
+    basePath: string,
+    options?: FileLockOptions,
+    private readonly ops: LockFileOps = fsLockFileOps,
+  ) {
     const lockFile = options?.lockKey ?? DEFAULT_LOCK_PATH;
     const ns = options?.namespace;
     this.lockPath = ns
@@ -493,33 +568,24 @@ export class FileLock implements DistributedLock {
   }
 
   async forceRelease(expectedNonce: string): Promise<boolean> {
-    const current = await this.readLockFile();
-    if (!current || current.nonce !== expectedNonce) {
+    const state = await this.ops.readState(this.lockPath, this.ttlMs);
+    if (state.kind !== "readable" || state.info.nonce !== expectedNonce) {
       return false;
     }
-    try {
-      await Deno.remove(this.lockPath);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
-    return true;
+    const after = await this.removeUnderClaim(this.lockPath, state, () => true);
+    return after === "removed" || after.kind === "absent";
   }
 
   private async tryCreate(nonce: string): Promise<boolean> {
     const content = JSON.stringify(buildLockInfo(this.ttlMs, nonce), null, 2);
-    const file = await createLockFileExclusive(
-      this.lockPath,
-      Deno.build.os === "windows",
-    );
+    const file = await this.ops.createExclusive(this.lockPath);
     if (!file) return false;
     try {
       await file.write(new TextEncoder().encode(content));
     } catch (error) {
       // The file is ours and incomplete: remove it so no one waits on it.
       file.close();
-      await Deno.remove(this.lockPath).catch(() => {});
+      await this.ops.remove(this.lockPath).catch(() => {});
       throw error;
     }
     file.close();
@@ -531,44 +597,110 @@ export class FileLock implements DistributedLock {
     return true;
   }
 
-  /**
-   * best-effort: if a fresh lock is deleted by accident, nonce fencing in
-   * extend() makes the old holder self-revoke
-   */
   private async clearStaleHolder(): Promise<
     "cleared" | "unreadable" | LockInfo
   > {
-    const state = await readLockFileState(this.lockPath, this.ttlMs);
+    const state = await this.ops.readState(this.lockPath, this.ttlMs);
     if (state.kind === "absent") return "cleared";
-    if (state.kind === "readable") {
-      const existing = state.info;
-      const pidDead = this.sameHostPidCheck && existing.hostname !== hostname()
-        ? false
-        : isProcessGone(existing.pid);
-      const isStale = pidDead ||
-        Date.now() - new Date(existing.acquiredAt).getTime() > existing.ttlMs;
-      if (!isStale) return existing;
-      try {
-        await Deno.remove(this.lockPath);
-      } catch {
-        // Another process may have already cleaned it up
+    if (!this.isStale(state)) {
+      return state.kind === "readable" ? state.info : "unreadable";
+    }
+    let after: "removed" | LockFileState;
+    try {
+      after = await this.removeUnderClaim(
+        this.lockPath,
+        state,
+        (current) => this.isStale(current),
+      );
+    } catch {
+      // A stale file that cannot be removed now is waited on like a holder.
+      after = state;
+    }
+    if (after === "removed") {
+      if (state.kind === "unreadable") {
+        const logger = getSwampLogger(["datastore", "lock"]);
+        logger.warn`Removed unreadable lock file ${this.lockPath}`;
       }
       return "cleared";
     }
-    // an unreadable file may be a live holder mid-write, so only one untouched
-    // for a full TTL is stale: removing a fresh one lets two holders in at once
-    if (!state.fresh) {
-      const logger = getSwampLogger(["datastore", "lock"]);
-      logger
-        .warn`Removing unreadable lock file ${this.lockPath}`;
-      try {
-        await Deno.remove(this.lockPath);
-      } catch {
-        // Another process may have already cleaned it up
+    if (after.kind === "absent") return "cleared";
+    return after.kind === "readable" ? after.info : "unreadable";
+  }
+
+  /**
+   * an unreadable file may be a live holder mid-write, so only one untouched
+   * for a full TTL is stale: removing a fresh one lets two holders in at once
+   */
+  private isStale(state: LockFileState): boolean {
+    if (state.kind === "absent") return false;
+    if (state.kind === "unreadable") return !state.fresh;
+    const info = state.info;
+    const pidDead = this.sameHostPidCheck && info.hostname !== hostname()
+      ? false
+      : isProcessGone(info.pid);
+    return pidDead ||
+      Date.now() - new Date(info.acquiredAt).getTime() > info.ttlMs;
+  }
+
+  /**
+   * Only the holder of a file's claim may remove that file. Every waiter that
+   * read the same file derives the same claim and the holder re-reads under it,
+   * so a waiter acting on an old read cannot remove a newer lock.
+   */
+  private async removeUnderClaim(
+    path: string,
+    observed: PresentLockFileState,
+    shouldRemove: (current: PresentLockFileState) => boolean,
+    depth = 0,
+  ): Promise<"removed" | LockFileState> {
+    const claimPath = join(
+      dirname(path),
+      await reclaimClaimName(basename(path), lockFileIdentity(observed)),
+    );
+    let claim = await this.ops.createExclusive(claimPath);
+    if (!claim) {
+      if (depth >= MAX_CLAIM_DEPTH) return observed;
+      const held = await this.ops.readState(claimPath, this.ttlMs);
+      if (held.kind !== "absent") {
+        if (!this.isStale(held)) return observed;
+        await this.removeUnderClaim(
+          claimPath,
+          held,
+          (current) => this.isStale(current),
+          depth + 1,
+        );
       }
-      return "cleared";
+      claim = await this.ops.createExclusive(claimPath);
+      if (!claim) return observed;
     }
-    return "unreadable";
+    try {
+      try {
+        await claim.write(
+          new TextEncoder().encode(
+            JSON.stringify(buildLockInfo(this.ttlMs, crypto.randomUUID())),
+          ),
+        );
+      } finally {
+        claim.close();
+      }
+      const current = await this.ops.readState(path, this.ttlMs);
+      if (current.kind === "absent") return current;
+      if (
+        lockFileIdentity(current) !== lockFileIdentity(observed) ||
+        !shouldRemove(current)
+      ) {
+        return current;
+      }
+      try {
+        await this.ops.remove(path);
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return { kind: "absent" };
+        throw error;
+      }
+      return "removed";
+    } finally {
+      await this.ops.remove(claimPath).catch(() => {});
+    }
   }
 
   private extend(): Promise<void> {

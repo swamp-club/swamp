@@ -22,6 +22,7 @@ import { join, resolve, SEPARATOR } from "@std/path";
 import fc from "fast-check";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { swampPath } from "../persistence/paths.ts";
+import { reclaimClaimName } from "../persistence/file_lock.ts";
 import {
   isCheckoutLocalKey,
   MATERIALISED_SUBDIRS,
@@ -187,6 +188,20 @@ Deno.test("isCheckoutLocalKey: dot paths, run logs and pulled extension sources 
   ];
   for (const key of committed) {
     assertEquals(isCheckoutLocalKey(key.split("/")), false, key);
+  }
+});
+
+Deno.test("isCheckoutLocalKey: a FileLock reclaim claim beside a per-model or datastore lock is the checkout's own", async () => {
+  for (
+    const [lockFile, segments] of [
+      [".lock", ["data", "command/shell", "model-id"]],
+      [".datastore.lock", []],
+    ] as const
+  ) {
+    for (const identity of ["nonce:stale", "unreadable:1700000000000"]) {
+      const claim = await reclaimClaimName(lockFile, identity);
+      assertEquals(isCheckoutLocalKey([...segments, claim]), true, claim);
+    }
   }
 });
 
