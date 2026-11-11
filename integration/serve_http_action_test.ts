@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { Ceiling } from "../src/domain/access/ceiling.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { walk } from "@std/fs";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -41,7 +42,11 @@ import {
   setConnectionDelegation,
 } from "../src/serve/handlers/shared.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
-import { RunEventBuffer } from "../src/serve/run_event_buffer.ts";
+import {
+  type BufferTerminal,
+  RunEventBuffer,
+} from "../src/serve/run_event_buffer.ts";
+import { startDetachedResume } from "../src/serve/resume_launcher.ts";
 import { handleMessage, MAX_ACTIVE_REQUESTS } from "../src/serve/connection.ts";
 import { handleHttpActionRequest } from "../src/serve/http_action_route.ts";
 import { SERVE_ACTION_PATH } from "../src/serve/protocol.ts";
@@ -681,6 +686,154 @@ test("a resume adding inputs to someone else's run is refused 403 and leaves the
     const resumed = await storedRun(repo, gated.name, gated.runId);
     assertEquals(resumed!.inputs.note, "x");
   });
+});
+
+test("a resume of a run still waiting at its gate is refused 409 naming the gate, and the gate can then be decided", async () => {
+  const forOther = {
+    ...everyAction(),
+    subject: { kind: "user" as const, name: "other" },
+  };
+  await withRoute([everyAction(), forOther], async (route, repo, ctx) => {
+    const gated = await startGated(route, repo, ctx);
+    const resume = {
+      type: "workflow.resume",
+      payload: { workflowIdOrName: gated.name, runId: gated.runId },
+    };
+
+    for (const token of ["caller.secret", "other.secret"]) {
+      const refused = await route.post(resume, { token });
+      assertEquals(refused.status, 409, JSON.stringify(refused.body));
+      assertEquals(withoutRequestId(refused.body), {
+        code: "awaiting_approval",
+        message:
+          "This run is waiting at an approval gate; decide the gate instead of resuming",
+        gate: { job: "main", step: "gate" },
+      });
+    }
+    assertEquals(ctx.activeRunRegistry?.size ?? 0, 0);
+
+    const withInputs = await route.post(
+      { ...resume, payload: { ...resume.payload, inputs: { note: "x" } } },
+      { token: "other.secret" },
+    );
+    assertEquals(withInputs.status, 403, JSON.stringify(withInputs.body));
+    assertEquals(withInputs.body.code, "resume_inputs_refused");
+
+    const stored = await storedRun(repo, gated.name, gated.runId);
+    assertEquals(stored!.status, "suspended");
+    const approved = await route.post(decision("workflow.approve", gated));
+    assert(approved.status < 300, JSON.stringify(approved.body));
+  });
+});
+
+test("a resume serve launches itself at a still-waiting gate ends with the same refusal and gate", async () => {
+  await withRoute([everyAction()], async (route, repo, ctx) => {
+    const gated = await startGated(route, repo, ctx);
+    const terminals: BufferTerminal[] = [];
+
+    const launched = await startDetachedResume(ctx, ctx.activeRunRegistry!, {
+      workflowIdOrName: gated.name,
+      runId: gated.runId,
+      principalId: null,
+      onTerminal: (terminal) => {
+        terminals.push(terminal);
+      },
+    });
+
+    assert(launched.ok, JSON.stringify(launched));
+    await waitFor(() => terminals.length === 1, "the resume ended");
+    const terminal = terminals[0];
+    assert(terminal.kind === "error", JSON.stringify(terminal));
+    assertEquals(terminal.code, "workflow_resume_failed");
+    assertEquals(terminal.details, {
+      resumeRefusal: "awaiting_approval",
+      gate: { job: "main", step: "gate" },
+    });
+    await settled(ctx);
+    assertEquals(
+      (await storedRun(repo, gated.name, gated.runId))!.status,
+      "suspended",
+    );
+  });
+});
+
+test("every refusal is logged without its message, a retried one at debug", async () => {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["serve", "http-action"],
+        lowestLevel: "debug",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await withRoute([everyAction()], async (route, repo, ctx) => {
+      const gated = await startGated(route, repo, ctx);
+      records.length = 0;
+      const refused = await route.post({
+        type: "workflow.resume",
+        payload: { workflowIdOrName: gated.name, runId: gated.runId },
+      });
+      assertEquals(refused.status, 409);
+      const unauthenticated = await route.post(status(gated.runId), {
+        token: null,
+      });
+      assertEquals(unauthenticated.status, 401);
+
+      assertEquals(
+        records.map((r) => [r.level, r.properties]),
+        [
+          ["info", {
+            type: "workflow.resume",
+            status: 409,
+            code: "awaiting_approval",
+            requestId: refused.body.requestId,
+            principal: TOKENS.caller,
+          }],
+          ["info", {
+            type: "unknown",
+            status: 401,
+            code: "unauthorized",
+            requestId: "none",
+            principal: "unauthenticated",
+          }],
+        ],
+      );
+      assert(
+        !JSON.stringify(records.map((r) => r.properties)).includes("gate"),
+        "no handler text or gate in the log",
+      );
+    });
+
+    records.length = 0;
+    await withRoute([everyAction()], async (route, repo, ctx) => {
+      const gated = await startGated(route, repo, ctx);
+      const approved = await route.post(decision("workflow.approve", gated));
+      assert(approved.status < 300, JSON.stringify(approved.body));
+      await settled(ctx);
+      const release = ctx.activeRunRegistry!.reserve(gated.runId);
+      try {
+        records.length = 0;
+        const busy = await route.post({
+          type: "workflow.resume",
+          payload: { workflowIdOrName: gated.name, runId: gated.runId },
+        });
+        assertEquals(busy.body.code, "busy");
+      } finally {
+        release?.();
+      }
+      assertEquals(records.map((r) => [r.level, r.properties.code]), [
+        ["debug", "busy"],
+      ]);
+    });
+  } finally {
+    await reset();
+  }
 });
 
 test("a mistyped workflow reads as not found to a caller who may run it", async () => {

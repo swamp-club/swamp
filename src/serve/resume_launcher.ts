@@ -29,6 +29,7 @@ import { withSharedSyncGate } from "./sync_gate.ts";
 import { isWireEvent, serializeEvent } from "./serializer.ts";
 import { UserError } from "../domain/errors.ts";
 import {
+  ApprovalPendingError,
   resolveResumableRun,
   RunNotSuspendedError,
   SuspendedRunNotFoundError,
@@ -163,14 +164,38 @@ export type DetachedResumeResult =
     buffer: RunEventBuffer;
     completedRun: CompletedRunSlot;
   }
-  | { ok: false; code: string; message: string; refusal?: ResumeRefusal };
+  | {
+    ok: false;
+    code: string;
+    message: string;
+    refusal?: ResumeRefusal;
+    gate?: ResumeGate;
+  };
+
+export const AWAITING_APPROVAL = "awaiting_approval" as const;
 
 /** told apart here since a refused resume shares one code */
 export type ResumeRefusal =
   | "not_found"
   | "nested_pending"
   | "refused"
-  | typeof RESUME_INPUTS_REFUSED;
+  | typeof RESUME_INPUTS_REFUSED
+  | typeof AWAITING_APPROVAL;
+
+/** the gate a resume waits on; anyone allowed to resume may already see it */
+export interface ResumeGate {
+  readonly job: string;
+  readonly step: string;
+}
+
+export function approvalPendingDetails(
+  error: ApprovalPendingError,
+): { resumeRefusal: typeof AWAITING_APPROVAL; gate: ResumeGate } {
+  return {
+    resumeRefusal: AWAITING_APPROVAL,
+    gate: { job: error.jobName, step: error.stepName },
+  };
+}
 
 function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
   return request.lostRaceIsOrdinary === true &&
@@ -293,6 +318,23 @@ export async function startDetachedResume(
       message:
         "This run was started through a link for someone no longer admitted to this server, so it can't be resumed",
       refusal: "refused",
+    };
+  }
+
+  // after the refusals a decision would not lift; serve's own continuations
+  // leave this to the resume, which refuses the same way
+  const waiting = request.resumer
+    ? resolvedRun.findWaitingApprovalStep()
+    : undefined;
+  if (waiting) {
+    const error = new ApprovalPendingError(request.workflowIdOrName, waiting);
+    const details = approvalPendingDetails(error);
+    return {
+      ok: false,
+      code: "workflow_resume_failed",
+      message: error.message,
+      refusal: details.resumeRefusal,
+      gate: details.gate,
     };
   }
 
@@ -505,6 +547,13 @@ export async function startDetachedResume(
                   error,
                   request.canReadWorkflow,
                 ),
+              };
+            } else if (error instanceof ApprovalPendingError) {
+              terminal = {
+                kind: "error",
+                code: "workflow_resume_failed",
+                message: error.message,
+                details: approvalPendingDetails(error),
               };
             } else {
               terminal = {

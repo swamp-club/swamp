@@ -147,14 +147,16 @@ failure is `{code, message}`, plus `requestId` once the action was dispatched.
 `workflow.reject`, `workflow.resume` (runId required, suspended runs only) and
 `workflow.signal` work the same way. Resuming someone else's run holds its steps
 to your own vault access as well as theirs, and only the person who started the
-run or an admin may add `inputs` (otherwise `403 resume_inputs_refused`). Fields
-not listed for a type are refused. A repeated decision gets `already_decided`, a
-decision for an attempt since re-opened `gate_reopened`, and a step name in
-several jobs `ambiguous_gate` until `jobName` picks one (read the job from
-status). A paused run reads `suspended` in status. An approved run continues
-with `--auto-resume`, or `autoResume: true` when it has inputs, or a
-`workflow.resume`; the reply's `autoResumed` says which. A repeated start is
-safe only on one node or a team leader.
+run or an admin may add `inputs` (otherwise `403 resume_inputs_refused`). A run
+still waiting at a gate answers `409 awaiting_approval` with its `gate` (`job`,
+`step`): decide that gate instead of resuming. Fields not listed for a type are
+refused. A repeated decision gets `already_decided`, a decision for an attempt
+since re-opened `gate_reopened`, and a step name in several jobs
+`ambiguous_gate` until `jobName` picks one (read the job from status). A paused
+run reads `suspended` in status. An approved run continues with `--auto-resume`,
+or `autoResume: true` when it has inputs, or a `workflow.resume`; the reply's
+`autoResumed` says which. A repeated start is safe only on one node or a team
+leader.
 
 `swamp workflow run --server` prints the wait ID and the signal command with
 `--server` when the run suspends on a wait, its own or a nested run's, and for a

@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  ApprovalPendingError,
   nextActionForStatus,
   resolveResumableRun,
   resolveSuspendedRun,
@@ -920,4 +921,17 @@ Deno.test("resolveResumableRun: a run that holds a fan-out plan for a job the wo
       'Job "j" ran as a fan-out job, and the workflow no longer sets fanOut on it.',
     );
   }
+});
+
+Deno.test("ApprovalPendingError: names the gate and keeps the CLI's approve hint", () => {
+  const error = new ApprovalPendingError("deploy", {
+    jobName: "main",
+    stepName: "gate",
+  });
+  assertEquals(error instanceof UserError, true);
+  assertEquals([error.jobName, error.stepName], ["main", "gate"]);
+  assertEquals(
+    error.message,
+    'Step "gate" in job "main" is still awaiting approval. Run "swamp workflow approve deploy gate" first.',
+  );
 });

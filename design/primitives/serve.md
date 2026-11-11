@@ -373,8 +373,10 @@ Three things separate it from the read route:
   than ignored. The parser builds the frame, so its request id, `suspendedOnly`,
   `exactRun`, `strictGate`, `acceptsPending` and `acceptsReceipt` are serve's.
 - **One reply with a real status.** `http_action_reply.ts` pins each outcome to
-  a code and status. Refusals carry fixed text and no details, except that a signal refusal keeps the signal route's status, code and receipt; the audit log
-  keeps the detail.
+  a code and status. Refusals carry fixed text and no details, except that a signal refusal keeps the signal route's status, code and receipt, and a resume of a run still waiting at an approval gate (`awaiting_approval`) names that gate's `job` and `step`, which `run` on the workflow already shows; the audit log
+  keeps the detail. The route logs every refusal it answers (type, status, code,
+  request id and principal, never the message), at debug for codes a caller
+  retries.
 
 | Status | Code |
 |---|---|
@@ -383,7 +385,7 @@ Three things separate it from the read route:
 | 401 | `unauthorized` |
 | 403 | `forbidden` |
 | 404 | `not_found`, `type_not_allowed` |
-| 409 | `already_decided`, `gate_reopened`, `gate_closed`, `gate_not_open`, `ambiguous_gate`, `busy`, `idempotency_conflict`, `run_not_suspended`, `run_not_resumable` |
+| 409 | `already_decided`, `gate_reopened`, `gate_closed`, `gate_not_open`, `ambiguous_gate`, `busy`, `idempotency_conflict`, `run_not_suspended`, `run_not_resumable`, `awaiting_approval` |
 | 413, 415 | `payload_too_large`, `unsupported_media_type` |
 | 429 | `rate_limited`, `too_many_runs` |
 | 500 | `action_failed`, `outcome_unknown`, `run_not_started` |

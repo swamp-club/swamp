@@ -276,6 +276,34 @@ Deno.test("startDetachedResume: registers the resume and unwinds the registratio
   assertEquals(result.completedRun.run, undefined);
 });
 
+Deno.test("startDetachedResume: refuses a manual resume of a run waiting at its gate, naming the gate, without registering it", async () => {
+  const workflow = makeWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const gate = job.getStep("gate")!;
+  gate.start();
+  gate.waitForApproval();
+  run.suspend();
+  const { ctx, registry } = makeHarness(workflow, run);
+
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: "gated",
+    runId: run.id,
+    principalId: "user:operator",
+    resumer: { principal: null, accessAdmin: false, vaultScope: null },
+  });
+
+  assertEquals(result.ok, false);
+  if (result.ok) throw new Error("expected a refusal");
+  assertEquals(result.code, "workflow_resume_failed");
+  assertEquals(result.refusal, "awaiting_approval");
+  assertEquals(result.gate, { job: "main", step: "gate" });
+  assertStringIncludes(result.message, "is still awaiting approval");
+  assertEquals(registry.registered.length, 0);
+});
+
 Deno.test("startDetachedResume: refuses a run that is already registered", async () => {
   const workflow = makeWorkflow();
   const run = makeApprovedRun(workflow);

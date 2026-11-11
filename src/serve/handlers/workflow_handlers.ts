@@ -155,6 +155,7 @@ import type {
   WorkflowWaitsPayload,
 } from "../protocol.ts";
 import {
+  ApprovalPendingError,
   lookupWorkflow,
   resolveResumableRun,
   resolveSuspendedRun,
@@ -243,6 +244,7 @@ import {
   resumeInputsRefusal,
 } from "../resume_caller_rules.ts";
 import {
+  approvalPendingDetails,
   autoResumeAfterApproval,
   autoResumeParentAfterChild,
   ownerResumesRun,
@@ -3139,6 +3141,14 @@ export async function handleWorkflowResume(
                 nestedRunReadDecider(ctx, socket, principal),
               ),
             );
+          } else if (error instanceof ApprovalPendingError) {
+            sendError(
+              socket,
+              requestId,
+              "workflow_resume_failed",
+              error.message,
+              approvalPendingDetails(error),
+            );
           } else {
             const message = sanitizeErrorForClient(error);
             sendError(socket, requestId, "workflow_resume_failed", message);
@@ -3187,7 +3197,12 @@ export async function handleWorkflowResume(
       requestId,
       launched.code,
       launched.message,
-      launched.refusal ? { resumeRefusal: launched.refusal } : undefined,
+      launched.refusal
+        ? {
+          resumeRefusal: launched.refusal,
+          ...(launched.gate ? { gate: launched.gate } : {}),
+        }
+        : undefined,
       launched.code === "draining" ? DRAINING_RETRY_AFTER_SECONDS : undefined,
     );
     return;

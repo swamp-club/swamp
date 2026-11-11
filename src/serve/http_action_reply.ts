@@ -33,6 +33,8 @@ import {
   NOT_READY_RETRY_AFTER_SECONDS,
 } from "./serve_admission.ts";
 import {
+  AWAITING_APPROVAL,
+  type ResumeGate,
   type ResumeRefusal,
   RUN_NOT_SUSPENDED_CODE,
 } from "./resume_launcher.ts";
@@ -69,6 +71,8 @@ export interface ActionFailureBody {
   readonly pending?: unknown;
   readonly lastWait?: unknown;
   readonly errors?: unknown;
+  // the gate a refused resume waits on
+  readonly gate?: ResumeGate;
 }
 
 /** codes the route answers before or around a handler, beside the tables */
@@ -278,6 +282,12 @@ const RESUME_FAILURES: Readonly<Record<string, Failure>> = {
     code: "resume_inputs_refused",
     message: RESUME_INPUTS_REFUSED_MESSAGE,
   },
+  [AWAITING_APPROVAL]: {
+    status: 409,
+    code: "awaiting_approval",
+    message:
+      "This run is waiting at an approval gate; decide the gate instead of resuming",
+  },
 } satisfies Record<ResumeRefusal, Failure>;
 
 export const HTTP_ACTION_FAILURE_TABLES = {
@@ -310,6 +320,15 @@ function failed(failure: Failure, requestId: string): ActionReply {
       ? { retryAfterSeconds: failure.retryAfterSeconds }
       : {}),
   };
+}
+
+// only the two names, so nothing else in the details reaches the reply
+function gateOf(value: unknown): ResumeGate | undefined {
+  const job = detail(value, "job");
+  const step = detail(value, "step");
+  return typeof job === "string" && typeof step === "string"
+    ? { job, step }
+    : undefined;
 }
 
 function signalRefusal(error: ErrorFrame, requestId: string): ActionReply {
@@ -359,9 +378,14 @@ function typedFailure(
       return gate ? failed(gate, requestId) : undefined;
     }
     case "workflow_resume_failed": {
-      const refusal =
-        RESUME_FAILURES[String(detail(error.details, "resumeRefusal"))];
-      return refusal ? failed(refusal, requestId) : undefined;
+      const name = String(detail(error.details, "resumeRefusal"));
+      const refusal = RESUME_FAILURES[name];
+      if (!refusal) return undefined;
+      const reply = failed(refusal, requestId);
+      const gate = name === AWAITING_APPROVAL
+        ? gateOf(detail(error.details, "gate"))
+        : undefined;
+      return gate ? { ...reply, body: { ...reply.body, gate } } : reply;
     }
     case "workflow_history_get_failed":
       return detail(error.details, "reason") === "not_found"
