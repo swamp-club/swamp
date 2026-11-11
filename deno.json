@@ -23,6 +23,7 @@
     "license-headers": "deno run --allow-read --allow-write scripts/add_license_headers.ts",
     "unbarrel": "deno run --allow-read --allow-write scripts/unbarrel.ts",
     "agent-session-schema": "deno run --allow-read --allow-write=design/surfaces/agent-session-record.schema.json,design/surfaces/agent-session-summary.schema.json scripts/generate_agent_session_schema.ts",
+    "swampify-schema": "deno run --allow-read --allow-write=design/surfaces/swampify-candidate-set.schema.json,design/surfaces/swampify-candidate-set-summary.schema.json,design/surfaces/swampify-offer.schema.json,design/surfaces/swampify-offer-summary.schema.json,design/surfaces/swampify-comparison.schema.json,design/surfaces/swampify-comparison-summary.schema.json scripts/generate_swampify_schema.ts",
     "refresh-spdx": "deno run --allow-read=scripts --allow-write=packages/extension-scoring/licensing/spdx_lists.generated.ts --allow-net=raw.githubusercontent.com scripts/refresh_spdx_lists.ts && deno fmt packages/extension-scoring/licensing/spdx_lists.generated.ts",
     "audit": "deno run --allow-read --allow-net=api.osv.dev --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/audit_deps.ts",
     "sbom": "deno run --allow-read --allow-run --allow-net=api.jsr.io,registry.npmjs.org --allow-write=sbom.cdx.json,scripts/jsr_license_cache.json scripts/generate_sbom.ts",

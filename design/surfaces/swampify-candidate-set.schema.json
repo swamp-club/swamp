@@ -1,0 +1,458 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 2
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+    },
+    "importerVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "window": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "until": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        }
+      },
+      "required": [
+        "since",
+        "until"
+      ],
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "harnesses": {
+          "minItems": 1,
+          "maxItems": 8,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 32,
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          }
+        },
+        "all": {
+          "type": "boolean"
+        },
+        "include": {
+          "maxItems": 1000,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "exclude": {
+          "maxItems": 1000,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      },
+      "required": [
+        "harnesses",
+        "all",
+        "include",
+        "exclude"
+      ],
+      "additionalProperties": false
+    },
+    "candidates": {
+      "maxItems": 100,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "prompt-repeat",
+              "call-sequence",
+              "covered-cli",
+              "headless-job"
+            ]
+          },
+          "invocation": {
+            "type": "string",
+            "enum": [
+              "interactive",
+              "headless"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "occurrences": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "sessions": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "directories": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "firstSeen": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "lastSeen": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "perOccurrence": {
+            "type": "object",
+            "properties": {
+              "tokens": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "min": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "median": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "max": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "min",
+                      "median",
+                      "max"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "output": {
+                    "type": "object",
+                    "properties": {
+                      "min": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "median": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "max": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "min",
+                      "median",
+                      "max"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "cacheRead": {
+                    "type": "object",
+                    "properties": {
+                      "min": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "median": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "max": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "min",
+                      "median",
+                      "max"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "cacheWrite": {
+                    "type": "object",
+                    "properties": {
+                      "min": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "median": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "max": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "min",
+                      "median",
+                      "max"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite"
+                ],
+                "additionalProperties": false
+              },
+              "weightedTokens": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "median": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "max": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "min",
+                  "median",
+                  "max"
+                ],
+                "additionalProperties": false
+              },
+              "toolCalls": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "median": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "max": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "min",
+                  "median",
+                  "max"
+                ],
+                "additionalProperties": false
+              },
+              "activeMs": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "median": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "max": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "min",
+                  "median",
+                  "max"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "tokens",
+              "weightedTokens",
+              "toolCalls",
+              "activeMs"
+            ],
+            "additionalProperties": false
+          },
+          "failureRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "sessionRefs": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "harness": {
+                  "type": "string",
+                  "maxLength": 32,
+                  "pattern": "^[a-z0-9][a-z0-9-]*$"
+                },
+                "sessionId": {
+                  "type": "string",
+                  "maxLength": 128,
+                  "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                }
+              },
+              "required": [
+                "harness",
+                "sessionId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "steps": {
+            "minItems": 2,
+            "maxItems": 8,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "program": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "excerpts": {
+            "maxItems": 5,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "prompt",
+                    "call"
+                  ]
+                },
+                "session": {
+                  "type": "object",
+                  "properties": {
+                    "harness": {
+                      "type": "string",
+                      "maxLength": 32,
+                      "pattern": "^[a-z0-9][a-z0-9-]*$"
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                    }
+                  },
+                  "required": [
+                    "harness",
+                    "sessionId"
+                  ],
+                  "additionalProperties": false
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300
+                },
+                "truncated": {
+                  "type": "boolean",
+                  "const": true
+                }
+              },
+              "required": [
+                "source",
+                "session",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "invocation",
+          "label",
+          "score",
+          "rank",
+          "occurrences",
+          "sessions",
+          "directories",
+          "firstSeen",
+          "lastSeen",
+          "perOccurrence",
+          "failureRate",
+          "sessionRefs",
+          "excerpts"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "importerVersion",
+    "window",
+    "scope",
+    "candidates"
+  ],
+  "additionalProperties": false
+}
