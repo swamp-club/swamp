@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "offered",
+        "picked",
+        "built",
+        "declined"
+      ]
+    },
+    "options": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "pickedOptionId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "behavior",
+            "workflow"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "state",
+    "options"
+  ],
+  "additionalProperties": false
+}

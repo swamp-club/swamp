@@ -103,6 +103,7 @@ Write in plain English:
 | [audit](./surfaces/audit.md)                     | Hook command log; to fold into agent-interface.md |
 | [audit-doctor](./surfaces/audit-doctor.md)       | To fold into agent-interface.md                   |
 | [agent-sessions](./surfaces/agent-sessions.md)   | Agent session record: schema, discovery, versions |
+| [swampify](./surfaces/swampify.md)               | Experimental: Swampify contracts and readers      |
 | [auth-gate](./surfaces/auth-gate.md)             | Account requirement, signed proofs, fail-open     |
 | [inbox](./surfaces/inbox.md)                     | Inbox API contract and how the CLI uses it        |
 | [account-notices](./surfaces/account-notices.md) | Trial ending / ended notices from Swamp Club      |

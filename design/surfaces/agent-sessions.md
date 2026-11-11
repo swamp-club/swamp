@@ -18,6 +18,9 @@ The record is a read model built per session. It is not the observation event
 stream or its OTEL mapping from the agent observation exploration; those are
 designed separately, and that event schema must carry the user on every event.
 
+Swampify's contracts, which hold redacted excerpts and so are kept apart from
+this prompt-free record, are in [swampify.md](./swampify.md).
+
 ## The record
 
 The schema is `AgentSessionRecordV2Schema` in
