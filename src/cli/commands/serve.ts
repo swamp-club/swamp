@@ -142,6 +142,7 @@ import {
   continuationSweepReloadReason,
   overlayAppliedSettings,
   reloadsOnHangup,
+  settingName,
 } from "../../serve/serve_settings_reload.ts";
 import {
   createServeSettingsReloader,
@@ -154,7 +155,14 @@ import {
   diffAuditConfig,
 } from "../../serve/serve_audit_reload.ts";
 
-import { emitServeConfigReloaded } from "../../serve/serve_config_reload_audit.ts";
+import {
+  emitServeConfigNotLanded,
+  emitServeConfigReloaded,
+} from "../../serve/serve_config_reload_audit.ts";
+import {
+  createGrantSettingsReload,
+  type GrantReloadPrepared,
+} from "../../serve/serve_grant_reload.ts";
 import { summarizeServeReload } from "../../serve/serve_reload_summary.ts";
 import {
   readProcessCommand,
@@ -798,7 +806,7 @@ import {
 } from "../../serve/token_key_exposure.ts";
 
 /** what a reload's prepare phase settled before anything changed */
-interface ReloadPrepared {
+interface ReloadPrepared extends GrantReloadPrepared {
   allowedUsers?: AllowedUsersReloadPlan;
   nameMapUnread?: boolean;
   audit?: {
@@ -3797,6 +3805,8 @@ export const serveCommand = new Command()
       ownerAddress,
       advertiseAddress,
     } = resolveServeStartupSettings(merged);
+    // the configured entries; OAuth resolves authConfig.admins to subjects
+    const startupAdminsConfigured = [...authConfig.admins];
     // reload replaces these; everything that reads them reads them when used
     let shutdownDrainTimeoutMs = startupShutdownDrainTimeoutMs;
     let shutdownListenerGraceMs = startupShutdownListenerGraceMs;
@@ -5626,41 +5636,62 @@ export const serveCommand = new Command()
         : "Tag policy: a write grant also permits changing tags",
     );
 
-    // built on a v3 datastore whatever the reload mode: a node taking the lead
-    // reconciles the grant sources as they are then, not as at its boot
-    let grantsDirectoryPoller: GrantsDirectoryPoller | null = null;
-    if (grantReloadMode === "auto" || v3Location !== undefined) {
-      grantsDirectoryPoller = new GrantsDirectoryPoller({
-        grantsDir,
+    // built whatever the reload mode: a node taking the lead reconciles the
+    // grant sources as they are then, and a reload can change the mode or sources
+    const grantsDirectoryPoller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsFile: externalGrantsFilePath,
+      externalGrantsDir: externalGrantsDirPath,
+      validateCondition: validateGrantCondition,
+      usernameResolver: grantUsernameResolver,
+      onUsernamesResolved: (usernamesBySub) =>
+        Object.assign(resolvedUserNames, usernamesBySub),
+      fileGrantStore: grantWrites.fileGrantStore,
+      policySnapshotLoader,
+      // a node without the lease writes nothing; the change is retried at its
+      // next poll. checked by lease, not role, which still reads follower
+      // while a node takes the lead
+      commitReconcile: async (reconcile) => {
+        if (
+          v3Location !== undefined &&
+          !holdsCurrentV3WriterLease(v3Location.path)
+        ) {
+          return "deferred";
+        }
+        await commitGrantWrites(reconcile);
+      },
+    });
+    if (grantReloadMode === "auto") await grantsDirectoryPoller.start();
+    const grantSettingsReload = createGrantSettingsReload({
+      repoDir: resolvedRepoDir,
+      authConfig,
+      initialAdminsConfigured: startupAdminsConfigured,
+      policySnapshotLoader,
+      poller: grantsDirectoryPoller,
+      adminGrantStore: grantWrites.adminGrantStore,
+      initialSources: {
         externalGrantsFile: externalGrantsFilePath,
         externalGrantsDir: externalGrantsDirPath,
-        validateCondition: validateGrantCondition,
-        usernameResolver: grantUsernameResolver,
-        onUsernamesResolved: (usernamesBySub) =>
-          Object.assign(resolvedUserNames, usernamesBySub),
-        fileGrantStore: grantWrites.fileGrantStore,
-        policySnapshotLoader,
-        // a node without the lease writes nothing; the change is retried at its
-        // next poll. checked by lease, not role, which still reads follower
-        // while a node takes the lead
-        commitReconcile: async (reconcile) => {
-          if (
-            v3Location !== undefined &&
-            !holdsCurrentV3WriterLease(v3Location.path)
-          ) {
-            return "deferred";
-          }
-          await commitGrantWrites(reconcile);
-        },
-      });
-      if (grantReloadMode === "auto") await grantsDirectoryPoller.start();
-    }
+      },
+      validateCondition: validateGrantCondition,
+      commitGrantWrites,
+      leadsGrantWrites: () =>
+        v3Location === undefined || holdsCurrentV3WriterLease(v3Location.path),
+      publishGrantConfig,
+      oauthNameCache: () => oauthNameCache,
+      // runs on reload, after the connection context exists
+      setAccessReloadSources: (sources) => {
+        connectionCtx.grantsFile = sources.externalGrantsFile;
+        connectionCtx.grantsDir = sources.externalGrantsDir;
+      },
+    });
     const applyGrantConfigAtLead = async (): Promise<void> => {
       await commitGrantWrites(async () => {
         await materializeAdmins(
           authConfig.mode,
           authConfig.admins,
           grantWrites.adminGrantStore,
+          grantSettingsReload.leadOptions(),
         );
       });
       await grantsDirectoryPoller?.reconcileNow();
@@ -7804,6 +7835,7 @@ export const serveCommand = new Command()
       const partial = allowedUsersPartialReason(plan);
       return partial === undefined ? undefined : { partial };
     };
+    let serveOptionsBeforeReload: MergedServeOptions | undefined;
     const settingsReloader = createServeSettingsReloader<
       ServeStartupSettings,
       ReloadPrepared
@@ -7843,10 +7875,18 @@ export const serveCommand = new Command()
             logger.warn("{warning}", { warning: finding.message });
           }
         }
+        Object.assign(
+          prepared,
+          await grantSettingsReload.prepare(next, startup, toApply),
+        );
+        // a closed allowed-users list admits only the admins, so a removed
+        // admin must leave it too
+        const adminsRemoved = (prepared.admins?.removedSubjects.length ?? 0) >
+          0;
         if (
           authConfig.mode === "oauth" && oauthNameCache !== undefined &&
           (toApply.includes("allowedUsers") ||
-            toApply.includes("allowedCollectives"))
+            toApply.includes("allowedCollectives") || adminsRemoved)
         ) {
           const apiKey = clubApiKey;
           const stored = await readOauthNameCache?.();
@@ -7855,7 +7895,9 @@ export const serveCommand = new Command()
             configured: startup.authConfig.allowedUsers,
             previouslyConfigured: allowedUsersConfigured,
             allowedCollectives: startup.authConfig.allowedCollectives,
-            adminSubjects: adminSubjectsOf(authConfig.admins),
+            adminSubjects: adminSubjectsOf(
+              prepared.admins?.inForce ?? authConfig.admins,
+            ),
             stored: stored ?? oauthNameCache,
             cache: oauthNameCache,
             resolve: apiKey
@@ -7930,7 +7972,7 @@ export const serveCommand = new Command()
           "the webhook routes poller",
         );
         if (routesPoll) reasons.webhookRoutesPoll = routesPoll;
-        return reasons;
+        return { ...reasons, ...grantSettingsReload.notRunning(startup) };
       },
       pending: () => allowedUsersDeferred ? ["allowedUsers"] : [],
       extraChanges: (prepared) =>
@@ -8077,6 +8119,26 @@ export const serveCommand = new Command()
         shutdownListenerGrace: ({ startup }) => {
           shutdownListenerGraceMs = startup.shutdownListenerGraceMs;
         },
+        approveRequiresExplicitGrant:
+          grantSettingsReload.appliers.approveRequiresExplicitGrant,
+        signalRequiresExplicitGrant:
+          grantSettingsReload.appliers.signalRequiresExplicitGrant,
+        tagRequiresExplicitGrant:
+          grantSettingsReload.appliers.tagRequiresExplicitGrant,
+        grantReload: grantSettingsReload.appliers.grantReload,
+        grantsFile: grantSettingsReload.appliers.grantsFile,
+        grantsDir: grantSettingsReload.appliers.grantsDir,
+        // a closed allowed-users list admits only the admins, so it follows them
+        admins: (candidate, prepared) => {
+          const result = grantSettingsReload.appliers.admins(
+            candidate,
+            prepared,
+          );
+          if (prepared.allowedUsers) {
+            applyAllowedUsers(candidate.startup, prepared);
+          }
+          return result;
+        },
       },
       beforeCommit: (report, context) =>
         emitServeConfigReloaded(
@@ -8090,20 +8152,56 @@ export const serveCommand = new Command()
       // only what was applied, so the config and health views never show a
       // value this process has not adopted
       afterCommit: ({ merged: nextMerged }, applied, prepared) => {
+        serveOptionsBeforeReload = connectionCtx.serveOptions ?? merged;
         const live = overlayAppliedSettings(
-          connectionCtx.serveOptions ?? merged,
+          serveOptionsBeforeReload,
           nextMerged,
           applied,
         );
-        connectionCtx.serveOptions = prepared.allowedUsers
-          ? {
-            ...live,
-            allowedUsers: prepared.allowedUsers.namesInForce.join(","),
-          }
-          : live;
+        connectionCtx.serveOptions = {
+          ...live,
+          ...(prepared.allowedUsers
+            ? { allowedUsers: prepared.allowedUsers.namesInForce.join(",") }
+            : {}),
+          // an added admin waits for a restart, so it is not shown in force
+          ...(prepared.admins
+            ? {
+              admins: grantSettingsReload.adminsConfigured.length > 0
+                ? grantSettingsReload.adminsConfigured.join(",")
+                : undefined,
+            }
+            : {}),
+        };
       },
-      followUps: (_candidate, prepared, applied) => {
+      notLanded: (settings, _report, context) => {
+        const before = serveOptionsBeforeReload;
+        const live = connectionCtx.serveOptions;
+        if (before && live) {
+          const restored: Record<string, unknown> = { ...live };
+          for (const key of settings) restored[key] = before[key];
+          connectionCtx.serveOptions =
+            restored as unknown as MergedServeOptions;
+        }
+        emitServeConfigNotLanded(
+          {
+            auditEmitter: connectionCtx.auditEmitter,
+            instanceId: connectionCtx.instanceId,
+          },
+          context,
+          settings.map(settingName),
+        );
+      },
+      followUps: ({ startup }, prepared, applied) => {
         const followUps: ReloadFollowUp[] = [];
+        for (
+          const followUp of grantSettingsReload.followUps(
+            startup,
+            prepared,
+            applied,
+          )
+        ) {
+          followUps.push(followUp);
+        }
         if (applied.includes("maxConcurrentWebhookRuns")) {
           followUps.push({
             name: "Starting queued webhook runs",
@@ -9623,7 +9721,7 @@ export const serveCommand = new Command()
       }
       if (grantsDirectoryPoller) {
         const poller = grantsDirectoryPoller;
-        await stages.run("grants poller", () => poller.stop());
+        await stages.run("grants poller", () => poller.close());
       }
       if (accessDataPoller) {
         const poller = accessDataPoller;

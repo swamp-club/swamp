@@ -990,6 +990,84 @@ for (const { kind, source, setup } of EXTERNAL_SOURCES) {
     });
   });
 
+  Deno.test(`GrantsDirectoryPoller: after pause, a reconcile revokes an emptied ${kind} file at once, as no later poll would`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+      ]);
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 3_600_000,
+      });
+      await poller.start();
+      await poller.pause();
+      await atomicWriteTextFile(path, "");
+      const outcome = await poller.reconcileNow();
+      assertEquals(outcome.status, "reconciled");
+      assertEquals(store.written.get("deny-1")?.state, "revoked");
+    });
+  });
+
+  Deno.test(`GrantsDirectoryPoller: started again after pause, it holds a first empty read of a ${kind} file and reports it held`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+      ]);
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 3_600_000,
+      });
+      await poller.start();
+      await poller.pause();
+      await poller.start();
+      try {
+        await atomicWriteTextFile(path, "");
+        const outcome = await poller.reconcileNow();
+        assertEquals(store.written.has("deny-1"), false);
+        assertEquals(outcome.held.map((h) => h.source), [
+          source.replace(/^file:/, ""),
+        ]);
+      } finally {
+        await poller.stop();
+      }
+    });
+  });
+
+  Deno.test(`GrantsDirectoryPoller: start after close does nothing, so a ${kind} file emptied then is not held`, async () => {
+    await withTempDir(async (dir) => {
+      const grantsDir = join(dir, "grants");
+      await ensureDir(grantsDir);
+      const { path, options } = await setup(dir);
+      const store = createStatefulStore([
+        storedGrant("deny-1", source, aliceDeny),
+      ]);
+      const poller = new GrantsDirectoryPoller({
+        grantsDir,
+        ...options,
+        fileGrantStore: store,
+        policySnapshotLoader: createMockLoader().loader,
+        pollIntervalMs: 3_600_000,
+      });
+      await poller.close();
+      await poller.start();
+      await atomicWriteTextFile(path, "");
+      await poller.reconcileNow();
+      assertEquals(store.written.get("deny-1")?.state, "revoked");
+    });
+  });
+
   Deno.test(`GrantsDirectoryPoller: a reconcile after stop still holds a first empty read of a ${kind} file, as a poll in flight at shutdown would`, async () => {
     await withTempDir(async (dir) => {
       const grantsDir = join(dir, "grants");
@@ -1329,5 +1407,77 @@ Deno.test("GrantsDirectoryPoller: reconcileNow applies the sources as they are n
     await poller.reconcileNow();
     assertEquals(store.writeCalls > 0, true);
     assertEquals(mock.loadCalls, 1);
+  });
+});
+
+Deno.test("GrantsDirectoryPoller.setSources: the next reconcile reads the new source and revokes the grants of the one no longer named", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const oldFile = join(dir, "old.yaml");
+    await Deno.writeTextFile(oldFile, DENY_GRANT_YAML);
+    const newDir = join(dir, "new-grants");
+    await ensureDir(newDir);
+    await Deno.writeTextFile(join(newDir, "team.yaml"), VALID_GRANT_YAML);
+    const store = createStatefulStore([
+      storedGrant("deny-1", "file:grants-file", aliceDeny),
+    ]);
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsFile: oldFile,
+      fileGrantStore: store,
+      policySnapshotLoader: createMockLoader().loader,
+      pollIntervalMs: 3_600_000,
+    });
+    await poller.setSources({ externalGrantsDir: newDir });
+    const outcome = await poller.reconcileNow();
+    assertEquals(outcome, { status: "reconciled", held: [] });
+    assertEquals(store.written.get("deny-1")?.state, "revoked");
+    const created = [...store.written.values()].filter((g) =>
+      g.source === "file:grants-dir/team.yaml"
+    );
+    assertEquals(created.length, 1);
+    assertEquals(created[0].state, "active");
+  });
+});
+
+Deno.test("GrantsDirectoryPoller.reconcileNow: reports a source it held back, a deferred commit and a failure", async () => {
+  await withTempDir(async (dir) => {
+    const grantsDir = join(dir, "grants");
+    await ensureDir(grantsDir);
+    const file = join(dir, "grants-file.yaml");
+    await Deno.writeTextFile(file, "grants: [not: valid");
+    let commit: "run" | "defer" | "throw" = "run";
+    const poller = new GrantsDirectoryPoller({
+      grantsDir,
+      externalGrantsFile: file,
+      fileGrantStore: createStatefulStore([]),
+      policySnapshotLoader: createMockLoader().loader,
+      pollIntervalMs: 3_600_000,
+      commitReconcile: async (reconcile) => {
+        if (commit === "defer") return "deferred";
+        if (commit === "throw") throw new Error("sync gate closed");
+        await reconcile();
+      },
+    });
+    const held = await poller.reconcileNow();
+    assertEquals(held.status, "reconciled");
+    assertEquals(held.held.map((h) => h.source), ["grants-file"]);
+
+    await Deno.writeTextFile(file, VALID_GRANT_YAML);
+    commit = "defer";
+    assertEquals(await poller.reconcileNow(), {
+      status: "deferred",
+      held: [],
+    });
+    commit = "throw";
+    const failed = await poller.reconcileNow();
+    assertEquals(failed.status, "failed");
+    assertEquals(failed.error, "sync gate closed");
+    commit = "run";
+    assertEquals(await poller.reconcileNow(), {
+      status: "reconciled",
+      held: [],
+    });
   });
 });

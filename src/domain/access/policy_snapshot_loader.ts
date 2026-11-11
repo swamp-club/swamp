@@ -294,7 +294,9 @@ export class PolicySnapshotLoader {
   #buildsAhead = 0;
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
-  readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
+  #decisionOptions: GrantBasedAccessDecisionServiceOptions;
+  readonly #eventBus: EventBus;
+  #disposed = false;
   /**
    * the grants and groups the last successful build parsed, so a record that
    * later cannot be read keeps a deny or members it had
@@ -332,39 +334,60 @@ export class PolicySnapshotLoader {
     this.#decisionOptions = decisionOptions;
     this.#conditionEvaluator = createConditionEvaluator();
 
-    if (mode === "auto") {
-      this.#unsubscribers.push(
-        eventBus.subscribe<ModelCreated>("ModelCreated", (event) => {
-          if (this.#isAccessModel(event.modelType)) {
-            this.#scheduleRebuild();
-          }
-        }),
-      );
+    this.#eventBus = eventBus;
+    if (mode === "auto") this.#subscribe();
+  }
 
-      this.#unsubscribers.push(
-        eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
-          if (this.#isAccessModel(event.modelType)) {
-            this.#scheduleRebuild();
-          }
-        }),
-      );
-
-      this.#unsubscribers.push(
-        eventBus.subscribe<DefinitionCreated>("DefinitionCreated", (event) => {
-          if (this.#isAccessModel(event.modelType)) {
-            this.#scheduleRebuild();
-          }
-        }),
-      );
-
-      this.#unsubscribers.push(
-        eventBus.subscribe<DefinitionUpdated>("DefinitionUpdated", (event) => {
-          if (this.#isAccessModel(event.modelType)) {
-            this.#scheduleRebuild();
-          }
-        }),
-      );
+  /**
+   * auto rebuilds on access-model events; manual waits for a reload. A
+   * rebuild already scheduled still runs, since it follows a real change
+   */
+  setMode(mode: PolicyReloadMode): void {
+    if (this.#disposed) return;
+    const subscribed = this.#unsubscribers.length > 0;
+    if (mode === "auto" && !subscribed) {
+      this.#subscribe();
+      // what changed while manual is read now, not at the next event
+      this.#scheduleRebuild();
+    } else if (mode === "manual" && subscribed) {
+      this.#unsubscribe();
     }
+  }
+
+  /** the next decision uses these; a decision in flight keeps the old ones */
+  setDecisionOptions(
+    options: Pick<
+      GrantBasedAccessDecisionServiceOptions,
+      "runImpliesApprove" | "runImpliesSignal" | "writeImpliesTag"
+    >,
+  ): void {
+    this.#decisionOptions = { ...this.#decisionOptions, ...options };
+    this.#cachedDecisionService = null;
+  }
+
+  #subscribe(): void {
+    const onEvent = (event: { modelType: string }) => {
+      if (this.#isAccessModel(event.modelType)) this.#scheduleRebuild();
+    };
+    this.#unsubscribers.push(
+      this.#eventBus.subscribe<ModelCreated>("ModelCreated", onEvent),
+      this.#eventBus.subscribe<ModelUpdated>("ModelUpdated", onEvent),
+      this.#eventBus.subscribe<DefinitionCreated>(
+        "DefinitionCreated",
+        onEvent,
+      ),
+      this.#eventBus.subscribe<DefinitionUpdated>(
+        "DefinitionUpdated",
+        onEvent,
+      ),
+    );
+  }
+
+  #unsubscribe(): void {
+    for (const unsub of this.#unsubscribers) {
+      unsub();
+    }
+    this.#unsubscribers.length = 0;
   }
 
   get snapshot(): PolicySnapshot {
@@ -437,14 +460,12 @@ export class PolicySnapshotLoader {
   }
 
   async dispose(): Promise<void> {
+    this.#disposed = true;
     if (this.#rebuildTimer) {
       clearTimeout(this.#rebuildTimer);
       this.#rebuildTimer = null;
     }
-    for (const unsub of this.#unsubscribers) {
-      unsub();
-    }
-    this.#unsubscribers.length = 0;
+    this.#unsubscribe();
     await this.#pendingRebuild;
     await this.#builds;
   }

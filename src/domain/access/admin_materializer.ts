@@ -49,6 +49,18 @@ export interface MaterializeResult {
 export interface StoredConfigGrant {
   grant: Grant;
   modelId: string;
+  /** when this state of the grant was written */
+  writtenAt?: Date;
+}
+
+export interface MaterializeAdminsOptions {
+  /**
+   * when this instance last read its admin config. A grant state written
+   * after it came from a newer config elsewhere, so it is left as it is
+   */
+  readonly adminsReadAt?: Date;
+  /** configured admins not yet in force: never created, never revoked */
+  readonly retain?: readonly string[];
 }
 
 export interface AdminGrantStore {
@@ -111,7 +123,7 @@ export function createAdminGrantStore(
       for (const { grant, data, modelId } of await readStoredGrants(dataRepo)) {
         if (grant.source !== "config") continue;
         const modelName = data.tags["modelName"] ?? "";
-        const copy = { grant, modelId };
+        const copy = { grant, modelId, writtenAt: data.createdAt };
         const copies = configGrants.get(modelName);
         if (copies) {
           copies.push(copy);
@@ -167,8 +179,9 @@ export function createAdminGrantStore(
 
 export async function materializeAdmins(
   mode: AuthMode,
-  admins: string[],
+  admins: readonly string[],
   store: AdminGrantStore,
+  options: MaterializeAdminsOptions = {},
 ): Promise<MaterializeResult> {
   if (mode === "none") {
     return { created: 0, updated: 0, revoked: 0, reactivated: 0, unchanged: 0 };
@@ -185,6 +198,15 @@ export async function materializeAdmins(
   const configGrants = await store.queryConfigGrants();
   const desiredInstanceNames = new Set<string>();
   const uniqueAdmins = [...new Set(admins)];
+  const readAt = options.adminsReadAt?.getTime();
+  const newerThanConfig = (copy: StoredConfigGrant) =>
+    readAt !== undefined && copy.writtenAt !== undefined &&
+    copy.writtenAt.getTime() > readAt;
+  for (const retained of options.retain ?? []) {
+    desiredInstanceNames.add(
+      instanceNameForAdmin(await hashPrincipal(retained)),
+    );
+  }
 
   for (const admin of uniqueAdmins) {
     const hash = await hashPrincipal(admin);
@@ -197,6 +219,13 @@ export async function materializeAdmins(
     const copies = configGrants.get(instanceName) ?? [];
     if (copies.some((c) => c.grant.state === "active")) {
       result.unchanged++;
+      continue;
+    }
+
+    if (copies.some(newerThanConfig)) {
+      result.unchanged++;
+      logger
+        .info`Admin grant for ${admin} was changed by a newer admin config on another instance; it stays as it is until this instance restarts`;
       continue;
     }
 
@@ -221,9 +250,18 @@ export async function materializeAdmins(
 
   for (const [instanceName, copies] of configGrants) {
     if (desiredInstanceNames.has(instanceName)) continue;
-    for (const { grant, modelId } of copies) {
+    for (const copy of copies) {
+      const { grant, modelId } = copy;
       if (grant.state === "revoked") {
         result.unchanged++;
+        continue;
+      }
+      if (newerThanConfig(copy)) {
+        result.unchanged++;
+        logger
+          .info`Admin grant for ${
+          subjectToString(grant.subject)
+        } was written by a newer admin config on another instance; it stays until this instance restarts`;
         continue;
       }
 

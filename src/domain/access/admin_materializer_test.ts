@@ -544,3 +544,121 @@ Deno.test("createAdminGrantStore: a grant whose content cannot be read refuses t
   assertStringIncludes(error.message, "swamp/grant/bad cannot be read");
   assertStringIncludes(error.message, "read access");
 });
+
+const READ_AT = new Date("2026-06-01T12:00:00Z");
+const BEFORE = new Date("2026-06-01T11:00:00Z");
+const AFTER = new Date("2026-06-01T13:00:00Z");
+
+Deno.test("materializeAdmins: does not reactivate an admin grant revoked after this instance read its admins", async () => {
+  const name = await adminInstanceName("user:alice");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[name, [{
+      grant: makeGrant({
+        subject: { kind: "user", name: "alice" },
+        state: "revoked",
+      }),
+      modelId: "m1",
+      writtenAt: AFTER,
+    }]]]),
+  });
+  const result = await materializeAdmins("token", ["user:alice"], store, {
+    adminsReadAt: READ_AT,
+  });
+  assertEquals(result.reactivated, 0);
+  assertEquals(result.unchanged, 1);
+  assertEquals(store.written.size, 0);
+});
+
+Deno.test("materializeAdmins: reactivates an admin grant revoked before this instance read its admins", async () => {
+  const name = await adminInstanceName("user:alice");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[name, [{
+      grant: makeGrant({
+        subject: { kind: "user", name: "alice" },
+        state: "revoked",
+      }),
+      modelId: "m1",
+      writtenAt: BEFORE,
+    }]]]),
+  });
+  const result = await materializeAdmins("token", ["user:alice"], store, {
+    adminsReadAt: READ_AT,
+  });
+  assertEquals(result.reactivated, 1);
+  assertEquals(store.written.get(name)?.state, "active");
+});
+
+Deno.test("materializeAdmins: does not revoke an admin grant written after this instance read its admins", async () => {
+  const name = await adminInstanceName("user:bob");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[name, [{
+      grant: makeGrant({ subject: { kind: "user", name: "bob" } }),
+      modelId: "m1",
+      writtenAt: AFTER,
+    }]]]),
+  });
+  const result = await materializeAdmins("token", ["user:alice"], store, {
+    adminsReadAt: READ_AT,
+  });
+  assertEquals(result.revoked, 0);
+  assertEquals(store.written.get(name), undefined);
+});
+
+Deno.test("materializeAdmins: revokes a removed admin's grant written before this instance read its admins", async () => {
+  const name = await adminInstanceName("user:bob");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[name, [{
+      grant: makeGrant({ subject: { kind: "user", name: "bob" } }),
+      modelId: "m1",
+      writtenAt: BEFORE,
+    }]]]),
+  });
+  const result = await materializeAdmins("token", ["user:alice"], store, {
+    adminsReadAt: READ_AT,
+  });
+  assertEquals(result.revoked, 1);
+  assertEquals(store.written.get(name)?.state, "revoked");
+});
+
+Deno.test("materializeAdmins: a retained admin is neither created nor revoked", async () => {
+  const name = await adminInstanceName("user:bob");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([[name, [{
+      grant: makeGrant({ subject: { kind: "user", name: "bob" } }),
+      modelId: "m1",
+      writtenAt: BEFORE,
+    }]]]),
+  });
+  const result = await materializeAdmins("token", [], store, {
+    adminsReadAt: READ_AT,
+    retain: ["user:bob", "user:carol"],
+  });
+  assertEquals(result.revoked, 0);
+  assertEquals(result.created, 0);
+  assertEquals(store.written.size, 0);
+});
+
+Deno.test("materializeAdmins: without adminsReadAt, timestamps change nothing", async () => {
+  const alice = await adminInstanceName("user:alice");
+  const bob = await adminInstanceName("user:bob");
+  const store = createMockStore(new Map(), {
+    duplicates: new Map([
+      [alice, [{
+        grant: makeGrant({
+          subject: { kind: "user", name: "alice" },
+          state: "revoked",
+        }),
+        modelId: "m1",
+        writtenAt: AFTER,
+      }]],
+      [bob, [{
+        grant: makeGrant({ subject: { kind: "user", name: "bob" } }),
+        modelId: "m2",
+        writtenAt: AFTER,
+      }]],
+    ]),
+  });
+  const result = await materializeAdmins("token", ["user:alice"], store);
+  assertEquals(result.reactivated, 1);
+  assertEquals(result.revoked, 1);
+});

@@ -79,11 +79,11 @@ without it the default file is optional.
 | `--keep-oauth-client-in-vault` / `auth.keep-oauth-client-in-vault` | `SWAMP_KEEP_OAUTH_CLIENT_IN_VAULT` | `false` | Opt-in: the OAuth secret migration leaves `oauth-client-id` and `oauth-client-secret` in the user vault for seeded vaults, which leaves the secret readable there (`src/serve/oauth_secret_migration.ts`) |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field the collectives are read from |
 | `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted behavior type needs admin to create, run, edit or delete a behavior of it, delete or rename its data, or add or change a workflow step running it. A behavior type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
-| `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
-| `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
-| `--tag-requires-explicit-grant` / `auth.tag-requires-explicit-grant` | `SWAMP_TAG_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
+| `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload |
+| `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload |
+| `--tag-requires-explicit-grant` / `auth.tag-requires-explicit-grant` | `SWAMP_TAG_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
-| `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants |
+| `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants. All three change on reload (see Reload) |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
 | `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely and are fixed until restart; only the file list reloads |
@@ -1984,7 +1984,11 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   one, and the report lists only what commit applied. Follow-ups run after
   it (saving resolved user names, swamp-club re-registration, starting queued
   webhook runs, rebuilding audit sinks); a failed follow-up is a warning that
-  keeps the new values. Before commit the reload records a
+  keeps the new values. A follow-up that carries settings (grant sources,
+  grant reload mode, admin revocation) is different: its settings count as
+  applied only once it lands, a failure moves them to needs restart, writes
+  a second `serve.config.reloaded` event with outcome `failure` naming them,
+  and the next reload tries them again. Before commit the reload records a
   `serve.config.reloaded` audit event, under the audit policy in force before
   it, naming the caller and the settings by group, never a value.
 
@@ -2007,14 +2011,30 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   removals leave empty with no collectives admits only the admins rather than
   everyone;
   `allowed-collectives` (re-registering the instance), the restrictions and
-  `groups-field` apply as written. New values govern new runs, requests,
+  `groups-field` apply as written. Grants (`src/serve/serve_grant_reload.ts`):
+  the explicit-grant rules apply to the next decision; `grant-reload` starts
+  or pauses the grants poller, and switching to `auto` reconciles the sources
+  first; a changed `grants-file` or `grants-dir` is read with startup's checks
+  in prepare, so a source startup would refuse refuses the reload and keeps
+  its stored grants, and is reconciled in a follow-up (in manual mode too). A
+  new source the reconcile held back (an unresolvable username, an empty read)
+  is reported as partly applied. Removing an admin revokes their
+  `grant-config-*` grant through `materializeAdmins` and reloads the policy
+  before the report says applied; it also re-plans a closed allowed-users
+  list, which admits only the admins. Adding an admin needs a restart; a swap
+  applies the removal and reports the addition, and may leave no admin in
+  force until the restart. A node that does not lead grant writes reports the
+  revocation and grant-source reconcile as partly applied: the leading node
+  applies them when it reloads, and this node does when it takes the lead.
+  Admission is per instance: another instance keeps admitting a removed admin
+  on its own closed list until it reloads, though the revoked grant ends their
+  admin authority everywhere. New values govern new runs, requests,
   sockets and enrollments; nothing already running changes. Needing a
-  restart: the listener, TLS and CA cert, auth mode and OAuth client, admins,
-  the datastore, `stale-ttl` and `heartbeat-interval` (every instance judges
+  restart: the listener, TLS and CA cert, auth mode and OAuth client, adding
+  an admin, the datastore, `stale-ttl` and `heartbeat-interval` (every instance judges
   its peers' liveness by them), `remote-only`, turning a timed service on or
   off, the audit stores, WAL, HMAC and batching, and, not applied by reload
-  yet, scheduling, grant reload mode, the grants file and directory and the
-  explicit-grant rules.
+  yet, scheduling.
 
   `performServeReload` (`src/serve/extension_reload.ts`) re-bundles pulled
   extensions whose source fingerprint changed and re-imports every pulled type.

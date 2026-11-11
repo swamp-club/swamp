@@ -794,6 +794,7 @@ export interface ServeReloadOptions {
    */
   settingsReloader?: (context: WebhookApplyContext) => Promise<{
     readonly config: ServeConfigFile | null;
+    /** read again after followUp, which can take a setting out of applied */
     readonly report: SettingsReloadReport;
     /** async work after commit; returns a warning per step that failed */
     readonly followUp?: () => Promise<string[]>;
@@ -955,12 +956,16 @@ async function runServeReload(
     let settings: SettingsReloadReport | undefined;
     let config: ServeConfigFile | null = null;
     let followUp: (() => Promise<string[]>) | undefined;
+    let settingsOutcome:
+      | { readonly report: SettingsReloadReport }
+      | undefined;
     if (options?.settingsReloader) {
       try {
         const reloaded = await options.settingsReloader(
           options.webhookContext ?? { trigger: "reload" },
         );
         config = reloaded.config;
+        settingsOutcome = reloaded;
         settings = reloaded.report;
         followUp = reloaded.followUp;
       } catch (err) {
@@ -1024,6 +1029,8 @@ async function runServeReload(
 
     if (followUp) {
       for (const warning of await followUp()) warnings.push(warning);
+      // a setting whose follow-up failed is no longer reported as applied
+      settings = settingsOutcome?.report ?? settings;
     }
 
     let auditSinks: number | undefined;

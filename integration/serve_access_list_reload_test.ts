@@ -42,6 +42,11 @@ import {
   type SettingAppliers,
 } from "../src/serve/serve_settings_reloader.ts";
 import { SETTING_CATALOGUE } from "../src/serve/serve_settings_reload.ts";
+import {
+  type AdminReloadPlan,
+  oauthAdminSubjectOf,
+  planAdminReload,
+} from "../src/serve/serve_admin_reload.ts";
 
 await initializeLogging({});
 
@@ -49,22 +54,30 @@ const PROVIDER = "https://club.example";
 
 interface Prepared {
   allowedUsers?: AllowedUsersReloadPlan;
+  admins?: AdminReloadPlan;
 }
 
-function oauthFile(users: string[], collectives: string[] = []) {
+function oauthFile(
+  users: string[],
+  collectives: string[] = [],
+  admins: string[] = ["root"],
+) {
   return {
     auth: {
       mode: "oauth",
       "oauth-provider": PROVIDER,
       "oauth-client-id": "client-1",
-      admins: ["root"],
+      admins,
       ...(users.length > 0 ? { "allowed-users": users } : {}),
       ...(collectives.length > 0 ? { "allowed-collectives": collectives } : {}),
     },
   } as unknown as ServeConfigFile;
 }
 
-const ADMIN_SUBS: Record<string, string> = { root: "sub-root" };
+const ADMIN_SUBS: Record<string, string> = {
+  root: "sub-root",
+  ops: "sub-ops",
+};
 
 /** serve's wiring of the access lists, with a lookup table for swamp-club */
 function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
@@ -87,6 +100,9 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
     mergeServeOptions(file, {}, new Set(), () => undefined);
   const authConfig = toAuth(merge(initial));
   let cache: Record<string, string> = Object.create(null);
+  // admins are keyed by bare name in the name map
+  for (const name of authConfig.admins) cache[name] = ADMIN_SUBS[name];
+  let adminsConfigured: readonly string[] = [...authConfig.admins];
   for (const name of authConfig.allowedUsers) {
     cache[`allowed:${name}`] = subs[name];
   }
@@ -136,21 +152,31 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
     load: () => file,
     merge,
     resolve: (merged) => ({ authConfig: toAuth(merged) }),
-    prepare: async ({ startup }) => ({
-      allowedUsers: await planAllowedUsersReload({
-        configured: startup.authConfig.allowedUsers,
-        previouslyConfigured: configured,
-        allowedCollectives: startup.authConfig.allowedCollectives,
-        adminSubjects: adminSubjectsOf(authConfig.admins),
-        stored: cache,
-        cache,
-        resolve: (name, _signal) =>
-          lookupsUp && Object.hasOwn(subs, name)
-            ? Promise.resolve(subs[name])
-            : Promise.reject(new Error("club unreachable")),
-        now: () => "2026-11-10T00:00:00.000Z",
-      }),
-    }),
+    prepare: async ({ startup }) => {
+      // as serve: removals plan first, and a closed list follows the admins
+      const admins = planAdminReload({
+        configuredBefore: adminsConfigured,
+        configuredAfter: startup.authConfig.admins,
+        inForce: authConfig.admins,
+        subjectOf: (entry) => oauthAdminSubjectOf(cache, entry),
+      });
+      return {
+        admins,
+        allowedUsers: await planAllowedUsersReload({
+          configured: startup.authConfig.allowedUsers,
+          previouslyConfigured: configured,
+          allowedCollectives: startup.authConfig.allowedCollectives,
+          adminSubjects: adminSubjectsOf(admins.inForce),
+          stored: cache,
+          cache,
+          resolve: (name, _signal) =>
+            lookupsUp && Object.hasOwn(subs, name)
+              ? Promise.resolve(subs[name])
+              : Promise.reject(new Error("club unreachable")),
+          now: () => "2026-11-10T00:00:00.000Z",
+        }),
+      };
+    },
     notRunning: () => ({}),
     pending: () => deferred ? ["allowedUsers"] : [],
     appliers: {
@@ -163,6 +189,12 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
           authConfig.allowedCollectives.length,
           ...startup.authConfig.allowedCollectives,
         );
+        applyUsers(prepared, startup.authConfig.allowedUsers);
+      },
+      admins: ({ startup }, prepared) => {
+        const plan = prepared.admins!;
+        authConfig.admins.splice(0, authConfig.admins.length, ...plan.inForce);
+        adminsConfigured = plan.configured;
         applyUsers(prepared, startup.authConfig.allowedUsers);
       },
     },
@@ -285,4 +317,25 @@ Deno.test("serve access list reload: emptying the collectives keeps a list of de
     false,
     false,
   ]);
+});
+
+Deno.test("serve access list reload: an admin removed by reload leaves a closed allowed-users list", async () => {
+  const serve = serveLike(oauthFile(["alice"], [], ["root", "ops"]), {
+    alice: "sub-a",
+  });
+  serve.setLookups(false);
+  serve.write(oauthFile(["bob"], [], ["root", "ops"]));
+  await serve.reload();
+  // closed: only the admins are admitted
+  assertEquals(await admittedEverywhere(serve, "sub-ops"), [true, true, true]);
+
+  serve.write(oauthFile(["bob"], [], ["root"]));
+  const removed = await serve.reload();
+  assertEquals(removed.report.applied.includes("auth.admins"), true);
+  assertEquals(await admittedEverywhere(serve, "sub-ops"), [
+    false,
+    false,
+    false,
+  ]);
+  assertEquals(await admittedEverywhere(serve, "sub-root"), [true, true, true]);
 });

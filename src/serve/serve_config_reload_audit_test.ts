@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import type { AuditEmitter } from "../domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../domain/serve_audit/audit_event.ts";
 import {
+  emitServeConfigNotLanded,
   emitServeConfigReloaded,
   SERVE_CONFIG_RELOADED_ACTION,
   serveConfigReloadedDetail,
@@ -99,4 +100,29 @@ Deno.test("emitServeConfigReloaded: an emitter that throws never breaks the relo
     { trigger: "poll" },
     report,
   );
+});
+
+Deno.test("serveConfigReloadedDetail: names settings that land only after their follow-up", () => {
+  assertEquals(
+    serveConfigReloadedDetail("reload", {
+      applied: ["auth.admins"],
+      landing: ["auth.admins"],
+      needsRestart: [],
+      overridden: [],
+    }),
+    "trigger=reload applied=auth.admins landing=auth.admins",
+  );
+});
+
+Deno.test("emitServeConfigNotLanded: records the settings that did not land as a failure", () => {
+  const { events, emitter } = recorder();
+  emitServeConfigNotLanded(
+    { auditEmitter: emitter, instanceId: "inst-1" },
+    { trigger: "reload", principal: { kind: "user", id: "alice" } },
+    ["auth.admins"],
+  );
+  assertEquals(events.length, 1);
+  assertEquals(events[0].action, SERVE_CONFIG_RELOADED_ACTION);
+  assertEquals(events[0].outcome, "failure");
+  assertEquals(events[0].detail, "trigger=reload not-landed=auth.admins");
 });

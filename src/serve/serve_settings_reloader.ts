@@ -48,10 +48,14 @@ export type SettingAppliers<S, P> = {
   readonly [K in AppliedSettingKey]: SettingApplier<S, P>;
 };
 
-/** async work after commit; a throw is a warning that keeps the new values */
+/**
+ * async work after commit; a throw is a warning that keeps the new values,
+ * unless the follow-up carries settings: those are only applied once it lands
+ */
 export interface ReloadFollowUp {
   readonly name: string;
-  run(): Promise<void>;
+  readonly settings?: readonly AppliedSettingKey[];
+  run(): Promise<void | SettingApplyResult>;
 }
 
 export interface ServeSettingsReloaderDeps<S, P> {
@@ -99,10 +103,17 @@ export interface ServeSettingsReloaderDeps<S, P> {
     prepared: P,
     applied: readonly AppliedSettingKey[],
   ): readonly ReloadFollowUp[];
+  /** settings whose follow-up failed: commit's values are no longer in force */
+  notLanded?(
+    settings: readonly AppliedSettingKey[],
+    report: SettingsReloadReport,
+    context: ServeReloadCaller,
+  ): void;
 }
 
 export interface SettingsReloadOutcome {
   readonly config: ServeConfigFile | null;
+  /** final once followUp has settled: a setting whose follow-up failed leaves applied */
   readonly report: SettingsReloadReport;
   /** runs the follow-ups; returns one warning per follow-up that failed */
   followUp(): Promise<string[]>;
@@ -116,6 +127,8 @@ export function createServeSettingsReloader<S, P>(
   deps: ServeSettingsReloaderDeps<S, P>,
 ): (context: ServeReloadCaller) => Promise<SettingsReloadOutcome> {
   let liveConfig = deps.initialConfig;
+  // settings whose follow-up failed; every reload tries them again
+  const retry = new Set<AppliedSettingKey>();
   return async (context) => {
     const file = deps.load();
     const merged = deps.merge(file);
@@ -129,7 +142,7 @@ export function createServeSettingsReloader<S, P>(
       notRunning: deps.notRunning(candidate),
     });
     const toApply = [...changes.applied];
-    for (const key of deps.pending()) {
+    for (const key of [...deps.pending(), ...retry]) {
       if (!toApply.includes(key)) toApply.push(key);
     }
     const prepared = await deps.prepare(candidate, toApply, liveConfig);
@@ -145,10 +158,16 @@ export function createServeSettingsReloader<S, P>(
       setting: settingName(key),
       by,
     }));
+    // built before commit so the audit event can name what lands only later
+    const followUps = deps.followUps(candidate, prepared, toApply);
+    const landing = toApply.filter((key) =>
+      followUps.some((followUp) => followUp.settings?.includes(key))
+    );
     deps.beforeCommit({
       applied: [...toApply.map(settingName), ...extra.applied],
       needsRestart,
       overridden,
+      ...(landing.length > 0 ? { landing: landing.map(settingName) } : {}),
     }, context);
     const applied: string[] = [];
     for (const key of toApply) {
@@ -165,22 +184,58 @@ export function createServeSettingsReloader<S, P>(
     const notes = deps.commitExtra?.(prepared) ?? [];
     deps.afterCommit(candidate, toApply, prepared);
     liveConfig = file;
+    for (const key of toApply) retry.delete(key);
 
-    const followUps = deps.followUps(candidate, prepared, toApply);
+    let report: SettingsReloadReport = { applied, needsRestart, overridden };
     return {
       config: file,
-      report: { applied, needsRestart, overridden },
+      get report() {
+        return report;
+      },
       followUp: async () => {
         const warnings: string[] = [...notes];
+        const notLanded: AppliedSettingKey[] = [];
         for (const followUp of followUps) {
+          const carried = (followUp.settings ?? []).filter((key) =>
+            toApply.includes(key)
+          );
           try {
-            await followUp.run();
+            const result = await followUp.run();
+            if (result) {
+              for (const key of carried) {
+                needsRestart.push({
+                  setting: settingName(key),
+                  reason: result.partial,
+                });
+              }
+            }
           } catch (err) {
-            warnings.push(
-              `${followUp.name} did not complete; the reloaded values are in force: ` +
-                (err instanceof Error ? err.message : String(err)),
-            );
+            const message = err instanceof Error ? err.message : String(err);
+            if (carried.length === 0) {
+              warnings.push(
+                `${followUp.name} did not complete; the reloaded values are in force: ${message}`,
+              );
+              continue;
+            }
+            for (const key of carried) {
+              notLanded.push(key);
+              retry.add(key);
+              needsRestart.push({
+                setting: settingName(key),
+                reason:
+                  `not applied: ${followUp.name} failed: ${message}; the next reload tries it again`,
+              });
+            }
           }
+        }
+        if (notLanded.length > 0) {
+          const failed = new Set(notLanded.map(settingName));
+          report = {
+            applied: applied.filter((setting) => !failed.has(setting)),
+            needsRestart,
+            overridden,
+          };
+          deps.notLanded?.(notLanded, report, context);
         }
         return warnings;
       },

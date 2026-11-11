@@ -48,6 +48,9 @@ export function serveConfigReloadedDetail(
   if (report.applied.length > 0) {
     fields.push(["applied", report.applied.join(",")]);
   }
+  if (report.landing && report.landing.length > 0) {
+    fields.push(["landing", report.landing.join(",")]);
+  }
   if (report.needsRestart.length > 0) {
     fields.push([
       "needs-restart",
@@ -72,6 +75,34 @@ export function emitServeConfigReloaded(
   context: ServeReloadCaller,
   report: SettingsReloadReport,
 ): void {
+  emitReloadEvent(
+    ctx,
+    context,
+    "success",
+    serveConfigReloadedDetail(context.trigger, report),
+  );
+}
+
+/** the settings a reload named as applied whose follow-up then failed */
+export function emitServeConfigNotLanded(
+  ctx: ServeConfigReloadAuditContext,
+  context: ServeReloadCaller,
+  settings: readonly string[],
+): void {
+  emitReloadEvent(
+    ctx,
+    context,
+    "failure",
+    `trigger=${context.trigger} not-landed=${settings.join(",")}`,
+  );
+}
+
+function emitReloadEvent(
+  ctx: ServeConfigReloadAuditContext,
+  context: ServeReloadCaller,
+  outcome: "success" | "failure",
+  detail: string,
+): void {
   if (!ctx.auditEmitter) return;
   const principal = context.principal;
   try {
@@ -79,7 +110,7 @@ export function emitServeConfigReloaded(
       instanceId: ctx.instanceId ?? "unknown",
       category: "admin",
       stage: "response",
-      outcome: "success",
+      outcome,
       action: SERVE_CONFIG_RELOADED_ACTION,
       resourceKind: "server",
       resourceName: ctx.instanceId ?? "unknown",
@@ -90,7 +121,7 @@ export function emitServeConfigReloaded(
       ...(context.client !== undefined ? { client: context.client } : {}),
       sourceIp: context.sourceIp ?? "127.0.0.1",
       requestId: crypto.randomUUID(),
-      detail: serveConfigReloadedDetail(context.trigger, report),
+      detail,
     }));
   } catch (error) {
     logger.warn("Failed to emit {action} audit event: {error}", {
