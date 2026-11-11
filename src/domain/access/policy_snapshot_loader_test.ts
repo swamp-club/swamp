@@ -694,6 +694,125 @@ Deno.test("PolicySnapshotLoader.decisionService: keeps runImpliesApprove false a
   await loader.dispose();
 });
 
+function countingGrantRepo(): {
+  dataRepo: UnifiedDataRepository;
+  grantReads: () => number;
+} {
+  let reads = 0;
+  const dataRepo = {
+    findAllForType(type: ModelType) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized) reads++;
+      return Promise.resolve([]);
+    },
+    getContent() {
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
+  return { dataRepo, grantReads: () => reads };
+}
+
+Deno.test("PolicySnapshotLoader.setMode: manual to auto rebuilds once and then on access-model events", async () => {
+  const { dataRepo, grantReads } = countingGrantRepo();
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus, "manual");
+  try {
+    await loader.load();
+    loader.setMode("auto");
+    await waitFor(() => grantReads() >= 2, "rebuild on switching to auto");
+    await eventBus.publish(createModelCreated("swamp/grant", "1", "g"));
+    await waitFor(() => grantReads() >= 3, "event-driven rebuild");
+  } finally {
+    await loader.dispose();
+  }
+});
+
+function countingBus(): { bus: EventBus; live: () => number } {
+  let live = 0;
+  const bus = {
+    subscribe() {
+      live++;
+      return () => {
+        live--;
+      };
+    },
+  } as unknown as EventBus;
+  return { bus, live: () => live };
+}
+
+Deno.test("PolicySnapshotLoader.setMode: auto to manual drops every subscription, and setting a mode twice changes nothing", async () => {
+  const { dataRepo } = countingGrantRepo();
+  const { bus, live } = countingBus();
+  const loader = new PolicySnapshotLoader(dataRepo, bus, "auto");
+  try {
+    assertEquals(live(), 4);
+    loader.setMode("auto");
+    assertEquals(live(), 4);
+    loader.setMode("manual");
+    assertEquals(live(), 0);
+    loader.setMode("manual");
+    assertEquals(live(), 0);
+    loader.setMode("auto");
+    assertEquals(live(), 4);
+  } finally {
+    await loader.dispose();
+  }
+  assertEquals(live(), 0);
+  loader.setMode("auto");
+  assertEquals(live(), 0);
+});
+
+Deno.test("PolicySnapshotLoader.setDecisionOptions: the next decision uses the new explicit-grant rules", async () => {
+  const dataRepo = createMockDataRepo(
+    [{
+      attrs: makeGrant({ actions: ["run", "write"] }),
+      modelId: "g1",
+      dataName: "grant-main",
+    }],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus(), "manual");
+  const principal = {
+    principal: { kind: "user" as const, id: "adam" },
+    collectives: [],
+    groups: [],
+    client: undefined,
+    delegation: undefined,
+  };
+  const resource = { kind: "workflow" as const, name: "deploy", fields: {} };
+  try {
+    await loader.load();
+    assertEquals(
+      loader.decisionService.decide(principal, "approve", resource)?.effect,
+      "allow",
+    );
+    loader.setDecisionOptions({
+      runImpliesApprove: false,
+      runImpliesSignal: false,
+      writeImpliesTag: false,
+    });
+    const strict = loader.decisionService;
+    assertEquals(strict.runImpliesApprove, false);
+    assertEquals(strict.runImpliesSignal, false);
+    assertEquals(strict.writeImpliesTag, false);
+    assertEquals(strict.decide(principal, "approve", resource), null);
+    assertEquals(strict.decide(principal, "signal", resource), null);
+    assertEquals(strict.decide(principal, "tag", resource), null);
+    assertEquals(strict.decide(principal, "run", resource)?.effect, "allow");
+
+    loader.setDecisionOptions({
+      runImpliesApprove: true,
+      runImpliesSignal: true,
+      writeImpliesTag: true,
+    });
+    assertEquals(
+      loader.decisionService.decide(principal, "approve", resource)?.effect,
+      "allow",
+    );
+  } finally {
+    await loader.dispose();
+  }
+});
+
 const PRINCIPAL: PrincipalContext = {
   sub: "user-123",
   groups: ["release-managers", "platform"],

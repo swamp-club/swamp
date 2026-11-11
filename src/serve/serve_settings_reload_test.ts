@@ -73,7 +73,7 @@ Deno.test("diffServeSettings: a listener setting needs a new process, with the r
   );
 });
 
-Deno.test("diffServeSettings: allowed-users and the restrictions apply on reload; admins need a restart", () => {
+Deno.test("diffServeSettings: allowed-users, the restrictions and admins apply on reload; serve decides which admin changes wait for a restart", () => {
   const report = diff(
     {
       auth: {
@@ -93,11 +93,36 @@ Deno.test("diffServeSettings: allowed-users and the restrictions apply on reload
     },
   );
   assertEquals(report.applied, [
+    "auth.admins",
     "auth.allowed-users",
     "auth.restricted-commands",
   ]);
-  assertEquals(report.needsRestart.map((r) => r.setting), ["auth.admins"]);
-  assertStringIncludes(report.needsRestart[0].reason, "restart serve");
+  assertEquals(report.needsRestart, []);
+});
+
+Deno.test("diffServeSettings: grant reload mode, grant sources and the explicit-grant rules apply on reload", () => {
+  const report = diff(
+    {},
+    {
+      "grant-reload": "auto",
+      "grants-file": "grants.yaml",
+      "grants-dir": "grants.d",
+      auth: {
+        "approve-requires-explicit-grant": true,
+        "signal-requires-explicit-grant": true,
+        "tag-requires-explicit-grant": true,
+      },
+    } as unknown as ServeConfigFile,
+  );
+  assertEquals(report.needsRestart, []);
+  assertEquals([...report.applied].sort(), [
+    "auth.approve-requires-explicit-grant",
+    "auth.signal-requires-explicit-grant",
+    "auth.tag-requires-explicit-grant",
+    "grant-reload",
+    "grants-dir",
+    "grants-file",
+  ]);
 });
 
 Deno.test("diffServeSettings: a value pinned by a startup flag is overridden, naming the flag", () => {

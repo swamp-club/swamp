@@ -844,6 +844,16 @@ without a `--grants-dir`, or with different files in it, revokes the other
 instance's `grants-dir/` grants, as it does for repository `grants/` files it
 does not have.
 
+Removing an admin from `auth.admins` applies on `swamp serve reload`; adding
+one needs a restart. The revocation runs where grant writes lead. So that it
+survives a change of leader, `materializeAdmins` compares each admin grant's
+stored write time with when this instance last read its admin config (startup
+or a reload that applied `auth.admins`): it neither reactivates a grant
+revoked after that read nor revokes one written after it. A node that took
+the lead without reloading keeps a removal another node made, and does not
+revoke an admin a newer restart added. A restart reads the config afresh and
+applies its list as before. The comparison uses each writer's clock.
+
 Reconcile treats every stored copy of a grant as the same grant. Serve
 instances that start against one datastore can each store a copy of a file
 grant or `--admins` grant. An entry removed from a file, or an admin removed

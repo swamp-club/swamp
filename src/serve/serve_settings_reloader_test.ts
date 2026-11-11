@@ -240,3 +240,68 @@ Deno.test("createServeSettingsReloader: a sweep that runs only at boot reports a
       "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this",
   }]);
 });
+
+Deno.test("createServeSettingsReloader: a follow-up carrying a setting that fails takes it out of applied, reports it, and the next reload retries it", async () => {
+  let fail = true;
+  const notLanded: string[][] = [];
+  const audits: SettingsReloadReport[] = [];
+  const h = harness(null, {
+    followUps: (_candidate, _prepared, applied) =>
+      applied.includes("dashboard")
+        ? [{
+          name: "Revoking admin grants",
+          settings: ["dashboard"],
+          run: () =>
+            fail
+              ? Promise.reject(new Error("datastore unreachable"))
+              : Promise.resolve(),
+        }]
+        : [],
+    notLanded: (settings) => notLanded.push([...settings]),
+    beforeCommit: (report) => {
+      audits.push(report);
+    },
+  });
+  h.file = { dashboard: true, "max-concurrent-runs": 3 };
+  const reloader = createServeSettingsReloader(h.deps);
+  const first = await reloader(reload);
+  assertEquals(audits[0].landing, ["dashboard"]);
+  assertEquals(await first.followUp(), []);
+  assertEquals(first.report.applied, ["max-concurrent-runs"]);
+  assertEquals(first.report.needsRestart, [{
+    setting: "dashboard",
+    reason:
+      "not applied: Revoking admin grants failed: datastore unreachable; the next reload tries it again",
+  }]);
+  assertEquals(notLanded, [["dashboard"]]);
+
+  fail = false;
+  h.calls.length = 0;
+  const second = await reloader(reload);
+  assertEquals(h.calls.includes("apply:dashboard"), true);
+  assertEquals(await second.followUp(), []);
+  assertEquals(second.report.applied, ["dashboard"]);
+  assertEquals(second.report.needsRestart, []);
+
+  h.calls.length = 0;
+  const third = await reloader(reload);
+  await third.followUp();
+  assertEquals(h.calls.includes("apply:dashboard"), false);
+});
+
+Deno.test("createServeSettingsReloader: a follow-up carrying a setting that lands partly reports the setting as applied and waiting", async () => {
+  const h = harness(null, {
+    followUps: () => [{
+      name: "Revoking admin grants",
+      settings: ["dashboard"],
+      run: () => Promise.resolve({ partial: "this node does not lead" }),
+    }],
+  });
+  h.file = { dashboard: true };
+  const outcome = await createServeSettingsReloader(h.deps)(reload);
+  assertEquals(await outcome.followUp(), []);
+  assertEquals(outcome.report.applied, ["dashboard"]);
+  assertEquals(outcome.report.needsRestart, [
+    { setting: "dashboard", reason: "this node does not lead" },
+  ]);
+});

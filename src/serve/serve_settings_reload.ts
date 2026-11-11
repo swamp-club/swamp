@@ -115,11 +115,8 @@ export const SETTING_CATALOGUE = {
     "hot-reload",
     `${NEW_PROCESS}: the signal handler is installed at startup`,
   ),
-  admins: restart(
-    "auth.admins",
-    "admins",
-    "restart serve to change admins; admin grants are written when serve starts",
-  ),
+  // removals apply; an addition reports itself as needing a restart
+  admins: applied("auth.admins", "admins"),
   allowedCollectives: applied(
     "auth.allowed-collectives",
     "allowed-collectives",
@@ -138,25 +135,22 @@ export const SETTING_CATALOGUE = {
     "auth.group-refresh-interval",
     "group-refresh-interval",
   ),
-  approveRequiresExplicitGrant: restart(
+  approveRequiresExplicitGrant: applied(
     "auth.approve-requires-explicit-grant",
     "approve-requires-explicit-grant",
-    NOT_YET,
   ),
-  signalRequiresExplicitGrant: restart(
+  signalRequiresExplicitGrant: applied(
     "auth.signal-requires-explicit-grant",
     "signal-requires-explicit-grant",
-    NOT_YET,
   ),
-  tagRequiresExplicitGrant: restart(
+  tagRequiresExplicitGrant: applied(
     "auth.tag-requires-explicit-grant",
     "tag-requires-explicit-grant",
-    NOT_YET,
   ),
   schedule: restart("schedule", "schedule", NOT_YET),
-  grantsFile: restart("grants-file", "grants-file", NOT_YET),
-  grantsDir: restart("grants-dir", "grants-dir", NOT_YET),
-  grantReload: restart("grant-reload", "grant-reload", NOT_YET),
+  grantsFile: applied("grants-file", "grants-file"),
+  grantsDir: applied("grants-dir", "grants-dir"),
+  grantReload: applied("grant-reload", "grant-reload"),
   webhookRoutesDir: applied("webhook-routes-dir", "webhook-routes-dir"),
   webhookRoutesPoll: applied("webhook-routes-poll", "webhook-routes-poll"),
   trustProxy: applied("trust-proxy", "trust-proxy"),
@@ -261,6 +255,8 @@ function restart(
 
 export interface SettingsReloadReport {
   readonly applied: readonly string[];
+  /** applied settings that are in force only once their follow-up lands */
+  readonly landing?: readonly string[];
   readonly needsRestart: readonly { setting: string; reason: string }[];
   readonly overridden: readonly { setting: string; by: string }[];
 }

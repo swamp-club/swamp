@@ -2635,6 +2635,47 @@ Deno.test("performServeReload: the settings reloader hears who asked, its follow
   }
 });
 
+Deno.test("performServeReload: reports the settings as they stand after the follow-up, which can take one out of applied", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    let report = {
+      applied: ["auth.admins"],
+      needsRestart: [] as { setting: string; reason: string }[],
+      overridden: [],
+    };
+    const result = await performServeReload(
+      tmpDir,
+      join(tmpDir, "nonexistent_lockfile.json"),
+      {
+        settingsReloader: () =>
+          Promise.resolve({
+            config: null,
+            get report() {
+              return report;
+            },
+            followUp: () => {
+              report = {
+                applied: [],
+                needsRestart: [{
+                  setting: "auth.admins",
+                  reason: "not applied",
+                }],
+                overridden: [],
+              };
+              return Promise.resolve([]);
+            },
+          }),
+      },
+    );
+    assertEquals(result.settings?.applied, []);
+    assertEquals(result.settings?.needsRestart, [
+      { setting: "auth.admins", reason: "not applied" },
+    ]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("performServeReload: without a settings reloader the sink rebuild reads the file itself", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

@@ -75,10 +75,23 @@ export interface GrantsDirectoryPollerOptions {
   ) => Promise<void | "deferred">;
 }
 
+/** a source a reconcile left as stored, with the first reason it gave */
+export interface HeldGrantSource {
+  readonly source: string;
+  readonly reason: string;
+}
+
+export interface GrantsReconcileOutcome {
+  /** deferred: a node without the lease wrote nothing */
+  readonly status: "reconciled" | "unchanged" | "deferred" | "failed";
+  readonly held: readonly HeldGrantSource[];
+  readonly error?: string;
+}
+
 export class GrantsDirectoryPoller {
   readonly #grantsDir: string;
-  readonly #externalGrantsFile: string | undefined;
-  readonly #externalGrantsDir: string | undefined;
+  #externalGrantsFile: string | undefined;
+  #externalGrantsDir: string | undefined;
   readonly #validateCondition: ConditionValidator | undefined;
   readonly #fileGrantStore: FileGrantStore;
   readonly #policySnapshotLoader: PolicySnapshotLoader;
@@ -96,8 +109,10 @@ export class GrantsDirectoryPoller {
   #reconciling = false;
   /** External sources that read as empty on the last poll. */
   #sourcesSeenEmpty = new Set<string>();
-  /** Stays set after stop, so a poll in flight at shutdown still holds. */
+  /** Stays set after stop, so a poll in flight at shutdown still holds; pause clears it. */
   #started = false;
+  /** set by close, which shutdown calls; start then does nothing */
+  #closed = false;
 
   constructor(options: GrantsDirectoryPollerOptions) {
     this.#grantsDir = options.grantsDir;
@@ -115,7 +130,7 @@ export class GrantsDirectoryPoller {
   }
 
   async start(): Promise<void> {
-    if (this.#timer) return;
+    if (this.#timer || this.#closed) return;
     this.#started = true;
     this.#contentHash = await this.#computeContentHash();
     this.#timer = setInterval(() => {
@@ -132,13 +147,31 @@ export class GrantsDirectoryPoller {
    * (swamp-club#4096), since a follower's polls applied nothing. Waits for a
    * poll in flight first.
    */
-  reconcileNow(): Promise<void> {
-    this.#pendingReconcile = this.#pendingReconcile.then(() => {
+  reconcileNow(): Promise<GrantsReconcileOutcome> {
+    const run = this.#pendingReconcile.then(() => {
       this.#contentHash = "";
       return withPollCycleSpan(
         "grants_directory",
         () => this.#checkAndReconcile(),
       );
+    });
+    this.#pendingReconcile = run.then(() => {});
+    return run;
+  }
+
+  /**
+   * points the poller at other external sources; the next reconcile reads
+   * them, and a source no longer named has its grants revoked
+   */
+  setSources(sources: {
+    readonly externalGrantsFile?: string;
+    readonly externalGrantsDir?: string;
+  }): Promise<void> {
+    this.#pendingReconcile = this.#pendingReconcile.then(() => {
+      this.#externalGrantsFile = sources.externalGrantsFile;
+      this.#externalGrantsDir = sources.externalGrantsDir;
+      this.#contentHash = "";
+      this.#sourcesSeenEmpty = new Set();
     });
     return this.#pendingReconcile;
   }
@@ -151,19 +184,48 @@ export class GrantsDirectoryPoller {
     await this.#pendingReconcile;
   }
 
+  /**
+   * stops polling for a switch to manual reload: with no next poll, the
+   * next reconcileNow applies an emptied source at once, as one never started does
+   */
+  async pause(): Promise<void> {
+    await this.stop();
+    if (!this.#timer) {
+      this.#started = false;
+      this.#sourcesSeenEmpty = new Set();
+    }
+  }
+
+  /** stops for good: a reload racing shutdown cannot start it again */
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.stop();
+  }
+
   #poll(): void {
     if (this.#reconciling) return;
 
-    this.#pendingReconcile = this.#pendingReconcile.then(() =>
-      withPollCycleSpan("grants_directory", () => this.#checkAndReconcile())
-    );
+    this.#pendingReconcile = this.#pendingReconcile.then(async () => {
+      await withPollCycleSpan(
+        "grants_directory",
+        () => this.#checkAndReconcile(),
+      );
+    });
   }
 
-  async #checkAndReconcile(): Promise<void> {
+  async #checkAndReconcile(): Promise<GrantsReconcileOutcome> {
     this.#reconciling = true;
+    const held = new Map<string, string>();
+    const hold = (source: string, reason: string) => {
+      if (!held.has(source)) held.set(source, reason);
+    };
+    const heldList = () =>
+      [...held].map(([source, reason]) => ({ source, reason }));
     try {
       const newHash = await this.#computeContentHash();
-      if (newHash === this.#contentHash) return;
+      if (newHash === this.#contentHash) {
+        return { status: "unchanged", held: [] };
+      }
 
       logger.info`Grants directory change detected, reconciling`;
 
@@ -187,6 +249,7 @@ export class GrantsDirectoryPoller {
       for (const [filename, result] of grantFileResults) {
         if (result.errors.length > 0) {
           this.#logUnavailable(filename, result.errors);
+          hold(filename, result.errors[0].message);
           unavailable.add(filename);
           continue;
         }
@@ -202,10 +265,12 @@ export class GrantsDirectoryPoller {
             filename: load.path,
             message: `Failed to read: ${load.cause}`,
           }]);
+          hold(GRANTS_FILE_SOURCE_NAME, `failed to read: ${load.cause}`);
           unavailable.add(GRANTS_FILE_SOURCE_NAME);
         } else if (load.file.result !== null) {
           if (load.file.result.errors.length > 0) {
             this.#logUnavailable(load.path, load.file.result.errors);
+            hold(GRANTS_FILE_SOURCE_NAME, load.file.result.errors[0].message);
             unavailable.add(GRANTS_FILE_SOURCE_NAME);
           } else {
             parsed.set(GRANTS_FILE_SOURCE_NAME, {
@@ -228,6 +293,7 @@ export class GrantsDirectoryPoller {
           logger
             .error`Failed to read grants directory ${load.path} during auto-reload, keeping the stored grants of its files unchanged: ${load.cause}`;
           externalDirUnavailable = true;
+          hold(load.path, `failed to read: ${load.cause}`);
         } else if (load.status === "loaded") {
           for (const file of load.files) {
             if (file.readError !== undefined) {
@@ -237,6 +303,7 @@ export class GrantsDirectoryPoller {
                 filename: file.path,
                 message: `Failed to read: ${file.readError}`,
               }]);
+              hold(file.sourceName, `failed to read: ${file.readError}`);
               unavailable.add(file.sourceName);
               continue;
             }
@@ -246,6 +313,7 @@ export class GrantsDirectoryPoller {
             }
             if (file.result.errors.length > 0) {
               this.#logUnavailable(file.path, file.result.errors);
+              hold(file.sourceName, file.result.errors[0].message);
               unavailable.add(file.sourceName);
               continue;
             }
@@ -272,6 +340,10 @@ export class GrantsDirectoryPoller {
       for (const source of heldEmpty) {
         logger
           .warn`Grant source ${source} reads as empty, keeping its stored grants until the next poll confirms it`;
+        hold(
+          source,
+          "reads as empty; its stored grants stay until the next poll confirms it",
+        );
         unavailable.add(source);
       }
 
@@ -286,6 +358,7 @@ export class GrantsDirectoryPoller {
       for (const [source, resolved] of resolution.sources) {
         if (resolved.errors.length > 0) {
           this.#logUnavailable(parsed.get(source)!.filename, resolved.errors);
+          hold(source, resolved.errors[0].message);
           unavailable.add(source);
           continue;
         }
@@ -317,11 +390,17 @@ export class GrantsDirectoryPoller {
       });
       // Deferred (a serve follower, which writes nothing): the change is not
       // applied, so the next poll tries it again.
-      if (committed === "deferred") return;
+      if (committed === "deferred") return { status: "deferred", held: [] };
       // A held source is not applied, so the next poll must look at it again.
       if (heldEmpty.length === 0) this.#contentHash = newHash;
+      return { status: "reconciled", held: heldList() };
     } catch (error) {
       logger.error`Grants directory poll failed: ${error}`;
+      return {
+        status: "failed",
+        held: heldList(),
+        error: error instanceof Error ? error.message : String(error),
+      };
     } finally {
       this.#reconciling = false;
     }
