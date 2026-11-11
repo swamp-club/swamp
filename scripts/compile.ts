@@ -22,7 +22,7 @@
 import { parseArgs } from "@std/cli/parse-args";
 import { expandGlob } from "@std/fs";
 import { parse as parseJsonc } from "@std/jsonc";
-import { isGlob, join } from "@std/path";
+import { isGlob, join, relative, resolve, SEPARATOR } from "@std/path";
 
 interface CompileOptions {
   output: string;
@@ -205,21 +205,52 @@ export async function readWorkspaceConfigs(
   return { configs, paths };
 }
 
-const NPM_SOURCE =
-  /[\\/](?:registry\.npmjs\.org|node_modules)[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)[\\/]/g;
+function packageAt(segments: readonly string[]): string | undefined {
+  const [first, second] = segments;
+  if (first === undefined || first.startsWith(".")) return undefined;
+  if (!first.startsWith("@")) return first;
+  return second === undefined ? undefined : `${first}/${second}`;
+}
 
-// npm files sit under the npm cache or node_modules, so a map source there
+// npm files sit under Deno's npm cache (<npmCache>/<registry host>/...,
+// whatever the registry) or a node_modules directory, so a map source there
 // is a package the bundle inlined instead of leaving external
-export function inlinedNpmPackages(sources: readonly string[]): string[] {
+export function inlinedNpmPackages(
+  sources: readonly string[],
+  { bundleDir, npmCache }: { bundleDir: string; npmCache: string },
+): string[] {
   const names = new Set<string>();
   for (const source of sources) {
-    let last: string | undefined;
-    for (const match of source.matchAll(NPM_SOURCE)) last = match[1];
-    if (last !== undefined && !last.startsWith(".")) {
-      names.add(last.replace("\\", "/"));
-    }
+    const path = resolve(bundleDir, source);
+    const inCache = relative(npmCache, path);
+    const name = !inCache.startsWith("..") && inCache !== path
+      ? packageAt(inCache.split(SEPARATOR).slice(1))
+      : nodeModulesPackage(path);
+    if (name !== undefined) names.add(name);
   }
   return [...names].sort();
+}
+
+function nodeModulesPackage(path: string): string | undefined {
+  const segments = path.split(SEPARATOR);
+  const at = segments.lastIndexOf("node_modules");
+  return at === -1 ? undefined : packageAt(segments.slice(at + 1));
+}
+
+async function npmCacheDir(): Promise<string> {
+  const { success, stdout } = await new Deno.Command("deno", {
+    args: ["info", "--json"],
+    stdout: "piped",
+    stderr: "inherit",
+  }).output();
+  const npmCache = success
+    ? (JSON.parse(new TextDecoder().decode(stdout)) as { npmCache?: unknown })
+      .npmCache
+    : undefined;
+  if (typeof npmCache !== "string") {
+    throw new Error("deno info --json did not report the npm cache directory");
+  }
+  return npmCache;
 }
 
 export function bundleArgs(
@@ -499,7 +530,10 @@ async function bundle(root: string): Promise<string[] | undefined> {
       sources.push(...(map.sources ?? []));
     }
   }
-  const inlined = inlinedNpmPackages(sources);
+  const inlined = inlinedNpmPackages(sources, {
+    bundleDir: join(root, BUNDLE_DIR),
+    npmCache: await npmCacheDir(),
+  });
   if (inlined.length > 0) {
     throw new Error(
       `The bundle inlined npm packages that should stay external: ` +

@@ -51,9 +51,11 @@ compiling, so the binary loads a few large chunks instead of every source module
 Releases still ship the unbundled build. Every npm package stays external: the
 list comes from the `npm:` imports in the root's and each workspace member's
 `deno.json` or `deno.jsonc`, plus their `package.json` dependencies, and the
-build fails if the bundle's source maps show a package was inlined anyway. The
-bundle lands in `build/bundle/`, which a `--bundle` build removes when it ends,
-pass or fail. Its linked source maps are embedded, so stack traces name source files.
+build fails if the bundle's source maps show a file from Deno's npm cache (any
+registry) or a `node_modules` directory, which means a package was inlined
+anyway. The bundle lands in `build/bundle/`, which a `--bundle` build removes
+when it ends, pass or fail. Its linked source maps are embedded, so stack traces
+name source files.
 
 To compare the two builds of one commit, give the bundled binary its own name
 and use it as the second binary in both scripts:

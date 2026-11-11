@@ -25,7 +25,7 @@ import {
   assertRejects,
   assertThrows,
 } from "@std/assert";
-import { dirname, fromFileUrl, join } from "@std/path";
+import { dirname, fromFileUrl, join, relative, resolve } from "@std/path";
 import {
   BUNDLE_DIR,
   bundleArgs,
@@ -371,19 +371,32 @@ Deno.test("readWorkspaceConfigs: refuses a root without a deno.json or deno.json
   }
 });
 
-Deno.test("inlinedNpmPackages: names packages whose files the bundle inlined", () => {
+Deno.test("inlinedNpmPackages: names packages from the npm cache of any registry and from node_modules", () => {
+  const home = resolve("home");
+  const bundleDir = join(resolve("repo"), "build", "bundle");
+  const npmCache = join(home, ".cache", "deno", "npm");
+  const from = (first: string, ...rest: string[]) =>
+    relative(bundleDir, join(first, ...rest));
   assertEquals(
     inlinedNpmPackages([
-      "../../src/cli/mod.ts",
-      "../../../.cache/deno/remote/https/jsr.io/@std/path/1.1.4/join.ts",
-      "../../../.cache/deno/npm/registry.npmjs.org/emojilib/2.4.0/index.js",
-      "../../../.cache/deno/npm/registry.npmjs.org/@scope/pkg/1.0.0/a.js",
-      "../../node_modules/.deno/zod@4.6.7/node_modules/zod/index.js",
-      "..\\..\\node_modules\\@win\\pkg\\index.js",
-    ]),
-    ["@scope/pkg", "@win/pkg", "emojilib", "zod"],
+      from(resolve("repo"), "src", "cli", "mod.ts"),
+      from(resolve("repo"), "src", "npm", "registry", "pkg", "x.ts"),
+      from(home, ".cache", "deno", "remote", "https", "jsr.io", "@std", "a.ts"),
+      from(npmCache, "registry.npmjs.org", "emojilib", "2.4.0", "index.js"),
+      from(npmCache, "npm.example.com", "@scope", "pkg", "1.0.0", "a.js"),
+      from(npmCache, "localhost_4873", "yaml", "2.9.0", "index.js"),
+      from(
+        resolve("repo"),
+        "node_modules",
+        ".deno",
+        "zod@4.6.7",
+        "node_modules",
+        "zod",
+        "index.js",
+      ),
+    ], { bundleDir, npmCache }),
+    ["@scope/pkg", "emojilib", "yaml", "zod"],
   );
-  assertEquals(inlinedNpmPackages(["../../src/main.ts"]), []);
 });
 
 Deno.test("requireNpmExternals: refuses an empty list and names the configs read", () => {
