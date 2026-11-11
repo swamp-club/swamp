@@ -20,10 +20,11 @@
 import { join } from "@std/path";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
-  type InstalledEntries,
+  findMissingPulledExtensions,
   isAbsentFromDisk,
+  type MissingPulledExtensionState,
   pathsToRemoveForReinstall,
-  readInstalledEntries,
+  readInstalledEntriesWithRetry,
 } from "../../infrastructure/persistence/installed_entries.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
@@ -52,6 +53,11 @@ export interface ExtensionListEntry {
    */
   autoResolved?: true;
   removeToReinstall?: string[];
+  /** present when tracked source files are not on disk */
+  missing?: MissingPulledExtensionState;
+  missingFiles?: string[];
+  /** the auto-resolver reinstalls it when one of its types is needed */
+  installsOnNextUse?: true;
 }
 
 export interface ExtensionListData {
@@ -68,27 +74,14 @@ export interface ExtensionListDeps {
   readOnDiskVersion?: (name: string) => string | null;
   autoResolvedNames?: ReadonlySet<string>;
   removeToReinstall?: (name: string) => string[];
-}
-
-const LOCKFILE_RETRY_DELAY_MS = 75;
-
-const waitBeforeRetryDefault = () =>
-  new Promise<void>((r) => setTimeout(r, LOCKFILE_RETRY_DELAY_MS));
-
-async function readEntriesWithRetry(
-  lockfilePath: string,
-  localLockfilePath: string | undefined,
-  waitBeforeRetry: () => Promise<void>,
-): Promise<InstalledEntries> {
-  try {
-    return await readInstalledEntries(lockfilePath, localLockfilePath);
-  } catch (error) {
-    // The managed lockfile is a datastore cache file that a sync pull can
-    // rewrite non-atomically; one short retry rides that out.
-    if (!(error instanceof SyntaxError)) throw error;
-    await waitBeforeRetry();
-    return await readInstalledEntries(lockfilePath, localLockfilePath);
-  }
+  missingOnDisk?: ReadonlyMap<
+    string,
+    {
+      state: MissingPulledExtensionState;
+      missingFiles: string[];
+      installsOnNextUse: boolean;
+    }
+  >;
 }
 
 /**
@@ -103,11 +96,12 @@ export async function createExtensionListDeps(
     waitBeforeRetry?: () => Promise<void>;
   },
 ): Promise<ExtensionListDeps> {
-  const { entries, localOnly } = await readEntriesWithRetry(
+  const installed = await readInstalledEntriesWithRetry(
     lockfilePath,
     localLockfilePath,
-    options?.waitBeforeRetry ?? waitBeforeRetryDefault,
+    options?.waitBeforeRetry,
   );
+  const { entries, localOnly } = installed;
   // An auto-resolved extension gone from disk is not installed: the
   // auto-resolver reinstalls it the next time one of its types is needed.
   const listed = { ...entries };
@@ -116,6 +110,11 @@ export async function createExtensionListDeps(
       delete listed[name];
     }
   }
+  const missing = await findMissingPulledExtensions(
+    repoDir,
+    installed,
+    localLockfilePath,
+  );
   const pulledRoot = resolvePulledExtensionsRoot(repoDir);
   return {
     lockfileRepository: new LockfileRepository(lockfilePath, listed),
@@ -125,6 +124,13 @@ export async function createExtensionListDeps(
     autoResolvedNames: localOnly,
     removeToReinstall: (name) =>
       pathsToRemoveForReinstall(repoDir, name, entries),
+    missingOnDisk: new Map(
+      missing.map((m) => [m.name, {
+        state: m.state,
+        missingFiles: m.missingFiles,
+        installsOnNextUse: m.installsOnNextUse,
+      }]),
+    ),
   };
 }
 
@@ -147,6 +153,7 @@ export async function* extensionList(
             ? null
             : deps.readOnDiskVersion?.(name) ?? null;
           const publishedChannel = readPublishedChannel(entry);
+          const missing = deps.missingOnDisk?.get(name);
           return {
             name,
             version: entry.version,
@@ -162,6 +169,15 @@ export async function* extensionList(
                 autoResolved: true as const,
                 ...(deps.removeToReinstall
                   ? { removeToReinstall: deps.removeToReinstall(name) }
+                  : {}),
+              }
+              : {}),
+            ...(missing
+              ? {
+                missing: missing.state,
+                missingFiles: missing.missingFiles,
+                ...(missing.installsOnNextUse
+                  ? { installsOnNextUse: true as const }
                   : {}),
               }
               : {}),

@@ -129,6 +129,7 @@ import {
   type DoctorExtensionsDeps,
   type DoctorRegistryDeps,
   extensionMemberDoctorDeps,
+  missingExtensionsDoctorDep,
   toDoctorWarnings,
 } from "../../libswamp/extensions/doctor.ts";
 import {
@@ -2212,6 +2213,11 @@ export async function handleDoctorExtensions(
       getWarnings: () => toDoctorWarnings(getExtensionLoadWarnings()),
       resetWarnings: resetExtensionLoadWarnings,
       ...extensionMemberDoctorDeps(sharedCatalog!),
+      ...missingExtensionsDoctorDep(
+        repoDir,
+        lockfilePath,
+        transitionalLocalLockfilePath(repoDir, marker, lockfilePath),
+      ),
     };
 
     let result: Record<string, unknown> | undefined;

@@ -18,15 +18,16 @@ piece in the output.
 
 Reach for a doctor command when the symptom maps to a known integration:
 
-| Symptom                                                    | Run                       |
-| ---------------------------------------------------------- | ------------------------- |
-| Audit log empty after init/upgrade or after AI-tool change | `swamp doctor audit`      |
-| Hooks aren't firing for the configured AI tool             | `swamp doctor audit`      |
-| Extension behavior/vault/datastore/report missing from CLI | `swamp doctor extensions` |
-| `swamp-warning:` line on stderr mentioning a load failure  | `swamp doctor extensions` |
-| Workflow YAML fails to parse or construct                  | `swamp doctor workflows`  |
-| `swamp workflow get` errors on a file that search finds    | `swamp doctor workflows`  |
-| CI preflight needs to gate on integration health           | any, with `--json`        |
+| Symptom                                                     | Run                       |
+| ----------------------------------------------------------- | ------------------------- |
+| Audit log empty after init/upgrade or after AI-tool change  | `swamp doctor audit`      |
+| Hooks aren't firing for the configured AI tool              | `swamp doctor audit`      |
+| Extension behavior/vault/datastore/report missing from CLI  | `swamp doctor extensions` |
+| `swamp-warning:` line on stderr mentioning a load failure   | `swamp doctor extensions` |
+| Pulled extension has missing source files (startup warning) | `swamp doctor extensions` |
+| Workflow YAML fails to parse or construct                   | `swamp doctor workflows`  |
+| `swamp workflow get` errors on a file that search finds     | `swamp doctor workflows`  |
+| CI preflight needs to gate on integration health            | any, with `--json`        |
 
 If the symptom is generic ("command errored", "method failed"), skip Tier 1 and
 go to Tier 2 (error inspection).
@@ -139,9 +140,10 @@ with `swamp repo upgrade --tool <name>`.
 
 ## `swamp doctor extensions`
 
-Verifies that every user-defined extension in this repo loads cleanly. Forces a
-catalog rescan and re-runs each registry's loader from scratch — cached lazy
-entries cannot mask failures. Exits 1 on any registry fail.
+Verifies that every user-defined extension in this repo loads cleanly and that
+every lockfile-pinned extension is on disk. Forces a catalog rescan and re-runs
+each registry's loader from scratch — cached lazy entries cannot mask failures.
+Exits 1 on any registry fail or any pinned extension missing from disk.
 
 ```bash
 swamp doctor extensions
@@ -222,6 +224,32 @@ The error string identifies the cause. Most failures fall into these buckets:
 | `Import "<dep>" not a dependency`      | Add the dep to the source's `deno.json` `imports` map                                                                     |
 | Syntax / unresolvable import           | Fix the file so `~/.swamp/deno/deno check` passes                                                                         |
 | `<registry> loader>: …`                | The loader itself threw — read the message; usually a config issue in the source's `deno.json` or a missing native binary |
+
+### Missing pinned extensions
+
+`missingExtensions` (always present in JSON) lists each lockfile entry whose
+tracked source files are not on disk: `state` is `absent` (nothing remains) or
+`truncated` (some files remain). Either fails the run, while every registry row
+still passes:
+
+```
+✗ 1 pinned extension(s) missing from disk:
+  • @example/missing  absent  .swamp/pulled-extensions/@example/missing
+    missing: .swamp/pulled-extensions/@example/missing/manifest.yaml
+    → Run 'swamp extension install' to restore it.
+
+5 passed, 0 failed, 1 missing pinned extension(s) — OVERALL: FAIL
+```
+
+The fix is in each entry's `remedy`: `install` means run
+`swamp extension install`; `deleteAndAutoResolve` means delete the paths in
+`removeToReinstall` so the auto-resolver reinstalls it (pulling would pin it in
+the team lockfile). Entries with `installsOnNextUse: true` (`remedy: nextUse`)
+are advisory: the auto-resolver installs them when a command needs one of their
+types. A fresh clone without a managed config has every pinned extension absent,
+so run `swamp extension install` before `doctor extensions` in CI.
+`swamp extension list` marks the same entries `(absent on disk)`,
+`(truncated on disk)` or `(absent on disk, installed on next use)`.
 
 For the deeper "extension not in type search" walkthrough (stderr inspection,
 source registration, `deno.json` discovery), see
@@ -351,9 +379,9 @@ swamp doctor workflows --json > workflow-health.json
 ```
 
 Run `doctor extensions` after every PR that touches `extensions/` or
-`.swamp-sources.yaml`. Run `doctor workflows` after every PR that touches
-workflow YAML files. Run `doctor audit` after every `init` or `upgrade` step in
-CI bootstrap.
+`.swamp-sources.yaml`, after `swamp extension install` on a fresh checkout. Run
+`doctor workflows` after every PR that touches workflow YAML files. Run
+`doctor audit` after every `init` or `upgrade` step in CI bootstrap.
 
 ## Escalating to other tiers
 

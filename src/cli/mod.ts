@@ -28,8 +28,9 @@ import {
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
 import {
+  findMissingPulledExtensions,
   type InstalledEntries,
-  isAbsentFromDisk,
+  type MissingPulledExtension,
   pathsToRemoveForReinstall,
   readInstalledEntries,
   transitionalInstalledNames,
@@ -154,7 +155,6 @@ import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
   createAutoResolveInstallerAdapter,
   createAutoResolveOutputAdapter,
-  isBundleArtifactPath,
 } from "./auto_resolver_adapters.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { isTelemetryDisabledByEnv } from "../infrastructure/telemetry/telemetry_opt_out_env.ts";
@@ -1683,85 +1683,49 @@ async function loadUserWebhooks(
   }
 }
 
-function trackedSourceFiles(entry: unknown): string[] {
-  if (typeof entry !== "object" || entry === null) return [];
-  const { files } = entry as { files?: unknown };
-  return Array.isArray(files)
-    ? files.filter((file): file is string => typeof file === "string")
-    : [];
-}
-
 /**
  * entries found only in the in-repo lockfile are reported separately, since
  * extension install restores only the resolved one; an entry already gone
  * entirely awaits the auto-resolver and is not reported
  */
-async function checkForMissingPulledExtensions(
+export async function checkForMissingPulledExtensions(
   repoDir: string,
   lockfilePath: string,
   localLockfilePath: string | undefined,
   report: (warning: DeferredWarning) => void,
 ): Promise<void> {
+  // advisory: anything that goes wrong warns rather than failing startup
   let installed: InstalledEntries;
+  let found: MissingPulledExtension[];
   try {
     installed = await readInstalledEntries(lockfilePath, localLockfilePath);
+    found = await findMissingPulledExtensions(
+      repoDir,
+      installed,
+      localLockfilePath,
+    );
   } catch (error) {
     logger.warn`Cannot check pulled extensions: ${
       error instanceof Error ? error.message : String(error)
     }`;
     return;
   }
-  const { entries, localOnly } = installed;
-  if (Object.keys(entries).length === 0) return;
-
-  // skips bundle artifacts (regenerable cache), with the same filter as
-  // inspectInstallation. advisory: a malformed entry is skipped and anything
-  // else that goes wrong warns rather than failing startup
-  const missing: Array<{ name: string; file: string }> = [];
-  try {
-    for (const [name, entry] of Object.entries(entries)) {
-      for (const file of trackedSourceFiles(entry)) {
-        if (isBundleArtifactPath(file)) continue;
-        try {
-          await Deno.stat(join(repoDir, file));
-        } catch (error) {
-          if (error instanceof Deno.errors.NotFound) {
-            missing.push({ name, file });
-            break;
-          }
-        }
-      }
-    }
-  } catch (error) {
-    logger.warn`Cannot check pulled extensions: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-    return;
-  }
+  // gone entirely and awaiting the auto-resolver: nothing to repair
+  const missing = found
+    .filter((m) => !m.installsOnNextUse)
+    .map((m) => ({
+      name: m.name,
+      file: m.missingFiles[0],
+      autoResolved: m.autoResolved,
+    }));
 
   const describe = (items: typeof missing) => {
     const files = items.map((m) => m.file);
     const detail = ` (e.g. ${files.slice(0, 3).join(", ")})`;
     return `${items.map((m) => m.name).join(", ")}${detail}`;
   };
-  // a team checkout's shared lockfile lists every extension the team pulled:
-  // one this checkout never installed is reinstalled when a command needs it
-  const shared: typeof missing = [];
-  for (const m of missing) {
-    if (localOnly.has(m.name)) continue;
-    if (
-      localLockfilePath !== undefined &&
-      await isAbsentFromDisk(repoDir, m.name, entries[m.name])
-    ) continue;
-    shared.push(m);
-  }
-  const local: typeof missing = [];
-  for (const m of missing) {
-    if (!localOnly.has(m.name)) continue;
-    // Gone entirely, it is reinstalled on next use: nothing to repair.
-    if (await isAbsentFromDisk(repoDir, m.name, entries[m.name])) continue;
-    local.push(m);
-  }
+  const shared = missing.filter((m) => !m.autoResolved);
+  const local = missing.filter((m) => m.autoResolved);
   if (shared.length > 0) {
     report({
       kind: "extensions",
@@ -1776,7 +1740,11 @@ async function checkForMissingPulledExtensions(
     // is an auto-resolver reinstall. all of an extension's paths, skill dirs
     // included, must go or the auto-resolver treats it as installed
     const toRemove = local.map(({ name }) => {
-      const paths = pathsToRemoveForReinstall(repoDir, name, entries);
+      const paths = pathsToRemoveForReinstall(
+        repoDir,
+        name,
+        installed.entries,
+      );
       return paths.length > 0 ? `${name}: ${paths.join(", ")}` : name;
     });
     report({

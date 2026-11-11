@@ -62,6 +62,7 @@ import type {
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   collectClusterInstances,
+  handleDoctorExtensions,
   handleDoctorWorkflows,
   handleExtensionInstall,
   handleExtensionList,
@@ -1156,6 +1157,47 @@ Deno.test("handleExtensionList: reads the managed lockfile and the transitional 
         e: { name: string },
       ) => e.name);
       assertEquals(names, ["@test/auto", "@test/team"]);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+Deno.test("handleDoctorExtensions: a pinned extension missing from disk fails the report and is named", async () => {
+  await withTempDir(async (dir) => {
+    const { repoDir, ctx, cleanup } = await createSyncRepo(dir, false);
+    try {
+      await ensureDir(join(repoDir, "extensions", "models"));
+      await Deno.writeTextFile(
+        join(repoDir, "extensions", "models", "upstream_extensions.json"),
+        JSON.stringify({
+          "@example/missing": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00.000Z",
+            files: [".swamp/pulled-extensions/@example/missing/manifest.yaml"],
+          },
+        }),
+      );
+      const socket = createMockSocket();
+
+      await handleDoctorExtensions(
+        socket,
+        ctx,
+        "req-doctor",
+        new AbortController(),
+        null,
+      );
+
+      const message = JSON.parse(socket.sent[0]);
+      assertEquals(message.type, "doctor.extensions");
+      const report = message.payload.data;
+      assertEquals(report.overallStatus, "fail");
+      assertEquals(
+        report.missingExtensions.map((
+          m: { name: string; state: string; remedy: string },
+        ) => [m.name, m.state, m.remedy]),
+        [["@example/missing", "absent", "install"]],
+      );
     } finally {
       cleanup();
     }

@@ -20,6 +20,12 @@
 import { walk } from "@std/fs";
 import { join, relative } from "@std/path";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import {
+  findMissingPulledExtensions,
+  type MissingPulledExtensionState,
+  pathsToRemoveForReinstall,
+  readInstalledEntriesWithRetry,
+} from "../../infrastructure/persistence/installed_entries.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { SwampError } from "../errors.ts";
 import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
@@ -62,6 +68,33 @@ export interface DoctorOrphanFile {
   path: string;
 }
 
+/**
+ * install: swamp extension install restores it; deleteAndAutoResolve: delete
+ * removeToReinstall and the auto-resolver reinstalls it, since a pull would pin
+ * it in the team lockfile; nextUse: the auto-resolver installs it when needed
+ */
+export type DoctorMissingExtensionRemedy =
+  | "install"
+  | "deleteAndAutoResolve"
+  | "nextUse";
+
+export interface DoctorMissingExtension {
+  name: string;
+  state: MissingPulledExtensionState;
+  expectedPath: string;
+  missingFiles: string[];
+  missingFileCount: number;
+  /** advisory when true: overallStatus is unchanged */
+  installsOnNextUse: boolean;
+  remedy: DoctorMissingExtensionRemedy;
+  removeToReinstall?: string[];
+}
+
+export interface DoctorMissingExtensionsResult {
+  missing: DoctorMissingExtension[];
+  warning?: DoctorWarning;
+}
+
 export interface DoctorWarning {
   /**
    * for ExtensionAttachFailed it is the model type that could not be loaded,
@@ -98,6 +131,8 @@ export interface DoctorExtensionsReport {
    * so existing CI gates keyed on it keep working
    */
   orphanFiles: DoctorOrphanFile[];
+  /** any entry that does not install on next use makes overallStatus fail */
+  missingExtensions: DoctorMissingExtension[];
   aggregateState?: DoctorAggregateReport;
   repairReport?: RepairReport;
   rescanSkipped?: DoctorRescanSkipped;
@@ -156,13 +191,18 @@ export interface DoctorExtensionsDeps {
   resetWarnings?: () => void;
   attachExtensionMembers?: () => Promise<readonly DoctorWarning[]>;
   getMemberCollisions?: () => readonly DoctorMemberCollision[];
+  findMissingExtensions?: () => Promise<DoctorMissingExtensionsResult>;
   rescanSkipped?: DoctorRescanSkipped;
 }
 
 function overallStatus(
   results: ReadonlyArray<DoctorRegistryResult>,
+  missingExtensions: ReadonlyArray<DoctorMissingExtension>,
 ): DoctorOverallStatus {
-  return results.some((r) => r.status === "fail") ? "fail" : "pass";
+  return results.some((r) => r.status === "fail") ||
+      missingExtensions.some((m) => !m.installsOnNextUse)
+    ? "fail"
+    : "pass";
 }
 
 /**
@@ -306,6 +346,12 @@ export async function* doctorExtensions(
     );
   }
 
+  let missingResult: DoctorMissingExtensionsResult = { missing: [] };
+  if (!deps.abortSignal.aborted && deps.findMissingExtensions) {
+    missingResult = await deps.findMissingExtensions();
+  }
+  const missingExtensions = missingResult.missing;
+
   let aggregateState: DoctorAggregateReport | undefined;
   if (!deps.abortSignal.aborted && deps.buildAggregateState) {
     aggregateState = await deps.buildAggregateState();
@@ -319,7 +365,11 @@ export async function* doctorExtensions(
   }
 
   const recentTransitions = deps.getRecentTransitions?.() ?? [];
-  const warnings = [...(deps.getWarnings?.() ?? []), ...attachWarnings];
+  const warnings = [
+    ...(deps.getWarnings?.() ?? []),
+    ...attachWarnings,
+    ...(missingResult.warning ? [missingResult.warning] : []),
+  ];
   const memberCollisions = deps.getMemberCollisions?.() ?? [];
 
   const results: DoctorRegistryResult[] = DOCTOR_REGISTRY_ORDER.map((name) => ({
@@ -337,9 +387,10 @@ export async function* doctorExtensions(
   yield {
     kind: "completed",
     report: {
-      overallStatus: overallStatus(results),
+      overallStatus: overallStatus(results, missingExtensions),
       registries,
       orphanFiles,
+      missingExtensions,
       aggregateState,
       repairReport,
       rescanSkipped: deps.rescanSkipped,
@@ -392,5 +443,72 @@ export function extensionMemberDoctorDeps(
       return failures;
     },
     getMemberCollisions: () => getExtensionMemberCollisions(),
+  };
+}
+
+/**
+ * shared by the CLI and serve so both report the entries the startup warning
+ * names; a lockfile that stays unreadable becomes a warning, not a failed run
+ */
+export function missingExtensionsDoctorDep(
+  repoDir: string,
+  lockfilePath: string,
+  localLockfilePath: string | undefined,
+  options?: { waitBeforeRetry?: () => Promise<void> },
+): Pick<DoctorExtensionsDeps, "findMissingExtensions"> {
+  return {
+    findMissingExtensions: async () => {
+      try {
+        const installed = await readInstalledEntriesWithRetry(
+          lockfilePath,
+          localLockfilePath,
+          options?.waitBeforeRetry,
+        );
+        const found = await findMissingPulledExtensions(
+          repoDir,
+          installed,
+          localLockfilePath,
+        );
+        const missing = found.map((m): DoctorMissingExtension => {
+          const remedy: DoctorMissingExtensionRemedy = m.installsOnNextUse
+            ? "nextUse"
+            : m.autoResolved
+            ? "deleteAndAutoResolve"
+            : "install";
+          return {
+            name: m.name,
+            state: m.state,
+            expectedPath: m.expectedPath,
+            missingFiles: m.missingFiles,
+            missingFileCount: m.missingFileCount,
+            installsOnNextUse: m.installsOnNextUse,
+            remedy,
+            ...(remedy === "deleteAndAutoResolve"
+              ? {
+                removeToReinstall: pathsToRemoveForReinstall(
+                  repoDir,
+                  m.name,
+                  installed.entries,
+                ).map(toForwardSlashes),
+              }
+              : {}),
+          };
+        });
+        return {
+          missing: missing.sort((a, b) => a.name.localeCompare(b.name)),
+        };
+      } catch (error) {
+        return {
+          missing: [],
+          warning: {
+            sourcePath: lockfilePath,
+            category: "LockfileUnreadable",
+            message: `Cannot check pinned extensions on disk: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          },
+        };
+      }
+    },
   };
 }

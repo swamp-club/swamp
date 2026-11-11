@@ -1369,6 +1369,9 @@ export {
   type DoctorExtensionsEvent,
   type DoctorExtensionsReport,
   type DoctorMemberCollision,
+  type DoctorMissingExtension,
+  type DoctorMissingExtensionRemedy,
+  type DoctorMissingExtensionsResult,
   type DoctorOverallStatus,
   type DoctorRegistryDeps,
   type DoctorRegistryName,
@@ -1376,6 +1379,7 @@ export {
   type DoctorRescanSkipped,
   type DoctorWarning,
   extensionMemberDoctorDeps,
+  missingExtensionsDoctorDep,
   toDoctorWarnings,
 } from "./extensions/doctor.ts";
 
