@@ -158,7 +158,8 @@ Deno.test("selectRoute: root help only when argv holds no word, no -- and no opt
       rootHelp++;
       for (const [i, arg] of args.entries()) {
         const valueOf = args[i - 1] === "--log-level";
-        assert(arg !== "--" && arg !== HELP_COMMAND, args.join(" "));
+        assert(arg !== "--", args.join(" "));
+        assert(arg !== HELP_COMMAND || valueOf, args.join(" "));
         assert(!ROUTE_WORDS.has(arg) || valueOf, args.join(" "));
         assert(
           valueOf || arg.startsWith("--log-level=") ||
@@ -243,6 +244,11 @@ Deno.test("outcome: the stand-in tree reaches a route through globals and help, 
     (await outcome(ROOT_ROUTES, ["--bogus", "data"])).startsWith("error: "),
     true,
   );
+});
+
+Deno.test("outcome: help as the --log-level value reaches no command on either tree", async () => {
+  assertEquals(await outcome(ROOT_ROUTES, ["--log-level", "help"]), "nothing");
+  assertEquals(await outcome([], ["--log-level", "help"]), "nothing");
 });
 
 /** keyed by the command words from the root to the group */

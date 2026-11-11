@@ -137,6 +137,7 @@ Deno.test("selectRoute: root help for no word, with only root globals and help f
       ["--json", "--help"],
       ["-h", "--log-level", "debug"],
       ["--log-level=debug", "--no-color", "--help"],
+      ["--log-level", "help"],
     ]
   ) {
     assertEquals(
