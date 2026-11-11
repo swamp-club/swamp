@@ -129,9 +129,11 @@ every read and run command works the same with `--server`
 Each invocation loads only the top-level command it runs, through its row in
 `src/cli/root_routes.ts` (a shell completion callback also loads
 `completions`); a new top-level command gets a row there, and startup code never
-imports a command module statically. The `data` and `workflow` groups load only
-the subcommand argv names, through their own tables (`data_routes.ts`,
-`workflow_routes.ts`); a new subcommand of either gets a row there. `behavior`,
+imports a command module statically. The row also carries the command's short
+description and argument syntax, so root help lists every command without
+loading any. The `data` and `workflow` groups load only the subcommand argv
+names, through their own tables (`data_routes.ts`, `workflow_routes.ts`); a new
+subcommand of either gets a row there. `behavior`,
 `model` and `model method` do the same through `model_routes.ts`, which defines
 each shared subcommand once and lists it in each spelling's own order.
 

@@ -163,8 +163,12 @@ Deno.test("typoFor: short and repeated-letter names fall back to a suffix", () =
 
 Deno.test("buildInvocations: root help, per-path help, completions, typos, version", () => {
   const invocations = buildInvocations(tree).map((args) => args.join(" "));
-  assertEquals(invocations.slice(0, 5), [
+  assertEquals(invocations.slice(0, 9), [
     "--help",
+    "-h",
+    "",
+    "--json",
+    "--json --help",
     "help",
     "help --include-hidden",
     "data --help",
@@ -180,6 +184,7 @@ Deno.test("buildInvocations: root help, per-path help, completions, typos, versi
 
 Deno.test("buildInvocations: one typo at the root and in every group, from a visible child", () => {
   const typos = buildInvocations(tree)
+    .filter((args) => args.length > 0 && !args[0].startsWith("-"))
     .filter((args) => !args.includes("--help") && args[0] !== "help")
     .filter((args) => args[0] !== "completions" && args[0] !== "version");
   assertEquals(typos, [

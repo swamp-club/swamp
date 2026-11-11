@@ -162,6 +162,10 @@ export const COMPLETION_SHELLS: readonly string[] = ["bash", "zsh", "fish"];
 export function buildInvocations(root: SchemaNode): string[][] {
   const invocations: string[][] = [
     ["--help"],
+    ["-h"],
+    [],
+    ["--json"],
+    ["--json", "--help"],
     ["help"],
     ["help", "--include-hidden"],
   ];

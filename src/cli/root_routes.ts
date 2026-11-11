@@ -18,13 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AnyCommand } from "./cli_schema.ts";
-import type { CommandRoute } from "./command_routes.ts";
+import type { RootRoute } from "./command_routes.ts";
 
 // each load is a literal import(): deno compile embeds only literal specifiers,
-// and the order is root help's listing order
-export const ROOT_ROUTES: readonly CommandRoute[] = [
+// and the order is root help's listing order; root help reads the rows alone
+export const ROOT_ROUTES: readonly RootRoute[] = [
   {
     name: "access",
+    shortDescription:
+      "Manage authorization policies (grants), groups, and access checks",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/access.ts",
@@ -33,6 +35,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "version",
+    shortDescription: "Display the version of swamp",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/version.ts",
@@ -41,6 +44,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "behavior",
+    shortDescription: "Manage and run behaviors (preferred over 'model')",
     aliases: ["behaviour"],
     hidden: false,
     module: "src/cli/commands/behavior.ts",
@@ -50,6 +54,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "model",
+    shortDescription:
+      "Manage models (legacy spelling of 'behavior'; kept, no removal planned)",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/model.ts",
@@ -59,6 +65,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "init",
+    shortDescription: "Initialize a new swamp repository",
+    arguments: "[path:string]",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/repo_init.ts",
@@ -67,6 +75,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "repo",
+    shortDescription: "Manage swamp repositories",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/repo_init.ts",
@@ -75,6 +84,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "workflow",
+    shortDescription: "Manage workflows",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/workflow.ts",
@@ -84,6 +94,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "vault",
+    shortDescription: "Manage vault configurations",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/vault.ts",
@@ -92,6 +103,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "data",
+    shortDescription: "Manage behavior data",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/data.ts",
@@ -101,6 +113,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "telemetry",
+    shortDescription: "Manage CLI telemetry",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/telemetry_stats.ts",
@@ -110,6 +123,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "audit",
+    shortDescription: "View audit timeline of swamp vs direct CLI commands",
     aliases: [],
     hidden: true,
     module: "src/cli/commands/audit.ts",
@@ -118,6 +132,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "update",
+    shortDescription: "Update swamp to the latest version",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/update.ts",
@@ -126,6 +141,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "config",
+    shortDescription: "Manage swamp configuration",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/config.ts",
@@ -134,6 +150,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "source",
+    shortDescription: "Manage swamp source code for troubleshooting",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/source.ts",
@@ -142,6 +159,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "completions",
+    shortDescription: "Generate shell completions.",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/completion.ts",
@@ -153,6 +171,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "issue",
+    shortDescription:
+      "Search, fetch, report, and comment on swamp-club Lab issues",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/issue.ts",
@@ -161,6 +181,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "invite",
+    shortDescription: "Invite people to swamp-club",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/invite.ts",
@@ -170,6 +191,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   // Hidden easter egg — the same command as `swamp invite link`.
   {
     name: "first-rule",
+    shortDescription: "Print your swamp-club invite link",
     aliases: [],
     hidden: true,
     module: "src/cli/commands/invite_link.ts",
@@ -179,6 +201,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "auth",
+    shortDescription: "Manage swamp-club authentication.",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/auth.ts",
@@ -187,6 +210,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "extension",
+    shortDescription: "Manage swamp extensions",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/extension.ts",
@@ -196,6 +220,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "summarise",
+    shortDescription:
+      "Show a high-level overview of repo activity (method executions, workflows, data)",
     aliases: ["summarize"],
     hidden: false,
     module: "src/cli/commands/summarise.ts",
@@ -205,6 +231,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "datastore",
+    shortDescription: "Manage datastore configuration",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/datastore.ts",
@@ -214,6 +241,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "doctor",
+    shortDescription:
+      "Run diagnostics that verify swamp's integrations are healthy.",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/doctor.ts",
@@ -222,6 +251,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "run",
+    shortDescription: "Track and diagnose in-flight method and workflow runs",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/run.ts",
@@ -230,6 +260,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "report",
+    shortDescription: "Browse and view stored report results",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/report.ts",
@@ -238,6 +269,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "serve",
+    shortDescription:
+      "Start a WebSocket API server for workflow and behavior execution.",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/serve.ts",
@@ -246,6 +279,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "agent",
+    shortDescription: "Manage custom AI agent tool definitions",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/agent_setup.ts",
@@ -254,6 +288,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "worker",
+    shortDescription: "Manage remote execution workers and enrollment tokens",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/worker.ts",
@@ -262,6 +297,7 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "quest",
+    shortDescription: "What treasures are there yet to discover?",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/quest.ts",
@@ -270,6 +306,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "subscription",
+    shortDescription:
+      "Show the plan and billing standing of your swamp-club collectives, and open their billing page",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/subscription.ts",
@@ -279,6 +317,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "inbox",
+    shortDescription:
+      "Browse your Swamp Club inbox. In a terminal, an interactive inbox where opening a message marks it read. Otherwise a list of messages with their ids, which marks nothing read.",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/inbox.ts",
@@ -287,6 +327,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "start",
+    shortDescription:
+      "Get from a task to an agent working on it. Opens a local page where you",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/start.ts",
@@ -295,6 +337,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "dashboard",
+    shortDescription:
+      "Open this repo's dashboard in your browser, with no swamp serve",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/dashboard.ts",
@@ -304,6 +348,8 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
   },
   {
     name: "workspace",
+    shortDescription:
+      "Manage workspaces: swamp repos Swamp keeps track of, wherever they are",
     aliases: [],
     hidden: false,
     module: "src/cli/commands/workspace.ts",
