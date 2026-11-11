@@ -25,6 +25,7 @@ import {
   overlayAppliedSettings,
   reloadsOnHangup,
   SETTING_CATALOGUE,
+  timedServiceReloadReasons,
 } from "./serve_settings_reload.ts";
 
 function diff(
@@ -253,26 +254,100 @@ Deno.test("diffServeSettings: stale-ttl and heartbeat-interval stay restart-only
   assertStringIncludes(report.needsRestart[0].reason, "liveness");
 });
 
-Deno.test("continuationSweepReloadReason: a sweep that runs only at boot cannot take a new interval, but turning it off still needs a restart", () => {
+Deno.test("continuationSweepReloadReason: a reload starts or stops the sweep, except where this datastore cannot run it after boot", () => {
+  type Decision = Parameters<
+    typeof continuationSweepReloadReason
+  >[0]["startDecision"];
   const reason = (
     running: boolean,
     bootPassOnly: boolean,
     staysOn: boolean,
-  ) => continuationSweepReloadReason({ running, bootPassOnly, staysOn });
+    startDecision: Decision = "start",
+  ) =>
+    continuationSweepReloadReason({
+      running,
+      bootPassOnly,
+      staysOn,
+      startDecision,
+    });
   assertEquals(reason(true, false, true), undefined);
+  assertEquals(reason(false, false, true), undefined);
+  assertEquals(reason(true, false, false), undefined);
+  assertEquals(reason(false, false, false, "disabled"), undefined);
+  assertEquals(reason(true, true, false), undefined);
   assertEquals(
-    reason(false, false, true),
-    "the continuation sweep is not running on this serve; restart serve to start it",
+    reason(true, true, true),
+    "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this",
   );
   assertEquals(
-    reason(true, false, false),
-    "turning the continuation sweep off needs a restart",
+    reason(false, true, true),
+    "the continuation sweep runs only at boot on this datastore; restart serve to start it",
   );
-  const bootOnly =
-    "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
-  assertEquals(reason(true, true, true), bootOnly);
+  assertStringIncludes(
+    reason(false, false, true, "no_shared_claims")!,
+    "cannot run on this datastore",
+  );
+  assertStringIncludes(
+    reason(false, false, true, "serve_starting")!,
+    "serve is still starting",
+  );
+  assertStringIncludes(
+    reason(false, false, true, "records_not_current")!,
+    "restart serve to start the continuation sweep",
+  );
+});
+
+Deno.test("timedServiceReloadReasons: scheduling, the scheduled-run limit and the timed services apply without a restart", () => {
+  const base = {
+    scheduling: { running: true, turnsOn: true },
+    dataPollers: true,
+    reconciliationLoop: true,
+    sweep: {
+      running: false,
+      bootPassOnly: false,
+      staysOn: true,
+      startDecision: "start" as const,
+    },
+    groupRefresh: { running: false, staysOn: true, runnable: true },
+  };
+  assertEquals(timedServiceReloadReasons(base), {});
   assertEquals(
-    reason(true, true, false),
-    "turning the continuation sweep off needs a restart",
+    Object.keys(timedServiceReloadReasons({
+      ...base,
+      scheduling: { running: false, turnsOn: true },
+    })),
+    [],
   );
+  assertStringIncludes(
+    timedServiceReloadReasons({
+      ...base,
+      scheduling: { running: false, turnsOn: false },
+    }).triggerOverrides!,
+    "a reload that turns schedule on applies them",
+  );
+  assertStringIncludes(
+    timedServiceReloadReasons({
+      ...base,
+      groupRefresh: { running: false, staysOn: true, runnable: false },
+    }).groupRefreshInterval!,
+    "--auth-mode oauth",
+  );
+  assertEquals(
+    Object.keys(timedServiceReloadReasons({
+      ...base,
+      dataPollers: false,
+      reconciliationLoop: false,
+    })).sort(),
+    ["datastorePollInterval", "reconciliationInterval"],
+  );
+
+  const report = diff(
+    { schedule: true, "max-concurrent-scheduled-runs": 1 },
+    { schedule: false, "max-concurrent-scheduled-runs": 3 },
+  );
+  assertEquals([...report.applied].sort(), [
+    "max-concurrent-scheduled-runs",
+    "schedule",
+  ]);
+  assertEquals(report.needsRestart, []);
 });

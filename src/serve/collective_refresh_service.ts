@@ -92,6 +92,13 @@ export class CollectiveRefreshService {
     this.#scheduleNext();
   }
 
+  /** a changed interval counts from now; mid-refresh the next timer reads it */
+  rearm(): void {
+    if (this.#disposed || this.#running || this.#timer === null) return;
+    clearTimeout(this.#timer);
+    this.#scheduleNext();
+  }
+
   async dispose(): Promise<void> {
     this.#disposed = true;
     if (this.#timer !== null) {

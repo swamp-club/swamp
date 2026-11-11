@@ -190,6 +190,8 @@ export interface ContinuationSweepDeps {
    * can be behind, and a pass would resume it.
    */
   readonly bootPassOnly?: boolean;
+  /** started by a reload: its first pass is not the boot pass */
+  readonly afterBoot?: boolean;
   sweep(
     pass: { boot: boolean; isStopping: () => boolean; signal: AbortSignal },
   ): Promise<ContinuationSweepResult>;
@@ -231,6 +233,7 @@ export class ContinuationSweepService {
 
   constructor(deps: ContinuationSweepDeps) {
     this.#deps = deps;
+    this.#booted = deps.afterBoot ?? false;
   }
 
   /**
@@ -264,6 +267,13 @@ export class ContinuationSweepService {
       this.#timer = null;
     }
     if (this.#running) await this.#running;
+  }
+
+  /** a changed interval counts from now; mid-pass the next timer reads it */
+  rearm(): void {
+    if (this.#disposed || this.#running || this.#timer === null) return;
+    clearTimeout(this.#timer);
+    this.#scheduleNext();
   }
 
   async runOnce(): Promise<void> {

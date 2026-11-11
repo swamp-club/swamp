@@ -227,6 +227,7 @@ Deno.test("createServeSettingsReloader: a sweep that runs only at boot reports a
         running: true,
         bootPassOnly: true,
         staysOn: merged.continuationSweepInterval !== "0",
+        startDecision: "start",
       });
       return reason ? { continuationSweepInterval: reason } : {};
     },

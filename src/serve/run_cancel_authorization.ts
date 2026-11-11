@@ -41,8 +41,16 @@ export type RunCancelHolders = Pick<
   | "cancelRegistry"
   | "activeRunRegistry"
   | "scheduledExecution"
+  | "retiringScheduled"
   | "webhookRuns"
 >;
+
+function schedulersOf(holders: RunCancelHolders) {
+  return [
+    ...(holders.scheduledExecution ? [holders.scheduledExecution] : []),
+    ...(holders.retiringScheduled?.() ?? []),
+  ];
+}
 
 /** a cancel is decided on this; undefined when the lookup failed, which refuses */
 export async function runCancelResource(
@@ -63,7 +71,8 @@ export function workflowHeldOutsideActiveRuns(
   holders: RunCancelHolders,
   runId: string,
 ): HeldRunWorkflow | undefined {
-  const scheduled = holders.scheduledExecution?.workflowOfRun(runId);
+  const scheduled = schedulersOf(holders).map((s) => s.workflowOfRun(runId))
+    .find((found) => found !== undefined);
   const webhook = holders.webhookRuns?.workflowOfRun(runId);
   return holders.cancelRegistry?.workflowOf("workflow-run", runId) ??
     scheduled ??
@@ -76,7 +85,7 @@ export function abortRunHeldOutsideActiveRuns(
   reason: string,
 ): boolean {
   return holders.cancelRegistry?.cancel("workflow-run", runId, reason) ||
-    holders.scheduledExecution?.cancelByRunId(runId, reason) ||
+    schedulersOf(holders).some((s) => s.cancelByRunId(runId, reason)) ||
     holders.webhookRuns?.cancelByRunId(runId, reason) ||
     false;
 }

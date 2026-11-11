@@ -458,3 +458,55 @@ Deno.test("runOnce: a failed token the cap left untried stays at the back", asyn
   await service.runOnce();
   assertEquals(attempted, ["later", "bad"]);
 });
+
+Deno.test("rearm: a lowered interval takes effect without waiting out the timer already set", async () => {
+  let intervalMs = ONE_HOUR;
+  let listCalls = 0;
+  const service = new ServerTokenGcService({
+    ...makeMockDeps([], {
+      listTokens: () => {
+        listCalls++;
+        return Promise.resolve([]);
+      },
+    }),
+    get intervalMs() {
+      return intervalMs;
+    },
+  });
+  try {
+    service.start();
+    await waitFor(() => listCalls === 1, "the first sweep");
+    intervalMs = 10;
+    service.rearm();
+    await waitFor(() => listCalls >= 3, "sweeps at the new interval");
+  } finally {
+    await service.dispose();
+  }
+});
+
+Deno.test("rearm: mid-sweep it leaves the schedule to the sweep, which reads the new interval", async () => {
+  let intervalMs = ONE_HOUR;
+  let listCalls = 0;
+  const release = Promise.withResolvers<TokenGcInfo[]>();
+  const service = new ServerTokenGcService({
+    ...makeMockDeps([], {
+      listTokens: () => {
+        listCalls++;
+        return listCalls === 1 ? release.promise : Promise.resolve([]);
+      },
+    }),
+    get intervalMs() {
+      return intervalMs;
+    },
+  });
+  try {
+    service.start();
+    await waitFor(() => listCalls === 1, "the first sweep in flight");
+    intervalMs = 10;
+    service.rearm();
+    release.resolve([]);
+    await waitFor(() => listCalls >= 3, "sweeps at the new interval");
+  } finally {
+    await service.dispose();
+  }
+});

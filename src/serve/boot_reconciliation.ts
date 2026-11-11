@@ -338,6 +338,18 @@ export interface ReplayPendingRunsDeps {
   claimAs?: PendingRunOwner;
   /** runs this process claimed, kept for its lifetime: an owner write can fail */
   replayedRuns?: Set<string>;
+  /**
+   * with no scheduler, cron runs are left pending instead of discarded: this
+   * process turned scheduling off and may turn it back on
+   */
+  keepCronRuns?: boolean;
+  /**
+   * only the cron runs claimAs owns, which a drained scheduler left pending;
+   * the normal pass skips them as already queued
+   */
+  ownCronOnly?: boolean;
+  /** with ownCronOnly: a run queued from then on is the live scheduler's own */
+  createdBefore?: string;
 }
 
 export async function replayPendingRuns(
@@ -467,18 +479,33 @@ export async function replayPendingRuns(
 
   let replayed = 0;
   for (const entry of pending) {
-    if (deps.replayedRuns?.has(entry.id)) continue;
+    const ownCron = entry.source === "cron" &&
+      deps.claimAs !== undefined &&
+      entry.owner?.instanceId === deps.claimAs.instanceId;
+    if (deps.ownCronOnly && !ownCron) continue;
+    if (
+      deps.ownCronOnly && deps.createdBefore !== undefined &&
+      entry.createdAt >= deps.createdBefore
+    ) continue;
+    if (
+      entry.source === "cron" && !deps.scheduledExecution && deps.keepCronRuns
+    ) continue;
+    if (!deps.ownCronOnly && deps.replayedRuns?.has(entry.id)) continue;
     if (deps.sweep && entry.owner === undefined) continue;
     // a run this process already owns is in its queue, or failed to start
     if (
+      !deps.ownCronOnly &&
       deps.claimAs !== undefined &&
       entry.owner?.instanceId === deps.claimAs.instanceId
     ) continue;
-    if (entry.owner && deps.ownerAlive && await deps.ownerAlive(entry.owner)) {
+    if (
+      !deps.ownCronOnly && entry.owner && deps.ownerAlive &&
+      await deps.ownerAlive(entry.owner)
+    ) {
       deps.deferred?.add(entry.id);
       continue;
     }
-    if (deps.claimAs) {
+    if (deps.claimAs && !deps.ownCronOnly) {
       let claimed: boolean;
       try {
         claimed = await claimPendingRun(

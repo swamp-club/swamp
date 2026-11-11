@@ -527,3 +527,48 @@ Deno.test("decideContinuationSweepStart: a synced datastore needs claims every i
     "records_not_current",
   );
 });
+
+Deno.test("ContinuationSweepService: rearm makes a lowered interval take effect without waiting out the timer already set", async () => {
+  let intervalMs = 3_600_000;
+  let passes = 0;
+  const service = new ContinuationSweepService({
+    get intervalMs() {
+      return intervalMs;
+    },
+    sweep: () => {
+      passes++;
+      return Promise.resolve({ examined: 0, launched: 0 });
+    },
+  });
+  try {
+    service.start();
+    await waitFor(() => passes === 1, "the boot pass");
+    // the boot pass schedules the next one once it settles
+    await service.runOnce();
+    intervalMs = 10;
+    service.rearm();
+    await waitFor(() => passes >= 4, "passes at the new interval");
+  } finally {
+    await service.dispose();
+  }
+});
+
+Deno.test("ContinuationSweepService: one started by a reload does not treat its first pass as the boot pass", async () => {
+  const passes: boolean[] = [];
+  const service = new ContinuationSweepService({
+    intervalMs: 3_600_000,
+    afterBoot: true,
+    sweep: ({ boot }) => {
+      passes.push(boot);
+      return Promise.resolve({ examined: 0, launched: 0 });
+    },
+  });
+  try {
+    service.start();
+    await service.runOnce();
+    await service.runOnce();
+    assertEquals(passes, [false, false]);
+  } finally {
+    await service.dispose();
+  }
+});

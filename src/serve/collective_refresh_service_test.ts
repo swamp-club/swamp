@@ -528,3 +528,27 @@ Deno.test("CollectiveRefreshService: never passes on a user name for userinfo of
   await runOneCycle(deps, cycles);
   assertEquals(learned, []);
 });
+
+Deno.test("CollectiveRefreshService: rearm makes a lowered interval take effect without waiting out the timer already set", async () => {
+  let intervalMs = 60 * 60 * 1000;
+  let cycles = 0;
+  const service = new CollectiveRefreshService({
+    ...makeMockDeps({
+      listActiveTokens: () => {
+        cycles++;
+        return Promise.resolve([]);
+      },
+    }),
+    get intervalMs() {
+      return intervalMs;
+    },
+  });
+  try {
+    service.start();
+    intervalMs = 10;
+    service.rearm();
+    await waitFor(() => cycles >= 2, "refreshes at the new interval");
+  } finally {
+    await service.dispose();
+  }
+});
