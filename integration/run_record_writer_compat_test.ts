@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a run record the repository writes reads the same in serve as one an older
-// binary wrote, so forwarding and read filtering decide alike for both
-
 import { assert, assertEquals } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 import type { TypedChange } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";

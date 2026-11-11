@@ -25,6 +25,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // JSON leaves these raw; YAML forbids them in a stream or reads them as breaks.
 const RAW_IN_JSON = /[\x7f-\x9f\u2028\u2029\ufeff\ufffe\uffff]/;
 const RAW_IN_JSON_ALL = new RegExp(RAW_IN_JSON.source, "g");
+// YAML caps an implicit key here; strict parsers refuse a longer one.
+const MAX_IMPLICIT_KEY = 1024;
 
 function escapeRaw(char: string): string {
   return `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
@@ -42,7 +44,7 @@ function writeString(text: string): string {
 }
 
 function isEmptyObject(value: object): boolean {
-  for (const _ in value) return false;
+  for (const key in value) if (Object.hasOwn(value, key)) return false;
   return true;
 }
 
@@ -84,12 +86,16 @@ function writeMapping(
   let prefix = lead;
   for (const key of Object.keys(map)) {
     const value = map[key];
-    out += prefix + writeString(key) + ":";
+    const written = writeString(key);
+    const explicit = written.length > MAX_IMPLICIT_KEY;
+    out += explicit
+      ? prefix + "? " + written + "\n" + indent + ":"
+      : prefix + written + ":";
     if (!isCollection(value)) {
       out += " " + writeScalar(value) + "\n";
     } else {
-      // a sequence under a key sits at the key's own indent
-      const inner = Array.isArray(value) ? indent : indent + "  ";
+      // a sequence under an implicit key sits at the key's own indent
+      const inner = Array.isArray(value) && !explicit ? indent : indent + "  ";
       out += "\n" + writeCollection(value, inner, inner);
     }
     prefix = indent;
@@ -110,8 +116,9 @@ function writeSequence(items: unknown[], indent: string, lead: string): string {
 }
 
 /**
- * Block-style YAML for a JSON-clean run record, read back by any YAML 1.2
- * parser; it skips the general dumper's style search, folding and anchors.
+ * Block-style YAML 1.2 for a JSON-clean run record, which `@std/yaml` reads back
+ * as the same data; it skips the general dumper's style search, folding and
+ * anchors.
  */
 export function writeRunRecordYaml(record: Record<string, unknown>): string {
   return isCollection(record) ? writeMapping(record, "", "") : "{}\n";

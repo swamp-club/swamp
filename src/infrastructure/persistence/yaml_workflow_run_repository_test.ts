@@ -6161,7 +6161,7 @@ function realisticRunData(
     workflowRunId: runId,
     job: "main",
     step,
-    initiatedBy: "user:zack",
+    initiatedBy: "user:test",
     "_swamp.kind": type,
   });
   const steps = Array.from({ length: stepCount }, (_, i) => {

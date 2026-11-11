@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// any JSON-clean record reads back identically, through the same parser older
-// binaries and serve use
-
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -110,7 +107,14 @@ const baseString = fc.oneof(
   fc.date({ noInvalidDate: true }).map((date) => date.toISOString()),
 );
 const text = fc.oneof(
-  { weight: 4, arbitrary: baseString },
+  { weight: 8, arbitrary: baseString },
+  // either side of YAML's 1024-character implicit-key limit
+  {
+    weight: 1,
+    arbitrary: fc.tuple(fc.integer({ min: 1015, max: 1030 }), baseString).map(
+      ([length, tail]) => "k".repeat(length) + tail,
+    ),
+  },
   {
     weight: 1,
     arbitrary: fc.tuple(tricky, baseString, tricky).map((parts) =>

@@ -303,6 +303,39 @@ Deno.test("writeRunRecordYaml: special and long keys round-trip", () => {
   });
 });
 
+Deno.test("writeRunRecordYaml: a key longer than YAML's implicit-key limit is written as an explicit key", () => {
+  const atLimit = "k".repeat(1024);
+  const overLimit = "k".repeat(1025);
+  const quotedOver = "k ".repeat(512);
+  const record = {
+    [atLimit]: 1,
+    [overLimit]: "scalar",
+    [quotedOver]: { nested: [1, [2]] },
+    list: [{ [overLimit]: [3] }, { [overLimit]: {} }],
+  };
+  assertEquals(
+    writeRunRecordYaml(record),
+    [
+      `${atLimit}: 1`,
+      `? ${overLimit}`,
+      ": scalar",
+      `? ${JSON.stringify(quotedOver)}`,
+      ":",
+      "  nested:",
+      "  - 1",
+      "  - - 2",
+      "list:",
+      `- ? ${overLimit}`,
+      "  :",
+      "    - 3",
+      `- ? ${overLimit}`,
+      "  : {}",
+      "",
+    ].join("\n"),
+  );
+  assertRoundTrips(record);
+});
+
 Deno.test("writeRunRecordYaml: a __proto__ key reads back as an own property", () => {
   const record = JSON.parse('{"__proto__": {"polluted": true}, "a": 1}');
   const back = roundTrip(record) as Record<string, unknown>;
