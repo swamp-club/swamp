@@ -75,10 +75,13 @@ import type {
 } from "../../libswamp/models/model_method_run_view.ts";
 import { GIT_SHA } from "../../infrastructure/runtime/build_info.ts";
 import {
+  assertNoDataInputOverlap,
   deepMerge,
   mergeInputArgs,
+  parseDataInputs,
   parseInputs,
   parseStdinContent,
+  withDataInputs,
 } from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTags } from "../../libswamp/data/search.ts";
@@ -113,7 +116,11 @@ import {
   runModelMethodOverServer,
   TOKEN_FILE_DESCRIPTION,
 } from "../remote_run.ts";
-import { SERVE_CAPABILITY_LITERAL_INPUTS } from "../../serve/protocol.ts";
+import { dottedKeyPath } from "../../domain/models/data_field_extractor.ts";
+import {
+  SERVE_CAPABILITY_DATA_INPUTS,
+  SERVE_CAPABILITY_LITERAL_INPUTS,
+} from "../../serve/protocol.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
@@ -289,6 +296,11 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
       { default: false },
     )
     .option(
+      "--input-data <value:string>",
+      "Read one input from a file as data, never evaluated (key=<path>, repeatable; with --server, needs a serve that supports it)",
+      { collect: true },
+    )
+    .option(
       "--tag <tag:string>",
       "Add tag to produced data (KEY=VALUE, repeatable)",
       { collect: true },
@@ -456,6 +468,10 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               : options.inputFile as string | undefined,
             literal: options.literalInputs === true,
           });
+          const dataInputs = await parseDataInputs(
+            options.inputData as string[] | undefined,
+          );
+          assertNoDataInputOverlap(cliInputs, dataInputs);
 
           const runtimeTags = options.tag
             ? parseTags(options.tag as string[])
@@ -684,13 +700,16 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             datastoreRootOf(datastoreConfig),
           );
 
-          const inputSets: Record<string, unknown>[] = stdinItems
-            ? stdinItems.map((item) =>
-              Object.keys(cliInputs).length > 0
-                ? deepMerge(item, cliInputs)
-                : item
-            )
-            : [cliInputs];
+          const inputSets: Record<string, unknown>[] = withDataInputs(
+            stdinItems
+              ? stdinItems.map((item) =>
+                Object.keys(cliInputs).length > 0
+                  ? deepMerge(item, cliInputs)
+                  : item
+              )
+              : [cliInputs],
+            dataInputs,
+          );
 
           // what each run wrote, for the locks' push to publish.
           const written: WrittenVersion[] = [];
@@ -939,6 +958,11 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                         methodName,
                         inputs: inputSets[i],
                         literalInputs: options.literalInputs === true,
+                        ...(dataInputs.keys.length > 0
+                          ? {
+                            dataInputPaths: dataInputs.keys.map(dottedKeyPath),
+                          }
+                          : {}),
                         lastEvaluated,
                         typeArg,
                         definitionName,
@@ -1114,6 +1138,10 @@ async function runMethodViaServer(
     inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
     literal: literalInputs,
   });
+  const dataInputs = await parseDataInputs(
+    options.inputData as string[] | undefined,
+  );
+  assertNoDataInputOverlap(cliInputs, dataInputs);
   const runtimeTags = options.tag
     ? parseTags(options.tag as string[])
     : undefined;
@@ -1129,11 +1157,14 @@ async function runMethodViaServer(
     stopsCatchUps: true,
   });
 
-  const inputSets: Record<string, unknown>[] = stdinItems
-    ? stdinItems.map((item) =>
-      Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
-    )
-    : [cliInputs];
+  const inputSets: Record<string, unknown>[] = withDataInputs(
+    stdinItems
+      ? stdinItems.map((item) =>
+        Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
+      )
+      : [cliInputs],
+    dataInputs,
+  );
 
   const token = await resolveServerTokenFromOptions(
     server,
@@ -1154,6 +1185,20 @@ async function runMethodViaServer(
       if (!version.capabilities?.includes(SERVE_CAPABILITY_LITERAL_INPUTS)) {
         throw new UserError(
           `The server (swamp ${version.version}) does not support --literal-inputs, so it would evaluate expressions in the inputs. Upgrade swamp serve, or run without --server.`,
+        );
+      }
+    }
+    if (dataInputs.keys.length > 0 && !literalInputs) {
+      // asked of the leader, which runs it; a follower only relays
+      const version = await requestServerResponse<
+        { version: string; capabilities?: string[] }
+      >(
+        { server, token, signal: abort.signal },
+        { type: "server.version", payload: { leader: true } },
+      );
+      if (!version.capabilities?.includes(SERVE_CAPABILITY_DATA_INPUTS)) {
+        throw new UserError(
+          `The server (swamp ${version.version}) does not support --input-data, so it would evaluate expressions in the file. Upgrade swamp serve, or run without --server.`,
         );
       }
     }
@@ -1183,6 +1228,9 @@ async function runMethodViaServer(
             methodName,
             inputs: inputSets[i],
             ...(literalInputs ? { literalInputs: true } : {}),
+            ...(dataInputs.keys.length > 0
+              ? { dataInputKeys: dataInputs.keys }
+              : {}),
             lastEvaluated: options.lastEvaluated as boolean,
             runtimeTags,
             typeArg: info.typeArg,

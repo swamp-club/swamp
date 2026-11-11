@@ -84,7 +84,10 @@ function toCompactOutput(data: TypeDescribeData): CompactTypeDescribe {
 
 interface JsonSchemaLike {
   type?: string | string[];
-  properties?: Record<string, { type?: string | string[]; enum?: string[] }>;
+  properties?: Record<
+    string,
+    { type?: string | string[]; enum?: string[]; data?: boolean }
+  >;
   required?: string[];
 }
 
@@ -98,6 +101,7 @@ function compactSchema(schema: object): object {
     const entry: Record<string, unknown> = {};
     if (val.type) entry.type = val.type;
     if (val.enum) entry.enum = val.enum;
+    if (val.data === true) entry.data = true;
     props[key] = entry;
   }
   result.properties = props;

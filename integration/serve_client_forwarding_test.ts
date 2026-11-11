@@ -57,6 +57,12 @@ import {
   extractWebSocketToken,
 } from "../src/serve/token_auth.ts";
 import "../src/domain/models/models.ts";
+import { z } from "zod";
+import type { Grant } from "../src/domain/models/access/grant_model.ts";
+import { modelRegistry } from "../src/domain/models/model.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
   createServeCtx,
   grant,
@@ -166,10 +172,11 @@ async function withCluster(
     leader?: IntegrationLookup;
     follower?: IntegrationLookup;
   } = {},
+  grants: Grant[] = [WORKFLOW_GRANT],
 ): Promise<void> {
   await withServeRepo(async (leaderRepo) => {
     const events: AuditEvent[] = [];
-    const leaderCtx = createServeCtx(leaderRepo, [WORKFLOW_GRANT], {
+    const leaderCtx = createServeCtx(leaderRepo, grants, {
       integrations: standings.leader,
     });
     leaderCtx.auditEmitter = {
@@ -185,7 +192,7 @@ async function withCluster(
         since: "2026-10-29T12:00:00.000Z",
       };
       const leaderLink = new LeaderLink({ leader: () => leader });
-      const followerCtx = createServeCtx(followerRepo, [WORKFLOW_GRANT], {
+      const followerCtx = createServeCtx(followerRepo, grants, {
         integrations: standings.follower,
       });
       followerCtx.followerGate = {
@@ -564,5 +571,87 @@ Deno.test({
         follower: { standingOf: () => onFollower },
       },
     );
+  },
+});
+
+Deno.test({
+  name:
+    "serve client: a run forwarded by a follower keeps its dataInputKeys and marked arguments as data on the leader, and server.version with leader answers for the leader",
+  ...testOptions,
+  fn: async () => {
+    const notes: unknown[] = [];
+    const type = ModelType.create(`test/fwd-data-${crypto.randomUUID()}`);
+    const capture = (args: { note?: string }) => {
+      notes.push(args.note);
+      return Promise.resolve({});
+    };
+    modelRegistry.register({
+      type,
+      version: "2026.11.11.1",
+      methods: {
+        echo: {
+          description: "plain",
+          kind: "read",
+          arguments: z.object({ note: z.string().optional() }),
+          execute: capture,
+        },
+        echoData: {
+          description: "marked",
+          kind: "read",
+          arguments: z.object({
+            note: z.string().meta({ data: true }).optional(),
+          }),
+          execute: capture,
+        },
+      },
+    });
+    const note = "${{ env.SWAMP_4649_FORWARDED }}";
+    try {
+      await withMockedEnv({ SWAMP_4649_FORWARDED: "evaluated" }, async () => {
+        await withCluster(
+          undefined,
+          async ({ leader, followerAddress }) => {
+            await leader.repo.repoContext.definitionRepo.save(
+              type,
+              Definition.create({ name: "fwd-echo", globalArguments: {} }),
+            );
+            const run = (methodName: string, extra = {}) =>
+              request(followerAddress, {
+                type: "model.method.run",
+                id: crypto.randomUUID(),
+                payload: {
+                  modelIdOrName: "fwd-echo",
+                  methodName,
+                  inputs: { note },
+                  ...extra,
+                },
+              }, (frame) => frame.type === "done" || frame.type === "error");
+            await run("echo", { dataInputKeys: ["note"] });
+            await run("echoData");
+            await run("echo");
+            assertEquals(notes, [note, note, "evaluated"]);
+            const frames = await request(followerAddress, {
+              type: "server.version",
+              id: "version-leader",
+              payload: { leader: true },
+            }, (frame) => frame.type === "server.version");
+            const version = frames.find((frame) =>
+              frame.type === "server.version"
+            ) as { payload?: { capabilities?: string[] } } | undefined;
+            assert(version?.payload?.capabilities?.includes("data-inputs"));
+          },
+          {},
+          [
+            WORKFLOW_GRANT,
+            grant({
+              actions: ["read", "run", "write"],
+              resource: { kind: "model", pattern: "*" },
+            }),
+          ],
+        );
+      });
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
   },
 });

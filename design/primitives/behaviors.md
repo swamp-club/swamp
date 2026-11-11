@@ -423,6 +423,19 @@ and a routed global argument holding expression text is refused before it is
 persisted. Over `swamp serve` the client sends it only to a server whose
 `server.version` lists the `literal-inputs` capability.
 
+A type marks a method argument as data with `.meta({ data: true })`: whatever
+a caller supplies for it, by any of those routes, over serve or through a
+follower, reaches the method verbatim and is stored as the method saw it. Text
+written in the definition or a workflow step stays the author's and evaluates.
+Global arguments cannot carry the marker; registration refuses it.
+`--input-data key=<path>` makes one input data from the caller's side: the CLI
+reads the file and the content is never evaluated; a key routed to a global
+argument gets the `--literal-inputs` treatment. Over serve the CLI sends the
+keys as `dataInputKeys`, only to a leader listing `data-inputs`; a server
+honouring the marker lists `data-arguments`. The serve handler skips both
+kinds of place when it authorizes input expressions and hands the run exactly
+the places it skipped, so nothing it did not check is evaluated.
+
 **Subsequent runs:** Swamp finds `my-vpc`, checks that its type matches
 `@swamp/aws/ec2/vpc` (a safety check), and runs. If the routed global arguments
 differ from the stored definition, the definition is updated and saved. This

@@ -383,3 +383,15 @@ Deno.test("formatMethodKind: is empty when the method has no kind", () => {
     "",
   );
 });
+
+Deno.test("formatSchemaAttributes: tags a data-marked property and only that one", () => {
+  const lines = formatSchemaAttributes({
+    type: "object",
+    properties: {
+      payload: { type: "string", data: true },
+      name: { type: "string" },
+    },
+  }, "  ");
+  assertEquals(lines[0].includes("data"), true);
+  assertEquals(lines[1].includes("data"), false);
+});

@@ -171,6 +171,16 @@ import {
   principalToString,
 } from "../../domain/access/principal.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import {
+  canonicalKeyPath,
+  dataArgumentKeys,
+  definitionInputsReadAsData,
+  dottedKeyPath,
+  type KeyPath,
+  omitKeyPaths,
+} from "../../domain/models/data_field_extractor.ts";
+import { UserError } from "../../domain/errors.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
@@ -684,8 +694,65 @@ function resolvedRunAllowed(
 }
 
 /**
+ * the places in the inputs that are data: the caller's dataInputKeys and values
+ * for arguments the type marks data. The run is handed exactly these, so what
+ * authorization skips is never evaluated; an unknown type skips nothing
+ */
+async function runDataInputPaths(
+  payload: ModelMethodRunPayload,
+  target: MethodRunTarget,
+): Promise<KeyPath[]> {
+  const paths = (payload.dataInputKeys ?? []).map((key) => {
+    const canonical = canonicalKeyPath(
+      payload.inputs ?? {},
+      dottedKeyPath(key),
+    );
+    if (canonical === undefined) {
+      throw new UserError(
+        `dataInputKeys entry ${key} has no matching value in inputs.`,
+      );
+    }
+    return canonical;
+  });
+  if (payload.literalInputs === true) return paths;
+  const definition = target.run?.definition ?? target.definition;
+  let modelDef = definition
+    ? await resolveModelType(definition.type, null)
+    : undefined;
+  if (!definition && payload.typeArg) {
+    modelDef = await resolveModelType(ModelType.create(payload.typeArg), null);
+    if (!modelDef && payload.typeArg.startsWith("@")) {
+      modelDef = await resolveModelType(
+        ModelType.create(payload.typeArg.slice(1)),
+        null,
+      );
+    }
+  }
+  const method = modelDef?.methods[payload.methodName];
+  if (!method) return paths;
+  const inputs = payload.inputs ?? {};
+  const definitionInputKeys = Object.keys(
+    (definition?.definition.inputs as
+      | { properties?: Record<string, unknown> }
+      | undefined)?.properties ?? {},
+  );
+  const spliced = definition
+    ? definitionInputsReadAsData(
+      method.arguments,
+      definition.definition.getMethodArguments(payload.methodName),
+      definitionInputKeys,
+    ).filter((name) => Object.hasOwn(inputs, name)).map((name) => [name])
+    : [];
+  return [
+    ...paths,
+    ...dataArgumentKeys(method.arguments, inputs),
+    ...spliced,
+  ];
+}
+
+/**
  * with `literalInputs` nothing in the inputs is evaluated, so there is nothing
- * to authorize
+ * to authorize; nor at dataPaths
  */
 async function authorizeRunInputs(
   socket: WebSocket,
@@ -694,9 +761,12 @@ async function authorizeRunInputs(
   payload: ModelMethodRunPayload,
   target: MethodRunTarget,
   ctx: ConnectionContext,
+  dataPaths: readonly KeyPath[],
 ): Promise<boolean> {
   if (payload.literalInputs === true) return true;
-  const expressions = analyzeContentExpressions(payload.inputs ?? {});
+  const expressions = analyzeContentExpressions(
+    omitKeyPaths(payload.inputs ?? {}, dataPaths),
+  );
   if (expressions.length === 0) return true;
   const runOn = target.run?.resource ?? target.resource;
   const refusal = await authorizeRunInputExpressions(
@@ -785,6 +855,7 @@ export async function handleModelMethodRun(
       if (
         !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
       ) return;
+      const dataInputPaths = await runDataInputPaths(payload, target);
       if (
         !await authorizeRunInputs(
           socket,
@@ -793,6 +864,7 @@ export async function handleModelMethodRun(
           payload,
           target,
           ctx,
+          dataInputPaths,
         )
       ) return;
       const preResult = executedDefinition(target);
@@ -934,6 +1006,7 @@ export async function handleModelMethodRun(
                       methodName: payload.methodName,
                       inputs: payload.inputs ?? {},
                       literalInputs: payload.literalInputs === true,
+                      dataInputPaths,
                       lastEvaluated: payload.lastEvaluated ?? false,
                       runtimeTags: payload.runtimeTags,
                       typeArg: payload.typeArg,
@@ -1043,6 +1116,18 @@ export async function handleModelMethodRun(
   if (
     !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
   ) return;
+  let dataInputPaths: KeyPath[];
+  try {
+    dataInputPaths = await runDataInputPaths(payload, target);
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "method_execution_failed",
+      sanitizeErrorForClient(error),
+    );
+    return;
+  }
   if (
     !await authorizeRunInputs(
       socket,
@@ -1051,6 +1136,7 @@ export async function handleModelMethodRun(
       payload,
       target,
       ctx,
+      dataInputPaths,
     )
   ) return;
   const preResult = executedDefinition(target);
@@ -1287,6 +1373,7 @@ export async function handleModelMethodRun(
                       methodName: payload.methodName,
                       inputs: payload.inputs ?? {},
                       literalInputs: payload.literalInputs === true,
+                      dataInputPaths,
                       lastEvaluated: payload.lastEvaluated ?? false,
                       runtimeTags: payload.runtimeTags,
                       typeArg: payload.typeArg,

@@ -33,6 +33,7 @@ import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -350,8 +351,10 @@ function versionedServer(capabilities: string[] | undefined): {
   url: string;
   shutdown: () => Promise<void>;
   runs: Record<string, unknown>[];
+  versionRequests: (Record<string, unknown> | undefined)[];
 } {
   const runs: Record<string, unknown>[] = [];
+  const versionRequests: (Record<string, unknown> | undefined)[] = [];
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (req) => {
@@ -363,6 +366,7 @@ function versionedServer(capabilities: string[] | undefined): {
           payload: Record<string, unknown>;
         };
         if (request.type === "server.version") {
+          versionRequests.push(request.payload);
           socket.send(JSON.stringify({
             type: "server.version",
             id: request.id,
@@ -389,6 +393,7 @@ function versionedServer(capabilities: string[] | undefined): {
     url: `ws://127.0.0.1:${server.addr.port}`,
     shutdown: () => server.shutdown(),
     runs,
+    versionRequests,
   };
 }
 
@@ -457,5 +462,169 @@ Deno.test({
       Deno.exitCode = previousExitCode;
       await server.shutdown();
     }
+  },
+});
+
+async function runDataInputOverServer(
+  positionals: string[],
+  url: string,
+  file: string,
+  extra: string[] = [],
+): Promise<void> {
+  await (await root()).parse([
+    ...positionals,
+    "--input-data",
+    `body=${file}`,
+    ...extra,
+    "--json",
+    "--server",
+    url,
+    "--token",
+    "test.token",
+  ]);
+}
+
+Deno.test({
+  name:
+    "both run leaves: --input-data is refused by a leader that does not list the data-inputs capability",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "result.md");
+      await Deno.writeTextFile(file, "result");
+      const server = versionedServer(["literal-inputs"]);
+      try {
+        for (const positionals of LITERAL_SPELLINGS) {
+          await assertRejects(
+            () => runDataInputOverServer(positionals, server.url, file),
+            Error,
+            "does not support --input-data",
+          );
+        }
+        assertEquals(server.runs, []);
+        assertEquals(server.versionRequests, [{ leader: true }, {
+          leader: true,
+        }]);
+      } finally {
+        await server.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "both run leaves: --input-data sends the file's content verbatim with dataInputKeys",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "result.md");
+      const content = "@/etc/passwd ${{ vault.get('v', 'k') }}\n";
+      await Deno.writeTextFile(file, content);
+      const server = versionedServer(["data-inputs"]);
+      const previousExitCode = Deno.exitCode;
+      try {
+        for (const positionals of LITERAL_SPELLINGS) {
+          await runDataInputOverServer(positionals, server.url, file, [
+            "--input",
+            "name=a1",
+          ]);
+        }
+        assertEquals(server.runs.length, 2);
+        for (const run of server.runs) {
+          assertEquals(run.dataInputKeys, ["body"]);
+          assertEquals(run.literalInputs, undefined);
+          assertEquals(run.inputs, { name: "a1", body: content });
+        }
+      } finally {
+        Deno.exitCode = previousExitCode;
+        await server.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "both run leaves: an input given by both --input and --input-data is refused before anything is sent",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const file = join(dir, "result.md");
+      await Deno.writeTextFile(file, "result");
+      const server = versionedServer(["data-inputs"]);
+      try {
+        for (const positionals of LITERAL_SPELLINGS) {
+          await assertRejects(
+            () =>
+              runDataInputOverServer(positionals, server.url, file, [
+                "--input",
+                "body=typed",
+              ]),
+            Error,
+            "given both by --input-data and by --input",
+          );
+        }
+        assertEquals(server.runs, []);
+        assertEquals(server.versionRequests, []);
+      } finally {
+        await server.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "behavior run: a local --input-data value reaches the method verbatim where a typed --input is evaluated",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const repoDir = await initRepo(dir);
+      const executions: Record<string, unknown>[] = [];
+      const type = registerType(executions);
+      try {
+        await new YamlDefinitionRepository(repoDir, undefined, undefined, false)
+          .save(
+            type,
+            Definition.create({
+              name: "data-model",
+              type: type.normalized,
+              globalArguments: {},
+            }),
+          );
+        const file = join(dir, "value.txt");
+        const text = "${{ env.SWAMP_4649_PROBE }}";
+        await Deno.writeTextFile(file, text);
+        await withMockedEnv({ SWAMP_4649_PROBE: "evaluated" }, async () => {
+          for (
+            const words of [
+              ["behavior", "run", "data-model", "ping", "--input-data"],
+              ["model", "method", "run", "data-model", "ping", "--input-data"],
+            ]
+          ) {
+            const run = await runJson(repoDir, [...words, `value=${file}`]);
+            assertEquals(run.status, "succeeded");
+          }
+          await runJson(repoDir, [
+            "behavior",
+            "run",
+            "data-model",
+            "ping",
+            "--input",
+            `value=${text}`,
+          ]);
+        });
+        assertEquals(executions, [{ value: text }, { value: text }, {
+          value: "evaluated",
+        }]);
+      } finally {
+        modelRegistry.invalidateType(type);
+      }
+    });
   },
 });

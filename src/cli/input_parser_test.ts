@@ -19,13 +19,16 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  assertNoDataInputOverlap,
   deepMerge,
   isScopedIdentifier,
   mergeInputArgs,
+  parseDataInputs,
   parseInputs,
   parseKeyValueInputs,
   parseStdinContent,
   setNestedValue,
+  withDataInputs,
 } from "./input_parser.ts";
 import { UserError } from "../domain/errors.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -629,4 +632,86 @@ Deno.test("parseInputs: literal applies to key=value entries", async () => {
     literal: true,
   });
   assertEquals(inputs, { body: "@missing-file.txt" });
+});
+
+Deno.test("parseDataInputs: reads each file verbatim at its dotted key and lists the keys", async () => {
+  const tempFile = await Deno.makeTempFile();
+  try {
+    const content = "@other ${{ vault.get('v', 'k') }}";
+    await Deno.writeTextFile(tempFile, content);
+    const result = await parseDataInputs([
+      `payload=${tempFile}`,
+      `body.text=${tempFile}`,
+    ]);
+    assertEquals(result, {
+      values: { payload: content, body: { text: content } },
+      keys: ["payload", "body.text"],
+    });
+  } finally {
+    await Deno.remove(tempFile);
+  }
+});
+
+Deno.test("parseDataInputs: refuses a malformed entry, a repeated key and a missing file without the @ hint", async () => {
+  await assertRejects(() => parseDataInputs(["payload"]), UserError);
+  await assertRejects(() => parseDataInputs(["payload="]), UserError);
+  await assertRejects(() => parseDataInputs(["=x"]), UserError);
+  await assertRejects(() => parseDataInputs(["a..b=x"]), UserError);
+  const tempFile = await Deno.makeTempFile();
+  try {
+    await assertRejects(
+      () => parseDataInputs([`p=${tempFile}`, `p=${tempFile}`]),
+      UserError,
+      "more than once",
+    );
+  } finally {
+    await Deno.remove(tempFile);
+  }
+  const err = await assertRejects(
+    () => parseDataInputs(["payload=/nonexistent/path/file.txt"]),
+    UserError,
+  );
+  assertStringIncludes(err.message, 'Input file not found for key "payload"');
+  assertEquals(err.message.includes("\\@"), false);
+});
+
+Deno.test("parseDataInputs: no entries yields no keys", async () => {
+  assertEquals(await parseDataInputs(undefined), { values: {}, keys: [] });
+});
+
+Deno.test("assertNoDataInputOverlap: refuses a key another input source sets, at any depth", () => {
+  const data = { values: {}, keys: ["body.text"] };
+  assertThrows(
+    () => assertNoDataInputOverlap({ body: { text: "typed" } }, data),
+    UserError,
+    "given both by --input-data",
+  );
+  assertNoDataInputOverlap({ body: { note: "n" } }, data);
+  assertNoDataInputOverlap({}, data);
+  assertThrows(
+    () => assertNoDataInputOverlap({ body: "hello" }, data),
+    UserError,
+    "given both by --input-data",
+  );
+  assertThrows(
+    () =>
+      assertNoDataInputOverlap({ tags: [] }, { values: {}, keys: ["tags.0"] }),
+    UserError,
+    "given both by --input-data",
+  );
+});
+
+Deno.test("withDataInputs: merges the data inputs into every set and refuses a set that names one", () => {
+  const data = { values: { payload: "file" }, keys: ["payload"] };
+  assertEquals(withDataInputs([{ name: "a" }, { name: "b" }], data), [
+    { name: "a", payload: "file" },
+    { name: "b", payload: "file" },
+  ]);
+  assertThrows(
+    () => withDataInputs([{ name: "a" }, { payload: "stdin" }], data),
+    UserError,
+    "a --stdin item",
+  );
+  const sets = [{ name: "a" }];
+  assertEquals(withDataInputs(sets, { values: {}, keys: [] }), sets);
 });

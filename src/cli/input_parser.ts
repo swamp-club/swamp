@@ -73,6 +73,7 @@ export function isScopedIdentifier(value: string): boolean {
 async function resolveFileValue(
   key: string,
   filePath: string,
+  atHint = true,
 ): Promise<string> {
   let resolvedPath = filePath;
   if (resolvedPath.startsWith("~/")) {
@@ -91,7 +92,9 @@ async function resolveFileValue(
       throw markErrorPaths(
         new UserError(
           `Input file not found for key "${key}": ${resolvedPath}` +
-            `. Values starting with @ are read as file paths; use \\@ for a literal @ or :json suffix to bypass`,
+            (atHint
+              ? `. Values starting with @ are read as file paths; use \\@ for a literal @ or :json suffix to bypass`
+              : ""),
         ),
         [resolvedPath],
       );
@@ -171,6 +174,89 @@ export async function parseKeyValueInputs(
   }
 
   return result;
+}
+
+export interface DataInputs {
+  values: Record<string, unknown>;
+  /** dotted, as written after --input-data */
+  keys: string[];
+}
+
+/**
+ * --input-data key=<path>: the file's content is the value, read on the client
+ * and never evaluated
+ */
+export async function parseDataInputs(
+  entries: string[] | undefined,
+): Promise<DataInputs> {
+  const values: Record<string, unknown> = {};
+  const keys: string[] = [];
+  for (const entry of entries ?? []) {
+    const eqIndex = entry.indexOf("=");
+    if (eqIndex === -1 || eqIndex === entry.length - 1) {
+      throw new UserError(
+        `Invalid --input-data format: "${entry}". Expected key=<path>.`,
+      );
+    }
+    const key = entry.slice(0, eqIndex);
+    if (key === "" || key.split(".").includes("")) {
+      throw new UserError(
+        `Invalid --input-data key in "${entry}": keys are dotted names with no empty segment, such as body.text=<path>.`,
+      );
+    }
+    if (keys.includes(key)) {
+      throw new UserError(`--input-data ${key} is given more than once.`);
+    }
+    setNestedValue(
+      values,
+      key,
+      await resolveFileValue(key, entry.slice(eqIndex + 1), false),
+    );
+    keys.push(key);
+  }
+  return { values, keys };
+}
+
+/** refuses a key another input source also sets, rather than pick one */
+export function assertNoDataInputOverlap(
+  inputs: Record<string, unknown>,
+  data: DataInputs,
+): void {
+  for (const key of data.keys) {
+    // set at the key, or a prefix holds a value the merge would replace
+    let current: unknown = inputs;
+    let present = true;
+    for (const part of key.split(".")) {
+      if (
+        current === null || typeof current !== "object" ||
+        Array.isArray(current)
+      ) {
+        break;
+      }
+      if (!Object.hasOwn(current, part)) {
+        present = false;
+        break;
+      }
+      current = (current as Record<string, unknown>)[part];
+    }
+    if (present) {
+      throw new UserError(
+        `Input ${key} is given both by --input-data and by --input, --input-file or a --stdin item.`,
+      );
+    }
+  }
+}
+
+/** each input set with the data inputs merged in; a set that names one too is refused */
+export function withDataInputs(
+  sets: Record<string, unknown>[],
+  data: DataInputs,
+): Record<string, unknown>[] {
+  if (data.keys.length === 0) return sets;
+  return sets.map((set) => {
+    assertNoDataInputOverlap(set, data);
+    return deepMerge(set, data.values);
+  });
 }
 
 function isJsonInput(entries: string[]): boolean {

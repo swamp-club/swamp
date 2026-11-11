@@ -92,6 +92,14 @@ import {
   routedGlobalProvenance,
   sentinelStandInOf,
 } from "../../domain/expressions/provenance_map.ts";
+import {
+  canonicalKeyPath,
+  dataArgumentKeys,
+  definitionInputsReadAsData,
+  type KeyPath,
+  keysToPath,
+  omitKeyPaths,
+} from "../../domain/models/data_field_extractor.ts";
 import { attachBindingProvenance } from "../../domain/expressions/splice_origin.ts";
 import {
   EVALUATED_CACHE_HOLDS_SENSITIVE_ARGUMENTS_CODE,
@@ -141,6 +149,7 @@ import {
 } from "../../domain/models/sensitive_field_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detector.ts";
 import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
+import type { z } from "zod";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
@@ -372,6 +381,11 @@ export interface ModelMethodRunInput {
    * combined with lastEvaluated
    */
   literalInputs?: boolean;
+  /**
+   * places in inputs that are data, as under literalInputs: a file read with
+   * --input-data, or each place the serve handler left out of authorization
+   */
+  dataInputPaths?: readonly KeyPath[];
   lastEvaluated: boolean;
   typeArg?: string;
   definitionName?: string;
@@ -479,6 +493,26 @@ export async function* modelMethodRun(
             }
             // Keys the caller supplied; under literalInputs they are data.
             const callerInputKeys = new Set(Object.keys(input.inputs));
+            const dataInputPaths: KeyPath[] = [];
+            for (const keys of input.dataInputPaths ?? []) {
+              const canonical = canonicalKeyPath(input.inputs, keys);
+              if (canonical === undefined) {
+                yield prepareFailed({
+                  kind: "error",
+                  error: validationFailed(
+                    `Data input ${
+                      keys.join(".")
+                    } has no matching value in the inputs.`,
+                  ),
+                });
+                return;
+              }
+              dataInputPaths.push(canonical);
+            }
+            const callerDataMap = dataInputPaths.reduce(
+              (map, keys) => map.graft(keysToPath(keys), ProvenanceMap.data()),
+              ProvenanceMap.authored(),
+            );
 
             yield {
               kind: "resolving_model",
@@ -584,7 +618,9 @@ export async function* modelMethodRun(
                     inputs: ProvenanceMap.data(),
                     globalArgs: ProvenanceMap.data(),
                   }
-                  : undefined,
+                  : callerDataMap.isAuthored
+                  ? undefined
+                  : { inputs: callerDataMap, globalArgs: callerDataMap },
               );
 
               if (!result.ok) {
@@ -623,11 +659,11 @@ export async function* modelMethodRun(
               definition = result.definition;
               modelType = result.modelType;
               modelDef = result.modelDef;
-              if (input.literalInputs) {
+              if (input.literalInputs || !callerDataMap.isAuthored) {
                 routedGlobalsProvenance = routedGlobalProvenance(
                   result.routedInputs.globalArguments,
                   input.inputs,
-                  ProvenanceMap.data(),
+                  input.literalInputs ? ProvenanceMap.data() : callerDataMap,
                 );
               }
 
@@ -821,6 +857,25 @@ export async function* modelMethodRun(
                 sensitiveValues.sentinels,
               );
 
+              // The inputs the definition declares; any other --input key is an
+              // override of a method argument, merged below.
+              const definitionInputKeys = definition.inputs
+                ? Object.keys(
+                  (definition.inputs as {
+                    properties?: Record<string, unknown>;
+                  })
+                    .properties || {},
+                )
+                : [];
+              const dataPaths = input.literalInputs ? [] : markedDataPaths(
+                method.arguments,
+                definition.getMethodArguments(input.methodName),
+                inputs,
+                callerInputKeys,
+                definitionInputKeys,
+                dataInputPaths,
+              );
+
               // collected from the source definition, never the evaluated one,
               // which has data spliced in; under literalInputs the inputs vouch
               // for nothing and all their keys are data
@@ -830,7 +885,7 @@ export async function* modelMethodRun(
               const authoredExpressions = input.literalInputs
                 ? new Set(sourceExpressions)
                 : collectAuthoredExpressions(
-                  inputs,
+                  omitKeyPaths(inputs, dataPaths),
                   new Set(sourceExpressions),
                 );
               // Operator-typed values are run data, so in a sensitive argument
@@ -848,6 +903,12 @@ export async function* modelMethodRun(
                     : readSetMap(value, collectAuthoredExpressions(value)),
                 );
               }
+              for (const keys of dataPaths) {
+                inputsProvenance = inputsProvenance.graft(
+                  keysToPath(keys),
+                  ProvenanceMap.data(),
+                );
+              }
 
               let deferredExpressions: readonly DeferredExpression[] = [];
               let failedExpressions: FailedExpressions = new Map();
@@ -856,16 +917,6 @@ export async function* modelMethodRun(
               let pendingMasked: readonly MaskedPath[] = [];
               let pendingProvenance = ProvenanceMap.authored();
               let pendingPersistedProvenance = ProvenanceMap.authored();
-              // The inputs the definition declares; any other --input key is an
-              // override of a method argument, merged below.
-              const definitionInputKeys = definition.inputs
-                ? Object.keys(
-                  (definition.inputs as {
-                    properties?: Record<string, unknown>;
-                  })
-                    .properties || {},
-                )
-                : [];
               if (input.lastEvaluated) {
                 const lastEval = await deps.loadEvaluatedDefinition(
                   modelType,
@@ -1237,16 +1288,38 @@ export async function* modelMethodRun(
               });
               // A whole argument typed with --input is the operator's own
               // command text, so it runs as written; runtime splices into it
-              // stay data.
+              // stay data, as do marked arguments and data inputs.
+              const wholeData = dataPaths.some((keys) => keys.length === 0);
               const placementProvenance = input.literalInputs
                 ? executedProvenance
-                : operatorArgumentKeys.reduce(
+                : wholeData
+                ? operatorArgumentKeys.reduce(
                   (map, key) =>
                     map.graft(
                       methodArgumentPath(input.methodName, key),
-                      ProvenanceMap.authored(),
+                      ProvenanceMap.data(),
                     ),
                   executedProvenance,
+                )
+                : dataPaths.filter(([key]) =>
+                  typeof key === "string" && operatorArgumentKeys.includes(key)
+                ).reduce(
+                  (map, [key, ...rest]) =>
+                    map.graft(
+                      keysToPath(
+                        rest,
+                        methodArgumentPath(input.methodName, String(key)),
+                      ),
+                      ProvenanceMap.data(),
+                    ),
+                  operatorArgumentKeys.reduce(
+                    (map, key) =>
+                      map.graft(
+                        methodArgumentPath(input.methodName, key),
+                        ProvenanceMap.authored(),
+                      ),
+                    executedProvenance,
+                  ),
                 );
               // Scoped to the invoked method: another method's vault and env
               // expressions are left as authored, neither checked, loaded nor
@@ -2176,4 +2249,38 @@ export function toReportResultView(
     json: result.json,
     error: result.error,
   };
+}
+
+/**
+ * caller-supplied places that are data: values for marked method arguments,
+ * the requested data inputs, and whole any definition input a marked
+ * argument's own source reads through inputs.*
+ */
+function markedDataPaths(
+  argumentsSchema: z.ZodTypeAny,
+  sourceArguments: Record<string, unknown>,
+  inputs: Record<string, unknown>,
+  callerInputKeys: ReadonlySet<string>,
+  definitionInputKeys: readonly string[],
+  dataInputPaths: readonly KeyPath[],
+): KeyPath[] {
+  const overrides = Object.fromEntries(
+    Object.entries(inputs).filter(([key]) =>
+      callerInputKeys.has(key) && !definitionInputKeys.includes(key)
+    ),
+  );
+  const paths: KeyPath[] = [
+    ...dataArgumentKeys(argumentsSchema, overrides),
+    ...dataInputPaths,
+  ];
+  for (
+    const name of definitionInputsReadAsData(
+      argumentsSchema,
+      sourceArguments,
+      definitionInputKeys,
+    )
+  ) {
+    if (callerInputKeys.has(name)) paths.push([name]);
+  }
+  return paths;
 }

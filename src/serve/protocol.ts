@@ -53,6 +53,12 @@ export interface WorkflowRunPayload {
 
 export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
 
+/** honours dataInputKeys on model.method.run */
+export const SERVE_CAPABILITY_DATA_INPUTS = "data-inputs";
+
+/** honours a method argument marked `.meta({ data: true })` */
+export const SERVE_CAPABILITY_DATA_ARGUMENTS = "data-arguments";
+
 export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
 
 export const SERVE_CAPABILITY_SCHEDULE_CATCH_UP = "schedule-catch-up";
@@ -117,6 +123,12 @@ export interface ModelMethodRunPayload {
    * the field and evaluates
    */
   literalInputs?: boolean;
+  /**
+   * dotted input keys that are data, as --input-data writes them; send only to
+   * a server advertising the data-inputs capability, as an older one ignores
+   * them
+   */
+  dataInputKeys?: string[];
   lastEvaluated?: boolean;
   runtimeTags?: Record<string, string>;
   typeArg?: string;

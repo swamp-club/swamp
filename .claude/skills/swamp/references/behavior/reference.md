@@ -499,6 +499,17 @@ reference, "Trust Boundary: Which Inputs Are Evaluated".
 swamp behavior run github-pr update-body --literal-inputs --input-file body.json
 ```
 
+To make one input data rather than all of them, read it from a file with
+`--input-data key=<path>`: the content reaches the method verbatim while other
+`--input` values are still evaluated. It cannot share a key with `--input`,
+`--input-file` or a `--stdin` item. An argument the type marks
+`.meta({ data: true })` is data whatever the route, with no flag
+(`swamp behavior type describe` tags it `data`).
+
+```bash
+swamp behavior run artifacts record --input name=plan --input-data payload=result.md
+```
+
 **`--last-evaluated` and sensitive arguments.** An argument the type marks
 `sensitive` whose resolved value did not come from a vault — an input or a data
 field not marked sensitive — is written to the evaluated cache as `***`, so that
