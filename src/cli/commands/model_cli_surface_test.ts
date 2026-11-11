@@ -36,95 +36,34 @@ import {
   type CommandSyntax,
   PREFERRED_SPELLING_EXAMPLE,
 } from "./command_syntax.ts";
-import {
-  createModelCommand,
-  createModelCreateCommand,
-  MODEL_CREATE_SYNTAX,
-  MODEL_SYNTAX,
-  modelCommand,
-} from "./model_create.ts";
+import { createModelCommand } from "./model.ts";
+import { createModelCreateCommand } from "./model_create.ts";
 import {
   cancelAllHint,
   createModelCancelCommand,
   MODEL_CANCEL_SYNTAX,
 } from "./model_cancel.ts";
-import {
-  createModelDeleteCommand,
-  MODEL_DELETE_SYNTAX,
-} from "./model_delete.ts";
+import { createModelDeleteCommand } from "./model_delete.ts";
 import {
   createModelEditCommand,
-  MODEL_EDIT_SYNTAX,
   requireModelEditContent,
 } from "./model_edit.ts";
-import {
-  createModelEvaluateCommand,
-  MODEL_EVALUATE_SYNTAX,
-} from "./model_evaluate.ts";
-import { createModelGetCommand, MODEL_GET_SYNTAX } from "./model_get.ts";
-import {
-  createModelSearchCommand,
-  MODEL_SEARCH_SYNTAX,
-} from "./model_search.ts";
-import {
-  createModelValidateCommand,
-  MODEL_VALIDATE_SYNTAX,
-} from "./model_validate.ts";
-import {
-  createModelMethodCommand,
-  createModelMethodRunCommand,
-  MODEL_METHOD_RUN_SYNTAX,
-  MODEL_METHOD_SYNTAX,
-} from "./model_method_run.ts";
-import {
-  createModelMethodDescribeCommand,
-  MODEL_METHOD_DESCRIBE_SYNTAX,
-} from "./model_method_describe.ts";
-import {
-  createModelMethodHistoryCommand,
-  MODEL_METHOD_HISTORY_SYNTAX,
-} from "./model_method_history.ts";
-import {
-  createModelMethodHistoryGetCommand,
-  MODEL_METHOD_HISTORY_GET_SYNTAX,
-} from "./model_method_history_get.ts";
-import {
-  createModelMethodHistorySearchCommand,
-  MODEL_METHOD_HISTORY_SEARCH_SYNTAX,
-} from "./model_method_history_search.ts";
-import {
-  createModelMethodHistoryLogsCommand,
-  MODEL_METHOD_HISTORY_LOGS_SYNTAX,
-} from "./model_method_history_logs.ts";
-import {
-  createModelOutputCommand,
-  MODEL_OUTPUT_SYNTAX,
-} from "./model_output.ts";
-import {
-  createModelOutputGetCommand,
-  MODEL_OUTPUT_GET_SYNTAX,
-} from "./model_output_get.ts";
-import {
-  createModelOutputSearchCommand,
-  MODEL_OUTPUT_SEARCH_SYNTAX,
-} from "./model_output_search.ts";
-import {
-  createModelOutputLogsCommand,
-  MODEL_OUTPUT_LOGS_SYNTAX,
-} from "./model_output_logs.ts";
-import {
-  createModelOutputDataCommand,
-  MODEL_OUTPUT_DATA_SYNTAX,
-} from "./model_output_data.ts";
-import { createModelTypeCommand, MODEL_TYPE_SYNTAX } from "./model_type.ts";
-import {
-  createTypeDescribeCommand,
-  MODEL_TYPE_DESCRIBE_SYNTAX,
-} from "./type_describe.ts";
-import {
-  createTypeSearchCommand,
-  MODEL_TYPE_SEARCH_SYNTAX,
-} from "./type_search.ts";
+import { createModelEvaluateCommand } from "./model_evaluate.ts";
+import { createModelGetCommand } from "./model_get.ts";
+import { createModelSearchCommand } from "./model_search.ts";
+import { createModelValidateCommand } from "./model_validate.ts";
+import { createModelMethodDescribeCommand } from "./model_method_describe.ts";
+import { createModelMethodHistoryCommand } from "./model_method_history.ts";
+import { createModelMethodHistoryGetCommand } from "./model_method_history_get.ts";
+import { createModelMethodHistorySearchCommand } from "./model_method_history_search.ts";
+import { createModelMethodHistoryLogsCommand } from "./model_method_history_logs.ts";
+import { createModelOutputCommand } from "./model_output.ts";
+import { createModelOutputGetCommand } from "./model_output_get.ts";
+import { createModelOutputSearchCommand } from "./model_output_search.ts";
+import { createModelOutputLogsCommand } from "./model_output_logs.ts";
+import { createModelOutputDataCommand } from "./model_output_data.ts";
+import { createTypeDescribeCommand } from "./type_describe.ts";
+import { createTypeSearchCommand } from "./type_search.ts";
 
 import "../../domain/models/models.ts";
 
@@ -192,10 +131,8 @@ function collectHelp(
   }
 }
 
-function captureSurface(
-  modelTree: AnyCommand = modelCommand as unknown as AnyCommand,
-): ModelCliSurface {
-  const root = surfaceRoot(modelTree);
+async function captureSurface(): Promise<ModelCliSurface> {
+  const root = surfaceRoot(await createModelCommand());
   const model = root.getCommand("model") as AnyCommand;
   const schemaModel = (includeHidden: boolean) =>
     buildCliSchema(root, "golden", { includeHidden }).root.subcommands.find(
@@ -223,7 +160,7 @@ function captureSurface(
 }
 
 Deno.test("model CLI surface: matches the golden file", async () => {
-  const actual = captureSurface();
+  const actual = await captureSurface();
   if (Deno.env.get("SWAMP_UPDATE_GOLDEN") === "1") {
     await Deno.writeTextFile(
       GOLDEN_PATH,
@@ -243,111 +180,22 @@ Deno.test("model CLI surface: matches the golden file", async () => {
   assertEquals(actual.completions, expected.completions);
 });
 
-async function readGolden(): Promise<ModelCliSurface> {
-  return JSON.parse(await Deno.readTextFile(GOLDEN_PATH)) as ModelCliSurface;
-}
-
 function allCommands(command: AnyCommand, into: AnyCommand[] = []) {
   into.push(command);
   for (const child of command.getCommands(true)) allCommands(child, into);
   return into;
 }
 
-/**
- * each leaf is built from its legacy syntax constant: a syntax derived with
- * `subcommandSyntax` has no preferred spelling, and the run leaf has legacy
- * text no derivation reproduces, so every leaf is passed in
- */
-function freshLegacyModelCommand(): AnyCommand {
-  return createModelCommand(MODEL_SYNTAX, {
-    cancel: createModelCancelCommand(MODEL_CANCEL_SYNTAX),
-    create: createModelCreateCommand(MODEL_CREATE_SYNTAX),
-    delete: createModelDeleteCommand(MODEL_DELETE_SYNTAX),
-    edit: createModelEditCommand(MODEL_EDIT_SYNTAX),
-    evaluate: createModelEvaluateCommand(MODEL_EVALUATE_SYNTAX),
-    get: createModelGetCommand(MODEL_GET_SYNTAX),
-    search: createModelSearchCommand(MODEL_SEARCH_SYNTAX),
-    validate: createModelValidateCommand(MODEL_VALIDATE_SYNTAX),
-    method: createModelMethodCommand(MODEL_METHOD_SYNTAX, {
-      run: createModelMethodRunCommand(MODEL_METHOD_RUN_SYNTAX),
-      describe: createModelMethodDescribeCommand(MODEL_METHOD_DESCRIBE_SYNTAX),
-      history: createModelMethodHistoryCommand(MODEL_METHOD_HISTORY_SYNTAX, {
-        get: createModelMethodHistoryGetCommand(
-          MODEL_METHOD_HISTORY_GET_SYNTAX,
-        ),
-        search: createModelMethodHistorySearchCommand(
-          MODEL_METHOD_HISTORY_SEARCH_SYNTAX,
-        ),
-        logs: createModelMethodHistoryLogsCommand(
-          MODEL_METHOD_HISTORY_LOGS_SYNTAX,
-        ),
-      }),
-    }),
-    output: createModelOutputCommand(MODEL_OUTPUT_SYNTAX, {
-      get: createModelOutputGetCommand(MODEL_OUTPUT_GET_SYNTAX),
-      search: createModelOutputSearchCommand(MODEL_OUTPUT_SEARCH_SYNTAX),
-      logs: createModelOutputLogsCommand(MODEL_OUTPUT_LOGS_SYNTAX),
-      data: createModelOutputDataCommand(MODEL_OUTPUT_DATA_SYNTAX),
-    }),
-    type: createModelTypeCommand(MODEL_TYPE_SYNTAX, {
-      describe: createTypeDescribeCommand(MODEL_TYPE_DESCRIBE_SYNTAX),
-      search: createTypeSearchCommand(MODEL_TYPE_SEARCH_SYNTAX),
-    }),
-  }) as unknown as AnyCommand;
-}
-
-Deno.test("createModelCommand: a fresh tree matches the golden file", async () => {
-  const actual = captureSurface(freshLegacyModelCommand());
-  const expected = await readGolden();
-  assertEquals(actual.schema, expected.schema);
-  assertEquals(actual.schemaWithHidden, expected.schemaWithHidden);
-  assertEquals(actual.subtreeSchema, expected.subtreeSchema);
-  assertEquals(Object.keys(actual.help), Object.keys(expected.help));
-  for (const path of Object.keys(expected.help)) {
-    assertEquals(actual.help[path], expected.help[path], path);
-  }
-  assertEquals(actual.completions, expected.completions);
-});
-
-Deno.test("createModelCommand: a fresh tree shares no command instance with modelCommand", () => {
-  const legacy = allCommands(modelCommand as unknown as AnyCommand);
-  const fresh = allCommands(freshLegacyModelCommand());
-  assertEquals(fresh.length, legacy.length);
-  for (const command of fresh) {
+Deno.test("createModelCommand: two loads share no command instance", async () => {
+  const first = allCommands(await createModelCommand());
+  const second = allCommands(await createModelCommand());
+  assertEquals(second.length, first.length);
+  for (const command of second) {
     assert(
-      legacy.every((other) => other !== command),
-      `${command.getName()} is shared with the legacy tree`,
+      first.every((other) => other !== command),
+      `${command.getName()} is shared between two loads`,
     );
   }
-});
-
-Deno.test("createModelCommand: default children render the given syntax", () => {
-  const tree = createModelCommand({ invocation: "swamp x", surface: "model" });
-  const examplesOf = (path: string[]) => {
-    let command = tree as unknown as AnyCommand;
-    for (const word of path) command = command.getCommand(word) as AnyCommand;
-    return command.getExamples().map((e: { description: string }) =>
-      e.description
-    );
-  };
-  assertEquals(examplesOf(["get"])[0], "swamp x get my-server");
-  assertEquals(
-    examplesOf(["type", "describe"])[0],
-    "swamp x type describe aws-ec2",
-  );
-  assertEquals(
-    examplesOf(["method", "run"])[0],
-    "swamp x method run my-server getSystemInfo",
-  );
-  assertEquals(
-    examplesOf(["method", "run"])[2],
-    "swamp x method run @swamp/aws/ec2/vpc create my-vpc --input region=us-east-1",
-  );
-  assertEquals(
-    examplesOf(["method", "history", "logs"])[0],
-    "swamp x method history logs abc123",
-  );
-  assertEquals(examplesOf(["output"])[0], "swamp x output my-server");
 });
 
 const LEAF_FACTORIES: ReadonlyArray<
@@ -403,8 +251,8 @@ Deno.test("model command factories: examples name the given syntax", () => {
   }
 });
 
-Deno.test("model type commands: legacy examples name swamp model type", () => {
-  const typeGroup = (modelCommand as unknown as AnyCommand).getCommand(
+Deno.test("model type commands: legacy examples name swamp model type", async () => {
+  const typeGroup = (await createModelCommand()).getCommand(
     "type",
   ) as AnyCommand;
   for (const word of ["describe", "search"]) {

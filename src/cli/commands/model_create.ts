@@ -21,12 +21,9 @@ import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
   recordDefiningModule,
-  subcommandSyntax,
   typeNameType,
   withPreferredExample,
 } from "./command_syntax.ts";
-import { createModelLeaseCommand, MODEL_LEASE_SYNTAX } from "./model_lease.ts";
-import { groupCommandAction } from "../group_action.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -48,38 +45,6 @@ import {
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { join } from "@std/path";
 import { parseKeyValueInputs } from "../input_parser.ts";
-import {
-  createModelValidateCommand,
-  modelValidateCommand,
-} from "./model_validate.ts";
-import {
-  createModelMethodCommand,
-  modelMethodCommand,
-} from "./model_method_run.ts";
-import {
-  createModelSearchCommand,
-  modelSearchCommand,
-} from "./model_search.ts";
-import { createModelGetCommand, modelGetCommand } from "./model_get.ts";
-import {
-  createModelDeleteCommand,
-  modelDeleteCommand,
-} from "./model_delete.ts";
-import { createModelEditCommand, modelEditCommand } from "./model_edit.ts";
-import {
-  createModelEvaluateCommand,
-  modelEvaluateCommand,
-} from "./model_evaluate.ts";
-import {
-  createModelOutputCommand,
-  modelOutputCommand,
-} from "./model_output.ts";
-import { createModelTypeCommand, modelTypeCommand } from "./model_type.ts";
-import {
-  createModelCancelCommand,
-  modelCancelCommand,
-} from "./model_cancel.ts";
-import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -209,95 +174,3 @@ export function createModelCreateCommand(syntax: CommandSyntax) {
 }
 
 export const modelCreateCommand = createModelCreateCommand(MODEL_CREATE_SYNTAX);
-
-export interface ModelChildren {
-  readonly cancel: ReturnType<typeof createModelCancelCommand>;
-  readonly create: ReturnType<typeof createModelCreateCommand>;
-  readonly delete: ReturnType<typeof createModelDeleteCommand>;
-  readonly edit: ReturnType<typeof createModelEditCommand>;
-  readonly evaluate: ReturnType<typeof createModelEvaluateCommand>;
-  readonly get: ReturnType<typeof createModelGetCommand>;
-  readonly lease: ReturnType<typeof createModelLeaseCommand>;
-  readonly search: ReturnType<typeof createModelSearchCommand>;
-  readonly validate: ReturnType<typeof createModelValidateCommand>;
-  readonly method: ReturnType<typeof createModelMethodCommand>;
-  readonly output: ReturnType<typeof createModelOutputCommand>;
-  readonly type: ReturnType<typeof createModelTypeCommand>;
-}
-
-export const MODEL_SYNTAX: CommandSyntax = {
-  invocation: "swamp model",
-  surface: "model",
-};
-
-/**
- * children not passed are built fresh from syntax; Cliffy reparents a command
- * attached under a second parent, so two surfaces must never share an instance.
- */
-export function createModelCommand(
-  syntax: CommandSyntax,
-  children: Partial<ModelChildren> = {},
-) {
-  const sub = (word: string) => subcommandSyntax(syntax, word);
-  const command = new Command()
-    .name("model")
-    .description(
-      syntax.surface === "model"
-        ? "Manage models (legacy spelling of 'behavior'; kept, no removal planned)"
-        : `Manage ${syntax.surface}s`,
-    )
-    .error(unknownCommandErrorHandler)
-    .action(groupCommandAction)
-    .command(
-      "cancel",
-      children.cancel ?? createModelCancelCommand(sub("cancel")),
-    )
-    .command(
-      "create",
-      children.create ?? createModelCreateCommand(sub("create")),
-    )
-    .command(
-      "delete",
-      children.delete ?? createModelDeleteCommand(sub("delete")),
-    )
-    .command("edit", children.edit ?? createModelEditCommand(sub("edit")))
-    .command(
-      "evaluate",
-      children.evaluate ?? createModelEvaluateCommand(sub("evaluate")),
-    )
-    .command("get", children.get ?? createModelGetCommand(sub("get")))
-    .command("lease", children.lease ?? createModelLeaseCommand(sub("lease")))
-    .command(
-      "search",
-      children.search ?? createModelSearchCommand(sub("search")),
-    )
-    .command(
-      "validate",
-      children.validate ?? createModelValidateCommand(sub("validate")),
-    )
-    .command(
-      "method",
-      children.method ?? createModelMethodCommand(sub("method")),
-    )
-    .command(
-      "output",
-      children.output ?? createModelOutputCommand(sub("output")),
-    )
-    .command("type", children.type ?? createModelTypeCommand(sub("type")));
-  return recordDefiningModule(command, import.meta.url);
-}
-
-export const modelCommand = createModelCommand(MODEL_SYNTAX, {
-  cancel: modelCancelCommand,
-  create: modelCreateCommand,
-  delete: modelDeleteCommand,
-  edit: modelEditCommand,
-  evaluate: modelEvaluateCommand,
-  get: modelGetCommand,
-  lease: createModelLeaseCommand(MODEL_LEASE_SYNTAX),
-  search: modelSearchCommand,
-  validate: modelValidateCommand,
-  method: modelMethodCommand,
-  output: modelOutputCommand,
-  type: modelTypeCommand,
-});

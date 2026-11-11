@@ -26,8 +26,8 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
-import { behaviorCommand } from "../src/cli/commands/behavior.ts";
-import { modelMethodCommand } from "../src/cli/commands/model_method_run.ts";
+import { createBehaviorCommand } from "../src/cli/commands/behavior.ts";
+import { createModelMethodCommand } from "../src/cli/commands/model_method.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -69,11 +69,14 @@ interface RunResult {
   status: string;
 }
 
-function root(): AnyCommand {
+async function root(): Promise<AnyCommand> {
   return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")
-    .command("behavior", behaviorCommand)
-    .command("model", new Command().command("method", modelMethodCommand));
+    .command("behavior", await createBehaviorCommand())
+    .command(
+      "model",
+      new Command().command("method", await createModelMethodCommand()),
+    );
 }
 
 /**
@@ -87,7 +90,7 @@ async function runJson(repoDir: string, words: string[]): Promise<RunResult> {
   const previousExitCode = Deno.exitCode;
   console.log = (...args: unknown[]) => printed.push(args.join(" "));
   try {
-    await root().parse([...words, "--repo-dir", repoDir, "--json"]);
+    await (await root()).parse([...words, "--repo-dir", repoDir, "--json"]);
   } finally {
     console.log = originalLog;
     Deno.exitCode = previousExitCode;
@@ -298,7 +301,7 @@ Deno.test({
           ["behaviour", "run", "@swamp/echo", "echo", "my-def"],
         ]
       ) {
-        await root().parse(REMOTE_ARGS(positionals, server.url));
+        await (await root()).parse(REMOTE_ARGS(positionals, server.url));
       }
       assertEquals(server.payloads.length, 3);
       const [legacy, behavior, alias] = server.payloads;
@@ -333,7 +336,7 @@ Deno.test({
         ]
       ) {
         Deno.exitCode = 0;
-        await root().parse(REMOTE_ARGS(positionals, server.url));
+        await (await root()).parse(REMOTE_ARGS(positionals, server.url));
         assertEquals(Deno.exitCode, 1, positionals.join(" "));
       }
     } finally {
@@ -398,7 +401,7 @@ async function runLiteralOverServer(
   positionals: string[],
   url: string,
 ): Promise<void> {
-  await root().parse([
+  await (await root()).parse([
     ...positionals,
     "--literal-inputs",
     "--input",

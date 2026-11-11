@@ -39,7 +39,7 @@ import {
   createInMemoryRemote,
   type InMemoryRemote,
 } from "@swamp-club/swamp-testing";
-import { modelMethodCommand } from "../src/cli/commands/model_method_run.ts";
+import { createModelMethodCommand } from "../src/cli/commands/model_method.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import {
   acquireModelLocks,
@@ -384,7 +384,10 @@ async function runMethod(
   const root = registerCompletionTypes(new Command()).globalOption(
     "--json",
     "JSON output",
-  ).command("model", new Command().command("method", modelMethodCommand));
+  ).command(
+    "model",
+    new Command().command("method", await createModelMethodCommand()),
+  );
   await root.parse([
     "model",
     "method",

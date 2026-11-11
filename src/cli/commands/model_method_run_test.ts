@@ -50,21 +50,24 @@ Deno.test("modelMethodRunCommand has correct description", async () => {
   assertStringIncludes(desc, "SWAMP_LOCK_TIMEOUT_MS");
 });
 
-Deno.test("modelMethodCommand module loads", async () => {
-  const { modelMethodCommand } = await import("./model_method_run.ts");
+Deno.test("createModelMethodCommand: builds the method group", async () => {
+  const modelMethodCommand = await (await import("./model_method.ts"))
+    .createModelMethodCommand();
   assertEquals(modelMethodCommand.getName(), "method");
 });
 
-Deno.test("modelMethodCommand has correct description", async () => {
-  const { modelMethodCommand } = await import("./model_method_run.ts");
+Deno.test("createModelMethodCommand: has correct description", async () => {
+  const modelMethodCommand = await (await import("./model_method.ts"))
+    .createModelMethodCommand();
   assertEquals(
     modelMethodCommand.getDescription(),
     "Execute model methods",
   );
 });
 
-Deno.test("modelMethodCommand has run as subcommand", async () => {
-  const { modelMethodCommand } = await import("./model_method_run.ts");
+Deno.test("createModelMethodCommand: has run as subcommand", async () => {
+  const modelMethodCommand = await (await import("./model_method.ts"))
+    .createModelMethodCommand();
   const commands = modelMethodCommand.getCommands();
   const runCommand = commands.find((cmd) => cmd.getName() === "run");
   assertEquals(runCommand !== undefined, true);

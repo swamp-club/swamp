@@ -39,8 +39,9 @@ Deno.test("modelMethodDescribeCommand has correct description", async () => {
   );
 });
 
-Deno.test("modelMethodCommand has describe as subcommand", async () => {
-  const { modelMethodCommand } = await import("./model_method_run.ts");
+Deno.test("createModelMethodCommand: has describe as subcommand", async () => {
+  const modelMethodCommand = await (await import("./model_method.ts"))
+    .createModelMethodCommand();
   const commands = modelMethodCommand.getCommands();
   const describeCmd = commands.find((cmd) => cmd.getName() === "describe");
   assertEquals(describeCmd !== undefined, true);

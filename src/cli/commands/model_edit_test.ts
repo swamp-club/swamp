@@ -37,8 +37,8 @@ Deno.test("modelEditCommand has correct description", async () => {
   );
 });
 
-Deno.test("modelEditCommand is registered as subcommand of modelCommand", async () => {
-  const { modelCommand } = await import("./model_create.ts");
+Deno.test("modelEditCommand is registered as subcommand of the model group", async () => {
+  const modelCommand = await (await import("./model.ts")).createModelCommand();
   const commands = modelCommand.getCommands();
   const editCmd = commands.find((c) => c.getName() === "edit");
   assertEquals(editCmd !== undefined, true);

@@ -22,8 +22,8 @@ import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { join } from "@std/path";
 import { z } from "zod";
-import { behaviorCommand } from "../src/cli/commands/behavior.ts";
-import { modelMethodCommand } from "../src/cli/commands/model_method_run.ts";
+import { createBehaviorCommand } from "../src/cli/commands/behavior.ts";
+import { createModelMethodCommand } from "../src/cli/commands/model_method.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { Data } from "../src/domain/data/data.ts";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
@@ -233,10 +233,10 @@ Deno.test("ephemeral output: both CLI spellings and direct-type execution preser
           "--json",
           "JSON output",
         )
-          .command("behavior", behaviorCommand)
+          .command("behavior", await createBehaviorCommand())
           .command(
             "model",
-            new Command().command("method", modelMethodCommand),
+            new Command().command("method", await createModelMethodCommand()),
           );
         const target = direct
           ? [`@${fx.type.normalized}`, "run", "scratch"]

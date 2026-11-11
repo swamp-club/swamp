@@ -26,9 +26,12 @@ import {
 } from "./command_syntax.ts";
 import {
   createTypeDescribeCommand,
-  typeDescribeCommand,
+  MODEL_TYPE_DESCRIBE_SYNTAX,
 } from "./type_describe.ts";
-import { createTypeSearchCommand, typeSearchCommand } from "./type_search.ts";
+import {
+  createTypeSearchCommand,
+  MODEL_TYPE_SEARCH_SYNTAX,
+} from "./type_search.ts";
 
 export interface ModelTypeChildren {
   readonly describe: ReturnType<typeof createTypeDescribeCommand>;
@@ -70,11 +73,10 @@ export function createModelTypeCommand(
   return recordDefiningModule(command, import.meta.url);
 }
 
-/**
- * its subcommands are the exported typeDescribeCommand and typeSearchCommand
- * instances, so they are passed in rather than built fresh.
- */
-export const modelTypeCommand = createModelTypeCommand(MODEL_TYPE_SYNTAX, {
-  describe: typeDescribeCommand,
-  search: typeSearchCommand,
-});
+/** each leaf carries its legacy constant's preferred spelling, which subcommandSyntax cannot derive */
+export function createLegacyModelTypeCommand() {
+  return createModelTypeCommand(MODEL_TYPE_SYNTAX, {
+    describe: createTypeDescribeCommand(MODEL_TYPE_DESCRIBE_SYNTAX),
+    search: createTypeSearchCommand(MODEL_TYPE_SEARCH_SYNTAX),
+  });
+}

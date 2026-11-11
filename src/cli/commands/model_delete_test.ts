@@ -37,8 +37,8 @@ Deno.test("modelDeleteCommand has correct description", async () => {
   );
 });
 
-Deno.test("modelDeleteCommand is registered as subcommand of modelCommand", async () => {
-  const { modelCommand } = await import("./model_create.ts");
+Deno.test("modelDeleteCommand is registered as subcommand of the model group", async () => {
+  const modelCommand = await (await import("./model.ts")).createModelCommand();
   const commands = modelCommand.getCommands();
   const deleteCmd = commands.find((c) => c.getName() === "delete");
   assertEquals(deleteCmd !== undefined, true);

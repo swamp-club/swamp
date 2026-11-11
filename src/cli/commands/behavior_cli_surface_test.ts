@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { generateShellCompletions } from "@cliffy/command/completions";
 import { generatePowerShellCompletions } from "./completion_powershell.ts";
@@ -26,7 +26,7 @@ import { fromFileUrl } from "@std/path";
 import { registerCompletionTypes } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
-import { behaviorCommand } from "./behavior.ts";
+import { createBehaviorCommand } from "./behavior.ts";
 
 import "../../domain/models/models.ts";
 
@@ -93,8 +93,8 @@ function collectHelp(
   }
 }
 
-function captureSurface(): BehaviorCliSurface {
-  const root = surfaceRoot(behaviorCommand as unknown as AnyCommand);
+async function captureSurface(): Promise<BehaviorCliSurface> {
+  const root = surfaceRoot(await createBehaviorCommand());
   const behavior = root.getCommand("behavior") as AnyCommand;
   const schemaBehavior = (includeHidden: boolean) =>
     buildCliSchema(root, "golden", { includeHidden }).root.subcommands.find(
@@ -122,7 +122,7 @@ function captureSurface(): BehaviorCliSurface {
 }
 
 Deno.test("behavior CLI surface: matches the golden file", async () => {
-  const actual = captureSurface();
+  const actual = await captureSurface();
   if (Deno.env.get("SWAMP_UPDATE_GOLDEN") === "1") {
     await Deno.writeTextFile(
       GOLDEN_PATH,
@@ -142,11 +142,11 @@ Deno.test("behavior CLI surface: matches the golden file", async () => {
   assertEquals(actual.completions, expected.completions);
 });
 
-Deno.test("behavior CLI surface: only the zsh and PowerShell completion scripts offer the behaviour alias", () => {
+Deno.test("behavior CLI surface: only the zsh and PowerShell completion scripts offer the behaviour alias", async () => {
   // Cliffy's bash and fish generators ignore command aliases (see
   // src/cli/commands/completion.ts); a Cliffy upgrade that changes this should
   // update that note and design/primitives/behaviors.md
-  const { completions } = captureSurface();
+  const { completions } = await captureSurface();
   assertEquals(completions.zsh.includes("behavior|behaviour"), true);
   assertEquals(
     completions.powershell.includes(
@@ -156,4 +156,25 @@ Deno.test("behavior CLI surface: only the zsh and PowerShell completion scripts 
   );
   assertEquals(completions.bash.includes("behaviour"), false);
   assertEquals(completions.fish.includes("behaviour"), false);
+});
+
+function allCommands(command: AnyCommand): AnyCommand[] {
+  return [
+    command,
+    ...command.getCommands(true).flatMap((child: AnyCommand) =>
+      allCommands(child)
+    ),
+  ];
+}
+
+Deno.test("createBehaviorCommand: two loads share no command instance", async () => {
+  const first = allCommands(await createBehaviorCommand());
+  const second = allCommands(await createBehaviorCommand());
+  assertEquals(second.length, first.length);
+  for (const command of second) {
+    assert(
+      first.every((other) => other !== command),
+      `${command.getName()} is shared between two loads`,
+    );
+  }
 });

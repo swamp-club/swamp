@@ -36,8 +36,8 @@ import { z } from "zod";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
-import { behaviorCommand } from "../src/cli/commands/behavior.ts";
-import { modelCommand } from "../src/cli/commands/model_create.ts";
+import { createBehaviorCommand } from "../src/cli/commands/behavior.ts";
+import { createModelCommand } from "../src/cli/commands/model.ts";
 import type { AnyCommand } from "../src/cli/cli_schema.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -72,11 +72,11 @@ async function initRepo(dir: string): Promise<string> {
   return repoDir;
 }
 
-function root(): AnyCommand {
+async function root(): Promise<AnyCommand> {
   return registerCompletionTypes(new Command())
     .globalOption("--json", "JSON output")
-    .command("behavior", behaviorCommand)
-    .command("model", modelCommand);
+    .command("behavior", await createBehaviorCommand())
+    .command("model", await createModelCommand());
 }
 
 interface Result {
@@ -99,7 +99,7 @@ async function runJson(
   console.log = (...args: unknown[]) => printed.push(args.join(" "));
   let exitCode: number;
   try {
-    await root().parse([...words, ...extra, "--json"]);
+    await (await root()).parse([...words, ...extra, "--json"]);
   } finally {
     console.log = originalLog;
     exitCode = Deno.exitCode;
@@ -482,7 +482,13 @@ Deno.test({
           lines.push(line.slice(line.indexOf(": ") + 2));
         };
         try {
-          await root().parse([group, "cancel", "--all", "--repo-dir", repoDir]);
+          await (await root()).parse([
+            group,
+            "cancel",
+            "--all",
+            "--repo-dir",
+            repoDir,
+          ]);
         } finally {
           console.info = original;
         }

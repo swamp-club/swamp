@@ -32,7 +32,7 @@ Deno.test("model search has list as a native alias", async () => {
 });
 
 Deno.test("model list resolves to the search command", async () => {
-  const { modelCommand } = await import("./model_create.ts");
+  const modelCommand = await (await import("./model.ts")).createModelCommand();
   const searchCmd = modelCommand.getCommand("search");
   const listCmd = modelCommand.getCommand("list", true);
   assertStrictEquals(listCmd, searchCmd, "list should resolve to search");

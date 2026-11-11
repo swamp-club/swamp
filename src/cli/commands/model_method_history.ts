@@ -29,16 +29,16 @@ import {
 import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
 import {
   createModelMethodHistoryGetCommand,
+  MODEL_METHOD_HISTORY_GET_SYNTAX,
   modelMethodHistoryGetAction,
-  modelMethodHistoryGetCommand,
 } from "./model_method_history_get.ts";
 import {
   createModelMethodHistorySearchCommand,
-  modelMethodHistorySearchCommand,
+  MODEL_METHOD_HISTORY_SEARCH_SYNTAX,
 } from "./model_method_history_search.ts";
 import {
   createModelMethodHistoryLogsCommand,
-  modelMethodHistoryLogsCommand,
+  MODEL_METHOD_HISTORY_LOGS_SYNTAX,
 } from "./model_method_history_logs.ts";
 
 export interface ModelMethodHistoryChildren {
@@ -108,11 +108,13 @@ export function createModelMethodHistoryCommand(
   return recordDefiningModule(command, import.meta.url);
 }
 
-export const modelMethodHistoryCommand = createModelMethodHistoryCommand(
-  MODEL_METHOD_HISTORY_SYNTAX,
-  {
-    get: modelMethodHistoryGetCommand,
-    search: modelMethodHistorySearchCommand,
-    logs: modelMethodHistoryLogsCommand,
-  },
-);
+/** each leaf carries its legacy constant's preferred spelling, which subcommandSyntax cannot derive */
+export function createLegacyModelMethodHistoryCommand() {
+  return createModelMethodHistoryCommand(MODEL_METHOD_HISTORY_SYNTAX, {
+    get: createModelMethodHistoryGetCommand(MODEL_METHOD_HISTORY_GET_SYNTAX),
+    search: createModelMethodHistorySearchCommand(
+      MODEL_METHOD_HISTORY_SEARCH_SYNTAX,
+    ),
+    logs: createModelMethodHistoryLogsCommand(MODEL_METHOD_HISTORY_LOGS_SYNTAX),
+  });
+}

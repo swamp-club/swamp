@@ -23,7 +23,6 @@ import {
   lastEvaluatedDefinition,
 } from "../last_evaluated_trust.ts";
 import { Command } from "@cliffy/command";
-import { groupCommandAction } from "../group_action.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -92,23 +91,12 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import {
-  createModelMethodHistoryCommand,
-  modelMethodHistoryCommand,
-} from "./model_method_history.ts";
-import {
-  createModelMethodDescribeCommand,
-  modelMethodDescribeCommand,
-} from "./model_method_describe.ts";
-import {
-  type CommandSyntax,
   definitionNameType,
   PREFERRED_SPELLING_EXAMPLE,
   recordDefiningModule,
   runTargetArgument,
-  subcommandSyntax,
 } from "./command_syntax.ts";
 import type { CommandSurface } from "../../presentation/command_surface.ts";
-import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   modelMethodRun,
@@ -1097,70 +1085,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
 
 export const modelMethodRunCommand = createModelMethodRunCommand(
   MODEL_METHOD_RUN_SYNTAX,
-);
-
-/**
- * the legacy model method run names a direct type before method instead, so its
- * group is built with MODEL_METHOD_RUN_SYNTAX.
- */
-function methodRunSyntax(syntax: CommandSyntax): RunCommandSyntax {
-  const run = subcommandSyntax(syntax, "run").invocation;
-  return {
-    invocation: (model, method) => `${run} ${model} ${method}`,
-    directInvocation: (type, method, name) =>
-      `${run} ${type} ${method} ${name}`,
-    surface: syntax.surface,
-  };
-}
-
-export interface ModelMethodChildren {
-  readonly run: ReturnType<typeof createModelMethodRunCommand>;
-  readonly describe: ReturnType<typeof createModelMethodDescribeCommand>;
-  readonly history: ReturnType<typeof createModelMethodHistoryCommand>;
-}
-
-export const MODEL_METHOD_SYNTAX: CommandSyntax = {
-  invocation: "swamp model method",
-  surface: "model",
-};
-
-/**
- * Cliffy reparents a command attached under a second parent, so two surfaces
- * must never share an instance.
- */
-export function createModelMethodCommand(
-  syntax: CommandSyntax,
-  children: Partial<ModelMethodChildren> = {},
-) {
-  const command = new Command()
-    .name("method")
-    .description(`Execute ${syntax.surface} methods`)
-    .error(unknownCommandErrorHandler)
-    .action(groupCommandAction)
-    .command(
-      "run",
-      children.run ?? createModelMethodRunCommand(methodRunSyntax(syntax)),
-    )
-    .command(
-      "describe",
-      children.describe ??
-        createModelMethodDescribeCommand(subcommandSyntax(syntax, "describe")),
-    )
-    .command(
-      "history",
-      children.history ??
-        createModelMethodHistoryCommand(subcommandSyntax(syntax, "history")),
-    );
-  return recordDefiningModule(command, import.meta.url);
-}
-
-export const modelMethodCommand = createModelMethodCommand(
-  MODEL_METHOD_SYNTAX,
-  {
-    run: modelMethodRunCommand,
-    describe: modelMethodDescribeCommand,
-    history: modelMethodHistoryCommand,
-  },
 );
 
 async function runMethodViaServer(

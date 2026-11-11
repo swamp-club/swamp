@@ -45,15 +45,17 @@ export const ROOT_ROUTES: readonly CommandRoute[] = [
     hidden: false,
     module: "src/cli/commands/behavior.ts",
     needsFullTree: false,
-    load: async () => (await import("./commands/behavior.ts")).behaviorCommand,
+    load: async (rest) =>
+      (await import("./commands/behavior.ts")).createBehaviorCommand(rest),
   },
   {
     name: "model",
     aliases: [],
     hidden: false,
-    module: "src/cli/commands/model_create.ts",
+    module: "src/cli/commands/model.ts",
     needsFullTree: false,
-    load: async () => (await import("./commands/model_create.ts")).modelCommand,
+    load: async (rest) =>
+      (await import("./commands/model.ts")).createModelCommand(rest),
   },
   {
     name: "init",

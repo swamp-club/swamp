@@ -25,13 +25,15 @@ import "../../domain/models/models.ts";
 
 await initializeLogging({});
 
-Deno.test("modelTypeCommand module loads", async () => {
-  const { modelTypeCommand } = await import("./model_type.ts");
+Deno.test("createLegacyModelTypeCommand: builds the type group", async () => {
+  const { createLegacyModelTypeCommand } = await import("./model_type.ts");
+  const modelTypeCommand = createLegacyModelTypeCommand();
   assertEquals(modelTypeCommand.getName(), "type");
 });
 
-Deno.test("typeDescribeCommand is registered as subcommand of modelTypeCommand", async () => {
-  const { modelTypeCommand } = await import("./model_type.ts");
+Deno.test("typeDescribeCommand is registered as subcommand of the legacy type group", async () => {
+  const { createLegacyModelTypeCommand } = await import("./model_type.ts");
+  const modelTypeCommand = createLegacyModelTypeCommand();
   const commands = modelTypeCommand.getCommands();
   const describeCmd = commands.find((c: Command) => c.getName() === "describe");
   assertEquals(describeCmd !== undefined, true);
