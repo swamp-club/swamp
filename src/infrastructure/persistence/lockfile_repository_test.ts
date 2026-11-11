@@ -655,6 +655,19 @@ Deno.test("LockfileRepository.normalize: leaves a canonical lockfile's bytes alo
   });
 });
 
+Deno.test("LockfileRepository.normalize: refuses a lockfile with a repeated key and leaves its bytes alone", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repo = await LockfileRepository.create(path);
+    const written =
+      '{\n  "@a/x": {"version": "1.0.0", "files": ["a\\\\b"]},\n' +
+      '  "@a/x": {"version": "2.0.0", "files": ["c\\\\d"]}\n}\n';
+    await Deno.writeTextFile(path, written);
+    await assertRejects(() => repo.normalize(), SyntaxError, "more than once");
+    assertEquals(await Deno.readTextFile(path), written);
+  });
+});
+
 Deno.test("LockfileRepository.normalize: a missing lockfile creates nothing", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "models", "upstream_extensions.json");

@@ -20,6 +20,8 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { relative as win32Relative } from "@std/path/windows";
+import { hasControlCharacter } from "../../domain/control_characters.ts";
+import { errorPaths } from "../../domain/errors.ts";
 import {
   canonicalLockfileEntry,
   canonicalLockfilePath,
@@ -92,6 +94,60 @@ Deno.test("readUpstreamExtensions: rejects unparseable JSON, naming the file", a
       error.message,
       `Cannot parse lockfile ${lockfilePath}`,
     );
+  });
+});
+
+Deno.test("readUpstreamExtensions: rejects an extension listed twice, naming it and the file", async () => {
+  const content =
+    '{\n  "@example/one": {"version":"1.0.0","pulledAt":"first"},\n' +
+    '  "@example/one": {"version":"2.0.0","pulledAt":"last"}\n}\n';
+  await withLockfile(content, async (lockfilePath) => {
+    const error = await assertRejects(
+      () => readUpstreamExtensions(lockfilePath),
+      SyntaxError,
+    );
+    assertEquals(
+      error.message,
+      `Lockfile ${lockfilePath} lists "@example/one" more than once`,
+    );
+    assertEquals(errorPaths(error), [lockfilePath]);
+  });
+});
+
+Deno.test("readUpstreamExtensions: rejects a key repeated inside an entry, naming the entry", async () => {
+  const content = '{"@a/x": {"version": "1", "pulledAt": "p", "version": "2"}}';
+  await withLockfile(content, async (lockfilePath) => {
+    const error = await assertRejects(
+      () => readUpstreamExtensions(lockfilePath),
+      SyntaxError,
+    );
+    assertEquals(
+      error.message,
+      `Lockfile ${lockfilePath} repeats key "version" in "@a/x"`,
+    );
+  });
+});
+
+Deno.test("readUpstreamExtensions: a repeated key with control characters is shown escaped", async () => {
+  const content = '{"@a/x": {"files": ["a"], "\\u001b[2J\\u009b": 1, ' +
+    '"\\u001b[2J\\u009b": 2}}';
+  await withLockfile(content, async (lockfilePath) => {
+    const error = await assertRejects(
+      () => readUpstreamExtensions(lockfilePath),
+      SyntaxError,
+    );
+    assertStringIncludes(error.message, '"\\u001b[2J\\x9b" in "@a/x"');
+    assertEquals(hasControlCharacter(error.message), false);
+  });
+});
+
+Deno.test("readUpstreamExtensions: entries sharing field names still read", async () => {
+  const entries = {
+    "@a/x": { version: "1", pulledAt: "p" },
+    "@b/y": { version: "2", pulledAt: "q" },
+  };
+  await withLockfile(JSON.stringify(entries), async (lockfilePath) => {
+    assertEquals(await readUpstreamExtensions(lockfilePath), entries);
   });
 });
 
