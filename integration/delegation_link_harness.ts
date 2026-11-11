@@ -68,7 +68,10 @@ export class MockClub {
   /** served as the feed, in the order swamp-club ended them */
   endedFeed: string[] = [];
   people = new Map<string, unknown>();
-  refuseClient: { status: number; error: string } | undefined;
+  /** without `at`, every link route refuses the client */
+  refuseClient:
+    | { status: number; error: string; at?: "capabilities" | "start" }
+    | undefined;
   /** swamp-club's answer for a collective without a trial or paid plan */
   refusePlan:
     | { at: "capabilities" | "start"; message?: unknown }
@@ -89,9 +92,15 @@ export class MockClub {
         if (this.down) {
           return Response.json({ error: "unavailable" }, { status: 503 });
         }
-        if (this.refuseClient) {
-          return Response.json({ error: this.refuseClient.error }, {
-            status: this.refuseClient.status,
+        const clientRefused = this.refuseClient !== undefined &&
+          (this.refuseClient.at === undefined ||
+            (this.refuseClient.at === "capabilities"
+              ? path === "/capabilities"
+              : path === "" && req.method === "POST"));
+        if (clientRefused) {
+          if (path === "" && req.method === "POST") this.starts++;
+          return Response.json({ error: this.refuseClient!.error }, {
+            status: this.refuseClient!.status,
           });
         }
         const planRefused = this.refusePlan !== undefined &&

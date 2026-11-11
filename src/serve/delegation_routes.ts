@@ -158,6 +158,7 @@ export const DELEGATION_ROUTE_CODES = [
   "invalid_grant",
   "invalid_request",
   "links_not_enabled",
+  "links_require_collective_client",
   "links_require_plan",
   "links_unavailable",
   "method_not_allowed",
@@ -322,7 +323,20 @@ export async function handleDelegationRequest(
   }
 }
 
+export const COLLECTIVE_CLIENT_MESSAGE =
+  "This serve's swamp-club client isn't owned by a collective, so it can't link people. Set serve up with a collective API key, as in Deploy with Headless OAuth.";
+
 function clubFailure(error: ServeLinkError): Response {
+  if (error.kind === "unauthorized" && error.code === "client_not_collective") {
+    logger.warn(
+      "Link start refused: swamp-club says this serve's OAuth client isn't owned by a collective; linking people needs a serve set up with a collective API key",
+    );
+    return httpFailure(
+      409,
+      "links_require_collective_client",
+      COLLECTIVE_CLIENT_MESSAGE,
+    );
+  }
   switch (error.kind) {
     case "not_enabled":
       return httpFailure(
