@@ -28,6 +28,7 @@ import {
   parseKeyValueInputs,
   parseStdinContent,
   setNestedValue,
+  withDataInputs,
 } from "./input_parser.ts";
 import { UserError } from "../domain/errors.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
@@ -687,4 +688,19 @@ Deno.test("assertNoDataInputOverlap: refuses a key another input source sets, at
   );
   assertNoDataInputOverlap({ body: { note: "n" } }, data);
   assertNoDataInputOverlap({}, data);
+});
+
+Deno.test("withDataInputs: merges the data inputs into every set and refuses a set that names one", () => {
+  const data = { values: { payload: "file" }, keys: ["payload"] };
+  assertEquals(withDataInputs([{ name: "a" }, { name: "b" }], data), [
+    { name: "a", payload: "file" },
+    { name: "b", payload: "file" },
+  ]);
+  assertThrows(
+    () => withDataInputs([{ name: "a" }, { payload: "stdin" }], data),
+    UserError,
+    "a --stdin item",
+  );
+  const sets = [{ name: "a" }];
+  assertEquals(withDataInputs(sets, { values: {}, keys: [] }), sets);
 });

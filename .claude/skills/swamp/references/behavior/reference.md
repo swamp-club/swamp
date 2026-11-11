@@ -501,10 +501,10 @@ swamp behavior run github-pr update-body --literal-inputs --input-file body.json
 
 To make one input data rather than all of them, read it from a file with
 `--input-data key=<path>`: the content reaches the method verbatim while other
-`--input` values are still evaluated. It cannot share a key with `--input` or
-`--input-file`. An argument the type marks `.meta({ data: true })` is data
-whatever the route, with no flag (`swamp behavior type describe` tags it
-`data`).
+`--input` values are still evaluated. It cannot share a key with `--input`,
+`--input-file` or a `--stdin` item. An argument the type marks
+`.meta({ data: true })` is data whatever the route, with no flag
+(`swamp behavior type describe` tags it `data`).
 
 ```bash
 swamp behavior run artifacts record --input name=plan --input-data payload=result.md

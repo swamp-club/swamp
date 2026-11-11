@@ -93,8 +93,8 @@ import {
   sentinelStandInOf,
 } from "../../domain/expressions/provenance_map.ts";
 import {
+  canonicalKeyPath,
   dataArgumentKeys,
-  hasValueAt,
   type KeyPath,
   keysToPath,
   omitKeyPaths,
@@ -383,7 +383,7 @@ export interface ModelMethodRunInput {
   literalInputs?: boolean;
   /**
    * places in inputs that are data, as under literalInputs: a file read with
-   * --input-data, or what a serve caller was not authorized for
+   * --input-data, or each place the serve handler left out of authorization
    */
   dataInputPaths?: readonly KeyPath[];
   lastEvaluated: boolean;
@@ -493,20 +493,21 @@ export async function* modelMethodRun(
             }
             // Keys the caller supplied; under literalInputs they are data.
             const callerInputKeys = new Set(Object.keys(input.inputs));
-            const dataInputPaths = input.dataInputPaths ?? [];
-            const missingDataInput = dataInputPaths.find((keys) =>
-              !hasValueAt(input.inputs, keys)
-            );
-            if (missingDataInput !== undefined) {
-              yield prepareFailed({
-                kind: "error",
-                error: validationFailed(
-                  `Data input ${
-                    keysToPath(missingDataInput)
-                  } names no supplied input.`,
-                ),
-              });
-              return;
+            const dataInputPaths: KeyPath[] = [];
+            for (const keys of input.dataInputPaths ?? []) {
+              const canonical = canonicalKeyPath(input.inputs, keys);
+              if (canonical === undefined) {
+                yield prepareFailed({
+                  kind: "error",
+                  error: validationFailed(
+                    `Data input ${
+                      keys.join(".")
+                    } has no matching value in the inputs.`,
+                  ),
+                });
+                return;
+              }
+              dataInputPaths.push(canonical);
             }
             const callerDataMap = dataInputPaths.reduce(
               (map, keys) => map.graft(keysToPath(keys), ProvenanceMap.data()),
@@ -1288,9 +1289,20 @@ export async function* modelMethodRun(
               // A whole argument typed with --input is the operator's own
               // command text, so it runs as written; runtime splices into it
               // stay data.
-              // a marked argument or data input stays data inside it
+              // a marked argument or data input stays data inside it; a marked
+              // arguments object makes every override data
+              const wholeData = dataPaths.some((keys) => keys.length === 0);
               const placementProvenance = input.literalInputs
                 ? executedProvenance
+                : wholeData
+                ? operatorArgumentKeys.reduce(
+                  (map, key) =>
+                    map.graft(
+                      methodArgumentPath(input.methodName, key),
+                      ProvenanceMap.data(),
+                    ),
+                  executedProvenance,
+                )
                 : dataPaths.filter(([key]) =>
                   typeof key === "string" && operatorArgumentKeys.includes(key)
                 ).reduce(

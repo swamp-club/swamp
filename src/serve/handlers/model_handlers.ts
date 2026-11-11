@@ -173,11 +173,13 @@ import {
 import { modelRegistry } from "../../domain/models/model.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import {
+  canonicalKeyPath,
   dataArgumentKeys,
   dottedKeyPath,
   type KeyPath,
   omitKeyPaths,
 } from "../../domain/models/data_field_extractor.ts";
+import { UserError } from "../../domain/errors.ts";
 import { RegistryCapacityError } from "../active_run_registry.ts";
 import { RunEventBuffer } from "../run_event_buffer.ts";
 import { deleteActiveRun, writeActiveRun } from "../active_run_tracker.ts";
@@ -699,7 +701,18 @@ async function runDataInputPaths(
   payload: ModelMethodRunPayload,
   target: MethodRunTarget,
 ): Promise<KeyPath[]> {
-  const paths = (payload.dataInputKeys ?? []).map(dottedKeyPath);
+  const paths = (payload.dataInputKeys ?? []).map((key) => {
+    const canonical = canonicalKeyPath(
+      payload.inputs ?? {},
+      dottedKeyPath(key),
+    );
+    if (canonical === undefined) {
+      throw new UserError(
+        `dataInputKeys entry ${key} has no matching value in inputs.`,
+      );
+    }
+    return canonical;
+  });
   if (payload.literalInputs === true) return paths;
   const definition = target.run?.definition ?? target.definition;
   let modelDef = definition

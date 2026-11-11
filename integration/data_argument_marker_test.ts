@@ -80,7 +80,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-4649-data-args-" });
   const type = ModelType.create(`@test/data-args-${crypto.randomUUID()}`);
   const received: Record<string, unknown>[] = [];
-  // the #4596 shape: the method digests the payload it received and stores both
+  // the method digests the payload it received and stores both
   const recordArtifact = async (
     args: unknown,
     context: { writeResource?: (...a: never[]) => unknown },
@@ -129,6 +129,22 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
         arguments: z.object({ name: z.string(), payload: z.string() }),
         // deno-lint-ignore no-explicit-any
         execute: recordArtifact as any,
+      },
+      wholeData: {
+        description: "wholeData",
+        arguments: z.object({
+          name: z.string().optional(),
+          payload: z.string(),
+        }).meta({ data: true }),
+        execute: capture,
+      },
+      list: {
+        description: "list",
+        arguments: z.object({
+          label: z.string().optional(),
+          items: z.array(z.string()),
+        }),
+        execute: capture,
       },
       nested: {
         description: "nested",
@@ -240,7 +256,6 @@ async function swampFilesHolding(dir: string, text: string): Promise<string[]> {
   return hits;
 }
 
-/** the stored artifact whose digest the method computed */
 async function storedArtifact(
   dir: string,
   digest: string,
@@ -504,5 +519,27 @@ Deno.test("data input: a data path naming no supplied input is refused before th
     const [error] = errorsOf(events);
     assertStringIncludes(error.message, "payloda");
     assertEquals(h.received.length, 0);
+  });
+});
+
+Deno.test("data argument: a marked arguments object makes an override data even when its text matches an expression in the definition source", async () => {
+  await withHarness(async (h) => {
+    await define(h, "whole", "wholeData", { name: VAULT_REF });
+    assertCompleted(
+      await run(h, "whole", "wholeData", { payload: VAULT_REF }),
+    );
+    assertEquals(h.received.at(-1)!.payload, VAULT_REF);
+  });
+});
+
+Deno.test("data input: an array element named by a dotted key is data at that element", async () => {
+  await withHarness(async (h) => {
+    await define(h, "list", "list", { label: VAULT_REF });
+    assertCompleted(
+      await run(h, "list", "list", { items: [VAULT_REF, "plain"] }, {
+        dataInputPaths: [["items", "0"]],
+      }),
+    );
+    assertEquals(h.received.at(-1)!.items, [VAULT_REF, "plain"]);
   });
 });

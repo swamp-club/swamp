@@ -398,6 +398,26 @@ async function withEchoType(
           return Promise.resolve({});
         },
       },
+      echoAll: {
+        description: "takes arguments that are all data",
+        kind: "read",
+        arguments: z.object({ note: z.string().optional() }).meta({
+          data: true,
+        }),
+        execute: (args: { note?: string }) => {
+          notes.push(args.note);
+          return Promise.resolve({});
+        },
+      },
+      echoList: {
+        description: "takes a list of notes",
+        kind: "read",
+        arguments: z.object({ items: z.array(z.string()) }),
+        execute: (args: { items: string[] }) => {
+          notes.push(args.items[0]);
+          return Promise.resolve({});
+        },
+      },
       echoData: {
         description: "takes a note that is data",
         kind: "read",
@@ -583,6 +603,90 @@ Deno.test("serve expressions: a marked argument and a dataInputKeys input run as
       });
     },
   );
+});
+
+Deno.test("serve expressions: text the handler skipped never evaluates, even when it matches an expression in the definition source, for a marked arguments object and an array element named by dataInputKeys", async () => {
+  await withMockedEnv(
+    { SWAMP_EXPR_SENTINEL_RUN: "sentinel-4649-root" },
+    async () => {
+      await withEchoType(async (echoType, notes) => {
+        await withFixtures(async (f) => {
+          const authored = "${{ env.SWAMP_EXPR_SENTINEL_RUN }}";
+          await f.repo.repoContext.definitionRepo.save(
+            echoType,
+            Definition.create({
+              name: "echo-src",
+              globalArguments: {},
+              methods: { echo: { arguments: { note: authored } } },
+            }),
+          );
+          const runOnly = createServeCtx(f.repo, [
+            grant({
+              actions: ["read", "run"],
+              resource: { kind: "model", pattern: "*" },
+            }),
+            ...GRANTS.slice(2),
+          ]);
+          const send = (payload: Record<string, unknown>) =>
+            sendRequest(
+              runOnly,
+              request("model.method.run", {
+                modelIdOrName: "echo-src",
+                ...payload,
+              }),
+            );
+          assertAllowed(
+            await send({ methodName: "echoAll", inputs: { note: authored } }),
+            "root-marked",
+          );
+          assertAllowed(
+            await send({
+              methodName: "echoList",
+              inputs: { items: [authored] },
+              dataInputKeys: ["items.0"],
+            }),
+            "array element",
+          );
+          assertEquals(notes, [authored, authored]);
+          const missing = await send({
+            methodName: "echoList",
+            inputs: { items: [authored] },
+            dataInputKeys: ["items.5"],
+          });
+          assert(errorFrame(missing), "a key naming no value is refused");
+          assertEquals(notes.length, 2);
+        });
+      });
+    },
+  );
+});
+
+Deno.test("serve expressions: a direct type execution with an @-prefixed type finds the marker", async () => {
+  await withEchoType(async (echoType, notes) => {
+    await withFixtures(async (f) => {
+      const runOnly = createServeCtx(f.repo, [
+        grant({
+          actions: ["read", "run", "write"],
+          resource: { kind: "model", pattern: "*" },
+        }),
+        ...GRANTS.slice(2),
+      ]);
+      assertAllowed(
+        await sendRequest(
+          runOnly,
+          request("model.method.run", {
+            modelIdOrName: "echo-at",
+            methodName: "echoData",
+            typeArg: `@${echoType.normalized}`,
+            definitionName: "echo-at",
+            inputs: { note: REFUSED_REFERENCES[0] },
+          }),
+        ),
+        "@-prefixed direct marked",
+      );
+      assertEquals(notes, [REFUSED_REFERENCES[0]]);
+    });
+  });
 });
 
 Deno.test("serve expressions: a direct type execution with a marked argument runs it as data", async () => {

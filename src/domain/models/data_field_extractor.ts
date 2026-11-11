@@ -75,14 +75,39 @@ export function dottedKeyPath(key: string): KeyPath {
   return key.split(".");
 }
 
-export function hasValueAt(value: unknown, keys: KeyPath): boolean {
+/**
+ * the path as it sits in value, a segment under an array read as its index, so
+ * a dotted key and the walker name one place; undefined when nothing is there
+ */
+export function canonicalKeyPath(
+  value: unknown,
+  keys: KeyPath,
+): KeyPath | undefined {
+  const canonical: (string | number)[] = [];
   let current = value;
   for (const key of keys) {
-    if (current === null || typeof current !== "object") return false;
-    if (!Object.hasOwn(current, key)) return false;
-    current = (current as Record<string | number, unknown>)[key];
+    if (Array.isArray(current)) {
+      const index = typeof key === "number"
+        ? key
+        : /^(0|[1-9][0-9]*)$/.test(key)
+        ? Number(key)
+        : -1;
+      if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+        return undefined;
+      }
+      canonical.push(index);
+      current = current[index];
+    } else if (
+      current !== null && typeof current === "object" &&
+      typeof key === "string" && Object.hasOwn(current, key)
+    ) {
+      canonical.push(key);
+      current = (current as Record<string, unknown>)[key];
+    } else {
+      return undefined;
+    }
   }
-  return true;
+  return canonical;
 }
 
 export function valueAt(value: unknown, keys: KeyPath): unknown {

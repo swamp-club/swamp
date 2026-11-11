@@ -200,7 +200,9 @@ export async function parseDataInputs(
     }
     const key = entry.slice(0, eqIndex);
     if (key === "" || key.split(".").includes("")) {
-      throw new UserError(`Invalid --input-data key in "${entry}".`);
+      throw new UserError(
+        `Invalid --input-data key in "${entry}": keys are dotted names with no empty segment, such as body.text=<path>.`,
+      );
     }
     if (keys.includes(key)) {
       throw new UserError(`--input-data ${key} is given more than once.`);
@@ -215,7 +217,7 @@ export async function parseDataInputs(
   return { values, keys };
 }
 
-/** refuses a key --input or --input-file also sets, rather than pick one */
+/** refuses a key another input source also sets, rather than pick one */
 export function assertNoDataInputOverlap(
   inputs: Record<string, unknown>,
   data: DataInputs,
@@ -235,10 +237,22 @@ export function assertNoDataInputOverlap(
     }
     if (present) {
       throw new UserError(
-        `Input ${key} is given both by --input-data and by --input or --input-file.`,
+        `Input ${key} is given both by --input-data and by --input, --input-file or a --stdin item.`,
       );
     }
   }
+}
+
+/** each input set with the data inputs merged in; a set that names one too is refused */
+export function withDataInputs(
+  sets: Record<string, unknown>[],
+  data: DataInputs,
+): Record<string, unknown>[] {
+  if (data.keys.length === 0) return sets;
+  return sets.map((set) => {
+    assertNoDataInputOverlap(set, data);
+    return deepMerge(set, data.values);
+  });
 }
 
 function isJsonInput(entries: string[]): boolean {
