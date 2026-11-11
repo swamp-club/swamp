@@ -23,7 +23,11 @@
  * the process's hold on the writer lock
  */
 
-import { clearServeUnreachableLatches } from "./serve_datastore_client.ts";
+import {
+  clearServeUnreachableLatches,
+  closePooledServeClients,
+  endServeWarmups,
+} from "./serve_datastore_client.ts";
 import { dirname, join, resolve } from "@std/path";
 import {
   type DatastoreConfig,
@@ -1937,6 +1941,7 @@ export async function closeV3Datastores(
     {},
     () => Promise.all(feedWatches.splice(0).map((watch) => watch.stop())),
   );
+  await endServeWarmups();
   closeServeLockClients();
   let unreachable = options.storageUnreachable === true;
   // Serve's shutdown deadline, kept for the release once the sync's turn
@@ -2097,6 +2102,7 @@ export async function closeV3Datastores(
   keepMarkers = false;
   keptMarkers.clear();
   clearServeUnreachableLatches();
+  closePooledServeClients();
   // A replication failure comes first: it is what the command reports.
   const failed = [...closing, ...closed, ...unheld, ...released].find((
     result,

@@ -316,6 +316,11 @@ export interface ServeDatastoreClientOptions {
    * once, on the first request, never at construction.
    */
   readonly httpClient?: () => Deno.HttpClient;
+  /**
+   * a process-wide client borrowed until a request on it times out, then
+   * `httpClient`'s; never closed by this one
+   */
+  readonly pool?: () => Deno.HttpClient;
   readonly timeoutMs?: number;
   readonly extraHeaders?: Readonly<Record<string, string>>;
   readonly fetch?: typeof fetch;
@@ -517,6 +522,7 @@ export class ServeDatastoreClient {
   readonly namespace: string;
   readonly #token: string | undefined;
   readonly #makeHttpClient: (() => Deno.HttpClient) | undefined;
+  readonly #pool: (() => Deno.HttpClient) | undefined;
   #httpClient: Deno.HttpClient | undefined;
   // a client whose connection timed out takes no new request; requests still
   // in flight on it finish there, and it closes once they have
@@ -549,6 +555,7 @@ export class ServeDatastoreClient {
       : options.namespace;
     this.#token = options.token === "" ? undefined : options.token;
     this.#makeHttpClient = options.httpClient;
+    this.#pool = options.pool;
     this.#timeoutMs = options.timeoutMs ?? serveRequestTimeoutMs();
     this.#extraHeaders = options.extraHeaders ?? {};
     this.#fetch = options.fetch ??
@@ -1701,6 +1708,9 @@ export class ServeDatastoreClient {
   }
 
   #clientInit(): { client?: Deno.HttpClient } {
+    if (this.#pool !== undefined && !this.#ownConnectionAfterTimeout) {
+      return { client: this.#pool() };
+    }
     const make = this.#makeHttpClient ??
       (this.#ownConnectionAfterTimeout
         ? () => Deno.createHttpClient({})
@@ -1728,7 +1738,7 @@ export class ServeDatastoreClient {
       else client.close();
     }
     // the process-wide pool may hold more connections to the same node
-    if (this.#makeHttpClient === undefined) {
+    if (this.#makeHttpClient === undefined || this.#pool !== undefined) {
       this.#ownConnectionAfterTimeout = true;
     }
   }
@@ -2093,6 +2103,7 @@ export function serveDatastoreClientFor(
   const caCerts = target.caCerts !== undefined && target.caCerts.length > 0
     ? [...target.caCerts]
     : undefined;
+  const pooled = caCerts !== undefined && options.ownConnection !== true;
   return new ServeDatastoreClient({
     baseUrl: target.serverUrl,
     namespace,
@@ -2104,5 +2115,70 @@ export function serveDatastoreClientFor(
           Deno.createHttpClient(caCerts !== undefined ? { caCerts } : {}),
       }
       : {}),
+    ...(pooled ? { pool: () => pooledClientFor(caCerts) } : {}),
   });
+}
+
+// One per CA set, so a command's requests to serve share one h2 connection
+// where a client of its own each would open another.
+const pooledClients = new Map<string, Deno.HttpClient>();
+
+function pooledClientFor(caCerts: readonly string[]): Deno.HttpClient {
+  const key = JSON.stringify(caCerts);
+  let client = pooledClients.get(key);
+  if (client === undefined) {
+    client = Deno.createHttpClient({ caCerts: [...caCerts] });
+    pooledClients.set(key, client);
+  }
+  return client;
+}
+
+/** once the process's serve requests have ended */
+export function closePooledServeClients(): void {
+  for (const client of pooledClients.values()) client.close();
+  pooledClients.clear();
+}
+
+const warmups = new Map<
+  string,
+  { readonly abort: AbortController; readonly done: Promise<void> }
+>();
+
+/**
+ * opens the pooled connection to serve while the command still starts, so
+ * its first request does not wait for TCP and TLS; once per serve
+ */
+export function warmServeConnection(
+  target: ServeUpstreamTarget,
+  timeoutMs: number = serveRequestTimeoutMs(),
+): void {
+  const caCerts = target.caCerts !== undefined && target.caCerts.length > 0
+    ? target.caCerts
+    : undefined;
+  const url = `${normalizeServerUrl(target.serverUrl)}/ready`;
+  const key = JSON.stringify([url, caCerts ?? []]);
+  if (warmups.has(key)) return;
+  const abort = new AbortController();
+  const headers = new Headers(target.extraHeaders);
+  // as every other request to this address does, so a bound token goes with it
+  if (target.token !== undefined && target.token !== "") {
+    headers.set("authorization", `Bearer ${target.token}`);
+  }
+  const done = fetch(url, {
+    headers,
+    signal: AbortSignal.any([abort.signal, AbortSignal.timeout(timeoutMs)]),
+    ...(caCerts !== undefined ? { client: pooledClientFor(caCerts) } : {}),
+  }).then(
+    (response) => response.body?.cancel().catch(() => {}),
+    () => {},
+  );
+  warmups.set(key, { abort, done });
+}
+
+/** a warm-up still connecting is cut off: it never holds a command open */
+export async function endServeWarmups(): Promise<void> {
+  const pending = [...warmups.values()];
+  warmups.clear();
+  for (const { abort } of pending) abort.abort();
+  await Promise.all(pending.map(({ done }) => done));
 }

@@ -28,6 +28,7 @@ import {
   assert,
   assertEquals,
   assertInstanceOf,
+  assertNotEquals,
   assertNotStrictEquals,
   assertRejects,
   assertStrictEquals,
@@ -58,8 +59,10 @@ import {
 import { isNetworkFailure } from "./network_failure.ts";
 import {
   clearServeUnreachableLatches,
+  closePooledServeClients,
   COMMIT_CONTENT_TYPE,
   DEFAULT_SERVE_TIMEOUT_MS,
+  endServeWarmups,
   latchServeUnreachable,
   MAX_HAS_HASHES,
   MAX_PUT_OP_REPLY_BYTES,
@@ -74,11 +77,14 @@ import {
   SERVE_PAGE_MAX_BYTES,
   SERVE_REPLY_MAX_BYTES,
   ServeDatastoreClient,
+  serveDatastoreClientFor,
   type ServeDatastoreClientOptions,
   serveRequestDeadlineMs,
   serveRequestTimeoutMs,
   serveResponseDeadlineMs,
+  warmServeConnection,
 } from "./serve_datastore_client.ts";
+import { ServeUpstreamTarget } from "../../domain/datastore_v3/serve_upstream.ts";
 import {
   ServeAuthFailedError,
   ServeLeaseLapsedLatch,
@@ -2451,4 +2457,156 @@ Deno.test("ServeDatastoreClient: a refused read whose body is cut off is unreach
     );
     assertEquals(error.sent, "maybe");
   });
+});
+
+const TEST_CA = [
+  "-----BEGIN CERTIFICATE-----",
+  "MIICFjCCAbwCCQCrHFHEmBrIHzAKBggqhkjOPQQDAjAYMRYwFAYDVQQDDA1zd2Ft",
+  "cCB0ZXN0IENBMCAXDTI2MTExMTA3MjEyNVoYDzIxMjYxMDE4MDcyMTI1WjAYMRYw",
+  "FAYDVQQDDA1zd2FtcCB0ZXN0IENBMIIBSzCCAQMGByqGSM49AgEwgfcCAQEwLAYH",
+  "KoZIzj0BAQIhAP////8AAAABAAAAAAAAAAAAAAAA////////////////MFsEIP//",
+  "//8AAAABAAAAAAAAAAAAAAAA///////////////8BCBaxjXYqjqT57PrvVV2mIa8",
+  "ZR0GsMxTsPY7zjw+J9JgSwMVAMSdNgiG5wSTamZ44ROdJreBn36QBEEEaxfR8uEs",
+  "Qkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sx",
+  "Xs7LtkBoN79R9QIhAP////8AAAAA//////////+85vqtpxeehPO5ysL8YyVRAgEB",
+  "A0IABMi+c3P8LEQ6mc54H7hSyytI72BmNYkwOG3RVlUcS6zLS23fngyg2YAxDFsg",
+  "MhS+pWhcvL4QVm7Msv8t/msdPgQwCgYIKoZIzj0EAwIDSAAwRQIgfw5hEiHH01FN",
+  "z2Z3F1BpYvvmu2mYlz10cncz4xKXgoICIQDvpjZicO27FsJyipjtEF42b4YbAoXa",
+  "jcMC0DFENccOnQ==",
+  "-----END CERTIFICATE-----",
+].join("\n");
+
+/** a plain-HTTP serve recording each request's client port */
+function portServe(
+  hold?: Promise<void>,
+): {
+  readonly origin: string;
+  readonly requests: { path: string; port: number; auth: string | null }[];
+  close(): Promise<void>;
+} {
+  const requests: { path: string; port: number; auth: string | null }[] = [];
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    async (request, info) => {
+      const path = new URL(request.url).pathname;
+      requests.push({
+        path,
+        port: (info.remoteAddr as Deno.NetAddr).port,
+        auth: request.headers.get("authorization"),
+      });
+      if (path === "/ready" && hold !== undefined) await hold;
+      return Response.json({ changes: [], cursor: 0, more: false });
+    },
+  );
+  return {
+    origin: `http://127.0.0.1:${server.addr.port}`,
+    requests,
+    close: () => server.shutdown(),
+  };
+}
+
+Deno.test("serveDatastoreClientFor: a command's clients of one serve under a private CA share one connection, warmed at start; a client with its own connection does not", async () => {
+  const serve = portServe();
+  const target = ServeUpstreamTarget.create({
+    serverUrl: serve.origin,
+    caCerts: [TEST_CA],
+  });
+  const a = serveDatastoreClientFor(target, "");
+  const b = serveDatastoreClientFor(target, "");
+  const own = serveDatastoreClientFor(target, "", { ownConnection: true });
+  try {
+    warmServeConnection(target);
+    await waitFor(
+      () => serve.requests.length === 1,
+      "the warm-up reached serve",
+    );
+    await endServeWarmups();
+    await a.changes(0, signal());
+    await b.changes(0, signal());
+    await own.changes(0, signal());
+    const [warm, first, second, third] = serve.requests;
+    assertEquals(warm.path, "/ready");
+    assertEquals(
+      first.port,
+      warm.port,
+      "the first request reuses the warm connection",
+    );
+    assertEquals(second.port, first.port);
+    assertNotEquals(third.port, first.port);
+  } finally {
+    a.close();
+    b.close();
+    own.close();
+    closePooledServeClients();
+    await serve.close();
+  }
+});
+
+Deno.test("ServeDatastoreClient: a pooled client whose request times out moves to its own connection and never closes the pool another client still uses", async () => {
+  let poolClosed = 0;
+  const pool = Deno.createHttpClient({});
+  const closePool = pool.close.bind(pool);
+  pool.close = () => {
+    poolClosed++;
+    closePool();
+  };
+  const used: { name: string; client: unknown }[] = [];
+  const clientOf = (name: string, answers: boolean[]) =>
+    new ServeDatastoreClient({
+      baseUrl: BASE,
+      responseBaseMs: 20,
+      timeoutSignal: neverTimesOut,
+      pool: () => pool,
+      httpClient: () => Deno.createHttpClient({}),
+      fetch: (input, init) => {
+        used.push({ name, client: (init as { client?: unknown }).client });
+        return answers.shift() === false
+          ? neverAnswered(new Request(input, init))
+          : Promise.resolve(
+            Response.json({ changes: [], cursor: 0, more: false }),
+          );
+      },
+    });
+  const timing = clientOf("timing", [false, true, true]);
+  const other = clientOf("other", [true]);
+  try {
+    await timing.changes(0, signal());
+    await timing.changes(0, signal());
+    await other.changes(0, signal());
+    assertStrictEquals(used[0].client, pool);
+    assertNotStrictEquals(used[1].client, pool);
+    assertStrictEquals(used[2].client, used[1].client, "it stays on its own");
+    assertStrictEquals(used[3].client, pool, "the other keeps the pool");
+  } finally {
+    timing.close();
+    other.close();
+  }
+  assertEquals(poolClosed, 0);
+  pool.close();
+});
+
+Deno.test("warmServeConnection: sends the bound token once per serve, and endServeWarmups cuts off one serve never answers", async () => {
+  let release!: () => void;
+  const serve = portServe(new Promise((resolve) => release = resolve));
+  try {
+    const target = ServeUpstreamTarget.create({
+      serverUrl: serve.origin,
+      token: "alice-token",
+    });
+    warmServeConnection(target);
+    warmServeConnection(target);
+    await waitFor(
+      () => serve.requests.length === 1,
+      "the warm-up reached serve",
+    );
+    await endServeWarmups();
+    assertEquals(serve.requests, [{
+      path: "/ready",
+      port: serve.requests[0].port,
+      auth: "Bearer alice-token",
+    }]);
+  } finally {
+    release();
+    await serve.close();
+  }
 });

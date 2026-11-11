@@ -185,6 +185,36 @@ Deno.test("ServeCatchUp.catchUp: applies the feed in order across pages and move
   });
 });
 
+Deno.test("ServeCatchUp.catchUp: a new command applying serve's commits to partitions with history rebuilds none of them", async () => {
+  await withCheckout(async ({ dir, store, state, serve, catchUp }) => {
+    for (let seq = 1; seq <= 30; seq++) serve.land(await other(seq));
+    for (let seq = 1; seq <= 30; seq++) serve.land(await other(seq, OTHER));
+    await catchUp.catchUp(signal());
+    serve.land(await other(31));
+    serve.land(await other(31, OTHER));
+    serve.land(await other(32));
+
+    // A new command's store holds no partition.
+    const fresh = SqliteCommitStore.open(join(dir, "commits.db"), {
+      follower: true,
+    });
+    try {
+      const report = await through(serve, { dir, store: fresh, state })
+        .catchUp(signal());
+      assertEquals(report, { applied: 3 });
+      assertEquals(fresh.rebuilds, 0);
+      assertEquals(fresh.appendTransactions, 1);
+      assertEquals((await fresh.head("", MODEL)).seq, 32);
+      assertEquals((await fresh.head("", OTHER)).seq, 31);
+    } finally {
+      await fresh.close();
+    }
+    // The commits it stored rebuild with the rest when a reader loads them.
+    assertEquals((await store.partitionState("", MODEL)).seq, 32);
+    assertEquals(store.rebuilds, 1);
+  });
+});
+
 Deno.test("ServeCatchUp.catchUp: a page that fails to apply leaves the cursor at the last page applied", async () => {
   await withCheckout(async ({ store, state, serve, catchUp }) => {
     serve.feedPageSize = 2;
