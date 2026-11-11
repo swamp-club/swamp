@@ -1517,7 +1517,9 @@ const FALLBACKS: readonly {
     arrange: async (env) => {
       const moved = join(env.repoDir, "moved");
       await writeLocal(join(moved, "data", "x"), "x");
-      await mergeDirInto(moved, join(env.repoDir, "elsewhere"));
+      const elsewhere = join(env.repoDir, "elsewhere");
+      await Deno.mkdir(elsewhere, { recursive: true });
+      await mergeDirInto(moved, elsewhere);
       requireFullV3Recovery(env.repoDir);
     },
   },
