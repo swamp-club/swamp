@@ -5669,6 +5669,10 @@ export const serveCommand = new Command()
       policySnapshotLoader,
       poller: grantsDirectoryPoller,
       adminGrantStore: grantWrites.adminGrantStore,
+      initialSources: {
+        externalGrantsFile: externalGrantsFilePath,
+        externalGrantsDir: externalGrantsDirPath,
+      },
       validateCondition: validateGrantCondition,
       commitGrantWrites,
       leadsGrantWrites: () =>

@@ -225,7 +225,7 @@ export async function materializeAdmins(
     if (copies.some(newerThanConfig)) {
       result.unchanged++;
       logger
-        .info`Admin grant for ${admin} was revoked by a newer admin config on another instance; it stays revoked until this instance restarts`;
+        .info`Admin grant for ${admin} was changed by a newer admin config on another instance; it stays as it is until this instance restarts`;
       continue;
     }
 

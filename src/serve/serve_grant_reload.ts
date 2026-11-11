@@ -90,6 +90,8 @@ export interface GrantSettingsReloadDeps {
     "setSources" | "reconcileNow" | "start" | "pause"
   >;
   readonly adminGrantStore: AdminGrantStore;
+  /** the external sources startup loaded */
+  readonly initialSources: GrantSources;
   readonly validateCondition?: ConditionValidator;
   /** runs grant writes as one unit under the sync gate */
   commitGrantWrites<T>(fn: () => Promise<T>): Promise<T>;
@@ -127,6 +129,8 @@ export function createGrantSettingsReload(deps: GrantSettingsReloadDeps) {
   let adminsConfigured = [...deps.initialAdminsConfigured];
   let adminsReadAt = now();
   let adminsWaitingSubjects: readonly string[] = [];
+  // what a failed reconcile restores, so the old sources stay in force
+  let sourcesInForce: GrantSources = deps.initialSources;
 
   const subjectOf = (entry: string): string | undefined =>
     authConfig.mode === "oauth"
@@ -197,9 +201,12 @@ export function createGrantSettingsReload(deps: GrantSettingsReloadDeps) {
           "No admin is in force until serve restarts with the admins now configured",
         );
       }
-      return plan.waiting.length > 0
-        ? { partial: ADMIN_ADDITION_NEEDS_RESTART }
-        : undefined;
+      if (plan.waiting.length === 0) return undefined;
+      return {
+        partial: plan.inForce.length === 0
+          ? `the removal applied and no admin is in force until a restart; ${ADMIN_ADDITION_NEEDS_RESTART}`
+          : `the removal applied; ${ADMIN_ADDITION_NEEDS_RESTART}`,
+      };
     },
   };
 
@@ -264,10 +271,14 @@ export function createGrantSettingsReload(deps: GrantSettingsReloadDeps) {
           settings: ["grantsFile", "grantsDir"],
           run: async () => {
             await poller.setSources(sources);
-            return heldGrantSourceReason(
-              await poller.reconcileNow(),
-              sources.externalGrantsDir,
-            );
+            const outcome = await poller.reconcileNow();
+            if (outcome.status === "failed") {
+              await poller.setSources(sourcesInForce);
+              deps.setAccessReloadSources(sourcesInForce);
+              throw new Error(outcome.error ?? "the grant reconcile failed");
+            }
+            sourcesInForce = sources;
+            return heldGrantSourceReason(outcome, sources.externalGrantsDir);
           },
         });
       }
@@ -287,10 +298,11 @@ export function createGrantSettingsReload(deps: GrantSettingsReloadDeps) {
             const outcome = sourcesChanged
               ? undefined
               : await poller.reconcileNow();
-            await poller.start();
             if (outcome?.status === "failed") {
+              deps.policySnapshotLoader.setMode("manual");
               throw new Error(outcome.error ?? "the grant reconcile failed");
             }
+            await poller.start();
           },
         });
       }
@@ -332,9 +344,6 @@ function heldGrantSourceReason(
   outcome: GrantsReconcileOutcome,
   externalGrantsDir: string | undefined,
 ): SettingApplyResult {
-  if (outcome.status === "failed") {
-    throw new Error(outcome.error ?? "the grant reconcile failed");
-  }
   if (outcome.status === "deferred") {
     return { partial: GRANT_WRITES_ELSEWHERE };
   }

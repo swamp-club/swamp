@@ -134,6 +134,7 @@ interface InstanceOptions {
   readonly bootedAt?: Date;
   readonly leads?: () => boolean;
   readonly failGrantWrites?: () => boolean;
+  readonly failReconcile?: () => boolean;
 }
 
 /** serve's grant wiring at startup and on reload, over one repository */
@@ -181,6 +182,10 @@ async function startInstance(
     ),
     policySnapshotLoader: loader,
     pollIntervalMs: 20,
+    commitReconcile: async (reconcile) => {
+      if (options.failReconcile?.()) throw new Error("datastore unreachable");
+      await reconcile();
+    },
   });
   const commitGrantWrites = <T>(fn: () => Promise<T>): Promise<T> =>
     options.failGrantWrites?.()
@@ -204,6 +209,7 @@ async function startInstance(
     policySnapshotLoader: loader,
     poller,
     adminGrantStore,
+    initialSources: sources,
     validateCondition: validateGrantCondition,
     commitGrantWrites,
     leadsGrantWrites: options.leads ?? (() => true),
@@ -524,7 +530,8 @@ Deno.test("serve grant reload: swapping one admin for another applies the remova
       assertEquals(swapped.report.applied, ["auth.admins"]);
       assertEquals(swapped.report.needsRestart, [{
         setting: "auth.admins",
-        reason: ADMIN_ADDITION_NEEDS_RESTART,
+        reason:
+          `the removal applied and no admin is in force until a restart; ${ADMIN_ADDITION_NEEDS_RESTART}`,
       }]);
       assertEquals(serve.isAdmin("user:alice"), false);
       assertEquals(serve.isAdmin("user:bob"), false);
@@ -629,6 +636,69 @@ Deno.test("serve grant reload: a switch to auto after shutdown closed the poller
       await atomicWriteTextFile(grantsFile, "");
       await serve.poller.reconcileNow();
       assertEquals(serve.allows("user:dev", "run"), false);
+    } finally {
+      await serve.close();
+    }
+  });
+});
+
+Deno.test("serve grant reload: a switch to auto whose reconcile fails is not applied and leaves the poller stopped", async () => {
+  await withRepo(async (repoDir, repo) => {
+    const grantsFile = join(repoDir, "grants.yaml");
+    await atomicWriteTextFile(grantsFile, RUN_GRANT);
+    let fail = false;
+    const serve = await startInstance(repoDir, repo, config({ grantsFile }), {
+      failReconcile: () => fail,
+    });
+    try {
+      fail = true;
+      const failed = await serve.reload(
+        config({ grantsFile, grantReload: "auto" }),
+      );
+      assertEquals(failed.report.applied, []);
+      assertEquals(failed.report.needsRestart.map((r) => r.setting), [
+        "grant-reload",
+      ]);
+      fail = false;
+      // never started, so one reconcile applies an emptied source at once
+      await atomicWriteTextFile(grantsFile, "");
+      await serve.poller.reconcileNow();
+      assertEquals(serve.allows("user:dev", "run"), false);
+    } finally {
+      await serve.close();
+    }
+  });
+});
+
+Deno.test("serve grant reload: a changed grants file whose reconcile fails keeps the old source in force", async () => {
+  await withRepo(async (repoDir, repo) => {
+    const first = join(repoDir, "first.yaml");
+    const second = join(repoDir, "second.yaml");
+    await atomicWriteTextFile(first, RUN_GRANT);
+    await atomicWriteTextFile(
+      second,
+      RUN_GRANT.replace("user:dev", "user:ops"),
+    );
+    let fail = false;
+    const serve = await startInstance(
+      repoDir,
+      repo,
+      config({ grantsFile: first }),
+      { failReconcile: () => fail },
+    );
+    try {
+      fail = true;
+      const failed = await serve.reload(config({ grantsFile: second }));
+      assertEquals(failed.report.applied, []);
+      assertEquals(failed.report.needsRestart.map((r) => r.setting), [
+        "grants-file",
+      ]);
+      assertEquals(serve.accessReloadSources().externalGrantsFile, first);
+
+      fail = false;
+      await serve.poller.reconcileNow();
+      assertEquals(serve.allows("user:dev", "run"), true);
+      assertEquals(serve.allows("user:ops", "run"), false);
     } finally {
       await serve.close();
     }
