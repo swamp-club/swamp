@@ -257,6 +257,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
 
   private readonly runIndexCache: RunIndexCache;
 
+  // the status each run object's last landed save wrote, so save need not read the record back
+  private readonly lastSavedStatus = new WeakMap<WorkflowRun, string>();
+
   /**
    * runIndexClock is a test seam (production gets Date.now): Deno.utime moves
    * ctime to now, so a test settling files with it runs this clock ahead
@@ -996,7 +999,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         !(await fileExists(path));
 
       let previousStatus: string | undefined;
-      if (this.eventBus) {
+      if (this.eventBus && this.lastSavedStatus.has(run)) {
+        previousStatus = this.lastSavedStatus.get(run);
+      } else if (this.eventBus) {
         try {
           const existingRun = await this.findById(workflowId, run.id);
           previousStatus = existingRun?.status;
@@ -1012,6 +1017,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       // The persisted form: sensitive values the run read through expressions
       // are written as the vault references they came from.
       const data = run.toPersistedData();
+      // read with the data: saves of one run overlap and it changes between awaits
+      const writtenStatus = run.status;
       if (data.logFile) {
         data.logFile = toRelativePath(this.repoDir, data.logFile);
       }
@@ -1039,6 +1046,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
           ),
         ]);
       }
+      if (this.eventBus) this.lastSavedStatus.set(run, writtenStatus);
 
       await this.updateIndexEntry(workflowId, run, path, content);
 
