@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   assertModelsDirEnvConsistent,
   commandNeedsLoaderSetup,
@@ -34,12 +34,14 @@ import {
   isTelemetryOptOutInvocation,
   isThinClientCommand,
   isUpdateCheckDisabledByEnv,
+  parseLogLevelSetting,
   resolveAutoResolverLockfilePath,
   resolveLogLevel,
   resolveModelsDir,
   resolveTelemetryEndpoint,
   resolveWorkflowsDir,
   runsLocallyWithServeUpstream,
+  selectLogLevel,
   shouldSuppressMissingExtensionsWarning,
 } from "./mod.ts";
 import { extractCommandInfo } from "./telemetry_integration.ts";
@@ -168,6 +170,116 @@ Deno.test("resolveLogLevel returns env var when set with no marker", () => {
   withMockedEnv({ SWAMP_LOG_LEVEL: "error" }, () => {
     const result = resolveLogLevel(null);
     assertEquals(result, "error");
+  });
+});
+
+const LEVEL_LIST = "trace, debug, info, warning, error, fatal";
+
+function markerWithLogLevel(logLevel: string) {
+  return {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01T00:00:00Z",
+    logLevel,
+  };
+}
+
+Deno.test("parseLogLevelSetting: accepts every level in any case", () => {
+  for (const level of ["trace", "debug", "info", "warning", "error", "fatal"]) {
+    assertEquals(parseLogLevelSetting(level, "--log-level"), level);
+  }
+  assertEquals(parseLogLevelSetting("DEBUG", "--log-level"), "debug");
+  assertEquals(parseLogLevelSetting("Warning", "--log-level"), "warning");
+});
+
+Deno.test("parseLogLevelSetting: refuses an unknown level naming the source and the accepted levels", () => {
+  for (const value of ["bogus", "help", "warn"]) {
+    const error = assertThrows(
+      () => parseLogLevelSetting(value, "--log-level"),
+      UserError,
+    );
+    assertEquals(
+      error.message,
+      `Invalid log level "${value}" for --log-level. Expected one of: ${LEVEL_LIST}.`,
+    );
+  }
+});
+
+Deno.test("resolveLogLevel: refuses an invalid SWAMP_LOG_LEVEL naming the env var", () => {
+  withMockedEnv({ SWAMP_LOG_LEVEL: "bogus" }, () => {
+    const error = assertThrows(
+      () => resolveLogLevel(markerWithLogLevel("debug")),
+      UserError,
+    );
+    assertStringIncludes(error.message, "for SWAMP_LOG_LEVEL.");
+  });
+});
+
+Deno.test("resolveLogLevel: refuses an invalid marker logLevel naming .swamp.yaml", () => {
+  withMockedEnv({ SWAMP_LOG_LEVEL: undefined }, () => {
+    const error = assertThrows(
+      () => resolveLogLevel(markerWithLogLevel("bogus")),
+      UserError,
+    );
+    assertStringIncludes(error.message, "for logLevel in .swamp.yaml.");
+  });
+});
+
+Deno.test("selectLogLevel: defaults to info, and verbose raises only info to debug", () => {
+  withMockedEnv({ SWAMP_LOG_LEVEL: undefined }, () => {
+    assertEquals(selectLogLevel({}, null, false), "info");
+    assertEquals(selectLogLevel({ verbose: true }, null, false), "debug");
+    assertEquals(
+      selectLogLevel({ verbose: true, logLevel: "warning" }, null, false),
+      "warning",
+    );
+    assertEquals(
+      selectLogLevel({}, markerWithLogLevel("trace"), false),
+      "trace",
+    );
+  });
+});
+
+Deno.test("selectLogLevel: quiet and a valid flag win without parsing a bad env or marker value", () => {
+  withMockedEnv({ SWAMP_LOG_LEVEL: "bogus" }, () => {
+    const marker = markerWithLogLevel("bogus");
+    assertEquals(selectLogLevel({ quiet: true }, marker, false), "error");
+    assertEquals(selectLogLevel({ logLevel: "DEBUG" }, marker, false), "debug");
+  });
+});
+
+Deno.test("selectLogLevel: refuses a bad level from any source outside hook mode", () => {
+  withMockedEnv({ SWAMP_LOG_LEVEL: undefined }, () => {
+    assertThrows(
+      () => selectLogLevel({ logLevel: "bogus" }, null, false),
+      UserError,
+      "for --log-level.",
+    );
+    assertThrows(
+      () => selectLogLevel({}, markerWithLogLevel("bogus"), false),
+      UserError,
+      "for logLevel in .swamp.yaml.",
+    );
+  });
+  withMockedEnv({ SWAMP_LOG_LEVEL: "bogus" }, () => {
+    assertThrows(
+      () => selectLogLevel({}, null, false),
+      UserError,
+      "for SWAMP_LOG_LEVEL.",
+    );
+  });
+});
+
+Deno.test("selectLogLevel: hook mode runs a bad level from any source at the default", () => {
+  withMockedEnv({ SWAMP_LOG_LEVEL: undefined }, () => {
+    assertEquals(selectLogLevel({ logLevel: "bogus" }, null, true), "info");
+    assertEquals(
+      selectLogLevel({}, markerWithLogLevel("bogus"), true),
+      "info",
+    );
+  });
+  withMockedEnv({ SWAMP_LOG_LEVEL: "bogus" }, () => {
+    assertEquals(selectLogLevel({}, null, true), "info");
+    assertEquals(selectLogLevel({ verbose: true }, null, true), "debug");
   });
 });
 

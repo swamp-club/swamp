@@ -50,7 +50,12 @@ import {
   choosePulledDatastoreDirsOnDisk,
   enumeratePulledExtensionDirs,
 } from "../libswamp/extensions/enumerate_pulled.ts";
-import { getLogger, parseLogLevel } from "@logtape/logtape";
+import {
+  getLogger,
+  getLogLevels,
+  type LogLevel,
+  parseLogLevel,
+} from "@logtape/logtape";
 import {
   bufferStartupWarnings,
   initializeLogging,
@@ -315,13 +320,49 @@ export { resolveWebhooksDir };
 
 const logger = getLogger(["swamp", "cli"]);
 
+export function parseLogLevelSetting(value: string, source: string): LogLevel {
+  try {
+    return parseLogLevel(value);
+  } catch {
+    throw new UserError(
+      `Invalid log level "${value}" for ${source}. Expected one of: ${
+        getLogLevels().join(", ")
+      }.`,
+    );
+  }
+}
+
 export function resolveLogLevel(
   marker: RepoMarkerData | null,
-): string | undefined {
+): LogLevel | undefined {
   const envVal = Deno.env.get("SWAMP_LOG_LEVEL");
-  if (envVal) return envVal;
-  if (marker?.logLevel) return marker.logLevel;
+  if (envVal) return parseLogLevelSetting(envVal, "SWAMP_LOG_LEVEL");
+  if (marker?.logLevel) {
+    return parseLogLevelSetting(marker.logLevel, "logLevel in .swamp.yaml");
+  }
   return undefined;
+}
+
+export function selectLogLevel(
+  options: Pick<GlobalOptions, "quiet" | "logLevel" | "verbose">,
+  marker: RepoMarkerData | null,
+  hookMode: boolean,
+): LogLevel {
+  let logLevel: LogLevel = "info";
+  if (options.quiet) {
+    logLevel = "error";
+  } else {
+    try {
+      logLevel = options.logLevel
+        ? parseLogLevelSetting(options.logLevel, "--log-level")
+        : resolveLogLevel(marker) ?? "info";
+    } catch (error) {
+      // hook mode must not fail, so a refused level runs at the default
+      if (!hookMode || !(error instanceof UserError)) throw error;
+    }
+  }
+  if (options.verbose && logLevel === "info") logLevel = "debug";
+  return logLevel;
 }
 
 export { isTelemetryDisabledByEnv };
@@ -2603,22 +2644,10 @@ async function runInvocation(
       }
       const prettyOutput = !noColor && isStdinTty();
 
-      let logLevel: "trace" | "debug" | "info" | "warning" | "error" | "fatal" =
-        "info";
-      if (options.quiet) {
-        logLevel = "error";
-      } else if (options.logLevel) {
-        logLevel = parseLogLevel(options.logLevel);
-      } else {
-        const resolved = resolveLogLevel(marker);
-        if (resolved) logLevel = parseLogLevel(resolved);
-      }
+      const logLevel = selectLogLevel(options, marker, hookMode);
 
       const forceLog = options.log ?? false;
       const verbose = options.verbose ?? false;
-      if (verbose && logLevel === "info") {
-        logLevel = "debug";
-      }
       await initializeLogging({
         prettyOutput,
         showProperties: options.showProperties ?? false,
