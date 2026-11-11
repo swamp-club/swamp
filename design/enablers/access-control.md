@@ -349,9 +349,12 @@ the request unread.
    [Consenting again](#consenting-again)). A start swamp-club won't take answers
    `409 links_require_plan` when its collective has no active trial or paid plan,
    with swamp-club's message cleaned for display; `409 links_not_enabled` when
-   swamp-club has no link routes for it; and `502 club_unavailable` when swamp-club
-   can't be reached or refuses serve's client. Serve stores nothing for any of them
-   and the app's client does not retry them.
+   swamp-club has no link routes for it; `409 links_require_collective_client`,
+   logged as a warning, when swamp-club answers `403 client_not_collective`, since
+   links need a client a collective owns and only a serve set up with a collective
+   API key registers one; and `502 club_unavailable` when swamp-club can't be
+   reached or refuses serve's client any other way. Serve stores nothing for any of
+   them and the app's client does not retry them.
 2. **Consent** happens on swamp-club. The leader polls it at swamp-club's interval,
    backing off to a minute on errors. On approval it checks the digest swamp-club
    bound the consent to, runs the same admission check as a sign-in, writes the

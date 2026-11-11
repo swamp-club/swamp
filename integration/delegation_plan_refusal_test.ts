@@ -176,7 +176,7 @@ Deno.test("plan refusal: a swamp-club without link routes and one that is down s
     assertEquals(missing.status, 409);
     assertEquals(missing.body.code, "links_not_enabled");
 
-    rig.club.refuseClient = { status: 403, error: "client_not_collective" };
+    rig.club.refuseClient = { status: 401, error: "invalid_client" };
     const refusedClient = await rig.post("links", START_BODY);
     assertEquals(refusedClient.status, 502);
     assertEquals(refusedClient.body.code, "club_unavailable");

@@ -153,6 +153,21 @@ Deno.test("ServeLinkClient: a collective without a plan is requires_plan with sw
   );
 });
 
+Deno.test("ServeLinkClient: a client that isn't a collective's is unauthorized with client_not_collective at capabilities and start", async () => {
+  await withMock(
+    () => ({ status: 403, body: { error: "client_not_collective" } }),
+    async (client) => {
+      for (
+        const call of [() => client.capabilities(), () => client.start(START)]
+      ) {
+        const error = await assertRejects(call, ServeLinkError);
+        assertEquals(error.kind, "unauthorized");
+        assertEquals(error.code, "client_not_collective");
+      }
+    },
+  );
+});
+
 Deno.test("ServeLinkClient: a plan refusal without a usable message carries serve's own wording", async () => {
   for (
     const body of [
