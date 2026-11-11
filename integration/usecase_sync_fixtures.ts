@@ -37,14 +37,14 @@ import {
   requireInitializedRepoUnlocked,
 } from "../src/cli/repo_context.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
-import { accessCommand } from "../src/cli/commands/access.ts";
+import { createAccessCommand } from "../src/cli/commands/access.ts";
 import { createDataCommand } from "../src/cli/commands/data.ts";
-import { datastoreCommand } from "../src/cli/commands/datastore.ts";
+import { createDatastoreCommand } from "../src/cli/commands/datastore.ts";
 import { doctorCommand } from "../src/cli/commands/doctor.ts";
-import { extensionCommand } from "../src/cli/commands/extension.ts";
+import { createExtensionCommand } from "../src/cli/commands/extension.ts";
 import { createModelCommand } from "../src/cli/commands/model.ts";
 import { runCommand } from "../src/cli/commands/run.ts";
-import { vaultCommand } from "../src/cli/commands/vault.ts";
+import { createVaultCommand } from "../src/cli/commands/vault.ts";
 import { workerCommand } from "../src/cli/commands/worker.ts";
 import { createWorkflowCommand } from "../src/cli/commands/workflow.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
@@ -354,6 +354,10 @@ async function buildRoot(): Promise<CliRoot> {
   const dataCommand = await createDataCommand();
   const workflowCommand = await createWorkflowCommand();
   const modelCommand = await createModelCommand();
+  const accessCommand = await createAccessCommand();
+  const datastoreCommand = await createDatastoreCommand();
+  const extensionCommand = await createExtensionCommand();
+  const vaultCommand = await createVaultCommand();
   return registerCompletionTypes(new Command())
     .name("swamp")
     .globalOption("--json", "Output in JSON format (non-interactive)")
@@ -989,6 +993,8 @@ export async function checkRows(
   rows: AnyRow[],
   expected: Record<string, PinnedRow>,
 ): Promise<void> {
+  // built outside the recording: ink's yoga-layout fetches its inline wasm on import
+  await root();
   const { calls } = await withMockedFetch(
     refuseFetch,
     () => checkEachRow(t, rows, expected),

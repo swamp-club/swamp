@@ -39,6 +39,13 @@ import {
   MODEL_METHOD_ROUTES,
   MODEL_ROUTES,
 } from "../src/cli/commands/model_routes.ts";
+import { EXTENSION_ROUTES } from "../src/cli/commands/extension_routes.ts";
+import { VAULT_ROUTES } from "../src/cli/commands/vault_routes.ts";
+import { DATASTORE_ROUTES } from "../src/cli/commands/datastore_routes.ts";
+import {
+  ACCESS_ROUTES,
+  ACCESS_TOKEN_ROUTES,
+} from "../src/cli/commands/access_routes.ts";
 import {
   BEHAVIOR_GROUP_WORDS,
   METHOD_LEVEL_WORDS,
@@ -93,6 +100,31 @@ const GROUP_TABLES: readonly GroupTable[] = [
     path: ["model", "method"],
     file: "src/cli/commands/model_routes.ts",
     routes: MODEL_METHOD_ROUTES,
+  },
+  {
+    path: ["extension"],
+    file: "src/cli/commands/extension_routes.ts",
+    routes: EXTENSION_ROUTES,
+  },
+  {
+    path: ["vault"],
+    file: "src/cli/commands/vault_routes.ts",
+    routes: VAULT_ROUTES,
+  },
+  {
+    path: ["datastore"],
+    file: "src/cli/commands/datastore_routes.ts",
+    routes: DATASTORE_ROUTES,
+  },
+  {
+    path: ["access"],
+    file: "src/cli/commands/access_routes.ts",
+    routes: ACCESS_ROUTES,
+  },
+  {
+    path: ["access", "token"],
+    file: "src/cli/commands/access_routes.ts",
+    routes: ACCESS_TOKEN_ROUTES,
   },
 ];
 

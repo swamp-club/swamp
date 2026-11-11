@@ -35,6 +35,13 @@ import {
   MODEL_METHOD_ROUTES,
   MODEL_ROUTES,
 } from "./commands/model_routes.ts";
+import { EXTENSION_ROUTES } from "./commands/extension_routes.ts";
+import { VAULT_ROUTES } from "./commands/vault_routes.ts";
+import { DATASTORE_ROUTES } from "./commands/datastore_routes.ts";
+import {
+  ACCESS_ROUTES,
+  ACCESS_TOKEN_ROUTES,
+} from "./commands/access_routes.ts";
 import { createRootCommand } from "./mod.ts";
 import type { AnyCommand } from "./cli_schema.ts";
 
@@ -258,6 +265,11 @@ const GROUP_TABLES: ReadonlyMap<string, readonly CommandRoute[]> = new Map([
   ["behavior", BEHAVIOR_ROUTES],
   ["model", MODEL_ROUTES],
   ["model method", MODEL_METHOD_ROUTES],
+  ["extension", EXTENSION_ROUTES],
+  ["vault", VAULT_ROUTES],
+  ["datastore", DATASTORE_ROUTES],
+  ["access", ACCESS_ROUTES],
+  ["access token", ACCESS_TOKEN_ROUTES],
 ]);
 
 type Narrow = (path: readonly string[]) => readonly CommandRoute[];

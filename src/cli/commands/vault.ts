@@ -18,47 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { AnyCommand } from "../cli_schema.ts";
+import { loadGroupRoutes } from "../command_routes.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { vaultTypeSearchCommand } from "./vault_type_search.ts";
-import { vaultCreateCommand } from "./vault_create.ts";
-import { vaultSearchCommand } from "./vault_search.ts";
-import { vaultGetCommand } from "./vault_get.ts";
-import { vaultDescribeCommand } from "./vault_describe.ts";
-import { vaultEditCommand } from "./vault_edit.ts";
-import { vaultPutCommand } from "./vault_put.ts";
-import { vaultDeleteCommand } from "./vault_delete.ts";
-import { vaultRemoveCommand } from "./vault_remove.ts";
-import { vaultAnnotateCommand } from "./vault_annotate.ts";
-import { vaultInspectCommand } from "./vault_inspect.ts";
-import { vaultListKeysCommand } from "./vault_list_keys.ts";
-import { vaultMigrateCommand } from "./vault_migrate.ts";
-import { vaultReadSecretCommand } from "./vault_read_secret.ts";
-import { vaultAuditTrailCommand } from "./vault_audit_trail.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import { VAULT_ROUTES } from "./vault_routes.ts";
 
-export const vaultTypeCommand = new Command()
-  .name("type")
-  .description("Inspect vault types")
-  .action(groupCommandAction)
-  .command("search", vaultTypeSearchCommand);
-
-export const vaultCommand = new Command()
-  .name("vault")
-  .description("Manage vault configurations")
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("type", vaultTypeCommand)
-  .command("create", vaultCreateCommand)
-  .command("search", vaultSearchCommand)
-  .command("get", vaultGetCommand)
-  .command("describe", vaultDescribeCommand)
-  .command("edit", vaultEditCommand)
-  .command("put", vaultPutCommand)
-  .command("delete", vaultDeleteCommand)
-  .command("remove", vaultRemoveCommand)
-  .command("annotate", vaultAnnotateCommand)
-  .command("inspect", vaultInspectCommand)
-  .command("migrate", vaultMigrateCommand)
-  .command("read-secret", vaultReadSecretCommand)
-  .command("list-keys", vaultListKeysCommand)
-  .command("audit-trail", vaultAuditTrailCommand);
+/** rest, the argv after the group word, narrows the group to one subcommand */
+export async function createVaultCommand(
+  rest: readonly string[] = [],
+): Promise<AnyCommand> {
+  const group: AnyCommand = new Command()
+    .name("vault")
+    .description(
+      "Manage vault configurations",
+    )
+    .error(unknownCommandErrorHandler)
+    .action(groupCommandAction);
+  const loaded = await loadGroupRoutes("vault", VAULT_ROUTES, rest);
+  for (const { name, command } of loaded) group.command(name, command);
+  return group;
+}

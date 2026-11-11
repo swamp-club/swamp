@@ -18,44 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { AnyCommand } from "../cli_schema.ts";
+import { loadGroupRoutes } from "../command_routes.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { accessGrantCommand } from "./access_grant.ts";
-import { accessGroupCommand } from "./access_group.ts";
-import { accessCanICommand } from "./access_can_i.ts";
-import { accessCheckCommand } from "./access_check.ts";
-import { accessReloadCommand } from "./access_reload.ts";
-import { accessIntegrationCommand } from "./access_integration.ts";
-import { accessDelegationCommand } from "./access_delegation.ts";
-import { accessTokenMintCommand } from "./access_token_mint.ts";
-import { accessTokenListCommand } from "./access_token_list.ts";
-import { accessTokenRevealCommand } from "./access_token_reveal.ts";
-import { accessTokenRevokeCommand } from "./access_token_revoke.ts";
-import { accessTokenRotateCommand } from "./access_token_rotate.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import { ACCESS_ROUTES } from "./access_routes.ts";
 
-export const accessTokenCommand = new Command()
-  .name("token")
-  .description("Manage server tokens for user authentication")
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("mint", accessTokenMintCommand)
-  .command("list", accessTokenListCommand)
-  .command("reveal", accessTokenRevealCommand)
-  .command("revoke", accessTokenRevokeCommand)
-  .command("rotate", accessTokenRotateCommand);
-
-export const accessCommand = new Command()
-  .name("access")
-  .description(
-    "Manage authorization policies (grants), groups, and access checks",
-  )
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("token", accessTokenCommand)
-  .command("integration", accessIntegrationCommand)
-  .command("delegation", accessDelegationCommand)
-  .command("grant", accessGrantCommand)
-  .command("group", accessGroupCommand)
-  .command("can-i", accessCanICommand)
-  .command("check", accessCheckCommand)
-  .command("reload", accessReloadCommand);
+/** rest, the argv after the group word, narrows the group to one subcommand */
+export async function createAccessCommand(
+  rest: readonly string[] = [],
+): Promise<AnyCommand> {
+  const group: AnyCommand = new Command()
+    .name("access")
+    .description(
+      "Manage authorization policies (grants), groups, and access checks",
+    )
+    .error(unknownCommandErrorHandler)
+    .action(groupCommandAction);
+  const loaded = await loadGroupRoutes("access", ACCESS_ROUTES, rest);
+  for (const { name, command } of loaded) group.command(name, command);
+  return group;
+}

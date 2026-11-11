@@ -288,6 +288,13 @@ const GROUP_ROUTE_TABLES: ReadonlyArray<
     ],
     "src/cli/commands/model_routes.ts",
   ],
+  [["src/cli/commands/extension.ts"], "src/cli/commands/extension_routes.ts"],
+  [["src/cli/commands/vault.ts"], "src/cli/commands/vault_routes.ts"],
+  [["src/cli/commands/datastore.ts"], "src/cli/commands/datastore_routes.ts"],
+  [
+    ["src/cli/commands/access.ts", "src/cli/commands/access_token.ts"],
+    "src/cli/commands/access_routes.ts",
+  ],
 ];
 
 Deno.test(

@@ -18,51 +18,24 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { AnyCommand } from "../cli_schema.ts";
+import { loadGroupRoutes } from "../command_routes.ts";
 import { groupCommandAction } from "../group_action.ts";
-import { extensionPushCommand } from "./extension_push.ts";
-import { extensionPullCommand } from "./extension_pull.ts";
-import { extensionInstallCommand } from "./extension_install.ts";
-import { extensionFmtCommand } from "./extension_fmt.ts";
-import { extensionInfoCommand } from "./extension_info.ts";
-import { extensionQualityCommand } from "./extension_quality.ts";
-import { extensionRemoveCommand } from "./extension_rm.ts";
-import { extensionListCommand } from "./extension_list.ts";
-import { extensionSearchCommand } from "./extension_search.ts";
-import { extensionUpdateCommand } from "./extension_update.ts";
-import { extensionOutdatedCommand } from "./extension_outdated.ts";
-import { extensionVersionCommand } from "./extension_version.ts";
-import { extensionYankCommand } from "./extension_yank.ts";
-import { extensionUnyankCommand } from "./extension_unyank.ts";
-import { extensionDeprecateCommand } from "./extension_deprecate.ts";
-import { extensionUndeprecateCommand } from "./extension_undeprecate.ts";
-import { extensionTrustCommand } from "./extension_trust.ts";
-import { extensionSourceCommand } from "./extension_source.ts";
-import { extensionPromoteCommand } from "./extension_promote.ts";
-import { extensionVisibilityCommand } from "./extension_visibility.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import { EXTENSION_ROUTES } from "./extension_routes.ts";
 
-export const extensionCommand = new Command()
-  .name("extension")
-  .description("Manage swamp extensions")
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("push", extensionPushCommand)
-  .command("info", extensionInfoCommand)
-  .command("fmt", extensionFmtCommand)
-  .command("quality", extensionQualityCommand)
-  .command("pull", extensionPullCommand)
-  .command("install", extensionInstallCommand)
-  .command("rm", extensionRemoveCommand)
-  .command("list", extensionListCommand)
-  .command("search", extensionSearchCommand)
-  .command("update", extensionUpdateCommand)
-  .command("outdated", extensionOutdatedCommand)
-  .command("version", extensionVersionCommand)
-  .command("yank", extensionYankCommand)
-  .command("unyank", extensionUnyankCommand)
-  .command("deprecate", extensionDeprecateCommand)
-  .command("undeprecate", extensionUndeprecateCommand)
-  .command("trust", extensionTrustCommand)
-  .command("source", extensionSourceCommand)
-  .command("promote", extensionPromoteCommand)
-  .command("visibility", extensionVisibilityCommand);
+/** rest, the argv after the group word, narrows the group to one subcommand */
+export async function createExtensionCommand(
+  rest: readonly string[] = [],
+): Promise<AnyCommand> {
+  const group: AnyCommand = new Command()
+    .name("extension")
+    .description(
+      "Manage swamp extensions",
+    )
+    .error(unknownCommandErrorHandler)
+    .action(groupCommandAction);
+  const loaded = await loadGroupRoutes("extension", EXTENSION_ROUTES, rest);
+  for (const { name, command } of loaded) group.command(name, command);
+  return group;
+}
