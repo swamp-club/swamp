@@ -1814,7 +1814,9 @@ instance, followed by `swamp serve reload` or a restart (see Known limits).
 returns 503 `shutting_down`, webhook deliveries get 503 with `Retry-After: 5`,
 run starts and resumes get `draining` (`retryAfterSeconds: 5` on the error
 frame, 503 `shutting_down` with `Retry-After: 5` on the action route), and the
-scheduler stops. Approve, reject and signal are still recorded; the
+scheduler stops. `/ready`, webhook intake and run admission switch together,
+before shutdown awaits anything, so no trigger is acknowledged after `/ready`
+reports `shutting_down`. Approve, reject and signal are still recorded; the
 continuation sweep resumes their runs after the restart. The listener stays
 open until the in-flight runs have drained and `--shutdown-listener-grace`
 (default 1 s) has passed since SIGTERM, then closes; the stages after the drain

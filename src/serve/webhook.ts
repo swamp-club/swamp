@@ -567,6 +567,8 @@ export interface WebhookServiceDeps {
   acceptsRuns?: () => boolean;
   /** false until serve's startup completes; absent, the node takes runs at once */
   startupComplete?: () => boolean;
+  /** true once serve's shutdown begins, before drain() runs; absent, only drain() refuses */
+  shuttingDown?: () => boolean;
   /** stamped on each queued run, so a peer's boot leaves it to this process */
   pendingRunOwner?: PendingRunOwner;
   /**
@@ -872,7 +874,9 @@ export class WebhookService {
       return null;
     }
 
-    if (this.draining) return this.shuttingDownResponse(endpoint, sourceIp);
+    if (this.shuttingDown()) {
+      return this.shuttingDownResponse(endpoint, sourceIp);
+    }
 
     this.emit({
       kind: "webhook_received",
@@ -1010,7 +1014,9 @@ export class WebhookService {
 
     // Checked again: a drain can start during the awaits above, and a run
     // queued after it would be acknowledged and then aborted unreplayed.
-    if (this.draining) return this.shuttingDownResponse(endpoint, sourceIp);
+    if (this.shuttingDown()) {
+      return this.shuttingDownResponse(endpoint, sourceIp);
+    }
 
     // after verification, so only a verified sender learns this node does not
     // lead; the reply names no leader
@@ -1148,6 +1154,10 @@ export class WebhookService {
       });
       return { kind: "missing" };
     }
+  }
+
+  private shuttingDown(): boolean {
+    return this.draining || this.deps.shuttingDown?.() === true;
   }
 
   private shuttingDownResponse(
