@@ -331,12 +331,13 @@ export function continuationSweepReloadReason(sweep: {
   if (!sweep.running) {
     return "the continuation sweep is not running on this serve; restart serve to start it";
   }
+  // checked first: a restart with interval 0 does stop the boot pass
+  if (!sweep.staysOn) {
+    return "turning the continuation sweep off needs a restart";
+  }
   // a restart on this datastore runs the boot pass alone again
   if (sweep.bootPassOnly) {
     return "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
-  }
-  if (!sweep.staysOn) {
-    return "turning the continuation sweep off needs a restart";
   }
   return undefined;
 }

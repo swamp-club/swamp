@@ -228,7 +228,7 @@ Deno.test("diffServeSettings: stale-ttl and heartbeat-interval stay restart-only
   assertStringIncludes(report.needsRestart[0].reason, "liveness");
 });
 
-Deno.test("continuationSweepReloadReason: a sweep that runs only at boot cannot take a new interval", () => {
+Deno.test("continuationSweepReloadReason: a sweep that runs only at boot cannot take a new interval, but turning it off still needs a restart", () => {
   const reason = (
     running: boolean,
     bootPassOnly: boolean,
@@ -246,5 +246,8 @@ Deno.test("continuationSweepReloadReason: a sweep that runs only at boot cannot 
   const bootOnly =
     "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
   assertEquals(reason(true, true, true), bootOnly);
-  assertEquals(reason(true, true, false), bootOnly);
+  assertEquals(
+    reason(true, true, false),
+    "turning the continuation sweep off needs a restart",
+  );
 });

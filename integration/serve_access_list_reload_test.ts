@@ -264,7 +264,6 @@ Deno.test("serve access list reload: [A] to [B] with B not resolvable admits onl
   const second = await serve.reload();
   assertEquals(second.report.applied, ["auth.allowed-users"]);
   assertEquals(await admittedEverywhere(serve, "sub-b"), [true, true, true]);
-  // an open list admits the admins only if it names them
   assertEquals(await admittedEverywhere(serve, "sub-root"), [
     false,
     false,
