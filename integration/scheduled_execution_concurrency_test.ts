@@ -48,17 +48,26 @@ await initializeLogging({});
 const YEARLY = "0 0 1 1 *";
 
 async function withScheduledRepo(
-  maxConcurrentRuns: number | undefined,
+  options:
+    | number
+    | undefined
+    | {
+      maxConcurrentRuns?: number;
+      busyElsewhere?: (identity: readonly string[]) => boolean;
+      onRunSettled?: () => void;
+    },
   fn: (ctx: {
     service: ScheduledExecutionService;
     collector: HealthCollector;
-    runs: { workflow: string; release: () => void }[];
+    runs: { workflow: string; release: () => void; aborted: () => boolean }[];
     events: ScheduledExecutionEvent[];
     workflows: Map<string, Workflow>;
     resolver: ReturnType<typeof createHealthResourceResolver>;
     setNow: (ms: number) => void;
   }) => Promise<void>,
 ): Promise<void> {
+  const { maxConcurrentRuns, busyElsewhere, onRunSettled } =
+    typeof options === "object" ? options : { maxConcurrentRuns: options };
   const repoDir = await Deno.makeTempDir({ prefix: "swamp-sched-conc-" });
   const repoContext = createRepositoryContext({ repoDir });
   let service: ScheduledExecutionService | undefined;
@@ -90,10 +99,18 @@ async function withScheduledRepo(
       workflows.set(name, workflow);
     }
 
-    const runs: { workflow: string; release: () => void }[] = [];
+    const runs: {
+      workflow: string;
+      release: () => void;
+      aborted: () => boolean;
+    }[] = [];
     const executeWorkflow: WorkflowExecutor = (input, signal, onEvent) => {
       const done = Promise.withResolvers<void>();
-      runs.push({ workflow: input.workflowIdOrName, release: done.resolve });
+      runs.push({
+        workflow: input.workflowIdOrName,
+        release: done.resolve,
+        aborted: () => signal.aborted,
+      });
       signal.addEventListener("abort", () => done.resolve(), { once: true });
       onEvent({
         kind: "started",
@@ -110,6 +127,8 @@ async function withScheduledRepo(
       repoDir,
       executeWorkflow,
       maxConcurrentRuns,
+      busyElsewhere,
+      onRunSettled,
       now: () => now,
     });
     await service.start((event) => events.push(event));
@@ -229,6 +248,95 @@ Deno.test("scheduled execution concurrency: by default runs go one at a time in 
         .filter((e) => e.kind === "schedule_started")
         .map((e) => e.workflowName),
       ["beta", "alpha", "gamma"],
+    );
+  });
+});
+
+Deno.test("scheduled execution concurrency: a raised limit starts a queued run at once", async () => {
+  await withScheduledRepo(1, async (ctx) => {
+    replay(ctx.service, "alpha", "beta");
+    await waitFor(() => ctx.runs.length === 1, "first run");
+    ctx.service.setMaxConcurrentRuns(2);
+    await waitFor(() => ctx.runs.length === 2, "queued run admitted");
+    assertEquals(ctx.runs.map((run) => run.workflow), ["alpha", "beta"]);
+  });
+});
+
+Deno.test("scheduled execution concurrency: a lowered limit aborts nothing and holds back the next run", async () => {
+  await withScheduledRepo(2, async (ctx) => {
+    replay(ctx.service, "alpha", "beta", "gamma");
+    await waitFor(() => ctx.runs.length === 2, "two runs in flight");
+    ctx.service.setMaxConcurrentRuns(1);
+    assertEquals(ctx.runs.map((run) => run.aborted()), [false, false]);
+
+    ctx.runs[0].release();
+    // the claim is released in the same turn the queue is re-read
+    await waitFor(() => !ctx.service.holdsAny(["alpha"]), "alpha settled");
+    assertEquals(ctx.runs.length, 2);
+
+    ctx.runs[1].release();
+    await waitFor(() => ctx.runs.length === 3, "gamma admitted");
+    assertEquals(ctx.runs[2].workflow, "gamma");
+  });
+});
+
+Deno.test("scheduled execution concurrency: a workflow busy in a sibling scheduler waits until admitted", async () => {
+  let alphaBusy = true;
+  await withScheduledRepo({
+    maxConcurrentRuns: 2,
+    busyElsewhere: (identity) => alphaBusy && identity.includes("alpha"),
+  }, async (ctx) => {
+    replay(ctx.service, "alpha", "beta");
+    await waitFor(() => ctx.runs.length === 1, "beta runs");
+    assertEquals(ctx.runs[0].workflow, "beta");
+    assertEquals(
+      ctx.service.queueStatus(ctx.workflows.get("alpha")!.id).queued,
+      1,
+    );
+
+    alphaBusy = false;
+    ctx.service.admitQueued();
+    await waitFor(() => ctx.runs.length === 2, "alpha admitted");
+    assertEquals(ctx.runs[1].workflow, "alpha");
+  });
+});
+
+Deno.test("scheduled execution concurrency: each settled run is reported, so a sibling scheduler can admit its queue", async () => {
+  let settled = 0;
+  await withScheduledRepo({
+    maxConcurrentRuns: 2,
+    onRunSettled: () => settled++,
+  }, async (ctx) => {
+    replay(ctx.service, "alpha");
+    await waitFor(() => ctx.runs.length === 1, "alpha runs");
+    assertEquals(settled, 0);
+    ctx.runs[0].release();
+    await waitFor(() => settled === 1, "alpha reported settled");
+  });
+});
+
+Deno.test("scheduled execution concurrency: a replay of a pending run already queued or in flight here is ignored", async () => {
+  await withScheduledRepo(1, async (ctx) => {
+    const alpha = {
+      pendingRunId: crypto.randomUUID(),
+      workflowIdOrName: "alpha",
+    };
+    const beta = {
+      pendingRunId: crypto.randomUUID(),
+      workflowIdOrName: "beta",
+    };
+    ctx.service.enqueueForReplay(alpha);
+    ctx.service.enqueueForReplay(beta);
+    await waitFor(() => ctx.runs.length === 1, "alpha in flight");
+    ctx.service.enqueueForReplay(alpha);
+    ctx.service.enqueueForReplay(beta);
+    assertEquals(
+      ctx.service.queueStatus(ctx.workflows.get("beta")!.id).queued,
+      1,
+    );
+    assertEquals(
+      ctx.service.queueStatus(ctx.workflows.get("alpha")!.id).queued,
+      0,
     );
   });
 });

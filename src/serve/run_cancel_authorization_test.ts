@@ -76,6 +76,27 @@ Deno.test("workflowHeldOutsideActiveRuns: names the holder's workflow, attached 
   assertEquals(workflowHeldOutsideActiveRuns(holders, "r3"), undefined);
 });
 
+Deno.test("workflowHeldOutsideActiveRuns and abortRunHeldOutsideActiveRuns: a scheduler turned off by reload keeps its runs cancellable", () => {
+  const aborted: string[] = [];
+  const retiring = {
+    workflowOfRun: (r: string) =>
+      r === "r1" ? { id: "nightly-id", name: "nightly" } : undefined,
+    cancelByRunId: (r: string, reason: string) => {
+      if (r !== "r1") return false;
+      aborted.push(reason);
+      return true;
+    },
+  };
+  const holders = {
+    cancelRegistry: new RunCancelRegistry(),
+    retiringScheduled: () => [retiring],
+  } as unknown as Parameters<typeof workflowHeldOutsideActiveRuns>[0];
+  assertEquals(workflowHeldOutsideActiveRuns(holders, "r1")?.name, "nightly");
+  assertEquals(abortRunHeldOutsideActiveRuns(holders, "r1", "why"), true);
+  assertEquals(abortRunHeldOutsideActiveRuns(holders, "r2", "why"), false);
+  assertEquals(aborted, ["why"]);
+});
+
 Deno.test("abortRunHeldOutsideActiveRuns: says false when no holder has the run", () => {
   assertEquals(
     abortRunHeldOutsideActiveRuns(

@@ -147,7 +147,7 @@ export const SETTING_CATALOGUE = {
     "auth.tag-requires-explicit-grant",
     "tag-requires-explicit-grant",
   ),
-  schedule: restart("schedule", "schedule", NOT_YET),
+  schedule: applied("schedule", "schedule"),
   grantsFile: applied("grants-file", "grants-file"),
   grantsDir: applied("grants-dir", "grants-dir"),
   grantReload: applied("grant-reload", "grant-reload"),
@@ -177,10 +177,9 @@ export const SETTING_CATALOGUE = {
   ),
   tokenGcInterval: applied("token-gc-interval", "token-gc-interval"),
   tokenGcGracePeriod: applied("token-gc-grace-period", "token-gc-grace-period"),
-  maxConcurrentScheduledRuns: restart(
+  maxConcurrentScheduledRuns: applied(
     "max-concurrent-scheduled-runs",
     "max-concurrent-scheduled-runs",
-    NOT_YET,
   ),
   maxConcurrentWebhookRuns: applied(
     "max-concurrent-webhook-runs",
@@ -323,19 +322,70 @@ export function continuationSweepReloadReason(sweep: {
   readonly running: boolean;
   readonly bootPassOnly: boolean;
   readonly staysOn: boolean;
+  /** what startup would decide with the reloaded interval */
+  readonly startDecision:
+    | "start"
+    | "disabled"
+    | "no_shared_claims"
+    | "records_not_current"
+    | "serve_starting";
 }): string | undefined {
-  if (!sweep.running) {
-    return "the continuation sweep is not running on this serve; restart serve to start it";
+  if (sweep.running) {
+    // a restart on this datastore runs the boot pass alone again
+    if (sweep.staysOn && sweep.bootPassOnly) {
+      return "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
+    }
+    return undefined;
   }
-  // checked first: a restart with interval 0 does stop the boot pass
-  if (!sweep.staysOn) {
-    return "turning the continuation sweep off needs a restart";
+  if (!sweep.staysOn) return undefined;
+  if (sweep.startDecision === "no_shared_claims") {
+    return "the continuation sweep cannot run on this datastore: it has no shared control-plane store that can create a record atomically";
   }
-  // a restart on this datastore runs the boot pass alone again
+  if (sweep.startDecision === "serve_starting") {
+    return "serve is still starting; reload again once startup is complete";
+  }
+  if (sweep.startDecision === "records_not_current") {
+    return "the boot hydration did not complete, so this instance's run records may be out of date; restart serve to start the continuation sweep";
+  }
   if (sweep.bootPassOnly) {
-    return "the continuation sweep runs only at boot on this datastore, so its interval has no effect here; a restart does not change this";
+    return "the continuation sweep runs only at boot on this datastore; restart serve to start it";
   }
   return undefined;
+}
+
+/** the reloaded settings this process cannot apply while it runs */
+export function timedServiceReloadReasons(state: {
+  readonly scheduling: { readonly running: boolean; readonly turnsOn: boolean };
+  readonly dataPollers: boolean;
+  readonly reconciliationLoop: boolean;
+  readonly sweep: Parameters<typeof continuationSweepReloadReason>[0];
+  readonly groupRefresh: {
+    readonly running: boolean;
+    readonly staysOn: boolean;
+    /** OAuth mode with a client secret */
+    readonly runnable: boolean;
+  };
+}): Partial<Record<keyof MergedServeOptions, string>> {
+  const reasons: Partial<Record<keyof MergedServeOptions, string>> = {};
+  if (!state.scheduling.running && !state.scheduling.turnsOn) {
+    reasons.triggerOverrides =
+      "scheduling is off on this serve; a reload that turns schedule on applies them";
+  }
+  if (!state.dataPollers) {
+    reasons.datastorePollInterval = "no datastore poller runs on this serve";
+  }
+  if (!state.reconciliationLoop) {
+    reasons.reconciliationInterval =
+      "no reconciliation loop runs on this serve";
+  }
+  const sweep = continuationSweepReloadReason(state.sweep);
+  if (sweep) reasons.continuationSweepInterval = sweep;
+  const group = state.groupRefresh;
+  if (!group.running && group.staysOn && !group.runnable) {
+    reasons.groupRefreshInterval =
+      "group refresh runs only with --auth-mode oauth and an OAuth client secret";
+  }
+  return reasons;
 }
 
 export function settingName(key: keyof MergedServeOptions): string {

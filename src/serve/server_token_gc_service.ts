@@ -82,6 +82,13 @@ export class ServerTokenGcService {
     this.#scheduleNext(0);
   }
 
+  /** a changed interval counts from now; mid-sweep the next timer reads it */
+  rearm(): void {
+    if (this.#disposed || this.#running || this.#timer === null) return;
+    clearTimeout(this.#timer);
+    this.#scheduleNext(this.#deps.intervalMs);
+  }
+
   async dispose(): Promise<void> {
     this.#disposed = true;
     if (this.#timer !== null) {

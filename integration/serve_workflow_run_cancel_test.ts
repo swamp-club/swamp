@@ -642,7 +642,13 @@ function fakeTriggerHolder(runId: string, name: string, id?: string) {
   };
 }
 
-const HOLDER_KINDS = ["attached", "scheduled", "webhook", "active"] as const;
+const HOLDER_KINDS = [
+  "attached",
+  "scheduled",
+  "retiring",
+  "webhook",
+  "active",
+] as const;
 
 function holdRun(
   h: Harness,
@@ -663,7 +669,12 @@ function holdRun(
     return () => controller.signal.aborted;
   }
   const { holder, aborted } = fakeTriggerHolder(runId, name, id);
-  ctx[kind === "scheduled" ? "scheduledExecution" : "webhookRuns"] = holder;
+  if (kind === "retiring") {
+    // a scheduler a reload turned off, whose run is still finishing
+    ctx.retiringScheduled = () => [holder];
+  } else {
+    ctx[kind === "scheduled" ? "scheduledExecution" : "webhookRuns"] = holder;
+  }
   return () => aborted.length > 0;
 }
 

@@ -423,6 +423,8 @@ export interface ConnectionContext {
   hotReload?: boolean;
   serveConfigPath?: string;
   scheduledExecution?: ScheduledExecutionService;
+  /** schedulers a reload turned off whose runs in flight are still finishing */
+  retiringScheduled?: () => readonly ScheduledExecutionService[];
   webhookRuns?: Pick<
     import("../webhook.ts").WebhookService,
     "workflowOfRun" | "cancelByRunId"

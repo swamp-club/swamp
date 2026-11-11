@@ -84,11 +84,11 @@ without it the default file is optional.
 | `--tag-requires-explicit-grant` / `auth.tag-requires-explicit-grant` | `SWAMP_TAG_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in; changes on reload |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants. All three change on reload (see Reload) |
-| `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
-| `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
+| `--no-schedule` / `schedule` | — | `true` | Disables cron triggers. A reload turns scheduling on or off: off drains the scheduler (queued runs stay pending for replay, runs in flight finish), on builds a new one with the file's triggers |
+| `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. A reload applies it: a raised limit starts queued runs at once, a lowered one stops no run in flight |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely and are fixed until restart; only the file list reloads |
 | `--webhook-routes-dir` / `webhook-routes-dir` | `SWAMP_WEBHOOK_ROUTES_DIR` | `webhook-routes` | Directory of route files, one route per YAML file, read at startup and on every reload, flag mode included. A relative path resolves against the repository; a directory that is or sits inside the webhook extensions dir, `extensions/` or `.swamp/` loads no file routes and is reported as an error (see Webhooks) |
-| `--webhook-routes-poll` / `webhook-routes-poll` | `SWAMP_WEBHOOK_ROUTES_POLL` | `off` | Polls the routes directory at this interval (minimum `1s`) and applies changed route files without `swamp serve reload`; a change applies once two polls agree, one to two intervals after it lands. Needs no `--hot-reload` and no managed config. A reload changes the interval of a running poller; turning the poller on or off needs a restart (see Webhooks) |
+| `--webhook-routes-poll` / `webhook-routes-poll` | `SWAMP_WEBHOOK_ROUTES_POLL` | `off` | Polls the routes directory at this interval (minimum `1s`) and applies changed route files without `swamp serve reload`; a change applies once two polls agree, one to two intervals after it lands. Needs no `--hot-reload` and no managed config. A reload changes the interval, and turns the poller on or off |
 | `--max-concurrent-webhook-runs` / `max-concurrent-webhook-runs` | `SWAMP_MAX_CONCURRENT_WEBHOOK_RUNS` | `1` | Webhook runs in flight at once, across all routes; deliveries to the same route may overlap. Separate from `--max-concurrent-runs`. A reload changes it: a raised limit starts queued deliveries, a lowered one lets running runs finish |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
@@ -1999,11 +1999,20 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   API, run, webhook-run and signal-wait limits, queue, idle, drain and
   listener-grace timeouts, auto-resume, triggers, webhooks and the routes
   directory, `trust-proxy`, `trusted-hosts`, `dispatch-env-allow`,
-  `verify-on-enroll`, the intervals of services already running (the
-  datastore and routes pollers re-arm at once; reconciliation, the
-  continuation sweep, token GC and group refresh take the new interval after
-  their next run; a continuation sweep that runs only its boot pass reports a
-  changed interval under needs restart), and in the
+  `verify-on-enroll`, scheduling and `max-concurrent-scheduled-runs`
+  (`ScheduledExecutionLifecycle` in
+  `src/serve/scheduled_execution_lifecycle.ts`: turning scheduling off
+  drains the scheduler, keeping queued runs pending for replay while runs in
+  flight finish and stay cancellable; turning it on builds a new one with the
+  reloaded triggers, replays this process's own pending cron runs and catches
+  up, both only where this node leads scheduled fires; a process that has run
+  a scheduler keeps cron runs pending while it is off), the timed services'
+  intervals (each re-arms at once, counting the new interval from the
+  reload) and turning them on or off (group refresh, token GC, the
+  continuation sweep and the routes poller, under the leader rules startup
+  applies; nothing starts once shutdown has begun; a continuation sweep that
+  runs only its boot pass, or that this datastore refuses after boot, is
+  reported under needs restart), and in the
   `audit` block the policy, alerts (each rule's window starts again),
   fail-open and sinks. Access lists: allowed-users removals always apply, a
   new name applies once it resolves (from the stored name map, or the club
@@ -2032,9 +2041,8 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   sockets and enrollments; nothing already running changes. Needing a
   restart: the listener, TLS and CA cert, auth mode and OAuth client, adding
   an admin, the datastore, `stale-ttl` and `heartbeat-interval` (every instance judges
-  its peers' liveness by them), `remote-only`, turning a timed service on or
-  off, the audit stores, WAL, HMAC and batching, and, not applied by reload
-  yet, scheduling.
+  its peers' liveness by them), `remote-only`, and the audit stores, WAL,
+  HMAC and batching.
 
   `performServeReload` (`src/serve/extension_reload.ts`) re-bundles pulled
   extensions whose source fingerprint changed and re-imports every pulled type.

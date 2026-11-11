@@ -294,6 +294,13 @@ export interface ScheduledExecutionDeps {
    * 1: one scheduled run at a time, in fire order.
    */
   maxConcurrentRuns?: number;
+  /**
+   * true when another scheduler in this process still runs one of a workflow's
+   * keys (its id or name), so a run of it waits rather than overlapping
+   */
+  busyElsewhere?: (identity: readonly string[]) => boolean;
+  /** after each run settles, so a sibling waiting on its workflow can start */
+  onRunSettled?: () => void;
   now?: () => number;
 }
 
@@ -375,10 +382,12 @@ export class ScheduledExecutionService {
   >();
   private readonly workflowNames = new Map<WorkflowId, string>();
   private readonly runQueue: QueuedRun[] = [];
-  private readonly maxConcurrentRuns: number;
+  private maxConcurrentRuns: number;
   private readonly now: () => number;
   private readonly inFlight = new Set<Promise<void>>();
   private readonly claimed = new Set<string>();
+  /** pending runs queued or in flight here; a second replay of one is ignored */
+  private readonly heldPendingIds = new Set<string>();
   private readonly lastQueueDelayMs = new Map<string, number>();
   private draining = false;
   private stopped = false;
@@ -608,6 +617,28 @@ export class ScheduledExecutionService {
     return this.running.has(workflowId);
   }
 
+  holdsAny(identity: readonly string[]): boolean {
+    return identity.some((key) => this.claimed.has(key));
+  }
+
+  /** runs in flight keep going; a raised limit starts queued runs at once */
+  setMaxConcurrentRuns(maxConcurrentRuns: number): void {
+    this.maxConcurrentRuns = Math.max(1, maxConcurrentRuns);
+    this.admitQueued();
+  }
+
+  /** resolves once no run is in flight; aborts nothing */
+  async idle(): Promise<void> {
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled([...this.inFlight]);
+    }
+  }
+
+  admitQueued(): void {
+    if (this.draining || this.stopped) return;
+    this.processQueue();
+  }
+
   queueStatus(workflowId: WorkflowId): ScheduleQueueStatus {
     const name = this.workflowNames.get(workflowId) ?? workflowId;
     const waiting = this.runQueue.filter((entry) =>
@@ -687,6 +718,8 @@ export class ScheduledExecutionService {
   }): void {
     // The pending entry stays in the run tracker for the next boot to replay.
     if (this.draining) return;
+    if (this.heldPendingIds.has(entry.pendingRunId)) return;
+    this.heldPendingIds.add(entry.pendingRunId);
     this.runQueue.push({
       pendingRunId: entry.pendingRunId,
       workflowId: entry.workflowIdOrName as WorkflowId,
@@ -1413,6 +1446,7 @@ export class ScheduledExecutionService {
     let enqueuePromise: Promise<void> | undefined;
     if (this.deps.pendingRunHook) {
       pendingRunId = crypto.randomUUID();
+      this.heldPendingIds.add(pendingRunId);
       enqueuePromise = this.deps.pendingRunHook.enqueue({
         id: pendingRunId,
         source: "cron",
@@ -1701,18 +1735,22 @@ export class ScheduledExecutionService {
    */
   private processQueue(): void {
     while (this.inFlight.size < this.maxConcurrentRuns) {
-      const index = this.runQueue.findIndex((entry) =>
-        !this.identityOf(entry).some((key) => this.claimed.has(key))
-      );
+      const index = this.runQueue.findIndex((entry) => {
+        const identity = this.identityOf(entry);
+        return !identity.some((key) => this.claimed.has(key)) &&
+          !this.deps.busyElsewhere?.(identity);
+      });
       if (index === -1) return;
       const [entry] = this.runQueue.splice(index, 1);
       const identity = this.identityOf(entry);
       for (const key of identity) this.claimed.add(key);
       const settled: Promise<void> = this.runEntry(entry).finally(() => {
         for (const key of identity) this.claimed.delete(key);
+        if (entry.pendingRunId) this.heldPendingIds.delete(entry.pendingRunId);
         this.inFlight.delete(settled);
         try {
           this.processQueue();
+          this.deps.onRunSettled?.();
         } catch (error) {
           logger.error("Scheduled run queue stalled: {error}", {
             error: error instanceof Error ? error.message : String(error),

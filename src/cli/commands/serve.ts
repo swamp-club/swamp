@@ -139,15 +139,17 @@ import {
   type WebhookRouteTableDeps,
 } from "../../serve/webhook_reload.ts";
 import {
-  continuationSweepReloadReason,
+  type AppliedSettingKey,
   overlayAppliedSettings,
   reloadsOnHangup,
   settingName,
+  timedServiceReloadReasons,
 } from "../../serve/serve_settings_reload.ts";
 import {
   createServeSettingsReloader,
   type ReloadFollowUp,
 } from "../../serve/serve_settings_reloader.ts";
+import { timedServiceFollowUp } from "../../serve/timed_service_reload.ts";
 import {
   alertRulesFrom,
   type AuditConfigChanges,
@@ -416,9 +418,14 @@ import { cascadeEndedRunAndPush } from "../../serve/nested_run_cascade.ts";
 import { modelMethodRun } from "../../libswamp/models/run.ts";
 import {
   normalizeFireTime,
+  type ScheduledExecutionEvent,
   ScheduledExecutionService,
   type TriggerOverride,
 } from "../../libswamp/workflows/scheduled_execution.ts";
+import {
+  ScheduledExecutionLifecycle,
+  type SchedulerBuildOptions,
+} from "../../serve/scheduled_execution_lifecycle.ts";
 import {
   workerPrune,
   type WorkerPruneDeps,
@@ -719,6 +726,7 @@ import { serveHolder } from "../../domain/workflows/continuation_claim.ts";
 import { isAtomicControlPlaneStore } from "../../infrastructure/persistence/control_plane_signal_wait_store.ts";
 import {
   ContinuationSweepService,
+  type ContinuationSweepStart,
   decideContinuationSweepStart,
   DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
   heldSignalSweeper,
@@ -1073,7 +1081,10 @@ export async function respondToRunCancel(
     return resource !== undefined &&
       isCallerAuthorized(caller, audit.requestId, "run", resource, ctx);
   };
-  const scheduled = ctx.scheduledExecution;
+  const schedulers = [
+    ...(ctx.scheduledExecution ? [ctx.scheduledExecution] : []),
+    ...(ctx.retiringScheduled?.() ?? []),
+  ];
   const webhooks = ctx.webhookRuns;
   let result: CancelResult;
   try {
@@ -1084,8 +1095,8 @@ export async function respondToRunCancel(
         cancelRegistry,
         activeRunRegistry,
         reason,
-        scheduledCancelByRunId: scheduled
-          ? (id) => scheduled.cancelByRunId(id, reason)
+        scheduledCancelByRunId: schedulers.length > 0
+          ? (id) => schedulers.some((s) => s.cancelByRunId(id, reason))
           : undefined,
         webhookCancelByRunId: webhooks
           ? (id) => webhooks.cancelByRunId(id, reason)
@@ -3819,6 +3830,7 @@ export const serveCommand = new Command()
       groupRefreshMs: 0,
     };
     let reconciliationLoopRunning = false;
+    let rearmReconciliation = (): void => {};
     if (
       advertiseAddress !== undefined &&
       advertiseAddressInCleartext(advertiseAddress)
@@ -5942,6 +5954,12 @@ export const serveCommand = new Command()
     let serverTokenGcService: ServerTokenGcService | undefined;
     let continuationSweepService: ContinuationSweepService | undefined;
     let continuationSweepBootPassOnly = false;
+    // built late in boot; a reload before then reports these as not landed
+    const lateTimedServices: {
+      decideSweepStart?: (intervalMs: number) => ContinuationSweepStart;
+      buildSweep?: (afterBoot: boolean) => ContinuationSweepService;
+      buildTokenGc?: () => Promise<ServerTokenGcService>;
+    } = {};
     const runIndexWarmup = new RunIndexWarmup({
       listWorkflowIds: async () =>
         (await listWorkflows(repoContext.workflowRepo)).map((w) => w.id),
@@ -6846,24 +6864,28 @@ export const serveCommand = new Command()
       workflowRepo: repoContext.workflowRepo,
     });
 
-    let scheduledExecution: ScheduledExecutionService | null = null;
     // only the leader runs a fire; a follower leaves its slot to it, as does a
     // leader whose lease was just taken over and has not ticked since
     const leadsScheduledFires = (): boolean =>
       !isFollowing() &&
       (v3Location === undefined || holdsCurrentV3WriterLease(v3Location.path));
-    if (enableSchedule) {
-      if (triggerOverrides && triggerOverrides.size > 0) {
-        logger.info(
-          "Loaded {count} trigger override(s) from serve.yaml",
-          { count: triggerOverrides.size },
-        );
-      }
-      scheduledExecution = new ScheduledExecutionService({
+    // refreshed each time a scheduler is built; replay reads it
+    let configuredCronWorkflows: ReadonlySet<string> = new Set();
+    // assigned once the replay it shares with boot is built
+    let replayOwnPendingCron = (
+      _service: ScheduledExecutionService,
+      _createdBefore: string,
+    ): Promise<number> => Promise.resolve(0);
+    const buildScheduledExecution = (
+      options: SchedulerBuildOptions,
+    ): ScheduledExecutionService =>
+      new ScheduledExecutionService({
         workflowRepo: repoContext.workflowRepo,
         repoDir: resolvedRepoDir,
-        triggerOverrides,
-        maxConcurrentRuns: maxConcurrentScheduledRuns,
+        triggerOverrides: options.triggerOverrides,
+        maxConcurrentRuns: options.maxConcurrentRuns,
+        busyElsewhere: options.busyElsewhere,
+        onRunSettled: options.onRunSettled,
         initiatedBy: principalToString(SCHEDULER_PRINCIPAL),
         authorizeRun: createScheduledRunAuthorizer(
           triggerAuthorizer,
@@ -6981,86 +7003,115 @@ export const serveCommand = new Command()
           }
           : undefined,
       });
-
-      await scheduledExecution.start((event) => {
-        // Audit before the output branch so --json mode audits too.
-        auditScheduledEvent(connectionCtx, event);
-        if (isJson) {
-          console.log(JSON.stringify(event));
-        } else {
-          switch (event.kind) {
-            case "schedule_registered":
-              logger.info(
-                "Scheduled workflow {name} ({cron})",
-                { name: event.workflowName, cron: event.cronExpression },
-              );
-              break;
-            case "schedule_unregistered":
-              logger.info(
-                "Unregistered scheduled workflow {name}",
-                { name: event.workflowName },
-              );
-              break;
-            case "schedule_fired":
-              logger.info(
-                "Running scheduled workflow {name}",
-                { name: event.workflowName },
-              );
-              break;
-            case "schedule_skipped":
-              if (event.paused) {
-                if (event.paused.reason === undefined) {
-                  logger.info(
-                    "Skipped scheduled workflow {name}: paused",
-                    { name: event.workflowName },
-                  );
-                } else {
-                  logger.info(
-                    "Skipped scheduled workflow {name}: paused ({reason})",
-                    { name: event.workflowName, reason: event.paused.reason },
-                  );
-                }
-              } else if (event.dedupSkip) {
+    const onScheduledEvent = (event: ScheduledExecutionEvent): void => {
+      // Audit before the output branch so --json mode audits too.
+      auditScheduledEvent(connectionCtx, event);
+      if (isJson) {
+        console.log(JSON.stringify(event));
+      } else {
+        switch (event.kind) {
+          case "schedule_registered":
+            logger.info(
+              "Scheduled workflow {name} ({cron})",
+              { name: event.workflowName, cron: event.cronExpression },
+            );
+            break;
+          case "schedule_unregistered":
+            logger.info(
+              "Unregistered scheduled workflow {name}",
+              { name: event.workflowName },
+            );
+            break;
+          case "schedule_fired":
+            logger.info(
+              "Running scheduled workflow {name}",
+              { name: event.workflowName },
+            );
+            break;
+          case "schedule_skipped":
+            if (event.paused) {
+              if (event.paused.reason === undefined) {
                 logger.info(
-                  "Skipped scheduled workflow {name}: {reason}",
-                  { name: event.workflowName, reason: event.reason },
+                  "Skipped scheduled workflow {name}: paused",
+                  { name: event.workflowName },
                 );
               } else {
-                logger.warn(
-                  "Skipped scheduled workflow {name}: {reason}",
-                  { name: event.workflowName, reason: event.reason },
+                logger.info(
+                  "Skipped scheduled workflow {name}: paused ({reason})",
+                  { name: event.workflowName, reason: event.paused.reason },
                 );
               }
-              break;
-            case "schedule_completed": {
+            } else if (event.dedupSkip) {
               logger.info(
-                "Scheduled workflow {name} completed (run: {runId})",
-                { name: event.workflowName, runId: event.runId },
+                "Skipped scheduled workflow {name}: {reason}",
+                { name: event.workflowName, reason: event.reason },
               );
-              const schedRun = runTracker.findById(event.runId);
-              const schedDuration = schedRun
-                ? Date.now() - schedRun.startedAt.getTime()
-                : 0;
-              runMetricsTracker.record("completed", schedDuration);
-              break;
+            } else {
+              logger.warn(
+                "Skipped scheduled workflow {name}: {reason}",
+                { name: event.workflowName, reason: event.reason },
+              );
             }
-            case "schedule_suspended":
-              logger.info(
-                "Scheduled workflow {name} suspended awaiting approval (run: {runId})",
-                { name: event.workflowName, runId: event.runId },
-              );
-              break;
-            case "schedule_failed":
-              logger.error(
-                "Scheduled workflow {name} failed: {error}",
-                { name: event.workflowName, error: event.error },
-              );
-              runMetricsTracker.record("failed", 0);
-              break;
+            break;
+          case "schedule_completed": {
+            logger.info(
+              "Scheduled workflow {name} completed (run: {runId})",
+              { name: event.workflowName, runId: event.runId },
+            );
+            const schedRun = runTracker.findById(event.runId);
+            const schedDuration = schedRun
+              ? Date.now() - schedRun.startedAt.getTime()
+              : 0;
+            runMetricsTracker.record("completed", schedDuration);
+            break;
           }
+          case "schedule_suspended":
+            logger.info(
+              "Scheduled workflow {name} suspended awaiting approval (run: {runId})",
+              { name: event.workflowName, runId: event.runId },
+            );
+            break;
+          case "schedule_failed":
+            logger.error(
+              "Scheduled workflow {name} failed: {error}",
+              { name: event.workflowName, error: event.error },
+            );
+            runMetricsTracker.record("failed", 0);
+            break;
         }
-      });
-      connectionCtx.scheduledExecution = scheduledExecution;
+      }
+    };
+    const scheduler = new ScheduledExecutionLifecycle<
+      ScheduledExecutionService
+    >(
+      {
+        build: buildScheduledExecution,
+        start: async (service) => {
+          configuredCronWorkflows = new Set(
+            (await repoContext.workflowRepo.findAll())
+              .filter((w) => w.schedule)
+              .map((w) => w.name),
+          );
+          await service.start(onScheduledEvent);
+        },
+        publish: (service) => {
+          connectionCtx.scheduledExecution = service ?? undefined;
+        },
+        leads: () => leaderWorkStarted && leadsScheduledFires(),
+        replayOwnCron: (service, createdBefore) =>
+          replayOwnPendingCron(service, createdBefore),
+        maxConcurrentRuns: maxConcurrentScheduledRuns,
+      },
+    );
+    connectionCtx.retiringScheduled = () => scheduler.retiring();
+    if (enableSchedule) {
+      if (triggerOverrides && triggerOverrides.size > 0) {
+        logger.info(
+          "Loaded {count} trigger override(s) from serve.yaml",
+          { count: triggerOverrides.size },
+        );
+      }
+      await scheduler.turnOn(triggerOverrides, { atBoot: true });
     }
 
     // Wire workflow reloader for hot-reload. Built here (cli layer) so the
@@ -7107,10 +7158,11 @@ export const serveCommand = new Command()
       );
     }
 
-    if (
-      groupRefreshMs > 0 && authConfig.mode === "oauth" &&
-      oauthClientSecret
-    ) {
+    const groupRefreshRunnable = authConfig.mode === "oauth" &&
+      Boolean(oauthClientSecret);
+    const buildCollectiveRefresh = async (): Promise<
+      import("../../serve/collective_refresh_service.ts").CollectiveRefreshService
+    > => {
       const vaultService = await VaultService.fromRepository(
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
@@ -7126,7 +7178,7 @@ export const serveCommand = new Command()
         "../../serve/oauth_access_token_lookup.ts"
       );
 
-      collectiveRefreshService = new CollectiveRefreshService({
+      return new CollectiveRefreshService({
         get intervalMs() {
           return liveIntervals.groupRefreshMs;
         },
@@ -7253,6 +7305,9 @@ export const serveCommand = new Command()
         closeConnectionsForPrincipal,
         onUsernamesResolved: rememberUsernames,
       });
+    };
+    if (groupRefreshMs > 0 && groupRefreshRunnable) {
+      collectiveRefreshService = await buildCollectiveRefresh();
       collectiveRefreshService.start();
     }
 
@@ -7644,9 +7699,11 @@ export const serveCommand = new Command()
 
     // every node polls: a follower forwards only the routes in its own table
     let webhookRoutesPoller: WebhookRoutesPoller | null = null;
-    if (webhookRoutesPollMs !== undefined) {
-      webhookRoutesPoller = new WebhookRoutesPoller({
-        intervalMs: webhookRoutesPollMs,
+    const createWebhookRoutesPoller = (
+      intervalMs: number,
+    ): WebhookRoutesPoller =>
+      new WebhookRoutesPoller({
+        intervalMs,
         // the snapshot never reads a directory the loader refuses to read
         snapshot: async () => {
           try {
@@ -7664,22 +7721,30 @@ export const serveCommand = new Command()
         },
         apply: () => webhookRouteApplier.reapplyRouteFiles({ trigger: "poll" }),
       });
-      webhookRoutesPoller.start();
+    const announceWebhookRoutesPoller = (
+      poller: WebhookRoutesPoller,
+      intervalMs: number,
+    ): void => {
+      poller.start();
       if (isJson) {
         console.log(JSON.stringify({
           kind: "webhook_routes_poll_started",
           directory: webhookRoutesDir,
-          intervalMs: webhookRoutesPollMs,
+          intervalMs,
         }));
       } else {
         logger.info(
           "Polling webhook routes directory {directory} every {interval}s",
           {
             directory: webhookRoutesDir,
-            interval: webhookRoutesPollMs / 1000,
+            interval: intervalMs / 1000,
           },
         );
       }
+    };
+    if (webhookRoutesPollMs !== undefined) {
+      webhookRoutesPoller = createWebhookRoutesPoller(webhookRoutesPollMs);
+      announceWebhookRoutesPoller(webhookRoutesPoller, webhookRoutesPollMs);
     }
     connectionCtx.trustedCollectivesUpdater = trustedCollectivesUpdater;
     connectionCtx.webhookAdmissionSnapshots = () =>
@@ -7738,8 +7803,13 @@ export const serveCommand = new Command()
       metricsTracker: runMetricsTracker,
       componentChecker: componentHealthChecker,
       workerProvider: workerGateway,
-      scheduleProvider: scheduledExecution,
-      scheduleEnabled: enableSchedule,
+      // reload turns scheduling on and off, so each collect reads it
+      get scheduleProvider() {
+        return scheduler.current();
+      },
+      get scheduleEnabled() {
+        return scheduler.enabled();
+      },
       webhookProvider: webhookService,
       webhookRouteFilesProvider: () => ({
         directory: webhookRoutesDir,
@@ -7836,6 +7906,103 @@ export const serveCommand = new Command()
       return partial === undefined ? undefined : { partial };
     };
     let serveOptionsBeforeReload: MergedServeOptions | undefined;
+    const timedServiceFollowUps = (
+      startup: ServeStartupSettings,
+      next: MergedServeOptions,
+      applied: readonly AppliedSettingKey[],
+    ): ReloadFollowUp[] => {
+      const followUps: ReloadFollowUp[] = [];
+      if (applied.includes("schedule")) {
+        followUps.push({
+          name: next.schedule
+            ? "Starting the scheduler"
+            : "Stopping the scheduler",
+          settings: ["schedule"],
+          run: () =>
+            next.schedule
+              ? scheduler.turnOn(
+                next.triggerOverrides
+                  ? new Map(Object.entries(next.triggerOverrides))
+                  : undefined,
+              )
+              : scheduler.turnOff(),
+        });
+      }
+      const add = (followUp: ReloadFollowUp | undefined) => {
+        if (followUp) followUps.push(followUp);
+      };
+      const closed = () => shuttingDown;
+      if (applied.includes("groupRefreshInterval")) {
+        add(timedServiceFollowUp({
+          name: "the group refresh",
+          settings: ["groupRefreshInterval"],
+          get: () => collectiveRefreshService,
+          set: (service) => collectiveRefreshService = service,
+          build: buildCollectiveRefresh,
+          // every node refreshes its own connections, as at boot
+          start: (service) => service.start(),
+          stop: (service) => service.dispose(),
+          closed,
+        }, startup.groupRefreshMs > 0 && groupRefreshRunnable));
+      }
+      if (applied.includes("tokenGcInterval")) {
+        add(timedServiceFollowUp({
+          name: "the server token GC",
+          settings: ["tokenGcInterval", "tokenGcGracePeriod"],
+          get: () => serverTokenGcService ?? null,
+          set: (service) => serverTokenGcService = service ?? undefined,
+          build: () => {
+            const build = lateTimedServices.buildTokenGc;
+            if (!build) throw new Error("serve is still starting");
+            return build();
+          },
+          start: (service) => startWhenLeading(() => service.start()),
+          stop: (service) => service.dispose(),
+          closed,
+        }, startup.tokenGcSettings.intervalMs > 0));
+      }
+      if (applied.includes("continuationSweepInterval")) {
+        const intervalMs = startup.continuationSweepIntervalMs;
+        const running = continuationSweepService !== undefined;
+        // a sweep this datastore cannot start after boot is reported, not built
+        const startable = !continuationSweepBootPassOnly &&
+          lateTimedServices.decideSweepStart?.(intervalMs) === "start";
+        add(timedServiceFollowUp({
+          name: "the continuation sweep",
+          settings: ["continuationSweepInterval"],
+          get: () => continuationSweepService ?? null,
+          set: (service) => continuationSweepService = service ?? undefined,
+          build: () => {
+            const build = lateTimedServices.buildSweep;
+            if (!build) throw new Error("serve is still starting");
+            return build(true);
+          },
+          start: (service) => startWhenLeading(() => service.start()),
+          stop: (service) => service.dispose(),
+          closed,
+        }, intervalMs > 0 && (running || startable)));
+      }
+      if (applied.includes("webhookRoutesPoll")) {
+        const intervalMs = startup.webhookRoutesPollMs;
+        add(timedServiceFollowUp({
+          name: "the webhook routes poller",
+          settings: ["webhookRoutesPoll"],
+          get: () => webhookRoutesPoller,
+          set: (poller) => webhookRoutesPoller = poller,
+          build: () => {
+            if (intervalMs === undefined) {
+              throw new Error("the webhook routes poll is off");
+            }
+            return createWebhookRoutesPoller(intervalMs);
+          },
+          // every node polls, as at boot
+          start: (poller) => announceWebhookRoutesPoller(poller, intervalMs!),
+          stop: (poller) => poller.stop(),
+          closed,
+        }, intervalMs !== undefined));
+      }
+      return followUps;
+    };
     const settingsReloader = createServeSettingsReloader<
       ServeStartupSettings,
       ReloadPrepared
@@ -7914,64 +8081,34 @@ export const serveCommand = new Command()
         }
         return prepared;
       },
-      notRunning: ({ startup }) => {
-        const reasons: Partial<Record<keyof MergedServeOptions, string>> = {};
-        if (!scheduledExecution) {
-          reasons.triggerOverrides =
-            "no scheduler runs on this serve; restart serve with schedule on to change it";
-        }
-        const dataPollers = [
-          configPoller,
-          accessDataPoller,
-          integrationDataPoller,
-          delegationDataPoller,
-          runtimeDataPoller,
-        ];
-        if (dataPollers.every((poller) => poller === null)) {
-          reasons.datastorePollInterval =
-            "no datastore poller runs on this serve";
-        }
-        if (!reconciliationLoopRunning) {
-          reasons.reconciliationInterval =
-            "no reconciliation loop runs on this serve";
-        }
-        const startOrStop = (
-          running: boolean,
-          stays: boolean,
-          service: string,
-        ) =>
-          !running
-            ? `${service} is not running on this serve; restart serve to start it`
-            : !stays
-            ? `turning ${service} off needs a restart`
-            : undefined;
-        const sweep = continuationSweepReloadReason({
-          running: continuationSweepService !== undefined,
-          bootPassOnly: continuationSweepBootPassOnly,
-          staysOn: startup.continuationSweepIntervalMs > 0,
+      notRunning: ({ startup, merged: next }) => {
+        const reasons = timedServiceReloadReasons({
+          scheduling: {
+            running: scheduler.enabled(),
+            turnsOn: next.schedule,
+          },
+          dataPollers: [
+            configPoller,
+            accessDataPoller,
+            integrationDataPoller,
+            delegationDataPoller,
+            runtimeDataPoller,
+          ].some((poller) => poller !== null),
+          reconciliationLoop: reconciliationLoopRunning,
+          sweep: {
+            running: continuationSweepService !== undefined,
+            bootPassOnly: continuationSweepBootPassOnly,
+            staysOn: startup.continuationSweepIntervalMs > 0,
+            startDecision: lateTimedServices.decideSweepStart?.(
+              startup.continuationSweepIntervalMs,
+            ) ?? "serve_starting",
+          },
+          groupRefresh: {
+            running: collectiveRefreshService !== null,
+            staysOn: startup.groupRefreshMs > 0,
+            runnable: groupRefreshRunnable,
+          },
         });
-        if (sweep) reasons.continuationSweepInterval = sweep;
-        const tokenGc = startOrStop(
-          serverTokenGcService !== undefined,
-          startup.tokenGcSettings.intervalMs > 0,
-          "server token GC",
-        );
-        if (tokenGc) {
-          reasons.tokenGcInterval = tokenGc;
-          reasons.tokenGcGracePeriod = tokenGc;
-        }
-        const groupRefresh = startOrStop(
-          collectiveRefreshService !== null,
-          startup.groupRefreshMs > 0,
-          "group refresh",
-        );
-        if (groupRefresh) reasons.groupRefreshInterval = groupRefresh;
-        const routesPoll = startOrStop(
-          webhookRoutesPoller !== null,
-          startup.webhookRoutesPollMs !== undefined,
-          "the webhook routes poller",
-        );
-        if (routesPoll) reasons.webhookRoutesPoll = routesPoll;
         return { ...reasons, ...grantSettingsReload.notRunning(startup) };
       },
       pending: () => allowedUsersDeferred ? ["allowedUsers"] : [],
@@ -8075,20 +8212,36 @@ export const serveCommand = new Command()
         reconciliationInterval: ({ startup }) => {
           liveIntervals.reconciliationMs = startup.reconciliationIntervalMs ??
             60_000;
+          rearmReconciliation();
         },
+        // a service the reload turns on or off is started or stopped in a
+        // follow-up, which reads these intervals
+        // 0 keeps the old interval: a pass before the stop must not loop
         continuationSweepInterval: ({ startup }) => {
-          liveIntervals.continuationSweepMs =
-            startup.continuationSweepIntervalMs;
+          if (startup.continuationSweepIntervalMs > 0) {
+            liveIntervals.continuationSweepMs =
+              startup.continuationSweepIntervalMs;
+            continuationSweepService?.rearm();
+          }
         },
         tokenGcInterval: ({ startup }) => {
-          liveIntervals.tokenGcMs = startup.tokenGcSettings.intervalMs;
+          if (startup.tokenGcSettings.intervalMs > 0) {
+            liveIntervals.tokenGcMs = startup.tokenGcSettings.intervalMs;
+            serverTokenGcService?.rearm();
+          }
         },
         tokenGcGracePeriod: ({ startup }) => {
           liveIntervals.tokenGcGraceMs = startup.tokenGcSettings.gracePeriodMs;
         },
         groupRefreshInterval: ({ startup }) => {
-          liveIntervals.groupRefreshMs = startup.groupRefreshMs;
+          if (startup.groupRefreshMs > 0) {
+            liveIntervals.groupRefreshMs = startup.groupRefreshMs;
+            collectiveRefreshService?.rearm();
+          }
         },
+        schedule: appliedByReloadStage,
+        maxConcurrentScheduledRuns: ({ startup }) =>
+          scheduler.setMaxConcurrentRuns(startup.maxConcurrentScheduledRuns),
         webhookRoutesPoll: ({ startup }) => {
           if (startup.webhookRoutesPollMs !== undefined) {
             webhookRoutesPoller?.setIntervalMs(startup.webhookRoutesPollMs);
@@ -8191,8 +8344,13 @@ export const serveCommand = new Command()
           settings.map(settingName),
         );
       },
-      followUps: ({ startup }, prepared, applied) => {
+      followUps: ({ startup, merged: next }, prepared, applied) => {
         const followUps: ReloadFollowUp[] = [];
+        for (
+          const followUp of timedServiceFollowUps(startup, next, applied)
+        ) {
+          followUps.push(followUp);
+        }
         for (
           const followUp of grantSettingsReload.followUps(
             startup,
@@ -8270,9 +8428,10 @@ export const serveCommand = new Command()
     const buildServeReloadOptions = (
       webhookContext: WebhookApplyContext,
     ): ServeReloadOptions => ({
-      triggerOverrideUpdater: scheduledExecution
+      triggerOverrideUpdater: scheduler.current()
         ? (overrides: ReadonlyMap<string, TriggerOverride>) =>
-          scheduledExecution!.updateTriggerOverrides(overrides)
+          scheduler.current()?.updateTriggerOverrides(overrides) ??
+            Promise.resolve(0)
         : undefined,
       workflowReloader: connectionCtx.workflowReloader,
       extensionDiscoverer: createExtensionDiscoverer({
@@ -9020,9 +9179,12 @@ export const serveCommand = new Command()
               {
                 cancelRegistry,
                 activeRunRegistry,
-                scheduledCancelAll: scheduledExecution
-                  ? (r) => scheduledExecution.cancelAllRuns(r)
-                  : undefined,
+                scheduledCancelAll: (r) =>
+                  [scheduler.current(), ...scheduler.retiring()].reduce(
+                    (count, service) =>
+                      count + (service?.cancelAllRuns(r) ?? 0),
+                    0,
+                  ),
                 webhookCancelAll: (r) => webhookService.cancelAllRuns(r),
               },
               typeFilter as ExecutionType | undefined,
@@ -9579,7 +9741,7 @@ export const serveCommand = new Command()
       await stages.run("pending replay sweep", () => pendingReplaySweep.stop());
       const remaining = await runShutdownDrain({
         webhookService,
-        scheduledExecution,
+        scheduledExecution: scheduler,
         activeRunRegistry: activeRunRegistry ?? null,
         drainTimeoutMs: shutdownDrainTimeoutMs,
         abortGraceMs: SHUTDOWN_ABORT_GRACE_MS,
@@ -9896,10 +10058,6 @@ export const serveCommand = new Command()
       );
     }
 
-    const allWorkflows = await repoContext.workflowRepo.findAll();
-    const configuredCronWorkflows = new Set(
-      allWorkflows.filter((w) => w.schedule).map((w) => w.name),
-    );
     // only instances with a remote control plane write heartbeats
     const heartbeatStore = hasRemoteControlPlane
       ? controlPlaneStore
@@ -9927,11 +10085,12 @@ export const serveCommand = new Command()
       return await replayPendingRuns({
         runTracker,
         webhookService,
-        scheduledExecution: scheduledExecution ?? undefined,
+        scheduledExecution: scheduler.current() ?? undefined,
         controlPlaneStore: sweep ? sweepStore : controlPlaneStore,
         configuredWebhookWorkflows: webhookTargets.workflows,
         configuredWebhookRoutes: webhookTargets.routes,
         configuredCronWorkflows,
+        keepCronRuns: scheduler.ranScheduler(),
         ownerAlive: sweep ? sweepOwnerAlive : bootOwnerAlive,
         deferred,
         claimAs: pendingRunOwner,
@@ -9940,6 +10099,18 @@ export const serveCommand = new Command()
         readRemote,
       });
     };
+    replayOwnPendingCron = (service, createdBefore) =>
+      replayPendingRuns({
+        runTracker,
+        scheduledExecution: service,
+        controlPlaneStore,
+        configuredWebhookWorkflows: new Set(),
+        configuredWebhookRoutes: new Set(),
+        configuredCronWorkflows,
+        claimAs: pendingRunOwner,
+        ownCronOnly: true,
+        createdBefore,
+      });
     // the control plane is listed on one pass in 12, about once a minute
     let sweepPasses = 0;
     const replayLeftByPeers = async (): Promise<void> => {
@@ -9969,7 +10140,7 @@ export const serveCommand = new Command()
     if (!v3Follows) {
       await replayPendingAtLead();
       // after the replay, so a replayed run queues ahead of a catch-up
-      scheduledExecution?.startCatchUp();
+      scheduler.current()?.startCatchUp();
     }
 
     if (hasRemoteControlPlane) {
@@ -10067,18 +10238,28 @@ export const serveCommand = new Command()
           );
         }
       };
+      // undefined while a tick runs: it schedules the next one itself
+      let reconciliationTimer: ReturnType<typeof setTimeout> | undefined;
       const scheduleReconciliation = () => {
         const jitter = new Uint32Array(1);
         crypto.getRandomValues(jitter);
         const jitterMs = (jitter[0] / 0xFFFFFFFF) * RECONCILIATION_JITTER_MS;
         const timer = setTimeout(
-          () =>
+          () => {
+            reconciliationTimer = undefined;
             runReconciliationTick().catch(() => {}).finally(
               scheduleReconciliation,
-            ),
+            );
+          },
           liveIntervals.reconciliationMs + jitterMs,
         );
+        reconciliationTimer = timer;
         Deno.unrefTimer(timer);
+      };
+      rearmReconciliation = () => {
+        if (reconciliationTimer === undefined) return;
+        clearTimeout(reconciliationTimer);
+        scheduleReconciliation();
       };
       scheduleReconciliation();
       logger.info("Continuous reconciliation timer started");
@@ -10219,10 +10400,7 @@ export const serveCommand = new Command()
         },
         // as the leader, so its writes and fire claims are not refused, and
         // after the grant config, which authorizes the catch-up run
-        onLed: () => {
-          scheduledExecution?.startCatchUp();
-          return Promise.resolve();
-        },
+        onLed: () => scheduler.atLead(),
         // a node that lost the lead stops as a shutdown does, leaving queued
         // webhook runs pending for the leader and exiting 75 so its supervisor
         // restarts it as a follower; runs outside the leadership tick
@@ -10591,7 +10769,8 @@ export const serveCommand = new Command()
           "The token GC grace period (--token-gc-grace-period, SWAMP_TOKEN_GC_GRACE_PERIOD or token-gc-grace-period in serve.yaml) has no effect while the server token GC is disabled",
         );
       }
-    } else {
+    }
+    const buildServerTokenGc = async (): Promise<ServerTokenGcService> => {
       const tokenGcSync = syncService;
       const tokenGcDeps = createServerTokenGcDeps({
         intervalMs: tokenGcSettings.intervalMs,
@@ -10623,7 +10802,7 @@ export const serveCommand = new Command()
         withTokenLock: (name, fn) =>
           withServerTokenLock(datastoreConfig, name, fn),
       });
-      serverTokenGcService = new ServerTokenGcService({
+      return new ServerTokenGcService({
         ...tokenGcDeps,
         get intervalMs() {
           return liveIntervals.tokenGcMs;
@@ -10632,52 +10811,42 @@ export const serveCommand = new Command()
           return liveIntervals.tokenGcGraceMs;
         },
       });
-      startWhenLeading(() => serverTokenGcService!.start());
+    };
+    if (tokenGcSettings.intervalMs > 0) {
+      const service = await buildServerTokenGc();
+      serverTokenGcService = service;
+      startWhenLeading(() => service.start());
     }
 
     // continuation sweep: continues suspended runs that need no further
     // decision; it starts last, once the heartbeat is written and boot
     // reconciliation has settled runs a dead instance left running
-    const sweepStart = decideContinuationSweepStart({
-      intervalMs: continuationSweepIntervalMs,
-      syncedDatastore: isCustomDatastoreConfig(datastoreConfig) &&
-        v3Location === undefined,
-      sharedClaims: hasRemoteControlPlane &&
-        repoContext.continuationClaims !== undefined,
-      runRecordsCurrentAtBoot,
-    });
-    if (sweepStart === "disabled") {
-      logger.info(
-        "Continuation sweep disabled (continuation sweep interval is 0)",
-      );
-    } else if (sweepStart === "no_shared_claims") {
-      logger.info(
-        "Continuation sweep not started: this datastore has no shared control-plane store that can create a record atomically, so instances could not tell which of them resumed a run",
-      );
-    } else if (sweepStart === "records_not_current") {
-      logger.warn(
-        "Continuation sweep not started: the boot hydration did not complete, so this instance's run records may be out of date. Runs are still continued when a signal arrives here; restart to enable the sweep",
-      );
-    } else {
-      const synced = isCustomDatastoreConfig(datastoreConfig) &&
-        v3Location === undefined;
-      // after boot this instance's run records fall behind a synced datastore
-      // and nothing in a record says so, so later passes run only where each
-      // run can be compared with the remote first
-      const bootPassOnly = runRecordsSynced && !repoContext.runRecordCurrency;
-      continuationSweepBootPassOnly = bootPassOnly;
-      if (bootPassOnly) {
-        logger.info(
-          "Continuation sweep runs once, at boot: this datastore cannot be read without replacing this instance's run records, so later passes could resume a run from a copy that is out of date. Runs are still continued when a signal arrives here",
-        );
-      }
+    const sweepSynced = isCustomDatastoreConfig(datastoreConfig) &&
+      v3Location === undefined;
+    // after boot this instance's run records fall behind a synced datastore
+    // and nothing in a record says so, so later passes run only where each
+    // run can be compared with the remote first
+    const sweepBootPassOnly = runRecordsSynced &&
+      !repoContext.runRecordCurrency;
+    const decideSweepStart = (intervalMs: number) =>
+      decideContinuationSweepStart({
+        intervalMs,
+        syncedDatastore: sweepSynced,
+        sharedClaims: hasRemoteControlPlane &&
+          repoContext.continuationClaims !== undefined,
+        runRecordsCurrentAtBoot,
+      });
+    const buildContinuationSweep = (
+      afterBoot: boolean,
+    ): ContinuationSweepService => {
       // Built once, outside the pass: it remembers when it last swept.
       const sweepHeldSignalsWhenDue = heldSignalSweeper();
-      continuationSweepService = new ContinuationSweepService({
+      return new ContinuationSweepService({
         get intervalMs() {
           return liveIntervals.continuationSweepMs;
         },
-        bootPassOnly,
+        bootPassOnly: sweepBootPassOnly,
+        afterBoot,
         sweep: async ({ boot, isStopping, signal }) => {
           // A follower resumes nothing, since its commits would be refused;
           // checked by lease, not role, because a node taking the lead still
@@ -10692,7 +10861,7 @@ export const serveCommand = new Command()
           const result = await sweepContinuations(connectionCtx, {
             // A dead holder's claim is replaced only while the run records
             // are current: after boot they go stale on a synced datastore.
-            takeover: !synced || boot,
+            takeover: !sweepSynced || boot,
             isStopping,
             signal,
           });
@@ -10700,7 +10869,33 @@ export const serveCommand = new Command()
           return result;
         },
       });
-      startWhenLeading(() => continuationSweepService!.start());
+    };
+    continuationSweepBootPassOnly = sweepBootPassOnly;
+    lateTimedServices.decideSweepStart = decideSweepStart;
+    lateTimedServices.buildSweep = buildContinuationSweep;
+    lateTimedServices.buildTokenGc = buildServerTokenGc;
+    const sweepStart = decideSweepStart(continuationSweepIntervalMs);
+    if (sweepStart === "disabled") {
+      logger.info(
+        "Continuation sweep disabled (continuation sweep interval is 0)",
+      );
+    } else if (sweepStart === "no_shared_claims") {
+      logger.info(
+        "Continuation sweep not started: this datastore has no shared control-plane store that can create a record atomically, so instances could not tell which of them resumed a run",
+      );
+    } else if (sweepStart === "records_not_current") {
+      logger.warn(
+        "Continuation sweep not started: the boot hydration did not complete, so this instance's run records may be out of date. Runs are still continued when a signal arrives here; restart to enable the sweep",
+      );
+    } else {
+      if (sweepBootPassOnly) {
+        logger.info(
+          "Continuation sweep runs once, at boot: this datastore cannot be read without replacing this instance's run records, so later passes could resume a run from a copy that is out of date. Runs are still continued when a signal arrives here",
+        );
+      }
+      const service = buildContinuationSweep(false);
+      continuationSweepService = service;
+      startWhenLeading(() => service.start());
     }
 
     // a node starting as a follower enters rotation only once its copy holds

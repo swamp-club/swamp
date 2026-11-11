@@ -3281,3 +3281,108 @@ Deno.test("replayPendingRuns: a claim chain through more gone instances than the
     false,
   );
 });
+
+Deno.test("replayPendingRuns: with no scheduler, keepCronRuns leaves cron runs pending and still discards others", async () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-cron",
+      source: "cron",
+      workflowIdOrName: "nightly",
+      createdAt: "2026-01-01T00:00:00Z",
+      owner: { instanceId: "gone-peer", pid: 1 },
+    }, {
+      id: "pr-hook",
+      source: "webhook",
+      workflowIdOrName: "deploy",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    { hasCron: false, hasWebhook: false },
+  );
+  h.deps.keepCronRuns = true;
+  h.deps.claimAs = { instanceId: "me", pid: 2 };
+
+  assertEquals(await replayPendingRuns(h.deps), 0);
+  assertEquals(h.deleted, ["pr-hook"]);
+  assertEquals(h.claimed, [{
+    id: "pr-hook",
+    owner: { instanceId: "me", pid: 2 },
+  }]);
+});
+
+Deno.test("replayPendingRuns: a process that never ran a scheduler still discards cron runs", async () => {
+  const h = createReplayHarness(
+    [{
+      id: "pr-cron",
+      source: "cron",
+      workflowIdOrName: "nightly",
+      createdAt: "2026-01-01T00:00:00Z",
+    }],
+    { hasCron: false },
+  );
+
+  assertEquals(await replayPendingRuns(h.deps), 0);
+  assertEquals(h.deleted, ["pr-cron"]);
+});
+
+Deno.test("replayPendingRuns: ownCronOnly replays only the cron runs this process owns, without claiming them", async () => {
+  const me = { instanceId: "me", pid: 2 };
+  const h = createReplayHarness([
+    {
+      id: "pr-own-cron",
+      source: "cron",
+      workflowIdOrName: "nightly",
+      createdAt: "2026-01-01T00:00:00Z",
+      owner: me,
+    },
+    {
+      id: "pr-peer-cron",
+      source: "cron",
+      workflowIdOrName: "nightly",
+      createdAt: "2026-01-01T00:00:00Z",
+      owner: { instanceId: "peer", pid: 3 },
+    },
+    {
+      id: "pr-own-hook",
+      source: "webhook",
+      workflowIdOrName: "deploy",
+      createdAt: "2026-01-01T00:00:00Z",
+      owner: me,
+    },
+  ]);
+  h.deps.claimAs = me;
+  h.deps.ownCronOnly = true;
+  // claimed earlier from a peer, then dropped by a drain
+  h.deps.replayedRuns = new Set(["pr-own-cron"]);
+
+  assertEquals(await replayPendingRuns(h.deps), 1);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["pr-own-cron"]);
+  assertEquals(h.webhookReplays.length, 0);
+  assertEquals(h.claimed, []);
+  assertEquals(h.deleted, []);
+});
+
+Deno.test("replayPendingRuns: ownCronOnly with createdBefore leaves a run the live scheduler queued after the turn-on", async () => {
+  const me = { instanceId: "me", pid: 2 };
+  const h = createReplayHarness([
+    {
+      id: "pr-drained",
+      source: "cron",
+      workflowIdOrName: "nightly",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      owner: me,
+    },
+    {
+      id: "pr-fresh",
+      source: "cron",
+      workflowIdOrName: "nightly",
+      createdAt: "2026-01-01T00:05:00.000Z",
+      owner: me,
+    },
+  ]);
+  h.deps.claimAs = me;
+  h.deps.ownCronOnly = true;
+  h.deps.createdBefore = "2026-01-01T00:05:00.000Z";
+
+  assertEquals(await replayPendingRuns(h.deps), 1);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["pr-drained"]);
+});
