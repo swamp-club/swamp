@@ -594,7 +594,10 @@ Two more optional fields appear whether or not enrichment ran
 - `missing` (`absent` or `truncated`) and `missingFiles` mark an entry whose
   tracked source files are not on disk: nothing of it remains, or only some of
   its files do. Log mode shows `(absent on disk)` or `(truncated on disk)` on
-  the row and a footer naming `swamp extension install`. The classification is
+  the row and a footer naming `swamp extension install`. An absent entry the
+  auto-resolver reinstalls on next use also carries `installsOnNextUse: true`,
+  shows `(absent on disk, installed on next use)` and is left out of that
+  footer, matching doctor, which reports it as advisory. The classification is
   `findMissingPulledExtensions`
   (`src/infrastructure/persistence/installed_entries.ts`), the same one the
   startup warning and `doctor extensions` use.

@@ -193,7 +193,6 @@ export interface MissingPulledExtension {
   state: MissingPulledExtensionState;
   /** repo-relative, forward slashes */
   expectedPath: string;
-  /** the first MISSING_FILES_SAMPLE_SIZE missing files, forward slashes */
   missingFiles: string[];
   missingFileCount: number;
   autoResolved: boolean;

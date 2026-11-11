@@ -142,11 +142,15 @@ for (const variant of variants) {
       const report = await runDoctor(repoDir, lockfilePath, localLockfilePath);
       const listed = await runList(repoDir, lockfilePath, localLockfilePath);
 
-      const fromDoctor = report.missingExtensions.map((m) => [m.name, m.state]);
+      const fromDoctor = report.missingExtensions.map((m) => [
+        m.name,
+        m.state,
+        m.installsOnNextUse,
+      ]);
       const fromList = listed
         .filter((e) => e.missing !== undefined)
-        .map((e) => [e.name, e.missing]);
-      assertEquals(fromDoctor, [
+        .map((e) => [e.name, e.missing, e.installsOnNextUse === true]);
+      assertEquals(fromDoctor.map(([name, state]) => [name, state]), [
         ["@ex/absent", "absent"],
         ["@ex/truncated", "truncated"],
       ]);

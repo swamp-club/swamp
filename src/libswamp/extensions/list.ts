@@ -56,6 +56,8 @@ export interface ExtensionListEntry {
   /** present when tracked source files are not on disk */
   missing?: MissingPulledExtensionState;
   missingFiles?: string[];
+  /** the auto-resolver reinstalls it when one of its types is needed */
+  installsOnNextUse?: true;
 }
 
 export interface ExtensionListData {
@@ -74,7 +76,11 @@ export interface ExtensionListDeps {
   removeToReinstall?: (name: string) => string[];
   missingOnDisk?: ReadonlyMap<
     string,
-    { state: MissingPulledExtensionState; missingFiles: string[] }
+    {
+      state: MissingPulledExtensionState;
+      missingFiles: string[];
+      installsOnNextUse: boolean;
+    }
   >;
 }
 
@@ -122,6 +128,7 @@ export async function createExtensionListDeps(
       missing.map((m) => [m.name, {
         state: m.state,
         missingFiles: m.missingFiles,
+        installsOnNextUse: m.installsOnNextUse,
       }]),
     ),
   };
@@ -166,7 +173,13 @@ export async function* extensionList(
               }
               : {}),
             ...(missing
-              ? { missing: missing.state, missingFiles: missing.missingFiles }
+              ? {
+                missing: missing.state,
+                missingFiles: missing.missingFiles,
+                ...(missing.installsOnNextUse
+                  ? { installsOnNextUse: true as const }
+                  : {}),
+              }
               : {}),
           };
         })

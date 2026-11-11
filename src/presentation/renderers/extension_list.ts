@@ -126,7 +126,9 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             line += `  (on disk v${ext.onDiskVersion})`;
           }
           if (ext.missing) {
-            line += ext.missing === "absent"
+            line += ext.installsOnNextUse
+              ? "  (absent on disk, installed on next use)"
+              : ext.missing === "absent"
               ? "  (absent on disk)"
               : "  (truncated on disk)";
           }
@@ -153,7 +155,11 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             }
           }
         }
-        if (exts.some((ext) => ext.missing && !ext.autoResolved)) {
+        if (
+          exts.some((ext) =>
+            ext.missing && !ext.autoResolved && !ext.installsOnNextUse
+          )
+        ) {
           logger.warn("{line}", {
             line: "Pinned extensions marked absent or truncated are not " +
               "fully on disk. Run 'swamp extension install' to restore them.",

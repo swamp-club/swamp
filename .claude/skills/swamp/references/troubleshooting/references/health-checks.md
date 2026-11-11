@@ -248,8 +248,8 @@ the team lockfile). Entries with `installsOnNextUse: true` (`remedy: nextUse`)
 are advisory: the auto-resolver installs them when a command needs one of their
 types. A fresh clone without a managed config has every pinned extension absent,
 so run `swamp extension install` before `doctor extensions` in CI.
-`swamp extension list` marks the same entries `(absent on disk)` or
-`(truncated on disk)`.
+`swamp extension list` marks the same entries `(absent on disk)`,
+`(truncated on disk)` or `(absent on disk, installed on next use)`.
 
 For the deeper "extension not in type search" walkthrough (stderr inspection,
 source registration, `deno.json` discovery), see

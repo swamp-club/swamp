@@ -428,3 +428,64 @@ Deno.test("LogExtensionListRenderer - marks a pinned extension missing from disk
     lines.join("\n"),
   );
 });
+
+Deno.test("LogExtensionListRenderer - an entry installed on next use gets no install footer", async () => {
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({
+    _reset: true,
+    logLevel: "info",
+    _logsConfig: { exporterKind: "none" },
+  });
+  const lines: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+  };
+  const capture = (...args: unknown[]) => lines.push(args.join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  try {
+    const renderer = createExtensionListRenderer("log");
+    await consumeStream(
+      toStream([
+        { kind: "resolving" },
+        {
+          kind: "completed",
+          data: {
+            extensions: [
+              {
+                name: "@example/later",
+                version: "1.0.0",
+                pulledAt: "2026-01-01",
+                files: [],
+                missing: "absent",
+                missingFiles: [],
+                installsOnNextUse: true,
+              },
+            ],
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+  }
+  const row = lines.find((l) => l.includes("(pulled 2026-01-01)")) ?? "";
+  assertEquals(
+    row.includes("(absent on disk, installed on next use)"),
+    true,
+    row,
+  );
+  assertEquals(
+    lines.some((l) => l.includes("Run 'swamp extension install'")),
+    false,
+    lines.join("\n"),
+  );
+});

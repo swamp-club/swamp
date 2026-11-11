@@ -311,3 +311,32 @@ Deno.test("createExtensionListDeps marks a pinned entry whose files are not on d
     );
   });
 });
+
+Deno.test("createExtensionListDeps marks a shared entry gone from disk as installed on next use in a checkout with a transitional lockfile", async () => {
+  await withTempDir(async (dir) => {
+    const managed = join(dir, "cache", "upstream_extensions.json");
+    const local = join(dir, ".swamp", "config", "upstream_extensions.json");
+    await Deno.mkdir(join(dir, "cache"), { recursive: true });
+    const manifest = ".swamp/pulled-extensions/@ns/team/manifest.yaml";
+    await Deno.writeTextFile(
+      managed,
+      JSON.stringify({
+        "@ns/team": { version: "1", pulledAt: "x", files: [manifest] },
+      }),
+    );
+
+    const [withLocal] = await listed(
+      await createExtensionListDeps(dir, managed, local),
+    );
+    assertEquals(
+      [withLocal.missing, withLocal.installsOnNextUse],
+      ["absent", true],
+    );
+
+    const [withoutLocal] = await listed(
+      await createExtensionListDeps(dir, managed),
+    );
+    assertEquals(withoutLocal.missing, "absent");
+    assertEquals("installsOnNextUse" in withoutLocal, false);
+  });
+});

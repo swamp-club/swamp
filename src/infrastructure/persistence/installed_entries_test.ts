@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import {
   findMissingPulledExtensions,
   isAbsentFromDisk,
+  MISSING_FILES_SAMPLE_SIZE,
   pathsToRemoveForReinstall,
   readInstalledEntries,
   readInstalledEntriesWithRetry,
@@ -532,7 +533,7 @@ Deno.test("findMissingPulledExtensions: ignores bundle output, paths outside the
   }
 });
 
-Deno.test("findMissingPulledExtensions: samples the first three missing files and counts them all", async () => {
+Deno.test("findMissingPulledExtensions: samples the first missing files and counts them all", async () => {
   const repo = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const files = [1, 2, 3, 4, 5].map((n) => pulled("@a/many", `m${n}.ts`));
@@ -545,7 +546,7 @@ Deno.test("findMissingPulledExtensions: samples the first three missing files an
       undefined,
     );
 
-    assertEquals(found.missingFiles, files.slice(0, 3));
+    assertEquals(found.missingFiles, files.slice(0, MISSING_FILES_SAMPLE_SIZE));
     assertEquals(found.missingFileCount, 5);
   } finally {
     await removeTempDir(repo);
