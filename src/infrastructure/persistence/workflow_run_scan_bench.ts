@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { stringify as stringifyYaml } from "@std/yaml";
 import { ensureDir } from "@std/fs";
 import { dirname, join } from "@std/path";
 import { Job } from "../../domain/workflows/job.ts";
@@ -30,6 +29,7 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { createRepositoryContext } from "./repository_factory.ts";
+import { writeRunRecordYaml } from "./run_record_yaml.ts";
 import type { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 
 const SIZES = (Deno.args[0] ?? "2000,10000").split(",").map(Number);
@@ -91,7 +91,7 @@ async function seed(
     }
     await Deno.writeTextFile(
       path,
-      stringifyYaml(JSON.parse(JSON.stringify(run.toPersistedData()))),
+      writeRunRecordYaml(JSON.parse(JSON.stringify(run.toPersistedData()))),
     );
     const mtime = fresh ? new Date(now) : completedAt;
     await Deno.utime(path, mtime, mtime);

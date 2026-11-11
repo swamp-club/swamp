@@ -3754,6 +3754,14 @@ The run record is written to the datastore at
 datastore holds the record. The record's `logFile` names it relative to the
 repo.
 
+A run saves its whole record twice per step, so the writer is specialised
+rather than a general YAML dumper (`writeRunRecordYaml`): block style, strings
+plain only when no YAML 1.2 type or indicator can claim them, everything else a
+JSON string literal, with no folding, anchors or type guessing, always ending in
+a newline. Every reader parses records with `@std/yaml`, so a record written
+by the general dumper (older binaries) and one written by the specialised writer
+decode to the same data, in both directions.
+
 The record is first saved before the run's `started` event is yielded
 (`WorkflowExecutionService.run`), so a consumer that sees `started` can read
 the run by the id the event carries. `swamp workflow run --server --detach`

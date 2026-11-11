@@ -19,13 +19,14 @@
 
 import { ensureDir } from "@std/fs";
 import { basename, join, resolve } from "@std/path";
-import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { parse as parseYaml } from "@std/yaml";
 import {
   stageTyped,
   typedStagingActive,
   withChangeSignalled,
 } from "./unit_of_work_scope.ts";
 import { keyUnder, unlessUnpartitionable } from "./config_staging.ts";
+import { writeRunRecordYaml } from "./run_record_yaml.ts";
 import {
   unreadableRecordsUnder,
   warnUnreadableLeftOut,
@@ -1023,7 +1024,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         data.logFile = toRelativePath(this.repoDir, data.logFile);
       }
       const cleanData = JSON.parse(JSON.stringify(data));
-      const content = stringifyYaml(cleanData as Record<string, unknown>);
+      const content = writeRunRecordYaml(cleanData as Record<string, unknown>);
       // checked after every await above, any of which can outlast the wait of
       // the owner closing the fence
       if (fence?.isClosed(run.id)) {
