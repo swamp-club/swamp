@@ -25,19 +25,28 @@ import {
   assertRejects,
   assertThrows,
 } from "@std/assert";
-import { dirname, fromFileUrl, join } from "@std/path";
+import { dirname, fromFileUrl, join, relative, resolve } from "@std/path";
 import {
+  type BuildChild,
+  BuildRunner,
+  BUNDLE_DIR,
+  bundleArgs,
+  compileArgs,
+  inlinedNpmPackages,
+  npmExternals,
+  type PackageJson,
+  readWorkspaceConfigs,
+  requireNpmExternals,
+  requireRepoSources,
   restoreBuildState,
   runStampedBuild,
+  sourceMapIncludes,
   stampBuildInfo,
   VERSION_FILE,
 } from "./compile.ts";
 
-const buildInfoPath = join(
-  dirname(fromFileUrl(import.meta.url)),
-  "..",
-  VERSION_FILE,
-);
+const repoRoot = join(dirname(fromFileUrl(import.meta.url)), "..");
+const buildInfoPath = join(repoRoot, VERSION_FILE);
 
 const VERSION_LINE = /^export const VERSION = .*$/m;
 const GIT_SHA_LINE = /^export const GIT_SHA = .*$/m;
@@ -146,57 +155,535 @@ async function exists(path: string): Promise<boolean> {
   return await Deno.stat(path).then(() => true).catch(() => false);
 }
 
+interface BuildTree {
+  versionFile: string;
+  denoDir: string;
+  bundleDir: string;
+}
+
 async function withBuildTree(
-  run: (paths: { versionFile: string; denoDir: string }) => Promise<void>,
+  run: (paths: BuildTree) => Promise<void>,
 ): Promise<void> {
   const root = await Deno.makeTempDir({ prefix: "compile-restore-" });
   try {
     const versionFile = join(root, "build_info.ts");
     const denoDir = join(root, "resources", "deno");
+    const bundleDir = join(root, "build", "bundle");
     await Deno.writeTextFile(versionFile, 'export const GIT_SHA = "stamped";');
     await Deno.mkdir(denoDir, { recursive: true });
     await Deno.writeTextFile(join(denoDir, "version.txt"), "2.9.8");
-    await run({ versionFile, denoDir });
+    await Deno.mkdir(bundleDir, { recursive: true });
+    await Deno.writeTextFile(join(bundleDir, "main.js"), "");
+    await Deno.writeTextFile(join(bundleDir, "main.js.map"), "{}");
+    await run({ versionFile, denoDir, bundleDir });
   } finally {
     await Deno.remove(root, { recursive: true });
   }
 }
 
-Deno.test("restoreBuildState: rewrites the version file and removes the deno resources", async () => {
-  await withBuildTree(async ({ versionFile, denoDir }) => {
-    await restoreBuildState(versionFile, "original", denoDir);
+Deno.test("restoreBuildState: rewrites the version file and removes the deno resources and the bundle", async () => {
+  await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
+    await restoreBuildState(versionFile, "original", denoDir, bundleDir);
     assertEquals(await Deno.readTextFile(versionFile), "original");
     assertEquals(await exists(denoDir), false);
+    assertEquals(await exists(bundleDir), false);
   });
 });
 
 Deno.test("restoreBuildState: leaves the version file alone when nothing was stamped", async () => {
-  await withBuildTree(async ({ versionFile, denoDir }) => {
-    await restoreBuildState(versionFile, undefined, denoDir);
+  await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
+    await restoreBuildState(versionFile, undefined, denoDir, bundleDir);
     assertEquals(
       await Deno.readTextFile(versionFile),
       'export const GIT_SHA = "stamped";',
     );
     assertEquals(await exists(denoDir), false);
+    assertEquals(await exists(bundleDir), false);
   });
 });
 
 Deno.test("restoreBuildState: tolerates missing deno resources", async () => {
-  await withBuildTree(async ({ versionFile, denoDir }) => {
+  await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
     await Deno.remove(denoDir, { recursive: true });
-    await restoreBuildState(versionFile, "original", denoDir);
+    await restoreBuildState(versionFile, "original", denoDir, bundleDir);
     assertEquals(await Deno.readTextFile(versionFile), "original");
+    assertEquals(await exists(bundleDir), false);
   });
 });
 
-Deno.test("restoreBuildState: removes the deno resources when the version file write fails", async () => {
-  await withBuildTree(async ({ versionFile, denoDir }) => {
+Deno.test("restoreBuildState: tolerates a missing bundle directory", async () => {
+  await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
+    await Deno.remove(bundleDir, { recursive: true });
+    await restoreBuildState(versionFile, "original", denoDir, bundleDir);
+    assertEquals(await Deno.readTextFile(versionFile), "original");
+    assertEquals(await exists(denoDir), false);
+  });
+});
+
+Deno.test("restoreBuildState: leaves the bundle directory alone when no bundle was built", async () => {
+  await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
+    await restoreBuildState(versionFile, "original", denoDir, undefined);
+    assertEquals(await Deno.readTextFile(versionFile), "original");
+    assertEquals(await exists(denoDir), false);
+    assertEquals(await exists(join(bundleDir, "main.js")), true);
+  });
+});
+
+Deno.test("restoreBuildState: removes the deno resources and the bundle when the version file write fails", async () => {
+  await withBuildTree(async ({ versionFile, denoDir, bundleDir }) => {
     await Deno.remove(versionFile);
     await Deno.mkdir(versionFile);
     // the error class differs by platform, so only the rejection is asserted
     await assertRejects(() =>
-      restoreBuildState(versionFile, "original", denoDir)
+      restoreBuildState(versionFile, "original", denoDir, bundleDir)
     );
     assertEquals(await exists(denoDir), false);
+    assertEquals(await exists(bundleDir), false);
   });
+});
+
+// the build writes both directories before the failing step, as a real
+// bundle or compile failure leaves them
+function stampedBuildOver(
+  tree: BuildTree,
+  failingStep: () => Promise<boolean>,
+) {
+  const original = 'export const GIT_SHA = "";';
+  return {
+    original,
+    steps: {
+      stamp: () => Deno.writeTextFile(tree.versionFile, "stamped"),
+      build: async () => {
+        await Deno.mkdir(tree.denoDir, { recursive: true });
+        await Deno.mkdir(tree.bundleDir, { recursive: true });
+        await Deno.writeTextFile(join(tree.bundleDir, "chunk.js"), "");
+        return await failingStep();
+      },
+      restore: () =>
+        restoreBuildState(
+          tree.versionFile,
+          original,
+          tree.denoDir,
+          tree.bundleDir,
+        ),
+    },
+  };
+}
+
+Deno.test("runStampedBuild: a failing bundle step restores the stamp and removes both directories", async () => {
+  await withBuildTree(async (tree) => {
+    const { original, steps } = stampedBuildOver(
+      tree,
+      () => Promise.resolve(false),
+    );
+    await Deno.writeTextFile(tree.versionFile, original);
+    assertEquals(await runStampedBuild(steps), false);
+    assertEquals(await Deno.readTextFile(tree.versionFile), original);
+    assertEquals(await exists(tree.denoDir), false);
+    assertEquals(await exists(tree.bundleDir), false);
+  });
+});
+
+Deno.test("runStampedBuild: a throwing compile step restores the stamp and removes both directories", async () => {
+  await withBuildTree(async (tree) => {
+    const { original, steps } = stampedBuildOver(
+      tree,
+      () => Promise.reject(new Error("compile failed")),
+    );
+    await Deno.writeTextFile(tree.versionFile, original);
+    await assertRejects(() => runStampedBuild(steps), Error, "compile failed");
+    assertEquals(await Deno.readTextFile(tree.versionFile), original);
+    assertEquals(await exists(tree.denoDir), false);
+    assertEquals(await exists(tree.bundleDir), false);
+  });
+});
+
+Deno.test("npmExternals: collects npm import names across configs, sorted and de-duplicated", () => {
+  assertEquals(
+    npmExternals([
+      {
+        imports: {
+          "zod": "npm:zod@^4.6.7",
+          "@std/path": "jsr:@std/path@^1.1.4",
+          "react/jsx-runtime": "npm:react@^19.2.5/jsx-runtime",
+          "local": "./src/local.ts",
+        },
+        workspace: ["packages/a"],
+      },
+      { imports: { "zod": "npm:zod@^4.6.7", "cel-js": "npm:cel-js@7" } },
+      {},
+    ]),
+    ["cel-js", "react/jsx-runtime", "zod"],
+  );
+});
+
+Deno.test("npmExternals: treats every package.json dependency as external", () => {
+  assertEquals(
+    npmExternals([
+      { imports: { "zod": "npm:zod@4" } },
+      {
+        dependencies: { "d3-force": "^3.0.0" },
+        devDependencies: { "vite": "^6.0.0" },
+        optionalDependencies: { "fsevents": "^2.3.3" },
+        peerDependencies: { "react": "^19.0.0" },
+      },
+    ]),
+    ["d3-force", "fsevents", "react", "vite", "zod"],
+  );
+});
+
+Deno.test("npmExternals: reads npm mappings under scopes", () => {
+  assertEquals(
+    npmExternals([{
+      imports: { "zod": "npm:zod@4" },
+      scopes: {
+        "./vendor/": { "yaml": "npm:yaml@2", "local": "./local.ts" },
+      },
+    }]),
+    ["yaml", "zod"],
+  );
+});
+
+Deno.test("npmExternals: ignores a package.json imports field that holds condition objects", () => {
+  const pkg = {
+    imports: { "#dep": { node: "dep-node", default: "./dep.js" } },
+    dependencies: { "d3-force": "^3" },
+  } as unknown as PackageJson;
+  assertEquals(npmExternals([pkg]), ["d3-force"]);
+});
+
+Deno.test("readWorkspaceConfigs: reads deno.jsonc and package.json members and expands glob entries", async () => {
+  const root = await Deno.makeTempDir({ prefix: "compile-workspace-" });
+  try {
+    const write = async (path: string, text: string) => {
+      await Deno.mkdir(dirname(join(root, path)), { recursive: true });
+      await Deno.writeTextFile(join(root, path), text);
+    };
+    await write(
+      "deno.json",
+      JSON.stringify({
+        workspace: ["packages/*", "explicit"],
+        imports: { "zod": "npm:zod@4" },
+      }),
+    );
+    await write(
+      "packages/a/deno.jsonc",
+      '// comment\n{ "imports": { "ink": "npm:ink@6" } }',
+    );
+    await write(
+      "packages/b/package.json",
+      JSON.stringify({ dependencies: { "d3-force": "^3" } }),
+    );
+    await write(
+      "explicit/deno.json",
+      JSON.stringify({ imports: { "yaml": "npm:yaml@2" } }),
+    );
+    const { configs, paths } = await readWorkspaceConfigs(root);
+    assertEquals(npmExternals(configs), ["d3-force", "ink", "yaml", "zod"]);
+    assertEquals(paths.length, 4);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("readWorkspaceConfigs: refuses a root without a deno.json or deno.jsonc", async () => {
+  const root = await Deno.makeTempDir({ prefix: "compile-workspace-" });
+  try {
+    await assertRejects(() => readWorkspaceConfigs(root), Error, "No deno.json");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("inlinedNpmPackages: names packages from the npm cache of any registry and from node_modules", () => {
+  const home = resolve("home");
+  const bundleDir = join(resolve("repo"), "build", "bundle");
+  const npmCache = join(home, ".cache", "deno", "npm");
+  const from = (first: string, ...rest: string[]) =>
+    relative(bundleDir, join(first, ...rest));
+  assertEquals(
+    inlinedNpmPackages([
+      from(resolve("repo"), "src", "cli", "mod.ts"),
+      from(resolve("repo"), "src", "npm", "registry", "pkg", "x.ts"),
+      from(home, ".cache", "deno", "remote", "https", "jsr.io", "@std", "a.ts"),
+      from(npmCache, "registry.npmjs.org", "emojilib", "2.4.0", "index.js"),
+      from(npmCache, "npm.example.com", "@scope", "pkg", "1.0.0", "a.js"),
+      from(npmCache, "localhost_4873", "yaml", "2.9.0", "index.js"),
+      from(npmCache, "..odd-host", "croner", "9.1.0", "index.js"),
+      from(
+        resolve("repo"),
+        "node_modules",
+        ".deno",
+        "zod@4.6.7",
+        "node_modules",
+        "zod",
+        "index.js",
+      ),
+    ], { bundleDir, npmCache }),
+    ["@scope/pkg", "croner", "emojilib", "yaml", "zod"],
+  );
+});
+
+Deno.test("requireRepoSources: accepts maps whose sources resolve inside the repo", () => {
+  const root = resolve("repo");
+  const bundleDir = join(root, "build", "bundle");
+  requireRepoSources(
+    [relative(bundleDir, join(root, "src", "cli", "mod.ts"))],
+    { bundleDir, root },
+  );
+});
+
+Deno.test("requireRepoSources: refuses maps whose sources are URLs or specifiers", () => {
+  const root = resolve("repo");
+  const bundleDir = join(root, "build", "bundle");
+  assertThrows(
+    () =>
+      requireRepoSources(
+        [
+          "npm:zod@4/index.js",
+          "file:///repo/src/cli/mod.ts",
+          relative(bundleDir, resolve("elsewhere", "a")),
+        ],
+        { bundleDir, root },
+      ),
+    Error,
+    "inlined npm packages cannot run",
+  );
+  assertThrows(() => requireRepoSources([], { bundleDir, root }), Error);
+});
+
+Deno.test("requireNpmExternals: refuses an empty list and names the configs read", () => {
+  assertThrows(
+    () =>
+      requireNpmExternals({
+        configs: [{ imports: { "@std/path": "jsr:@std/path@1" } }],
+        paths: ["/repo/deno.json"],
+      }),
+    Error,
+    "/repo/deno.json",
+  );
+});
+
+Deno.test("readWorkspaceConfigs: the repo's workspace configs yield the npm externals", async () => {
+  const externals = requireNpmExternals(await readWorkspaceConfigs(repoRoot));
+  for (const name of ["zod", "ink", "react/jsx-runtime", "d3-force"]) {
+    assertEquals(externals.includes(name), true, `${name} is not external`);
+  }
+});
+
+Deno.test("bundleArgs: bundles main.ts with code splitting, kept names and linked maps", () => {
+  assertEquals(bundleArgs("out", ["ink", "zod"]), [
+    "bundle",
+    "--platform",
+    "deno",
+    "--format",
+    "esm",
+    "--code-splitting",
+    "--keep-names",
+    "--sourcemap=linked",
+    "--outdir",
+    "out",
+    "--external=ink",
+    "--external=zod",
+    "main.ts",
+  ]);
+});
+
+Deno.test("sourceMapIncludes: includes only the map files, in sorted order", () => {
+  assertEquals(
+    sourceMapIncludes("out", [
+      "main.js",
+      "main.js.map",
+      "chunk-B.js.map",
+      "chunk-B.js",
+      "chunk-A.js.map",
+    ]),
+    [
+      "--include",
+      join("out", "chunk-A.js.map"),
+      "--include",
+      join("out", "chunk-B.js.map"),
+      "--include",
+      join("out", "main.js.map"),
+    ],
+  );
+});
+
+const UNBUNDLED_ARGS = [
+  "compile",
+  "--unstable-bundle",
+  "--unstable-net",
+  "--exclude-unused-npm",
+  "--allow-read",
+  "--allow-write",
+  "--allow-env",
+  "--allow-run",
+  "--allow-sys",
+  "--allow-net",
+  "--allow-ffi",
+  "--include",
+  ".claude/skills",
+  "--include",
+  "resources/deno",
+  "--include",
+  "packages/dashboard/dist",
+  "--exclude",
+  "agent-constraints",
+  "--exclude",
+  ".agents",
+  "--exclude",
+  ".claude/skills/ddd",
+  "--exclude",
+  ".claude/skills/github-pr",
+  "--exclude",
+  ".claude/skills/jujutsu",
+  "--exclude",
+  ".claude/skills/issue-lifecycle",
+  "--exclude",
+  ".claude/skills/skill-creator",
+  "--exclude",
+  ".claude/skills/terminal-output",
+  "--exclude",
+  ".github",
+  "--exclude",
+  ".vault-test-vault",
+  "--exclude",
+  "design",
+  "--exclude",
+  "evals",
+  "--exclude",
+  "integration",
+  "--exclude",
+  "scripts",
+  "--exclude",
+  "verification",
+  "--exclude",
+  "workflows",
+  "--target",
+  "x86_64-unknown-linux-gnu",
+  "--output",
+  "dist/swamp",
+  "main.ts",
+];
+
+Deno.test("compileArgs: the unbundled build compiles main.ts with the release flags", () => {
+  assertEquals(
+    compileArgs(
+      { output: "dist/swamp", target: "x86_64-unknown-linux-gnu" },
+      { entry: "main.ts", dashboardDistExists: true, extraIncludes: [] },
+    ),
+    UNBUNDLED_ARGS,
+  );
+});
+
+Deno.test("compileArgs: leaves the dashboard out when it was not built, and omits --target", () => {
+  const args = compileArgs(
+    { output: "swamp" },
+    { entry: "main.ts", dashboardDistExists: false, extraIncludes: [] },
+  );
+  assertEquals(args.includes("packages/dashboard/dist"), false);
+  assertEquals(args.includes("--target"), false);
+  assertEquals(args.slice(-3), ["--output", "swamp", "main.ts"]);
+});
+
+Deno.test("compileArgs: the bundled build compiles the bundle entry and includes its maps", () => {
+  const entry = join(BUNDLE_DIR, "main.js");
+  const mapInclude = ["--include", join(BUNDLE_DIR, "main.js.map")];
+  const args = compileArgs(
+    { output: "swamp" },
+    { entry, dashboardDistExists: false, extraIncludes: mapInclude },
+  );
+  assertEquals(args.at(-1), entry);
+  const at = args.indexOf(join(BUNDLE_DIR, "main.js.map"));
+  assertEquals(args[at - 1], "--include");
+  // no --exclude may cover the bundle output
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--exclude") {
+      assertEquals(BUNDLE_DIR.startsWith(args[i + 1]), false, args[i + 1]);
+    }
+  }
+});
+
+function fakeChild(): BuildChild & {
+  finish(success: boolean): void;
+  kills: number;
+} {
+  let resolveStatus: (status: { success: boolean }) => void = () => {};
+  const child = {
+    status: new Promise<{ success: boolean }>((resolve) => {
+      resolveStatus = resolve;
+    }),
+    kills: 0,
+    kill() {
+      child.kills++;
+      resolveStatus({ success: false });
+    },
+    finish(success: boolean) {
+      resolveStatus({ success });
+    },
+  };
+  return child;
+}
+
+Deno.test("BuildRunner: reports the child's result and the directory it ran in", async () => {
+  const spawned: { args: readonly string[]; cwd: string }[] = [];
+  const child = fakeChild();
+  const runner = new BuildRunner((args, cwd) => {
+    spawned.push({ args, cwd });
+    return child;
+  });
+  const running = runner.run(["compile"], "/repo");
+  child.finish(true);
+  assertEquals(await running, true);
+  assertEquals(spawned, [{ args: ["compile"], cwd: "/repo" }]);
+  assertEquals(runner.interrupted, false);
+});
+
+Deno.test("BuildRunner: an interrupt stops the running child and fails the step", async () => {
+  const child = fakeChild();
+  const runner = new BuildRunner(() => child);
+  const running = runner.run(["bundle"], "/repo");
+  runner.interrupt();
+  assertEquals(await running, false);
+  assertEquals(child.kills, 1);
+  assertEquals(runner.interrupted, true);
+});
+
+Deno.test("BuildRunner: a child that succeeds after an interrupt still fails the step", async () => {
+  const child = fakeChild();
+  child.kill = () => {};
+  const runner = new BuildRunner(() => child);
+  const running = runner.run(["compile"], "/repo");
+  runner.interrupt();
+  child.finish(true);
+  assertEquals(await running, false);
+});
+
+Deno.test("BuildRunner: after an interrupt no further step spawns", async () => {
+  let spawns = 0;
+  const runner = new BuildRunner(() => {
+    spawns++;
+    return fakeChild();
+  });
+  runner.interrupt();
+  assertEquals(await runner.run(["compile"], "/repo"), false);
+  assertEquals(spawns, 0);
+});
+
+Deno.test("BuildRunner: an interrupt tolerates a child that has already exited", async () => {
+  const child = fakeChild();
+  child.kill = () => {
+    throw new Error("process already exited");
+  };
+  const runner = new BuildRunner(() => child);
+  const running = runner.run(["compile"], "/repo");
+  runner.interrupt();
+  child.finish(true);
+  assertEquals(await running, false);
+});
+
+Deno.test("BuildRunner: interrupt reports whether the build was already interrupted", () => {
+  const runner = new BuildRunner(() => fakeChild());
+  assertEquals(runner.interrupt(), false);
+  assertEquals(runner.interrupt(), true);
 });

@@ -87,9 +87,11 @@ workflows exit 127.
 
 `deno run compile` stamps the git SHA into
 `src/infrastructure/runtime/build_info.ts` and restores it, and removes
-`resources/deno`, whether the build passes or fails. A build that is interrupted
-(Ctrl-C or killed) can still leave the stamp; run `git diff` on that file and
-restore only the stamp before reporting a clean tree or retrying.
+`resources/deno` (and `build/bundle` with `--bundle`), whether the build passes
+or fails, and on Ctrl-C, SIGTERM or SIGHUP. A build killed outright (SIGKILL, or
+a second Ctrl-C to force-quit) can still leave the stamp and those directories;
+run `git diff` on that file and restore only the stamp before reporting a clean
+tree or retrying.
 
 During development, use these commands for quick feedback:
 
