@@ -99,6 +99,8 @@ export interface ActionFailureBody {
   readonly pending?: unknown;
   readonly lastWait?: unknown;
   readonly errors?: unknown;
+  // the gate a refused resume waits on
+  readonly gate?: { readonly job: string; readonly step: string };
 }
 
 export const HTTP_ACTION_ROUTE_CODES = [

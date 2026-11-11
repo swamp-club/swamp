@@ -77,6 +77,8 @@ export type ResumeOutcome =
   | { kind: "replayed"; runId: string; workflowName: string }
   | { kind: "not_suspended" }
   | { kind: "not_resumable"; message: string }
+  // decide this gate rather than resume; an older serve names no gate
+  | { kind: "awaiting_approval"; gate?: { job: string; step: string } }
   | Refused
   | { kind: "not_found" }
   | OutcomeUnknown;
@@ -134,6 +136,7 @@ export const ACTION_OUTCOME_CODES = [
   "idempotency_conflict",
   "run_not_suspended",
   "run_not_resumable",
+  "awaiting_approval",
   "already_decided",
   "gate_closed",
   "gate_not_open",
@@ -211,6 +214,12 @@ export class SwampActionClient {
     if (reply.code === "run_not_suspended") return { kind: "not_suspended" };
     if (reply.code === "run_not_resumable") {
       return { kind: "not_resumable", message: messageOf(reply) };
+    }
+    if (reply.code === "awaiting_approval") {
+      const gate = gateOf(reply);
+      return gate
+        ? { kind: "awaiting_approval", gate }
+        : { kind: "awaiting_approval" };
     }
     return common(reply) as ResumeOutcome ??
       thrown(reply, "workflow.resume");
@@ -367,6 +376,15 @@ export class SwampActionClient {
   [Symbol.for("nodejs.util.inspect.custom")](): string {
     return "SwampActionClient { token: [redacted] }";
   }
+}
+
+function gateOf(
+  reply: HttpReply,
+): { job: string; step: string } | undefined {
+  const gate = reply.body.gate as Record<string, unknown> | undefined;
+  return typeof gate?.job === "string" && typeof gate?.step === "string"
+    ? { job: gate.job, step: gate.step }
+    : undefined;
 }
 
 function messageOf(reply: HttpReply): string {

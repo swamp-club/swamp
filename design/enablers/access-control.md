@@ -2022,7 +2022,10 @@ resume still records the run's principal. Only the person who started the run,
 or an access admin, may add inputs on resume: inputs are write-once and later
 continuations act on them with the starter's access, so anyone else sending
 inputs is refused (`resumeRefusal: inputs_refused`, 403 `resume_inputs_refused`
-on the action route) before anything runs. A delegated caller counts as the
+on the action route) before anything runs. A resume of a run still waiting at
+an approval gate is refused the same way (`resumeRefusal: awaiting_approval`,
+409 `awaiting_approval` with the gate's job and step), since only a decision
+moves it on. A delegated caller counts as the
 person, and an admin acting through an integration is not an admin here.
 Serve's own continuations (after an approval or a signal, by the sweep, and of
 a parent after its child) add no inputs and stay held to the run's principal

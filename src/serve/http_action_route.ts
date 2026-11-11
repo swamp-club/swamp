@@ -114,6 +114,55 @@ async function withDeadline<T>(
   }
 }
 
+// a caller retries these by design, so each one is not worth an info line
+const RETRIED_CODES: ReadonlySet<string> = new Set([
+  "rate_limited",
+  "still_working",
+  "busy",
+  "too_many_runs",
+  "not_ready",
+  "shutting_down",
+  "not_leader",
+  "outcome_unknown",
+]);
+
+interface RefusalContext {
+  type?: string;
+  requestId?: string;
+  principal?: string;
+  code?: string;
+  // the leader that answered a forwarded request logs it
+  forwarded?: boolean;
+}
+
+async function refusalCode(response: Response): Promise<string> {
+  try {
+    const body = await response.clone().json();
+    return typeof body?.code === "string" ? body.code : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function logRefusal(
+  response: Response,
+  seen: RefusalContext,
+): Promise<void> {
+  // the message is left out: a handler's text may name resources
+  const code = seen.code ?? await refusalCode(response);
+  const fields = {
+    type: seen.type ?? "unknown",
+    status: response.status,
+    code,
+    requestId: seen.requestId ?? "none",
+    principal: seen.principal ?? "unauthenticated",
+  };
+  const message =
+    "Action {type} refused {status} {code} (request {requestId}, {principal})";
+  if (RETRIED_CODES.has(code)) logger.debug(message, fields);
+  else logger.info(message, fields);
+}
+
 /** a leader too old to have this route answers plain text, not our JSON */
 function leaderLacksRoute(response: Response): boolean {
   return response.status === 404 &&
@@ -125,6 +174,7 @@ async function forwardedReply(
   type: string,
   ctx: ConnectionContext,
   deadlineMs: number,
+  seen: RefusalContext,
 ): Promise<Response> {
   const settled = await withDeadline(forwarding, deadlineMs);
   if (settled === "deadline") {
@@ -151,6 +201,7 @@ async function forwardedReply(
       await barrier;
     }
   }
+  seen.forwarded = true;
   return settled;
 }
 
@@ -159,6 +210,20 @@ export async function handleHttpActionRequest(
   req: Request,
   sourceIp: string,
   deps: HttpActionRouteDeps,
+): Promise<Response> {
+  const seen: RefusalContext = {};
+  const response = await answerActionRequest(req, sourceIp, deps, seen);
+  if (response.status >= 400 && !seen.forwarded) {
+    await logRefusal(response, seen);
+  }
+  return response;
+}
+
+async function answerActionRequest(
+  req: Request,
+  sourceIp: string,
+  deps: HttpActionRouteDeps,
+  seen: RefusalContext,
 ): Promise<Response> {
   if (req.method !== "POST") {
     return Response.json(
@@ -174,6 +239,7 @@ export async function handleHttpActionRequest(
     limitPrincipalRate: true,
   });
   if (caller instanceof Response) return caller;
+  if (caller.token !== undefined) seen.principal = caller.principal;
 
   if (!hasJsonContentType(req)) {
     return httpFailure(
@@ -214,6 +280,8 @@ export async function handleHttpActionRequest(
       )
       : httpFailure(400, "invalid_request", parsed.message);
   }
+  seen.type = parsed.type;
+  seen.requestId = parsed.requestId;
 
   const slot = caller.token === undefined
     ? `anonymous:${sourceIp}`
@@ -229,7 +297,13 @@ export async function handleHttpActionRequest(
   });
   if (forwarding !== undefined) {
     try {
-      return await forwardedReply(forwarding, parsed.type, ctx, deadlineMs);
+      return await forwardedReply(
+        forwarding,
+        parsed.type,
+        ctx,
+        deadlineMs,
+        seen,
+      );
     } finally {
       releaseCaller(slot);
     }
@@ -314,10 +388,17 @@ export async function handleHttpActionRequest(
       body: bytes,
     });
     try {
-      return await forwardedReply(forwarded, parsed.type, ctx, deadlineMs);
+      return await forwardedReply(
+        forwarded,
+        parsed.type,
+        ctx,
+        deadlineMs,
+        seen,
+      );
     } finally {
       release();
     }
   }
+  seen.code = String(settled.body.code ?? "unknown");
   return responseFor(settled, release);
 }

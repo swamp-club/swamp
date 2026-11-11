@@ -185,6 +185,13 @@ Deno.test("actionFailure: pinned codes and statuses", () => {
     ],
     [
       "workflow.resume",
+      "workflow_resume_failed",
+      { resumeRefusal: "awaiting_approval" },
+      409,
+      "awaiting_approval",
+    ],
+    [
+      "workflow.resume",
       "run_not_suspended",
       undefined,
       409,
@@ -295,6 +302,30 @@ Deno.test("actionFailure: a fixed reply is its code, its fixed text and the requ
     assertEquals(Object.keys(body).sort(), ["code", "message", "requestId"]);
     assertEquals(String(body.message).includes("/home/secret"), false);
   }
+});
+
+Deno.test("actionFailure: a resume waiting at a gate names only the gate's job and step", () => {
+  const { body } = failure("workflow.resume", "workflow_resume_failed", {
+    resumeRefusal: "awaiting_approval",
+    gate: { job: "main", step: "gate", secret: "x" },
+  });
+  assertEquals(body.code, "awaiting_approval");
+  assertEquals(body.gate, { job: "main", step: "gate" });
+
+  for (
+    const gate of [undefined, { job: "main" }, { job: 1, step: "gate" }, "x"]
+  ) {
+    const { body } = failure("workflow.resume", "workflow_resume_failed", {
+      resumeRefusal: "awaiting_approval",
+      gate,
+    });
+    assertEquals(Object.keys(body).sort(), ["code", "message", "requestId"]);
+  }
+  const other = failure("workflow.resume", "workflow_resume_failed", {
+    resumeRefusal: "refused",
+    gate: { job: "main", step: "gate" },
+  });
+  assertEquals(other.body.gate, undefined);
 });
 
 Deno.test("actionFailure: a refused caller and a missing run read the same", () => {

@@ -169,6 +169,7 @@ import {
 } from "../remote/fan_out.ts";
 import { checkResumeInputOverrides } from "./resume_input_guard.ts";
 import {
+  ApprovalPendingError,
   FROM_JOB_WITHOUT_FROM,
   nextActionForStatus,
   RunNotSuspendedError,
@@ -4495,12 +4496,7 @@ export class WorkflowExecutionService {
     } else {
       checkSuspendedRunResume(workflow, existingRun);
       const waiting = existingRun.findWaitingApprovalStep();
-      if (waiting) {
-        throw new UserError(
-          `Step "${waiting.stepName}" in job "${waiting.jobName}" is still awaiting approval. ` +
-            `Run "swamp workflow approve ${workflowIdOrName} ${waiting.stepName}" first.`,
-        );
-      }
+      if (waiting) throw new ApprovalPendingError(workflowIdOrName, waiting);
       // The owner saves the record as suspended before the level it
       // suspended in has drained, and keeps saving it without the claim
       // until then. Taking the run over now would be saved over.

@@ -47,6 +47,25 @@ export class RunNotSuspendedError extends UserError {
   }
 }
 
+/** a decision is what moves this run on, so a resume is refused until one is made */
+export class ApprovalPendingError extends UserError {
+  readonly jobName: string;
+  readonly stepName: string;
+
+  constructor(
+    workflowIdOrName: string,
+    gate: { jobName: string; stepName: string },
+  ) {
+    super(
+      `Step "${gate.stepName}" in job "${gate.jobName}" is still awaiting approval. ` +
+        `Run "swamp workflow approve ${workflowIdOrName} ${gate.stepName}" first.`,
+    );
+    this.name = "ApprovalPendingError";
+    this.jobName = gate.jobName;
+    this.stepName = gate.stepName;
+  }
+}
+
 /** nothing to act on, told apart from a run that refuses the operation */
 export class SuspendedRunNotFoundError extends UserError {
   constructor(message: string) {

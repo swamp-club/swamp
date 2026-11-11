@@ -166,6 +166,27 @@ Deno.test("SwampActionClient.resume: started, not suspended and not resumable", 
   assertEquals((await client.resume(payload)).kind, "not_resumable");
 });
 
+Deno.test("SwampActionClient.resume: a run waiting at its gate names the gate to decide", async () => {
+  const { client } = actions([
+    {
+      status: 409,
+      body: {
+        code: "awaiting_approval",
+        message: "m",
+        requestId: "q",
+        gate: { job: "main", step: "approve" },
+      },
+    },
+    failure(409, "awaiting_approval"),
+  ]);
+  const payload = { workflowIdOrName: "deploy", runId: RUN_ID };
+  assertEquals(await client.resume(payload), {
+    kind: "awaiting_approval",
+    gate: { job: "main", step: "approve" },
+  });
+  assertEquals(await client.resume(payload), { kind: "awaiting_approval" });
+});
+
 Deno.test("SwampActionClient.signal: delivered, pending, accepted, an invalid payload and a settled wait", async () => {
   const receipt = { id: "s", receivedAt: "t", submittedBy: "user:pat" };
   const { client } = actions([
