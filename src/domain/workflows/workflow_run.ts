@@ -1220,6 +1220,10 @@ export class JobRun implements TriggerEvaluationContext {
   skipEmptyExpansion(templateName: string): boolean {
     let template = this.getStep(templateName);
     if (!template) {
+      // iterations left from an earlier expansion settle the step themselves
+      if (this._steps.some((s) => s.forEachTemplate === templateName)) {
+        return false;
+      }
       template = StepRun.pending(templateName);
       this._steps.push(template);
     }

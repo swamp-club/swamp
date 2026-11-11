@@ -276,7 +276,9 @@ export class DefaultWorkflowValidationService
 
     results.push(...this.validateGuardExpressionTypes(workflow));
 
-    results.push(...this.validateForEachSameJobDataReads(workflow));
+    for (const result of this.validateForEachSameJobDataReads(workflow)) {
+      results.push(result);
+    }
 
     results.push(...this.validateWritesPlacement(workflow));
 
@@ -1487,15 +1489,17 @@ export class DefaultWorkflowValidationService
 
         const upstream: string[] = [];
         const seen = new Set<string>([step.name]);
-        const pending = [...step.getDependencyNames()];
-        while (pending.length > 0) {
-          const name = pending.shift()!;
+        const pending = step.getDependencyNames();
+        for (let i = 0; i < pending.length; i++) {
+          const name = pending[i];
           if (seen.has(name)) continue;
           seen.add(name);
           const dependency = byName.get(name);
           if (!dependency) continue;
           upstream.push(name);
-          pending.push(...dependency.getDependencyNames());
+          for (const next of dependency.getDependencyNames()) {
+            pending.push(next);
+          }
         }
         if (upstream.length === 0) continue;
 

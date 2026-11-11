@@ -2239,6 +2239,17 @@ Deno.test("JobRun.skipEmptyExpansion: inserts a template a record lacks", () => 
   assertEquals(jobRun.getStep("fan")!.status, "skipped");
 });
 
+Deno.test("JobRun.skipEmptyExpansion: adds no template beside iterations of an earlier expansion", () => {
+  const jobRun = JobRun.pending("main", ["fan"]);
+  jobRun.replaceExpandedSteps("fan", ["fan-a"]);
+
+  assertEquals(jobRun.skipEmptyExpansion("fan"), false);
+  jobRun.registerForEachExpansion("fan", []);
+
+  assertEquals(jobRun.steps.map((s) => s.stepName), ["fan-a"]);
+  assertEquals(jobRun.getStatus("fan"), undefined);
+});
+
 Deno.test("JobRun.skipEmptyExpansion: leaves a settled template and reports no change", () => {
   const jobRun = JobRun.pending("main", ["fan"]);
   jobRun.skipEmptyExpansion("fan");
