@@ -5365,7 +5365,22 @@ export class WorkflowExecutionService {
           if (!step.forEach) continue;
           const expanded = expandedStepsMap.get(step.name);
           const names = expanded ? expanded.map((e) => e.expandedName) : [];
-          jobRun.replaceExpandedSteps(step.name, names);
+          if (names.length === 0) {
+            if (jobRun.skipEmptyExpansion(step.name)) {
+              // expansion refuses an unauthored forEach.in, so this is the
+              // authored text, as a guard's expression is
+              yield {
+                kind: "step_skipped",
+                jobId: job.name,
+                stepId: step.name,
+                reason: "empty_collection",
+                collectionExpression: extractCelExpression(step.forEach.in) ??
+                  step.forEach.in,
+              };
+            }
+          } else {
+            jobRun.replaceExpandedSteps(step.name, names);
+          }
           jobRun.registerForEachExpansion(step.name, names);
           // an iteration that waited on a nested run but is not produced by the
           // collection is skipped, its link kept; no skip reason, since the

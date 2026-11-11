@@ -834,6 +834,9 @@ A step can declare a `guard` — a CEL expression evaluated before execution. Wh
 the guard evaluates truthy, the step is skipped (already done). When falsy or
 absent, the step executes normally.
 
+A truthy guard means **skip**, not run: a guard that finds the data it looks for
+skips the step. A skipped step is not proof the guard matched nothing.
+
 Guard is the workflow-level primitive for idempotent step execution, enabling
 safe workflow resume, re-run, and cron scheduling without re-executing completed
 steps.
@@ -909,6 +912,12 @@ fails the step with a `step_failed` event containing the error message.
 **Events and rendering:** Guard-skipped steps emit a `step_skipped` event with
 `reason: "guarded"` (vs `"dependency"` for dependency skips). The console
 renderer shows `skipped <step> (guarded)` to distinguish from dependency skips.
+
+A forEach step whose `forEach.in` resolves to no items emits `step_skipped` with
+`reason: "empty_collection"` and `collectionExpression`, and the console shows
+`skipped <step> (empty forEach) · in: <expr>`. The step stays in the run as
+`skipped`, so a dependent with `condition: { type: skipped }` runs and one with
+`succeeded` is skipped as a dependency.
 
 ## Step Task Types
 
@@ -1372,7 +1381,7 @@ Two moments, and which one applies decides what an expression can see.
 | `task.inputs`, assert `task.message` | Step time **when** they read `data.*`                             | Same                                      |
 | `task.behavior`, `task.behaviorName` | Step time when they read `data.*` **or** their step has a `guard` | Same                                      |
 | `trigger.inputs`                     | Trigger fire time                                                 | The webhook payload                       |
-| `forEach.in`                         | Job start                                                         | Data available when the job begins        |
+| `forEach.in`                         | Job start                                                         | Data from earlier jobs, not this job      |
 | `run.*`, `self.*`                    | Step time                                                         | The run record, the forEach variable      |
 
 The null-safe form applies to **same-run** data, not only to data from a prior

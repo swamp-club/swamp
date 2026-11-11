@@ -4015,3 +4015,120 @@ Deno.test("validateExpressionTypes: an assert expr wrapped in ${{ }} is not repo
   await typeCheckingService(checked).validate(workflow);
   assertEquals(checked, []);
 });
+
+function sameJobForEach(
+  inExpression: string,
+  dependsOn: string[],
+  extraJob?: Job,
+): Workflow {
+  const producer = (name: string, after: string[] = []) =>
+    Step.create({
+      name,
+      task: StepTask.model("producer", "run"),
+      dependsOn: after.map((step) => ({
+        step,
+        condition: TriggerCondition.succeeded(),
+      })),
+    });
+  return Workflow.create({
+    name: "foreach-same-job",
+    jobs: [
+      ...(extraJob ? [extraJob] : []),
+      Job.create({
+        name: "main",
+        steps: [
+          producer("produce"),
+          producer("enrich", ["produce"]),
+          Step.create({
+            name: "fan",
+            task: StepTask.model("consumer", "run"),
+            forEach: { item: "p", in: inExpression },
+            dependsOn: dependsOn.map((step) => ({
+              step,
+              condition: TriggerCondition.succeeded(),
+            })),
+          }),
+        ],
+        ...(extraJob
+          ? {
+            dependsOn: [{
+              job: extraJob.name,
+              condition: TriggerCondition.succeeded(),
+            }],
+          }
+          : {}),
+      }),
+    ],
+  });
+}
+
+async function sameJobWarnings(workflow: Workflow) {
+  const results = await service.validate(workflow);
+  return results.filter((r) => r.name.startsWith("forEach.in in job"));
+}
+
+Deno.test("validate: forEach.in reading data after a same-job step warns", async () => {
+  const warnings = await sameJobWarnings(sameJobForEach(
+    `\${{ data.query('modelName == "producer"') }}`,
+    ["produce"],
+  ));
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0].warning, true);
+  assertEquals(warnings[0].passed, true);
+  assertEquals(warnings[0].name, "forEach.in in job 'main' step 'fan'");
+  assertStringIncludes(warnings[0].error!, "before step 'produce' runs, so");
+  assertStringIncludes(warnings[0].error!, "a truthy guard skips");
+});
+
+Deno.test("validate: forEach.in warning names every transitive same-job dependency", async () => {
+  const warnings = await sameJobWarnings(sameJobForEach(
+    `\${{ data.findBySpec("producer", "result") }}`,
+    ["enrich"],
+  ));
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(
+    warnings[0].error!,
+    "before steps 'enrich', 'produce' run, so",
+  );
+});
+
+Deno.test("validate: forEach.in reading the model or file namespace after a same-job step warns", async () => {
+  for (
+    const expr of [
+      "${{ model.producer.resource.result.items }}",
+      '${{ file.contents("producer", "log").split("\\n") }}',
+    ]
+  ) {
+    const warnings = await sameJobWarnings(sameJobForEach(expr, ["produce"]));
+    assertEquals(warnings.length, 1, expr);
+  }
+});
+
+Deno.test("validate: forEach.in reading no stored data does not warn", async () => {
+  const warnings = await sameJobWarnings(
+    sameJobForEach("${{ inputs.items }}", ["produce"]),
+  );
+  assertEquals(warnings, []);
+});
+
+Deno.test("validate: forEach.in reading data without a same-job dependency does not warn", async () => {
+  const warnings = await sameJobWarnings(
+    sameJobForEach(`\${{ data.query('modelName == "producer"') }}`, []),
+  );
+  assertEquals(warnings, []);
+});
+
+Deno.test("validate: forEach.in reading data written by an earlier job does not warn", async () => {
+  const earlier = Job.create({
+    name: "earlier",
+    steps: [
+      Step.create({ name: "write", task: StepTask.model("producer", "run") }),
+    ],
+  });
+  const warnings = await sameJobWarnings(sameJobForEach(
+    `\${{ data.query('modelName == "producer"') }}`,
+    [],
+    earlier,
+  ));
+  assertEquals(warnings, []);
+});

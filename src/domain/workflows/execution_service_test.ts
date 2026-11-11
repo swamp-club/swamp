@@ -26443,3 +26443,200 @@ Deno.test("WorkflowExecutionService: a top-level run saves its final record nami
     assertEquals(run.workflowDataArtifacts.length, 2);
   });
 });
+
+function emptyForEachWorkflow(name: string, extra: Step[] = []): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "fan",
+            task: StepTask.model("test-model", "run"),
+            forEach: { item: "x", in: "${{ inputs.items }}" },
+          }),
+          Step.create({
+            name: "after-success",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [{
+              step: "fan",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+          Step.create({
+            name: "on-empty",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [{ step: "fan", condition: TriggerCondition.skipped() }],
+          }),
+          ...extra,
+        ],
+      }),
+    ],
+  });
+}
+
+function emptyCollectionSkips(
+  events: WorkflowExecutionEvent[],
+): Extract<WorkflowExecutionEvent, { kind: "step_skipped" }>[] {
+  return events.filter((e) =>
+    e.kind === "step_skipped" && e.reason === "empty_collection"
+  ) as Extract<WorkflowExecutionEvent, { kind: "step_skipped" }>[];
+}
+
+Deno.test("execute: an empty forEach is kept as a skipped step and announced with its collection", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    const workflow = emptyForEachWorkflow("empty-foreach");
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const events: WorkflowExecutionEvent[] = [];
+    let completed: WorkflowRun | undefined;
+    for await (
+      const event of service.run(workflow.name, { inputs: { items: [] } })
+    ) {
+      events.push(event);
+      if (event.kind === "completed") completed = event.run;
+    }
+
+    assertEquals(emptyCollectionSkips(events), [{
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "fan",
+      reason: "empty_collection",
+      collectionExpression: "inputs.items",
+    }]);
+    assertEquals(completed?.status, "succeeded");
+    const main = completed!.getJob("main")!;
+    assertEquals(main.status, "succeeded");
+    assertEquals(main.getStep("fan")!.status, "skipped");
+    assertEquals(main.getStep("fan")!.skipReason, undefined);
+    assertEquals(main.getStep("after-success")!.skipReason, {
+      kind: "dependency",
+    });
+    assertEquals(executor.executedSteps, ["main/on-empty"]);
+  });
+});
+
+Deno.test("execute: a non-empty forEach emits no empty-collection skip", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    const workflow = emptyForEachWorkflow("non-empty-foreach");
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (
+      const event of service.run(workflow.name, { inputs: { items: ["a"] } })
+    ) {
+      events.push(event);
+    }
+
+    assertEquals(emptyCollectionSkips(events), []);
+    assertEquals(executor.executedSteps.sort(), [
+      "main/after-success",
+      "main/fan-a",
+    ]);
+  });
+});
+
+Deno.test("resume: an empty forEach already skipped is not announced again and strands nothing", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    const workflow = emptyForEachWorkflow("empty-foreach-resume", [
+      Step.create({ name: "boom", task: StepTask.model("test-model", "run") }),
+    ]);
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    executor.shouldFail.add("boom");
+    const failed = await service.execute(workflow.name, {
+      inputs: { items: [] },
+    });
+    assertEquals(failed.status, "failed");
+    assertEquals(failed.getJob("main")!.getStep("fan")!.status, "skipped");
+
+    executor.shouldFail.clear();
+    const events: WorkflowExecutionEvent[] = [];
+    let completed: WorkflowRun | undefined;
+    for await (const event of service.resume(workflow.name, failed.id)) {
+      events.push(event);
+      if (event.kind === "completed") completed = event.run;
+    }
+
+    assertEquals(emptyCollectionSkips(events), []);
+    assertEquals(completed?.status, "succeeded");
+    assertEquals(completed!.getJob("main")!.getStep("fan")!.status, "skipped");
+  });
+});
+
+Deno.test("execute: an empty forEach reading a vault announces the authored expression, never the secret", async () => {
+  await withTempDir(async (tempDir) => {
+    await withProbeVault(tempDir);
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const authored =
+      `vault.get('${PROBE_VAULT}', 'probe') == null ? ['p'] : []`;
+    const workflow = Workflow.create({
+      name: "empty-foreach-vault",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "fan",
+              task: StepTask.model("test-model", "run"),
+              forEach: { item: "x", in: `\${{ ${authored} }}` },
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(workflow.name, {})) {
+      events.push(event);
+    }
+
+    const skips = emptyCollectionSkips(events);
+    assertEquals(skips.length, 1);
+    assertEquals(skips[0].collectionExpression, authored);
+    assertEquals(JSON.stringify(events).includes("present"), false);
+  });
+});

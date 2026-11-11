@@ -256,7 +256,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "fleet pattern: with no connected workers the list is empty, the step expands to nothing, and the run succeeds",
+    "fleet pattern: with no connected workers the list is empty, the step is skipped, and the run succeeds",
   ...SANITIZE,
   fn: async () => {
     await using fleet = await Fleet.start();
@@ -267,7 +267,9 @@ Deno.test({
     const run = await fleet.runWorkflow(await saveFleetPattern(fleet));
 
     assertEquals(run.status, "succeeded");
-    assertEquals(viewSteps(run), {});
+    assertEquals(viewSteps(run), {
+      "scan-${{ self.worker.attributes.name }}": "skipped",
+    });
     assertEquals(fleet.dispatchCounts(), { "w-off": 0 });
   },
 });

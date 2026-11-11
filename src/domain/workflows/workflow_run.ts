@@ -1213,6 +1213,26 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
+   * an empty collection keeps the template as a skipped step so the run shows
+   * it and dependents read skipped; no skip kind is recorded, as a new one
+   * would make older binaries refuse the record. False when already settled
+   */
+  skipEmptyExpansion(templateName: string): boolean {
+    let template = this.getStep(templateName);
+    if (!template) {
+      // iterations left from an earlier expansion settle the step themselves
+      if (this._steps.some((s) => s.forEachTemplate === templateName)) {
+        return false;
+      }
+      template = StepRun.pending(templateName);
+      this._steps.push(template);
+    }
+    if (template.status !== "pending") return false;
+    template.skip();
+    return true;
+  }
+
+  /**
    * the execution service registers this after every forEach expansion, resume
    * included, so the mapping need not be persisted
    */

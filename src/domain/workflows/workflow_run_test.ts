@@ -2218,6 +2218,62 @@ Deno.test("JobRun.getStatus: empty forEach expansion returns undefined", () => {
   assertEquals(jobRun.getStatus("deploy"), undefined);
 });
 
+Deno.test("JobRun.skipEmptyExpansion: keeps the template as a skipped step", () => {
+  const jobRun = JobRun.pending("main", ["fetch", "fan", "after"]);
+
+  assertEquals(jobRun.skipEmptyExpansion("fan"), true);
+  jobRun.registerForEachExpansion("fan", []);
+
+  assertEquals(jobRun.steps.map((s) => s.stepName), ["fetch", "fan", "after"]);
+  assertEquals(jobRun.getStep("fan")!.status, "skipped");
+  assertEquals(jobRun.getStep("fan")!.skipReason, undefined);
+  assertEquals(jobRun.getStatus("fan"), "skipped");
+  assertEquals(jobRun.skippedByGuard("fan"), false);
+});
+
+Deno.test("JobRun.skipEmptyExpansion: inserts a template a record lacks", () => {
+  const jobRun = JobRun.pending("main", ["fetch"]);
+
+  assertEquals(jobRun.skipEmptyExpansion("fan"), true);
+
+  assertEquals(jobRun.getStep("fan")!.status, "skipped");
+});
+
+Deno.test("JobRun.skipEmptyExpansion: adds no template beside iterations of an earlier expansion", () => {
+  const jobRun = JobRun.pending("main", ["fan"]);
+  jobRun.replaceExpandedSteps("fan", ["fan-a"]);
+
+  assertEquals(jobRun.skipEmptyExpansion("fan"), false);
+  jobRun.registerForEachExpansion("fan", []);
+
+  assertEquals(jobRun.steps.map((s) => s.stepName), ["fan-a"]);
+  assertEquals(jobRun.getStatus("fan"), undefined);
+});
+
+Deno.test("JobRun.skipEmptyExpansion: leaves a settled template and reports no change", () => {
+  const jobRun = JobRun.pending("main", ["fan"]);
+  jobRun.skipEmptyExpansion("fan");
+  const completedAt = jobRun.getStep("fan")!.completedAt;
+
+  assertEquals(jobRun.skipEmptyExpansion("fan"), false);
+  assertEquals(jobRun.getStep("fan")!.completedAt, completedAt);
+});
+
+Deno.test("JobRun.skipEmptyExpansion: a skipped condition matches and succeeded does not", () => {
+  const jobRun = JobRun.pending("main", ["fan"]);
+  jobRun.skipEmptyExpansion("fan");
+  jobRun.registerForEachExpansion("fan", []);
+
+  assertEquals(
+    TriggerCondition.skipped().evaluate(jobRun, "fan"),
+    true,
+  );
+  assertEquals(
+    TriggerCondition.succeeded().evaluate(jobRun, "fan"),
+    false,
+  );
+});
+
 Deno.test("JobRun.getStatus: unknown template returns undefined (no regression)", () => {
   const jobRun = JobRun.pending("main", ["step1"]);
 

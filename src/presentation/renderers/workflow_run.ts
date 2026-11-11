@@ -454,8 +454,9 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           this.pipe.skippedStepLine(
             displayName,
             e.stepId,
-            e.reason,
+            e.reason === "empty_collection" ? "empty forEach" : e.reason,
             e.guardExpression,
+            e.collectionExpression,
           ),
         );
       },
@@ -1329,6 +1330,17 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_started: () => {},
       step_completed: () => {},
       step_skipped: (e) => {
+        if (e.reason === "empty_collection") {
+          unguardedConsole.error(JSON.stringify({
+            step: e.stepId,
+            job: e.jobId,
+            status: "skipped",
+            reason: "empty_collection",
+            ...(e.collectionExpression !== undefined && {
+              collectionExpression: e.collectionExpression,
+            }),
+          }));
+        }
         if (e.reason === "guarded") {
           unguardedConsole.error(JSON.stringify({
             step: e.stepId,

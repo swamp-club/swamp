@@ -177,12 +177,19 @@ export class PipeWriter {
     stepPath: string,
     reason?: string,
     guardExpression?: string,
+    collectionExpression?: string,
   ): string {
     const extra = reason ? ` (${reason})` : "";
     const guard = guardExpression
       ? ` ${dim(`· guard: ${guardExpression}`)}`
       : "";
-    return this.line(name, `${dim(`skipped ${stepPath}${extra}`)}${guard}`);
+    const collection = collectionExpression
+      ? ` ${dim(`· in: ${collectionExpression}`)}`
+      : "";
+    return this.line(
+      name,
+      `${dim(`skipped ${stepPath}${extra}`)}${guard}${collection}`,
+    );
   }
 
   stepLine(
