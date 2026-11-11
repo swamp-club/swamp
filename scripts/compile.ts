@@ -31,8 +31,7 @@ interface CompileOptions {
   bundle: boolean;
 }
 
-// inside the repo, so deno.json and the lockfile resolve the npm externals
-// and the embedded tree keeps the repo root as its root
+// inside the repo so deno.json resolves the npm externals at the same root
 export const BUNDLE_DIR = join("build", "bundle");
 
 export const VERSION_FILE = "src/infrastructure/runtime/build_info.ts";
@@ -219,9 +218,7 @@ function packageAt(segments: readonly string[]): string | undefined {
   return second === undefined ? undefined : `${first}/${second}`;
 }
 
-// npm files sit under Deno's npm cache (<npmCache>/<registry host>/...,
-// whatever the registry) or a node_modules directory, so a map source there
-// is a package the bundle inlined instead of leaving external
+// a source under <npmCache>/<any registry host>/ or node_modules was inlined
 export function inlinedNpmPackages(
   sources: readonly string[],
   { bundleDir, npmCache }: { bundleDir: string; npmCache: string },
@@ -238,8 +235,7 @@ export function inlinedNpmPackages(
   return [...names].sort();
 }
 
-// the inlined-package check reads sources as paths; if none lands in the
-// repo, the map format changed and the check would pass without looking
+// sources that are not repo paths would make the inlined check pass blind
 export function requireRepoSources(
   sources: readonly string[],
   { bundleDir, root }: { bundleDir: string; root: string },
@@ -294,21 +290,18 @@ export function bundleArgs(
     "--format",
     "esm",
     "--code-splitting",
-    // esbuild renames colliding names; telemetry and serve read
-    // error.constructor.name
+    // telemetry and serve read error.constructor.name, which esbuild renames
     "--keep-names",
     "--sourcemap=linked",
     "--outdir",
     outDir,
-    // the = form, since --external takes several values and would swallow
-    // the entry
+    // the = form, since a bare --external would swallow the entry
     ...externals.map((name) => `--external=${name}`),
     "main.ts",
   ];
 }
 
-// a linked map is applied only when included; the chunks themselves are
-// reached through the entry's imports, so the directory is not included
+// Deno applies a linked map only when it is included
 export function sourceMapIncludes(
   outDir: string,
   fileNames: readonly string[],
@@ -346,8 +339,7 @@ async function removeBuildDir(dir: string, label: string): Promise<void> {
   }
 }
 
-// undefined content means nothing was stamped, so the file is left alone;
-// an undefined bundleDir means no bundle was built, so the directory is too
+// undefined content or bundleDir means there is nothing there to restore
 export async function restoreBuildState(
   versionFile: string,
   originalContent: string | undefined,
@@ -516,8 +508,7 @@ async function runDeno(args: readonly string[]): Promise<boolean> {
     stdout: "inherit",
     stderr: "inherit",
   }).spawn();
-  // a signal aimed at this process alone would otherwise leave the child
-  // writing build output after the cleanup has run
+  // else a signal to this process alone leaves the child writing after cleanup
   const stop = () => {
     try {
       child.kill();
@@ -537,8 +528,6 @@ async function runDeno(args: readonly string[]): Promise<boolean> {
   }
 }
 
-// resolves to the --include flags for the bundle's source maps, or undefined
-// when the bundle failed
 async function bundle(root: string): Promise<string[] | undefined> {
   const externals = requireNpmExternals(await readWorkspaceConfigs(root));
   // a leftover from an interrupted build would be embedded with the new one
@@ -560,16 +549,25 @@ async function bundle(root: string): Promise<string[] | undefined> {
       sources.push(...(map.sources ?? []));
     }
   }
-  requireRepoSources(sources, { bundleDir: join(root, BUNDLE_DIR), root });
+  // map sources hold resolved paths, so every base they meet must be resolved
+  const realRoot = await Deno.realPath(root);
+  const realBundleDir = await Deno.realPath(join(root, BUNDLE_DIR));
+  const npmCache = await npmCacheDir();
+  const realNpmCache = await Deno.realPath(npmCache).catch((error) => {
+    if (error instanceof Deno.errors.NotFound) return npmCache;
+    throw error;
+  });
+  requireRepoSources(sources, { bundleDir: realBundleDir, root: realRoot });
   const inlined = inlinedNpmPackages(sources, {
-    bundleDir: join(root, BUNDLE_DIR),
-    npmCache: await npmCacheDir(),
+    bundleDir: realBundleDir,
+    npmCache: realNpmCache,
   });
   if (inlined.length > 0) {
     throw new Error(
       `The bundle inlined npm packages that should stay external: ` +
-        `${inlined.join(", ")}. Declare them in a workspace deno.json, ` +
-        "deno.jsonc or package.json.",
+        `${inlined.join(", ")}. Declare each in a workspace deno.json, ` +
+        "deno.jsonc or package.json, and import it by that bare name rather " +
+        'than an npm: specifier (for example "zod", not "npm:zod@4").',
     );
   }
   return sourceMapIncludes(BUNDLE_DIR, fileNames);
