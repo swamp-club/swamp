@@ -32,8 +32,10 @@ import {
   compileArgs,
   inlinedNpmPackages,
   npmExternals,
+  type PackageJson,
   readWorkspaceConfigs,
   requireNpmExternals,
+  requireRepoSources,
   restoreBuildState,
   runStampedBuild,
   sourceMapIncludes,
@@ -328,6 +330,14 @@ Deno.test("npmExternals: treats every package.json dependency as external", () =
   );
 });
 
+Deno.test("npmExternals: ignores a package.json imports field that holds condition objects", () => {
+  const pkg = {
+    imports: { "#dep": { node: "dep-node", default: "./dep.js" } },
+    dependencies: { "d3-force": "^3" },
+  } as unknown as PackageJson;
+  assertEquals(npmExternals([pkg]), ["d3-force"]);
+});
+
 Deno.test("readWorkspaceConfigs: reads deno.jsonc and package.json members and expands glob entries", async () => {
   const root = await Deno.makeTempDir({ prefix: "compile-workspace-" });
   try {
@@ -399,6 +409,34 @@ Deno.test("inlinedNpmPackages: names packages from the npm cache of any registry
   );
 });
 
+Deno.test("requireRepoSources: accepts maps whose sources resolve inside the repo", () => {
+  const root = resolve("repo");
+  const bundleDir = join(root, "build", "bundle");
+  requireRepoSources(
+    [relative(bundleDir, join(root, "src", "cli", "mod.ts"))],
+    { bundleDir, root },
+  );
+});
+
+Deno.test("requireRepoSources: refuses maps whose sources are URLs or specifiers", () => {
+  const root = resolve("repo");
+  const bundleDir = join(root, "build", "bundle");
+  assertThrows(
+    () =>
+      requireRepoSources(
+        [
+          "npm:zod@4/index.js",
+          "file:///repo/src/cli/mod.ts",
+          relative(bundleDir, resolve("elsewhere", "a")),
+        ],
+        { bundleDir, root },
+      ),
+    Error,
+    "inlined npm packages cannot run",
+  );
+  assertThrows(() => requireRepoSources([], { bundleDir, root }), Error);
+});
+
 Deno.test("requireNpmExternals: refuses an empty list and names the configs read", () => {
   assertThrows(
     () =>
@@ -411,7 +449,7 @@ Deno.test("requireNpmExternals: refuses an empty list and names the configs read
   );
 });
 
-Deno.test("readWorkspaceConfigs: the repo config yields the npm packages the CLI imports", async () => {
+Deno.test("readWorkspaceConfigs: the repo's workspace configs yield the npm externals", async () => {
   const externals = requireNpmExternals(await readWorkspaceConfigs(repoRoot));
   for (const name of ["zod", "ink", "react/jsx-runtime", "d3-force"]) {
     assertEquals(externals.includes(name), true, `${name} is not external`);

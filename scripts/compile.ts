@@ -124,8 +124,15 @@ export function npmExternals(sources: readonly ImportSource[]): string[] {
   const names = new Set<string>();
   for (const source of sources) {
     if ("imports" in source) {
-      for (const [name, target] of Object.entries(source.imports ?? {})) {
-        if (target.startsWith("npm:")) names.add(name);
+      // a package.json "imports" field can hold condition objects
+      for (
+        const [name, target] of Object.entries(
+          (source.imports ?? {}) as Record<string, unknown>,
+        )
+      ) {
+        if (typeof target === "string" && target.startsWith("npm:")) {
+          names.add(name);
+        }
       }
     }
     const pkg = source as PackageJson;
@@ -229,6 +236,29 @@ export function inlinedNpmPackages(
     if (name !== undefined) names.add(name);
   }
   return [...names].sort();
+}
+
+// the inlined-package check reads sources as paths; if none lands in the
+// repo, the map format changed and the check would pass without looking
+export function requireRepoSources(
+  sources: readonly string[],
+  { bundleDir, root }: { bundleDir: string; root: string },
+): void {
+  const within = (base: string, path: string) => {
+    const rel = relative(base, path);
+    return rel !== "" && !rel.startsWith("..") && rel !== path;
+  };
+  // a URL or specifier resolves to a junk path under the bundle dir itself
+  const inRepo = sources.some((source) => {
+    const path = resolve(bundleDir, source);
+    return within(root, path) && !within(bundleDir, path);
+  });
+  if (!inRepo) {
+    throw new Error(
+      "No source-map source resolves inside the repo, so the check for " +
+        "inlined npm packages cannot run",
+    );
+  }
 }
 
 function nodeModulesPackage(path: string): string | undefined {
@@ -530,6 +560,7 @@ async function bundle(root: string): Promise<string[] | undefined> {
       sources.push(...(map.sources ?? []));
     }
   }
+  requireRepoSources(sources, { bundleDir: join(root, BUNDLE_DIR), root });
   const inlined = inlinedNpmPackages(sources, {
     bundleDir: join(root, BUNDLE_DIR),
     npmCache: await npmCacheDir(),
