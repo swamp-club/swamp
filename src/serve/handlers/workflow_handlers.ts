@@ -238,6 +238,11 @@ import {
   runStreamFor,
 } from "./run_data_attributes.ts";
 import {
+  captureResumeCaller,
+  RESUME_INPUTS_REFUSED,
+  resumeInputsRefusal,
+} from "../resume_caller_rules.ts";
+import {
   autoResumeAfterApproval,
   autoResumeParentAfterChild,
   ownerResumesRun,
@@ -2927,6 +2932,7 @@ export async function handleWorkflowResume(
     )
   ) return;
   const workflow = targetArgument(target, payload.workflowIdOrName);
+  const resumer = captureResumeCaller(ctx, socket, principal);
 
   // the limit's guarantee needs the registry, so it is refused rather than dropped
   if (!ctx.activeRunRegistry && payload.suspendedOnly) {
@@ -2976,6 +2982,21 @@ export async function handleWorkflowResume(
               signalWaits: ctx.repoContext.signalWaits,
             },
           );
+          const inputsRefusal = resumeInputsRefusal(
+            run,
+            resumer,
+            payload.inputs,
+          );
+          if (inputsRefusal !== undefined) {
+            sendError(
+              socket,
+              requestId,
+              "workflow_resume_failed",
+              inputsRefusal,
+              { resumeRefusal: RESUME_INPUTS_REFUSED },
+            );
+            return;
+          }
 
           const stepLockHook = createStepLockHook(
             ctx.repoDir,
@@ -3013,14 +3034,18 @@ export async function handleWorkflowResume(
             ephemeral.catalog,
           );
 
+          const vaultScope = resumeRunVaultScope(
+            runVaultScopeContext(ctx),
+            run,
+            resumer.vaultScope ?? undefined,
+          );
           const resumeGenerator = async function* (): AsyncGenerator<
             WorkflowRunEvent
           > {
-            // held to the principal that triggered the run, never the resumer
             for await (
               const { event } of deferCompletedForOutputs(
                 runGeneratorWithVaultAccess(
-                  resumeRunVaultScope(runVaultScopeContext(ctx), run)?.access,
+                  vaultScope?.access,
                   () =>
                     service.resume(workflowName, run.id, {
                       signal: controller.signal,
@@ -3153,6 +3178,7 @@ export async function handleWorkflowResume(
     subject: captureDecisionSubject(socket, principal),
     // a resume decides no gate, so its caller is not judged as an approver
     parentGrant: "run",
+    resumer,
     canReadWorkflow: nestedRunReadDecider(ctx, socket, principal),
   });
   if (!launched.ok) {

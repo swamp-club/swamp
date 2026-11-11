@@ -633,6 +633,56 @@ test("a resume is limited to a suspended run", async () => {
   });
 });
 
+test("a resume adding inputs to someone else's run is refused 403 and leaves the run as it was", async () => {
+  const forOther = {
+    ...everyAction(),
+    subject: { kind: "user" as const, name: "other" },
+  };
+  await withRoute([everyAction(), forOther], async (route, repo, ctx) => {
+    const name = `noted-${crypto.randomUUID()}`;
+    await repo.repoContext.workflowRepo.save(Workflow.create({
+      name,
+      inputs: { properties: { note: { type: "string" } } },
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve"),
+            }),
+          ],
+        }),
+      ],
+    }));
+    const gated = await startGated(route, repo, ctx, name);
+    const approved = await route.post(decision("workflow.approve", gated));
+    assert(approved.status < 300, JSON.stringify(approved.body));
+    await settled(ctx);
+    const resumeWithNote = {
+      type: "workflow.resume",
+      payload: {
+        workflowIdOrName: gated.name,
+        runId: gated.runId,
+        inputs: { note: "x" },
+      },
+    };
+
+    const refused = await route.post(resumeWithNote, { token: "other.secret" });
+    assertEquals(refused.status, 403, JSON.stringify(refused.body));
+    assertEquals(refused.body.code, "resume_inputs_refused");
+    const untouched = await storedRun(repo, gated.name, gated.runId);
+    assertEquals(untouched!.status, "suspended");
+    assertEquals(untouched!.inputs.note, undefined);
+
+    const own = await route.post(resumeWithNote);
+    assert(own.status < 300, JSON.stringify(own.body));
+    await settled(ctx);
+    const resumed = await storedRun(repo, gated.name, gated.runId);
+    assertEquals(resumed!.inputs.note, "x");
+  });
+});
+
 test("a mistyped workflow reads as not found to a caller who may run it", async () => {
   await withRoute([everyAction()], async (route) => {
     const reply = await route.post(start("no-such-workflow", "k"));

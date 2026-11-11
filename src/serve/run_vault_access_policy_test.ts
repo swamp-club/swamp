@@ -42,6 +42,7 @@ import {
   createRunVaultScope,
   decideRunVaultAccess,
   resumeRunVaultScope,
+  type RunPrincipalInputs,
   type RunVaultPolicyDeps,
   runVaultScopeContext,
   ServeRunVaultPolicy,
@@ -812,6 +813,155 @@ Deno.test("resumeRunVaultScope: a run with no recorded principal fails closed on
   assert(withGrants);
   const decision = await withGrants.access.decide("erp", "read", "get");
   assertEquals(decision.allowed, false);
+});
+
+const ALICE_RUN = {
+  id: "run-1",
+  initiatedBy: "user:alice",
+  triggeringPrincipal: {
+    kind: "user" as const,
+    id: "alice",
+    membership: { localGroups: [], idpGroups: [], collectives: [] },
+  },
+};
+
+function sessionOf(id: string): RunPrincipalInputs {
+  return {
+    source: "session",
+    principal: { kind: "user", id },
+    idpGroups: [],
+    collectives: [],
+  };
+}
+
+function crossUserGrants(): Grant[] {
+  return [
+    grant({
+      subject: { kind: "user", name: "alice" },
+      resource: { kind: "vault", pattern: "erp" },
+    }),
+    grant({
+      subject: { kind: "user", name: "bob" },
+      effect: "deny",
+      resource: { kind: "vault", pattern: "erp" },
+    }),
+    grant({
+      subject: { kind: "user", name: "bob" },
+      resource: { kind: "vault", pattern: "billing" },
+    }),
+    accessAdmin("root"),
+  ];
+}
+
+Deno.test("resumeRunVaultScope: a resumer refused a vault refuses it to the resumed run", async () => {
+  const ctx = {
+    authMode: "token" as const,
+    policySnapshotLoader: { decisionService: service(crossUserGrants()) },
+  };
+  const alone = resumeRunVaultScope(ctx, ALICE_RUN);
+  assert(alone);
+  assertEquals((await alone.access.decide("erp", "read", "get")).allowed, true);
+  const byBob = resumeRunVaultScope(ctx, ALICE_RUN, sessionOf("bob"));
+  assert(byBob);
+  assertEquals(
+    (await byBob.access.decide("erp", "read", "get")).allowed,
+    false,
+  );
+});
+
+Deno.test("resumeRunVaultScope: a resumer allowed a vault the run is not allowed does not lift the run's limit", async () => {
+  const scope = resumeRunVaultScope(
+    {
+      authMode: "token",
+      policySnapshotLoader: { decisionService: service(crossUserGrants()) },
+    },
+    ALICE_RUN,
+    sessionOf("bob"),
+  );
+  assert(scope);
+  assertEquals(
+    (await scope.access.decide("billing", "read", "get")).allowed,
+    false,
+  );
+});
+
+Deno.test("resumeRunVaultScope: an access admin resuming keeps exactly the run's scope", async () => {
+  const scope = resumeRunVaultScope(
+    {
+      authMode: "token",
+      policySnapshotLoader: { decisionService: service(crossUserGrants()) },
+    },
+    ALICE_RUN,
+    sessionOf("root"),
+  );
+  assert(scope);
+  assertEquals((await scope.access.decide("erp", "read", "get")).allowed, true);
+  assertEquals(
+    (await scope.access.decide("billing", "read", "get")).allowed,
+    false,
+  );
+});
+
+Deno.test("resumeRunVaultScope: a run resumed by someone else still records its own principal", () => {
+  const scope = resumeRunVaultScope(
+    {
+      authMode: "token",
+      policySnapshotLoader: { decisionService: service(crossUserGrants()) },
+    },
+    ALICE_RUN,
+    sessionOf("bob"),
+  );
+  assert(scope);
+  assertEquals(scope.access.triggeringPrincipal?.id, "alice");
+});
+
+Deno.test("resumeRunVaultScope: a run that recorded no principal records none for the resumer either", () => {
+  const scope = resumeRunVaultScope(
+    {
+      authMode: "token",
+      policySnapshotLoader: { decisionService: service(crossUserGrants()) },
+    },
+    { id: "run-1", initiatedBy: "user:alice" },
+    sessionOf("bob"),
+  );
+  assert(scope);
+  assertEquals(scope.access.triggeringPrincipal, undefined);
+});
+
+Deno.test("resumeRunVaultScope: no scope with a resumer when authorization is off", () => {
+  assertEquals(
+    resumeRunVaultScope({ authMode: "none" }, ALICE_RUN, sessionOf("bob")),
+    undefined,
+  );
+});
+
+Deno.test("resumeRunVaultScope: a refusal is audited once, under the principal whose grants refused it", async () => {
+  for (
+    const [vault, refusedBy] of [["erp", "bob"], ["billing", "alice"]] as const
+  ) {
+    const { events, emitter } = recorder();
+    const scope = resumeRunVaultScope(
+      {
+        authMode: "token",
+        policySnapshotLoader: { decisionService: service(crossUserGrants()) },
+        auditEmitter: emitter,
+      },
+      ALICE_RUN,
+      sessionOf("bob"),
+    );
+    assert(scope);
+    await assertRejects(
+      () =>
+        runWithVaultAccess(
+          scope.access,
+          () => scope.access.check(vault, "read", "get", "k"),
+        ),
+      VaultAccessDeniedError,
+    );
+    assertEquals(events.length, 1);
+    assertEquals(events[0].principalId, refusedBy);
+    assertStringIncludes(events[0].detail ?? "", "run=run-1");
+  }
 });
 
 Deno.test("resumeRunVaultScope: a resume of a token-triggered run revalidates the token and keeps the recorded memberships", async () => {

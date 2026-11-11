@@ -597,9 +597,9 @@ export function serviceRunVaultScope(
 }
 
 /**
- * a resume runs as the run's triggering principal, never the resumer, with
- * recorded memberships. A revoked token or no recorded principal refuses every
- * vault operation once the policy holds a vault grant.
+ * a revoked token or no recorded principal refuses every vault operation once
+ * the policy holds a vault grant; a caller's resume must also be allowed by the
+ * resumer's own grants
  */
 export function resumeRunVaultScope(
   ctx: RunVaultScopeContext,
@@ -609,27 +609,49 @@ export function resumeRunVaultScope(
     readonly client?: string;
     readonly triggeringPrincipal?: RunTriggeringPrincipal;
   },
+  resumer?: RunPrincipalInputs,
 ): ServeRunVaultScope | undefined {
   const recorded = run.triggeringPrincipal;
-  return createRunVaultScope(
-    ctx,
-    recorded
-      ? {
-        source: "persisted",
-        principal: { kind: recorded.kind, id: recorded.id },
-        ...(recorded.tokenBinding
-          ? { tokenBinding: recorded.tokenBinding }
-          : {}),
-        idpGroups: recorded.membership.idpGroups,
-        collectives: recorded.membership.collectives,
-        ...(run.client !== undefined ? { client: run.client } : {}),
-      }
-      : {
-        source: "missing",
-        label: run.initiatedBy ?? "an unrecorded principal",
-      },
-    run.id,
-  );
+  const runInputs: RunPrincipalInputs = recorded
+    ? {
+      source: "persisted",
+      principal: { kind: recorded.kind, id: recorded.id },
+      ...(recorded.tokenBinding ? { tokenBinding: recorded.tokenBinding } : {}),
+      idpGroups: recorded.membership.idpGroups,
+      collectives: recorded.membership.collectives,
+      ...(run.client !== undefined ? { client: run.client } : {}),
+    }
+    : {
+      source: "missing",
+      label: run.initiatedBy ?? "an unrecorded principal",
+    };
+  if (!resumer) return createRunVaultScope(ctx, runInputs, run.id);
+  if (ctx.authMode === "none" || !ctx.policySnapshotLoader) return undefined;
+  // the run's policy first: a child run started here records the run's principal
+  const runPolicy = new ServeRunVaultPolicy(ctx, runInputs);
+  const resumerPolicy = new ServeRunVaultPolicy(ctx, resumer);
+  // never a principal to record, so a run that recorded none gives its child none
+  const narrowing: VaultPrincipalPolicy = {
+    principal: resumerPolicy.principal,
+    decide: (...args) => resumerPolicy.decide(...args),
+  };
+  const scope: { access?: RunVaultAccess; runId?: string } = { runId: run.id };
+  scope.access = RunVaultAccess.create({
+    policy: runPolicy,
+    // one audit event, under the principal whose grants refused
+    onDenied: (denial) => {
+      const byResumer = denial.principal === resumerPolicy.principal &&
+        denial.principal !== runPolicy.principal;
+      emitRunVaultDenial(
+        ctx,
+        byResumer ? resumer : runInputs,
+        byResumer ? resumerPolicy.principal : runPolicy.principal,
+        denial,
+        scope.runId,
+      );
+    },
+  }).narrowedBy(RunVaultAccess.create({ policy: narrowing }));
+  return scope as ServeRunVaultScope;
 }
 
 /** audit must never break a run, so a failure is logged and dropped */

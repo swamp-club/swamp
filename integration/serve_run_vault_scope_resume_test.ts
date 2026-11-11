@@ -30,6 +30,9 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import type { DelegationDirectory } from "../src/domain/access/delegation_directory.ts";
+import { delegationSessionName } from "../src/serve/delegated_token_auth.ts";
+import { CONSENTED_TO_EVERYTHING } from "./serve_request_harness.ts";
 import "../src/domain/models/models.ts";
 import {
   BOT,
@@ -44,6 +47,7 @@ import {
   sendAs,
   type SessionSetup,
   stepOf,
+  TEST_APP_CLIENT,
   vaultDenials,
   type VaultScopeFixture,
   withVaultScopeFixture,
@@ -413,3 +417,309 @@ for (const withVaultGrants of [true, false]) {
       }),
   });
 }
+
+const ALICE: Principal = { kind: "user", id: "alice" };
+const BOB: Principal = { kind: "user", id: "bob" };
+
+function crossUserGrants(): Grant[] {
+  return [
+    ...runnerGrants("user:alice"),
+    grant("user:alice", "vault", "erp"),
+    grant("user:alice", "vault", "roomcontrol"),
+    ...runnerGrants("user:bob"),
+    grant("user:bob", "vault", "roomcontrol"),
+    ...runnerGrants("user:root"),
+    grant("user:root", "access", "*", ["admin"]),
+  ];
+}
+
+function gatedWithNote(name: string, autoResume = false): Workflow {
+  const base = gatedReads(name, autoResume);
+  return Workflow.create({
+    name,
+    autoResume,
+    inputs: { properties: { note: { type: "string" } } },
+    jobs: [...base.jobs],
+  });
+}
+
+async function approvedAliceRun(
+  f: VaultScopeFixture,
+  workflow: Workflow,
+): Promise<WorkflowRun> {
+  const suspended = await startRun(f, workflow, ALICE);
+  assertEquals(suspended.status, "suspended");
+  await sendAs(f.ctx, "workflow.approve", {
+    workflowIdOrName: workflow.name,
+    runId: suspended.id,
+    stepName: "gate",
+  }, BOB);
+  return suspended;
+}
+
+function resumeOf(
+  workflow: Workflow,
+  runId: string,
+  inputs?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    workflowIdOrName: workflow.name,
+    runId,
+    ...(inputs ? { inputs } : {}),
+  };
+}
+
+function erpStep(run: WorkflowRun) {
+  return stepOf(run, "main", "erp");
+}
+
+for (const detached of [false, true]) {
+  const path = detached ? "detached" : "attached";
+
+  Deno.test({
+    name:
+      `serve resume vault scope: the ${path} resume of another person's run is held to the resumer's vault access too`,
+    ...SANITIZE,
+    fn: () =>
+      withVaultScopeFixture(async (f) => {
+        const workflow = gatedWithNote(`cross-${path}`);
+        const run = await approvedAliceRun(f, workflow);
+        await sendAs(f.ctx, "workflow.resume", resumeOf(workflow, run.id), BOB);
+        const resumed = await settled(f, workflow, run.id);
+        assertEquals(erpStep(resumed).status, "failed");
+        assertStringIncludes(
+          erpStep(resumed).error ?? "",
+          "vault 'erp' is refused for user:bob",
+        );
+        assertEquals(f.seen.includes(SECRETS.erp), false);
+        const denial = vaultDenials(f.audits).find((d) =>
+          d.resourceName === "erp"
+        );
+        assertEquals(denial?.principalId, "bob");
+      }, { ctx: { detached }, grants: crossUserGrants() }),
+  });
+
+  for (const resumer of [ALICE, ROOT]) {
+    Deno.test({
+      name: `serve resume vault scope: the ${path} resume of alice's run by ${
+        resumer === ALICE ? "alice herself" : "an access admin"
+      } keeps the run's vault access and may add inputs`,
+      ...SANITIZE,
+      fn: () =>
+        withVaultScopeFixture(async (f) => {
+          const workflow = gatedWithNote(`own-${path}-${resumer.id}`);
+          const run = await approvedAliceRun(f, workflow);
+          await sendAs(
+            f.ctx,
+            "workflow.resume",
+            resumeOf(workflow, run.id, { note: "added" }),
+            resumer,
+          );
+          const resumed = await settled(f, workflow, run.id);
+          assertEquals(erpStep(resumed).status, "succeeded");
+          assertEquals(f.seen.includes(SECRETS.erp), true);
+          assertEquals(resumed.inputs.note, "added");
+        }, { ctx: { detached }, grants: crossUserGrants() }),
+    });
+  }
+
+  Deno.test({
+    name:
+      `serve resume vault scope: the ${path} resume of another person's run with inputs is refused before anything runs`,
+    ...SANITIZE,
+    fn: () =>
+      withVaultScopeFixture(async (f) => {
+        const workflow = gatedWithNote(`inputs-${path}`);
+        const run = await approvedAliceRun(f, workflow);
+        const frames = await sendAs(
+          f.ctx,
+          "workflow.resume",
+          resumeOf(workflow, run.id, { note: "set-by-bob" }),
+          BOB,
+        );
+        const error = frames.find((frame) => frame.type === "error") as
+          | {
+            error?: {
+              code?: string;
+              message?: string;
+              details?: Record<string, unknown>;
+            };
+          }
+          | undefined;
+        assertEquals(error?.error?.code, "workflow_resume_failed");
+        assertEquals(error?.error?.details?.resumeRefusal, "inputs_refused");
+        assertStringIncludes(error?.error?.message ?? "", "started this run");
+        const after = await loadRun(f, workflow, run.id);
+        assertEquals(after?.status, "suspended");
+        assertEquals(after?.inputs.note, undefined);
+        assertEquals(f.seen, []);
+      }, { ctx: { detached }, grants: crossUserGrants() }),
+  });
+}
+
+Deno.test({
+  name:
+    "serve resume vault scope: auto-resume after someone else approves still runs with the starter's vault access",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      const workflow = gatedWithNote("cross-auto", true);
+      const run = await approvedAliceRun(f, workflow);
+      const resumed = await settled(f, workflow, run.id);
+      assertEquals(erpStep(resumed).status, "succeeded");
+      assertEquals(f.seen.includes(SECRETS.erp), true);
+    }, { ctx: { detached: true }, grants: crossUserGrants() }),
+});
+
+Deno.test({
+  name:
+    "serve resume vault scope: a child run started inside someone else's resume is held to the resumer and records the starter",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      const child = Workflow.create({
+        name: "erp-child",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "erp",
+                task: StepTask.model("erp-reader", "read"),
+              }),
+            ],
+          }),
+        ],
+      });
+      await f.repo.repoContext.workflowRepo.save(child);
+      const parent = Workflow.create({
+        name: "gated-parent",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("ok?"),
+              }),
+              after(
+                "call",
+                StepTask.workflow("erp-child"),
+                "gate",
+                TriggerCondition.succeeded(),
+              ),
+            ],
+          }),
+        ],
+      });
+      const run = await approvedAliceRun(f, parent);
+      await sendAs(f.ctx, "workflow.resume", resumeOf(parent, run.id), BOB);
+      await settled(f, parent, run.id);
+      const childRun = await f.repo.repoContext.workflowRunRepo
+        .findLatestByWorkflowId(createWorkflowId(child.id));
+      assertEquals(childRun?.triggeringPrincipal?.id, "alice");
+      assertStringIncludes(
+        stepOf(childRun!, "main", "erp").error ?? "",
+        "vault 'erp' is refused for user:bob",
+      );
+      assertEquals(f.seen.includes(SECRETS.erp), false);
+    }, { ctx: { detached: true }, grants: crossUserGrants() }),
+});
+
+function delegatedSession(person: string): SessionSetup {
+  const id = `link-${person}`;
+  return {
+    token: {
+      name: delegationSessionName(id),
+      createdAt: "2026-11-01T00:00:00.000Z",
+      principalId: `user:${person}`,
+    },
+    delegation: { client: TEST_APP_CLIENT, id },
+  };
+}
+
+function linkedPeople(): DelegationDirectory {
+  return {
+    standingOf: (id: string) => CONSENTED_TO_EVERYTHING.standingOf(id),
+    recordOf: (id: string) => ({
+      integrationId: "test-app",
+      person: { sub: id.replace(/^link-/, "") },
+    }),
+  } as unknown as DelegationDirectory;
+}
+
+Deno.test({
+  name:
+    "serve resume vault scope: a delegated resumer is held to their own vault access and can't add inputs to another person's run",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      f.ctx.delegationDirectory = linkedPeople();
+      const workflow = gatedWithNote("cross-delegated");
+      const run = await approvedAliceRun(f, workflow);
+      const refused = await sendAs(
+        f.ctx,
+        "workflow.resume",
+        resumeOf(workflow, run.id, { note: "x" }),
+        BOB,
+        delegatedSession("bob"),
+      );
+      assertEquals(
+        refused.some((frame) =>
+          frame.type === "error" &&
+          (frame as { error?: { details?: Record<string, unknown> } }).error
+              ?.details?.resumeRefusal === "inputs_refused"
+        ),
+        true,
+      );
+      await sendAs(
+        f.ctx,
+        "workflow.resume",
+        resumeOf(workflow, run.id),
+        BOB,
+        delegatedSession("bob"),
+      );
+      const resumed = await settled(f, workflow, run.id);
+      assertStringIncludes(
+        erpStep(resumed).error ?? "",
+        "vault 'erp' is refused for user:bob",
+      );
+    }, { ctx: { detached: true }, grants: crossUserGrants() }),
+});
+
+Deno.test({
+  name:
+    "serve resume vault scope: a person resuming their own run through a delegation may add inputs, and an admin's delegation may not on another's",
+  ...SANITIZE,
+  fn: () =>
+    withVaultScopeFixture(async (f) => {
+      f.ctx.delegationDirectory = linkedPeople();
+      const workflow = gatedWithNote("own-delegated");
+      const run = await approvedAliceRun(f, workflow);
+      const byAdminLink = await sendAs(
+        f.ctx,
+        "workflow.resume",
+        resumeOf(workflow, run.id, { note: "x" }),
+        ROOT,
+        delegatedSession("root"),
+      );
+      assertEquals(
+        byAdminLink.some((frame) =>
+          frame.type === "error" &&
+          (frame as { error?: { details?: Record<string, unknown> } }).error
+              ?.details?.resumeRefusal === "inputs_refused"
+        ),
+        true,
+      );
+      await sendAs(
+        f.ctx,
+        "workflow.resume",
+        resumeOf(workflow, run.id, { note: "mine" }),
+        ALICE,
+        delegatedSession("alice"),
+      );
+      const resumed = await settled(f, workflow, run.id);
+      assertEquals(resumed.inputs.note, "mine");
+      assertEquals(erpStep(resumed).status, "succeeded");
+    }, { ctx: { detached: true }, grants: crossUserGrants() }),
+});

@@ -100,6 +100,11 @@ import {
   resumeRunVaultScope,
   runVaultScopeContext,
 } from "./run_vault_access_policy.ts";
+import {
+  RESUME_INPUTS_REFUSED,
+  type ResumeCaller,
+  resumeInputsRefusal,
+} from "./resume_caller_rules.ts";
 
 const logger = getSwampLogger(["serve", "resume"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -129,6 +134,11 @@ export interface DetachedResumeRequest {
   subject?: DecisionSubject;
   parentGrant?: Action;
   /**
+   * the caller of a manual resume; absent for serve's own continuations, which
+   * add no inputs and stay held to the run's principal alone
+   */
+  resumer?: ResumeCaller;
+  /**
    * set by the continuation of a settled run, which may find a peer got there
    * first; a resume after an approval keeps workflow_resume_failed for a run no
    * longer suspended
@@ -156,7 +166,11 @@ export type DetachedResumeResult =
   | { ok: false; code: string; message: string; refusal?: ResumeRefusal };
 
 /** told apart here since a refused resume shares one code */
-export type ResumeRefusal = "not_found" | "nested_pending" | "refused";
+export type ResumeRefusal =
+  | "not_found"
+  | "nested_pending"
+  | "refused"
+  | typeof RESUME_INPUTS_REFUSED;
 
 function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
   return request.lostRaceIsOrdinary === true &&
@@ -231,6 +245,22 @@ export async function startDetachedResume(
         ? { refusal: "refused" as const }
         : {}),
     };
+  }
+
+  if (request.resumer) {
+    const refusal = resumeInputsRefusal(
+      resolvedRun,
+      request.resumer,
+      request.inputs,
+    );
+    if (refusal !== undefined) {
+      return {
+        ok: false,
+        code: "workflow_resume_failed",
+        message: refusal,
+        refusal: RESUME_INPUTS_REFUSED,
+      };
+    }
   }
 
   // a run bound to a delegation resumes only while the delegation stands,
@@ -377,11 +407,10 @@ export async function startDetachedResume(
               ephemeral.catalog,
             );
 
-            // held to the principal that triggered the run, never the approver
-            // or resumer
             const vaultScope = resumeRunVaultScope(
               runVaultScopeContext(ctx),
               resolvedRun,
+              request.resumer?.vaultScope ?? undefined,
             );
             const doResume = async () => {
               for await (

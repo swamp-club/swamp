@@ -36,6 +36,10 @@ import {
   type ResumeRefusal,
   RUN_NOT_SUSPENDED_CODE,
 } from "./resume_launcher.ts";
+import {
+  RESUME_INPUTS_REFUSED,
+  RESUME_INPUTS_REFUSED_MESSAGE,
+} from "./resume_caller_rules.ts";
 
 export interface ActionReply {
   readonly status: number;
@@ -268,6 +272,11 @@ const RESUME_FAILURES: Readonly<Record<string, Failure>> = {
     status: 409,
     code: "run_not_resumable",
     message: "This run can't be resumed now",
+  },
+  [RESUME_INPUTS_REFUSED]: {
+    status: 403,
+    code: "resume_inputs_refused",
+    message: RESUME_INPUTS_REFUSED_MESSAGE,
   },
 } satisfies Record<ResumeRefusal, Failure>;
 
