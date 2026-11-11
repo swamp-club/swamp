@@ -81,6 +81,7 @@ class FakeScheduler implements LifecycleScheduler {
 
 function harness(
   overrides: Partial<ScheduledExecutionLifecycleDeps<FakeScheduler>> = {},
+  { booted = true }: { booted?: boolean } = {},
 ) {
   const built: FakeScheduler[] = [];
   const published: (FakeScheduler | null)[] = [];
@@ -108,6 +109,7 @@ function harness(
     maxConcurrentRuns: 2,
     ...overrides,
   });
+  if (booted) lifecycle.markBootReplayed();
   return {
     lifecycle,
     built,
@@ -241,9 +243,9 @@ Deno.test("ScheduledExecutionLifecycle: a turnOn that resolves after shutdown be
     start: () => started.promise,
   });
   const turning = h.lifecycle.turnOn(undefined);
-  await h.lifecycle.drain(0);
+  const draining = h.lifecycle.drain(0);
   started.resolve();
-  await turning;
+  await Promise.all([turning, draining]);
   assertEquals(h.published, []);
   assertEquals(h.built[0].calls, ["stop"]);
 
@@ -302,4 +304,68 @@ Deno.test("ScheduledExecutionLifecycle: a retiring scheduler's run ending admits
     admitsBefore + 1,
   );
   assertEquals(h.lifecycle.retiring(), [first]);
+});
+
+Deno.test("ScheduledExecutionLifecycle: before the boot replay a reload can neither turn scheduling on nor off, and applies once it has run", async () => {
+  const h = harness({}, { booted: false });
+  await assertRejects(
+    () => h.lifecycle.turnOn(undefined),
+    Error,
+    "serve is still starting",
+  );
+  assertEquals(h.built, []);
+  assertEquals(h.published, []);
+
+  await h.lifecycle.turnOn(undefined, { atBoot: true });
+  const boot = h.built[0];
+  await assertRejects(
+    () => h.lifecycle.turnOff(),
+    Error,
+    "serve is still starting",
+  );
+  assertEquals(h.lifecycle.current(), boot);
+  assertEquals(boot.calls, ["start"]);
+
+  h.lifecycle.markBootReplayed();
+  await h.lifecycle.turnOff();
+  await h.lifecycle.turnOn(undefined);
+  assertEquals(h.built.length, 2);
+  assertEquals(h.built[1].calls, ["start", "replay", "catchUp"]);
+});
+
+async function settledWhenStartIsHeld(
+  shutdown: (
+    lifecycle: ScheduledExecutionLifecycle<FakeScheduler>,
+  ) => Promise<void>,
+  release: (started: PromiseWithResolvers<void>) => void,
+): Promise<void> {
+  const started = Promise.withResolvers<void>();
+  const h = harness({ start: () => started.promise });
+  const turning = h.lifecycle.turnOn(undefined).catch(() => {});
+  await waitFor(() => h.built.length === 1, "the scheduler is built");
+  let settled = false;
+  const done = shutdown(h.lifecycle).then(() => settled = true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(settled, false);
+
+  release(started);
+  await done;
+  assertEquals(h.built[0].calls, ["stop"]);
+  assertEquals(h.published, []);
+  await turning;
+}
+
+Deno.test("ScheduledExecutionLifecycle: shutdown waits for a scheduler a reload is still starting and stops it", async () => {
+  await settledWhenStartIsHeld(
+    (lifecycle) => lifecycle.drain(0),
+    (started) => started.resolve(),
+  );
+  await settledWhenStartIsHeld(
+    (lifecycle) => lifecycle.stop(),
+    (started) => started.resolve(),
+  );
+  await settledWhenStartIsHeld(
+    (lifecycle) => lifecycle.drain(0),
+    (started) => started.reject(new Error("store closed")),
+  );
 });

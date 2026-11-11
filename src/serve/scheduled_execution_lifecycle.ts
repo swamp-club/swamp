@@ -69,6 +69,10 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
   #maxConcurrentRuns: number | undefined;
   #ranScheduler = false;
   #closed = false;
+  // boot replays pending runs ahead of any catch-up, so a reload before then is refused
+  #bootReplayed = false;
+  /** settles once a turn-on's scheduler is published or stopped */
+  #starting: Promise<void> | undefined;
   /** a turn-on that did not lead leaves its replay to the lead, from this cutoff */
   #ownReplayCutoff: string | undefined;
 
@@ -94,6 +98,14 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     return [...this.#retiring.keys()];
   }
 
+  markBootReplayed(): void {
+    this.#bootReplayed = true;
+  }
+
+  #refuseBeforeBootReplay(): void {
+    if (!this.#bootReplayed) throw new Error("serve is still starting");
+  }
+
   setMaxConcurrentRuns(maxConcurrentRuns: number | undefined): void {
     this.#maxConcurrentRuns = maxConcurrentRuns;
     this.#current?.setMaxConcurrentRuns(maxConcurrentRuns ?? 1);
@@ -107,8 +119,29 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     triggerOverrides: ReadonlyMap<string, TriggerOverride> | undefined,
     options: TurnOnOptions = {},
   ): Promise<void> {
-    if (this.#closed || this.#current) return;
+    if (!options.atBoot) this.#refuseBeforeBootReplay();
+    if (this.#closed || this.#current || this.#starting) return;
     const createdBefore = new Date().toISOString();
+    const starting = this.#start(triggerOverrides);
+    this.#starting = starting.then(() => {}, () => {});
+    let service: S | null;
+    try {
+      service = await starting;
+    } finally {
+      this.#starting = undefined;
+    }
+    if (!service || options.atBoot) return;
+    if (!this.#deps.leads()) {
+      this.#ownReplayCutoff = createdBefore;
+      return;
+    }
+    await this.#replayThenCatchUp(service, createdBefore);
+  }
+
+  /** null when shutdown began meanwhile; settles once published or stopped */
+  async #start(
+    triggerOverrides: ReadonlyMap<string, TriggerOverride> | undefined,
+  ): Promise<S | null> {
     const service = this.#deps.build({
       triggerOverrides,
       maxConcurrentRuns: this.#maxConcurrentRuns,
@@ -127,17 +160,12 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     }
     if (this.#closed) {
       await service.stop();
-      return;
+      return null;
     }
     this.#current = service;
     this.#ranScheduler = true;
     this.#deps.publish(service);
-    if (options.atBoot) return;
-    if (!this.#deps.leads()) {
-      this.#ownReplayCutoff = createdBefore;
-      return;
-    }
-    await this.#replayThenCatchUp(service, createdBefore);
+    return service;
   }
 
   async atLead(): Promise<void> {
@@ -169,6 +197,7 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
   }
 
   async turnOff(): Promise<void> {
+    this.#refuseBeforeBootReplay();
     const service = this.#current;
     if (!service) return;
     this.#current = null;
@@ -200,6 +229,7 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
   /** shutdown: nothing starts after this, and every scheduler drains */
   async drain(timeoutMs: number): Promise<void> {
     this.#closed = true;
+    await this.#starting;
     const all = [
       ...(this.#current ? [this.#current] : []),
       ...this.#retiring.keys(),
@@ -214,6 +244,7 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
 
   async stop(): Promise<void> {
     this.#closed = true;
+    await this.#starting;
     const current = this.#current;
     this.#current = null;
     const retiring = [...this.#retiring.entries()];

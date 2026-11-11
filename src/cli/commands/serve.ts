@@ -10142,6 +10142,7 @@ export const serveCommand = new Command()
       // after the replay, so a replayed run queues ahead of a catch-up
       scheduler.current()?.startCatchUp();
     }
+    scheduler.markBootReplayed();
 
     if (hasRemoteControlPlane) {
       const scheme = tlsEnabled ? "https" : "http";

@@ -3386,3 +3386,18 @@ Deno.test("replayPendingRuns: ownCronOnly with createdBefore leaves a run the li
   assertEquals(await replayPendingRuns(h.deps), 1);
   assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["pr-drained"]);
 });
+
+Deno.test("replayPendingRuns: ownCronOnly leaves an own cron run that is only on the control plane", async () => {
+  const me = { instanceId: "me", pid: 2 };
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/pr-stale": cronEntry("pr-stale", me),
+  });
+  const h = createReplayHarness([cronEntry("pr-local", me)]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+  h.deps.claimAs = me;
+  h.deps.ownCronOnly = true;
+
+  assertEquals(await replayPendingRuns(h.deps), 1);
+  assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["pr-local"]);
+  assertEquals(controlPlaneStore.deleted, []);
+});

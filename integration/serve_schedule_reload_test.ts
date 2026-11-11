@@ -164,6 +164,8 @@ async function withScheduleReload(
         replay(service, { ownCronOnly: true, createdBefore }),
       maxConcurrentRuns: 1,
     });
+    // these reloads arrive after boot's replay
+    lifecycle.markBootReplayed();
     const h = lifecycle;
     await fn({
       lifecycle: h,

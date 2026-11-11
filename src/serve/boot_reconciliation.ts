@@ -483,6 +483,8 @@ export async function replayPendingRuns(
       deps.claimAs !== undefined &&
       entry.owner?.instanceId === deps.claimAs.instanceId;
     if (deps.ownCronOnly && !ownCron) continue;
+    // own runs are written locally first; one only on the control plane is stale
+    if (deps.ownCronOnly && remoteSourceKeys.has(entry.id)) continue;
     if (
       deps.ownCronOnly && deps.createdBefore !== undefined &&
       entry.createdAt >= deps.createdBefore
