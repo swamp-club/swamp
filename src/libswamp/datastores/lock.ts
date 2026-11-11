@@ -311,9 +311,6 @@ export async function* datastoreLockRelease(
         return;
       }
 
-      // Re-verify the lock holder hasn't changed between inspect and delete.
-      // forceRelease() re-reads the nonce immediately before deleting to
-      // minimise the TOCTOU window.
       const released = await deps.forceRelease(info.nonce!);
       if (!released) {
         yield {

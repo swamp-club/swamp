@@ -24,14 +24,17 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { configure, type LogRecord } from "@logtape/logtape";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   classifyLockCreateError,
   createLockFileExclusive,
   FileLock,
+  fsLockFileOps,
+  type LockFileOps,
   nextBackoffSleep,
+  reclaimClaimName,
 } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import {
@@ -1305,6 +1308,244 @@ Deno.test("FileLock.acquire: an abort during the wait stops it and leaves the ho
       assertEquals((await holder.inspect())?.nonce, holder.heldNonce);
     } finally {
       await holder.release();
+    }
+  });
+});
+
+const CLAIM_NAME =
+  /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
+
+async function claimFiles(dir: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    if (CLAIM_NAME.test(entry.name)) names.push(entry.name);
+  }
+  return names;
+}
+
+function staleRecord(nonce: string): LockInfo {
+  return {
+    holder: "crashed@host",
+    hostname: "host",
+    pid: 999_999,
+    acquiredAt: new Date(Date.now() - 600_000).toISOString(),
+    ttlMs: 30_000,
+    nonce,
+  };
+}
+
+/** ops whose first read of path waits until the test lets it go on */
+function pausedAfterFirstRead(path: string) {
+  let reach!: () => void;
+  let resume!: () => void;
+  const reached = new Promise<void>((resolve) => (reach = resolve));
+  const resumed = new Promise<void>((resolve) => (resume = resolve));
+  let paused = false;
+  const ops: LockFileOps = {
+    ...fsLockFileOps,
+    readState: async (target, ttlMs) => {
+      const state = await fsLockFileOps.readState(target, ttlMs);
+      if (!paused && target === path) {
+        paused = true;
+        reach();
+        await resumed;
+      }
+      return state;
+    },
+  };
+  return { ops, reached, resume };
+}
+
+const STALE_LOCK_OPTIONS = { ttlMs: 30_000, lockKey: ".lock" };
+
+Deno.test("FileLock.tryAcquire: a waiter that judged a crashed holder stale cannot remove the lock another waiter reclaimed since", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".lock");
+    await Deno.writeTextFile(lockPath, JSON.stringify(staleRecord("stale")));
+    const late = pausedAfterFirstRead(lockPath);
+    const first = new FileLock(dir, STALE_LOCK_OPTIONS);
+    const second = new FileLock(dir, STALE_LOCK_OPTIONS, late.ops);
+    try {
+      const secondResult = second.tryAcquire();
+      await late.reached;
+      assertEquals(await first.tryAcquire(), true);
+      late.resume();
+
+      assertEquals(await secondResult, false);
+      assertEquals((await first.inspect())?.nonce, first.heldNonce);
+      assertEquals(await claimFiles(dir), []);
+    } finally {
+      await first.release();
+      await second.release();
+    }
+  });
+});
+
+Deno.test("FileLock.tryAcquire: a live claim on a stale lock makes another waiter back off without touching it", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".lock");
+    const stale = JSON.stringify(staleRecord("stale"));
+    await Deno.writeTextFile(lockPath, stale);
+    const claimPath = join(
+      dir,
+      await reclaimClaimName(".lock", "nonce:stale"),
+    );
+    await Deno.writeTextFile(
+      claimPath,
+      JSON.stringify({
+        ...staleRecord("live-claim"),
+        hostname: "here",
+        pid: Deno.pid,
+        acquiredAt: new Date().toISOString(),
+      }),
+    );
+    const waiter = new FileLock(dir, STALE_LOCK_OPTIONS);
+    try {
+      assertEquals(await waiter.tryAcquire(), false);
+      assertEquals(await Deno.readTextFile(lockPath), stale);
+      assertEquals(await claimFiles(dir), [basename(claimPath)]);
+
+      await Deno.remove(claimPath);
+      assertEquals(await waiter.tryAcquire(), true);
+    } finally {
+      await waiter.release();
+    }
+  });
+});
+
+Deno.test("FileLock.tryAcquire: a claim left by a crashed claimant is recovered through a claim on the claim", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, ".lock"),
+      JSON.stringify(staleRecord("stale")),
+    );
+    const claimPath = join(
+      dir,
+      await reclaimClaimName(".lock", "nonce:stale"),
+    );
+    await Deno.writeTextFile(
+      claimPath,
+      JSON.stringify(staleRecord("crashed-claim")),
+    );
+    const claimOfClaim = await reclaimClaimName(
+      basename(claimPath),
+      "nonce:crashed-claim",
+    );
+    const created: string[] = [];
+    const ops: LockFileOps = {
+      ...fsLockFileOps,
+      createExclusive: (path) => {
+        created.push(basename(path));
+        return fsLockFileOps.createExclusive(path);
+      },
+    };
+    const waiter = new FileLock(dir, STALE_LOCK_OPTIONS, ops);
+    try {
+      assertEquals(await waiter.tryAcquire(), true);
+      assert(created.includes(claimOfClaim));
+      assertEquals(await claimFiles(dir), []);
+    } finally {
+      await waiter.release();
+    }
+  });
+});
+
+Deno.test("FileLock.tryAcquire: a holder that refreshed its lock after a waiter judged it stale keeps it", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".lock");
+    await Deno.writeTextFile(lockPath, JSON.stringify(staleRecord("paused")));
+    const waiting = pausedAfterFirstRead(lockPath);
+    const waiter = new FileLock(dir, STALE_LOCK_OPTIONS, waiting.ops);
+    try {
+      const result = waiter.tryAcquire();
+      await waiting.reached;
+      const refreshed = JSON.stringify({
+        ...staleRecord("paused"),
+        pid: Deno.pid,
+        acquiredAt: new Date().toISOString(),
+      });
+      await Deno.writeTextFile(lockPath, refreshed);
+      waiting.resume();
+
+      assertEquals(await result, false);
+      assertEquals(await Deno.readTextFile(lockPath), refreshed);
+      assertEquals(await claimFiles(dir), []);
+    } finally {
+      await waiter.release();
+    }
+  });
+});
+
+Deno.test("FileLock.tryAcquire: of two waiters on a stale unreadable lock file only one removes it", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".lock");
+    await Deno.writeTextFile(lockPath, "");
+    const old = new Date(Date.now() - 600_000);
+    await Deno.utime(lockPath, old, old);
+    const late = pausedAfterFirstRead(lockPath);
+    const first = new FileLock(dir, STALE_LOCK_OPTIONS);
+    const second = new FileLock(dir, STALE_LOCK_OPTIONS, late.ops);
+    try {
+      const secondResult = second.tryAcquire();
+      await late.reached;
+      assertEquals(await first.tryAcquire(), true);
+      late.resume();
+
+      assertEquals(await secondResult, false);
+      assertEquals((await first.inspect())?.nonce, first.heldNonce);
+      assertEquals(await claimFiles(dir), []);
+    } finally {
+      await first.release();
+      await second.release();
+    }
+  });
+});
+
+Deno.test("FileLock.forceRelease: racing a stale reclaim of the same nonce never removes the successor's lock", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".lock");
+    await Deno.writeTextFile(lockPath, JSON.stringify(staleRecord("stale")));
+    const forcing = pausedAfterFirstRead(lockPath);
+    const operator = new FileLock(dir, STALE_LOCK_OPTIONS, forcing.ops);
+    const successor = new FileLock(dir, STALE_LOCK_OPTIONS);
+    try {
+      const released = operator.forceRelease("stale");
+      await forcing.reached;
+      assertEquals(await successor.tryAcquire(), true);
+      forcing.resume();
+
+      assertEquals(await released, false);
+      assertEquals((await successor.inspect())?.nonce, successor.heldNonce);
+      assertEquals(await claimFiles(dir), []);
+    } finally {
+      await successor.release();
+    }
+  });
+});
+
+Deno.test("FileLock.tryAcquire: a claim whose write fails is removed, and the stale lock is left for a later attempt", async () => {
+  await withTempDir(async (dir) => {
+    const lockPath = join(dir, ".lock");
+    const stale = JSON.stringify(staleRecord("stale"));
+    await Deno.writeTextFile(lockPath, stale);
+    const ops: LockFileOps = {
+      ...fsLockFileOps,
+      createExclusive: async (path) => {
+        const handle = await fsLockFileOps.createExclusive(path);
+        if (!handle || path === lockPath) return handle;
+        return {
+          write: () => Promise.reject(new Error("disk full")),
+          close: () => handle.close(),
+        };
+      },
+    };
+    const waiter = new FileLock(dir, STALE_LOCK_OPTIONS, ops);
+    try {
+      assertEquals(await waiter.tryAcquire(), false);
+      assertEquals(await Deno.readTextFile(lockPath), stale);
+      assertEquals(await claimFiles(dir), []);
+    } finally {
+      await waiter.release();
     }
   });
 });
