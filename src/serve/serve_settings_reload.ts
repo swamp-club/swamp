@@ -323,6 +323,25 @@ export function classifyServeSettingChanges(
   return { applied: appliedKeys, needsRestart, overridden };
 }
 
+/** why reload cannot apply a continuation sweep interval here, or none */
+export function continuationSweepReloadReason(sweep: {
+  readonly running: boolean;
+  readonly bootPassOnly: boolean;
+  readonly staysOn: boolean;
+}): string | undefined {
+  if (!sweep.running) {
+    return "the continuation sweep is not running on this serve; restart serve to start it";
+  }
+  // a restart on this datastore runs the boot pass alone again
+  if (sweep.bootPassOnly) {
+    return "the continuation sweep runs only at boot on this datastore, so its interval has no effect here";
+  }
+  if (!sweep.staysOn) {
+    return "turning the continuation sweep off needs a restart";
+  }
+  return undefined;
+}
+
 export function settingName(key: keyof MergedServeOptions): string {
   return SETTING_CATALOGUE[key].setting;
 }

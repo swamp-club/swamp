@@ -22,6 +22,7 @@ import type { MergedServeOptions, ServeConfigFile } from "./serve_config.ts";
 import { mergeServeOptions } from "./serve_config.ts";
 import {
   type AppliedSettingKey,
+  continuationSweepReloadReason,
   SETTING_CATALOGUE,
   type SettingsReloadReport,
 } from "./serve_settings_reload.ts";
@@ -216,5 +217,26 @@ Deno.test("createServeSettingsReloader: not-running reasons see the reloaded val
   assertEquals(outcome.report.needsRestart, [{
     setting: "continuation-sweep-interval",
     reason: "turning the continuation sweep off needs a restart",
+  }]);
+});
+
+Deno.test("createServeSettingsReloader: a sweep that runs only at boot reports a changed interval as needing a restart, not applied", async () => {
+  const h = harness({ "continuation-sweep-interval": "60s" }, {
+    notRunning: ({ merged }) => {
+      const reason = continuationSweepReloadReason({
+        running: true,
+        bootPassOnly: true,
+        staysOn: merged.continuationSweepInterval !== "0",
+      });
+      return reason ? { continuationSweepInterval: reason } : {};
+    },
+  });
+  h.file = { "continuation-sweep-interval": "120s" };
+  const outcome = await createServeSettingsReloader(h.deps)(reload);
+  assertEquals(outcome.report.applied, []);
+  assertEquals(outcome.report.needsRestart, [{
+    setting: "continuation-sweep-interval",
+    reason:
+      "the continuation sweep runs only at boot on this datastore, so its interval has no effect here",
   }]);
 });

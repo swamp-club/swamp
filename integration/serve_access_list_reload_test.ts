@@ -33,6 +33,7 @@ import {
 import { checkAdmission } from "../src/domain/access/admission.ts";
 import { createTokenAdmissionChecker } from "../src/serve/token_admission.ts";
 import {
+  adminSubjectsOf,
   type AllowedUsersReloadPlan,
   planAllowedUsersReload,
 } from "../src/serve/serve_access_list_reload.ts";
@@ -63,6 +64,8 @@ function oauthFile(users: string[], collectives: string[] = []) {
   } as unknown as ServeConfigFile;
 }
 
+const ADMIN_SUBS: Record<string, string> = { root: "sub-root" };
+
 /** serve's wiring of the access lists, with a lookup table for swamp-club */
 function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
   const toAuth = (merged: MergedServeOptions): ServeAuthConfig =>
@@ -91,6 +94,12 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
     0,
     authConfig.allowedUsers.length,
     ...authConfig.allowedUsers.map((name) => subs[name]),
+  );
+  // startup resolves the admins to user principals
+  authConfig.admins.splice(
+    0,
+    authConfig.admins.length,
+    ...authConfig.admins.map((name) => `user:${ADMIN_SUBS[name]}`),
   );
   let deferred = false;
   let configured: readonly string[] = toAuth(merge(initial)).allowedUsers;
@@ -132,6 +141,7 @@ function serveLike(initial: ServeConfigFile, subs: Record<string, string>) {
         configured: startup.authConfig.allowedUsers,
         previouslyConfigured: configured,
         allowedCollectives: startup.authConfig.allowedCollectives,
+        adminSubjects: adminSubjectsOf(authConfig.admins),
         stored: cache,
         cache,
         resolve: (name, _signal) =>
@@ -224,7 +234,7 @@ Deno.test("serve access list reload: a person removed from allowed-users is refu
   assertEquals(await admittedEverywhere(serve, "sub-a"), [true, true, true]);
 });
 
-Deno.test("serve access list reload: [A] to [B] with B not resolvable admits nobody, reports B, and a later reload admits B", async () => {
+Deno.test("serve access list reload: [A] to [B] with B not resolvable admits only the admins, reports B, and a later reload admits B", async () => {
   const serve = serveLike(oauthFile(["alice"]), {
     alice: "sub-a",
     bob: "sub-b",
@@ -242,6 +252,11 @@ Deno.test("serve access list reload: [A] to [B] with B not resolvable admits nob
     false,
     false,
   ]);
+  assertEquals(await admittedEverywhere(serve, "sub-root"), [
+    true,
+    true,
+    true,
+  ]);
   assertEquals(first.report.applied, ["auth.allowed-users"]);
 
   serve.setLookups(true);
@@ -249,6 +264,12 @@ Deno.test("serve access list reload: [A] to [B] with B not resolvable admits nob
   const second = await serve.reload();
   assertEquals(second.report.applied, ["auth.allowed-users"]);
   assertEquals(await admittedEverywhere(serve, "sub-b"), [true, true, true]);
+  // an open list admits the admins only if it names them
+  assertEquals(await admittedEverywhere(serve, "sub-root"), [
+    false,
+    false,
+    false,
+  ]);
 });
 
 Deno.test("serve access list reload: emptying the collectives keeps a list of deferred names closed", async () => {

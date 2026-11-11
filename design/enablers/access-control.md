@@ -581,9 +581,10 @@ applies. A new allowed-user applies once it resolves, from the stored name map
 or, for a name never recorded, through the club API key; without one, or when
 the lookup fails, that name waits and is retried on every reload, and the
 reload reports it. A list that removals and waiting names leave empty, with no
-collectives, keeps an entry that matches no one, so admission stays closed
-rather than opening to everyone. A file that empties both lists is refused, as
-at startup. Admins are not reloaded: changing `--admins` needs a restart. Each
+collectives, holds only the admins' resolved ids (or, with no admins, an entry
+that matches no one), so admission stays closed rather than opening to
+everyone, and an admin can still fix the file and reload remotely. A file that
+empties both lists is refused, as at startup. Admins are not reloaded: changing `--admins` needs a restart. Each
 instance applies the lists it reloaded, so in a team a removed person is
 admitted by an instance until that instance reloads.
 

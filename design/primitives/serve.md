@@ -1998,12 +1998,14 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `verify-on-enroll`, the intervals of services already running (the
   datastore and routes pollers re-arm at once; reconciliation, the
   continuation sweep, token GC and group refresh take the new interval after
-  their next run), and in the
+  their next run; a continuation sweep that runs only its boot pass reports a
+  changed interval under needs restart), and in the
   `audit` block the policy, alerts (each rule's window starts again),
   fail-open and sinks. Access lists: allowed-users removals always apply, a
   new name applies once it resolves (from the stored name map, or the club
   API key) and is retried on each reload until then, and a list that
-  removals leave empty with no collectives admits no one rather than everyone;
+  removals leave empty with no collectives admits only the admins rather than
+  everyone;
   `allowed-collectives` (re-registering the instance), the restrictions and
   `groups-field` apply as written. New values govern new runs, requests,
   sockets and enrollments; nothing already running changes. Needing a
