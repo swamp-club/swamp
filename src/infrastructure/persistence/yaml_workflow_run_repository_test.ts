@@ -20,6 +20,7 @@
 import {
   assert,
   assertEquals,
+  assertFalse,
   assertNotEquals,
   assertNotStrictEquals,
   assertRejects,
@@ -41,7 +42,12 @@ import {
   writeRunIndex,
 } from "./workflow_run_index.ts";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import {
+  WorkflowRun,
+  type WorkflowRunInput,
+  WorkflowRunSchema,
+} from "../../domain/workflows/workflow_run.ts";
+import { writeRunRecordYaml } from "./run_record_yaml.ts";
 import { UnreadableRunRecordError } from "../../domain/workflows/unreadable_run_record.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import { SCHEDULED_FOR_TAG } from "../../domain/workflows/schedule_catch_up.ts";
@@ -6134,5 +6140,249 @@ Deno.test("runIndexSnapshot: a start key survives compacting the index", async (
     const fresh = new YamlWorkflowRunRepository(dir);
     const snapshot = await fresh.runIndexSnapshot(workflow.id);
     assertEquals(snapshot.withStartKey("lookup-1")?.summary.id, run.id);
+  });
+});
+
+// the shapes a real model_method step leaves in its record, with values that
+// test the writer's quoting
+function realisticRunData(
+  workflow: Workflow,
+  stepCount: number,
+): WorkflowRunInput {
+  const runId = crypto.randomUUID();
+  const base = WorkflowRun.create(workflow).toPersistedData();
+  const tagsFor = (step: string, type: string) => ({
+    type,
+    specName: "result",
+    modelName: "sh1",
+    source: "step-output",
+    workflow: workflow.name,
+    workflowId: workflow.id,
+    workflowRunId: runId,
+    job: "main",
+    step,
+    initiatedBy: "user:test",
+    "_swamp.kind": type,
+  });
+  const steps = Array.from({ length: stepCount }, (_, i) => {
+    const stepName = `s${i + 1}`;
+    const dataId = crypto.randomUUID();
+    return {
+      stepName,
+      status: "succeeded" as const,
+      startedAt: new Date(Date.UTC(2026, 10, 11, 14, 0, i)).toISOString(),
+      completedAt: new Date(Date.UTC(2026, 10, 11, 14, 0, i + 1)).toISOString(),
+      output: {
+        type: "model_method",
+        model: "sh1",
+        resources: {
+          result: {
+            id: dataId,
+            namespace: "",
+            attributes: null,
+            isLatest: true,
+            size: 121,
+            stdout: "bench\nline: two # not a comment\n",
+            exitCode: "0",
+            flag: "yes",
+            empty: "",
+            nested: [[], {}, [{ "<<": "merge-like" }]],
+            unicode: "caf\u00e9 \u{1f600} \u2028",
+          },
+        },
+        files: {
+          log: {
+            path: `/tmp/repo/.swamp/data/command/shell/${dataId}/log/1/raw`,
+            contentType: "text/plain",
+          },
+        },
+      },
+      dataArtifacts: [
+        {
+          dataId,
+          name: "result",
+          version: 1,
+          tags: tagsFor(stepName, "resource"),
+        },
+        {
+          dataId: crypto.randomUUID(),
+          name: "report-swamp-method-summary",
+          version: 1,
+          tags: { type: "report", reportName: "@swamp/method-summary" },
+        },
+      ],
+    };
+  });
+  return {
+    ...base,
+    id: runId,
+    status: "succeeded",
+    startedAt: "2026-11-11T14:00:00.000Z",
+    completedAt: "2026-11-11T14:10:00.000Z",
+    jobs: [{
+      jobName: "main",
+      status: "succeeded",
+      startedAt: "2026-11-11T14:00:00.000Z",
+      completedAt: "2026-11-11T14:10:00.000Z",
+      steps,
+    }],
+    tags: { team: "platform", "scheduled-for": "2026-11-11T14:00:00Z" },
+    inputs: { region: "us-east-1", count: 3, enabled: "on", token: "null" },
+    references: { "vault.get('v', 'k')": "${{ vault.get('v', 'k') }}" },
+    failureReason: "line one\n  indented: line two",
+    parentRun: {
+      workflowId: crypto.randomUUID(),
+      workflowName: "parent",
+      runId: crypto.randomUUID(),
+      jobName: "main",
+      stepName: "nested",
+      nestingDepth: 1,
+      ancestorWorkflowNames: ["parent"],
+    },
+  };
+}
+
+function persistedClone(run: WorkflowRun): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(run.toPersistedData()));
+}
+
+Deno.test("YamlWorkflowRunRepository.save: writes a realistic run with the run-record writer, and findById reads it back unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.fromData(realisticRunData(workflow, 5));
+    await repo.save(workflow.id, run);
+
+    const content = await Deno.readTextFile(repo.getPath(workflow.id, run.id));
+    assertEquals(content, writeRunRecordYaml(persistedClone(run)));
+    const found = await repo.findById(workflow.id, run.id);
+    assertEquals(
+      JSON.stringify(persistedClone(found!)),
+      JSON.stringify(persistedClone(run)),
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: a realistic record reads back as the same data @std/yaml stringify's output does", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.fromData(realisticRunData(workflow, 20));
+    await repo.save(workflow.id, run);
+
+    const content = await Deno.readTextFile(repo.getPath(workflow.id, run.id));
+    const before = parseYaml(stringifyYaml(persistedClone(run)));
+    assertEquals(parseYaml(content), before);
+    assertEquals(JSON.stringify(parseYaml(content)), JSON.stringify(before));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: what it writes passes @std/yaml parse and the run schema, as an older binary reads it", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    for (
+      const status of [
+        "pending",
+        "running",
+        "suspended",
+        "succeeded",
+        "failed",
+      ] as const
+    ) {
+      const run = WorkflowRun.fromData({
+        ...realisticRunData(workflow, 3),
+        status,
+      });
+      await repo.save(workflow.id, run);
+      const content = await Deno.readTextFile(
+        repo.getPath(workflow.id, run.id),
+      );
+      const parsed = WorkflowRunSchema.safeParse(parseYaml(content));
+      assert(parsed.success, status);
+      assertEquals(parsed.data.status, status);
+      assertEquals(
+        JSON.stringify(persistedClone(WorkflowRun.fromData(parsed.data))),
+        JSON.stringify(persistedClone(run)),
+      );
+    }
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: a record an older binary wrote with @std/yaml stringify still reads, and the next save rewrites it in the new format", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.fromData(realisticRunData(workflow, 4));
+    const path = repo.getPath(workflow.id, run.id);
+    await ensureDir(dirname(path));
+    const old = stringifyYaml(persistedClone(run));
+    await Deno.writeTextFile(path, old);
+
+    const expected = JSON.stringify(persistedClone(run));
+    const found = await repo.findById(workflow.id, run.id);
+    assertEquals(JSON.stringify(persistedClone(found!)), expected);
+    const global = await repo.findGlobalById(run.id);
+    assertEquals(global?.workflowId, workflow.id);
+    const summaries = await repo.findAllSummariesByWorkflowId(workflow.id);
+    assertEquals(summaries.map((summary) => summary.id), [run.id]);
+
+    await repo.save(workflow.id, found!);
+    const rewritten = await Deno.readTextFile(path);
+    assertNotEquals(rewritten, old);
+    assertEquals(rewritten, writeRunRecordYaml(persistedClone(run)));
+    const again = await repo.findById(workflow.id, run.id);
+    assertEquals(JSON.stringify(persistedClone(again!)), expected);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.save: on v3, an unchanged re-save stages nothing, and a record an older binary wrote is staged once", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, uow, batches } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.fromData(realisticRunData(workflow, 3));
+    const path = repo.getPath(workflow.id, run.id);
+
+    await runInUnitOfWork(uow, async () => {
+      await repo.save(workflow.id, run);
+      await repo.save(workflow.id, run, { alreadyStaged: true });
+      await Deno.writeTextFile(path, stringifyYaml(persistedClone(run)));
+      await repo.save(workflow.id, run, { alreadyStaged: true });
+      await repo.save(workflow.id, run, { alreadyStaged: true });
+    });
+
+    assertEquals(
+      batches.map((batch) => batch.map((change) => typedShape(change).intent)),
+      [["run.create"], ["run.update"]],
+    );
+    assertEquals(
+      await Deno.readTextFile(path),
+      writeRunRecordYaml(persistedClone(run)),
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.isRunDamaged: a realistic record cut short is damaged, and the next save repairs it", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.fromData(realisticRunData(workflow, 3));
+    await repo.save(workflow.id, run);
+    const path = repo.getPath(workflow.id, run.id);
+    const content = await Deno.readTextFile(path);
+    // mid-line, inside a quoted scalar: what a cut-short copy leaves
+    const cut = content.indexOf('"2026-11-11T14:00:01') + 5;
+    await Deno.writeTextFile(path, content.slice(0, cut));
+
+    assert(await repo.isRunDamaged(workflow.id, run.id));
+    await repo.save(workflow.id, run);
+    assertFalse(await repo.isRunDamaged(workflow.id, run.id));
+    assertEquals(await Deno.readTextFile(path), content);
   });
 });
