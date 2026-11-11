@@ -370,9 +370,8 @@ Deno.test("command routes: the tree built for a path has the full tree's schema 
   }
 });
 
-Deno.test("command routes: a completion callback's tree resolves each completion from the same command, to the same values, as the full tree", async () => {
-  // snapshot first: every later build re-parents the shared command instances
-  const full = await buildCommandTree();
+/** every path the complete walk reaches, the empty one first, then route aliases */
+function callbackPaths(full: AnyCommand): string[][] {
   const primary: string[][] = [[]];
   const visit = (command: AnyCommand, path: string[]) => {
     for (const child of command.getBaseCommands(false)) {
@@ -389,9 +388,30 @@ Deno.test("command routes: a completion callback's tree resolves each completion
         .map((path) => [alias, ...path.slice(1)])
     )
   );
-  const paths = [...primary, ...aliased];
   assert(primary.length > 100, `only ${primary.length} command paths found`);
   assert(aliased.length > 0, "no route alias reached");
+  return [...primary, ...aliased];
+}
+
+Deno.test("command routes: a completion callback parses through completions complete on the tree built for it", async () => {
+  const paths = callbackPaths(await buildCommandTree());
+  for (const path of paths) {
+    // an action no command completes yields nothing, so the parse prints nothing
+    const args = ["completions", "complete", "no-such-action", ...path];
+    const tree = (await buildCommandTree(args)).reset().noExit().throwErrors();
+    try {
+      await tree.parse(args);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`swamp ${args.join(" ")}: ${reason}`, { cause: error });
+    }
+  }
+});
+
+Deno.test("command routes: a completion callback's tree resolves each completion from the same command, to the same values, as the full tree", async () => {
+  // snapshot first: every later build re-parents the shared command instances
+  const full = await buildCommandTree();
+  const paths = callbackPaths(full);
   const parentOf = (root: AnyCommand, path: string[]) =>
     path.length === 0 ? undefined : walkVisible(root, path.slice(0, -1));
   const expected = new Map<string, unknown>();
