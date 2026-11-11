@@ -5800,6 +5800,26 @@ Deno.test("YamlWorkflowRunRepository.save: a run object new to the repository ta
   });
 });
 
+Deno.test("YamlWorkflowRunRepository.save: a run object new to the repository repairs an unreadable record and sends no second start event", async () => {
+  await withTempDir(async (dir) => {
+    const eventBus = new EventBus();
+    const events = collectRunEvents(eventBus);
+    const repo = new YamlWorkflowRunRepository(dir, eventBus);
+    const workflow = createTestWorkflow();
+    const run = await saveStarted(repo, workflow);
+    await truncateRecord(repo, run);
+
+    const copy = WorkflowRun.fromData(run.toPersistedData());
+    await repo.save(workflow.id, copy);
+    assertEquals(events, ["WorkflowRunStarted"]);
+    assertEquals((await repo.findById(workflow.id, run.id))?.status, "running");
+
+    copy.complete();
+    await repo.save(workflow.id, copy);
+    assertEquals(events, ["WorkflowRunStarted", "WorkflowRunFailed"]);
+  });
+});
+
 Deno.test("YamlWorkflowRunRepository.save: a save the fence refuses records no status, so the next save still sends the terminal event", async () => {
   await withTempDir(async (dir) => {
     const eventBus = new EventBus();
