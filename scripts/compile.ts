@@ -539,13 +539,16 @@ export class BuildRunner {
     return this.#interrupted;
   }
 
-  interrupt(): void {
+  // true when the build was already interrupted, so the caller can force-quit
+  interrupt(): boolean {
+    const repeated = this.#interrupted;
     this.#interrupted = true;
     try {
       this.#child?.kill();
     } catch {
       // already exited
     }
+    return repeated;
   }
 
   async run(args: readonly string[], cwd: string): Promise<boolean> {
@@ -565,7 +568,10 @@ async function withInterruptGuard<T>(
   runner: BuildRunner,
   work: () => Promise<T>,
 ): Promise<T> {
-  const interrupt = () => runner.interrupt();
+  // a second signal force-quits, skipping the restore, if the first hangs
+  const interrupt = () => {
+    if (runner.interrupt()) Deno.exit(130);
+  };
   for (const signal of FORWARDED_SIGNALS) {
     Deno.addSignalListener(signal, interrupt);
   }

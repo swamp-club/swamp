@@ -681,3 +681,9 @@ Deno.test("BuildRunner: an interrupt tolerates a child that has already exited",
   child.finish(true);
   assertEquals(await running, false);
 });
+
+Deno.test("BuildRunner: interrupt reports whether the build was already interrupted", () => {
+  const runner = new BuildRunner(() => fakeChild());
+  assertEquals(runner.interrupt(), false);
+  assertEquals(runner.interrupt(), true);
+});
