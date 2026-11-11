@@ -37,6 +37,7 @@ import type {
 } from "../../lib/agent_sessions/swampify.ts";
 import {
   consideredById,
+  formatDay,
   offerView,
   optionByCandidate,
   setFullness,
@@ -57,10 +58,6 @@ function toggled(set: ReadonlySet<string>, key: string): Set<string> {
   return next;
 }
 
-function day(iso: string): string {
-  return new Date(iso).toISOString().slice(0, 10);
-}
-
 function SetHeader(
   { set, row }: { set: SwampifyCandidateSet; row: SwampifyRow },
 ) {
@@ -72,7 +69,7 @@ function SetHeader(
           formatAbsoluteTime(window.until)
         }`}
       >
-        Sessions from {day(window.since)} to {day(window.until)}
+        Sessions from {formatDay(window.since)} to {formatDay(window.until)}
       </span>
       <span>{scope.harnesses.join(", ")}</span>
       <span title={scope.all ? undefined : scope.include.join("\n")}>

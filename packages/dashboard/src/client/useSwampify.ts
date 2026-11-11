@@ -22,13 +22,12 @@
  * this file only sends them.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRequest } from "./useRequest.ts";
 import { useSwamp } from "./SwampProvider.tsx";
 import { replyData } from "./agent_sessions.ts";
 import {
   candidateSetListPayload,
-  candidateSetProbePayload,
   comparisonListPayload,
   comparisonsByOption,
   itemPayload,
@@ -40,18 +39,13 @@ import {
   shownCandidateSet,
   shownOffer,
   type SwampifyRow,
+  swampifyRowKey,
 } from "./swampify.ts";
 import type {
   SwampifyCandidateSetReading,
   SwampifyComparisonReading,
   SwampifyOfferReading,
 } from "../lib/agent_sessions/swampify.ts";
-
-/** Whether the viewer can read at least one candidate set: one query, limit 1. */
-export function useCandidateSetVisible(): boolean {
-  const probe = useRequest("data.query", candidateSetProbePayload());
-  return parseSwampifyRows(replyData(probe.data)).rows.length > 0;
-}
 
 export interface Loadable<T> {
   readonly value: T;
@@ -73,15 +67,38 @@ function useShownItem<R>(
     () => pick(parseSwampifyRows(replyData(listReq.data)).rows),
     [listReq.data],
   );
+  const key = row ? swampifyRowKey(row) : null;
   const bodyReq = useRequest(
     "data.get",
     row ? itemPayload(row) : undefined,
     { enabled: row !== undefined },
   );
-  const reading = useMemo(
-    () => (bodyReq.data ? parse(replyData(bodyReq.data)) : null),
-    [bodyReq.data],
+  // A body belongs to the row version it was read for, so a newer version
+  // never shows the previous one's content while it loads.
+  const [read, setRead] = useState<{ key: string | null; reading: R } | null>(
+    null,
   );
+  const keyRef = useRef(key);
+  keyRef.current = key;
+  useEffect(() => {
+    if (bodyReq.data) {
+      setRead({ key: keyRef.current, reading: parse(replyData(bodyReq.data)) });
+    }
+  }, [bodyReq.data]);
+  // A rewrite keeps the item's name, so the payload is unchanged and the
+  // request would not re-run on its own.
+  const previous = useRef(row);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = row;
+    if (
+      row && before && key !== swampifyRowKey(before) &&
+      row.modelName === before.modelName && row.name === before.name
+    ) {
+      bodyReq.refetch();
+    }
+  }, [key]);
+  const reading = read !== null && read.key === key ? read.reading : null;
   return {
     list: {
       value: row,
@@ -180,7 +197,10 @@ export function useComparisonRecords(): {
   return { records, load };
 }
 
-/** The key `useComparisonRecords` keeps a row's body under. */
+/**
+ * The key `useComparisonRecords` keeps a row's body under: one per version,
+ * so a rewritten comparison is read again when opened.
+ */
 export function comparisonKey(row: SwampifyRow): string {
-  return `${row.modelName}/${row.name}`;
+  return swampifyRowKey(row);
 }

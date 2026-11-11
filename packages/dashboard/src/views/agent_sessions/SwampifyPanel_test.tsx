@@ -32,10 +32,11 @@ import {
   type SwampifySkipped,
 } from "../../../../../src/domain/agent_sessions/swampify.ts";
 import type { SwampifyRow } from "../../client/swampify.ts";
-import type {
-  ComparisonRecord,
-  Loadable,
-  SwampifyState,
+import {
+  comparisonKey,
+  type ComparisonRecord,
+  type Loadable,
+  type SwampifyState,
 } from "../../client/useSwampify.ts";
 import { fixtureSessions } from "./fixtures.ts";
 import {
@@ -143,7 +144,7 @@ function read(reading: SwampifyComparisonReading): ComparisonRecord {
 }
 
 const records = new Map([[
-  `swampify/${comparisonRow.name}`,
+  comparisonKey(comparisonRow),
   read({ kind: "record", record: comparison }),
 ]]);
 
@@ -274,7 +275,7 @@ Deno.test("SwampifyView: a candidate with a comparison opens it; one without say
 
 Deno.test("SwampifyView: a skipped comparison shows the note, never its figures", () => {
   const skipped = new Map([[
-    `swampify/${comparisonRow.name}`,
+    comparisonKey(comparisonRow),
     read({
       kind: "skipped",
       reason: "older",

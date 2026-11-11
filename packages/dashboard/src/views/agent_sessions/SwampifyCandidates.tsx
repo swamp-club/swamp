@@ -29,6 +29,7 @@ import type {
 } from "../../lib/agent_sessions/swampify.ts";
 import {
   CONSIDERED_LABEL,
+  formatDay,
   formatDuration,
   formatRate,
   formatSpread,
@@ -44,10 +45,6 @@ import { SessionRef } from "./SwampifyParts.tsx";
 /** The key a candidate's own comparison toggle uses, apart from the offer's. */
 export function candidateComparisonKey(candidateId: string): string {
   return `candidate:${candidateId}`;
-}
-
-function day(iso: string): string {
-  return new Date(iso).toISOString().slice(0, 10);
 }
 
 function RangeRow(
@@ -199,8 +196,8 @@ export function CandidatesTable(props: CandidatesProps) {
                       formatAbsoluteTime(c.lastSeen)
                     }`}
                   >
-                    {day(c.firstSeen)}
-                    <div className="as-muted">to {day(c.lastSeen)}</div>
+                    {formatDay(c.firstSeen)}
+                    <div className="as-muted">to {formatDay(c.lastSeen)}</div>
                   </td>
                   <td className="as-num" title={formatSpread(w, formatTokens)}>
                     {formatTokens(w.median)}

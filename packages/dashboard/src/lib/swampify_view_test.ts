@@ -34,6 +34,7 @@ import { fixtureSessions } from "../views/agent_sessions/fixtures.ts";
 import {
   consideredById,
   formatBreakEven,
+  formatDay,
   formatRate,
   formatSpread,
   offerView,
@@ -135,6 +136,7 @@ Deno.test("sessionRefTarget: links only a session the page loaded, and never thr
 
 Deno.test("formatting: shows stored figures without combining them", () => {
   assertEquals(formatRate(0.22), "22%");
+  assertEquals(formatDay("2026-11-10T23:30:00-02:00"), "2026-11-11");
   assertEquals(formatSpread({ min: 3, median: 9, max: 31 }), "3 – 31");
   assertEquals(formatSpread({ min: 5, median: 5, max: 5 }), "5");
   assertEquals(formatBreakEven({ low: null, high: null }), "Never pays back");

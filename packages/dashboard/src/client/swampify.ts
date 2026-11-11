@@ -119,6 +119,14 @@ export function comparisonListPayload(): Record<string, unknown> {
   );
 }
 
+/**
+ * Names one version of a listed item: its owner, name and tags, which a
+ * rewrite of the same item changes.
+ */
+export function swampifyRowKey(row: SwampifyRow): string {
+  return JSON.stringify([row.modelName, row.name, row.tags]);
+}
+
 /** Opens one listed item by its owner and name. */
 export function itemPayload(row: SwampifyRow): Record<string, unknown> {
   return {

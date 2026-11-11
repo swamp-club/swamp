@@ -52,6 +52,7 @@ import {
   SWAMPIFY_COMPARISON_LIMIT,
   SWAMPIFY_ITEM_LIMIT,
   type SwampifyRow,
+  swampifyRowKey,
 } from "./swampify.ts";
 
 function row(
@@ -219,4 +220,20 @@ Deno.test("parse replies: never throw, and a skip repeats nothing from the conte
     content: JSON.stringify({ ...fixtureCandidateSet(), schemaVersion: 99 }),
   });
   assertEquals(newer.kind === "skipped" && newer.reason, "newer");
+});
+
+Deno.test("swampifyRowKey: a rewrite of the same item is a new key; the same version keeps its key", () => {
+  const first = row("swampify-comparison-a", "swampify", {
+    generatedAt: "2026-11-09T00:00:00.000Z",
+  });
+  const again = row("swampify-comparison-a", "swampify", {
+    generatedAt: "2026-11-09T00:00:00.000Z",
+  });
+  const rewritten = row("swampify-comparison-a", "swampify", {
+    generatedAt: "2026-11-10T00:00:00.000Z",
+  });
+  const otherOwner = row("swampify-comparison-a", "elsewhere", first.tags);
+  assertEquals(swampifyRowKey(first), swampifyRowKey(again));
+  assertEquals(swampifyRowKey(first) === swampifyRowKey(rewritten), false);
+  assertEquals(swampifyRowKey(first) === swampifyRowKey(otherOwner), false);
 });

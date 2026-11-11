@@ -161,6 +161,11 @@ export const CONSIDERED_LABEL: Readonly<
   "low-value": "Low value",
 };
 
+/** The UTC date of an ISO time, as "2026-11-10". */
+export function formatDay(iso: string): string {
+  return new Date(iso).toISOString().slice(0, 10);
+}
+
 /** A stored share from 0 to 1, as a whole percent. */
 export function formatRate(rate: number): string {
   return `${Math.round(rate * 100)}%`;

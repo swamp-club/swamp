@@ -1292,6 +1292,7 @@
 
 .as-sw-detail {
   display: grid;
+  overflow-x: auto;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 12px 24px;
   padding: 6px 4px;
@@ -1314,9 +1315,7 @@
 }
 
 .as-sw-ranges th[scope="row"] {
-  text-align: left;
   font-weight: 400;
-  color: var(--text-2);
 }
 
 .as-sw-evidence {
@@ -1376,10 +1375,6 @@
 
 .as-sw-candidates col.as-sw-c-seen {
   width: 112px;
-}
-
-.as-sw-detail {
-  overflow-x: auto;
 }
 
 .as-sw-candidates .as-sw-refs a {

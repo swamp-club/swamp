@@ -35,6 +35,7 @@ import type {
 } from "../../lib/agent_sessions/swampify.ts";
 import {
   formatBreakEven,
+  formatDay,
   formatDuration,
   formatSpread,
   formatTokens,
@@ -196,7 +197,7 @@ export function ComparisonDetail(
       <table className="data-table as-table as-sw-compare-table">
         <caption className="as-muted">
           Per run, median with the range beneath. "Since" counts runs after{" "}
-          {new Date(forward.since).toISOString().slice(0, 10)}.
+          {formatDay(forward.since)}.
         </caption>
         <thead>
           <tr>
