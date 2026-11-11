@@ -806,6 +806,45 @@ const GlobalArgsSchema = z.object({
   `Unresolved expression in globalArguments.<field>`, so a field that must carry
   such text belongs in the method's arguments rather than its global arguments.
 
+### Arguments Holding Text an Agent Wrote
+
+A `--input` value is operator-written, so `${{ vault.get(...) }}` in it
+resolves. When a method argument carries text someone else wrote (a plan, review
+or result an agent produced), mark it data so a value supplied for it is never
+evaluated:
+
+```typescript
+record: {
+  description: "Record an artifact",
+  arguments: z.object({
+    name: z.string(),
+    payload: z.string().meta({ data: true }),
+  }),
+  execute: async (args, context) => {
+    // args.payload is exactly what the caller sent, ${{ ... }} text included
+  },
+},
+```
+
+- It holds for every route a caller uses: `--input`, `--input key=@file`,
+  `--input-file`, `--stdin`, `swamp serve` and a follower forwarding to its
+  leader. The method sees the text verbatim and the data it writes is stored
+  byte for byte, never as `***`.
+- It reaches nested fields, array elements and record values; on the arguments
+  object it makes every argument data. A definition input the marked argument
+  reads through `${{ inputs.x }}` is data for that run too.
+- Text written in the definition or a workflow step is the author's and still
+  evaluates, so a deliberate `vault.get()` goes there, or in an unmarked
+  argument.
+- Only method arguments take it: registering a type with `data: true` in
+  `globalArguments` fails.
+- Swamp before the release that added it ignores the marker and evaluates. A
+  server lists `data-arguments` in `server.version` capabilities when it honours
+  it; until your type requires that release, callers keep passing
+  `--literal-inputs`.
+- A caller can make one unmarked input data with `--input-data key=<path>`,
+  which reads the file and never evaluates its content.
+
 ---
 
 ## CheckDefinition API

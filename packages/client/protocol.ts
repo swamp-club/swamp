@@ -65,6 +65,15 @@ export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
 /** `server.version` capability: the server honours `fromJob` on a resume. */
 export const SERVE_CAPABILITY_RESUME_FROM_JOB = "resume-from-job";
 
+/** `server.version` capability: the server honours `dataInputKeys`. */
+export const SERVE_CAPABILITY_DATA_INPUTS = "data-inputs";
+
+/**
+ * `server.version` capability: the server treats a method argument marked
+ * `.meta({ data: true })` as data.
+ */
+export const SERVE_CAPABILITY_DATA_ARGUMENTS = "data-arguments";
+
 export interface ModelMethodRunPayload {
   modelIdOrName: string;
   methodName: string;
@@ -76,6 +85,12 @@ export interface ModelMethodRunPayload {
    * the field and evaluates.
    */
   literalInputs?: boolean;
+  /**
+   * Dotted input keys that are data, as `--input-data` writes them. Only send
+   * to a server whose `server.version` reply lists
+   * {@link SERVE_CAPABILITY_DATA_INPUTS}; an older server ignores them.
+   */
+  dataInputKeys?: string[];
   lastEvaluated?: boolean;
   runtimeTags?: Record<string, string>;
   typeArg?: string;

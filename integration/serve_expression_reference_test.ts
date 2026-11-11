@@ -398,6 +398,17 @@ async function withEchoType(
           return Promise.resolve({});
         },
       },
+      echoData: {
+        description: "takes a note that is data",
+        kind: "read",
+        arguments: z.object({
+          note: z.string().meta({ data: true }).optional(),
+        }),
+        execute: (args: { note?: string }) => {
+          notes.push(args.note);
+          return Promise.resolve({});
+        },
+      },
     },
   });
   try {
@@ -508,6 +519,113 @@ Deno.test("serve expressions: literalInputs runs untrusted text as data, unautho
       });
     },
   );
+});
+
+Deno.test("serve expressions: a marked argument and a dataInputKeys input run as data, unauthorized and unevaluated, while an unmarked one is still checked", async () => {
+  await withMockedEnv(
+    { SWAMP_EXPR_SENTINEL_RUN: "sentinel-4649" },
+    async () => {
+      await withEchoType(async (echoType, notes) => {
+        await withFixtures(async (f) => {
+          await f.repo.repoContext.definitionRepo.save(
+            echoType,
+            Definition.create({ name: "echo-x", globalArguments: {} }),
+          );
+          const runOnly = createServeCtx(f.repo, [
+            grant({
+              actions: ["read", "run"],
+              resource: { kind: "model", pattern: "*" },
+            }),
+            ...GRANTS.slice(2),
+          ]);
+          const texts = [
+            "${{ env.SWAMP_EXPR_SENTINEL_RUN }}",
+            REFUSED_REFERENCES[0],
+          ];
+          for (const note of texts) {
+            assertAllowed(
+              await sendRequest(
+                runOnly,
+                request("model.method.run", {
+                  modelIdOrName: "echo-x",
+                  methodName: "echoData",
+                  inputs: { note },
+                }),
+              ),
+              `marked ${note}`,
+            );
+            assertAllowed(
+              await sendRequest(
+                runOnly,
+                request("model.method.run", {
+                  modelIdOrName: "echo-x",
+                  methodName: "echo",
+                  inputs: { note },
+                  dataInputKeys: ["note"],
+                }),
+              ),
+              `data input ${note}`,
+            );
+            assertRefused(
+              await sendRequest(
+                runOnly,
+                request("model.method.run", {
+                  modelIdOrName: "echo-x",
+                  methodName: "echo",
+                  inputs: { note },
+                }),
+              ),
+              `unmarked ${note}`,
+            );
+          }
+          assertEquals(notes, [texts[0], texts[0], texts[1], texts[1]]);
+        });
+      });
+    },
+  );
+});
+
+Deno.test("serve expressions: a direct type execution with a marked argument runs it as data", async () => {
+  await withEchoType(async (echoType, notes) => {
+    await withFixtures(async (f) => {
+      const runOnly = createServeCtx(f.repo, [
+        grant({
+          actions: ["read", "run", "write"],
+          resource: { kind: "model", pattern: "*" },
+        }),
+        ...GRANTS.slice(2),
+      ]);
+      assertAllowed(
+        await sendRequest(
+          runOnly,
+          request("model.method.run", {
+            modelIdOrName: "echo-direct",
+            methodName: "echoData",
+            typeArg: echoType.normalized,
+            definitionName: "echo-direct",
+            inputs: { note: REFUSED_REFERENCES[0] },
+          }),
+        ),
+        "direct marked",
+      );
+      assertEquals(notes, [REFUSED_REFERENCES[0]]);
+    });
+  });
+});
+
+Deno.test("serve expressions: server.version advertises data-inputs and data-arguments", async () => {
+  await withFixtures(async (f) => {
+    const frames = await sendRequest(f.ctx, {
+      type: "server.version",
+      id: crypto.randomUUID(),
+    });
+    const version = frames.find((frame) => frame.type === "server.version") as
+      | { payload?: { capabilities?: string[] } }
+      | undefined;
+    const capabilities = version?.payload?.capabilities ?? [];
+    assertEquals(capabilities.includes("data-inputs"), true);
+    assertEquals(capabilities.includes("data-arguments"), true);
+  });
 });
 
 Deno.test("serve expressions: evaluate and validate never resolve env", async () => {

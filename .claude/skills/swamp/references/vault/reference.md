@@ -393,6 +393,8 @@ with a warning, even when the text matches an expression the author wrote.
 | Behavior definitions, workflow YAML      | evaluated       |
 | `swamp behavior run --input`             | evaluated       |
 | `swamp behavior run --literal-inputs`    | inert (literal) |
+| `swamp behavior run --input-data`        | inert (literal) |
+| An argument the type marks `data: true`  | inert (literal) |
 | `swamp workflow run/resume --input`      | inert (literal) |
 | Data content (`data.latest(...)` etc.)   | inert (literal) |
 | `forEach` items, webhook/trigger payload | inert (literal) |

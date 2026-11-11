@@ -75,8 +75,10 @@ import type {
 } from "../../libswamp/models/model_method_run_view.ts";
 import { GIT_SHA } from "../../infrastructure/runtime/build_info.ts";
 import {
+  assertNoDataInputOverlap,
   deepMerge,
   mergeInputArgs,
+  parseDataInputs,
   parseInputs,
   parseStdinContent,
 } from "../input_parser.ts";
@@ -113,7 +115,10 @@ import {
   runModelMethodOverServer,
   TOKEN_FILE_DESCRIPTION,
 } from "../remote_run.ts";
-import { SERVE_CAPABILITY_LITERAL_INPUTS } from "../../serve/protocol.ts";
+import {
+  SERVE_CAPABILITY_DATA_INPUTS,
+  SERVE_CAPABILITY_LITERAL_INPUTS,
+} from "../../serve/protocol.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { processDataWrites } from "../../domain/data/in_flight_data_writes.ts";
@@ -289,6 +294,11 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
       { default: false },
     )
     .option(
+      "--input-data <value:string>",
+      "Read one input from a file as data, never evaluated (key=<path>, repeatable; with --server, needs a serve that supports it)",
+      { collect: true },
+    )
+    .option(
       "--tag <tag:string>",
       "Add tag to produced data (KEY=VALUE, repeatable)",
       { collect: true },
@@ -456,6 +466,10 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
               : options.inputFile as string | undefined,
             literal: options.literalInputs === true,
           });
+          const dataInputs = await parseDataInputs(
+            options.inputData as string[] | undefined,
+          );
+          assertNoDataInputOverlap(cliInputs, dataInputs);
 
           const runtimeTags = options.tag
             ? parseTags(options.tag as string[])
@@ -684,13 +698,17 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             datastoreRootOf(datastoreConfig),
           );
 
-          const inputSets: Record<string, unknown>[] = stdinItems
+          const inputSets: Record<string, unknown>[] = (stdinItems
             ? stdinItems.map((item) =>
               Object.keys(cliInputs).length > 0
                 ? deepMerge(item, cliInputs)
                 : item
             )
-            : [cliInputs];
+            : [cliInputs]).map((set) =>
+              dataInputs.keys.length > 0
+                ? deepMerge(set, dataInputs.values)
+                : set
+            );
 
           // what each run wrote, for the locks' push to publish.
           const written: WrittenVersion[] = [];
@@ -704,7 +722,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 written.push(version);
                 writtenByRun[runIndex]?.push(version);
               }
-              if (outcome === "failed") methodFailed = true;
+              if (outcome === "failed") {
+                methodFailed = true;
+              }
             },
           };
           // the versions a read or list run's publish left on this host, which
@@ -720,7 +740,9 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             reason: UnpublishedVersionView["reason"],
           ) => {
             const listed = new Set(
-              unpublished.map((u) => versionKey(u.written)),
+              unpublished.map((u) =>
+                versionKey(u.written)
+              ),
             );
             for (const version of written) {
               if (
@@ -939,6 +961,13 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                         methodName,
                         inputs: inputSets[i],
                         literalInputs: options.literalInputs === true,
+                        ...(dataInputs.keys.length > 0
+                          ? {
+                            dataInputPaths: dataInputs.keys.map((key) =>
+                              key.split(".")
+                            ),
+                          }
+                          : {}),
                         lastEvaluated,
                         typeArg,
                         definitionName,
@@ -1114,6 +1143,10 @@ async function runMethodViaServer(
     inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
     literal: literalInputs,
   });
+  const dataInputs = await parseDataInputs(
+    options.inputData as string[] | undefined,
+  );
+  assertNoDataInputOverlap(cliInputs, dataInputs);
   const runtimeTags = options.tag
     ? parseTags(options.tag as string[])
     : undefined;
@@ -1129,11 +1162,14 @@ async function runMethodViaServer(
     stopsCatchUps: true,
   });
 
-  const inputSets: Record<string, unknown>[] = stdinItems
-    ? stdinItems.map((item) =>
-      Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
-    )
-    : [cliInputs];
+  const inputSets: Record<string, unknown>[] =
+    (stdinItems
+      ? stdinItems.map((item) =>
+        Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
+      )
+      : [cliInputs]).map((set) =>
+        dataInputs.keys.length > 0 ? deepMerge(set, dataInputs.values) : set
+      );
 
   const token = await resolveServerTokenFromOptions(
     server,
@@ -1144,6 +1180,20 @@ async function runMethodViaServer(
     // an older server ignores literalInputs, so the flag goes only to one that
     // says it honours it; dropping the probe would fail open. It runs inside
     // the try, under the run's signal so --timeout bounds it
+    if (dataInputs.keys.length > 0) {
+      // asked of the leader, which runs it; a follower only relays
+      const version = await requestServerResponse<
+        { version: string; capabilities?: string[] }
+      >(
+        { server, token, signal: abort.signal },
+        { type: "server.version", payload: { leader: true } },
+      );
+      if (!version.capabilities?.includes(SERVE_CAPABILITY_DATA_INPUTS)) {
+        throw new UserError(
+          `The server (swamp ${version.version}) does not support --input-data, so it would evaluate expressions in the file. Upgrade swamp serve, or run without --server.`,
+        );
+      }
+    }
     if (literalInputs) {
       const version = await requestServerResponse<
         { version: string; capabilities?: string[] }
@@ -1183,6 +1233,9 @@ async function runMethodViaServer(
             methodName,
             inputs: inputSets[i],
             ...(literalInputs ? { literalInputs: true } : {}),
+            ...(dataInputs.keys.length > 0
+              ? { dataInputKeys: dataInputs.keys }
+              : {}),
             lastEvaluated: options.lastEvaluated as boolean,
             runtimeTags,
             typeArg: info.typeArg,

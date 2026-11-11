@@ -36,6 +36,8 @@ interface JsonSchemaProperty {
   type?: string | string[];
   enum?: string[];
   description?: string;
+  /** set by `.meta({ data: true })`: a value for it is never evaluated */
+  data?: boolean;
 }
 
 interface JsonSchemaObject {
@@ -73,6 +75,7 @@ export function formatSchemaAttributes(
     if (formatted) parts.push(dim(`(${formatted})`));
     if (prop.enum) parts.push(dim(`[${prop.enum.join(", ")}]`));
     if (required.has(name)) parts.push(dim("*required"));
+    if (prop.data === true) parts.push(dim("data"));
     return `${indent}${parts.join(" ")}`;
   });
 }

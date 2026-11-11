@@ -279,3 +279,19 @@ Deno.test("zodToJsonSchema: io input lists what a schema with a transform accept
     "string",
   );
 });
+
+Deno.test("zodToJsonSchema: keeps a data marker on top-level and nested fields", () => {
+  const schema = zodToJsonSchema(
+    z.object({
+      payload: z.string().meta({ data: true }),
+      body: z.object({ text: z.string().meta({ data: true }) }),
+    }),
+  ) as {
+    properties: Record<
+      string,
+      { data?: boolean; properties?: Record<string, { data?: boolean }> }
+    >;
+  };
+  assertEquals(schema.properties.payload.data, true);
+  assertEquals(schema.properties.body.properties?.text.data, true);
+});

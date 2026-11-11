@@ -32,6 +32,7 @@ import type { SecretOccurrences } from "../vaults/secret_occurrences.ts";
 import type { DataRange } from "../expressions/provenance_map.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import { assertModelSecretsMetadataValid } from "./secret_destinations.ts";
+import { assertNoDataGlobalArguments } from "./data_field_extractor.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -1008,6 +1009,7 @@ export class ModelRegistry {
 
     // a field marked both sensitive and secrets: "refuse" is a schema error
     assertModelSecretsMetadataValid(model);
+    assertNoDataGlobalArguments(model);
 
     this.models.set(key, model);
   }

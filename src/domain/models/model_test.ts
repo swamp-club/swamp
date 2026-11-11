@@ -2012,3 +2012,27 @@ Deno.test("ModelRegistry.extend and applyExtensionMembers: a method with the sen
   );
   assertEquals(Object.keys(registry.get("swamp/base")!.methods), before);
 });
+
+Deno.test("ModelRegistry.register: a data marker in global arguments is refused; one on a method argument registers", () => {
+  const registry = new ModelRegistry();
+  const refused: ModelDefinition = {
+    ...createTestModel("swamp/data-global"),
+    globalArguments: z.object({ a: z.string().meta({ data: true }) }),
+  };
+  assertThrows(
+    () => registry.register(refused),
+    Error,
+    "Behavior type 'swamp/data-global' global arguments: field 'a' is marked data: true",
+  );
+  registry.register({
+    ...createTestModel("swamp/data-method"),
+    methods: {
+      run: {
+        description: "r",
+        arguments: z.object({ a: z.string().meta({ data: true }) }),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  assertEquals(registry.has("swamp/data-method"), true);
+});

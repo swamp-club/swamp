@@ -20,6 +20,8 @@
 import { z } from "zod";
 import { DelegationPhaseSchema } from "../domain/models/access/delegation_model.ts";
 import {
+  SERVE_CAPABILITY_DATA_ARGUMENTS,
+  SERVE_CAPABILITY_DATA_INPUTS,
   SERVE_CAPABILITY_GATE_ATTEMPT,
   SERVE_CAPABILITY_HTTP_ACTIONS,
   SERVE_CAPABILITY_LITERAL_INPUTS,
@@ -313,6 +315,7 @@ const ModelMethodRunRequestSchema = z.object({
     methodName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     literalInputs: z.boolean().optional(),
+    dataInputKeys: z.array(z.string().min(1).max(1024)).max(256).optional(),
     lastEvaluated: z.boolean().optional(),
     runtimeTags: boundedRecord(z.string(), z.string()).optional(),
     typeArg: z.string().optional(),
@@ -2174,6 +2177,8 @@ export function handleMessage(
                 SERVE_CAPABILITY_SCHEDULE_CATCH_UP,
                 SERVE_CAPABILITY_HTTP_ACTIONS,
                 SERVE_CAPABILITY_GATE_ATTEMPT,
+                SERVE_CAPABILITY_DATA_INPUTS,
+                SERVE_CAPABILITY_DATA_ARGUMENTS,
               ],
             },
           }),

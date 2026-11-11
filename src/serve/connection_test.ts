@@ -5393,6 +5393,8 @@ Deno.test("handleMessage: server.version lists its capabilities", async () => {
     "schedule-catch-up",
     "http-actions",
     "gate-attempt",
+    "data-inputs",
+    "data-arguments",
   ]);
 });
 

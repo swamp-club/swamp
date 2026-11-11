@@ -1299,6 +1299,15 @@ authored copies of an evaluated expression at other paths still receive the
 run-start value, as they always have. The one exception is an occurrence inside
 a data range, which is skipped.
 
+**Data arguments.** A method argument marked `.meta({ data: true })`, and an
+input named by `--input-data`, is a data range wherever a caller supplied it:
+in the inputs map, at the method argument it lands in, and, for a definition
+input the marked argument's own source reads through `inputs.*`, in every
+splice of that input. Expression text there is never added to the run's
+authored set. The marker reaches only what the argument's source names
+directly; a value routed through a global argument and `self.globalArguments`
+is not followed.
+
 **Value provenance.** CEL context bindings carry the same maps, so an authored
 expression that travels as a value keeps its standing. Examples are a
 `vault.get(...)` passed through method-run `--input`, a step input, a runtime
@@ -1445,6 +1454,8 @@ report text in one.
 | Definition input-schema defaults                            | authored   |
 | `swamp behavior run` inputs                                 | authored   |
 | `swamp behavior run --literal-inputs` inputs                | data       |
+| `swamp behavior run --input-data` inputs                    | data       |
+| `swamp behavior run` inputs for a `data: true` argument     | data       |
 | Child workflow inputs                                       | parent's   |
 
 **Where it is enforced.** Every evaluated-cache save states its map: the

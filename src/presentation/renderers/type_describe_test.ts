@@ -267,3 +267,49 @@ Deno.test("JsonTypeDescribeRenderer compact mode: carries each method's kind and
     console.log = originalLog;
   }
 });
+
+Deno.test("type describe: a data-marked argument is tagged in log mode and kept in compact JSON", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  const data = {
+    ...testData,
+    methods: [{
+      ...testData.methods[0],
+      arguments: {
+        type: "object",
+        properties: {
+          payload: { type: "string", data: true },
+          name: { type: "string" },
+        },
+        required: ["payload"],
+      },
+    }],
+  };
+  try {
+    await consumeStream(
+      toStream([{ kind: "completed", data }]),
+      createTypeDescribeRenderer("log").handlers(),
+    );
+    const lines = logs.join("\n").split("\n");
+    const payload = lines.find((line) => line.includes("payload"))!;
+    const name = lines.find((line) => line.trimStart().startsWith("name"))!;
+    assertStringIncludes(payload, "data");
+    assertEquals(name.includes("data"), false);
+    logs.length = 0;
+    await consumeStream(
+      toStream([{ kind: "completed", data }]),
+      createTypeDescribeRenderer("json", true).handlers(),
+    );
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.methods[0].arguments.properties.payload, {
+      type: "string",
+      data: true,
+    });
+    assertEquals(parsed.methods[0].arguments.properties.name, {
+      type: "string",
+    });
+  } finally {
+    console.log = originalLog;
+  }
+});
