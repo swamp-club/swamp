@@ -57,6 +57,8 @@ import {
   type WorkerCredential,
 } from "../src/worker/token_rotation_handler.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../src/domain/models/access/server_token_model.ts";
 
 await initializeLogging({});
 
@@ -328,5 +330,38 @@ Deno.test("worker token rotate from the local CLI keeps connected workers on the
 
     assertEquals(await f.revalidation.runOnce(), []);
     assertEquals(f.gateway.worker("w-local")?.connected, true);
+  });
+});
+
+Deno.test("worker token rotate from the local CLI never rotates another behavior with the name", async () => {
+  await withFixture(async (f) => {
+    await f.repoContext.definitionRepo.save(
+      SERVER_TOKEN_MODEL_TYPE,
+      Definition.create({
+        name: "srv",
+        type: SERVER_TOKEN_MODEL_TYPE.normalized,
+        globalArguments: {},
+      }),
+    );
+
+    const libCtx = createLibSwampContext();
+    const events = await collect(
+      workerTokenRotate(
+        libCtx,
+        await createWorkerTokenRotateDeps(libCtx, f.repoDir, f.repoContext),
+        { name: "srv" },
+      ),
+    );
+
+    const error = events.find((e) => e.kind === "error");
+    assertEquals(error?.kind, "error", JSON.stringify(events));
+    if (error?.kind === "error") {
+      assertEquals(error.error.code, "model_not_found");
+      assertEquals(
+        error.error.message.includes("swamp worker token list"),
+        true,
+        error.error.message,
+      );
+    }
   });
 });

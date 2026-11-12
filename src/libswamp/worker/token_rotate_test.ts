@@ -71,12 +71,13 @@ const ROTATED = {
 };
 
 Deno.test("workerTokenRotate: reads the successor secret and reports a local rotation as undelivered", async () => {
-  const runs: Array<{ name: string; durationMs?: number }> = [];
+  const runs: Array<{ definitionId: string; durationMs?: number }> = [];
   const reads: string[] = [];
   const deps: WorkerTokenRotateDeps = {
-    runRotate: async function* (name, durationMs) {
-      runs.push({ name, durationMs });
-      yield await Promise.resolve(completedEvent(name, ROTATED));
+    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
+    runRotate: async function* (definitionId, durationMs) {
+      runs.push({ definitionId, durationMs });
+      yield await Promise.resolve(completedEvent("web-01", ROTATED));
     },
     readSecret: (vaultName, secretKey) => {
       reads.push(`${vaultName}/${secretKey}`);
@@ -91,7 +92,7 @@ Deno.test("workerTokenRotate: reads the successor secret and reports a local rot
   );
 
   assertEquals(events[0], { kind: "rotating", name: "web-01" });
-  assertEquals(runs, [{ name: "web-01", durationMs: 60_000 }]);
+  assertEquals(runs, [{ definitionId: "def-web-01", durationMs: 60_000 }]);
   assertEquals(reads, ["local/worker-token-web-01.r1769904000000"]);
   assertEquals(events[1], {
     kind: "completed",
@@ -108,28 +109,48 @@ Deno.test("workerTokenRotate: reads the successor secret and reports a local rot
   });
 });
 
-Deno.test("workerTokenRotate: an unknown token names the list command", async () => {
+Deno.test("workerTokenRotate: a name with no enrollment token runs nothing and names the list command", async () => {
+  let runs = 0;
   const deps: WorkerTokenRotateDeps = {
+    findTokenDefinitionId: () => Promise.resolve(null),
+    runRotate: async function* (name) {
+      runs++;
+      yield await Promise.resolve(completedEvent(name, ROTATED));
+    },
+    readSecret: () => Promise.reject(new Error("unreachable")),
+  };
+  const events = await collect<WorkerTokenRotateEvent>(
+    workerTokenRotate(createLibSwampContext(), deps, { name: "srv" }),
+  );
+  const error = events[1] as Extract<WorkerTokenRotateEvent, { kind: "error" }>;
+  assertEquals(error.error.code, "model_not_found");
+  assertStringIncludes(error.error.message, "swamp worker token list");
+  assertEquals(runs, 0);
+});
+
+Deno.test("workerTokenRotate: a failed run passes its error through", async () => {
+  const deps: WorkerTokenRotateDeps = {
+    findTokenDefinitionId: () => Promise.resolve("def-web-01"),
     runRotate: async function* () {
       yield await Promise.resolve<ModelMethodRunEvent>({
         kind: "error",
-        error: { code: "model_not_found", message: "nope" },
+        error: { code: "method_failed", message: "has been revoked" },
       });
     },
     readSecret: () => Promise.reject(new Error("unreachable")),
   };
   const events = await collect<WorkerTokenRotateEvent>(
-    workerTokenRotate(createLibSwampContext(), deps, { name: "ghost" }),
+    workerTokenRotate(createLibSwampContext(), deps, { name: "web-01" }),
   );
   const error = events[1] as Extract<WorkerTokenRotateEvent, { kind: "error" }>;
-  assertEquals(error.error.code, "model_not_found");
-  assertStringIncludes(error.error.message, "swamp worker token list");
+  assertEquals(error.error.message, "has been revoked");
 });
 
 Deno.test("workerTokenRotate: a run that produced no record is an error, never a credential", async () => {
   const deps: WorkerTokenRotateDeps = {
-    runRotate: async function* (name) {
-      yield await Promise.resolve(completedEvent(name, undefined));
+    findTokenDefinitionId: () => Promise.resolve("def-web-01"),
+    runRotate: async function* () {
+      yield await Promise.resolve(completedEvent("web-01", undefined));
     },
     readSecret: () => Promise.reject(new Error("unreachable")),
   };

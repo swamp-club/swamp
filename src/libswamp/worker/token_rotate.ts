@@ -24,7 +24,10 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
-import { EnrollmentTokenSchema } from "../../domain/models/worker/enrollment_token_model.ts";
+import {
+  ENROLLMENT_TOKEN_MODEL_TYPE,
+  EnrollmentTokenSchema,
+} from "../../domain/models/worker/enrollment_token_model.ts";
 import { createWorkerModelRunDeps } from "./run_deps.ts";
 
 export interface WorkerTokenRotateData {
@@ -53,8 +56,10 @@ export interface WorkerTokenRotateInput {
 }
 
 export interface WorkerTokenRotateDeps {
+  /** by type as well as name, so another behavior with the name is never rotated */
+  findTokenDefinitionId: (name: string) => Promise<string | null>;
   runRotate: (
-    name: string,
+    definitionId: string,
     durationMs?: number,
   ) => AsyncIterable<ModelMethodRunEvent>;
   readSecret: (vaultName: string, secretKey: string) => Promise<string>;
@@ -73,9 +78,14 @@ export async function createWorkerTokenRotateDeps(
     vaultsDir: options?.vaultsDir,
   });
   return {
-    runRotate: (name, durationMs) =>
+    findTokenDefinitionId: async (name) =>
+      (await repoContext.definitionRepo.findByName(
+        ENROLLMENT_TOKEN_MODEL_TYPE,
+        name,
+      ))?.id ?? null,
+    runRotate: (definitionId, durationMs) =>
       modelMethodRun(ctx, runDeps, {
-        modelIdOrName: name,
+        modelIdOrName: definitionId,
         methodName: "rotate",
         inputs: durationMs !== undefined ? { durationMs } : {},
         lastEvaluated: false,
@@ -99,19 +109,25 @@ export async function* workerTokenRotate(
       (async function* () {
         yield { kind: "rotating" as const, name: input.name };
 
+        const definitionId = await deps.findTokenDefinitionId(input.name);
+        if (definitionId === null) {
+          yield {
+            kind: "error" as const,
+            error: {
+              code: "model_not_found",
+              message: `Enrollment token '${input.name}' not found. ` +
+                "Use 'swamp worker token list' to see existing tokens.",
+            },
+          };
+          return;
+        }
+
         let tokenRecord: Record<string, unknown> | undefined;
         for await (
-          const event of deps.runRotate(input.name, input.durationMs)
+          const event of deps.runRotate(definitionId, input.durationMs)
         ) {
           if (event.kind === "error") {
-            const error = event.error.code === "model_not_found"
-              ? {
-                code: event.error.code,
-                message: `Enrollment token '${input.name}' not found. ` +
-                  "Use 'swamp worker token list' to see existing tokens.",
-              }
-              : event.error;
-            yield { kind: "error" as const, error };
+            yield { kind: "error" as const, error: event.error };
             return;
           }
           if (event.kind === "completed") {
