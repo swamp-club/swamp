@@ -42,64 +42,93 @@ export interface ScheduleEntry {
   readonly nextRun: Date | null;
 }
 
+/** the clock and timers a scheduler arms with; real ones unless a test injects */
+export interface SchedulerClock {
+  now(): number;
+  /** runs `fn` after `ms`; the returned function cancels it */
+  setTimer(fn: () => void, ms: number): () => void;
+}
+
+export interface WorkflowSchedulerOptions {
+  /** the zone patterns are matched in; the host zone when absent */
+  readonly timezone?: string;
+  readonly clock?: SchedulerClock;
+}
+
+const systemClock: SchedulerClock = {
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const handle = setTimeout(fn, ms);
+    return () => clearTimeout(handle);
+  },
+};
+
+// re-reads the wall clock at least this often, as croner does, and keeps a
+// distant slot under the setTimeout limit
+const MAX_TIMER_MS = 30_000;
+
+interface Entry {
+  readonly cron: Cron;
+  cancel?: () => void;
+}
+
 export class WorkflowScheduler {
-  private readonly entries = new Map<WorkflowId, Cron>();
+  private readonly entries = new Map<WorkflowId, Entry>();
   private onFire: ScheduleFireCallback | null = null;
+  private readonly timezone: string | undefined;
+  private readonly clock: SchedulerClock;
+
+  constructor(options: WorkflowSchedulerOptions = {}) {
+    this.timezone = options.timezone;
+    this.clock = options.clock ?? systemClock;
+  }
 
   register(workflowId: WorkflowId, cronExpression: string): void {
     this.unregister(workflowId);
 
-    // croner arms the timer here and every fire re-arms from it, so arm it
-    // detached: a fire is its own unit of work, never part of the registering
-    // trace
-    const cron = runDetached(() =>
-      new Cron(
+    // croner only matches patterns: its own timer re-arms from nextRun, which
+    // lands before now inside a DST fall-back hour and fires in a loop
+    const entry: Entry = {
+      cron: new Cron(
         cronExpression,
-        { paused: this.onFire === null },
-        () => {
-          const entry = this.entries.get(workflowId);
-          if (!entry) return;
-          const result = this.onFire?.(workflowId, canonicalFireTime(entry));
-          if (result instanceof Promise) {
-            result.catch(() => {});
-          }
-        },
-      )
-    );
-
-    this.entries.set(workflowId, cron);
+        this.timezone ? { timezone: this.timezone } : undefined,
+      ),
+    };
+    this.entries.set(workflowId, entry);
+    if (this.onFire) this.armDetached(workflowId, entry);
   }
 
   unregister(workflowId: WorkflowId): void {
     const existing = this.entries.get(workflowId);
     if (existing) {
-      existing.stop();
+      this.disarm(existing);
       this.entries.delete(workflowId);
     }
   }
 
   start(onFire: ScheduleFireCallback): void {
     this.onFire = onFire;
-    for (const cron of this.entries.values()) {
-      cron.resume();
+    for (const [workflowId, entry] of this.entries) {
+      this.armDetached(workflowId, entry);
     }
   }
 
   stop(): void {
-    for (const cron of this.entries.values()) {
-      cron.stop();
+    for (const entry of this.entries.values()) {
+      this.disarm(entry);
     }
     this.entries.clear();
     this.onFire = null;
   }
 
   listSchedules(): ScheduleEntry[] {
+    const now = new Date(this.clock.now());
     const result: ScheduleEntry[] = [];
-    for (const [workflowId, cron] of this.entries) {
+    for (const [workflowId, entry] of this.entries) {
       result.push({
         workflowId,
-        cronExpression: cron.getPattern()!,
-        nextRun: nextSlotAfter(cron, new Date()),
+        cronExpression: entry.cron.getPattern()!,
+        nextRun: nextSlotAfter(entry.cron, now),
       });
     }
     return result;
@@ -107,6 +136,56 @@ export class WorkflowScheduler {
 
   get size(): number {
     return this.entries.size;
+  }
+
+  // a fire is its own unit of work, never part of the registering trace
+  private armDetached(workflowId: WorkflowId, entry: Entry): void {
+    runDetached(() => this.arm(workflowId, entry, new Date(this.clock.now())));
+  }
+
+  private arm(workflowId: WorkflowId, entry: Entry, from: Date): void {
+    this.disarm(entry);
+    const slot = nextSlotAfter(entry.cron, from);
+    if (slot) this.wait(workflowId, entry, slot);
+  }
+
+  private wait(workflowId: WorkflowId, entry: Entry, slot: Date): void {
+    const delay = Math.min(
+      Math.max(slot.getTime() - this.clock.now(), 0),
+      MAX_TIMER_MS,
+    );
+    entry.cancel = this.clock.setTimer(
+      () => this.wake(workflowId, entry, slot),
+      delay,
+    );
+  }
+
+  private wake(workflowId: WorkflowId, entry: Entry, slot: Date): void {
+    entry.cancel = undefined;
+    if (this.entries.get(workflowId) !== entry || !this.onFire) return;
+    const now = new Date(this.clock.now());
+    if (now.getTime() < slot.getTime()) {
+      this.wait(workflowId, entry, slot);
+      return;
+    }
+    // armed before the callback, which may unregister or replace this entry
+    this.arm(workflowId, entry, now);
+    try {
+      const result = this.onFire(
+        workflowId,
+        canonicalFireTime(entry.cron, now),
+      );
+      if (result instanceof Promise) {
+        result.catch(() => {});
+      }
+    } catch {
+      // a failing callback must not stop the schedule or escape the timer
+    }
+  }
+
+  private disarm(entry: Entry): void {
+    entry.cancel?.();
+    entry.cancel = undefined;
   }
 }
 
