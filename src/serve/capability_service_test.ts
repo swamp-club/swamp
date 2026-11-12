@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertRejects } from "@std/assert";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { CapabilityService } from "./capability_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
 import type { ActiveDispatch } from "./dispatch_registry.ts";
@@ -419,7 +419,7 @@ Deno.test("resolveSecret: rejects worker-token-* keys", async () => {
     hasDynamicRefs: true,
   });
   const service = createServiceWithVault(dispatches);
-  await assertRejects(
+  const error = await assertRejects(
     () =>
       service.resolveSecret("worker-1", {
         vaultName: "default",
@@ -427,6 +427,10 @@ Deno.test("resolveSecret: rejects worker-token-* keys", async () => {
       }),
     Error,
     "access denied",
+  );
+  assertStringIncludes(
+    error.message,
+    "key 'worker-token-ci-runner' is reserved for serve's own credentials in every vault",
   );
 });
 

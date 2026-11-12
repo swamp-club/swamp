@@ -433,6 +433,11 @@ approver):
   every vault a principal needs in the same change.
 - `data` grants play no part at run time. Reserved `_` vaults are refused to
   every serve run except principals with `admin` on `access:*`.
+- A step dispatched to a worker is never given `_token-secrets` or serve's own
+  credential keys (`server-token-*`, `worker-token-*`, `oauth-*`), in any vault
+  and for any principal, admins included. The step fails with `reserved_secret`
+  (HTTP 403). Steps that run on serve's own host are held only to the vault
+  rules above.
 - `service:scheduler` / `service:webhook` grants scope every scheduled or
   webhook run server-wide; bound one workflow with its `vaults:` list instead.
 
@@ -743,7 +748,9 @@ through serve, even by an admin (`token_not_revealable`); revoke it instead.
 
 `swamp worker token create <name> --duration <d> --server <url>` also stores the
 secret in `_token-secrets` unless `--vault <name>` names another vault on the
-server.
+server. `--vault` is for operators and provisioning outside workflows to read
+the secret: its key (`worker-token-<name>`) stays reserved, so a dispatched step
+cannot read it and a workflow cannot deliver a successor token to a worker.
 
 ## OAuth Login
 

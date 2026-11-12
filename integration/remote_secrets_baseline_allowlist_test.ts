@@ -529,15 +529,15 @@ Deno.test({
           }),
         );
 
-        const infra =
-          "resolveSecret: access denied — infrastructure secrets are not accessible from dispatched methods";
+        const infra = (key: string) =>
+          `resolveSecret: access denied — infrastructure secrets are not accessible from dispatched methods; key '${key}' is reserved for serve's own credentials in every vault`;
         assertEquals(results, [
           {
             refused:
               `resolveSecret: access denied — reserved vault '${TOKEN_SECRETS_VAULT_NAME}' is not accessible from dispatched methods`,
           },
-          { refused: infra },
-          { refused: infra },
+          { refused: infra(tokenKey) },
+          { refused: infra(tokenKey.toUpperCase()) },
         ]);
       } finally {
         await o.shutdown();
@@ -592,7 +592,9 @@ Deno.test({
         assertEquals(put, { ok: true });
         assertEquals(reservedPut, {
           refused:
-            "putSecret: access denied — infrastructure secrets are not accessible from dispatched methods",
+            `putSecret: access denied — infrastructure secrets are not accessible from dispatched methods; key '${
+              tokenSecretKey(workerName)
+            }' is reserved for serve's own credentials in every vault`,
         });
       } finally {
         await o.shutdown();

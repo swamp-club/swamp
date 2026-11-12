@@ -78,10 +78,13 @@ export class DispatchSecretLoadError extends Error {
     code: DispatchSecretLoadRefusal | "malformed_reply",
     reference?: { vaultName: string; key: string },
   ) {
+    const refused = reference
+      ? `Serve refused to load secret '${reference.key}' from vault '${reference.vaultName}' for this dispatch (${code}, HTTP ${status})`
+      : `Serve refused to load this dispatch's secrets (${code}, HTTP ${status})`;
     super(
-      reference
-        ? `Serve refused to load secret '${reference.key}' from vault '${reference.vaultName}' for this dispatch (${code}, HTTP ${status})`
-        : `Serve refused to load this dispatch's secrets (${code}, HTTP ${status})`,
+      code === "reserved_secret"
+        ? `${refused}: serve never releases its control-plane vault or its own credential keys (server-token-*, worker-token-*, oauth-*) to a dispatched step, from any vault or for any principal`
+        : refused,
     );
     this.name = "DispatchSecretLoadError";
     this.status = status;

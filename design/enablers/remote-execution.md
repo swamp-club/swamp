@@ -972,11 +972,16 @@ its `ActiveDispatch` registration, so the data plane scrubs it from resource
 writes as it does the pre-dispatch `secretValues` (swamp-club#3527).
 
 `putSecret` checks only the denylist, because write targets are not declared
-in vault expressions. The denylist (`src/serve/capability_service.ts`) covers
-the `server-token-*` and
-`worker-token-*` key prefixes, `oauth-client-secret`, `oauth-access-token-*`,
-`oauth-bootstrap-access-token`, `oauth-resolved-admins`, and the control-plane
-token-secrets vault by name.
+in vault expressions. The denylist (`src/serve/dispatch_secret_authorization.ts`)
+also runs first for `resolveSecret` and the data-plane load route, which refuses
+with `reserved_secret`. It covers the `server-token-*` and `worker-token-*` key
+prefixes, `oauth-client-secret`, `oauth-access-token-*`,
+`oauth-bootstrap-access-token`, `oauth-resolved-admins`,
+`oauth-resolved-grant-usernames`, and the control-plane token-secrets vault by
+name. Key prefixes match case-insensitively in every vault and for every
+principal, so `worker token create --vault` does not make a token's secret
+readable by a dispatched step. Steps run in process on serve's host are not
+dispatched and are held only to vault scope.
 
 Both verbs, and data-plane writes of sensitive fields, are also held to the
 dispatching run's vault scope (swamp-club#2676; see

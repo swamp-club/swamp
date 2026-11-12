@@ -1973,7 +1973,10 @@ and refresh-hook changes are `write`. Each is also judged with its vault verb
 1. **Reserved vaults** (`_`-prefixed, such as `_token-secrets`) are refused in
    every serve run unless the principal holds `admin` on `access:*`, whatever
    other grants exist. No run needs them; before this rule any run, including
-   a run-only caller's method inputs, could read `_token-secrets`.
+   a run-only caller's method inputs, could read `_token-secrets`. A dispatched
+   step is refused `_token-secrets` even for an admin, by the dispatch denylist
+   that runs before vault scope (see
+   [remote-execution](remote-execution.md)).
 2. **Inert without vault grants.** While the policy holds no grant of the
    vault kind, the operation is allowed, so a deployment without vault grants
    resolves vaults exactly as before.
