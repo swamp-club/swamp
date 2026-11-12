@@ -698,10 +698,6 @@ export interface WebhookEndpointInfo {
   readonly file?: string;
 }
 
-/**
- * up to maxConcurrentRuns queued runs execute at once; runs of the same route
- * or workflow may overlap since per-model locks guard shared state
- */
 /** a run stop() aborted for shutdown; shutdown marks it interrupted */
 export interface AbortedWebhookRun {
   readonly runId: string;
@@ -717,6 +713,10 @@ interface RunningWebhookRun {
   startedAt?: Date;
 }
 
+/**
+ * up to maxConcurrentRuns queued runs execute at once; runs of the same route
+ * or workflow may overlap since per-model locks guard shared state
+ */
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private maxConcurrentRuns: number;
