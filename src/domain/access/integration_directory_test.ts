@@ -399,3 +399,25 @@ Deno.test("IntegrationDirectory.onChanged: fires when the report changes, not on
   assertEquals(changes, 1);
   await directory.dispose();
 });
+
+Deno.test("IntegrationDirectory.reported: two revoked copies give the same report in either read order", async () => {
+  const early = record("a", {
+    state: "revoked",
+    revokedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const late = record("a", {
+    state: "revoked",
+    revokedAt: "2026-04-01T00:00:00.000Z",
+  });
+  const reports = [];
+  for (const rows of [[early, late], [late, early]]) {
+    const directory = new IntegrationDirectory(repo({
+      rows: rows.map((attrs, i) => ({ modelId: String(i), attrs })),
+    }));
+    await directory.reload();
+    reports.push(directory.reported());
+    await directory.dispose();
+  }
+  assertEquals(reports[0], reports[1]);
+  assertEquals(reports[0]?.[0].revokedAt, "2026-03-01T00:00:00.000Z");
+});

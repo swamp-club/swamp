@@ -85,7 +85,8 @@ something a primitive depends on, move it to `enablers/` and give it an
   a refusal's error code as `errorType` and no message; a bulk cancel is
   `cancel all` with `cancelledCount` (`src/serve/control_telemetry.ts`). An
   integration's or group's behavior is sent by its type, with no error text,
-  in method runs and workflow steps (`src/domain/telemetry/concealed_models.ts`).
+  in method runs and workflow steps once that type is known
+  (`src/domain/telemetry/concealed_models.ts`).
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`. A team member's requests to serve's datastore

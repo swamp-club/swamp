@@ -32,8 +32,10 @@ import {
 import { handleMessage } from "../src/serve/connection.ts";
 import {
   type ConnectionContext,
+  sendError,
   setConnectionClient,
   setConnectionDelegation,
+  watchRequestError,
 } from "../src/serve/handlers/shared.ts";
 import { setServeCollectivesSource } from "../src/serve/telemetry.ts";
 import { IntegrationDirectory } from "../src/domain/access/integration_directory.ts";
@@ -605,4 +607,39 @@ Deno.test("swamp-club report: registration and a revoke reach swamp-club with id
       }
     });
   }
+});
+
+Deno.test("serve telemetry: a request reusing an active id is counted on its own and leaves the original's outcome alone", async () => {
+  await withServeRepo(async (repo) => {
+    await withTelemetry(async (telemetry) => {
+      const ctx = createServeCtx(repo, [WORKFLOWS]);
+      const ws = {
+        readyState: WebSocket.OPEN,
+        send() {},
+        close() {},
+      } as unknown as WebSocket;
+      const id = crypto.randomUUID();
+      const original = watchRequestError(ws, id);
+      sendError(ws, id, "unauthorized", "Access denied");
+      const active = new Map([[id, new AbortController()]]);
+      await handleMessage(
+        ws,
+        ctx,
+        active,
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: "workflow.approve",
+            id,
+            payload: { workflowIdOrName: "w", stepName: "gate" },
+          }),
+        }),
+        CALLER,
+      );
+
+      assertEquals(original(), "unauthorized");
+      const sent = eventsOf(telemetry);
+      assertEquals(sent.length, 1);
+      assertEquals(sent[0].result.errorType, "duplicate_id");
+    });
+  });
 });

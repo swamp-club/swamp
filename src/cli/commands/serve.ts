@@ -7616,6 +7616,14 @@ export const serveCommand = new Command()
       clubHeartbeatService.start();
     }
     beatOnIntegrationChange(integrationDirectory, () => clubHeartbeatService);
+    // a change between registering and subscribing would otherwise wait an hour
+    if (
+      clubHeartbeatService &&
+      JSON.stringify(integrationDirectory.reported()) !==
+        JSON.stringify(clubRegistration?.integrations)
+    ) {
+      clubHeartbeatService.beatNow();
+    }
 
     const webhookSourceIsCliFlags = webhookFlags.length > 0;
     const parseWebhookConfigs = createWebhookConfigParser({

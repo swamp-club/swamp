@@ -75,7 +75,14 @@ function combinedReport(
   a: ReportedIntegration,
   b: ReportedIntegration,
 ): ReportedIntegration {
-  const revoked = a.state === "revoked" ? a : b.state === "revoked" ? b : a;
+  // two revoked copies keep the earlier revoke, so read order never changes the report
+  const revoked = a.state !== "revoked"
+    ? b
+    : b.state !== "revoked"
+    ? a
+    : (a.revokedAt ?? "") <= (b.revokedAt ?? "")
+    ? a
+    : b;
   const createdAt = a.createdAt < b.createdAt ? a.createdAt : b.createdAt;
   return { ...revoked, createdAt };
 }

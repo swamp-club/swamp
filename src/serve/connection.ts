@@ -24,6 +24,7 @@ import {
   recordControl,
   workflowControlActionOf,
 } from "./control_telemetry.ts";
+import { createControlTelemetry } from "./telemetry.ts";
 import { DelegationPhaseSchema } from "../domain/models/access/delegation_model.ts";
 import {
   SERVE_CAPABILITY_DATA_ARGUMENTS,
@@ -1996,9 +1997,14 @@ export function handleMessage(
     client: getConnectionClient(socket),
   };
   const controlAction = workflowControlActionOf(request.type);
-  const control = controlAction === undefined
-    ? undefined
-    : recordControl(socket, request.id, controlAction, caller);
+  // these refusals come before the request owns its id, so they leave its watch alone
+  const refuseControl = (code: string) =>
+    controlAction === undefined
+      ? undefined
+      : createControlTelemetry(controlAction, caller).finish({
+        status: "user_error",
+        errorType: code,
+      });
 
   if (request.type === "cancel") {
     const pendingController = activeRequests.get(request.id);
@@ -2056,7 +2062,7 @@ export function handleMessage(
       "too_many_requests",
       `Too many concurrent requests (limit: ${MAX_ACTIVE_REQUESTS}); wait for active requests to complete`,
     );
-    return control?.settle();
+    return refuseControl("too_many_requests");
   }
 
   if (activeRequests.has(request.id)) {
@@ -2066,11 +2072,14 @@ export function handleMessage(
       "duplicate_id",
       `Request id '${request.id}' is already active`,
     );
-    return control?.settle();
+    return refuseControl("duplicate_id");
   }
 
   const controller = new AbortController();
   activeRequests.set(request.id, controller);
+  const control = controlAction === undefined
+    ? undefined
+    : recordControl(socket, request.id, controlAction, caller);
 
   if (
     ctx.auditEmitter && ctx.auditFailOpen === false &&

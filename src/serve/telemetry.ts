@@ -113,6 +113,7 @@ export function createCommandTelemetry(
 
   return {
     resolveType: (modelType) => {
+      if (modelType === undefined) return;
       label = concealedModelLabel(modelType, target.modelName);
     },
     finish: async (error: Error | null): Promise<void> => {

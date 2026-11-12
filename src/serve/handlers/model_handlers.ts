@@ -851,6 +851,8 @@ export async function handleModelMethodRun(
         error instanceof Error ? error : new Error(String(error)),
       );
     };
+    // the named type counts even when the target then fails to resolve
+    telemetry?.resolveType(payload.typeArg);
     try {
       const target = await resolveMethodRunTarget(ctx, payload);
       telemetry?.resolveType(
