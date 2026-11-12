@@ -6916,6 +6916,7 @@ export const serveCommand = new Command()
     let replayOwnPendingCron = (
       _service: ScheduledExecutionService,
       _createdBefore: string,
+      _signal: AbortSignal,
     ): Promise<number> => Promise.resolve(0);
     const buildScheduledExecution = (
       options: SchedulerBuildOptions,
@@ -7139,8 +7140,8 @@ export const serveCommand = new Command()
           connectionCtx.scheduledExecution = service ?? undefined;
         },
         leads: () => leaderWorkStarted && leadsScheduledFires(),
-        replayOwnCron: (service, createdBefore) =>
-          replayOwnPendingCron(service, createdBefore),
+        replayOwnCron: (service, createdBefore, signal) =>
+          replayOwnPendingCron(service, createdBefore, signal),
         maxConcurrentRuns: maxConcurrentScheduledRuns,
       },
     );
@@ -10127,7 +10128,7 @@ export const serveCommand = new Command()
         readRemote,
       });
     };
-    replayOwnPendingCron = (service, createdBefore) =>
+    replayOwnPendingCron = (service, createdBefore, signal) =>
       replayPendingRuns({
         runTracker,
         scheduledExecution: service,
@@ -10138,6 +10139,7 @@ export const serveCommand = new Command()
         claimAs: pendingRunOwner,
         ownCronOnly: true,
         createdBefore,
+        signal,
       });
     // the control plane is listed on one pass in 12, about once a minute
     let sweepPasses = 0;

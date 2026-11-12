@@ -746,13 +746,14 @@ export class ScheduledExecutionService {
     return count;
   }
 
+  /** false when nothing was queued: a draining service or a run already held */
   enqueueForReplay(entry: {
     pendingRunId: string;
     workflowIdOrName: string;
-  }): void {
+  }): boolean {
     // The pending entry stays in the run tracker for the next boot to replay.
-    if (this.draining) return;
-    if (this.heldPendingIds.has(entry.pendingRunId)) return;
+    if (this.draining || this.stopped) return false;
+    if (this.heldPendingIds.has(entry.pendingRunId)) return false;
     this.heldPendingIds.add(entry.pendingRunId);
     this.runQueue.push({
       pendingRunId: entry.pendingRunId,
@@ -762,6 +763,7 @@ export class ScheduledExecutionService {
       replayed: true,
     });
     this.processQueue();
+    return true;
   }
 
   private resolveSchedule(

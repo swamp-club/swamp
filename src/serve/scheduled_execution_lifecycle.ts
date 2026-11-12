@@ -26,6 +26,9 @@ import type {
 
 const logger = getSwampLogger(["serve", "scheduler"]);
 
+/** how long shutdown waits for an aborted own-cron replay; fixed, as the drain timeout may be 0 */
+export const REPLAY_SETTLE_TIMEOUT_MS = 15_000;
+
 export interface LifecycleScheduler extends DrainableTriggerSource {
   startCatchUp(): void;
   setMaxConcurrentRuns(maxConcurrentRuns: number): void;
@@ -51,8 +54,13 @@ export interface ScheduledExecutionLifecycleDeps<S extends LifecycleScheduler> {
    * replays the cron runs this process left pending when it turned off; one
    * queued at or after createdBefore is the new scheduler's own fire
    */
-  replayOwnCron(service: S, createdBefore: string): Promise<number>;
+  replayOwnCron(
+    service: S,
+    createdBefore: string,
+    signal: AbortSignal,
+  ): Promise<number>;
   readonly maxConcurrentRuns: number | undefined;
+  readonly replaySettleTimeoutMs?: number;
 }
 
 export interface TurnOnOptions {
@@ -78,6 +86,9 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
   #starting: Promise<void> | undefined;
   /** a turn-on that did not lead leaves its replay to the lead, from this cutoff */
   #ownReplayCutoff: string | undefined;
+  /** own-cron replays in flight; shutdown aborts them and waits a bounded time */
+  readonly #replays = new Set<Promise<void>>();
+  readonly #replayAbort = new AbortController();
 
   constructor(deps: ScheduledExecutionLifecycleDeps<S>) {
     this.#deps = deps;
@@ -183,17 +194,32 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     await this.#replayThenCatchUp(service, cutoff);
   }
 
-  async #replayThenCatchUp(service: S, createdBefore: string): Promise<void> {
+  #replayThenCatchUp(service: S, createdBefore: string): Promise<void> {
+    const replay = this.#replay(service, createdBefore);
+    this.#replays.add(replay);
+    return replay.finally(() => this.#replays.delete(replay));
+  }
+
+  async #replay(service: S, createdBefore: string): Promise<void> {
     try {
-      const replayed = await this.#deps.replayOwnCron(service, createdBefore);
+      const replayed = await this.#deps.replayOwnCron(
+        service,
+        createdBefore,
+        this.#replayAbort.signal,
+      );
       if (replayed > 0) {
         logger
           .info`Replayed ${replayed} pending scheduled run(s) left when scheduling was turned off`;
       }
     } catch (error) {
-      logger.warn`Replaying pending scheduled runs failed; they stay pending: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      const message = error instanceof Error ? error.message : String(error);
+      if (this.#replayAbort.signal.aborted) {
+        logger
+          .debug`Shutdown stopped the replay of pending scheduled runs; they stay pending: ${message}`;
+      } else {
+        logger
+          .warn`Replaying pending scheduled runs failed; they stay pending: ${message}`;
+      }
     }
     // after the replay, so a replayed run queues ahead of a catch-up
     if (this.#current === service && !this.#closed) service.startCatchUp();
@@ -237,9 +263,10 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
       ...(this.#current ? [this.#current] : []),
       ...this.#retiring.keys(),
     ];
-    const results = await Promise.allSettled(
-      all.map((service) => service.drain(timeoutMs)),
-    );
+    const [, results] = await Promise.all([
+      this.#settleReplays(),
+      Promise.allSettled(all.map((service) => service.drain(timeoutMs))),
+    ]);
     for (const result of results) {
       if (result.status === "rejected") throw result.reason;
     }
@@ -248,6 +275,7 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
   async stop(): Promise<readonly StoppedTriggerRun[]> {
     this.#closed = true;
     await this.#starting;
+    await this.#settleReplays();
     const current = this.#current;
     this.#current = null;
     const retiring = [...this.#retiring.entries()];
@@ -262,5 +290,28 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
       aborted.push(...result.value);
     }
     return aborted;
+  }
+
+  async #settleReplays(): Promise<void> {
+    this.#replayAbort.abort(new Error("server shutdown"));
+    if (this.#replays.size === 0) return;
+    const timeoutMs = this.#deps.replaySettleTimeoutMs ??
+      REPLAY_SETTLE_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    try {
+      const outcome = await Promise.race([
+        Promise.allSettled([...this.#replays]),
+        bound,
+      ]);
+      if (outcome === "timeout") {
+        logger
+          .warn`The replay of pending scheduled runs did not stop within ${timeoutMs}ms; shutdown goes on and they stay pending`;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }

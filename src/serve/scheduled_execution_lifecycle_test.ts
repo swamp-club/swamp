@@ -389,3 +389,116 @@ Deno.test("ScheduledExecutionLifecycle: stop returns the runs every scheduler ab
 
   assertEquals(aborted.map((run) => run.runId).sort(), ["new-1", "old-1"]);
 });
+
+function heldReplayHarness(
+  replay: (signal: AbortSignal) => Promise<number>,
+  extra: Partial<ScheduledExecutionLifecycleDeps<FakeScheduler>> = {},
+) {
+  const signals: AbortSignal[] = [];
+  const h = harness({
+    replayOwnCron: (service, _createdBefore, signal) => {
+      service.calls.push("replay");
+      signals.push(signal);
+      return replay(signal);
+    },
+    ...extra,
+  });
+  return { ...h, signals };
+}
+
+// returned in an object: an async function returning the held promise would wait on it
+async function replayStarted(
+  h: ReturnType<typeof heldReplayHarness>,
+  path: "turnOn" | "atLead",
+): Promise<{ replaying: Promise<void> }> {
+  let replaying: Promise<void>;
+  if (path === "turnOn") {
+    replaying = h.lifecycle.turnOn(undefined);
+  } else {
+    h.setLeads(false);
+    await h.lifecycle.turnOn(undefined);
+    h.setLeads(true);
+    replaying = h.lifecycle.atLead();
+  }
+  await waitFor(
+    () => h.built[0]?.calls.includes("replay") ?? false,
+    "the own-run replay has begun",
+  );
+  return { replaying };
+}
+
+async function stopWaitsForTheReplay(path: "turnOn" | "atLead") {
+  const replay = Promise.withResolvers<number>();
+  const h = heldReplayHarness(() => replay.promise);
+  const { replaying } = await replayStarted(h, path);
+  let settled = false;
+  const done = h.lifecycle.stop().then(() => settled = true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(
+    settled,
+    false,
+    `stop() resolved while the ${path} replay still reads the stores`,
+  );
+
+  replay.resolve(1);
+  await done;
+  await replaying;
+  assertEquals(h.built[0].calls.includes("catchUp"), false);
+  assertEquals(h.built[0].calls.at(-1), "stop");
+}
+
+Deno.test("ScheduledExecutionLifecycle: shutdown waits for the own-run replay of a turn-on that led, and no catch-up follows (swamp-club#4660)", async () => {
+  await stopWaitsForTheReplay("turnOn");
+});
+
+Deno.test("ScheduledExecutionLifecycle: shutdown waits for the own-run replay taken up at the lead, and no catch-up follows (swamp-club#4660)", async () => {
+  await stopWaitsForTheReplay("atLead");
+});
+
+Deno.test("ScheduledExecutionLifecycle: shutdown aborts an own-run replay that never settles on its own (swamp-club#4660)", async () => {
+  for (const path of ["turnOn", "atLead"] as const) {
+    const h = heldReplayHarness((signal) =>
+      new Promise<number>((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      })
+    );
+    const { replaying } = await replayStarted(h, path);
+    await h.lifecycle.stop();
+    assertEquals(
+      h.signals[0]?.aborted,
+      true,
+      `the ${path} replay was never handed an aborted signal`,
+    );
+    await replaying;
+    assertEquals(h.built[0].calls.includes("catchUp"), false);
+  }
+});
+
+Deno.test("ScheduledExecutionLifecycle: a replay that ignores the abort holds shutdown no longer than the settle bound (swamp-club#4660)", async () => {
+  const h = heldReplayHarness(() => new Promise<number>(() => {}), {
+    replaySettleTimeoutMs: 1,
+  });
+  await replayStarted(h, "turnOn");
+  await h.lifecycle.stop();
+  assertEquals(h.built[0].calls.includes("catchUp"), false);
+  assertEquals(h.built[0].calls.at(-1), "stop");
+});
+
+Deno.test("ScheduledExecutionLifecycle: drain aborts the own-run replay alongside the scheduler drains (swamp-club#4660)", async () => {
+  const h = heldReplayHarness((signal) =>
+    new Promise<number>((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    })
+  );
+  const { replaying } = await replayStarted(h, "turnOn");
+  await h.lifecycle.drain(0);
+  assertEquals(h.signals[0].aborted, true);
+  assertEquals(h.built[0].calls.includes("drain:0"), true);
+  await replaying;
+  await h.lifecycle.stop();
+  assertEquals(h.built[0].calls.includes("catchUp"), false);
+});

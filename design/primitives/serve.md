@@ -1840,7 +1840,11 @@ webhook and scheduler services' `stop()` report the runs they abort, and
 `runShutdownDrain` returns them beside the registry's, so a run cut off by a
 restart is recoverable however it started (swamp-club#4656). A run a user or a
 webhook cancel request cancelled before the abort is not reported and stays
-`cancelled`. Before it loads them it closes their run write fence
+`cancelled`. A scheduler turned on by a reload first replays the cron runs it
+left pending; shutdown aborts that replay (its control-plane reads take the
+signal, and it queues and deletes nothing once aborted) and waits for it at most
+15 s (`REPLAY_SETTLE_TIMEOUT_MS`, `src/serve/scheduled_execution_lifecycle.ts`),
+so the runs stay pending for the next start (swamp-club#4660). Before it loads them it closes their run write fence
 (`ServeRunWriteFence`, `src/serve/run_write_fence.ts`) and waits up to 2 s for
 a save already under way. An executor can outlive the abort grace, as one whose
 remote step answers after the abort does; with the fence closed it can no

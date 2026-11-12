@@ -3414,6 +3414,79 @@ Deno.test("replayPendingRuns: ownCronOnly leaves an own cron run that is only on
   assertEquals(controlPlaneStore.deleted, []);
 });
 
+Deno.test("replayPendingRuns: an aborted signal reads, replays and deletes nothing, leaving the runs pending (swamp-club#4660)", async () => {
+  const me = { instanceId: "me", pid: 2 };
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/pr-remote": cronEntry("pr-remote", {
+      instanceId: "peer",
+      pid: 3,
+    }),
+    "claims/pending-runs/pr-gone": { owner: me },
+  });
+  const gets: string[] = [];
+  const get = controlPlaneStore.get;
+  controlPlaneStore.get = (key, options) => {
+    gets.push(key);
+    return get(key, options);
+  };
+  const h = createReplayHarness([cronEntry("pr-local", me)]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+  h.deps.claimAs = me;
+  h.deps.ownCronOnly = true;
+  const abort = new AbortController();
+  abort.abort(new Error("server shutdown"));
+  h.deps.signal = abort.signal;
+
+  assertEquals(await replayPendingRuns(h.deps), 0);
+  assertEquals(gets, []);
+  assertEquals(h.cronReplays, []);
+  assertEquals(h.deleted, []);
+  assertEquals(controlPlaneStore.deleted, []);
+});
+
+Deno.test("replayPendingRuns: a signal aborted during the control-plane reads stops the replay before it queues a run (swamp-club#4660)", async () => {
+  const me = { instanceId: "me", pid: 2 };
+  const controlPlaneStore = createInMemoryControlPlaneStore({
+    "pending-runs/pr-a": cronEntry("pr-a", { instanceId: "peer", pid: 3 }),
+    "pending-runs/pr-b": cronEntry("pr-b", { instanceId: "peer", pid: 3 }),
+  });
+  const abort = new AbortController();
+  const seen: (AbortSignal | undefined)[] = [];
+  const get = controlPlaneStore.get;
+  controlPlaneStore.get = (key, options) => {
+    seen.push(options?.signal);
+    abort.abort(new Error("server shutdown"));
+    return get(key, options);
+  };
+  const h = createReplayHarness([cronEntry("pr-local", me)]);
+  h.deps.controlPlaneStore = controlPlaneStore;
+  h.deps.claimAs = me;
+  h.deps.ownCronOnly = true;
+  h.deps.signal = abort.signal;
+
+  assertEquals(await replayPendingRuns(h.deps), 0);
+  assertEquals(seen, [abort.signal]);
+  assertEquals(h.cronReplays, []);
+});
+
+Deno.test("replayPendingRuns: a cron run the draining scheduler did not queue is neither counted nor logged as replayed (swamp-club#4660)", async () => {
+  const me = { instanceId: "me", pid: 2 };
+  const h = createReplayHarness([cronEntry("pr-local", me)]);
+  const offered: string[] = [];
+  h.deps.scheduledExecution = {
+    enqueueForReplay: (entry: { pendingRunId: string }) => {
+      offered.push(entry.pendingRunId);
+      return false;
+    },
+  } as unknown as ReplayPendingRunsDeps["scheduledExecution"];
+  h.deps.claimAs = me;
+  h.deps.ownCronOnly = true;
+
+  assertEquals(await replayPendingRuns(h.deps), 0);
+  assertEquals(offered, ["pr-local"]);
+  assertEquals(h.deleted, []);
+});
+
 const OWNER_A = { instanceId: "owner-a", pid: 4101, host: "host-1" };
 const OWNER_B = { instanceId: "owner-b", pid: 4102, host: "host-1" };
 

@@ -503,6 +503,30 @@ Deno.test("ScheduledExecutionService.stop: a run aborted before its started even
   }
 });
 
+Deno.test("ScheduledExecutionService.enqueueForReplay: reports whether it queued the run, false once draining or for a run already held (swamp-club#4660)", async () => {
+  const executor = createBlockingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  assertEquals(
+    service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" }),
+    true,
+  );
+  assertEquals(
+    service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" }),
+    false,
+  );
+  await service.drain(0);
+  assertEquals(
+    service.enqueueForReplay({ pendingRunId: "p-2", workflowIdOrName: "wf" }),
+    false,
+  );
+  await service.stop();
+});
+
 async function withRunInFlight(
   fn: (
     service: ScheduledExecutionService,
