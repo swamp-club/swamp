@@ -783,6 +783,7 @@ import {
   holdsCurrentV3WriterLease,
   v3WriterFence,
   v3WriterLeaseConfirmed,
+  v3WriterLeaseExpiresAt,
   v3WriterLeaseHolder,
 } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import { importCheckoutControlPlane } from "../../infrastructure/persistence/checkout_control_plane_import.ts";
@@ -10036,7 +10037,8 @@ export const serveCommand = new Command()
       }
       // No promotion during teardown: the lease is released below. Team
       // mode stays on until the datastores close, so a follower still
-      // commits nothing. stop() ends a promotion in flight between its steps.
+      // commits nothing. stop() ends a promotion in flight between its steps,
+      // and aborts a follower refresh before its restore is installed.
       if (serveLeadership) {
         const leadership = serveLeadership;
         await stages.run("leadership", () => leadership.stop(), "awaited");
@@ -10618,6 +10620,7 @@ export const serveCommand = new Command()
           fence: () => v3WriterFence(location.path),
           currentFence: async () =>
             (await v3WriterLeaseHolder(location.path))?.fence,
+          expiresAt: () => v3WriterLeaseExpiresAt(location.path),
           take: () =>
             holdV3Writer(location, resolvedRepoDir, {
               retakeLost: true,
@@ -10626,8 +10629,8 @@ export const serveCommand = new Command()
             }),
         },
         store: controlPlaneStore,
-        refreshCopy: async () => {
-          await refreshV3FollowerCopy(resolvedRepoDir, location);
+        refreshCopy: async (signal) => {
+          await refreshV3FollowerCopy(resolvedRepoDir, location, signal);
           serveCommitEffects?.poke();
         },
         onLead: async (stopped) => {

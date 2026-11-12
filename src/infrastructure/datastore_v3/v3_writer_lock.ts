@@ -33,6 +33,7 @@ import {
 import {
   type FenceRecord,
   V3_WRITER_BUSY_CODE,
+  WRITER_LEASE_CLOCK_SKEW_MS,
   WriterFencedError,
   WriterLease,
   WriterLeaseBusyError,
@@ -469,6 +470,26 @@ export async function v3WriterLeaseHolder(
       : {}),
     state: inspection.state,
   };
+}
+
+/**
+ * when a take would find the lease lapsed unless its holder renews, by this
+ * process's clock: 0 when nothing holds it, undefined when the holder's record
+ * cannot be read; the take's own judgement still decides
+ */
+export async function v3WriterLeaseExpiresAt(
+  datastorePath: string,
+): Promise<number | undefined> {
+  const inspection = await (await writerLease(
+    datastorePath,
+    DEFAULT_LOCK_TTL_MS,
+  )).inspect();
+  if (inspection === null || inspection.state !== "held") return 0;
+  if (inspection.record === undefined || inspection.renewedAt === undefined) {
+    return undefined;
+  }
+  return Date.parse(inspection.renewedAt) + inspection.record.ttlMs +
+    WRITER_LEASE_CLOCK_SKEW_MS;
 }
 
 export type V3WriterLockHandle = Pick<

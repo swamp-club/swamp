@@ -111,7 +111,10 @@ interface Team {
   readonly bOrigin: string;
 }
 
-async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
+async function withTeam(
+  fn: (team: Team) => Promise<void>,
+  options: { readonly stallFollowerRefresh?: boolean } = {},
+): Promise<void> {
   // under /tmp: macOS TMPDIR is too long for the sidecar's socket path
   const root = await Deno.realPath(
     await Deno.makeTempDir({ dir: "/tmp", prefix: "swamp-f43-" }),
@@ -194,7 +197,10 @@ async function withTeam(fn: (team: Team) => Promise<void>): Promise<void> {
     // a follower restores its copy from what the replica holds
     await a.send({ kind: "confirm" });
     const b = await node("b");
-    const follow = await b.send({ kind: "open" }) as Opened;
+    const follow = await b.send({
+      kind: "open",
+      ...(options.stallFollowerRefresh === true ? { stallRefresh: true } : {}),
+    }) as Opened;
     assertEquals(follow.role, "follower");
     await fn({
       root,
@@ -1148,5 +1154,32 @@ Deno.test({
       [],
       report,
     );
+  },
+});
+
+Deno.test({
+  ...sidecar,
+  name:
+    "serve team takeover (T1): a follower whose copy refresh is still running when the leader's lease lapses aborts it, takes the lease in the same tick, and restores once under the lease (swamp-club#4679)",
+  fn: async () => {
+    await withTeam(async (team) => {
+      // a commit the follower's copy lacks, so the takeover has to restore it
+      const sent = commitThrough(team, team.aOrigin, 1, 0);
+      assertEquals((await sent.reply).status, 200);
+      await team.a.send({ kind: "confirm" });
+      assertEquals(await storedAt(team.b, team, 1), undefined);
+      const before = await team.a.state();
+      const stalled = team.a.send({ kind: "pause", ms: STALL_MS });
+      // one tick: its refresh would never end unless the lapse aborts it
+      await team.b.send({ kind: "tick" });
+      const after = await team.b.state();
+      await stalled;
+      assertEquals(after.role, "leader");
+      assert(after.fence! > before.fence!, `${after.fence} > ${before.fence}`);
+      assertEquals(after.events, ["refresh", "refresh aborted", "lead"]);
+      // restored by take() under the lease, never by the aborted refresh
+      assertEquals(after.head, before.head);
+      assertEquals((await storedAt(team.b, team, 1))?.txnId, sent.txnId);
+    }, { stallFollowerRefresh: true });
   },
 });

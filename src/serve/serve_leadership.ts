@@ -37,6 +37,12 @@ const logger = getSwampLogger(["serve", "leadership"]);
 export const DEFAULT_LEADERSHIP_TICK_MS = 10_000;
 
 /**
+ * Past the old lease's computed expiry before a follower tries it: take()
+ * judges expiry strictly, and an early try that loses restores as a follower.
+ */
+const LEASE_EXPIRY_MARGIN_MS = 1_000;
+
+/**
  * How long a follower's copy may go without a refresh before it stops
  * answering reads: three ticks, so a revoked grant stops allowing reads on a
  * follower within it.
@@ -59,6 +65,12 @@ export interface LeadershipLease {
    * forwards to a leader record's address only at this fence
    */
   currentFence?(): Promise<number | undefined>;
+  /**
+   * when take() would find the current holder's lease lapsed unless it renews,
+   * by this node's clock; at or before now when nothing holds it, undefined
+   * when that cannot be told. Only timing reads it: take() alone decides.
+   */
+  expiresAt(): Promise<number | undefined>;
 }
 
 /**
@@ -76,7 +88,11 @@ export interface ServeLeadershipDeps {
   readonly address?: string;
   readonly lease: LeadershipLease;
   readonly store: ControlPlaneStore;
-  refreshCopy(): Promise<void>;
+  /**
+   * signal aborts when the lease the refresh waits behind lapses, or serve
+   * stops; honoured only until a restore is installed
+   */
+  refreshCopy(signal: AbortSignal): Promise<void>;
   /**
    * a follower applies it instead of restoring every tick, and restores only
    * when it is not current. Absent, every tick restores.
@@ -122,8 +138,10 @@ export class ServeLeadership {
   #refreshedAt: number | undefined;
   #recordedFence: number | undefined;
   #recordedProof: string | undefined;
-  #timer: ReturnType<typeof setInterval> | undefined;
+  #timer: ReturnType<typeof setTimeout> | undefined;
+  #scheduled: Promise<void> | undefined;
   #ticking: Promise<void> | undefined;
+  #refreshing: AbortController | undefined;
   /**
    * This node took the lease but could not write its leader record: the
    * next tick retries the record, not the lease.
@@ -194,10 +212,7 @@ export class ServeLeadership {
           .info`Serve instance ${leader.instanceId} leads this datastore at ${leader.address}; this node follows it`;
       }
     }
-    // A tick never rejects, and stop() waits for the one in flight.
-    this.#timer = setInterval(() => {
-      void this.tick();
-    }, this.#tickMs);
+    this.#schedule(await this.#nextDelay());
   }
 
   lostLeadHandled(): Promise<void> {
@@ -216,14 +231,47 @@ export class ServeLeadership {
   }
 
   /**
-   * Stops ticking and waits for a tick in flight. The leader record is left:
-   * the lease decides, and the next leader overwrites it.
+   * Stops ticking and waits for a tick in flight. A follower refresh in flight
+   * is aborted, honoured before its restore is installed; a take() in flight
+   * is awaited, so the lease release never races a promotion. The leader
+   * record is left: the lease decides, and the next leader overwrites it.
    */
   async stop(): Promise<void> {
     this.#stopped = true;
-    if (this.#timer !== undefined) clearInterval(this.#timer);
+    if (this.#timer !== undefined) clearTimeout(this.#timer);
+    this.#refreshing?.abort(new Error("serve is stopping"));
     await this.#ticking;
+    await this.#scheduled;
     await this.#deps.feed?.stop();
+  }
+
+  /** A tick never rejects, and stop() waits for the one in flight. */
+  #schedule(delay: number): void {
+    if (this.#stopped) return;
+    this.#timer = setTimeout(() => {
+      this.#timer = undefined;
+      this.#scheduled = (async () => {
+        await this.tick();
+        this.#schedule(await this.#nextDelay());
+      })();
+    }, delay);
+  }
+
+  /**
+   * A follower tries the lease just after the holder's computed expiry when
+   * that comes before the next tick; the delay never exceeds the tick, since
+   * the same timer detects a lost lead and drives refreshes, and an expiry
+   * already past waits a whole tick, as each failed take reads the bucket.
+   */
+  async #nextDelay(): Promise<number> {
+    if (this.#stopped || this.#role === "leader") return this.#tickMs;
+    const expiresAt = await this.#deps.lease.expiresAt().catch(
+      () => undefined,
+    );
+    if (expiresAt === undefined) return this.#tickMs;
+    const untilExpiry = expiresAt - this.#now();
+    if (untilExpiry <= 0) return this.#tickMs;
+    return Math.min(this.#tickMs, untilExpiry + LEASE_EXPIRY_MARGIN_MS);
   }
 
   async #tickOnce(): Promise<void> {
@@ -236,7 +284,7 @@ export class ServeLeadership {
       logger
         .error`This serve node lost the datastore's writer lease to another node; it stops, to start again as a follower`;
       this.#stopped = true;
-      if (this.#timer !== undefined) clearInterval(this.#timer);
+      if (this.#timer !== undefined) clearTimeout(this.#timer);
       // Its gates close while it stops: it takes nothing more.
       this.#role = "follower";
       this.#since = undefined;
@@ -271,11 +319,81 @@ export class ServeLeadership {
       await feed.stop();
     }
     if (this.#stopped) return;
-    await this.#deps.refreshCopy();
+    if (!await this.#refresh(true)) {
+      if (this.#stopped) return;
+      // The lease lapsed while the copy was restored: take() restores under
+      // it, never this follower's half-done restore. The feed is stopped.
+      logger
+        .info`The datastore's writer lease lapsed while this serve node refreshed its copy; it tries the lease`;
+      const retaken = await lease.take();
+      if (this.#stopped) return;
+      if (retaken === "writer") {
+        await this.#lead();
+        return;
+      }
+      // the holder renewed after all: the refresh runs to its end this time,
+      // so a lapse the take disagrees with cannot keep the copy stale
+      if (!await this.#refresh(false)) return;
+    }
+    if (this.#stopped || this.#role !== "follower") return;
     this.#refreshedAt = this.#now();
-    if (this.#stopped) return;
     await this.#readLeader();
+    if (this.#stopped || this.#role !== "follower") return;
     feed?.follow(this.#leader);
+  }
+
+  /**
+   * false when the refresh was aborted, by stop() or, when watched, once the
+   * holder's lease lapsed, which a timer apart from the tick watches
+   */
+  async #refresh(watchLapse: boolean): Promise<boolean> {
+    const refresh = new AbortController();
+    this.#refreshing = refresh;
+    const watch = watchLapse ? this.#abortAtLapse(refresh) : undefined;
+    try {
+      await this.#deps.refreshCopy(refresh.signal);
+      return true;
+    } catch (error) {
+      if (refresh.signal.aborted) return false;
+      throw error;
+    } finally {
+      this.#refreshing = undefined;
+      await watch?.cancel();
+    }
+  }
+
+  /**
+   * re-reads the expiry each time it comes due, so a holder that renewed
+   * meanwhile keeps the refresh going
+   */
+  #abortAtLapse(refresh: AbortController): { cancel(): Promise<void> } {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let checking: Promise<void> = Promise.resolve();
+    const check = async (): Promise<void> => {
+      const expiresAt = await this.#deps.lease.expiresAt().catch(
+        () => undefined,
+      );
+      if (cancelled) return;
+      const wait = expiresAt === undefined
+        ? this.#tickMs
+        : expiresAt + LEASE_EXPIRY_MARGIN_MS - this.#now();
+      if (wait <= 0) {
+        refresh.abort(new Error("the writer lease lapsed"));
+        return;
+      }
+      timer = setTimeout(() => {
+        checking = check();
+      }, wait);
+    };
+    checking = check();
+    return {
+      async cancel() {
+        cancelled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        await checking;
+      },
+    };
   }
 
   /**

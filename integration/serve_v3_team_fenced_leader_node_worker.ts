@@ -61,6 +61,7 @@ import {
   holdsCurrentV3WriterLease,
   v3WriterFence,
   v3WriterLeaseConfirmed,
+  v3WriterLeaseExpiresAt,
   v3WriterLeaseHolder,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -102,8 +103,16 @@ export type FencedNodeRequest =
     readonly modelType: string;
     readonly tokens: Readonly<Record<string, string>>;
   }
-  /** ttlMs: this node's writer lease, taken before serve's own hold joins it */
-  | { readonly kind: "open"; readonly ttlMs?: number }
+  /**
+   * ttlMs: this node's writer lease, taken before serve's own hold joins it;
+   * stallRefresh: a follower refresh hangs until aborted, as a long restore
+   * does, and the tick watches the holder's expiry
+   */
+  | {
+    readonly kind: "open";
+    readonly ttlMs?: number;
+    readonly stallRefresh?: boolean;
+  }
   | { readonly kind: "saveModel"; readonly name: string }
   | { readonly kind: "materialize"; readonly admins: readonly string[] }
   | { readonly kind: "confirm" }
@@ -245,7 +254,10 @@ async function initCheckout(
   );
 }
 
-async function open(ttlMs: number | undefined): Promise<Opened> {
+async function open(
+  ttlMs: number | undefined,
+  stallRefresh: boolean,
+): Promise<Opened> {
   const request = init!;
   await initCheckout(request.repoDir, request.datastorePath);
   if (ttlMs !== undefined) {
@@ -312,6 +324,11 @@ async function open(ttlMs: number | undefined): Promise<Opened> {
       confirmed: () => v3WriterLeaseConfirmed(here.path),
       fence: () => v3WriterFence(here.path),
       currentFence: async () => (await v3WriterLeaseHolder(here.path))?.fence,
+      // tests tick by hand unless a refresh stalls on purpose
+      expiresAt: () =>
+        stallRefresh
+          ? v3WriterLeaseExpiresAt(here.path)
+          : Promise.resolve(undefined),
       take: () =>
         holdV3Writer(here, repoDir, {
           retakeLost: true,
@@ -320,8 +337,15 @@ async function open(ttlMs: number | undefined): Promise<Opened> {
         }),
     },
     store: v3ServeControlPlaneAt(here),
-    refreshCopy: async () => {
-      await refreshV3FollowerCopy(repoDir, here);
+    refreshCopy: async (signal) => {
+      if (stallRefresh) {
+        events.push("refresh");
+        await new Promise<void>((done) =>
+          signal?.addEventListener("abort", () => done(), { once: true })
+        );
+        events.push("refresh aborted");
+      }
+      await refreshV3FollowerCopy(repoDir, here, signal);
       effects.poke();
     },
     onLead: async () => {
@@ -537,7 +561,7 @@ async function handle(request: FencedNodeRequest): Promise<unknown> {
       return undefined;
     }
     case "open":
-      return await open(request.ttlMs);
+      return await open(request.ttlMs, request.stallRefresh === true);
     case "saveModel": {
       const definition = Definition.create({
         name: request.name,

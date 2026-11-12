@@ -193,6 +193,8 @@ async function handle(request: TeamNodeRequest): Promise<unknown> {
         lease: {
           holdsCurrent: () => holdsCurrentV3WriterLease(datastorePath),
           fence: () => v3WriterFence(datastorePath),
+          // ticks only at the request's tickMs, never sooner at an expiry
+          expiresAt: () => Promise.resolve(undefined),
           take,
         },
         store: v3ServeControlPlaneAt(config()),
