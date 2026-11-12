@@ -37,10 +37,14 @@ import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/d
 import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 import {
   catalogCompletenessDataDir,
+  clearCatalogSurplus,
   compareCatalogToDisk,
   doctorDatastoresCommand,
+  findCatalogSurplus,
   repairLostV3FormatMarker,
 } from "./doctor_datastores.ts";
+import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
+import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { initializeV3Datastore } from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -288,6 +292,225 @@ Deno.test(
     assertEquals(summary.diskRecords, 3);
     assertEquals(summary.catalogRecords, 3);
     assertEquals(summary.shortfalls, []);
+  }),
+);
+
+function catalogRow(overrides: Partial<CatalogRow>): CatalogRow {
+  return {
+    id: crypto.randomUUID(),
+    namespace: SOLO_NAMESPACE,
+    type_normalized: "@scope/shows",
+    model_id: "model-001",
+    model_name: "shows",
+    data_name: "gone",
+    version: 1,
+    is_latest: 1,
+    is_step_latest: 1,
+    spec_name: "result",
+    data_type: "resource",
+    content_type: "application/json",
+    lifetime: "infinite",
+    garbage_collection: "10",
+    lifecycle: "active",
+    owner_type: "model-method",
+    owner_ref: "test",
+    streaming: 0,
+    size: 0,
+    created_at: "2026-01-01T00:00:00.000Z",
+    tags: "{}",
+    workflow_run_id: "",
+    workflow_name: "",
+    job_name: "",
+    step_name: "",
+    source: "",
+    ...overrides,
+  };
+}
+
+function saveData(
+  repo: FileSystemUnifiedDataRepository,
+  type: ModelType,
+  modelId: string,
+  name: string,
+): Promise<unknown> {
+  return repo.save(
+    type,
+    modelId,
+    Data.create({
+      name,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      tags: { type: "resource", modelName: "events" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+    }),
+    new TextEncoder().encode("{}"),
+  );
+}
+
+Deno.test(
+  "compareCatalogToDisk: reports the surplus a type moved by hand leaves behind, only when asked",
+  withFixture(async (repoDir, catalog) => {
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const oldType = ModelType.create("@old/events");
+    const modelId = crypto.randomUUID();
+    for (const name of ["alpha", "beta", "gamma"]) {
+      await saveData(dataRepo, oldType, modelId, name);
+    }
+    await dataRepo.rename(oldType, modelId, "gamma", "delta");
+    const query = new DataQueryService(catalog, dataRepo);
+    await query.query("true");
+
+    // folders moved by hand, then a rebuild
+    const dataDir = join(repoDir, ".swamp", "data");
+    ensureDirSync(join(dataDir, "@new"));
+    Deno.renameSync(
+      join(dataDir, "@old", "events"),
+      join(dataDir, "@new", "events"),
+    );
+    catalog.invalidate();
+    await query.query("true");
+
+    const summary = await compareCatalogToDisk(
+      catalog,
+      dataRepo,
+      SOLO_NAMESPACE,
+      { surplus: true },
+    );
+    assertEquals(summary.shortfalls, []);
+    // alpha, beta and delta by their rows, gamma by its rename forward
+    assertEquals(summary.surplus, [
+      { typeNormalized: "@old/events", dataNames: 4, catalogRecords: 3 },
+    ]);
+
+    const unasked = await compareCatalogToDisk(
+      catalog,
+      dataRepo,
+      SOLO_NAMESPACE,
+    );
+    assertEquals(unasked.surplus, []);
+  }),
+);
+
+Deno.test(
+  "findCatalogSurplus: keeps names with unreadable metadata, empty name directories, pending names and other namespaces' rows",
+  withFixture(async (repoDir, catalog) => {
+    const modelDir = join(
+      repoDir,
+      ".swamp",
+      "data",
+      "@scope",
+      "shows",
+      "model-001",
+    );
+    writeDataItem(repoDir, ["@scope", "shows"], "model-001", "live", 0);
+    ensureDirSync(join(modelDir, "unreadable", "1"));
+    Deno.writeTextFileSync(
+      join(modelDir, "unreadable", "1", "metadata.yaml"),
+      ":\n- [",
+    );
+    Deno.writeTextFileSync(join(modelDir, "unreadable", "latest"), "1");
+    ensureDirSync(join(modelDir, "empty"));
+
+    for (const data_name of ["live", "unreadable", "empty", "gone"]) {
+      catalog.upsert(catalogRow({ data_name }));
+    }
+    catalog.upsert(catalogRow({ data_name: "gone", version: 2 }));
+    catalog.upsert(
+      catalogRow({
+        data_name: "in-flight",
+        is_pending: 1,
+        pending_pid: 1,
+        pending_host: "h",
+      }),
+    );
+    catalog.upsert(catalogRow({ namespace: "other", data_name: "elsewhere" }));
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const { surplus, names } = await findCatalogSurplus(
+      catalog,
+      dataRepo,
+      SOLO_NAMESPACE,
+    );
+
+    assertEquals(names.map((n) => n.data_name), ["gone"]);
+    assertEquals(surplus, [
+      { typeNormalized: "@scope/shows", dataNames: 1, catalogRecords: 2 },
+    ]);
+  }),
+);
+
+Deno.test(
+  "clearCatalogSurplus: removes only surplus names under the datastore lock and keeps foreign rows and the populated mark",
+  withFixture(async (repoDir, catalog) => {
+    writeDataItem(repoDir, ["@scope", "shows"], "model-001", "live", 0);
+    catalog.upsert(catalogRow({ data_name: "live" }));
+    catalog.upsert(catalogRow({ data_name: "gone", version: 1, is_latest: 0 }));
+    catalog.upsert(catalogRow({ data_name: "gone", version: 2 }));
+    catalog.upsert(catalogRow({ namespace: "other", data_name: "elsewhere" }));
+    catalog.markPopulated();
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const datastorePath = join(repoDir, ".swamp");
+    const removed = await clearCatalogSurplus(
+      { catalogStore: catalog, dataRepo, namespace: SOLO_NAMESPACE },
+      { type: "filesystem", path: datastorePath },
+    );
+
+    assertEquals(removed, [
+      { typeNormalized: "@scope/shows", dataNames: 1, catalogRecords: 2 },
+    ]);
+    assertEquals(
+      catalog.dataNameCounts(SOLO_NAMESPACE).map((n) => n.data_name),
+      ["live"],
+    );
+    assertEquals(
+      catalog.dataNameCounts("other").map((n) => n.data_name),
+      ["elsewhere"],
+    );
+    assertEquals(catalog.isPopulated(), true);
+
+    const after = new FileLock(datastorePath, { maxWaitMs: 1000 });
+    await after.acquire();
+    await after.release();
+  }),
+);
+
+Deno.test(
+  "clearCatalogSurplus: keeps a name that reached disk after the preview counted it",
+  withFixture(async (repoDir, catalog) => {
+    catalog.upsert(catalogRow({ data_name: "late" }));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const preview = await findCatalogSurplus(catalog, dataRepo, SOLO_NAMESPACE);
+    assertEquals(preview.names.map((n) => n.data_name), ["late"]);
+
+    writeDataItem(repoDir, ["@scope", "shows"], "model-001", "late", 0);
+    const removed = await clearCatalogSurplus(
+      { catalogStore: catalog, dataRepo, namespace: SOLO_NAMESPACE },
+      { type: "filesystem", path: join(repoDir, ".swamp") },
+    );
+
+    assertEquals(removed, []);
+    assertEquals(
+      catalog.dataNameCounts(SOLO_NAMESPACE).map((n) => n.data_name),
+      ["late"],
+    );
   }),
 );
 

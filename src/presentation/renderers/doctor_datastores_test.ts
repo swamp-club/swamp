@@ -1067,3 +1067,183 @@ Deno.test("createDoctorDatastoresRenderer: json mode carries the mixed kind name
   );
   assertEquals(render({}).mixedKindNamesFinding, null);
 });
+
+const SURPLUS = [
+  {
+    typeNormalized: "@williamjtlacroix/es-events",
+    dataNames: 12,
+    catalogRecords: 19818,
+  },
+];
+
+Deno.test("createDoctorDatastoresRenderer: log mode lists catalog records with no data on disk", () => {
+  const renderer = createDoctorDatastoresRenderer("log");
+  const out = stripAnsiCode(captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        ...data(),
+        catalogCompletenessFinding: {
+          diskRecords: 12,
+          catalogRecords: 24,
+          shortfalls: [],
+          surplus: SURPLUS,
+        },
+      },
+    })
+  ));
+  assertStringIncludes(
+    out,
+    "Catalog index holds records with no data on disk:",
+  );
+  assertStringIncludes(
+    out,
+    "@williamjtlacroix/es-events: 19,818 record(s) of 12 data name(s)",
+  );
+  assertEquals(out.includes("Catalog index incomplete:"), false);
+  assertStringIncludes(out, "swamp doctor datastores --repair");
+});
+
+Deno.test("createCatalogIndexRepairRenderer: log mode previews and reports a surplus clear without the foreign-rows notice", () => {
+  const renderer = createCatalogIndexRepairRenderer(
+    "log",
+    new DatastoreRepairJsonReport(),
+  );
+  const completeness = {
+    diskRecords: 12,
+    catalogRecords: 24,
+    shortfalls: [],
+    surplus: SURPLUS,
+  };
+  const preview = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().preview({ kind: "preview", completeness })
+    ),
+  );
+  assertEquals(renderer.overallStatus, "preview");
+  assertStringIncludes(preview, "Remove catalog records with no data on disk:");
+  assertStringIncludes(preview, "19,818 record(s) of 12 data name(s)");
+  assertStringIncludes(preview, "rows pulled from other namespaces are kept");
+  assertEquals(preview.includes("swamp datastore catalog pull"), false);
+
+  const done = stripAnsiCode(captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      result: {
+        mode: "clear",
+        shortfalls: [],
+        missingRecords: 0,
+        surplus: SURPLUS,
+        surplusRecords: 19818,
+      },
+    })
+  ));
+  assertEquals(renderer.overallStatus, "pass");
+  assertStringIncludes(
+    done,
+    "Removed 19,818 catalog record(s) with no data on disk:",
+  );
+  assertEquals(done.includes("swamp datastore catalog pull"), false);
+
+  const nothing = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().completed({
+        kind: "completed",
+        result: {
+          mode: "clear",
+          shortfalls: [],
+          missingRecords: 0,
+          surplus: [],
+          surplusRecords: 0,
+        },
+      })
+    ),
+  );
+  assertStringIncludes(nothing, "Nothing left to remove");
+});
+
+Deno.test("createCatalogIndexRepairRenderer: log mode names surplus a rebuild drops along with the foreign-rows notice", () => {
+  const renderer = createCatalogIndexRepairRenderer(
+    "log",
+    new DatastoreRepairJsonReport(),
+  );
+  const shortfalls = [
+    { typeNormalized: "@liywjl/es-events", diskRecords: 12, catalogRecords: 0 },
+  ];
+  const preview = stripAnsiCode(
+    captureStdout(() =>
+      renderer.handlers().preview({
+        kind: "preview",
+        completeness: {
+          diskRecords: 12,
+          catalogRecords: 0,
+          shortfalls,
+          surplus: SURPLUS,
+        },
+      })
+    ),
+  );
+  assertStringIncludes(preview, "Drop 19,818 record(s) with no data on disk");
+  assertStringIncludes(preview, "swamp datastore catalog pull");
+
+  const done = stripAnsiCode(captureStdout(() =>
+    renderer.handlers().completed({
+      kind: "completed",
+      result: {
+        mode: "rebuild",
+        shortfalls,
+        missingRecords: 12,
+        surplus: SURPLUS,
+        surplusRecords: 19818,
+      },
+    })
+  ));
+  assertStringIncludes(done, "19,818 record(s) with no data on disk are gone");
+  assertStringIncludes(done, "swamp datastore catalog pull");
+});
+
+Deno.test("createCatalogIndexRepairRenderer: json mode carries the foreign-rows notice only for a rebuild", () => {
+  const completeness = {
+    diskRecords: 12,
+    catalogRecords: 24,
+    shortfalls: [],
+    surplus: SURPLUS,
+  };
+  const previewReport = new DatastoreRepairJsonReport();
+  createCatalogIndexRepairRenderer("json", previewReport).handlers().preview({
+    kind: "preview",
+    completeness,
+  });
+  assertEquals(
+    JSON.parse(captureStdout(() => previewReport.print())).catalog,
+    { status: "catalog_preview", completeness },
+  );
+
+  const clearResult = {
+    mode: "clear" as const,
+    shortfalls: [],
+    missingRecords: 0,
+    surplus: SURPLUS,
+    surplusRecords: 19818,
+  };
+  const clearReport = new DatastoreRepairJsonReport();
+  createCatalogIndexRepairRenderer("json", clearReport).handlers().completed({
+    kind: "completed",
+    result: clearResult,
+  });
+  assertEquals(
+    JSON.parse(captureStdout(() => clearReport.print())).catalog,
+    { status: "catalog_completed", result: clearResult },
+  );
+
+  const rebuildReport = new DatastoreRepairJsonReport();
+  createCatalogIndexRepairRenderer("json", rebuildReport).handlers().completed({
+    kind: "completed",
+    result: { ...clearResult, mode: "rebuild" },
+  });
+  assertStringIncludes(
+    JSON.parse(captureStdout(() => rebuildReport.print())).catalog
+      .foreignRowsNotice,
+    "swamp datastore catalog pull",
+  );
+});

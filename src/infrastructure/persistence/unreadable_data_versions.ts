@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ModelType } from "../../domain/models/model_type.ts";
 import type { Namespace } from "../../domain/data/namespace.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
 import type { CatalogStore, CatalogVersionKey } from "./catalog_store.ts";
@@ -51,19 +50,11 @@ export async function scanUnreadableVersions(
   const rowsByName = new Map<string, CatalogVersionKey[]>();
   for (const row of catalogStore.versionKeys(namespace)) {
     const key = keyOf(row.type_normalized, row.model_id, row.data_name);
+    // a name with no directory on disk is catalog surplus, not unreadable data
+    if (!names.has(key)) continue;
     const rows = rowsByName.get(key);
     if (rows) rows.push(row);
     else rowsByName.set(key, [row]);
-    if (names.has(key)) continue;
-    try {
-      names.set(key, {
-        type: ModelType.create(row.type_normalized),
-        modelId: row.model_id,
-        dataName: row.data_name,
-      });
-    } catch {
-      // A row whose type is not a valid model type names no layout path.
-    }
   }
 
   const findings: UnreadableDataVersion[] = [];

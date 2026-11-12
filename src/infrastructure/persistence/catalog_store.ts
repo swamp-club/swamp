@@ -261,6 +261,12 @@ export interface CatalogDataName {
   readonly data_name: string;
 }
 
+export interface CatalogDataNameCount extends CatalogDataName {
+  /** 0 for a name only a rename forward indexes */
+  readonly rows: number;
+  readonly pending: boolean;
+}
+
 /** a dirty name held by a commit not known to have landed */
 export interface CatalogDirtyPin extends CatalogDataName {
   readonly partition: string;
@@ -1009,6 +1015,38 @@ export class CatalogStore {
        FROM catalog WHERE ${clauses.join(" AND ")}
        ORDER BY type_normalized, model_id, data_name, version`,
     ).all(...params) as unknown as CatalogVersionKey[];
+  }
+
+  /** every data name one namespace indexes, through rows or a rename forward, for doctor datastores */
+  dataNameCounts(namespace: string): CatalogDataNameCount[] {
+    return (this.db.prepare(
+      `SELECT type_normalized, model_id, data_name,
+              SUM(rows) AS rows, MAX(pending) AS pending
+       FROM (
+         SELECT type_normalized, model_id, data_name,
+                COUNT(*) AS rows, MAX(is_pending) AS pending
+         FROM catalog WHERE namespace = ?
+         GROUP BY type_normalized, model_id, data_name
+         UNION ALL
+         SELECT type_normalized, model_id, data_name, 0 AS rows, 0 AS pending
+         FROM catalog_renames WHERE namespace = ?
+       )
+       GROUP BY type_normalized, model_id, data_name
+       ORDER BY type_normalized, model_id, data_name`,
+    ).all(namespace, namespace) as unknown as Array<{
+      type_normalized: string;
+      model_id: string;
+      data_name: string;
+      rows: number;
+      pending: number;
+    }>).map((row) => ({
+      namespace,
+      type_normalized: row.type_normalized,
+      model_id: row.model_id,
+      data_name: row.data_name,
+      rows: row.rows,
+      pending: row.pending === 1,
+    }));
   }
 
   /** published versions with the tags that name their kind, for doctor datastores */

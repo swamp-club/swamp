@@ -2387,6 +2387,42 @@ Deno.test("CatalogStore.versionKeys: lists the published rows of one namespace, 
   }
 });
 
+Deno.test("CatalogStore.dataNameCounts: counts each name's rows in one namespace, flags pending names, and lists names only a forward indexes", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.upsert(makeRow({ id: "a1", version: 1, is_latest: 0 }));
+    store.upsert(makeRow({ id: "a2", version: 2 }));
+    store.upsert(
+      makeRow({
+        id: "p1",
+        data_name: "in-flight",
+        is_pending: 1,
+        pending_pid: 1,
+        pending_host: "h",
+      }),
+    );
+    store.upsert(makeRow({ id: "f1", namespace: "foreign", version: 7 }));
+    store.recordRename(makeForward());
+    store.recordRename(makeForward({ namespace: "foreign", data_name: "x" }));
+
+    const counts = store.dataNameCounts("").map((n) =>
+      `${n.type_normalized}/${n.model_id}/${n.data_name}:${n.rows}:${n.pending}`
+    );
+    assertEquals(counts, [
+      "test-model/model-001/in-flight:1:true",
+      "test-model/model-001/my-data:2:false",
+      "test-model/model-001/old:0:false",
+    ]);
+    assertEquals(
+      store.dataNameCounts("foreign").map((n) => `${n.data_name}:${n.rows}`),
+      ["my-data:1", "x:0"],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("CatalogStore.iterateSorted: pages past ITERATE_PAGE_SIZE by keyset in a total order, ties crossing page boundaries (swamp-club#4177)", () => {
   using tempDb = makeTempDb();
   const store = new CatalogStore(tempDb.path);

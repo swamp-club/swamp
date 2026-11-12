@@ -10,6 +10,9 @@
   - ["Version not found"](#version-not-found)
   - ["GC deleted data I needed"](#gc-deleted-data-i-needed)
 - [Rename Issues](#rename-issues)
+- [Stale Catalog Records](#stale-catalog-records)
+  - [Query returns each item twice](#query-returns-each-item-twice)
+  - [Moving a behavior type to another name](#moving-a-behavior-type-to-another-name)
 - [Expression Debugging](#expression-debugging)
 - [Data Recovery](#data-recovery)
 
@@ -258,6 +261,46 @@ available behaviors:
 ```bash
 swamp behavior search --json
 ```
+
+## Stale Catalog Records
+
+The catalog (`.swamp/data/_catalog.db`) indexes data on disk. A rebuild only
+adds and updates rows, so rows whose files were moved or removed by hand stay
+until doctor removes them.
+
+### Query returns each item twice
+
+**Symptom**: `swamp data query` or `data search` returns every item twice, or
+returns data for a type whose folder no longer exists.
+
+**Solution**: Preview, then remove the catalog records with no data on disk:
+
+```bash
+swamp doctor datastores --repair      # preview
+swamp doctor datastores --repair -y   # remove them
+```
+
+Only those records go; rows pulled from other namespaces stay. If the catalog is
+also missing records, the repair rebuilds the whole catalog instead, which drops
+pulled rows until `swamp datastore catalog pull` restores them. This is the
+supported way to reindex the catalog. It applies to the default and
+external-path filesystem datastores; lazy S3/GCS caches are never reported.
+
+### Moving a behavior type to another name
+
+There is no rename command for a behavior type yet (for example moving
+`@old-namespace/es-events` to `@new-namespace/es-events`). On a filesystem
+datastore, move it by hand:
+
+1. Stop `swamp serve` and wait for running workflows to finish.
+2. Change the type in the extension source and in every definition YAML.
+3. Move `.swamp/data/<old-type>/`, `.swamp/outputs/<old-type>/` and
+   `.swamp/definitions-evaluated/<old-type>/` to the new type's path.
+4. Run `swamp doctor datastores --repair`, then again with `-y`.
+
+New versions then continue from the old history. Limits: workflow run records
+keep the old type per step, so history shows the old name; v3 and S3/GCS
+datastores cannot be moved this way.
 
 ## Expression Debugging
 
