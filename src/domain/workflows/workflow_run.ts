@@ -360,6 +360,10 @@ export const WorkflowRunSchema = z.object({
   failureReason: z.string().optional(),
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
+  // names, never values: the input leaves the display view masks as a literal
+  // sensitive value, which a resume masks again without the steps that found
+  // them
+  displayMaskedInputPaths: z.array(z.array(z.string())).optional(),
   stepProgress: z.object({
     completed: z.number().int().nonnegative(),
     total: z.number().int().nonnegative(),
@@ -1510,8 +1514,33 @@ export class WorkflowRun implements TriggerEvaluationContext {
    */
   private _sensitiveValues: RunSensitiveValues | undefined = undefined;
 
+  private _displayMaskedInputPaths: string[][] = [];
+
   attachSensitiveValues(values: RunSensitiveValues): void {
     this._sensitiveValues = values;
+    for (const path of this._displayMaskedInputPaths) {
+      const leaf = ownLeafAt(this._inputs, path);
+      if (typeof leaf === "string" || typeof leaf === "number") {
+        values.addDisplayLiteral(String(leaf));
+      }
+    }
+  }
+
+  /** the stored paths plus every leaf the display view now masks as a literal */
+  private displayMaskedInputPaths(): string[][] {
+    const paths = new Map<string, string[]>();
+    for (const path of this._displayMaskedInputPaths) {
+      paths.set(JSON.stringify(path), path);
+    }
+    const values = this._sensitiveValues;
+    if (values) {
+      for (const [path, leaf] of inputLeaves(this._inputs)) {
+        if (values.maskedForDisplay(leaf) !== values.masked(leaf)) {
+          paths.set(JSON.stringify(path), path);
+        }
+      }
+    }
+    return [...paths.values()];
   }
 
   /**
@@ -1520,7 +1549,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * view share
    */
   mask<T>(value: T): T {
-    return (this._sensitiveValues?.masked(value) ?? value) as T;
+    return (this._sensitiveValues?.maskedForDisplay(value) ?? value) as T;
   }
 
   maskedInputs(): Record<string, unknown> {
@@ -1661,6 +1690,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     run._replayedEvaluatedCache = validated.replayedEvaluatedCache === true;
     if (validated.resumedAt) run._resumedAt = new Date(validated.resumedAt);
     run._startKey = validated.startKey;
+    run._displayMaskedInputPaths = validated.displayMaskedInputPaths ?? [];
     if (validated.inputsProvenance) {
       run._inputsProvenance = ProvenanceMap.fromData(
         validated.inputsProvenance,
@@ -2479,6 +2509,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._sensitiveFormat !== undefined) {
       data.sensitiveFormat = this._sensitiveFormat;
     }
+    const displayMaskedInputPaths = this.displayMaskedInputPaths();
+    if (displayMaskedInputPaths.length > 0) {
+      data.displayMaskedInputPaths = displayMaskedInputPaths;
+    }
     if (
       this._references !== undefined &&
       Object.keys(this._references).length > 0
@@ -2601,4 +2635,34 @@ export function isGuardedRunRecord(
     run.jobs.some((job) =>
       job.steps.some((step) => step.approvalDecision !== undefined)
     );
+}
+
+function inputLeaves(
+  value: unknown,
+  path: string[] = [],
+): Array<[string[], string | number]> {
+  if (typeof value === "string" || typeof value === "number") {
+    return [[path, value]];
+  }
+  if (value === null || typeof value !== "object") return [];
+  const leaves: Array<[string[], string | number]> = [];
+  for (const [key, item] of Object.entries(value)) {
+    for (const leaf of inputLeaves(item, [...path, key])) leaves.push(leaf);
+  }
+  return leaves;
+}
+
+/** own properties only, so a stored path never reaches a prototype */
+function ownLeafAt(value: unknown, path: readonly string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (
+      current === null || typeof current !== "object" ||
+      !Object.hasOwn(current, key)
+    ) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
 }

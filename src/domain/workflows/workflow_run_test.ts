@@ -4402,3 +4402,67 @@ Deno.test("JobRun.toData: a job that never halted writes no fanOutHalts key", ()
   const job = haltedJob();
   assertEquals("fanOutHalts" in job.toData(), false);
 });
+
+Deno.test("WorkflowRun.toData: names the input leaves the display view masks as a literal, never a vault value", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  const values = new RunSensitiveValues();
+  values.addSecret("vault-held-value", { vaultName: "v", key: "k" });
+  run.attachSensitiveValues(values);
+  run.captureInputs({
+    token: "typed-in-token",
+    creds: { user: "bob", password: "typed-in-token" },
+    list: ["plain", "typed-in-token"],
+    fromVault: "vault-held-value",
+  });
+  values.addDisplayLiteral("typed-in-token");
+
+  const data = run.toData();
+  assertEquals(data.displayMaskedInputPaths, [
+    ["token"],
+    ["creds", "password"],
+    ["list", "1"],
+  ]);
+  assertEquals(
+    JSON.stringify(data.displayMaskedInputPaths).includes("typed-in"),
+    false,
+  );
+});
+
+Deno.test("WorkflowRun.attachSensitiveValues: a stored run masks the inputs its record names again", () => {
+  const original = WorkflowRun.create(createTestWorkflow());
+  const first = new RunSensitiveValues();
+  original.attachSensitiveValues(first);
+  original.captureInputs({
+    token: "typed-in-token",
+    creds: { user: "bob", password: "typed-in-pass" },
+  });
+  first.addDisplayLiteral("typed-in-token");
+  first.addDisplayLiteral("typed-in-pass");
+
+  const reloaded = WorkflowRun.fromData(original.toData());
+  assertEquals(reloaded.maskedInputs(), reloaded.inputs);
+  reloaded.attachSensitiveValues(new RunSensitiveValues());
+  assertEquals(reloaded.maskedInputs(), {
+    token: "***",
+    creds: { user: "bob", password: "***" },
+  });
+  assertEquals(reloaded.toData().displayMaskedInputPaths, [
+    ["token"],
+    ["creds", "password"],
+  ]);
+});
+
+Deno.test("WorkflowRun.attachSensitiveValues: a stored path never reaches a prototype or a missing input", () => {
+  const data = WorkflowRun.create(createTestWorkflow()).toData();
+  const run = WorkflowRun.fromData({
+    ...data,
+    inputs: { token: "typed-in-token" },
+    displayMaskedInputPaths: [["__proto__", "polluted"], ["missing"], [
+      "token",
+      "deeper",
+    ]],
+  });
+  const values = new RunSensitiveValues();
+  run.attachSensitiveValues(values);
+  assertEquals(values.maskedForDisplay("typed-in-token"), "typed-in-token");
+});

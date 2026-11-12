@@ -310,3 +310,72 @@ Deno.test("describeUnreadReference: names the vault, the key and the reason", ()
     "vault 'prod-vault', key 'db-password': op: command not found",
   );
 });
+
+Deno.test("RunSensitiveValues.addDisplayLiteral: masks the value in the display view only", () => {
+  const values = new RunSensitiveValues();
+  values.addSecret("vault-value", source);
+  values.addDisplayLiteral("typed-in-value");
+  assertEquals(
+    values.maskedForDisplay({ a: "typed-in-value", b: "x vault-value" }),
+    { a: "***", b: "x ***" },
+  );
+  assertEquals(values.masked({ a: "typed-in-value" }), { a: "typed-in-value" });
+  assertEquals(values.list(), [{ value: "vault-value", source }]);
+  assertEquals(values.sourceOf("typed-in-value"), undefined);
+});
+
+Deno.test("RunSensitiveValues.addDisplayLiteral: leaves the record empty of referenced values", () => {
+  const values = new RunSensitiveValues();
+  values.addDisplayLiteral("typed-in-value");
+  assertEquals(values.isEmpty, true);
+  assertEquals(values.withPlaceholders("typed-in-value"), "typed-in-value");
+});
+
+Deno.test("RunSensitiveValues.addDisplayLiteral: ignores values shorter than 3 characters", () => {
+  const values = new RunSensitiveValues();
+  values.addDisplayLiteral("ab");
+  assertEquals(values.maskedForDisplay({ a: "ab" }), { a: "ab" });
+});
+
+Deno.test("RunSensitiveValues.maskedForDisplay: masks a number equal to a literal but never a boolean", () => {
+  const values = new RunSensitiveValues();
+  values.addDisplayLiteral("4667");
+  values.addDisplayLiteral("true");
+  assertEquals(values.maskedForDisplay({ pin: 4667, on: true }), {
+    pin: "***",
+    on: true,
+  });
+});
+
+Deno.test("RunSensitiveValues.maskedForDisplay: masks the JSON-escaped form of a literal", () => {
+  const values = new RunSensitiveValues();
+  values.addDisplayLiteral('pa"ss');
+  assertEquals(values.maskedForDisplay('{"p":"pa\\"ss"}'), '{"p":"***"}');
+});
+
+Deno.test("RunSensitiveValues.maskedForDisplay: masks the longer of two overlapping values whole", () => {
+  const values = new RunSensitiveValues();
+  values.addDisplayLiteral("secret");
+  values.addSecret("secret-plus", source);
+  assertEquals(values.maskedForDisplay("secret-plus"), "***");
+});
+
+Deno.test("RunSensitiveValues.maskedForDisplay: a value recorded after a mask call is masked by the next one", () => {
+  const values = new RunSensitiveValues();
+  values.addDisplayLiteral("first-literal");
+  assertEquals(
+    values.maskedForDisplay("first-literal second-literal"),
+    "*** second-literal",
+  );
+  assertEquals(values.masked("vault-value-x"), "vault-value-x");
+  values.addDisplayLiteral("second-literal");
+  values.addSecret("vault-value-x", source);
+  assertEquals(
+    values.maskedForDisplay("first-literal second-literal vault-value-x"),
+    "*** *** ***",
+  );
+  assertEquals(
+    values.masked("vault-value-x first-literal"),
+    "*** first-literal",
+  );
+});
