@@ -211,6 +211,56 @@ Deno.test("SqliteCommitStore.highWaterMark: is the compaction point once every c
   });
 });
 
+Deno.test("SqliteCommitStore.compactHistory: an append issued during a compaction of many batches lands after at most one batch, and the compaction still folds its target (swamp-club#4679)", async () => {
+  await withStore(async (store) => {
+    const commits = 8;
+    for (let seq = 1; seq <= commits; seq++) {
+      await store.append(leaseCommit(seq, 1));
+    }
+    const late = await save(1);
+    const order: string[] = [];
+    let appended: Promise<unknown> | undefined;
+    const report = await store.compactHistory(commits, {
+      batchSize: 1,
+      beforeCommit: () => {
+        order.push("batch");
+        appended ??= store.append(late).then(() => {
+          order.push("append");
+        });
+      },
+    });
+    await appended;
+    assertEquals(report.batches, commits);
+    assertEquals(report.point, commits);
+    // Issued inside the first batch: the append's turn comes before the
+    // second batch's.
+    assertEquals(order.indexOf("append"), 1);
+    assertEquals(order.filter((step) => step === "batch").length, commits);
+    assertEquals(store.highWaterMark().cursor, commits + 1);
+  });
+});
+
+Deno.test("SqliteCommitStore.compactHistory: never folds past its target, though appends land between its batches (swamp-club#4679)", async () => {
+  await withStore(async (store) => {
+    for (let seq = 1; seq <= 4; seq++) {
+      await store.append(leaseCommit(seq, 1));
+    }
+    let extra = 0;
+    const appends: Promise<unknown>[] = [];
+    const report = await store.compactHistory(3, {
+      batchSize: 1,
+      beforeCommit: () => {
+        extra++;
+        appends.push(store.append(leaseCommit(4 + extra, 1)));
+      },
+    });
+    await Promise.all(appends);
+    assertEquals(report.point, 3);
+    assertEquals(report.compacted, 3);
+    assertEquals((await store.history()).storedCommits, 1 + extra);
+  });
+});
+
 Deno.test("SqliteCommitStore.oldestStoredCommitAt: is the oldest commit above the compaction point", async () => {
   await withStore(async (store, path) => {
     assertEquals(await store.oldestStoredCommitAt(), null);

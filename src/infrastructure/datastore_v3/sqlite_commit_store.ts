@@ -2264,17 +2264,14 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     options: SqliteCompactHistoryOptions = {},
   ): Promise<CompactionReport> {
     if (this.#closed) return Promise.reject(closedError());
-    return this.#enqueue(() => this.#compact(through, options)).finally(() =>
+    return this.#compact(through, options).finally(() =>
       this.#notifyHeadMoved(true)
     );
   }
 
   /**
-   * Compacts batch by batch. Each batch's rows are read and parsed, and the
-   * snapshots it needs rebuilt, before its transaction starts; inside it the
-   * point is checked again, the commits are folded in feed order, base
-   * references are added before the commits' are dropped (so a present
-   * chunk's count never reaches zero), and the rows are deleted.
+   * Compacts batch by batch, each batch its own turn in the queue, so an
+   * append waits for one batch, never the whole compaction.
    */
   async #compact(
     through: number,
@@ -2285,130 +2282,156 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     }
     const batchSize = options.batchSize ?? COMPACTION_BATCH;
     requirePositive(batchSize, "batchSize");
-    const clock = options.clock ?? (() => new Date());
     const retention = options.releasedRetentionMs ?? DEFAULT_CHUNK_GRACE_MS;
     if (!Number.isSafeInteger(retention) || retention < 0) {
       throw new Error(
         `releasedRetentionMs must be a non-negative integer: ${retention}`,
       );
     }
-    // Never past the last cursor assigned: a point above it would cover
-    // commits not yet written.
-    const last = (this.#db.prepare("SELECT MAX(cursor) AS cursor FROM commits")
-      .get() as { cursor: number | null }).cursor ?? 0;
-    const target = Math.min(through, last);
-    const pruneTxnsBefore = options.pruneTxnsBefore?.getTime();
-    let compacted = 0;
-    let batches = 0;
-    let released = 0;
-    let prunedTxns = 0;
+    const totals: CompactionTotals = {
+      compacted: 0,
+      batches: 0,
+      released: 0,
+      prunedTxns: 0,
+    };
     for (;;) {
-      options.signal?.throwIfAborted();
-      const point = this.#point();
-      if (point >= target) break;
-      const rows = this.#db.prepare(
-        "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
-          "WHERE cursor > ? AND cursor <= ? ORDER BY cursor LIMIT ?",
-      ).all(point, target, batchSize) as unknown as CommitRow[];
-      if (rows.length === 0) break;
-      const commits: Commit[] = [];
-      for (const row of rows) commits.push(await parseRow(row));
-
-      // Each partition's last seq in the batch becomes its compacted seq. A
-      // rebuild must never need a deleted commit, so a partition whose latest
-      // snapshot is older gets one at that seq.
-      const lastSeq = new Map<string, Commit>();
-      for (const commit of commits) {
-        lastSeq.set(
-          cacheKeyOf(commit.namespace, commit.partition.toString()),
-          commit,
-        );
-      }
-      const snapshots: {
-        namespace: string;
-        partition: string;
-        seq: number;
-        body: string;
-      }[] = [];
-      for (const commit of lastSeq.values()) {
-        const partition = commit.partition.toString();
-        const current = this.#selectSnapshot.get(commit.namespace, partition) as
-          | { seq: number }
-          | undefined;
-        if (current !== undefined && current.seq >= commit.seq) continue;
-        const rebuilt = await this.#rebuild(
-          commit.namespace,
-          commit.partition,
-          commit.seq,
-        );
-        if (rebuilt.seq !== commit.seq) {
-          // Its commits changed between reading the batch and rebuilding.
-          throw new Error(
-            `Partition ${partition} changed in commits.db during compaction: another process is writing the store`,
-          );
-        }
-        snapshots.push({
-          namespace: commit.namespace,
-          partition,
-          seq: commit.seq,
-          body: JSON.stringify(rebuilt.snapshot()),
-        });
-      }
-
-      const now = clock().getTime();
-      this.#db.exec("BEGIN IMMEDIATE");
-      try {
-        if (this.#point() !== point) {
-          throw new Error(
-            "The compaction point moved during compaction: another process is writing the store",
-          );
-        }
-        // Compaction is the writer's: one that lost its lease, or holds none
-        // once the store has a fence, stops here.
-        this.#checkWriterFence(options.fence);
-        this.#base.begin(now);
-        rows.forEach((row, i) => {
-          foldCommit(this.#base, commits[i], row.cursor, MATERIALISED_SUBDIRS);
-        });
-        for (let i = 0; i < rows.length; i++) {
-          this.#base.compactCommit(
-            rows[i],
-            commits[i].chunkRefs(),
-            Date.parse(commits[i].at),
-          );
-        }
-        for (const snapshot of snapshots) {
-          this.#upsertSnapshot.run(
-            snapshot.namespace,
-            snapshot.partition,
-            snapshot.seq,
-            snapshot.body,
-          );
-        }
-        this.#base.setPoint(rows[rows.length - 1]);
-        released += this.#base.finish(now - retention);
-        if (pruneTxnsBefore !== undefined) {
-          prunedTxns += this.#base.pruneTxns(pruneTxnsBefore);
-        }
-        options.beforeCommit?.();
-        this.#db.exec("COMMIT");
-      } catch (error) {
-        rollbackQuietly(this.#db);
-        // Cached partitions are unaffected by a rolled-back batch, but drop
-        // them anyway so nothing rebuilt around it is trusted.
-        this.#cache.clear();
-        throw error;
-      }
-      compacted += rows.length;
-      batches++;
+      this.#assertOpen();
+      const folded = await this.#enqueue(() =>
+        this.#compactBatch(through, batchSize, retention, options, totals)
+      );
+      if (!folded) break;
     }
     return {
       point: this.#point(),
-      compacted,
-      batches,
-      released,
-      ...(pruneTxnsBefore !== undefined ? { prunedTxns } : {}),
+      compacted: totals.compacted,
+      batches: totals.batches,
+      released: totals.released,
+      ...(options.pruneTxnsBefore !== undefined
+        ? { prunedTxns: totals.prunedTxns }
+        : {}),
     };
+  }
+
+  /**
+   * Folds the next batch, or returns false when none is left. Its rows are
+   * read and parsed, and the snapshots it needs rebuilt, before its
+   * transaction starts; inside it the point is checked again, the commits
+   * are folded in feed order, base references are added before the
+   * commits' are dropped (so a present chunk's count never reaches zero),
+   * and the rows are deleted.
+   */
+  async #compactBatch(
+    through: number,
+    batchSize: number,
+    retention: number,
+    options: SqliteCompactHistoryOptions,
+    totals: CompactionTotals,
+  ): Promise<boolean> {
+    options.signal?.throwIfAborted();
+    // Never past the last cursor assigned: a point above it would cover
+    // commits not yet written. Read each turn, since appends land between.
+    const last = (this.#db.prepare("SELECT MAX(cursor) AS cursor FROM commits")
+      .get() as { cursor: number | null }).cursor ?? 0;
+    const target = Math.min(through, last);
+    const point = this.#point();
+    if (point >= target) return false;
+    const rows = this.#db.prepare(
+      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
+        "WHERE cursor > ? AND cursor <= ? ORDER BY cursor LIMIT ?",
+    ).all(point, target, batchSize) as unknown as CommitRow[];
+    if (rows.length === 0) return false;
+    const commits: Commit[] = [];
+    for (const row of rows) commits.push(await parseRow(row));
+
+    // Each partition's last seq in the batch becomes its compacted seq. A
+    // rebuild must never need a deleted commit, so a partition whose latest
+    // snapshot is older gets one at that seq.
+    const lastSeq = new Map<string, Commit>();
+    for (const commit of commits) {
+      lastSeq.set(
+        cacheKeyOf(commit.namespace, commit.partition.toString()),
+        commit,
+      );
+    }
+    const snapshots: {
+      namespace: string;
+      partition: string;
+      seq: number;
+      body: string;
+    }[] = [];
+    for (const commit of lastSeq.values()) {
+      const partition = commit.partition.toString();
+      const current = this.#selectSnapshot.get(commit.namespace, partition) as
+        | { seq: number }
+        | undefined;
+      if (current !== undefined && current.seq >= commit.seq) continue;
+      const rebuilt = await this.#rebuild(
+        commit.namespace,
+        commit.partition,
+        commit.seq,
+      );
+      if (rebuilt.seq !== commit.seq) {
+        // Its commits changed between reading the batch and rebuilding.
+        throw new Error(
+          `Partition ${partition} changed in commits.db during compaction: another process is writing the store`,
+        );
+      }
+      snapshots.push({
+        namespace: commit.namespace,
+        partition,
+        seq: commit.seq,
+        body: JSON.stringify(rebuilt.snapshot()),
+      });
+    }
+
+    const now = (options.clock ?? (() => new Date()))().getTime();
+    const pruneTxnsBefore = options.pruneTxnsBefore?.getTime();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.#point() !== point) {
+        throw new Error(
+          "The compaction point moved during compaction: another process is writing the store",
+        );
+      }
+      // Compaction is the writer's: one that lost its lease, or holds none
+      // once the store has a fence, stops here.
+      this.#checkWriterFence(options.fence);
+      this.#base.begin(now);
+      rows.forEach((row, i) => {
+        foldCommit(this.#base, commits[i], row.cursor, MATERIALISED_SUBDIRS);
+      });
+      for (let i = 0; i < rows.length; i++) {
+        this.#base.compactCommit(
+          rows[i],
+          commits[i].chunkRefs(),
+          Date.parse(commits[i].at),
+        );
+      }
+      for (const snapshot of snapshots) {
+        this.#upsertSnapshot.run(
+          snapshot.namespace,
+          snapshot.partition,
+          snapshot.seq,
+          snapshot.body,
+        );
+      }
+      this.#base.setPoint(rows[rows.length - 1]);
+      totals.released += this.#base.finish(now - retention);
+      if (pruneTxnsBefore !== undefined) {
+        totals.prunedTxns += this.#base.pruneTxns(pruneTxnsBefore);
+      }
+      options.beforeCommit?.();
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      // Cached partitions are unaffected by a rolled-back batch, but drop
+      // them anyway so nothing rebuilt around it is trusted.
+      this.#cache.clear();
+      throw error;
+    }
+    totals.compacted += rows.length;
+    totals.batches++;
+    return true;
   }
 
   compactionPoint(): Promise<number> {
@@ -3279,6 +3302,14 @@ function requirePositive(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new Error(`${label} must be a positive integer: ${value}`);
   }
+}
+
+/** What a compaction's batches did so far, summed across their turns. */
+interface CompactionTotals {
+  compacted: number;
+  batches: number;
+  released: number;
+  prunedTxns: number;
 }
 
 /** Test hooks for {@link SqliteCommitStore.compactHistory}. */
