@@ -593,6 +593,33 @@ Deno.test("holdV3Writer: records the writer's checkout, and closeV3Datastores re
   });
 });
 
+Deno.test("closeV3Datastores: each teardown step between stopping the feeds and closing the stores has its own span (swamp-club#4679)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const config = { type: "filesystem" as const, path: datastorePath };
+    const repoDir = join(dir, "repo");
+    await holdV3Writer(config, repoDir);
+    v3DatastoreFor(repoDir, config);
+    await withCapturedSpans(async (spans) => {
+      await closeV3Datastores();
+      const steps = [
+        "feed_stop",
+        "compact",
+        "sync",
+        "dropped_work",
+        "dirty_names",
+        "stores",
+        "releases",
+      ].map((step) => `swamp.datastore.v3.close.${step}`);
+      assertEquals(
+        spans.map((span) => span.name).filter((name) => steps.includes(name)),
+        steps,
+      );
+    });
+  });
+});
+
 Deno.test("holdV3Writer: a hostname change while the writer runs still removes its own checkout record (swamp-club#3801)", async () => {
   await withTempDir(async (dir) => {
     const datastorePath = join(dir, "datastore");

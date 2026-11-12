@@ -1970,18 +1970,20 @@ export async function closeV3Datastores(
   );
   // a writer folds history the policy does not retain before it lets go of the
   // lock: compaction is the single writer's
-  for (const handle of unreachable ? [] : handles) {
-    if (!holdsV3WriterLock(handle.datastorePath)) continue;
-    // a sidecar already gone (signalled with this process) replicates nothing
-    // more, so no commit is made that no replica could hold
-    const use = replications.get(resolve(handle.datastorePath))?.[0];
-    if (use !== undefined && !await use.probe()) {
-      logger
-        .debug`Not compacting the v3 datastore at ${handle.datastorePath} at close: its Litestream sidecar is gone`;
-      continue;
+  await withSpan("swamp.datastore.v3.close.compact", {}, async () => {
+    for (const handle of unreachable ? [] : handles) {
+      if (!holdsV3WriterLock(handle.datastorePath)) continue;
+      // a sidecar already gone (signalled with this process) replicates nothing
+      // more, so no commit is made that no replica could hold
+      const use = replications.get(resolve(handle.datastorePath))?.[0];
+      if (use !== undefined && !await use.probe()) {
+        logger
+          .debug`Not compacting the v3 datastore at ${handle.datastorePath} at close: its Litestream sidecar is gone`;
+        continue;
+      }
+      await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
     }
-    await compactQuietly(handle, CLOSING_COMPACTION_BUDGET_MS);
-  }
+  });
   // one sync per datastore confirms every commit this process made,
   // compaction's included; before the stores close, since it makes Litestream
   // open commits.db and the WAL must survive for the next sidecar start
@@ -1993,67 +1995,76 @@ export async function closeV3Datastores(
   const deadlineMs = unreachable
     ? UNREACHABLE_SYNC_DEADLINE_MS
     : v3SyncDeadlineMs();
-  const synced = await Promise.allSettled([
-    ...heldEntries.map(async ([datastore, uses]) => {
-      const watch = watchStorageDuringSync(datastore, handles, unreachable);
-      const startedAt = Date.now();
-      try {
-        return await syncAndPublish(
-          datastore,
-          uses[0],
-          handles,
-          deadlineMs,
-          watch.signal,
-          // serve's shutdown deadline covers the wait for a probe's sync too
-          { queueWaitCounts: shutdownDeadline !== undefined },
-        );
-      } catch (error) {
-        const left = deadlineMs - (Date.now() - startedAt);
-        if (
-          !(error instanceof V3ReplicationError) ||
-          watch.signal?.aborted === true ||
-          left < MIN_QUEUED_SYNC_MS || await uses[0].probe()
-        ) {
-          throw error;
-        }
-        return await confirmClosedFromReplica(
-          datastore,
-          uses[0],
-          handles,
-          left,
-          watch.signal,
-          error,
-        );
-      } finally {
-        if (watch.stop()) unreachable = true;
-      }
-    }),
-    ...owed.map((datastore) =>
-      Promise.reject(
-        markErrorPaths(
-          new V3ReplicationError(
-            `the Litestream sidecar of the v3 datastore at ${datastore} ` +
-              `could not be replaced, so serve's recent commits were never ` +
-              `confirmed`,
-          ),
-          [datastore],
+  const synced = await withSpan(
+    "swamp.datastore.v3.close.sync",
+    {},
+    () =>
+      Promise.allSettled([
+        ...heldEntries.map(async ([datastore, uses]) => {
+          const watch = watchStorageDuringSync(datastore, handles, unreachable);
+          const startedAt = Date.now();
+          try {
+            return await syncAndPublish(
+              datastore,
+              uses[0],
+              handles,
+              deadlineMs,
+              watch.signal,
+              // serve's shutdown deadline covers the wait for a probe's sync too
+              { queueWaitCounts: shutdownDeadline !== undefined },
+            );
+          } catch (error) {
+            const left = deadlineMs - (Date.now() - startedAt);
+            if (
+              !(error instanceof V3ReplicationError) ||
+              watch.signal?.aborted === true ||
+              left < MIN_QUEUED_SYNC_MS || await uses[0].probe()
+            ) {
+              throw error;
+            }
+            return await confirmClosedFromReplica(
+              datastore,
+              uses[0],
+              handles,
+              left,
+              watch.signal,
+              error,
+            );
+          } finally {
+            if (watch.stop()) unreachable = true;
+          }
+        }),
+        ...owed.map((datastore) =>
+          Promise.reject(
+            markErrorPaths(
+              new V3ReplicationError(
+                `the Litestream sidecar of the v3 datastore at ${datastore} ` +
+                  `could not be replaced, so serve's recent commits were never ` +
+                  `confirmed`,
+              ),
+              [datastore],
+            ),
+          )
         ),
-      )
-    ),
-  ]);
+      ]),
+  );
   setV3ClosingDeadline(undefined);
   // After the closing sync, which serve's drain deadline is for, and before
   // the stores close.
-  for (const { key, handle, current } of dropped) {
-    await recoverDroppedWork(key, handle, current, unreachable);
-  }
+  await withSpan("swamp.datastore.v3.close.dropped_work", {}, async () => {
+    for (const { key, handle, current } of dropped) {
+      await recoverDroppedWork(key, handle, current, unreachable);
+    }
+  });
   // before the stores close; a checkout whose marker stays keeps its names
-  for (const [key, handle] of entries) {
-    const checkout = key.split("\0")[0];
-    if (!marked.has(key) || keepsMarker(checkout)) continue;
-    if (handle.droppedWork() !== undefined) continue;
-    await releaseDirtyNames(handle, checkout);
-  }
+  await withSpan("swamp.datastore.v3.close.dirty_names", {}, async () => {
+    for (const [key, handle] of entries) {
+      const checkout = key.split("\0")[0];
+      if (!marked.has(key) || keepsMarker(checkout)) continue;
+      if (handle.droppedWork() !== undefined) continue;
+      await releaseDirtyNames(handle, checkout);
+    }
+  });
   // once the command's own commits were confirmed, a closing sync that fails
   // covers only what was committed since: kept in commits.db, it replicates
   // with the next write and does not fail the command
