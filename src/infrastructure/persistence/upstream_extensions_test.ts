@@ -17,11 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { relative as win32Relative } from "@std/path/windows";
 import { hasControlCharacter } from "../../domain/control_characters.ts";
 import { errorPaths } from "../../domain/errors.ts";
+import { CorruptLockfileError } from "../../domain/extensions/corrupt_lockfile_error.ts";
 import {
   canonicalLockfileEntry,
   canonicalLockfilePath,
@@ -78,8 +84,10 @@ Deno.test("readUpstreamExtensions: rejects a lockfile containing an array", asyn
   await withLockfile("[]", async (lockfilePath) => {
     const error = await assertRejects(
       () => readUpstreamExtensions(lockfilePath),
-      SyntaxError,
+      CorruptLockfileError,
     );
+    assertInstanceOf(error, SyntaxError);
+    assertEquals(error.lockfilePath, lockfilePath);
     assertStringIncludes(error.message, "found an array");
   });
 });
@@ -88,8 +96,10 @@ Deno.test("readUpstreamExtensions: rejects unparseable JSON, naming the file", a
   await withLockfile("{\n", async (lockfilePath) => {
     const error = await assertRejects(
       () => readUpstreamExtensions(lockfilePath),
-      SyntaxError,
+      CorruptLockfileError,
     );
+    assertInstanceOf(error, SyntaxError);
+    assertEquals(error.lockfilePath, lockfilePath);
     assertStringIncludes(
       error.message,
       `Cannot parse lockfile ${lockfilePath}`,
@@ -104,7 +114,7 @@ Deno.test("readUpstreamExtensions: rejects an extension listed twice, naming it 
   await withLockfile(content, async (lockfilePath) => {
     const error = await assertRejects(
       () => readUpstreamExtensions(lockfilePath),
-      SyntaxError,
+      CorruptLockfileError,
     );
     assertEquals(
       error.message,
@@ -119,7 +129,7 @@ Deno.test("readUpstreamExtensions: rejects a key repeated inside an entry, namin
   await withLockfile(content, async (lockfilePath) => {
     const error = await assertRejects(
       () => readUpstreamExtensions(lockfilePath),
-      SyntaxError,
+      CorruptLockfileError,
     );
     assertEquals(
       error.message,

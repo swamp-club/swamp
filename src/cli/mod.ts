@@ -101,6 +101,10 @@ import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_c
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
+import {
+  CorruptLockfileError,
+  corruptLockfileUserErrorOf,
+} from "../domain/extensions/corrupt_lockfile_error.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import { createLocalModelRefresher } from "../domain/extensions/local_model_refresh.ts";
 import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
@@ -729,9 +733,14 @@ export async function configureStartupExtensions(
       try {
         loaded = await repositoryFor(lockfilePath);
       } catch (error) {
-        logger.warn`Skipping extension catalog repair: ${
-          error instanceof Error ? error.message : String(error)
-        }`;
+        // a corrupt lockfile fails the first loader with the same message
+        if (error instanceof CorruptLockfileError) {
+          logger.debug`Skipping extension catalog repair: ${error.message}`;
+        } else {
+          logger.warn`Skipping extension catalog repair: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+        }
         return false;
       }
       const { repository, lockfileRepository } = loaded;
@@ -2938,7 +2947,9 @@ async function runInvocation(
       // Best effort — don't shadow the original error.
     }
     // a command that committed nothing is not told its changes are saved
-    const reported = await closeV3DatastoresAfterFailure(error);
+    const failure = await closeV3DatastoresAfterFailure(error);
+    // a corrupt lockfile is the user's to fix: no stack, and not a crash in telemetry
+    const reported = corruptLockfileUserErrorOf(failure) ?? failure;
 
     // The command already ran, so a proof due its weekly refresh still
     // gets one.

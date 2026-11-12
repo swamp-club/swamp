@@ -20,6 +20,7 @@
 import { relative } from "@std/path";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
+import { CorruptLockfileError } from "../../domain/extensions/corrupt_lockfile_error.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import {
   findDuplicateJsonKey,
@@ -116,8 +117,8 @@ function renderSegment(segment: JsonPathSegment): string {
 
 /**
  * invalid JSON, a repeated key at any depth or a non-object throws a
- * SyntaxError naming the file, so callers treat all three as the same corrupt
- * lockfile
+ * CorruptLockfileError naming the file, so callers treat all three as the same
+ * corrupt lockfile
  */
 export async function readUpstreamExtensions(
   lockfilePath: string,
@@ -136,10 +137,11 @@ export async function readUpstreamExtensions(
     parsed = JSON.parse(content);
   } catch (error) {
     throw markErrorPaths(
-      new SyntaxError(
+      new CorruptLockfileError(
         `Cannot parse lockfile ${lockfilePath}: ${
           error instanceof Error ? error.message : String(error)
         }`,
+        lockfilePath,
       ),
       [lockfilePath, ...errorPaths(error)],
     );
@@ -148,12 +150,13 @@ export async function readUpstreamExtensions(
   if (duplicate !== undefined) {
     const key = renderSegment(duplicate.key);
     throw markErrorPaths(
-      new SyntaxError(
+      new CorruptLockfileError(
         duplicate.path.length === 0
           ? `Lockfile ${lockfilePath} lists ${key} more than once`
           : `Lockfile ${lockfilePath} repeats key ${key} in ${
             duplicate.path.map(renderSegment).join(" > ")
           }`,
+        lockfilePath,
       ),
       [lockfilePath],
     );
@@ -165,8 +168,9 @@ export async function readUpstreamExtensions(
       ? "an array"
       : typeof parsed;
     throw markErrorPaths(
-      new SyntaxError(
+      new CorruptLockfileError(
         `Lockfile ${lockfilePath} must contain a JSON object, found ${found}`,
+        lockfilePath,
       ),
       [lockfilePath],
     );
