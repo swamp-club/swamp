@@ -22,6 +22,7 @@ export interface AuditActor {
   initiatedBy: string;
   principalUsername?: string;
   principalEmail?: string;
+  client?: string;
 }
 
 /**
@@ -33,4 +34,13 @@ export function actorLabel(event: AuditActor): string {
   const { principalUsername: username, principalEmail: email } = event;
   if (username && email) return `${username} <${email}>`;
   return username || email || event.initiatedBy;
+}
+
+/**
+ * ` via <client>` for a client worth naming; direct clients (CLI, dashboard,
+ * token) are the default way in, so they and a missing client add nothing.
+ */
+export function clientSuffix(client: string | undefined): string {
+  if (!client || client.startsWith("direct:")) return "";
+  return ` via ${client}`;
 }

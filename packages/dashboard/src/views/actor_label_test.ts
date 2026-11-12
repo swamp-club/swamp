@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { actorLabel } from "./actor_label.ts";
+import { actorLabel, clientSuffix } from "./actor_label.ts";
 
 const initiatedBy = "user:sub-1";
 
@@ -50,4 +50,22 @@ Deno.test("actorLabel: falls back to initiatedBy when neither is known", () => {
     actorLabel({ initiatedBy, principalUsername: "", principalEmail: "" }),
     initiatedBy,
   );
+});
+
+Deno.test("clientSuffix: names an integration client", () => {
+  assertEquals(
+    clientSuffix("integration:slackwater"),
+    " via integration:slackwater",
+  );
+});
+
+Deno.test("clientSuffix: adds nothing for a direct client", () => {
+  for (const client of ["direct:cli", "direct:dashboard", "direct:token"]) {
+    assertEquals(clientSuffix(client), "");
+  }
+});
+
+Deno.test("clientSuffix: adds nothing when no client was recorded", () => {
+  assertEquals(clientSuffix(undefined), "");
+  assertEquals(clientSuffix(""), "");
 });

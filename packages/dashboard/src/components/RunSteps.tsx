@@ -27,6 +27,7 @@ import {
   type RouteState,
 } from "../routes.ts";
 import { formatAbsoluteTime, formatDuration } from "../lib/format.ts";
+import { clientSuffix } from "../views/actor_label.ts";
 import { stepArtifactLink } from "../views/artifact_links.ts";
 import type { DrawerItem } from "../views/run_item_param.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
@@ -51,6 +52,7 @@ export interface ApprovalInfo {
   rejectedAt?: string;
   timeoutAt?: string;
   reason?: string;
+  client?: string;
 }
 
 /** A step as `workflow.history.get` returns it. */
@@ -353,12 +355,14 @@ function ApprovalNote({ approval }: { approval: ApprovalInfo }) {
     <div className={`rs-note rs-note-${tone}`}>
       {approval.status === "approved" &&
         `Approved by ${approval.approvedBy ?? "unknown"}${
-          at(approval.approvedAt)
-        }`}
+          clientSuffix(approval.client)
+        }${at(approval.approvedAt)}`}
       {approval.status === "rejected" &&
         `Rejected by ${approval.rejectedBy ?? "unknown"}${
-          at(approval.rejectedAt)
-        }${approval.reason ? `: ${approval.reason}` : ""}`}
+          clientSuffix(approval.client)
+        }${at(approval.rejectedAt)}${
+          approval.reason ? `: ${approval.reason}` : ""
+        }`}
       {approval.status === "timed_out" &&
         `Timed out${at(approval.timeoutAt)}`}
     </div>
