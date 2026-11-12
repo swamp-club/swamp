@@ -78,6 +78,8 @@ import {
   containsVaultExpression,
 } from "../expressions/expression_evaluation_service.ts";
 import type { Data } from "../data/data.ts";
+import { specNameClashRemedy } from "../data/spec_name_clash.ts";
+import { CONTROL_PLANE_STORED_TYPES } from "./control_plane_types.ts";
 import type { ExecutionOutput } from "./execution_envelope.ts";
 import { InProcessExecutor } from "./in_process_executor.ts";
 import {
@@ -92,7 +94,7 @@ import {
   type RemoteStepResult,
 } from "../remote/remote_dispatch.ts";
 import type { RpcStreamEvent } from "../remote/protocol.ts";
-import type { Logger } from "@logtape/logtape";
+import { getLogger, type Logger } from "@logtape/logtape";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import { hasPlacement } from "../remote/scheduler.ts";
 import {
@@ -218,6 +220,65 @@ function isDeclaredResourceData(
   return data.tags["type"] === "resource" &&
     data.tags["specName"] !== undefined &&
     specNames.has(data.tags["specName"]);
+}
+
+/**
+ * the run's own logger reaches only its log file unless --log is passed, and
+ * this warning has to be seen where the clash was made
+ */
+const specNameClashLogger = getLogger(["swamp", "data", "spec-name-clash"]);
+
+/**
+ * warns on the run that first writes a data name, so the clash shows where it
+ * was made rather than in a later data.latest() elsewhere; never fails the run
+ */
+function warnOnSpecNameClash(
+  context: Pick<
+    MethodContext,
+    "dataQueryService" | "dataRepository" | "modelType" | "modelId"
+  >,
+  handles: DataHandle[],
+): void {
+  const queryService = context.dataQueryService;
+  if (!queryService) return;
+  const seen = new Set<string>();
+  for (const handle of handles) {
+    // a failed run's handles come from its error, which extension code can
+    // shape, so nothing here may throw past the catch
+    try {
+      if (handle.version !== 1) continue;
+      const specName = handle.tags["specName"];
+      const modelName = handle.tags["modelName"];
+      if (typeof specName !== "string" || typeof modelName !== "string") {
+        continue;
+      }
+      if (specName === "" || modelName === "") continue;
+      const key = JSON.stringify([modelName, specName]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const namespace = context.dataRepository.namespace;
+      const names = queryService.specNameClash(
+        specName,
+        modelName,
+        namespace,
+        CONTROL_PLANE_STORED_TYPES,
+        { modelType: context.modelType, modelId: context.modelId },
+      );
+      if (!names) continue;
+      specNameClashLogger.warn(escapeLogTemplate(
+        `Data item "${handle.name}" was written under spec "${specName}", ` +
+          `which is also a data name of "${modelName}", so ` +
+          `data.latest("${modelName}", "${specName}") now fails as ambiguous ` +
+          `(${names.join(", ")}). ` +
+          specNameClashRemedy(modelName, specName, namespace),
+      ));
+    } catch (error) {
+      specNameClashLogger
+        .debug`Could not check ${handle.name} for a spec name clash: ${
+        String(error)
+      }`;
+    }
+  }
 }
 
 function collectPersistedHandles(outputs: ExecutionOutput[]): DataHandle[] {
@@ -2139,6 +2200,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           };
         }
       } catch (error) {
+        // a failed run's writes stay on disk, and the next run writes version 2
+        warnOnSpecNameClash(context, recoveredDataHandles(error));
         if (output && context.outputRepository) {
           // the record holds the error with every delivered value and, in a
           // typed run, every sentinel, masked
@@ -2151,6 +2214,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
         throw error;
       }
+
+      warnOnSpecNameClash(context, currentHandles);
 
       const storedArtifacts: DataArtifactRef[] = currentHandles.map((h) => ({
         dataId: h.dataId,

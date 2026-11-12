@@ -158,8 +158,15 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
 lookup argument equals a `specName` tag shared by several data items under the
 same behavior. An exact data name that differs from the specName is unaffected,
 even if sibling items share the spec. Use `data.findBySpec()` to query by
-specName. The raw `data.query()` equivalent skips this check. When the lookup
-found the record through the behavior's definition, rows a retyped behavior left
+specName. The raw `data.query()` equivalent skips this check, and the error
+leads with it; renaming the data item lasts only while nothing writes the old
+name again. A method run whose new data name creates the clash
+(`DataQueryService.specNameClash`, the same rule) warns on the
+`swamp.data.spec-name-clash` category, not the run's own logger, so it shows
+without `--log`, even when the run then fails. It never fails the run and checks
+only version 1. It never backfills: an unpopulated catalog is read as it stands,
+since write-through keeps new rows current, with each candidate row confirmed on
+disk. JSON output does not carry it. When the lookup found the record through the behavior's definition, rows a retyped behavior left
 under its old type (same id, another type — what `data prune` reclaims as
 orphaned) are not counted as peers.
 
