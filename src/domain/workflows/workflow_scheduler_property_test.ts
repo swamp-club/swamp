@@ -31,7 +31,7 @@ import type { WorkflowId } from "./workflow_id.ts";
 
 const WORKFLOW_ID = "cccccccc-3333-3333-3333-333333333333" as WorkflowId;
 
-// windows sized so a run fires hundreds of times, not tens of thousands
+// windows stay short so the fake clock runs few timers per property run
 const arbScheduleAndWindow = fc.oneof(
   fc.record({
     expression: fc.constantFrom(

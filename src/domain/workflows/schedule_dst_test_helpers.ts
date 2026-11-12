@@ -88,7 +88,7 @@ export class FakeSchedulerClock implements SchedulerClock {
     return this.pending.size;
   }
 
-  /** a scheduler that re-arms at a zero delay would never pass `maxRuns` */
+  /** throws once more than `maxRuns` timers run, so a zero-delay re-arm loop fails */
   advanceTo(target: Date | number, maxRuns = 100_000): void {
     const end = typeof target === "number" ? target : target.getTime();
     for (let runs = 0;; runs++) {

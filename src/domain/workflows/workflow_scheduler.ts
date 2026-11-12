@@ -42,10 +42,9 @@ export interface ScheduleEntry {
   readonly nextRun: Date | null;
 }
 
-/** the clock and timers a scheduler arms with; real ones unless a test injects */
+/** the system clock unless a test injects one */
 export interface SchedulerClock {
   now(): number;
-  /** runs `fn` after `ms`; the returned function cancels it */
   setTimer(fn: () => void, ms: number): () => void;
 }
 
