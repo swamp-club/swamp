@@ -30,7 +30,9 @@ restarts, and reboots until the token lifetime expires, while any other machine
 is rejected. `--duration` is a hard deadline — when it elapses the orchestrator
 disconnects the worker and rejects re-enrollment. Pass a stable `--cache-dir` to
 keep the machine identity across restarts — the default temp cache directory
-yields a fresh identity (and thus needs a fresh token) per process. Manage
+yields a fresh identity (and thus needs a fresh token) per process. A token's
+secret is never released to a dispatched step, whatever vault holds it
+(`reserved_secret`), so deliver a token to its host outside workflows. Manage
 tokens with `swamp worker token list` and `swamp worker token revoke <name>`;
 inspect the pool with `swamp worker list`, or visually in the dashboard's
 Workers view (`/dashboard/workers` on a serve started with `--dashboard`):

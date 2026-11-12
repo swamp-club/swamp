@@ -569,6 +569,11 @@ Deno.test("DataPlaneClient.loadSecrets: a refusal names its code and reference, 
         code: "not_in_dispatch",
         reference: { vaultName: "v", key: "k" },
       }, "not_in_dispatch"],
+      [403, {
+        error: "leaked-text",
+        code: "reserved_secret",
+        reference: { vaultName: "v", key: "worker-token-w" },
+      }, "reserved_secret"],
       [410, { error: "leaked-text", code: "access_ended" }, "access_ended"],
       [
         401,
@@ -589,6 +594,18 @@ Deno.test("DataPlaneClient.loadSecrets: a refusal names its code and reference, 
     if (code === "not_in_dispatch") {
       assertEquals(error.reference, { vaultName: "v", key: "k" });
       assertStringIncludes(error.message, "secret 'k' from vault 'v'");
+    }
+    if (code === "reserved_secret") {
+      assertStringIncludes(
+        error.message,
+        "secret 'worker-token-w' from vault 'v' for this dispatch (reserved_secret, HTTP 403): serve never releases",
+      );
+      assertStringIncludes(
+        error.message,
+        "from any vault or for any principal",
+      );
+    } else {
+      assertEquals(error.message.includes("serve never releases"), false);
     }
   }
   const { client } = clientWith(() =>

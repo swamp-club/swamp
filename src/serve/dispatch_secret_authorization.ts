@@ -61,7 +61,7 @@ export function assertSecretKeyNotDenied(
   const normalized = secretKey.toLowerCase();
   if (DENIED_SECRET_KEY_PREFIXES.some((p) => normalized.startsWith(p))) {
     throw new Error(
-      `${verb}: access denied — infrastructure secrets are not accessible from dispatched methods`,
+      `${verb}: access denied — infrastructure secrets are not accessible from dispatched methods; key '${secretKey}' is reserved for serve's own credentials in every vault`,
     );
   }
 }
