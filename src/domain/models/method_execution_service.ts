@@ -2188,6 +2188,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           };
         }
       } catch (error) {
+        // a failed run's writes stay on disk, and the next run writes version 2
+        warnOnSpecNameClash(context, recoveredDataHandles(error));
         if (output && context.outputRepository) {
           // the record holds the error with every delivered value and, in a
           // typed run, every sentinel, masked

@@ -78,6 +78,15 @@ const model: ModelDefinition = {
     named: writes("signals", "signals"),
     watch: writes("signals", "pattern-watch-signals"),
     watchDeferred: writes("signals", "pattern-watch-signals", true),
+    watchThenFail: {
+      ...writes("signals", "pattern-watch-signals"),
+      execute: async (_args, context) => {
+        await context.writeResource!("signals", "pattern-watch-signals", {
+          count: 0,
+        });
+        throw new Error("failed after writing");
+      },
+    },
     hostA: writes("host", "host-a"),
     hostB: writes("host", "host-b"),
   },
@@ -161,12 +170,16 @@ async function withRepo(
           logger: captureWarnings(warnings),
         },
       );
-      await new DefaultMethodExecutionService().executeWorkflow(
-        definition,
-        model,
-        methodName,
-        context,
-      );
+      try {
+        await new DefaultMethodExecutionService().executeWorkflow(
+          definition,
+          model,
+          methodName,
+          context,
+        );
+      } catch (error) {
+        if (!methodName.endsWith("ThenFail")) throw error;
+      }
       return warnings.filter((w) => w.includes("now fails as ambiguous"));
     });
   } finally {
@@ -228,6 +241,14 @@ Deno.test("spec name clash: a rollbackOnFailure run warns once its writes are pr
   await withRepo(async (run) => {
     await run("named");
     assertEquals((await run("watchDeferred")).length, 1);
+  });
+});
+
+Deno.test("spec name clash: a run that writes the clashing item and then fails still warns", async () => {
+  await withRepo(async (run) => {
+    await run("named");
+    assertEquals((await run("watchThenFail")).length, 1);
+    assertEquals(await run("watch"), []);
   });
 });
 
