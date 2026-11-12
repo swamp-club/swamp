@@ -36,11 +36,6 @@ import {
   swampifyOfferTags,
 } from "../src/domain/agent_sessions/swampify.ts";
 import {
-  agentSessionsPageVisible,
-  parseListReply,
-  probePayload,
-} from "../packages/dashboard/src/client/agent_sessions.ts";
-import {
   candidateSetListPayload,
   candidateSetProbePayload,
   comparisonListPayload,
@@ -61,7 +56,7 @@ import {
   fixtureComparison,
   fixtureOffer,
   OPTION_IDS,
-} from "../packages/dashboard/src/views/agent_sessions/swampify_fixtures.ts";
+} from "../packages/dashboard/src/views/swampify/swampify_fixtures.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -228,19 +223,14 @@ const READ_ALL = [
   grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
 ];
 
-Deno.test("swampify panel: a repo with a candidate set and no session records shows the page", async () => {
+Deno.test("swampify page: the sidebar probe finds the candidate set a viewer may read", async () => {
   await withSwampify(async (repo) => {
     const ctx = createServeCtx(repo, READ_SHOWN);
-    const sessions = parseListReply(
-      (await ask(ctx, "data.query", probePayload())).data,
-    ).rows.length;
-    const sets = (await rows(ctx, candidateSetProbePayload())).length;
-    assertEquals([sessions, sets], [0, 1]);
-    assertEquals(agentSessionsPageVisible(sessions, sets), true);
+    assertEquals((await rows(ctx, candidateSetProbePayload())).length, 1);
   });
 });
 
-Deno.test("swampify panel: the reader shows the newest set across behaviors, the offer it may read, and only readable comparisons", async () => {
+Deno.test("swampify page: the reader shows the newest set across behaviors, the offer it may read, and only readable comparisons", async () => {
   await withSwampify(async (repo) => {
     const ctx = createServeCtx(repo, READ_SHOWN);
 
@@ -288,7 +278,7 @@ Deno.test("swampify panel: the reader shows the newest set across behaviors, the
   });
 });
 
-Deno.test("swampify panel: a viewer who may read everything sees the newer offer and both comparisons", async () => {
+Deno.test("swampify page: a viewer who may read everything sees the newer offer and both comparisons", async () => {
   await withSwampify(async (repo) => {
     const ctx = createServeCtx(repo, READ_ALL);
     assertEquals(
@@ -303,7 +293,7 @@ Deno.test("swampify panel: a viewer who may read everything sees the newer offer
   });
 });
 
-Deno.test("swampify panel: a viewer without read gets nothing, even by a direct read", async () => {
+Deno.test("swampify page: a viewer without read gets nothing, even by a direct read", async () => {
   await withSwampify(async (repo) => {
     const stranger = createServeCtx(repo, []);
     for (
@@ -326,7 +316,7 @@ Deno.test("swampify panel: a viewer without read gets nothing, even by a direct 
   });
 });
 
-Deno.test("swampify panel: the probe and every list read tags only, never a body", async () => {
+Deno.test("swampify page: the probe and every list read tags only, never a body", async () => {
   await withSwampify(async (repo, bodies) => {
     for (const body of bodies) {
       await Deno.remove(body);

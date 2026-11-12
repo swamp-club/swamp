@@ -26,7 +26,6 @@ import {
 } from "../../../../src/domain/agent_sessions/session_record.ts";
 import { fixtureSessions } from "../views/agent_sessions/fixtures.ts";
 import {
-  agentSessionsPageVisible,
   appendWindow,
   CHILDREN_LIMIT,
   childrenPayload,
@@ -325,11 +324,4 @@ Deno.test("pageContaining: the page holding a row, or null when it is not listed
   assertEquals(pageContaining(rows, `s-${SESSION_PAGE_SIZE}`), 1);
   assertEquals(pageContaining(rows, "s-119"), 2);
   assertEquals(pageContaining(rows, "missing"), null);
-});
-
-Deno.test("agentSessionsPageVisible: shows for sessions, for candidate sets, or both; hidden with neither", () => {
-  assertEquals(agentSessionsPageVisible(0, 0), false);
-  assertEquals(agentSessionsPageVisible(1, 0), true);
-  assertEquals(agentSessionsPageVisible(0, 1), true);
-  assertEquals(agentSessionsPageVisible(1, 1), true);
 });

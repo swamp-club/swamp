@@ -62,13 +62,13 @@ export function ComparisonBlock(
   { row, open, onToggle, records, onLoad }: ComparisonProps,
 ) {
   if (row === undefined) {
-    return <div className="as-muted as-sw-compare">Not compared yet.</div>;
+    return <div className="sw-muted sw-compare">Not compared yet.</div>;
   }
   const summary = comparisonSummaryOf(row);
   const record = records.get(comparisonKey(row));
   return (
-    <div className="as-sw-compare">
-      <div className="as-sw-compare-head">
+    <div className="sw-compare">
+      <div className="sw-compare-head">
         <span>
           {summary
             ? (
@@ -76,7 +76,7 @@ export function ComparisonBlock(
                 Compared: {summary.target.kind}{" "}
                 <code>{summary.target.name}</code>, run{" "}
                 <span
-                  className={summary.outcome === "failed" ? "as-failed" : ""}
+                  className={summary.outcome === "failed" ? "sw-fail" : ""}
                 >
                   {summary.outcome}
                 </span>
@@ -88,7 +88,7 @@ export function ComparisonBlock(
         </span>
         <button
           type="button"
-          className="as-link-button"
+          className="sw-link"
           aria-expanded={open}
           onClick={() => {
             if (!open) onLoad(row);
@@ -100,14 +100,14 @@ export function ComparisonBlock(
       </div>
       {open && (
         record === undefined || record.state === "loading"
-          ? <div className="as-muted">Loading the comparison…</div>
+          ? <div className="sw-muted">Loading the comparison…</div>
           : record.state === "error"
           ? (
-            <div className="as-failed">
+            <div className="sw-fail">
               Could not load the comparison: {record.error}{" "}
               <button
                 type="button"
-                className="as-link-button"
+                className="sw-link"
                 onClick={() => onLoad(row)}
               >
                 Retry
@@ -126,11 +126,11 @@ function Cell({ range, format }: {
   range: SwampifyRange | undefined;
   format: (n: number) => string;
 }) {
-  if (range === undefined) return <td className="as-num as-muted">—</td>;
+  if (range === undefined) return <td className="sw-num sw-muted">—</td>;
   return (
-    <td className="as-num">
+    <td className="sw-num">
       {format(range.median)}
-      <div className="as-muted as-sw-spread">{formatSpread(range, format)}</div>
+      <div className="sw-muted sw-spread">{formatSpread(range, format)}</div>
     </td>
   );
 }
@@ -193,9 +193,9 @@ export function ComparisonDetail(
     ],
   ];
   return (
-    <div className="as-sw-compare-body">
-      <table className="data-table as-table as-sw-compare-table">
-        <caption className="as-muted">
+    <div className="sw-compare-body">
+      <table className="data-table sw-compare-table">
+        <caption className="sw-muted">
           Per run, median with the range beneath. "Since" counts runs after{" "}
           {formatDay(forward.since)}.
         </caption>
@@ -203,9 +203,9 @@ export function ComparisonDetail(
           <tr>
             <th scope="col">Per run</th>
             {columns.map(([label, runs]) => (
-              <th key={label} scope="col" className="as-num">
+              <th key={label} scope="col" className="sw-num">
                 {label}
-                <div className="as-muted">{formatCount(runs)} runs</div>
+                <div className="sw-muted">{formatCount(runs)} runs</div>
               </th>
             ))}
           </tr>
@@ -225,7 +225,7 @@ export function ComparisonDetail(
           ))}
         </tbody>
       </table>
-      <dl className="as-sw-dl">
+      <dl className="sw-dl">
         <Row label="Target">
           {comparison.target.kind} <code>{comparison.target.name}</code>
         </Row>
@@ -233,7 +233,7 @@ export function ComparisonDetail(
           {tokenLine(build.tokens)}, {formatDuration(build.activeMs)} active
         </Row>
         <Row label="Swamp run">
-          <span className={swampRun.outcome === "failed" ? "as-failed" : ""}>
+          <span className={swampRun.outcome === "failed" ? "sw-fail" : ""}>
             {swampRun.outcome}
           </span>{" "}
           in {formatDuration(swampRun.wallMs)}; model tokens{" "}
@@ -257,7 +257,7 @@ export function ComparisonDetail(
               estimatedUsd.swampRun !== undefined &&
               `swamp run ${formatUsd(estimatedUsd.swampRun)}`,
             ].filter(Boolean).join("; ")}{" "}
-            <span className="as-muted">
+            <span className="sw-muted">
               (an estimate from the writer's prices)
             </span>
           </Row>

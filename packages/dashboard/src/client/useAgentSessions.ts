@@ -26,7 +26,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRequest } from "./useRequest.ts";
 import { useSwamp } from "./SwampProvider.tsx";
 import {
-  agentSessionsPageVisible,
   appendWindow,
   childrenPayload,
   detailPayload,
@@ -39,21 +38,15 @@ import {
   type SessionRow,
 } from "./agent_sessions.ts";
 import type { AgentSessionReading } from "../lib/agent_sessions/record.ts";
-import { candidateSetProbePayload, parseSwampifyRows } from "./swampify.ts";
 
 /**
- * Whether the viewer can read at least one session or Swampify candidate
- * set: two queries, limit 1 each. They run when the dashboard loads and when
- * it reconnects, so data imported while the dashboard is open shows after a
- * reload.
+ * Whether the viewer can read at least one session: one query, limit 1. It
+ * runs when the dashboard loads and when it reconnects, so sessions imported
+ * while the dashboard is open show after a reload.
  */
 export function useAgentSessionsVisible(): boolean {
   const probe = useRequest("data.query", probePayload());
-  const sets = useRequest("data.query", candidateSetProbePayload());
-  return agentSessionsPageVisible(
-    parseListReply(replyData(probe.data)).rows.length,
-    parseSwampifyRows(replyData(sets.data)).rows.length,
-  );
+  return parseListReply(replyData(probe.data)).rows.length > 0;
 }
 
 export interface ListState {

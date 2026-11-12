@@ -18,12 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * What the Swampify panel shows, joined from the items as they are. Nothing
- * here computes a figure: the panel shows the ranges, counts and rates the
+ * What the Swampify page shows, joined from the items as they are. Nothing
+ * here computes a figure: the page shows the ranges, counts and rates the
  * writers stored, and only formats them.
  */
 
-import { agentSessionDataName } from "./agent_sessions/record.ts";
 import {
   SWAMPIFY_THIN_BELOW,
   type SwampifyCandidate,
@@ -126,24 +125,6 @@ export function setFullness(
   if (set.candidates.length === 0) return "empty";
   const thin = summary?.thin ?? set.candidates.length < SWAMPIFY_THIN_BELOW;
   return thin ? "thin" : "full";
-}
-
-/**
- * The data name of the session a ref names, when that session is in the
- * list the page loaded; null otherwise, and for a ref the record would
- * refuse.
- */
-export function sessionRefTarget(
-  ref: { readonly harness: string; readonly sessionId: string },
-  loaded: ReadonlySet<string>,
-): string | null {
-  let name: string;
-  try {
-    name = agentSessionDataName(ref.harness, ref.sessionId);
-  } catch {
-    return null;
-  }
-  return loaded.has(name) ? name : null;
 }
 
 export const KIND_LABEL: Readonly<Record<SwampifyCandidate["kind"], string>> = {

@@ -18,19 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { agentSessionDataName } from "../../../../src/domain/agent_sessions/session_record.ts";
 import {
   CANDIDATE_IDS,
   emptyCandidateSet,
   fixtureCandidateSet,
   fixtureOffer,
-  MISSING_SESSION_REF,
   OPTION_IDS,
   SET_GENERATED_AT,
   thinCandidateSet,
   UNKNOWN_CANDIDATE_ID,
-} from "../views/agent_sessions/swampify_fixtures.ts";
-import { fixtureSessions } from "../views/agent_sessions/fixtures.ts";
+} from "../views/swampify/swampify_fixtures.ts";
 import {
   consideredById,
   formatBreakEven,
@@ -39,7 +36,6 @@ import {
   formatSpread,
   offerView,
   optionByCandidate,
-  sessionRefTarget,
   setFullness,
 } from "./swampify_view.ts";
 
@@ -116,21 +112,6 @@ Deno.test("setFullness: empty, thin from the summary's flag, or full", () => {
       },
     }),
     "full",
-  );
-});
-
-Deno.test("sessionRefTarget: links only a session the page loaded, and never throws on a ref the record refuses", () => {
-  const [edits] = fixtureSessions();
-  const name = agentSessionDataName(edits.harness, edits.id);
-  const loaded = new Set([name]);
-  assertEquals(
-    sessionRefTarget({ harness: edits.harness, sessionId: edits.id }, loaded),
-    name,
-  );
-  assertEquals(sessionRefTarget(MISSING_SESSION_REF, loaded), null);
-  assertEquals(
-    sessionRefTarget({ harness: "Bad_Harness", sessionId: "x" }, loaded),
-    null,
   );
 });
 

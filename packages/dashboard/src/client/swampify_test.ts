@@ -32,7 +32,7 @@ import {
   fixtureComparison,
   fixtureOffer,
   OPTION_IDS,
-} from "../views/agent_sessions/swampify_fixtures.ts";
+} from "../views/swampify/swampify_fixtures.ts";
 import {
   candidateSetListPayload,
   candidateSetProbePayload,

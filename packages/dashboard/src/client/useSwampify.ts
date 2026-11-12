@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The Swampify panel's requests. Payloads and parsing live in `swampify.ts`;
+ * The Swampify page's requests. Payloads and parsing live in `swampify.ts`;
  * this file only sends them.
  */
 
@@ -28,6 +28,7 @@ import { useSwamp } from "./SwampProvider.tsx";
 import { replyData } from "./agent_sessions.ts";
 import {
   candidateSetListPayload,
+  candidateSetProbePayload,
   comparisonListPayload,
   comparisonsByOption,
   itemPayload,
@@ -46,6 +47,15 @@ import type {
   SwampifyComparisonReading,
   SwampifyOfferReading,
 } from "../lib/agent_sessions/swampify.ts";
+
+/**
+ * Whether the viewer can read a candidate set: one query, limit 1, rerun on
+ * reconnect like the Agent sessions probe.
+ */
+export function useSwampifyVisible(): boolean {
+  const probe = useRequest("data.query", candidateSetProbePayload());
+  return parseSwampifyRows(replyData(probe.data)).rows.length > 0;
+}
 
 export interface Loadable<T> {
   readonly value: T;

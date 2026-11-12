@@ -19,7 +19,7 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   filterRows,
   formatSessionSort,
@@ -50,7 +50,6 @@ import {
 import { ListTotalsRow } from "./agent_sessions/SessionOverview.tsx";
 import { SessionDetail } from "./agent_sessions/SessionDetail.tsx";
 import { SessionsTable } from "./agent_sessions/SessionsTable.tsx";
-import { SwampifyPanel } from "./agent_sessions/SwampifyPanel.tsx";
 import "../styles/agent-sessions.css";
 
 const HEADLESS_FILTERS: Array<[HeadlessFilter, string]> = [
@@ -68,9 +67,8 @@ function parseHeadless(raw: string | null): HeadlessFilter {
 /**
  * What coding agents did in this repo: their sessions, turns and tool calls,
  * labelled swamp, bypass or neutral, with the findings the importer wrote
- * (swamp-club#4155), and the Swampify panel over the latest assessment. A
- * Preview page: the sidebar shows it only when the viewer can read a session
- * or a candidate set.
+ * (swamp-club#4155). A Preview page: the sidebar shows it only when the
+ * viewer can read a session.
  */
 export function AgentSessions() {
   const [repo, setRepo] = useQueryState<string | undefined>(
@@ -169,16 +167,6 @@ export function AgentSessions() {
     jumpPending.current = true;
   };
 
-  const loadedSessions = useMemo(
-    () => new Set(sessions.list.rows.map((r) => r.name)),
-    [sessions.list.rows],
-  );
-  // A session ref that is already open jumps back to it rather than closing it.
-  const openSessionByName = (name: string) => {
-    if (name === openName) setJumpNonce((n) => n + 1);
-    else openSession({ name });
-  };
-
   return (
     <>
       <div className="page-header">
@@ -242,11 +230,6 @@ export function AgentSessions() {
           <ListTotalsRow totals={listTotals(rows.map((r) => r.summary))} />
         </div>
       )}
-
-      <SwampifyPanel
-        loadedSessions={loadedSessions}
-        onOpenSession={openSessionByName}
-      />
 
       <div className="panel">
         {(sessions.list.nextCursor !== undefined || sessions.loadingOlder ||

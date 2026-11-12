@@ -33,7 +33,7 @@ import type {
   SwampifyOfferState,
   SwampifyRange,
 } from "../../lib/agent_sessions/swampify.ts";
-import { fixtureSessions } from "./fixtures.ts";
+import { fixtureSessions } from "../agent_sessions/fixtures.ts";
 
 const [edits, long, , headless] = fixtureSessions();
 

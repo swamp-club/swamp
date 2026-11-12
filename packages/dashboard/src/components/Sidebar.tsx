@@ -60,6 +60,8 @@ const ICONS: Record<string, string> = {
   extensions: '<path d="M3 5h12M3 9h12M3 13h8"/>',
   workers:
     '<rect x="1.5" y="1.5" width="9" height="9" rx="1.5"/><rect x="12" y="1.5" width="4.5" height="4.5" rx="1"/><rect x="12" y="7.5" width="4.5" height="3" rx="1"/><rect x="1.5" y="12" width="4.5" height="4.5" rx="1"/><rect x="7.5" y="12" width="9" height="4.5" rx="1"/>',
+  swampify:
+    '<path d="M9 1.5l1.6 4.4 4.4 1.6-4.4 1.6L9 13.5 7.4 9.1 3 7.5l4.4-1.6z"/><path d="M14.5 12l.6 1.6 1.6.6-1.6.6-.6 1.6-.6-1.6-1.6-.6 1.6-.6z"/>',
   system:
     '<path d="M9 2a7 7 0 110 14A7 7 0 019 2z"/><path d="M12 9a3 3 0 01-6 0 3 3 0 016 0z"/><path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4"/>',
 };
@@ -252,11 +254,12 @@ interface SidebarProps {
   health: HealthSnapshot | null;
   approvalCount: number;
   /**
-   * True when the viewer can read at least one agent session or Swampify
-   * candidate set. The Agent sessions item shows only then; see the comment
-   * on the item.
+   * True when the viewer can read at least one agent session. The Agent
+   * sessions item shows only then; see the comment on the item.
    */
   agentSessionsVisible?: boolean;
+  /** True when the viewer can read a Swampify candidate set; hidden like Agent sessions. */
+  swampifyVisible?: boolean;
   /** False once serve said it runs without an audit log. */
   auditEnabled?: boolean;
   /**
@@ -283,6 +286,7 @@ export function Sidebar({
   health,
   approvalCount,
   agentSessionsVisible = false,
+  swampifyVisible = false,
   auditEnabled = true,
   local = false,
   onLogout,
@@ -453,6 +457,14 @@ export function Sidebar({
           active={activeView === "overview"}
           onClick={onNavigate}
         />
+        {swampifyVisible && (
+          <NavItem
+            label="Swampify"
+            view="swampify"
+            active={activeView === "swampify"}
+            onClick={onNavigate}
+          />
+        )}
       </div>
 
       <div style={{ padding: "0 8px", marginBottom: 24 }}>
@@ -511,10 +523,10 @@ export function Sidebar({
         {
           // Hidden, not "Off": this deliberately departs from the faded
           // items operationsOff() gives (swamp-club#4155). A Preview page
-          // shows only when the viewer can read session or Swampify data;
-          // with none, there is nothing to turn on here. Hiding is not
-          // access control: the route still answers a direct URL, and every
-          // request it sends is read-gated by serve.
+          // shows only when the viewer can read session data; with none,
+          // there is nothing to turn on here. Hiding is not access control:
+          // the route still answers a direct URL, and every request it
+          // sends is read-gated by serve.
           agentSessionsVisible && (
             <NavItem
               label="Agent sessions"
