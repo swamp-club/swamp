@@ -523,6 +523,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/serve/unpushed_interrupts.ts: recordUnpushedInterrupts": CONFIG_WRITE,
     "src/worker/bundle_cache.ts: writeAtomically": CONFIG_WRITE,
     "src/worker/connect.ts: loadOrCreateMachineId": CONFIG_WRITE,
+    "src/worker/token_rotation_handler.ts: writeTokenFileAtomically":
+      CONFIG_WRITE,
   },
 };
 

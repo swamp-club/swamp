@@ -112,6 +112,7 @@ export const SYNC_GATED_REQUESTS: ReadonlySet<string> = new Set([
   "worker.prune",
   "worker.token.create",
   "worker.token.revoke",
+  "worker.token.rotate",
   "workflow.approve",
   "workflow.create",
   "workflow.delete",

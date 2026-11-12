@@ -117,6 +117,11 @@ import {
   workerTokenRevoke,
 } from "../../libswamp/worker/token_revoke.ts";
 import {
+  createWorkerTokenRotateDeps,
+  workerTokenRotate,
+  type WorkerTokenRotateData,
+} from "../../libswamp/worker/token_rotate.ts";
+import {
   createNamespaceListDeps,
   datastoreNamespaceList,
 } from "../../libswamp/datastores/namespace_list.ts";
@@ -194,6 +199,7 @@ import type {
   WorkerPrunePayload,
   WorkerTokenCreatePayload,
   WorkerTokenRevokePayload,
+  WorkerTokenRotatePayload,
   WorkerVerifyPayload,
 } from "../protocol.ts";
 import { dispatchFleetProbe } from "../fleet_probe_dispatch.ts";
@@ -2830,6 +2836,92 @@ export async function handleWorkerTokenRevoke(
       } catch (error) {
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "worker_token_revoke_failed", message);
+      }
+    },
+  );
+}
+
+/**
+ * serve owns the connected workers, so a rotation here also delivers the
+ * successor to them; without a gateway it rotates like the local CLI
+ */
+export async function handleWorkerTokenRotate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerTokenRotatePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      try {
+        let data: WorkerTokenRotateData | undefined;
+        const gateway = ctx.workerGateway;
+        if (gateway !== undefined) {
+          const report = await gateway.rotateToken(
+            payload.name,
+            payload.durationMs !== undefined
+              ? { durationMs: payload.durationMs }
+              : undefined,
+          );
+          data = {
+            name: report.tokenName,
+            token: report.token,
+            expiresAt: report.expiresAt,
+            predecessorExpiresAt: report.predecessorExpiresAt,
+            delivered: true,
+            rotated: report.rotated,
+            notRotated: report.notRotated,
+            unconnectedBindings: report.unconnectedBindings,
+          };
+        } else {
+          const libCtx = handlerLibSwampContext(ctx);
+          const deps = await createWorkerTokenRotateDeps(
+            libCtx,
+            ctx.repoDir,
+            ctx.repoContext,
+            { vaultsDir: ctx.vaultsDir },
+          );
+          await consumeStream(
+            workerTokenRotate(libCtx, deps, {
+              name: payload.name,
+              durationMs: payload.durationMs,
+            }),
+            withDefaults({
+              completed: (e) => {
+                data = e.data;
+              },
+              error: (e) => {
+                throw new Error(e.error.message);
+              },
+            }),
+          );
+        }
+
+        if (controller.signal.aborted) {
+          sendError(socket, requestId, "cancelled", "Operation was cancelled");
+          return;
+        }
+
+        send(socket, {
+          type: "worker.token.rotate",
+          id: requestId,
+          payload: { data: (data ?? {}) as unknown as Record<string, unknown> },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "worker_token_rotate_failed", message);
       }
     },
   );

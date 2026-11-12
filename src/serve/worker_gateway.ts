@@ -31,6 +31,7 @@ import {
 } from "../domain/remote/rpc_channel.ts";
 import type { RpcTransport } from "../domain/remote/rpc_channel.ts";
 import {
+  acceptsTokenRotation,
   type DispatchParams,
   type DispatchResult,
   DispatchResultSchema,
@@ -40,6 +41,7 @@ import {
   isSupportedRemoteProtocolVersion,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  type RotateTokenResult,
   type RpcStreamEvent,
   type SessionRefreshResult,
   shipsReferencesOnly,
@@ -56,6 +58,7 @@ import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_own
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   type EnrollmentBindingCutoffCause,
+  enrollmentMintFor,
   type EnrollmentToken,
   EnrollmentTokenSchema,
   type MaxEnrollments,
@@ -118,6 +121,20 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
 
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
+
+const DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS = 10_000;
+
+export interface TokenRotationReport {
+  tokenName: string;
+  /** the successor credential `<name>.<secret>`, for hosts it did not reach */
+  token: string;
+  expiresAt: string;
+  predecessorExpiresAt: string | null;
+  rotated: { worker: string; persisted: boolean }[];
+  notRotated: { worker: string; reason: string }[];
+  /** bound machines with no connected pool member, still on the old secret */
+  unconnectedBindings: number;
+}
 
 export function splitEnrollmentToken(
   presented: string,
@@ -271,6 +288,9 @@ export interface WorkerGatewayOptions {
     workerName: string,
   ) => Promise<{ ok: boolean; failureReason?: string }>;
   gatePass?: () => string | undefined;
+  /** reads a token's plaintext so a rotation can hand it to connected workers */
+  readTokenSecret?: (vaultName: string, secretKey: string) => Promise<string>;
+  rotationDeliveryTimeoutMs?: number;
   runModelMethod?: ModelMethodRunner;
   findTokenDefinitionId?: (tokenName: string) => Promise<string | null>;
   readTokenRecord?: (tokenName: string) => Promise<EnrollmentToken | null>;
@@ -497,6 +517,162 @@ export class WorkerGateway {
       }
       return removed;
     });
+  }
+
+  /**
+   * three phases so enrollments never queue behind a slow worker: rotate on the
+   * tail, deliver off it, re-stamp on it; the verdict keeps predecessor workers
+   */
+  async rotateToken(
+    tokenName: string,
+    options?: { durationMs?: number },
+  ): Promise<TokenRotationReport> {
+    const readTokenSecret = this.#options.readTokenSecret;
+    if (readTokenSecret === undefined) {
+      throw new Error("This orchestrator cannot read enrollment token secrets");
+    }
+    const { record, targets } = await this.#recordTransition(
+      "rotate_token",
+      async () => {
+        const definitionId = await this.#requireTokenDefinition(tokenName);
+        await this.#runModelMethod({
+          typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
+          definitionName: tokenName,
+          methodName: "rotate",
+          inputs: options?.durationMs !== undefined
+            ? { durationMs: options.durationMs }
+            : {},
+          expectedDefinitionId: definitionId,
+        });
+        const record = await this.#readTokenRecord(tokenName);
+        if (record === null) {
+          throw new Error(
+            `Enrollment token '${tokenName}' could not be read after rotation`,
+          );
+        }
+        const targets = [...this.#workers.values()]
+          .filter((entry) => entry.tokenName === tokenName)
+          .map((entry) => ({
+            name: entry.name,
+            instanceUuid: entry.instanceUuid,
+            protocolVersion: entry.protocolVersion,
+            channel: entry.channel,
+          }));
+        return { record, targets };
+      },
+    );
+
+    const token = `${tokenName}.${await readTokenSecret(
+      record.vaultName,
+      record.secretKey,
+    )}`;
+    const expiresAtMs = Date.parse(record.expiresAt);
+    const timeoutMs = this.#options.rotationDeliveryTimeoutMs ??
+      DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS;
+
+    const notRotated: { worker: string; reason: string }[] = [];
+    const acknowledged: {
+      name: string;
+      instanceUuid: string;
+      persisted: boolean;
+    }[] = [];
+    await Promise.all(targets.map(async (target) => {
+      const channel = target.channel;
+      if (channel === null || channel.closed) {
+        notRotated.push({ worker: target.name, reason: "disconnected" });
+        return;
+      }
+      if (!acceptsTokenRotation(target.protocolVersion)) {
+        notRotated.push({
+          worker: target.name,
+          reason: `protocol version ${target.protocolVersion} cannot rotate`,
+        });
+        return;
+      }
+      try {
+        const result = await channel.call<RotateTokenResult>(
+          WorkerMethod.rotateToken,
+          { token, expiresAtMs },
+          { timeoutMs },
+        );
+        acknowledged.push({
+          name: target.name,
+          instanceUuid: target.instanceUuid,
+          persisted: result?.persisted === true,
+        });
+      } catch (error) {
+        notRotated.push({
+          worker: target.name,
+          reason: error instanceof RpcError
+            ? error.code
+            : error instanceof ChannelClosedError
+            ? "disconnected"
+            : "no acknowledgement",
+        });
+      }
+    }));
+
+    const rotated = await this.#recordTransition(
+      "restamp_rotated_workers",
+      async () => {
+        const restamped: { worker: string; persisted: boolean }[] = [];
+        for (const ack of acknowledged) {
+          const entry = this.#workers.get(ack.name);
+          if (
+            entry?.tokenName === tokenName &&
+            entry.tokenCreatedAt === record.createdAt
+          ) {
+            restamped.push({ worker: ack.name, persisted: ack.persisted });
+            continue;
+          }
+          if (
+            entry === undefined || entry.tokenName !== tokenName ||
+            entry.instanceUuid !== ack.instanceUuid
+          ) {
+            notRotated.push({
+              worker: ack.name,
+              reason: "reconnected during rotation",
+            });
+            continue;
+          }
+          entry.tokenCreatedAt = record.createdAt;
+          if (entry.expiryTimer !== undefined) {
+            clearTimeout(entry.expiryTimer);
+            entry.expiryTimer = undefined;
+          }
+          this.#scheduleTokenExpiry(entry, expiresAtMs);
+          restamped.push({ worker: ack.name, persisted: ack.persisted });
+          try {
+            await this.#workerStatus.recordStatus(entry.name, {
+              status: entry.status,
+              activeDispatchIds: [...entry.activeDispatchIds],
+              tokenCreatedAt: record.createdAt,
+            });
+          } catch (error) {
+            logger.warn(
+              "Failed to record the rotated mint for {worker}: {error}",
+              {
+                worker: entry.name,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+          }
+        }
+        return restamped;
+      },
+    );
+
+    const connected =
+      targets.filter((t) => t.channel !== null && !t.channel.closed).length;
+    return {
+      tokenName,
+      token,
+      expiresAt: record.expiresAt,
+      predecessorExpiresAt: record.predecessor?.expiresAt ?? null,
+      rotated,
+      notRotated,
+      unconnectedBindings: Math.max(0, record.bindings.length - connected),
+    };
   }
 
   /**
@@ -773,7 +949,11 @@ export class WorkerGateway {
       // One read of the record redeem just validated supplies the mint the
       // worker is bound to, its lifetime, and fleet naming.
       const record = await preparing(() => this.#readEnrolledRecord(name));
-      const tokenCreatedAt = record.createdAt;
+      // a machine that redeemed the predecessor of a rotation is bound to that
+      // mint and keeps its deadline
+      const mint = enrollmentMintFor(record, params.machineId);
+      const tokenCreatedAt = mint.createdAt;
+      const onPredecessor = tokenCreatedAt !== record.createdAt;
       const maxEnrollments = await preparing(() =>
         this.#readTokenMaxEnrollments(name, record)
       ) ?? 1;
@@ -927,7 +1107,9 @@ export class WorkerGateway {
       // The token lifetime is a hard deadline: when it elapses, disconnect
       // the worker. Re-enrollment is then rejected as expired, so the
       // worker cannot return on this token.
-      const expiresAt = await this.#readTokenExpiresAt(name, record);
+      const expiresAt = onPredecessor
+        ? mint.expiresAt
+        : await this.#readTokenExpiresAt(name, record);
       if (expiresAt !== null) {
         this.#scheduleTokenExpiry(entry, Date.parse(expiresAt));
       }
@@ -1110,7 +1292,7 @@ export class WorkerGateway {
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
         definitionName: entry.tokenName,
         methodName: "expire",
-        inputs: {},
+        inputs: { mint: entry.tokenCreatedAt },
         expectedDefinitionId: definitionId,
       });
     }).catch((error: unknown) => {

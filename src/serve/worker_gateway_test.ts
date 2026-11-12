@@ -233,7 +233,7 @@ Deno.test("WorkerGateway: enrollment runs in a gateway-tail span (swamp-club#375
 });
 
 Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", async () => {
-  for (const protocolVersion of [4, 8, 99]) {
+  for (const protocolVersion of [4, 9, 99]) {
     const h = createHarness();
     const { workerChannel } = connectWorkerSocket(h.gateway);
     const error = await assertRejects(
@@ -246,8 +246,8 @@ Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", 
   }
 });
 
-Deno.test("WorkerGateway: enrolls protocol versions 5, 6 and 7, keeps each worker's version, and warns about version 5 only (typed-secrets 5.2)", async () => {
-  for (const protocolVersion of [5, 6, 7]) {
+Deno.test("WorkerGateway: enrolls protocol versions 5 through 8, keeps each worker's version, and warns about version 5 only (typed-secrets 5.2)", async () => {
+  for (const protocolVersion of [5, 6, 7, 8]) {
     const h = createHarness();
     const { workerChannel } = connectWorkerSocket(h.gateway);
     const logs = await capturingGatewayLogs(async () => {
@@ -2953,4 +2953,234 @@ Deno.test("WorkerGateway: serializeWorkerWrites runs after an enrollment in flig
   await settled;
 
   assertEquals(heldWhenRun, true);
+});
+
+const ROTATED_MINT = "2026-02-01T00:00:00.000Z";
+
+function rotationHarness(options?: {
+  rotatedExpiresAt?: string;
+  readTokenExpiresAt?: WorkerGatewayOptions["readTokenExpiresAt"];
+  rotationDeliveryTimeoutMs?: number;
+  initial?: EnrollmentToken;
+}) {
+  let record: EnrollmentToken = options?.initial ??
+    mintRecord("ci-runner-3", BASE_MINT);
+  const h = createHarness({
+    readTokenRecord: (name) =>
+      Promise.resolve(
+        name === "ci-runner-3" ? record : mintRecord(name, BASE_MINT),
+      ),
+    readTokenSecret: (_vault, secretKey) =>
+      Promise.resolve(`secret-for-${secretKey}`),
+    ...(options?.readTokenExpiresAt
+      ? { readTokenExpiresAt: options.readTokenExpiresAt }
+      : {}),
+    ...(options?.rotationDeliveryTimeoutMs !== undefined
+      ? { rotationDeliveryTimeoutMs: options.rotationDeliveryTimeoutMs }
+      : {}),
+  });
+  const wrapped = h.gateway;
+  const rotate = (durationMs?: number) => {
+    const previous = record;
+    record = {
+      ...previous,
+      createdAt: ROTATED_MINT,
+      expiresAt: options?.rotatedExpiresAt ?? "2099-06-01T00:00:00.000Z",
+      secretKey: `worker-token-ci-runner-3.r${Date.parse(ROTATED_MINT)}`,
+      predecessor: {
+        createdAt: previous.createdAt,
+        expiresAt: previous.expiresAt,
+        secretKey: previous.secretKey,
+      },
+    };
+    return wrapped.rotateToken(
+      "ci-runner-3",
+      durationMs === undefined ? undefined : { durationMs },
+    );
+  };
+  return { ...h, rotate };
+}
+
+Deno.test("WorkerGateway: rotateToken delivers the successor and re-stamps the worker's mint", async () => {
+  const h = rotationHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const delivered: unknown[] = [];
+  workerChannel.register(WorkerMethod.rotateToken, (params) => {
+    delivered.push(params);
+    return Promise.resolve({ persisted: true });
+  });
+  await enroll(workerChannel);
+
+  const report = await h.rotate();
+
+  const secretKey = `worker-token-ci-runner-3.r${Date.parse(ROTATED_MINT)}`;
+  assertEquals(report.token, `ci-runner-3.secret-for-${secretKey}`);
+  assertEquals(report.rotated, [{ worker: "ci-runner-3", persisted: true }]);
+  assertEquals(report.notRotated, []);
+  assertEquals(report.predecessorExpiresAt, "2099-01-01T00:00:00.000Z");
+  assertEquals(delivered, [{
+    token: report.token,
+    expiresAtMs: Date.parse("2099-06-01T00:00:00.000Z"),
+  }]);
+  assertEquals(h.gateway.boundTokens(), [{
+    tokenName: "ci-runner-3",
+    tokenCreatedAt: ROTATED_MINT,
+  }]);
+  const rotateRun = h.transitions.find((t) => t.methodName === "rotate");
+  assertEquals(rotateRun?.expectedDefinitionId, "def-ci-runner-3");
+  assertEquals(
+    h.transitions.some((t) =>
+      t.methodName === "set_status" && t.inputs.tokenCreatedAt === ROTATED_MINT
+    ),
+    true,
+  );
+});
+
+Deno.test("WorkerGateway: rotateToken passes a requested duration to the rotate method", async () => {
+  const h = rotationHarness();
+  await h.rotate(3_600_000);
+  const rotateRun = h.transitions.find((t) => t.methodName === "rotate");
+  assertEquals(rotateRun?.inputs, { durationMs: 3_600_000 });
+});
+
+Deno.test("WorkerGateway: a rotated worker's expiry timer moves to the successor's deadline", async () => {
+  const h = rotationHarness({
+    rotatedExpiresAt: new Date(Date.now() + 40).toISOString(),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  workerChannel.register(
+    WorkerMethod.rotateToken,
+    () => Promise.resolve({ persisted: true }),
+  );
+  await enroll(workerChannel);
+  await h.rotate();
+
+  await waitFor(() => h.removed.length === 1, "worker removed on expiry");
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "expire"),
+    "expire recorded",
+  );
+  const expire = h.transitions.find((t) => t.methodName === "expire");
+  assertEquals(expire?.inputs, { mint: ROTATED_MINT });
+});
+
+Deno.test("WorkerGateway: a worker on an older protocol is reported and keeps the predecessor", async () => {
+  const h = rotationHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, { ...enrollParams, protocolVersion: 7 });
+
+  const report = await h.rotate();
+
+  assertEquals(report.rotated, []);
+  assertEquals(report.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "protocol version 7 cannot rotate",
+  }]);
+  assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, BASE_MINT);
+  assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
+});
+
+Deno.test("WorkerGateway: a worker that refuses the successor keeps the predecessor", async () => {
+  const h = rotationHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  workerChannel.register(WorkerMethod.rotateToken, () =>
+    Promise.reject(
+      new RpcError({ code: "token_file_write_failed", message: "read-only" }),
+    ));
+  await enroll(workerChannel);
+
+  const report = await h.rotate();
+
+  assertEquals(report.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "token_file_write_failed",
+  }]);
+  assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, BASE_MINT);
+});
+
+Deno.test("WorkerGateway: an unacknowledged delivery is never re-stamped, and enrollments proceed meanwhile", async () => {
+  const h = rotationHarness({ rotationDeliveryTimeoutMs: 200 });
+  const first = connectWorkerSocket(h.gateway);
+  const delivery = Promise.withResolvers<void>();
+  first.workerChannel.register(WorkerMethod.rotateToken, async () => {
+    delivery.resolve();
+    await new Promise(() => {});
+  });
+  await enroll(first.workerChannel);
+
+  const rotating = h.rotate();
+  await delivery.promise;
+  const other = connectWorkerSocket(h.gateway);
+  await enroll(other.workerChannel, {
+    ...enrollParams,
+    token: "other.s3cret",
+    instanceUuid: "uuid-2",
+  });
+  const report = await rotating;
+
+  assertEquals(report.rotated, []);
+  assertEquals(report.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "no acknowledgement",
+  }]);
+  assertEquals(
+    h.gateway.boundTokens().find((t) => t.tokenName === "ci-runner-3")
+      ?.tokenCreatedAt,
+    BASE_MINT,
+  );
+});
+
+Deno.test("WorkerGateway: a straggler's expiry clears the predecessor instead of expiring the token", async () => {
+  const h = rotationHarness({
+    readTokenExpiresAt: () =>
+      Promise.resolve(new Date(Date.now() + 60).toISOString()),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, { ...enrollParams, protocolVersion: 7 });
+  await h.rotate();
+
+  await waitFor(() => h.removed.length === 1, "straggler removed on expiry");
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "expire"),
+    "expire recorded",
+  );
+  const expire = h.transitions.find((t) => t.methodName === "expire");
+  assertEquals(expire?.inputs, { mint: BASE_MINT });
+});
+
+Deno.test("WorkerGateway: a machine that redeemed the predecessor enrolls on it and keeps its deadline", async () => {
+  const predecessorExpiresAt = new Date(Date.now() + 40).toISOString();
+  const h = rotationHarness({
+    initial: {
+      ...mintRecord("ci-runner-3", ROTATED_MINT),
+      bindings: [{
+        machineId: "machine-1",
+        enrolledAt: BASE_MINT,
+        mint: BASE_MINT,
+      }],
+      predecessor: {
+        createdAt: BASE_MINT,
+        expiresAt: predecessorExpiresAt,
+        secretKey: "worker-token-ci-runner-3",
+      },
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  assertEquals(h.gateway.boundTokens(), [{
+    tokenName: "ci-runner-3",
+    tokenCreatedAt: BASE_MINT,
+  }]);
+  await waitFor(() => h.removed.length === 1, "removed at predecessor expiry");
+});
+
+Deno.test("WorkerGateway: rotateToken without a secret reader refuses before rotating", async () => {
+  const h = createHarness();
+  await assertRejects(
+    () => h.gateway.rotateToken("ci-runner-3"),
+    Error,
+    "cannot read enrollment token secrets",
+  );
+  assertEquals(h.transitions.filter((t) => t.methodName === "rotate"), []);
 });

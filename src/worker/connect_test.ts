@@ -291,6 +291,44 @@ Deno.test("runWorker: reconnects with the same instance uuid after a drop", asyn
   assertEquals(enrollments[0].machineId, enrollments[1].machineId);
 });
 
+Deno.test("runWorker: a reconnect after a rotation presents the successor token", async () => {
+  const enrollments: EnrollParams[] = [];
+  const sockets: FakeSocket[] = [];
+  const controller = new AbortController();
+
+  const done = runWorker({
+    url: "ws://test:1",
+    token: "ci.old",
+    swampVersion: "1.2.3",
+    signal: controller.signal,
+    onStatus: (event) => {
+      if (event.kind === "enrolled" && enrollments.length === 1) {
+        sockets[0].orchestrator.call(WorkerMethod.rotateToken, {
+          token: "ci.new",
+          expiresAtMs: Date.now() + 60_000,
+        }).finally(() => sockets[0].drop());
+      }
+      if (event.kind === "enrolled" && enrollments.length === 2) {
+        controller.abort();
+        queueMicrotask(() => sockets[1].drop());
+      }
+    },
+    createSocket: () => {
+      const socket = new FakeSocket((channel) => {
+        channel.register(RemoteMethod.enroll, (params) => {
+          enrollments.push(params as EnrollParams);
+          return Promise.resolve(enrollResult("ci"));
+        });
+      });
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  await done;
+  assertEquals(enrollments.map((e) => e.token), ["ci.old", "ci.new"]);
+});
+
 Deno.test("runWorker: a stable cache directory keeps the machine id across restarts", async () => {
   const cacheDir = await Deno.makeTempDir({ prefix: "swamp-worker-test-" });
   try {

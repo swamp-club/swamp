@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { markErrorPaths, UserError } from "../errors.ts";
 import {
+  acceptsTokenRotation,
   CONTROL_SOCKET_READS_PROTOCOL_VERSION,
   dispatchErrorCode,
   dispatchErrorPaths,
@@ -38,6 +39,7 @@ import {
   plaintextFieldsOf,
   REMOTE_PROTOCOL_VERSION,
   ResolveSecretParamsSchema,
+  RotateTokenParamsSchema,
   shipsReferencesOnly,
 } from "./protocol.ts";
 import { SENTINEL_SOURCE } from "../vaults/secret_bag_registry.ts";
@@ -427,7 +429,7 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
   // worker is refused at enrollment
   assertEquals(
     [REMOTE_PROTOCOL_VERSION, SENTINEL_SOURCE],
-    [7, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
+    [8, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
   );
   assertEquals(
     DispatchParamsSchema.safeParse(
@@ -437,10 +439,10 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
   );
 });
 
-Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5, 6 and 7 until typed-secrets 5.3", () => {
+Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5 through 8 until typed-secrets 5.3", () => {
   assertEquals(
-    [4, 5, 6, 7, 8].map(isSupportedRemoteProtocolVersion),
-    [false, true, true, true, false],
+    [4, 5, 6, 7, 8, 9].map(isSupportedRemoteProtocolVersion),
+    [false, true, true, true, true, false],
   );
   assertEquals(LEGACY_PLAINTEXT_PROTOCOL_VERSION, 5);
   assertEquals(CONTROL_SOCKET_READS_PROTOCOL_VERSION, 6);
@@ -450,6 +452,26 @@ Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5, 6 and 7 u
     true,
   );
   assertEquals(shipsReferencesOnly(REMOTE_PROTOCOL_VERSION), true);
+});
+
+Deno.test("acceptsTokenRotation: only a version 8 worker is sent a successor token", () => {
+  assertEquals(
+    [5, 6, 7, 8].map(acceptsTokenRotation),
+    [false, false, false, true],
+  );
+  assertEquals(acceptsTokenRotation(REMOTE_PROTOCOL_VERSION), true);
+});
+
+Deno.test("RotateTokenParamsSchema: refuses an empty token", () => {
+  assertEquals(
+    RotateTokenParamsSchema.safeParse({ token: "", expiresAtMs: 1 }).success,
+    false,
+  );
+  assertEquals(
+    RotateTokenParamsSchema.safeParse({ token: "web-01.abc", expiresAtMs: 1 })
+      .success,
+    true,
+  );
 });
 
 Deno.test("DispatchParamsSchema: a version 6 reference bag carries the reference, encoding and origin, never a value", () => {

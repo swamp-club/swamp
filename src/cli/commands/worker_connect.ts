@@ -252,6 +252,7 @@ export const workerConnectCommand = new Command()
       const result = await runWorker({
         url,
         token,
+        ...(tokenFilePath ? { tokenFile: tokenFilePath } : {}),
         labels,
         swampVersion: VERSION,
         dataPlaneUrl: options.dataPlaneUrl,

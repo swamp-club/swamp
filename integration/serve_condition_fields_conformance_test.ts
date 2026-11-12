@@ -193,6 +193,7 @@ const CATEGORIES: Record<string, Category> = {
   "worker.token.create": "access",
   "worker.token.list": "access",
   "worker.token.revoke": "access",
+  "worker.token.rotate": "access",
   "worker.verify": "access",
 
   "vault.annotate": "vault",

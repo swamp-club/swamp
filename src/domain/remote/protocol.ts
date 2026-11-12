@@ -35,7 +35,7 @@ import {
  * dispatch; changing the verbs or SENTINEL_EXACT needs a bump, an optional
  * parameter on an existing verb does not
  */
-export const REMOTE_PROTOCOL_VERSION = 7;
+export const REMOTE_PROTOCOL_VERSION = 8;
 
 /**
  * this version's dispatch frame still carries plaintext arguments, secretValues
@@ -46,10 +46,14 @@ export const LEGACY_PLAINTEXT_PROTOCOL_VERSION = 5;
 /** 6 still sends queryData and readOutput lists over the control socket */
 export const CONTROL_SOCKET_READS_PROTOCOL_VERSION = 6;
 
+/** the first version whose worker answers WorkerMethod.rotateToken */
+export const TOKEN_ROTATION_PROTOCOL_VERSION = 8;
+
 export const SUPPORTED_REMOTE_PROTOCOL_VERSIONS: readonly number[] = [
   LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   CONTROL_SOCKET_READS_PROTOCOL_VERSION,
-  REMOTE_PROTOCOL_VERSION,
+  7,
+  TOKEN_ROTATION_PROTOCOL_VERSION,
 ];
 
 export function isSupportedRemoteProtocolVersion(version: number): boolean {
@@ -58,6 +62,10 @@ export function isSupportedRemoteProtocolVersion(version: number): boolean {
 
 export function shipsReferencesOnly(version: number): boolean {
   return version > LEGACY_PLAINTEXT_PROTOCOL_VERSION;
+}
+
+export function acceptsTokenRotation(version: number): boolean {
+  return version >= TOKEN_ROTATION_PROTOCOL_VERSION;
 }
 
 export interface RpcStreamEvent {
@@ -197,7 +205,21 @@ export const RemoteMethod = {
 
 export const WorkerMethod = {
   dispatch: "worker.dispatch",
+  rotateToken: "worker.token.rotate",
 } as const;
+
+/** serve hands a connected worker the successor to the token it enrolled on */
+export const RotateTokenParamsSchema = z.object({
+  token: z.string().min(1),
+  expiresAtMs: z.number().int(),
+});
+
+export type RotateTokenParams = z.infer<typeof RotateTokenParamsSchema>;
+
+export interface RotateTokenResult {
+  /** false when the worker holds the token in memory only (no token file) */
+  persisted: boolean;
+}
 
 export const EnrollParamsSchema = z.object({
   /** Enrollment token (named, time-boxed, bound to one machine on first use). */

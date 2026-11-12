@@ -79,6 +79,7 @@ const OP_KINDS: Readonly<Record<IntentKind, readonly IntentOpKind[]>> = {
   "token.rotate": PUT,
   "worker-token.create": PUT,
   "worker-token.revoke": PUT,
+  "worker-token.rotate": PUT,
   "worker.delete": BOTH,
   "run.create": PUT,
   "run.update": PUT,
@@ -153,6 +154,7 @@ function bindSegments(
     case "token.rotate":
     case "worker-token.create":
     case "worker-token.revoke":
+    case "worker-token.rotate":
     case "worker.delete":
       return dataKey(intent.model, segments);
     case "output.save":

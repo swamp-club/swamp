@@ -228,6 +228,7 @@ import {
   handleWorkerTokenCreate,
   handleWorkerTokenList,
   handleWorkerTokenRevoke,
+  handleWorkerTokenRotate,
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
@@ -1544,6 +1545,15 @@ const WorkerTokenRevokeRequestSchema = z.object({
   }),
 });
 
+const WorkerTokenRotateRequestSchema = z.object({
+  type: z.literal("worker.token.rotate"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+    durationMs: z.number().int().positive().optional(),
+  }),
+});
+
 const DataGcRequestSchema = z.object({
   type: z.literal("data.gc"),
   id: z.string().min(1).max(256),
@@ -1729,6 +1739,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkerTokenCreateRequestSchema,
   WorkerTokenListRequestSchema,
   WorkerTokenRevokeRequestSchema,
+  WorkerTokenRotateRequestSchema,
   DataGcRequestSchema,
   DataPruneRequestSchema,
   RunGcRequestSchema,
@@ -4426,6 +4437,22 @@ export function handleMessage(
         confirmed(() =>
           withSyncGate(ctx.syncGate, () =>
             handleWorkerTokenRevoke(
+              socket,
+              ctx,
+              request.id,
+              request.payload,
+              controller,
+              principal,
+            ))
+        ),
+        auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "worker.token.rotate":
+      task = audited(
+        confirmed(() =>
+          withSyncGate(ctx.syncGate, () =>
+            handleWorkerTokenRotate(
               socket,
               ctx,
               request.id,

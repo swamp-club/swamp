@@ -669,6 +669,14 @@ export {
   type WorkerTokenRevokeEvent,
   type WorkerTokenRevokeInput,
 } from "./worker/token_revoke.ts";
+export {
+  createWorkerTokenRotateDeps,
+  workerTokenRotate,
+  type WorkerTokenRotateData,
+  type WorkerTokenRotateDeps,
+  type WorkerTokenRotateEvent,
+  type WorkerTokenRotateInput,
+} from "./worker/token_rotate.ts";
 export { createWorkerModelRunDeps } from "./worker/run_deps.ts";
 export {
   createWorkerQueueListDeps,

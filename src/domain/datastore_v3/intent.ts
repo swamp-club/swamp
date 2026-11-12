@@ -105,6 +105,7 @@ type ModelOnlyIntent = {
     | "token.rotate"
     | "worker-token.create"
     | "worker-token.revoke"
+    | "worker-token.rotate"
     | "worker.delete";
   readonly model: ModelRef;
 };
@@ -168,6 +169,7 @@ export const CONTROL_PLANE_INTENT_TYPES: Readonly<
   "token.rotate": "swamp/server-token",
   "worker-token.create": "swamp/enrollment-token",
   "worker-token.revoke": "swamp/enrollment-token",
+  "worker-token.rotate": "swamp/enrollment-token",
   "worker.delete": "swamp/worker",
 };
 
@@ -203,6 +205,7 @@ const SHAPES: Readonly<Record<IntentKind, Shape>> = {
   "token.rotate": "model",
   "worker-token.create": "model",
   "worker-token.revoke": "model",
+  "worker-token.rotate": "model",
   "worker.delete": "model",
   "run.create": "run",
   "run.update": "run",

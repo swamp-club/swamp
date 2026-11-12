@@ -52,6 +52,12 @@ Deno.test("followerRefusal: a follower refuses writes and runs, naming the leade
   }
 });
 
+Deno.test("followerRefusal: a follower forwards a worker token rotation to the leader that owns its workers", () => {
+  const refusal = followerRefusal("worker.token.rotate", gate("follower"));
+  assertInstanceOf(refusal, ServeNotLeaderError);
+  assertEquals(refusal.reads, false);
+});
+
 Deno.test("followerRefusal: a follower refuses a request it does not know", () => {
   assertInstanceOf(
     followerRefusal("some.future.request", gate("follower")),

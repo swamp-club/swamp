@@ -40,6 +40,10 @@ import {
   traceCarrier,
 } from "../domain/remote/observability.ts";
 import { injectTraceContext } from "../infrastructure/tracing/propagation.ts";
+import {
+  registerTokenRotationHandler,
+  type WorkerCredential,
+} from "./token_rotation_handler.ts";
 import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
   createTlsHttpClient,
@@ -85,6 +89,8 @@ export interface WorkerExitResult {
 export interface RunWorkerOptions {
   url: string;
   token: string;
+  /** where the token was read from; a rotation is written back to it */
+  tokenFile?: string;
   labels?: Record<string, string>;
   swampVersion: string;
   dataPlaneUrl?: string;
@@ -169,6 +175,7 @@ async function runWorkerFrom(
   dispatches: DispatchCount,
 ): Promise<WorkerExitResult> {
   const instanceUuid = crypto.randomUUID();
+  const credential: WorkerCredential = { token: options.token };
   const session: SessionState = { credential: "", expiresAtMs: 0 };
   const gate: GateState = { admitted: options.admitGatePass === undefined };
   const dataPlaneUrl = options.dataPlaneUrl ??
@@ -267,6 +274,7 @@ async function runWorkerFrom(
       }, () =>
         connectOnce({
           options,
+          credential,
           httpClient,
           instanceUuid,
           machineId,
@@ -460,6 +468,7 @@ interface GateState {
 
 interface ConnectOnceArgs {
   options: RunWorkerOptions;
+  credential: WorkerCredential;
   httpClient: Deno.HttpClient;
   instanceUuid: string;
   machineId: string;
@@ -569,12 +578,17 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           options.onStatus?.(event);
         },
       });
+      registerTokenRotationHandler({
+        channel,
+        credential: args.credential,
+        tokenFile: options.tokenFile,
+      });
       observeExecutionWork(
         "enrollment.request",
         {},
         () =>
           channel.call<EnrollResult>(RemoteMethod.enroll, {
-            token: options.token,
+            token: args.credential.token,
             instanceUuid,
             machineId,
             protocolVersion: REMOTE_PROTOCOL_VERSION,

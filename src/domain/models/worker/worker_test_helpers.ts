@@ -86,6 +86,11 @@ export function createInMemoryWorkerContext(
         vault.set(`${vaultName}/${secretKey}`, secretValue);
         return Promise.resolve();
       },
+      supportsDelete: () => true,
+      delete: (vaultName: string, secretKey: string) => {
+        vault.delete(`${vaultName}/${secretKey}`);
+        return Promise.resolve();
+      },
     },
     extensionFile: () => {
       throw new Error("extensionFile not available in worker model tests");

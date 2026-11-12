@@ -30,6 +30,7 @@ import type {
 import type { WorkerQueueListData } from "../../libswamp/worker/queue_list.ts";
 import type { WorkerTokenCreateData } from "../../libswamp/worker/token_create.ts";
 import type { WorkerTokenRevokeData } from "../../libswamp/worker/token_revoke.ts";
+import type { WorkerTokenRotateData } from "../../libswamp/worker/token_rotate.ts";
 import type { WorkerStatusEvent } from "../../worker/connect.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
@@ -210,6 +211,64 @@ export function renderWorkerTokenRevoke(
   } else if (!data.alreadyRevoked) {
     lines.push(dim("No connected workers were enrolled on this token."));
   }
+  writeOutput(lines.join("\n"));
+}
+
+export function renderWorkerTokenRotate(
+  data: WorkerTokenRotateData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  const lines = [
+    `${green(checkmark)} Token ${bold(data.name)} rotated.`,
+    `${bold(cyan("Expires:"))} ${data.expiresAt}`,
+  ];
+  if (data.predecessorExpiresAt !== null) {
+    lines.push(
+      `${bold(cyan("Old token valid until:"))} ${data.predecessorExpiresAt}`,
+    );
+  }
+  if (!data.delivered) {
+    lines.push(
+      yellow(
+        "No connected worker was sent the new token; run with --server to deliver it. Workers keep running on the old token until it expires.",
+      ),
+    );
+  }
+  for (const worker of data.rotated) {
+    lines.push(
+      worker.persisted
+        ? `  ${green(checkmark)} ${bold(worker.worker)} rotated`
+        : `  ${yellow("!")} ${bold(worker.worker)} rotated in memory only ${
+          dim("(no --token-file; a restart falls back to the old token)")
+        }`,
+    );
+  }
+  for (const worker of data.notRotated) {
+    lines.push(
+      `  ${red("✗")} ${bold(worker.worker)} not rotated ${
+        dim(`(${worker.reason})`)
+      }`,
+    );
+  }
+  if (data.delivered && data.unconnectedBindings > 0) {
+    lines.push(
+      dim(
+        `${data.unconnectedBindings} enrolled machine(s) not connected — they can enroll with the old token until it expires.`,
+      ),
+    );
+  }
+  lines.push(
+    "",
+    `  ${bold(data.token)}`,
+    "",
+    yellow(
+      "The new token is shown once — store it now for hosts that were not rotated.",
+    ),
+  );
   writeOutput(lines.join("\n"));
 }
 

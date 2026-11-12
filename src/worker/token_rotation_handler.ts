@@ -1,0 +1,121 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { getLogger } from "@logtape/logtape";
+import { type RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import {
+  RotateTokenParamsSchema,
+  type RotateTokenResult,
+  WorkerMethod,
+} from "../domain/remote/protocol.ts";
+import { atomicWriteTextFile } from "../infrastructure/persistence/atomic_write.ts";
+
+const logger = getLogger(["swamp", "worker", "token"]);
+
+/** the enrollment credential a reconnect presents; a rotation replaces it */
+export interface WorkerCredential {
+  token: string;
+}
+
+export interface TokenRotationHandlerOptions {
+  channel: RpcChannel;
+  credential: WorkerCredential;
+  /** absent when the token came inline, so a rotation lives in memory only */
+  tokenFile?: string;
+  writeTokenFile?: (path: string, token: string) => Promise<void>;
+}
+
+function tokenName(credential: string): string | null {
+  const dot = credential.indexOf(".");
+  if (dot <= 0 || dot === credential.length - 1) return null;
+  return credential.slice(0, dot);
+}
+
+async function writeTokenFileAtomically(
+  path: string,
+  token: string,
+): Promise<void> {
+  // a symlinked token file keeps its link; the write lands on the target
+  const target = await Deno.realPath(path);
+  await atomicWriteTextFile(target, `${token}\n`, { mode: 0o600, sync: {} });
+}
+
+export function registerTokenRotationHandler(
+  options: TokenRotationHandlerOptions,
+): void {
+  const write = options.writeTokenFile ?? writeTokenFileAtomically;
+  options.channel.register(WorkerMethod.rotateToken, async (rawParams) => {
+    const parsed = RotateTokenParamsSchema.safeParse(rawParams);
+    if (!parsed.success) {
+      throw new RpcError({
+        code: "invalid_params",
+        message: "Malformed token rotation",
+      });
+    }
+    const next = parsed.data.token;
+    const nextName = tokenName(next);
+    if (nextName === null) {
+      throw new RpcError({
+        code: "invalid_token",
+        message: "The rotated token is malformed",
+      });
+    }
+    if (nextName !== tokenName(options.credential.token)) {
+      throw new RpcError({
+        code: "token_rename_refused",
+        message: "A rotation keeps the token's name; this worker refuses " +
+          "a token issued under another name",
+      });
+    }
+    const persisted = options.tokenFile !== undefined;
+    if (options.tokenFile !== undefined) {
+      try {
+        await write(options.tokenFile, next);
+      } catch (error) {
+        logger.warn(
+          "Could not write the rotated token to {path}: {error}",
+          {
+            path: options.tokenFile,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        throw new RpcError({
+          code: "token_file_write_failed",
+          message: "The worker could not write its token file; it keeps " +
+            "the token it enrolled with",
+        });
+      }
+    }
+    options.credential.token = next;
+    const expiresAt = new Date(parsed.data.expiresAtMs).toISOString();
+    if (persisted) {
+      logger.info("Enrollment token rotated; it now expires at {expiresAt}", {
+        expiresAt,
+      });
+    } else {
+      logger.warn(
+        "Enrollment token rotated in memory only; it expires at {expiresAt}, " +
+          "and a restart presents the token this worker started with",
+        { expiresAt },
+      );
+    }
+    const result: RotateTokenResult = { persisted };
+    return result;
+  });
+}

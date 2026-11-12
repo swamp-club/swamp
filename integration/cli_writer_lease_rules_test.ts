@@ -75,6 +75,7 @@ const PINNED = [
   "src/cli/commands/worker_prune.ts :: workerPruneCommand",
   "src/cli/commands/worker_token_create.ts :: workerTokenCreateCommand",
   "src/cli/commands/worker_token_revoke.ts :: workerTokenRevokeCommand",
+  "src/cli/commands/worker_token_rotate.ts :: workerTokenRotateCommand",
   "src/cli/commands/workflow_approve.ts :: workflowApproveCommand",
   "src/cli/commands/workflow_cancel.ts :: workflowCancelCommand",
   "src/cli/commands/workflow_create.ts :: workflowCreateCommand",

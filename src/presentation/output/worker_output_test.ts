@@ -26,6 +26,7 @@ import type {
 import type { WorkerQueueListData } from "../../libswamp/worker/queue_list.ts";
 import type { WorkerTokenCreateData } from "../../libswamp/worker/token_create.ts";
 import type { WorkerTokenRevokeData } from "../../libswamp/worker/token_revoke.ts";
+import type { WorkerTokenRotateData } from "../../libswamp/worker/token_rotate.ts";
 import {
   renderWorkerList,
   renderWorkerQueue,
@@ -33,6 +34,7 @@ import {
   renderWorkerTokenCreate,
   renderWorkerTokenList,
   renderWorkerTokenRevoke,
+  renderWorkerTokenRotate,
   renderWorkerVerify,
 } from "./worker_output.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
@@ -622,4 +624,62 @@ Deno.test("renderWorkerVerify: log mode handles empty workers", () => {
     ),
   );
   assertStringIncludes(output, "No connected workers");
+});
+
+const rotateData: WorkerTokenRotateData = {
+  name: "web-01",
+  token: "web-01.successor-plaintext",
+  expiresAt: "2026-07-01T00:00:00.000Z",
+  predecessorExpiresAt: "2026-06-10T00:00:00.000Z",
+  delivered: true,
+  rotated: [
+    { worker: "web-01-aa11bb22", persisted: true },
+    { worker: "web-01-cc33dd44", persisted: false },
+  ],
+  notRotated: [{
+    worker: "web-01-ee55ff66",
+    reason: "protocol version 7 cannot rotate",
+  }],
+  unconnectedBindings: 2,
+};
+
+Deno.test("renderWorkerTokenRotate: log mode reports each worker and shows the token once", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerTokenRotate(rotateData, "log")),
+  );
+  assertStringIncludes(output, "Token web-01 rotated.");
+  assertStringIncludes(output, "Expires: 2026-07-01T00:00:00.000Z");
+  assertStringIncludes(
+    output,
+    "Old token valid until: 2026-06-10T00:00:00.000Z",
+  );
+  assertStringIncludes(output, "web-01-aa11bb22 rotated");
+  assertStringIncludes(output, "web-01-cc33dd44 rotated in memory only");
+  assertStringIncludes(
+    output,
+    "web-01-ee55ff66 not rotated (protocol version 7 cannot rotate)",
+  );
+  assertStringIncludes(output, "2 enrolled machine(s) not connected");
+  assertStringIncludes(output, "web-01.successor-plaintext");
+  assertStringIncludes(output, "shown once");
+});
+
+Deno.test("renderWorkerTokenRotate: a local rotation says no worker was sent the token", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderWorkerTokenRotate({
+        ...rotateData,
+        delivered: false,
+        rotated: [],
+        notRotated: [],
+      }, "log")
+    ),
+  );
+  assertStringIncludes(output, "No connected worker was sent the new token");
+  assertEquals(output.includes("not connected"), false);
+});
+
+Deno.test("renderWorkerTokenRotate: json mode emits the structured record", () => {
+  const output = captureLogs(() => renderWorkerTokenRotate(rotateData, "json"));
+  assertEquals(JSON.parse(output), rotateData);
 });
