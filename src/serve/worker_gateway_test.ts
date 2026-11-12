@@ -394,7 +394,8 @@ Deno.test("WorkerGateway: failed redemption leaves no pool state behind", async 
   const h = createHarness();
   h.failOn.add("redeem");
   const { workerChannel } = connectWorkerSocket(h.gateway);
-  await assertRejects(() => enroll(workerChannel), RpcError, "stubbed failure");
+  const error = await assertRejects(() => enroll(workerChannel), RpcError);
+  assertEquals(error.code, "redeem_failed");
   assertEquals(h.gateway.workers().length, 0);
   assertEquals(h.idle.length, 0);
 });
@@ -2408,7 +2409,6 @@ Deno.test("WorkerGateway: redeem rejections reach the worker coded, whatever the
       "Enrollment token 'ci': enrollment allowance exhausted",
       "enrollment_allowance_exhausted",
     ],
-    ["Enrollment token 'has-been-revoked' vault unavailable", "handler_failed"],
   ];
   for (const [message, code] of cases) {
     const h = createHarness({
@@ -2422,6 +2422,24 @@ Deno.test("WorkerGateway: redeem rejections reach the worker coded, whatever the
     assertEquals(error.code, code, message);
     assertEquals(error.message, message);
   }
+});
+
+Deno.test("WorkerGateway: an unrecognised redeem failure reaches the worker retryable, without serve's own detail", async () => {
+  const h = createHarness({
+    runModelMethod: (input) =>
+      input.methodName === "redeem"
+        ? Promise.reject(
+          new Error(
+            "Permission denied (os error 13): readfile '/srv/repo/.swamp/_control/token-secrets/values/worker-token-ci'",
+          ),
+        )
+        : Promise.resolve(),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const error = await assertRejects(() => enroll(workerChannel), RpcError);
+  assertEquals(error.code, "redeem_failed");
+  assertEquals(error.message.includes("/srv/repo"), false);
+  assertEquals(PERMANENT_ENROLLMENT_ERROR_CODES.has(error.code), false);
 });
 
 Deno.test("WorkerGateway: a dispatch whose worker drops while its busy status is recorded fails as a lost worker", async () => {

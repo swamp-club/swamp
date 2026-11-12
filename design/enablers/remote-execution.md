@@ -686,6 +686,11 @@ predecessor's deadline and records in the machine's binding which mint it
 redeemed (`mint`), so the gateway binds a reconnect to that mint and arms its
 deadline. A second rotation drops the oldest mint and deletes its key; a
 re-mint after revoke or expiry deletes the rotated keys the old record named.
+Only a missing predecessor key reads as a mismatch; any other vault failure
+reaches the worker as a retryable `redeem_failed` with a generic message, since
+an unrecognised redeem failure can name serve's own paths. Retryable is bounded
+by the worker's pre-enrollment retry budget, so a vault outage longer than that
+still stops a worker.
 
 Through `--server`, `WorkerGateway.rotateToken` runs in three phases so
 enrollments never wait behind a slow worker: the `rotate` method on the

@@ -91,8 +91,8 @@ export const DEFAULT_GRACE_WINDOW_MS = 60_000;
 const TOKEN_DATA_NAME = "token-main";
 
 /**
- * unmatched redeem rejections are rethrown as is and reach the worker as a
- * retryable handler_failed
+ * an unmatched redeem rejection reaches the worker as a retryable
+ * redeem_failed with a generic message: a vault error names serve's paths
  */
 const REDEEM_FAILURE_CODES: readonly [string, string][] = [
   ["has been revoked", "token_revoked"],
@@ -110,7 +110,14 @@ function codedRedeemFailure(error: unknown): unknown {
       return new RpcError({ code, message: error.message });
     }
   }
-  return error;
+  logger.warn("Could not verify an enrollment token: {error}", {
+    error: error.message,
+  });
+  return new RpcError({
+    code: "redeem_failed",
+    message:
+      "The orchestrator could not verify the enrollment token; retry the connection",
+  });
 }
 
 const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
