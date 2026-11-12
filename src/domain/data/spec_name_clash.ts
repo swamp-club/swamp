@@ -25,7 +25,7 @@ export function specNameClashRemedy(
   namespace?: string,
 ): string {
   const ns = namespace !== undefined ? ` && ns == ${celString(namespace)}` : "";
-  return `Rename the data item "${dataName}" so it differs from its spec, ` +
-    `or read it with data.query('modelName == ${celString(modelName)} ` +
-    `&& name == ${celString(dataName)}${ns}')[0].`;
+  return `Read it with data.query('modelName == ${celString(modelName)} ` +
+    `&& name == ${celString(dataName)}${ns}')[0]. Renaming the data item ` +
+    `lasts only if whatever writes "${dataName}" stops writing that name.`;
 }

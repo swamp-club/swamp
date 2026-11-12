@@ -3474,9 +3474,9 @@ Deno.test("checkSpecNameAmbiguity: names the model and both fixes", () => {
     error.message,
     'Ambiguous data.latest() match: "signals" is both a data name of ' +
       '"grafana" and the spec of 2 data items (pattern-watch-signals, ' +
-      'signals). Rename the data item "signals" so it differs from its ' +
-      'spec, or read it with data.query(\'modelName == "grafana" && ' +
-      'name == "signals"\')[0].',
+      'signals). Read it with data.query(\'modelName == "grafana" && ' +
+      'name == "signals"\')[0]. Renaming the data item lasts only if ' +
+      'whatever writes "signals" stops writing that name.',
   );
 });
 
@@ -3547,7 +3547,7 @@ Deno.test("specNameClash: the old-type rows of a retyped model are not peers", (
   assertEquals(service.specNameClash("foo", "m1"), ["foo", "foo-x"]);
 });
 
-Deno.test("specNameClash: an unpopulated catalog answers null without a backfill", () => {
+Deno.test("specNameClash: an unpopulated catalog drops rows not on disk and does not backfill", () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
   using _cleanup = cleanupOnDispose(catalog, dir);

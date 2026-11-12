@@ -20,11 +20,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { configure, getLogger, type LogRecord, reset } from "@logtape/logtape";
 import { z } from "zod";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type {
-  MethodContext,
   MethodDefinition,
   ModelDefinition,
 } from "../src/domain/models/model.ts";
@@ -92,38 +92,25 @@ const model: ModelDefinition = {
   },
 };
 
-function captureWarnings(sink: string[]): MethodContext["logger"] {
-  const record = (keep: boolean) =>
-  (
-    strings: TemplateStringsArray | string,
-    ...values: unknown[]
-  ): void => {
-    if (!keep) return;
-    sink.push(
-      typeof strings === "string" ? strings : strings.reduce(
-        (acc, part, i) =>
-          acc + part + (i < values.length ? String(values[i]) : ""),
-        "",
-      ),
-    );
-  };
-  return new Proxy({}, {
-    get(_target, property) {
-      if (property === "getChild") return () => captureWarnings(sink);
-      return record(property === "warn");
-    },
-  }) as unknown as MethodContext["logger"];
-}
-
 async function withRepo(
   fn: (run: (method: string) => Promise<string[]>) => Promise<void>,
   QueryService: typeof DataQueryService = DataQueryService,
+  populated = true,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-spec-clash-test-" });
   await ensureDir(join(dir, ".swamp", "data"));
   const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      { category: ["swamp"], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "warning", sinks: [] },
+    ],
+    reset: true,
+  });
   try {
-    catalog.markPopulated();
+    if (populated) catalog.markPopulated();
     const dataRepository = new FileSystemUnifiedDataRepository(
       dir,
       undefined,
@@ -146,7 +133,7 @@ async function withRepo(
     const dataQueryService = new QueryService(catalog, dataRepository);
 
     await fn(async (methodName) => {
-      const warnings: string[] = [];
+      const before = records.length;
       const context = buildMethodContext(
         {
           dataRepository,
@@ -167,7 +154,7 @@ async function withRepo(
             tags: definition.tags,
           },
           methodName,
-          logger: captureWarnings(warnings),
+          logger: getLogger(["test", "spec-name-clash"]),
         },
       );
       try {
@@ -180,9 +167,12 @@ async function withRepo(
       } catch (error) {
         if (!methodName.endsWith("ThenFail")) throw error;
       }
-      return warnings.filter((w) => w.includes("now fails as ambiguous"));
+      return records.slice(before)
+        .map((r) => r.message.map(String).join(""))
+        .filter((m) => m.includes("now fails as ambiguous"));
     });
   } finally {
+    await reset();
     catalog.close();
     if (Deno.build.os === "windows") {
       // EBUSY can fire on windows before V8 frees native sqlite handles; the
@@ -250,6 +240,17 @@ Deno.test("spec name clash: a run that writes the clashing item and then fails s
     assertEquals((await run("watchThenFail")).length, 1);
     assertEquals(await run("watch"), []);
   });
+});
+
+Deno.test("spec name clash: a repository whose catalog was never backfilled still warns", async () => {
+  await withRepo(
+    async (run) => {
+      await run("named");
+      assertEquals((await run("watch")).length, 1);
+    },
+    DataQueryService,
+    false,
+  );
 });
 
 Deno.test("spec name clash: a failing check never fails the run", async () => {

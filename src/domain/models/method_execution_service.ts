@@ -94,7 +94,7 @@ import {
   type RemoteStepResult,
 } from "../remote/remote_dispatch.ts";
 import type { RpcStreamEvent } from "../remote/protocol.ts";
-import type { Logger } from "@logtape/logtape";
+import { getLogger, type Logger } from "@logtape/logtape";
 import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import { hasPlacement } from "../remote/scheduler.ts";
 import {
@@ -223,13 +223,19 @@ function isDeclaredResourceData(
 }
 
 /**
+ * the run's own logger reaches only its log file unless --log is passed, and
+ * this warning has to be seen where the clash was made
+ */
+const specNameClashLogger = getLogger(["swamp", "data", "spec-name-clash"]);
+
+/**
  * warns on the run that first writes a data name, so the clash shows where it
  * was made rather than in a later data.latest() elsewhere; never fails the run
  */
 function warnOnSpecNameClash(
   context: Pick<
     MethodContext,
-    "logger" | "dataQueryService" | "dataRepository" | "modelType" | "modelId"
+    "dataQueryService" | "dataRepository" | "modelType" | "modelId"
   >,
   handles: DataHandle[],
 ): void {
@@ -237,15 +243,20 @@ function warnOnSpecNameClash(
   if (!queryService) return;
   const seen = new Set<string>();
   for (const handle of handles) {
-    if (handle.version !== 1) continue;
-    const specName = handle.tags["specName"];
-    const modelName = handle.tags["modelName"];
-    if (!specName || !modelName) continue;
-    const key = JSON.stringify([modelName, specName]);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const namespace = context.dataRepository.namespace;
+    // a failed run's handles come from its error, which extension code can
+    // shape, so nothing here may throw past the catch
     try {
+      if (handle.version !== 1) continue;
+      const specName = handle.tags["specName"];
+      const modelName = handle.tags["modelName"];
+      if (typeof specName !== "string" || typeof modelName !== "string") {
+        continue;
+      }
+      if (specName === "" || modelName === "") continue;
+      const key = JSON.stringify([modelName, specName]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const namespace = context.dataRepository.namespace;
       const names = queryService.specNameClash(
         specName,
         modelName,
@@ -254,7 +265,7 @@ function warnOnSpecNameClash(
         { modelType: context.modelType, modelId: context.modelId },
       );
       if (!names) continue;
-      context.logger.warn(escapeLogTemplate(
+      specNameClashLogger.warn(escapeLogTemplate(
         `Data item "${handle.name}" was written under spec "${specName}", ` +
           `which is also a data name of "${modelName}", so ` +
           `data.latest("${modelName}", "${specName}") now fails as ambiguous ` +
@@ -262,7 +273,8 @@ function warnOnSpecNameClash(
           specNameClashRemedy(modelName, specName, namespace),
       ));
     } catch (error) {
-      context.logger.debug`Could not check spec ${specName} for a clash: ${
+      specNameClashLogger
+        .debug`Could not check ${handle.name} for a spec name clash: ${
         String(error)
       }`;
     }

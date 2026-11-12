@@ -507,13 +507,16 @@ export class DataQueryService {
     excludeModelTypes: readonly string[] = [],
     resolved?: { modelType: ModelType; modelId: string },
   ): string[] | null {
-    if (!specName || !this.catalogStore.isPopulated()) return null;
+    if (!specName) return null;
+    // write-through keeps a never-backfilled catalog current for new writes,
+    // but its older rows may be stale, so those are confirmed on disk
     return this.clashingDataNames(
       specName,
       modelName,
       namespace,
       excludeModelTypes,
       resolved,
+      !this.catalogStore.isPopulated(),
     );
   }
 
@@ -523,9 +526,10 @@ export class DataQueryService {
     namespace: string | undefined,
     excludeModelTypes: readonly string[],
     resolved: { modelType: ModelType; modelId: string } | undefined,
+    confirmOnDisk = false,
   ): string[] | null {
     // Excluded rows are neither peers nor named in the error.
-    const peers = this.catalogStore.findLatestRowsBySpecName(
+    let peers = this.catalogStore.findLatestRowsBySpecName(
       modelName,
       specName,
       namespace,
@@ -536,8 +540,18 @@ export class DataQueryService {
     );
     // only a lookup by the spec's own name can mean the spec, so without a
     // peer of that name every name is unambiguous
-    if (peers.length < 2 || !peers.some((r) => r.data_name === specName)) {
-      return null;
+    const clashes = () =>
+      peers.length >= 2 && peers.some((r) => r.data_name === specName);
+    if (!clashes()) return null;
+    if (confirmOnDisk) {
+      peers = peers.filter((r) =>
+        this.dataRepo.findByNameSync(
+          ModelType.create(r.type_normalized),
+          r.model_id,
+          r.data_name,
+        ) !== null
+      );
+      if (!clashes()) return null;
     }
     return peers.map((r) => r.data_name).sort();
   }
