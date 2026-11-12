@@ -2070,6 +2070,8 @@ export async function closeV3Datastores(
       ]),
   );
   setV3ClosingDeadline(undefined);
+  // after the closing sync, which may start one, and before the lease goes
+  await Promise.all(lineageCollections.splice(0));
   // After the closing sync, which serve's drain deadline is for, and before
   // the stores close.
   await withSpan("swamp.datastore.v3.close.dropped_work", {}, async () => {
@@ -2391,14 +2393,24 @@ async function syncAndPublishNow(
     // a bucket datastore's old lineage paths go through its provider's replica
     // paths
     const replicaPaths = v3BucketBindingAt(datastore)?.replicaPaths;
-    await collectV3Lineages(
-      copy,
-      use.lineageFence,
-      replicaPaths !== undefined ? { replicaPaths } : {},
+    // Off the confirm's path, so a takeover leads without waiting for the old
+    // lineage's objects to go; closeV3Datastores awaits it under the lease.
+    lineageCollections.push(
+      collectV3Lineages(
+        copy,
+        use.lineageFence,
+        replicaPaths !== undefined ? { replicaPaths } : {},
+      ).catch((error) => {
+        logger
+          .warn`Removing the replaced replication lineages of the v3 datastore at ${datastore} failed; the next writer's first sync tries again: ${error}`;
+      }),
     );
   }
   return mark.cursor;
 }
+
+/** one per lineage this process started; each logs its own failure */
+const lineageCollections: Promise<void>[] = [];
 
 /**
  * called once the action has returned, so a later closing-sync failure covers
