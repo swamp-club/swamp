@@ -512,3 +512,63 @@ Deno.test("evaluateMissedFires: across a fall-back hour every missed slot is aft
     }
   }
 });
+
+Deno.test("evaluateMissedFires: a second-level schedule misses every slot of both copies of the repeated hour", () => {
+  const result = evaluateMissedFires(
+    "*/5 * * * * *",
+    new Date("2026-11-01T06:50:00Z"),
+    new Date("2026-11-01T08:00:10Z"),
+    LATEST_6H,
+    "America/Chicago",
+  );
+  assertEquals(result.missedCount, 842);
+  assertEquals(result.saturated, false);
+  assertEquals(result.oldestMissed, new Date("2026-11-01T06:50:05Z"));
+  assertEquals(result.latestMissed, new Date("2026-11-01T08:00:10Z"));
+});
+
+Deno.test("evaluateMissedFires: in Europe/London the first copy of the repeated hour is missed too", () => {
+  const result = evaluateMissedFires(
+    "*/15 * * * *",
+    new Date("2026-10-24T23:50:00Z"),
+    new Date("2026-10-25T01:10:00Z"),
+    undefined,
+    "Europe/London",
+  );
+  assertEquals(result.missedCount, 5);
+  assertEquals(result.oldestMissed, new Date("2026-10-25T00:00:00Z"));
+  assertEquals(result.latestMissed, new Date("2026-10-25T01:00:00Z"));
+});
+
+Deno.test("evaluateMissedFires: a fixed time of day across a fall-back is missed once", () => {
+  for (
+    const { timezone, at } of [
+      { timezone: "America/Chicago", at: "2026-11-01T07:00:00Z" },
+      { timezone: "Europe/London", at: "2026-10-25T01:00:00Z" },
+    ]
+  ) {
+    const centre = Date.parse(at);
+    const result = evaluateMissedFires(
+      "30 1 * * *",
+      new Date(centre - 12 * 3_600_000),
+      new Date(centre + 12 * 3_600_000),
+      undefined,
+      timezone,
+    );
+    assertEquals(result.missedCount, 1, timezone);
+  }
+});
+
+Deno.test("evaluateMissedFires: saturated across the repeated hour, the latest missed slot is the last one before now", () => {
+  const result = evaluateMissedFires(
+    "*/5 * * * * *",
+    new Date("2026-11-01T06:00:00Z"),
+    new Date("2026-11-01T08:00:10Z"),
+    LATEST_6H,
+    "America/Chicago",
+  );
+  assertEquals(result.missedCount, MISSED_FIRE_COUNT_CAP);
+  assertEquals(result.saturated, true);
+  assertEquals(result.latestMissed, new Date("2026-11-01T08:00:10Z"));
+  assertEquals(result.catchUpFireTime, new Date("2026-11-01T08:00:10Z"));
+});
