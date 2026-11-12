@@ -502,6 +502,11 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
   // a namespace merge keeps file times, so it owes the checkout a full recovery
   "src/cli/commands/datastore_namespace.ts -> src/infrastructure/datastore_v3/v3_catalog.ts",
+  // a --server run's start reads serve's not-leader refusal and reports the
+  // datastore's unreachable and may-land codes, so the exit codes match
+  "src/cli/remote_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/cli/remote_run.ts -> src/domain/datastore_v3/serve_leader.ts",
+  "src/cli/remote_run.ts -> src/domain/datastore_v3/writer_lease.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
