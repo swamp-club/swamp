@@ -253,6 +253,8 @@
 
 .sw-cta {
   display: inline-flex;
+  align-self: flex-end;
+  margin-top: auto;
   align-items: center;
   gap: 10px;
   font-weight: 600;
