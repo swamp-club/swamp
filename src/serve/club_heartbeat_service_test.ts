@@ -384,3 +384,31 @@ Deno.test("ClubHeartbeatService.beatNow: stop aborts a running extra beat and se
   service.beatNow();
   await service.settled();
 });
+
+Deno.test("ClubHeartbeatService: hourly and extra beats go out one at a time", async () => {
+  let inFlight = 0;
+  let most = 0;
+  let sent = 0;
+  const service = new ClubHeartbeatService({
+    providerUrl: "https://club.example.com",
+    oauthClientId: "clt-1",
+    instanceId: "inst-1",
+    reregister: () => Promise.resolve(),
+    intervalMs: 5,
+    getAccessToken: () => Promise.resolve("key"),
+    sendHeartbeat: async () => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      inFlight--;
+      sent++;
+      return { heartbeatCount: sent };
+    },
+  });
+  service.start();
+  service.beatNow();
+  await waitFor(() => sent >= 4, "several beats to go out");
+  service.stop();
+  await service.settled();
+  assertEquals(most, 1);
+});

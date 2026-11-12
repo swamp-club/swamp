@@ -2749,7 +2749,7 @@ const watchedRequestErrors = new WeakMap<
   Map<string, string | undefined>
 >();
 
-/** returns a reader of the request's first error code, which also stops the watch */
+/** reading the code also stops the watch */
 export function watchRequestError(
   socket: WebSocket,
   id: string,

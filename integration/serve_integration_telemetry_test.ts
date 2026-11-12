@@ -208,7 +208,6 @@ function pathOf(data: ReturnType<TelemetryEntry["toData"]>): string {
   return (data.invocation.commandPath ?? []).join(" ");
 }
 
-/** a run, a method run and every gate and run control, made by one caller */
 async function everyAction(
   repo: ServeRepo,
   ctx: ConnectionContext,

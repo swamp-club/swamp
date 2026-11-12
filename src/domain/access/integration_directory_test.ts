@@ -421,3 +421,19 @@ Deno.test("IntegrationDirectory.reported: two revoked copies give the same repor
   assertEquals(reports[0], reports[1]);
   assertEquals(reports[0]?.[0].revokedAt, "2026-03-01T00:00:00.000Z");
 });
+
+Deno.test("IntegrationDirectory.onChanged: a first load that follows a failed one fires, since registration went without a list", async () => {
+  const state = { rows: [{ modelId: "1", attrs: record("a") }], fail: true };
+  const directory = new IntegrationDirectory(repo(state), {
+    retryMs: 3_600_000,
+  });
+  let changes = 0;
+  directory.onChanged(() => changes++);
+  await directory.reload();
+  assertEquals(directory.reported(), undefined);
+  state.fail = false;
+  await directory.reload();
+  assertEquals(changes, 1);
+  assertEquals(directory.reported()?.map((r) => r.id), ["a"]);
+  await directory.dispose();
+});

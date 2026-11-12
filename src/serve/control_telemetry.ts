@@ -83,7 +83,6 @@ const HTTP_STATUS_CODES: Readonly<Record<number, string>> = {
   503: "unavailable",
 };
 
-/** an HTTP route's outcome, read from the status it answered with */
 export function httpControlOutcome(
   status: number,
   cancelledCount?: number,

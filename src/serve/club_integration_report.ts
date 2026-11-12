@@ -36,7 +36,7 @@ export function withReportedIntegrations<T extends object>(
   return integrations === undefined ? request : { ...request, integrations };
 }
 
-/** a reload replaces the heartbeat service, so the current one is looked up each time */
+// a reload replaces the heartbeat service, so look up the current one each time
 export function beatOnIntegrationChange(
   source: IntegrationReportSource,
   currentHeartbeat: () => { beatNow(): void } | null,

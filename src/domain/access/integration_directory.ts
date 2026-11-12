@@ -124,6 +124,7 @@ export class IntegrationDirectory implements IntegrationLookup {
   readonly #listeners = new Set<Listener>();
   readonly #changeListeners = new Set<() => void>();
   #reports: ReadonlyMap<string, ReportedIntegration> = new Map();
+  #failedBeforeFirstLoad = false;
   readonly #unsubscribers: (() => void)[] = [];
   readonly #retryMs: number;
   #entries: ReadonlyMap<string, Entry> = new Map();
@@ -176,7 +177,7 @@ export class IntegrationDirectory implements IntegrationLookup {
     return [...this.#reports.values()].sort((x, y) => x.id < y.id ? -1 : 1);
   }
 
-  /** called after a reload changes what reported() returns, not on the first load */
+  /** called when reported() changes, and on a first load that follows a failed one */
   onChanged(listener: () => void): () => void {
     this.#changeListeners.add(listener);
     return () => this.#changeListeners.delete(listener);
@@ -219,6 +220,7 @@ export class IntegrationDirectory implements IntegrationLookup {
     try {
       ({ entries, reports } = await this.#read());
     } catch (error) {
+      if (this.#lastGood === undefined) this.#failedBeforeFirstLoad = true;
       this.#whole = false;
       this.#reportFailure(error);
       this.#retry = setTimeout(() => {
@@ -228,8 +230,10 @@ export class IntegrationDirectory implements IntegrationLookup {
     }
     this.#lastFailure = undefined;
     const narrowed = this.#narrowedSince(entries);
-    const reportsChanged = this.#lastGood !== undefined &&
-      reportKey(reports) !== reportKey(this.#reports);
+    // a first load after a failed one is news: registration went without a list
+    const reportsChanged = this.#lastGood === undefined
+      ? this.#failedBeforeFirstLoad
+      : reportKey(reports) !== reportKey(this.#reports);
     this.#entries = entries;
     this.#lastGood = entries;
     this.#reports = reports;

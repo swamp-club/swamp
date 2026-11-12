@@ -73,14 +73,8 @@ export class ClubHeartbeatService {
       },
     );
     this.#timer = runDetached(() =>
-      setInterval(() => {
-        this.#beat().catch((err) => {
-          if (this.#disposed) return;
-          logger.warn("Club heartbeat failed: {error}", {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }, this.#deps.intervalMs)
+      // through beatNow's queue, so an hourly beat never lands after a newer list
+      setInterval(() => this.beatNow(), this.#deps.intervalMs)
     );
     Deno.unrefTimer(this.#timer);
   }
@@ -109,7 +103,7 @@ export class ClubHeartbeatService {
     } while (this.#beatAgain && !this.#disposed);
   }
 
-  /** resolves once an extra beat has finished; stop() already aborts interval beats */
+  /** resolves once a queued beat has finished */
   async settled(): Promise<void> {
     await this.#extraBeat;
   }
