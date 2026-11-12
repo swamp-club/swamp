@@ -471,7 +471,7 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
 
 /**
  * for a caller that drops a push failure because the command already failed:
- * the user still learns the remote differs; a timeout stays quiet as before
+ * the user still learns the remote differs; a timeout is not warned about here
  */
 export function warnDroppedPushFailure(error: unknown): void {
   if (error instanceof SyncTimeoutError) return;
