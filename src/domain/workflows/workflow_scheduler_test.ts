@@ -19,7 +19,11 @@
 
 import { assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
-import { canonicalFireTime, WorkflowScheduler } from "./workflow_scheduler.ts";
+import {
+  canonicalFireTime,
+  nextFireTime,
+  WorkflowScheduler,
+} from "./workflow_scheduler.ts";
 import { Cron } from "croner";
 import type { WorkflowId } from "./workflow_id.ts";
 
@@ -149,4 +153,35 @@ Deno.test("canonicalFireTime: snaps forward when timer fires early", () => {
   assertEquals(result.toISOString(), "2026-08-01T15:00:00.000Z");
 
   cron.stop();
+});
+
+Deno.test("canonicalFireTime: inside the repeated fall-back hour never resolves to a slot before its lookback", () => {
+  const cron = new Cron("*/15 * * * *", {
+    timezone: "America/Chicago",
+    paused: true,
+  });
+
+  const inRepeatedHour = new Date("2026-11-01T07:15:00.000Z");
+  const result = canonicalFireTime(cron, inRepeatedHour);
+  assertEquals(
+    result.getTime() >= inRepeatedHour.getTime() - 120_000,
+    true,
+  );
+  assertEquals(result, inRepeatedHour);
+
+  const nextFire = new Date("2026-11-01T08:00:00.050Z");
+  assertEquals(
+    canonicalFireTime(cron, nextFire).toISOString(),
+    "2026-11-01T08:00:00.000Z",
+  );
+
+  cron.stop();
+});
+
+Deno.test("nextFireTime: gives the first slot strictly after the instant, or null for an invalid expression", () => {
+  assertEquals(
+    nextFireTime("0 * * * *", new Date(2026, 7, 1, 15, 0, 0, 0)),
+    new Date(2026, 7, 1, 16, 0, 0, 0),
+  );
+  assertEquals(nextFireTime("not a cron", new Date()), null);
 });

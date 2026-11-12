@@ -24,6 +24,7 @@
 
 import { Cron } from "croner";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
+import { nextSlotAfter } from "./cron_slots.ts";
 import type { WorkflowId } from "./workflow_id.ts";
 
 /**
@@ -98,7 +99,7 @@ export class WorkflowScheduler {
       result.push({
         workflowId,
         cronExpression: cron.getPattern()!,
-        nextRun: cron.nextRun(),
+        nextRun: nextSlotAfter(cron, new Date()),
       });
     }
     return result;
@@ -116,8 +117,15 @@ export class WorkflowScheduler {
  */
 export function canonicalFireTime(cron: Cron, now?: Date): Date {
   const ref = now ?? new Date();
-  const lookback = new Date(ref.getTime() - 120_000);
-  const runs = cron.nextRuns(200, lookback);
+  const runs: Date[] = [];
+  let cursor = new Date(ref.getTime() - 120_000);
+  while (runs.length < 200) {
+    const next = nextSlotAfter(cron, cursor);
+    if (!next) break;
+    runs.push(next);
+    if (next.getTime() > ref.getTime()) break;
+    cursor = next;
+  }
   for (let i = runs.length - 1; i >= 0; i--) {
     if (runs[i].getTime() <= ref.getTime()) {
       return runs[i];
@@ -143,7 +151,7 @@ export function effectiveSchedule(
 
 export function nextFireTime(cronExpression: string, from: Date): Date | null {
   try {
-    return new Cron(cronExpression).nextRun(from);
+    return nextSlotAfter(new Cron(cronExpression), from);
   } catch {
     return null;
   }
