@@ -50,6 +50,7 @@ import {
   type WorkerSnapshot,
 } from "./worker_gateway.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_owner.ts";
 import { errorPaths, UserError } from "../domain/errors.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
@@ -124,6 +125,7 @@ function createHarness(options?: {
     methodName: string,
     inputs: Record<string, unknown>,
   ) => Promise<void>;
+  owner?: OrchestratorOwner;
 }) {
   const pool = new Map<string, WorkerSnapshot>(
     (options?.workers ?? [snapshot({ name: "w1" })]).map((w) => [w.name, w]),
@@ -184,6 +186,7 @@ function createHarness(options?: {
         Promise.resolve();
     },
     captureEnvironment: () => ({ SHIPPED: "yes" }),
+    ...(options?.owner ? { owner: options.owner } : {}),
   });
   service.bindGateway(gateway);
 
@@ -3675,4 +3678,35 @@ Deno.test("DispatchService.setDispatchEnvAllow: the next dispatch ships the relo
   service.setDispatchEnvAllow([]);
   await service.executeRemote(stepRequest());
   assertEquals(calls[0].environmentSnapshot, {});
+});
+
+Deno.test("DispatchService: stamps its owner on the lease and the queue entry it writes", async () => {
+  const owner = { instanceId: "serve-a", pid: 4101, host: "host-1" };
+  const h = createHarness({ owner, queueTimeoutMs: 60_000 });
+  await h.service.executeRemote(stepRequest());
+  const controller = new AbortController();
+  const queued = h.service.executeRemote(stepRequest({
+    placement: { labels: { gpu: "true" }, platform: "linux" },
+    signal: controller.signal,
+  }));
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "enqueue"),
+    "the step to queue",
+  );
+  controller.abort();
+  await assertRejects(() => queued, DOMException);
+
+  for (const method of ["acquire", "enqueue"]) {
+    assertEquals(
+      h.transitions.find((t) => t.methodName === method)?.inputs.owner,
+      owner,
+    );
+  }
+});
+
+Deno.test("DispatchService: without an owner the lease records none", async () => {
+  const h = createHarness();
+  await h.service.executeRemote(stepRequest());
+  const acquire = h.transitions.find((t) => t.methodName === "acquire");
+  assertEquals("owner" in (acquire?.inputs ?? {}), false);
 });

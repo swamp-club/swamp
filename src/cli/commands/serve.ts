@@ -524,6 +524,7 @@ import {
   withStoreDeadline,
 } from "../../serve/pending_run_owner.ts";
 import type { PendingRunOwner } from "../../infrastructure/persistence/run_tracker_store.ts";
+import type { OrchestratorOwner } from "../../domain/models/worker/orchestrator_owner.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
 import { ComponentHealthChecker } from "../../serve/component_health_checker.ts";
 import { HealthCollector } from "../../serve/health_collector.ts";
@@ -4126,6 +4127,12 @@ export const serveCommand = new Command()
       repoContext,
       dispatches: dispatchRegistry,
     });
+    const instanceId = crypto.randomUUID();
+    const pendingRunOwner: PendingRunOwner = {
+      instanceId,
+      pid: Deno.pid,
+      host: processHostIdentity(),
+    };
     const bundleRegistry = new BundleRegistry();
     const dispatchService = new DispatchService({
       repoDir: resolvedRepoDir,
@@ -4134,6 +4141,7 @@ export const serveCommand = new Command()
       bundles: bundleRegistry,
       queueTimeoutMs,
       dispatchEnvAllow,
+      owner: pendingRunOwner,
     });
     let verifyOnEnroll = merged.verifyOnEnroll;
     const gateSession = currentAuthGateSession();
@@ -4149,6 +4157,7 @@ export const serveCommand = new Command()
     runDetached(() => gatePassKeeper?.start(GATE_PASS_KEEPER_INTERVAL_MS));
     const workerGateway = new WorkerGateway({
       acceptsWorkers: () => !isFollowing(),
+      owner: pendingRunOwner,
       repoDir: resolvedRepoDir,
       repoContext,
       capabilityService,
@@ -5743,12 +5752,6 @@ export const serveCommand = new Command()
       );
     }
 
-    const instanceId = crypto.randomUUID();
-    const pendingRunOwner: PendingRunOwner = {
-      instanceId,
-      pid: Deno.pid,
-      host: processHostIdentity(),
-    };
     // the advertised address when given; otherwise the listener's, left out
     // when a wildcard or loopback bind names nothing another host can reach,
     // with an IPv6 literal bracketed for the URL
@@ -6092,6 +6095,22 @@ export const serveCommand = new Command()
         runningRuns.push(marked);
       }
     }
+    // only instances with a remote control plane write heartbeats
+    const heartbeatStore = hasRemoteControlPlane
+      ? controlPlaneStore
+      : undefined;
+    const ownerLiveness = (unjudgedOwner: "alive" | "gone") =>
+      pendingOwnerLiveness({
+        instanceId,
+        unjudgedOwner,
+        ...(heartbeatStore ? { controlPlaneStore: heartbeatStore } : {}),
+        ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
+      });
+    const bootOwnerAlive = ownerLiveness("gone");
+    const sweepOwnerAlive = ownerLiveness("alive");
+    // owners whose leases, queued dispatches and worker records the sweep left
+    // to them; the replay pass settles each one's records once it is gone
+    const deferredRecordOwners = new Map<string, OrchestratorOwner>();
     // the boot reap and method-run settle run in root units so saves stage into
     // a root, not signalChange's fallback; only the leader settles at boot, and
     // a new leader settles what others left
@@ -6197,7 +6216,21 @@ export const serveCommand = new Command()
       logger.info("Boot: sweeping stale records");
       const swept = await sweepStaleRecords({
         repoContext,
+        ownerAlive: bootOwnerAlive,
       });
+      // a promoted leader's own records are live by definition, not a peer's
+      const peers = swept.deferredOwners.filter((owner) =>
+        owner.instanceId !== instanceId
+      );
+      for (const owner of peers) {
+        deferredRecordOwners.set(owner.instanceId, owner);
+      }
+      if (peers.length > 0) {
+        logger.info(
+          "Boot: left the records of {count} live serve process(es) to them; settling them once each stops",
+          { count: peers.length },
+        );
+      }
       if (swept.leases + swept.pendingDispatches + swept.workers > 0) {
         logger.info(
           "Boot reconciliation: swept {leases} lease(s), {pendingDispatches} pending dispatch(es), {workers} worker(s)",
@@ -10058,19 +10091,6 @@ export const serveCommand = new Command()
       );
     }
 
-    // only instances with a remote control plane write heartbeats
-    const heartbeatStore = hasRemoteControlPlane
-      ? controlPlaneStore
-      : undefined;
-    const ownerLiveness = (unjudgedOwner: "alive" | "gone") =>
-      pendingOwnerLiveness({
-        instanceId,
-        unjudgedOwner,
-        ...(heartbeatStore ? { controlPlaneStore: heartbeatStore } : {}),
-        ...(staleTtlMs !== undefined ? { staleTtlMs } : {}),
-      });
-    const bootOwnerAlive = ownerLiveness("gone");
-    const sweepOwnerAlive = ownerLiveness("alive");
     const sweepStore = controlPlaneStore
       ? withStoreDeadline(controlPlaneStore)
       : undefined;
@@ -10113,7 +10133,29 @@ export const serveCommand = new Command()
       });
     // the control plane is listed on one pass in 12, about once a minute
     let sweepPasses = 0;
+    const settleRecordsOfGoneOwners = async (): Promise<void> => {
+      for (const owner of [...deferredRecordOwners.values()]) {
+        if (await sweepOwnerAlive(owner)) continue;
+        const swept = await sweepStaleRecords({
+          repoContext,
+          onlyOwner: owner.instanceId,
+        });
+        deferredRecordOwners.delete(owner.instanceId);
+        logger.info(
+          "Settled {leases} lease(s), {pendingDispatches} pending dispatch(es) and {workers} worker(s) a stopped serve process left",
+          {
+            leases: swept.leases,
+            pendingDispatches: swept.pendingDispatches,
+            workers: swept.workers,
+          },
+        );
+      }
+    };
     const replayLeftByPeers = async (): Promise<void> => {
+      await settleRecordsOfGoneOwners().catch((error) => {
+        logger
+          .warn`Settling the records a stopped serve process left failed; retrying on the next pass: ${error}`;
+      });
       sweepPasses++;
       const replayed = await replayPending(
         new Set<string>(),

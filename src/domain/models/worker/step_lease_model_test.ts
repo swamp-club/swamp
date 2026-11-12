@@ -208,3 +208,14 @@ Deno.test("parseStoredLease: a missing lease fails loudly", () => {
     "Step lease 'nope' does not exist",
   );
 });
+
+Deno.test("startLease: records the owning serve process when the args name one", () => {
+  const owner = { instanceId: "serve-a", pid: 4101, host: "host-1" };
+  assertEquals(startLease({ ...acquireArgs, owner }, null, NOW).owner, owner);
+  assertEquals("owner" in startLease(acquireArgs, null, NOW), false);
+});
+
+Deno.test("parseStoredLease: a malformed owner reads as none", () => {
+  const stored = { ...startLease(acquireArgs, null, NOW), owner: { pid: 0 } };
+  assertEquals(parseStoredLease("l-1", stored).owner, undefined);
+});

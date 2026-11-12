@@ -782,6 +782,20 @@ left stale by a crash or unclean shutdown:
 - **Workers** not in `disconnected` status → `disconnected` (no live WebSocket
   session backs them).
 
+Each record names the serve process that wrote it (`owner`: instance id, pid
+and host identity, `src/domain/models/worker/orchestrator_owner.ts`). The sweep
+settles only records whose owner is gone. A serve started beside a live one (an
+overlapping restart, or a team-mode promotion while the previous leader still
+runs) leaves that process's leases, queued dispatches and workers as they are,
+judged as queued runs are: on this host by pid, elsewhere by a fresh heartbeat.
+At boot an owner nothing can judge counts as gone. The pass that replays queued
+runs every 5 s then checks each owner it left records to, and settles that
+owner's records once it is gone. Only owners seen at boot are rechecked, so
+records a peer writes later and leaves by dying are settled at the next boot.
+Records written by a release that names no owner are settled at once, as
+before, so a restart from such a release still expires the old process's
+records.
+
 The sweep writes each record's next version directly
 (`sweepStaleRecords` in `src/serve/boot_reconciliation.ts`), in a root unit of
 work with no push, before any transition can run, so it keeps the sole-writer

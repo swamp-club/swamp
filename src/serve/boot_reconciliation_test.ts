@@ -176,7 +176,12 @@ Deno.test("sweepStaleRecords: clean boot returns zeros with no writes", async ()
   const h = createHarness(new Map());
   const result = await sweepStaleRecords(h.deps);
 
-  assertEquals(result, { leases: 0, pendingDispatches: 0, workers: 0 });
+  assertEquals(result, {
+    leases: 0,
+    pendingDispatches: 0,
+    workers: 0,
+    deferredOwners: [],
+  });
   assertEquals(h.saves.length, 0);
 });
 
@@ -807,7 +812,12 @@ Deno.test("sweepStaleRecords: sweeps all three model types together", async () =
 
   const result = await sweepStaleRecords(h.deps);
 
-  assertEquals(result, { leases: 1, pendingDispatches: 1, workers: 1 });
+  assertEquals(result, {
+    leases: 1,
+    pendingDispatches: 1,
+    workers: 1,
+    deferredOwners: [],
+  });
   assertEquals(h.saves.length, 3);
 });
 
@@ -3400,4 +3410,129 @@ Deno.test("replayPendingRuns: ownCronOnly leaves an own cron run that is only on
   assertEquals(await replayPendingRuns(h.deps), 1);
   assertEquals(h.cronReplays.map((r) => r.pendingRunId), ["pr-local"]);
   assertEquals(controlPlaneStore.deleted, []);
+});
+
+const OWNER_A = { instanceId: "owner-a", pid: 4101, host: "host-1" };
+const OWNER_B = { instanceId: "owner-b", pid: 4102, host: "host-1" };
+
+function ownedRecords(owner: unknown) {
+  const withOwner = (attrs: Record<string, unknown>) =>
+    owner === undefined ? attrs : { ...attrs, owner };
+  return new Map([
+    ["swamp/step-lease", [{
+      modelName: "leases",
+      dataName: "lease-l1",
+      modelType: "swamp/step-lease",
+      attrs: withOwner({ leaseId: "l1", state: "active" }),
+    }]],
+    ["swamp/pending-dispatch", [{
+      modelName: "pending",
+      dataName: "pending-q1",
+      modelType: "swamp/pending-dispatch",
+      attrs: withOwner({ queueId: "q1", state: "waiting" }),
+    }]],
+    ["swamp/worker", [{
+      modelName: "worker-w1",
+      dataName: "state-main",
+      modelType: "swamp/worker",
+      attrs: withOwner({ name: "w1", status: "busy" }),
+    }]],
+  ]);
+}
+
+Deno.test("sweepStaleRecords: leaves a live owner's lease, queued dispatch and worker to it", async () => {
+  const h = createHarness(ownedRecords(OWNER_A));
+  const result = await sweepStaleRecords({
+    ...h.deps,
+    ownerAlive: (owner) => Promise.resolve(owner.instanceId === "owner-a"),
+  });
+
+  assertEquals(h.saves, []);
+  assertEquals(result, {
+    leases: 0,
+    pendingDispatches: 0,
+    workers: 0,
+    deferredOwners: [OWNER_A],
+  });
+});
+
+Deno.test("sweepStaleRecords: settles the records of an owner judged gone", async () => {
+  const h = createHarness(ownedRecords(OWNER_A));
+  const result = await sweepStaleRecords({
+    ...h.deps,
+    ownerAlive: () => Promise.resolve(false),
+  });
+
+  assertEquals(
+    h.saves.map((s) => s.content.state ?? s.content.status),
+    ["expired", "orphaned", "disconnected"],
+  );
+  assertEquals(result.deferredOwners, []);
+});
+
+Deno.test("sweepStaleRecords: settles ownerless and malformed-owner records whatever the judge says", async () => {
+  for (const owner of [undefined, { instanceId: "", pid: -1 }, "owner-a"]) {
+    const h = createHarness(ownedRecords(owner));
+    const result = await sweepStaleRecords({
+      ...h.deps,
+      ownerAlive: () => Promise.resolve(true),
+    });
+    assertEquals(h.saves.length, 3);
+    assertEquals(result.deferredOwners, []);
+  }
+});
+
+Deno.test("sweepStaleRecords: an owner the judge cannot judge counts as alive", async () => {
+  const h = createHarness(ownedRecords(OWNER_A));
+  const result = await sweepStaleRecords({
+    ...h.deps,
+    ownerAlive: () => Promise.reject(new Error("control plane unreachable")),
+  });
+
+  assertEquals(h.saves, []);
+  assertEquals(result.deferredOwners, [OWNER_A]);
+});
+
+Deno.test("sweepStaleRecords: judges each owner once per sweep", async () => {
+  const h = createHarness(ownedRecords(OWNER_A));
+  const judged: string[] = [];
+  await sweepStaleRecords({
+    ...h.deps,
+    ownerAlive: (owner) => {
+      judged.push(owner.instanceId);
+      return Promise.resolve(true);
+    },
+  });
+
+  assertEquals(judged, ["owner-a"]);
+});
+
+Deno.test("sweepStaleRecords: with onlyOwner settles that owner's records and no others", async () => {
+  const records = ownedRecords(OWNER_A);
+  for (const [type, items] of ownedRecords(OWNER_B)) {
+    records.get(type)!.push(
+      ...items.map((item) => ({ ...item, dataName: `${item.dataName}-b` })),
+    );
+  }
+  for (const [type, items] of ownedRecords(undefined)) {
+    records.get(type)!.push(
+      ...items.map((item) => ({ ...item, dataName: `${item.dataName}-none` })),
+    );
+  }
+  const h = createHarness(records);
+  const result = await sweepStaleRecords({ ...h.deps, onlyOwner: "owner-a" });
+
+  assertEquals(
+    h.saves.map((s) => (s.content.owner as { instanceId: string }).instanceId),
+    ["owner-a", "owner-a", "owner-a"],
+  );
+  assertEquals(result.leases + result.pendingDispatches + result.workers, 3);
+});
+
+Deno.test("sweepStaleRecords: without a judge settles owned records as before", async () => {
+  const h = createHarness(ownedRecords(OWNER_A));
+  const result = await sweepStaleRecords(h.deps);
+
+  assertEquals(h.saves.length, 3);
+  assertEquals(result.deferredOwners, []);
 });

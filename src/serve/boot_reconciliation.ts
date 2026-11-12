@@ -23,6 +23,10 @@ import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
 import { PENDING_DISPATCH_MODEL_TYPE } from "../domain/models/worker/pending_dispatch_model.ts";
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
+import {
+  type OrchestratorOwner,
+  OrchestratorOwnerSchema,
+} from "../domain/models/worker/orchestrator_owner.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
 import { isUnreadableContentError } from "../domain/datastore/unreadable_content.ts";
@@ -84,12 +88,18 @@ const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
 export interface BootReconciliationDeps {
   repoContext: RepositoryContext;
+  /** absent, every record is settled whoever owns it */
+  ownerAlive?: PendingOwnerAlive;
+  /** only records naming this owning instance are considered */
+  onlyOwner?: string;
 }
 
 export interface SweepResult {
   leases: number;
   pendingDispatches: number;
   workers: number;
+  /** owners judged alive, whose records were left to them */
+  deferredOwners: OrchestratorOwner[];
 }
 
 export interface HydrateLocalCacheDeps {
@@ -213,8 +223,36 @@ export function sweepStaleRecords(
 async function sweepStaleRecordsInRoot(
   deps: BootReconciliationDeps,
 ): Promise<SweepResult> {
-  const result: SweepResult = { leases: 0, pendingDispatches: 0, workers: 0 };
+  const result: SweepResult = {
+    leases: 0,
+    pendingDispatches: 0,
+    workers: 0,
+    deferredOwners: [],
+  };
   const repo = deps.repoContext.unifiedDataRepo;
+  const verdicts = new Map<string, Promise<boolean>>();
+  // a record whose owner lives is that owner's; each owner is judged once, and
+  // a judge that fails counts the owner alive so live work is never expired
+  const leftToOwner = async (attrs: Record<string, unknown>) => {
+    const parsed = OrchestratorOwnerSchema.safeParse(attrs.owner);
+    const owner = parsed.success ? parsed.data : undefined;
+    if (deps.onlyOwner !== undefined && owner?.instanceId !== deps.onlyOwner) {
+      return true;
+    }
+    if (owner === undefined || deps.ownerAlive === undefined) return false;
+    let verdict = verdicts.get(owner.instanceId);
+    if (verdict === undefined) {
+      verdict = deps.ownerAlive(owner).catch(() => true);
+      verdicts.set(owner.instanceId, verdict);
+    }
+    if (!(await verdict)) return false;
+    if (
+      !result.deferredOwners.some((o) => o.instanceId === owner.instanceId)
+    ) {
+      result.deferredOwners.push(owner);
+    }
+    return true;
+  };
 
   for (
     const { attrs, modelId, data: existing } of await loadAttrsForType(
@@ -225,6 +263,7 @@ async function sweepStaleRecordsInRoot(
     if (attrs.state !== "active") continue;
     const leaseId = attrs.leaseId;
     if (typeof leaseId !== "string") continue;
+    if (await leftToOwner(attrs)) continue;
     try {
       const { data, content } = writeData(existing, {
         ...attrs,
@@ -251,6 +290,7 @@ async function sweepStaleRecordsInRoot(
     if (attrs.state !== "waiting") continue;
     const queueId = attrs.queueId;
     if (typeof queueId !== "string") continue;
+    if (await leftToOwner(attrs)) continue;
     try {
       const { data, content } = writeData(existing, {
         ...attrs,
@@ -280,6 +320,7 @@ async function sweepStaleRecordsInRoot(
     if (attrs.status === "disconnected") continue;
     const workerName = attrs.name;
     if (typeof workerName !== "string") continue;
+    if (await leftToOwner(attrs)) continue;
     try {
       const now = new Date().toISOString();
       const { data, content } = writeData(existing, {
