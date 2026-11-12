@@ -39,14 +39,6 @@
   border: 1px solid var(--info);
 }
 
-.sw-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 12px;
-  font-size: 0.8rem;
-  color: var(--text-2);
-}
-
 .sw-muted {
   color: var(--text-2);
 }
@@ -215,12 +207,96 @@
 }
 
 .sw-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 
 .sw-candidates {
   overflow: hidden;
+}
+
+.sw-cand-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sw-assessed {
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.sw-has-tip {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+.sw-tablist {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+}
+
+.sw-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sw-tab:hover {
+  color: var(--text-1);
+}
+
+.sw-tab.active {
+  background: var(--surface);
+  color: var(--text-1);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-1) 12%, transparent);
+}
+
+.sw-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.sw-tab-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 0.7rem;
+  line-height: 18px;
+  text-align: center;
+  color: var(--accent-hover);
+  background: var(--accent-subtle);
+}
+
+.sw-panel,
+.sw-built-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.sw-built {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .sw-scroll {
@@ -295,6 +371,16 @@
   color: var(--accent);
 }
 
+/* Tonal, not solid: a solid accent fill is too loud for a per-row action. */
+.sw-icon-btn,
+/* Tonal, not solid: a solid accent fill is too loud for a per-row action. */
+.sw-icon-btn,
+.sw-btn-primary {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-subtle);
+  color: var(--accent-hover);
+}
+
 .sw-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -303,14 +389,13 @@
   width: 34px;
   height: 34px;
   border-radius: 8px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--sw-on-accent, #fff);
   cursor: pointer;
 }
 
-.sw-icon-btn:hover {
-  background: var(--accent-hover);
+button.sw-icon-btn:hover,
+.sw-option:hover .sw-icon-btn,
+.sw-btn-primary:hover {
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface));
 }
 
 .sw-detail-row td {
@@ -446,16 +531,6 @@
   font: inherit;
   font-weight: 600;
   cursor: pointer;
-}
-
-.sw-btn-primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--sw-on-accent, #fff);
-}
-
-.sw-btn-primary:hover {
-  background: var(--accent-hover);
 }
 
 .sw-compare {

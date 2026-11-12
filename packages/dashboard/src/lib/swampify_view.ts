@@ -147,6 +147,27 @@ export function formatDay(iso: string): string {
   return new Date(iso).toISOString().slice(0, 10);
 }
 
+const SHORT_DAY = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+/** The UTC date of an ISO time, as "Nov 10". */
+export function formatShortDay(iso: string): string {
+  return SHORT_DAY.format(new Date(iso));
+}
+
+const HARNESS_NAME: Readonly<Record<string, string>> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+};
+
+/** A harness id as people say it; an unknown one as stored. */
+export function harnessName(harness: string): string {
+  return HARNESS_NAME[harness] ?? harness;
+}
+
 /** A stored share from 0 to 1, as a whole percent. */
 export function formatRate(rate: number): string {
   return `${Math.round(rate * 100)}%`;

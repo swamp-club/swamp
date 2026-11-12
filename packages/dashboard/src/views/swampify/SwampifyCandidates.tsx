@@ -19,7 +19,7 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import type {
   SwampifyCandidate,
   SwampifyOfferOption,
@@ -34,6 +34,7 @@ import {
   type SwampifyConsidered,
 } from "../../lib/swampify_view.ts";
 import { formatCount, pluralize } from "../../lib/format.ts";
+import { ReviewIcon } from "./SwampifyParts.tsx";
 
 export interface CandidatesProps {
   readonly candidates: readonly SwampifyCandidate[];
@@ -44,6 +45,8 @@ export interface CandidatesProps {
   /** False before the agent has made its offer: no placements to show. */
   readonly offered: boolean;
   readonly onReview: (optionId: string) => void;
+  /** Where the candidates came from, under the heading. */
+  readonly about?: ReactNode;
 }
 
 const LEFT_OUT: Readonly<Record<SwampifyConsidered["reason"], string>> = {
@@ -67,24 +70,6 @@ function placement(
     return rank === undefined ? "Merged" : `Merged into #${rank}`;
   }
   return LEFT_OUT[left.reason];
-}
-
-function ReviewIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5 12h14M13 6l6 6-6 6" />
-    </svg>
-  );
 }
 
 function CandidateDetail({ c }: { c: SwampifyCandidate }) {
@@ -140,17 +125,20 @@ export function CandidatesTable(props: CandidatesProps) {
   const rankOf = new Map(props.candidates.map((c) => [c.id, c.rank]));
   return (
     <section className="sw-card sw-candidates" aria-labelledby="sw-cand-h">
-      <div className="sw-section-head sw-pad">
-        <h2 id="sw-cand-h">
-          All candidates{" "}
-          <span className="sw-muted">
-            · {formatCount(props.candidates.length)}{" "}
-            found, ranked by what they cost you
+      <div className="sw-pad sw-cand-head">
+        <div className="sw-section-head">
+          <h2 id="sw-cand-h">
+            All candidates{" "}
+            <span className="sw-muted">
+              · {formatCount(props.candidates.length)}{" "}
+              found, ranked by what they cost you
+            </span>
+          </h2>
+          <span className="sw-muted sw-small">
+            Medians per run · open a row for its evidence
           </span>
-        </h2>
-        <span className="sw-muted sw-small">
-          Medians per run · open a row for its evidence
-        </span>
+        </div>
+        {props.about}
       </div>
       <div className="sw-scroll">
         <table className="sw-table">

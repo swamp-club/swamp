@@ -30,7 +30,8 @@ import { LoadError } from "../../components/LoadError.tsx";
 import type { SwampifyCandidateSet } from "../../lib/agent_sessions/swampify.ts";
 import {
   consideredById,
-  formatDay,
+  formatShortDay,
+  harnessName,
   offerView,
   optionByCandidate,
   setFullness,
@@ -40,35 +41,50 @@ import { CandidatesTable } from "./SwampifyCandidates.tsx";
 import { OptionCards } from "./SwampifyOptions.tsx";
 import { OptionReview } from "./SwampifyReview.tsx";
 import { SkipNotice } from "./SwampifyParts.tsx";
+import { builtOptions, BuiltPane } from "./SwampifyBuilt.tsx";
 
-function SetMeta({ set }: { set: SwampifyCandidateSet }) {
+const LIST = new Intl.ListFormat("en-US", { type: "conjunction" });
+
+function Paths({ paths }: { paths: readonly string[] }) {
+  return (
+    <span className="sw-has-tip" title={paths.join("\n")}>
+      {pluralize(paths.length, "path")}
+    </span>
+  );
+}
+
+/** Where the candidates came from, as one sentence. */
+function Assessed({ set }: { set: SwampifyCandidateSet }) {
   const { scope, window } = set;
   return (
-    <p className="sw-meta">
-      <span
-        title={`${formatAbsoluteTime(window.since)} to ${
-          formatAbsoluteTime(window.until)
-        }`}
-      >
-        Sessions from {formatDay(window.since)} to {formatDay(window.until)}
-      </span>
-      <span>{scope.harnesses.join(", ")}</span>
-      <span title={scope.all ? undefined : scope.include.join("\n")}>
-        {scope.all
-          ? "every repo"
-          : pluralize(scope.include.length, "included path")}
-      </span>
+    <p className="sw-assessed">
+      Assessed{" "}
+      <time title={formatAbsoluteTime(set.generatedAt)}>
+        {formatShortDay(set.generatedAt)}
+      </time>{" "}
+      from {LIST.format(scope.harnesses.map(harnessName))} sessions between{" "}
+      <time title={formatAbsoluteTime(window.since)}>
+        {formatShortDay(window.since)}
+      </time>{" "}
+      and{" "}
+      <time title={formatAbsoluteTime(window.until)}>
+        {formatShortDay(window.until)}
+      </time>, in {scope.all ? "every repo" : <Paths paths={scope.include} />}
       {scope.exclude.length > 0 && (
-        <span title={scope.exclude.join("\n")}>
-          {pluralize(scope.exclude.length, "excluded path")}
-        </span>
-      )}
-      <span title={formatAbsoluteTime(set.generatedAt)}>
-        assessed {formatDay(set.generatedAt)}
-      </span>
+        <>
+          {" "}except <Paths paths={scope.exclude} />
+        </>
+      )}.
     </p>
   );
 }
+
+type Tab = "candidates" | "built";
+
+const TABS: ReadonlyArray<readonly [Tab, string]> = [
+  ["candidates", "To swampify"],
+  ["built", "Built"],
+];
 
 export interface SwampifyPageProps {
   readonly state: SwampifyState;
@@ -77,6 +93,7 @@ export interface SwampifyPageProps {
   /** Tests render an option's review or open rows from the start. */
   readonly initialOptionId?: string;
   readonly initialOpen?: string;
+  readonly initialTab?: Tab;
 }
 
 /**
@@ -89,6 +106,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
     props.initialOptionId ?? null,
   );
   const [open, setOpen] = useState<string | null>(props.initialOpen ?? null);
+  const [tab, setTab] = useState<Tab>(props.initialTab ?? "candidates");
   const setRow = state.setRow.value;
   const setReading = state.set.value;
   const set = setReading?.kind === "record" ? setReading.record : null;
@@ -100,6 +118,11 @@ export function SwampifyPage(props: SwampifyPageProps) {
   );
   const options = useMemo(() => optionByCandidate(offer), [offer]);
   const considered = useMemo(() => consideredById(offer), [offer]);
+  const comparisons = state.comparisons.value;
+  const built = useMemo(() => builtOptions(view, comparisons), [
+    view,
+    comparisons,
+  ]);
 
   const selected = view?.options.find((o) => o.option.id === optionId);
   if (selected && view && state.offerRow.value) {
@@ -108,7 +131,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
         option={selected}
         offer={view}
         behavior={state.offerRow.value.modelName}
-        comparison={state.comparisons.value.get(selected.option.id)}
+        comparison={comparisons.get(selected.option.id)}
         records={props.records}
         onLoadComparison={props.onLoadComparison}
         onBack={() => setOptionId(null)}
@@ -143,7 +166,6 @@ export function SwampifyPage(props: SwampifyPageProps) {
             Turn prompts and tool calls into Swamp powered automation
           </p>
         </div>
-        {set && <SetMeta set={set} />}
       </div>
 
       {errors.map(([subject, error, retry], i) =>
@@ -156,71 +178,127 @@ export function SwampifyPage(props: SwampifyPageProps) {
           />
         )
       )}
-      {setRow === undefined && !state.setRow.error && (
-        <div className="sw-card sw-note">
-          {state.setRow.loading
-            ? "Loading the assessment…"
-            : "No assessment yet. Ask your agent to swampify your past sessions, or choose Swampify in swamp start."}
-        </div>
-      )}
-      {state.set.loading && setReading === null && setRow !== undefined && (
-        <div className="sw-card sw-note">Loading the assessment…</div>
-      )}
-      {setReading?.kind === "skipped" && (
-        <SkipNotice item="candidate set" skipped={setReading} />
-      )}
-      {offerReading?.kind === "skipped" && (
-        <SkipNotice item="offer" skipped={offerReading} />
-      )}
-      {state.comparisonsLimited && (
-        <div className="sw-card sw-note">
-          More comparisons exist than this page reads; some options may show
-          none.
-        </div>
-      )}
+      <div className="sw-tablist" role="tablist" aria-label="Swampify view">
+        {TABS.map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            id={`sw-tab-${key}`}
+            aria-selected={tab === key}
+            aria-controls={`sw-panel-${key}`}
+            tabIndex={tab === key ? 0 : -1}
+            className={`sw-tab${tab === key ? " active" : ""}`}
+            onClick={() => setTab(key)}
+            onKeyDown={(e) => {
+              if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+              e.preventDefault();
+              const next = key === "candidates" ? "built" : "candidates";
+              setTab(next);
+              document.getElementById(`sw-tab-${next}`)?.focus();
+            }}
+          >
+            {label}
+            {key === "built" && built.length > 0 && (
+              <span className="sw-tab-count">{built.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
 
-      {view && (
-        <OptionCards
-          view={view}
-          comparisons={state.comparisons.value}
-          onOpen={setOptionId}
-        />
-      )}
-      {!view && set && set.candidates.length > 0 &&
-        offerReading?.kind !== "skipped" && !state.offer.loading && (
-        <div className="sw-card sw-note">
-          <strong>Your agent hasn't made its offer yet</strong>
-          <span>
-            It reads a few example sessions for the top candidates, merges the
-            ones that are the same chore, and offers three to five. The
-            candidates it found are below.
-          </span>
-        </div>
-      )}
+      {tab === "candidates"
+        ? (
+          <div
+            id="sw-panel-candidates"
+            role="tabpanel"
+            aria-labelledby="sw-tab-candidates"
+            className="sw-panel"
+          >
+            {setRow === undefined && !state.setRow.error && (
+              <div className="sw-card sw-note">
+                {state.setRow.loading
+                  ? "Loading the assessment…"
+                  : "No assessment yet. Ask your agent to swampify your past sessions, or choose Swampify in swamp start."}
+              </div>
+            )}
+            {state.set.loading && setReading === null && setRow !== undefined &&
+              <div className="sw-card sw-note">Loading the assessment…</div>}
+            {setReading?.kind === "skipped" && (
+              <SkipNotice item="candidate set" skipped={setReading} />
+            )}
+            {offerReading?.kind === "skipped" && (
+              <SkipNotice item="offer" skipped={offerReading} />
+            )}
 
-      {fullness === "empty" && (
-        <div className="sw-card sw-note">
-          Nothing repeated often enough in this window to offer.
-        </div>
-      )}
-      {fullness === "thin" && (
-        <div className="sw-card sw-note">
-          A thin assessment: only{" "}
-          {pluralize(set?.candidates.length ?? 0, "chore")}{" "}
-          repeated often enough to list.
-        </div>
-      )}
-      {set && set.candidates.length > 0 && (
-        <CandidatesTable
-          candidates={set.candidates}
-          open={open}
-          onToggle={(id) => setOpen((current) => current === id ? null : id)}
-          options={options}
-          considered={considered}
-          offered={view !== null}
-          onReview={setOptionId}
-        />
-      )}
+            {view && (
+              <OptionCards
+                view={view}
+                options={view.options.filter((o) => !built.includes(o))}
+                onOpen={setOptionId}
+              />
+            )}
+            {!view && set && set.candidates.length > 0 &&
+              offerReading?.kind !== "skipped" && !state.offer.loading && (
+              <div className="sw-card sw-note">
+                <strong>Your agent hasn't made its offer yet</strong>
+                <span>
+                  It reads a few example sessions for the top candidates, merges
+                  the ones that are the same chore, and offers three to five.
+                  The candidates it found are below.
+                </span>
+              </div>
+            )}
+
+            {fullness === "empty" && (
+              <div className="sw-card sw-note">
+                Nothing repeated often enough in this window to offer.
+              </div>
+            )}
+            {fullness === "thin" && (
+              <div className="sw-card sw-note">
+                A thin assessment: only{" "}
+                {pluralize(set?.candidates.length ?? 0, "chore")}{" "}
+                repeated often enough to list.
+              </div>
+            )}
+            {set && set.candidates.length > 0 && (
+              <CandidatesTable
+                candidates={set.candidates}
+                open={open}
+                onToggle={(id) =>
+                  setOpen((current) => current === id ? null : id)}
+                options={options}
+                considered={considered}
+                offered={view !== null}
+                onReview={setOptionId}
+                about={<Assessed set={set} />}
+              />
+            )}
+          </div>
+        )
+        : (
+          <div
+            id="sw-panel-built"
+            role="tabpanel"
+            aria-labelledby="sw-tab-built"
+            className="sw-panel"
+          >
+            {state.comparisonsLimited && (
+              <div className="sw-card sw-note">
+                More comparisons exist than this page reads; some options may
+                show none.
+              </div>
+            )}
+            <BuiltPane
+              view={view}
+              options={built}
+              comparisons={comparisons}
+              records={props.records}
+              onLoadComparison={props.onLoadComparison}
+              onOpen={setOptionId}
+            />
+          </div>
+        )}
     </div>
   );
 }

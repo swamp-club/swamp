@@ -19,20 +19,16 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import type { SwampifyRow } from "../../client/swampify.ts";
 import type { SwampifyCandidate } from "../../lib/agent_sessions/swampify.ts";
 import {
   formatRate,
   formatTokens,
+  harnessName,
   type OfferView,
   type OptionView,
 } from "../../lib/swampify_view.ts";
 import { formatCount, pluralize } from "../../lib/format.ts";
-
-const READER: Readonly<Record<string, string>> = {
-  "claude-code": "Claude Code",
-  codex: "Codex",
-};
+import { ReviewIcon } from "./SwampifyParts.tsx";
 
 /** The option's candidates the shown set holds, best ranked first. */
 export function foundCandidates(option: OptionView): SwampifyCandidate[] {
@@ -50,10 +46,9 @@ export function optionStatus(
 }
 
 function OptionCard(
-  { option, offer, compared, onOpen }: {
+  { option, offer, onOpen }: {
     option: OptionView;
     offer: OfferView;
-    compared: boolean;
     onOpen: () => void;
   },
 ) {
@@ -102,24 +97,25 @@ function OptionCard(
         } · from ${pluralize(count, "candidate")}`}
       </span>
       <span className="sw-cta">
-        {status === "Built" && compared
-          ? "See the comparison →"
-          : "Review and build →"}
+        <span className="sw-icon-btn" aria-hidden="true">
+          <ReviewIcon />
+        </span>
+        Review and build
       </span>
     </button>
   );
 }
 
-/** The offer as cards, one per option, ahead of the candidates. */
+/** The offer as cards, one per option still to build, ahead of the candidates. */
 export function OptionCards(
-  { view, comparisons, onOpen }: {
+  { view, options, onOpen }: {
     view: OfferView;
-    comparisons: ReadonlyMap<string, SwampifyRow>;
+    options: readonly OptionView[];
     onOpen: (optionId: string) => void;
   },
 ) {
   const { offer } = view;
-  const reader = READER[offer.reading.harness] ?? offer.reading.harness;
+  const reader = harnessName(offer.reading.harness);
   return (
     <section className="sw-offer" aria-labelledby="sw-offer-h">
       <div className="sw-section-head">
@@ -143,17 +139,24 @@ export function OptionCards(
           You declined this offer. You can still build one of its options.
         </div>
       )}
-      <div className="sw-options">
-        {view.options.map((option) => (
-          <OptionCard
-            key={option.option.id}
-            option={option}
-            offer={view}
-            compared={comparisons.has(option.option.id)}
-            onOpen={() => onOpen(option.option.id)}
-          />
-        ))}
-      </div>
+      {options.length === 0
+        ? (
+          <div className="sw-card sw-note">
+            Every option in this offer is built; see Built.
+          </div>
+        )
+        : (
+          <div className="sw-options">
+            {options.map((option) => (
+              <OptionCard
+                key={option.option.id}
+                option={option}
+                offer={view}
+                onOpen={() => onOpen(option.option.id)}
+              />
+            ))}
+          </div>
+        )}
     </section>
   );
 }
