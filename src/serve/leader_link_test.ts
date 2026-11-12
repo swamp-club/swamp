@@ -22,6 +22,7 @@ import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
 import {
   forwardedHeaders,
   forwardNeverSent,
+  FROZEN_LEADER_PROBE_MS,
   LeaderLink,
   leaderTarget,
   notLeaderResponse,
@@ -415,4 +416,194 @@ Deno.test("LeaderLink.forward: reads trustProxy on every forward, so a reload th
   trustProxy = true;
   await forwarder.forward(request(), { clientIp: "10.0.0.7" });
   assertEquals(forwardedFor, ["10.0.0.7", "198.51.100.66, 10.0.0.7"]);
+});
+
+const CHANGES_URL =
+  "https://node-b.internal:9090/api/v1/datastore/_default/changes";
+
+function frozenLink(
+  fetchImpl: typeof fetch,
+  options: { leader?: () => ServeLeader; now?: () => number } = {},
+): LeaderLink {
+  return new LeaderLink({
+    leader: options.leader ?? (() => LEADER),
+    createClient: () => undefined,
+    responseBaseMs: 20,
+    now: options.now ?? (() => 0),
+    fetch: fetchImpl,
+  });
+}
+
+async function forwardOnce(
+  forwarder: LeaderLink,
+): Promise<{ status: number; inFlight: unknown; code: unknown }> {
+  const reply = await forwarder.forward(new Request(CHANGES_URL));
+  if (reply.status !== 503) {
+    await reply.body?.cancel();
+    return { status: reply.status, inFlight: undefined, code: undefined };
+  }
+  const json = await reply.json();
+  return { status: reply.status, inFlight: json.inFlight, code: json.code };
+}
+
+const FAST_REFUSAL = {
+  status: 503,
+  inFlight: undefined,
+  code: "serve_not_leader",
+};
+
+Deno.test("LeaderLink.forward: after a leader refused a connection, forwards to it are refused at once as never sent", async () => {
+  let calls = 0;
+  const forwarder = frozenLink(() => {
+    calls++;
+    return Promise.reject(
+      new TypeError("tcp connect error: Connection refused"),
+    );
+  });
+  try {
+    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
+    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
+    assertEquals(calls, 1);
+  } finally {
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.forward: one forward a slow leader left unanswered does not stop the next", async () => {
+  let now = 0;
+  let calls = 0;
+  const forwarder = frozenLink(
+    (_input, init) =>
+      ++calls === 1
+        ? neverAnswered(init?.signal)
+        : Promise.resolve(new Response("ok")),
+    { now: () => now },
+  );
+  try {
+    assertEquals((await forwardOnce(forwarder)).inFlight, true);
+    now++;
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    now++;
+    // the answer reset the count: one more unanswered is again only one
+    calls = 0;
+    assertEquals((await forwardOnce(forwarder)).inFlight, true);
+    now++;
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals(calls, 2);
+  } finally {
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.forward: forwards that waited on one stall together count as one unanswered", async () => {
+  let calls = 0;
+  const forwarder = frozenLink((_input, init) =>
+    ++calls <= 3
+      ? neverAnswered(init?.signal)
+      : Promise.resolve(new Response("ok"))
+  );
+  try {
+    const together = await Promise.all([
+      forwardOnce(forwarder),
+      forwardOnce(forwarder),
+      forwardOnce(forwarder),
+    ]);
+    assertEquals(together.map((r) => r.inFlight), [true, true, true]);
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals(calls, 4);
+  } finally {
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.forward: a leader that left two forwards in a row unanswered is refused at once until a probe gets an answer", async () => {
+  let now = 0;
+  let calls = 0;
+  let answers = false;
+  const forwarder = frozenLink((_input, init) => {
+    calls++;
+    return answers
+      ? Promise.resolve(new Response("ok"))
+      : neverAnswered(init?.signal);
+  }, { now: () => now });
+  try {
+    assertEquals((await forwardOnce(forwarder)).inFlight, true);
+    now++;
+    assertEquals((await forwardOnce(forwarder)).inFlight, true);
+    now++;
+    assertEquals(calls, 2);
+    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
+    assertEquals(calls, 2);
+
+    // a probe the leader leaves unanswered keeps it frozen
+    now += FROZEN_LEADER_PROBE_MS;
+    assertEquals((await forwardOnce(forwarder)).inFlight, true);
+    assertEquals(calls, 3);
+    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
+    assertEquals(calls, 3);
+
+    now += FROZEN_LEADER_PROBE_MS;
+    answers = true;
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals(calls, 5);
+  } finally {
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.forward: while a probe of a frozen leader waits, other forwards are refused at once", async () => {
+  let now = 0;
+  let calls = 0;
+  let release: (() => void) | undefined;
+  const forwarder = frozenLink(() => {
+    calls++;
+    if (calls === 1) {
+      return Promise.reject(
+        new TypeError("tcp connect error: Connection refused"),
+      );
+    }
+    return new Promise<Response>((resolve) => {
+      release = () => resolve(new Response("ok"));
+    });
+  }, { now: () => now });
+  try {
+    await forwardOnce(forwarder);
+    now += FROZEN_LEADER_PROBE_MS;
+    const probe = forwardOnce(forwarder);
+    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
+    assertEquals(calls, 2);
+    release?.();
+    assertEquals((await probe).status, 200);
+  } finally {
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.forward: a new leader is forwarded to at once, whatever the old one was marked", async () => {
+  let leader = LEADER;
+  const seen: string[] = [];
+  const forwarder = frozenLink((input) => {
+    const origin = new URL(String(input)).origin;
+    seen.push(origin);
+    return origin === "https://node-a.internal:9090"
+      ? Promise.reject(new TypeError("tcp connect error: Connection refused"))
+      : Promise.resolve(new Response("ok"));
+  }, { leader: () => leader });
+  try {
+    await forwardOnce(forwarder);
+    leader = {
+      ...LEADER,
+      instanceId: "instance-c",
+      fence: 4,
+      address: "https://node-c.internal:9090",
+    };
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals(seen, [
+      "https://node-a.internal:9090",
+      "https://node-c.internal:9090",
+    ]);
+  } finally {
+    forwarder.close();
+  }
 });

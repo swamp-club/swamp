@@ -512,6 +512,14 @@ function isReadSpec(spec: RequestSpec): boolean {
   return spec.method === "GET" || spec.path === "chunks/has";
 }
 
+/**
+ * a lock request refused before the leader saw it changed nothing, so it is
+ * retried like a read, but never followed: a failed follow is sent again
+ */
+function ridesRefusals(spec: RequestSpec): boolean {
+  return isReadSpec(spec) || (spec.method === "POST" && spec.path === "locks");
+}
+
 export class ServeDatastoreClient {
   readonly baseUrl: string;
   readonly namespace: string;
@@ -910,7 +918,10 @@ export class ServeDatastoreClient {
         budget,
       });
     } catch (error) {
-      if (error instanceof ServeUnreachableError && error.sent === "maybe") {
+      if (
+        (error instanceof ServeUnreachableError && error.sent === "maybe") ||
+        (error instanceof ServeNotLeaderError && error.inFlight)
+      ) {
         await this.#cancelLockRequest(budget.requestId);
       }
       throw error;
@@ -1556,7 +1567,7 @@ export class ServeDatastoreClient {
           this.#accessCheck(access);
         }
         let refusal: ServeNotLeaderError | ServeFollowerBehindError | undefined;
-        if (response.status === 503 && isReadSpec(spec)) {
+        if (response.status === 503 && ridesRefusals(spec)) {
           try {
             refusal = retryableServeRefusal(
               await this.#refusal(response.clone(), routeTemplate(spec.path)),
@@ -1596,7 +1607,7 @@ export class ServeDatastoreClient {
           await this.#delay(wait, signal);
           if (
             refusal instanceof ServeNotLeaderError && !followFailed &&
-            baseLogId !== undefined
+            baseLogId !== undefined && isReadSpec(spec)
           ) {
             origin = followableLeader(this.baseUrl, refusal.leader?.address) ??
               origin;
