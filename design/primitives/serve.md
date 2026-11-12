@@ -1926,10 +1926,11 @@ owner still lives to that owner (on this host by its pid, elsewhere by a fresh
 heartbeat). Every 5 s for as long as it runs, it reads this checkout's queued
 runs again and replays those whose owner has gone, including runs a peer
 queued after this process started; a run it replays becomes its own
-(`src/serve/pending_run_owner.ts`). Step leases, queued dispatches and worker records name
-their owner the same way, so the starting process's boot sweep leaves the old
-one's in-flight steps alone and settles them on that 5 s pass once it is gone
-(see "Boot reconciliation" in `design/enablers/remote-execution.md`). Cron fires are claimed once across the
+(`src/serve/pending_run_owner.ts`). Step leases, queued dispatches and
+worker records name their owner the same way, so the starting process's boot
+sweep leaves the old one's in-flight steps alone and settles them on that 5 s
+pass once it is gone (see "Boot reconciliation" in
+`design/enablers/remote-execution.md`). Cron fires are claimed once across the
 processes sharing a repository (`fire-records/` with `putIfAbsent`). Runs queued by
 an older serve name no owner and are replayed at boot as before. Without a
 remote control plane there are no heartbeats, so a run whose owner sits on

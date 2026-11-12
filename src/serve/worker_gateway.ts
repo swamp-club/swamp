@@ -435,6 +435,11 @@ export class WorkerGateway {
     return [...this.#workers.values()].map((entry) => this.#snapshot(entry));
   }
 
+  /** runs fn in the order of this gateway's worker writes, so no enrollment interleaves */
+  serializeWorkerWrites<T>(fn: () => Promise<T>): Promise<T> {
+    return this.#recordTransition("settle_left_workers", fn);
+  }
+
   worker(name: string): WorkerSnapshot | null {
     const entry = this.#workers.get(name);
     return entry ? this.#snapshot(entry) : null;

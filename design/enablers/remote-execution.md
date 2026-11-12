@@ -798,8 +798,13 @@ records.
 
 The sweep writes each record's next version directly
 (`sweepStaleRecords` in `src/serve/boot_reconciliation.ts`), in a root unit of
-work with no push, before any transition can run, so it keeps the sole-writer
-invariant. A failed write logs a warning and startup continues; one corrupted
+work with no push. At boot it runs before any transition can, so it keeps the
+sole-writer invariant. The later pass runs while serve takes workers, so it
+settles worker records inside the gateway's write ordering: it re-reads each
+record there and leaves one the gateway holds or that no longer names the gone
+owner, since that worker has re-enrolled with this process. A lease or queued
+dispatch is written only by its owner, so it needs no such ordering. An owner
+whose settling write failed stays on the list and is retried on the next pass. A failed write logs a warning and startup continues; one corrupted
 record cannot stop the orchestrator from serving.
 
 The sweep finishes before `Deno.serve` accepts traffic. A worker that

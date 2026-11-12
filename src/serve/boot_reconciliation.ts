@@ -92,6 +92,14 @@ export interface BootReconciliationDeps {
   ownerAlive?: PendingOwnerAlive;
   /** only records naming this owning instance are considered */
   onlyOwner?: string;
+  /**
+   * set while serve takes workers: worker records are settled inside its
+   * gateway's write ordering, re-read there, and one it holds is left alone
+   */
+  workerWrites?: {
+    serialize<T>(fn: () => Promise<T>): Promise<T>;
+    holds(workerName: string): boolean;
+  };
 }
 
 export interface SweepResult {
@@ -100,6 +108,8 @@ export interface SweepResult {
   workers: number;
   /** owners judged alive, whose records were left to them */
   deferredOwners: OrchestratorOwner[];
+  /** records whose settling write failed and was logged */
+  failed: number;
 }
 
 export interface HydrateLocalCacheDeps {
@@ -228,11 +238,13 @@ async function sweepStaleRecordsInRoot(
     pendingDispatches: 0,
     workers: 0,
     deferredOwners: [],
+    failed: 0,
   };
   const repo = deps.repoContext.unifiedDataRepo;
   const verdicts = new Map<string, Promise<boolean>>();
   // a record whose owner lives is that owner's; each owner is judged once, and
-  // a judge that fails counts the owner alive so live work is never expired
+  // a judge that throws counts the owner alive (the judge itself decides what
+  // an unreachable heartbeat means)
   const leftToOwner = async (attrs: Record<string, unknown>) => {
     const parsed = OrchestratorOwnerSchema.safeParse(attrs.owner);
     const owner = parsed.success ? parsed.data : undefined;
@@ -274,6 +286,7 @@ async function sweepStaleRecordsInRoot(
       await repo.save(STEP_LEASE_MODEL_TYPE, modelId, data, content);
       result.leases++;
     } catch (err) {
+      result.failed++;
       logger.warn("Failed to expire stale lease {leaseId}: {error}", {
         leaseId,
         error: err instanceof Error ? err.message : String(err),
@@ -300,6 +313,7 @@ async function sweepStaleRecordsInRoot(
       await repo.save(PENDING_DISPATCH_MODEL_TYPE, modelId, data, content);
       result.pendingDispatches++;
     } catch (err) {
+      result.failed++;
       logger.warn(
         "Failed to orphan stale pending dispatch {queueId}: {error}",
         {
@@ -310,39 +324,45 @@ async function sweepStaleRecordsInRoot(
     }
   }
 
-  for (
-    const { attrs, modelId, data: existing } of await loadAttrsForType(
-      repo,
-      WORKER_MODEL_TYPE,
-    )
-  ) {
-    if (existing.name !== "state-main") continue;
-    if (attrs.status === "disconnected") continue;
-    const workerName = attrs.name;
-    if (typeof workerName !== "string") continue;
-    if (await leftToOwner(attrs)) continue;
-    try {
-      const now = new Date().toISOString();
-      const { data, content } = writeData(existing, {
-        ...attrs,
-        status: "disconnected",
-        lastSeenAt: now,
-        activeDispatchIds: [],
-        disconnectedAt: now,
-        verifyFailureReason: undefined,
-      });
-      await repo.save(WORKER_MODEL_TYPE, modelId, data, content);
-      result.workers++;
-    } catch (err) {
-      logger.warn(
-        "Failed to disconnect stale worker {workerName}: {error}",
-        {
-          workerName,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      );
+  const workers = await loadAttrsForType(repo, WORKER_MODEL_TYPE);
+  const settleWorkers = async () => {
+    for (const { attrs: listed, modelId, data: existing } of workers) {
+      if (existing.name !== "state-main") continue;
+      const attrs = deps.workerWrites
+        ? await rereadAttrs(repo, WORKER_MODEL_TYPE, modelId, existing.name)
+        : listed;
+      if (attrs === null) continue;
+      if (attrs.status === "disconnected") continue;
+      const workerName = attrs.name;
+      if (typeof workerName !== "string") continue;
+      if (deps.workerWrites?.holds(workerName)) continue;
+      if (await leftToOwner(attrs)) continue;
+      try {
+        const now = new Date().toISOString();
+        const { data, content } = writeData(existing, {
+          ...attrs,
+          status: "disconnected",
+          lastSeenAt: now,
+          activeDispatchIds: [],
+          disconnectedAt: now,
+          verifyFailureReason: undefined,
+        });
+        await repo.save(WORKER_MODEL_TYPE, modelId, data, content);
+        result.workers++;
+      } catch (err) {
+        result.failed++;
+        logger.warn(
+          "Failed to disconnect stale worker {workerName}: {error}",
+          {
+            workerName,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
     }
-  }
+  };
+  if (deps.workerWrites) await deps.workerWrites.serialize(settleWorkers);
+  else await settleWorkers();
 
   return result;
 }
@@ -1587,6 +1607,25 @@ async function sweepTokenConsistencyInner(
   }
 
   return { inconsistencies };
+}
+
+async function rereadAttrs(
+  repo: FileSystemUnifiedDataRepository,
+  modelType: ModelType,
+  modelId: string,
+  dataName: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const content = await repo.getContent(modelType, modelId, dataName);
+    return content === null
+      ? null
+      : JSON.parse(new TextDecoder().decode(content)) as Record<
+        string,
+        unknown
+      >;
+  } catch {
+    return null;
+  }
 }
 
 async function loadAttrsForType(

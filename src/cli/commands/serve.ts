@@ -6108,6 +6108,13 @@ export const serveCommand = new Command()
       });
     const bootOwnerAlive = ownerLiveness("gone");
     const sweepOwnerAlive = ownerLiveness("alive");
+    // the sweep can run while workers enroll: worker records go through the
+    // gateway's write ordering, and one the gateway holds is never settled
+    const workerWrites = {
+      serialize: <T>(fn: () => Promise<T>) =>
+        workerGateway.serializeWorkerWrites(fn),
+      holds: (name: string) => workerGateway.worker(name) !== null,
+    };
     // owners whose leases, queued dispatches and worker records the sweep left
     // to them; the replay pass settles each one's records once it is gone
     const deferredRecordOwners = new Map<string, OrchestratorOwner>();
@@ -6217,6 +6224,7 @@ export const serveCommand = new Command()
       const swept = await sweepStaleRecords({
         repoContext,
         ownerAlive: bootOwnerAlive,
+        workerWrites,
       });
       // a promoted leader's own records are live by definition, not a peer's
       const peers = swept.deferredOwners.filter((owner) =>
@@ -10139,8 +10147,10 @@ export const serveCommand = new Command()
         const swept = await sweepStaleRecords({
           repoContext,
           onlyOwner: owner.instanceId,
+          workerWrites,
         });
-        deferredRecordOwners.delete(owner.instanceId);
+        // a failed save is retried on the next pass rather than left to boot
+        if (swept.failed === 0) deferredRecordOwners.delete(owner.instanceId);
         logger.info(
           "Settled {leases} lease(s), {pendingDispatches} pending dispatch(es) and {workers} worker(s) a stopped serve process left",
           {

@@ -169,7 +169,7 @@ function createHarness(
     } as unknown as RepositoryContext,
   };
 
-  return { deps, saves };
+  return { deps, saves, contentMap };
 }
 
 Deno.test("sweepStaleRecords: clean boot returns zeros with no writes", async () => {
@@ -181,6 +181,7 @@ Deno.test("sweepStaleRecords: clean boot returns zeros with no writes", async ()
     pendingDispatches: 0,
     workers: 0,
     deferredOwners: [],
+    failed: 0,
   });
   assertEquals(h.saves.length, 0);
 });
@@ -817,6 +818,7 @@ Deno.test("sweepStaleRecords: sweeps all three model types together", async () =
     pendingDispatches: 1,
     workers: 1,
     deferredOwners: [],
+    failed: 0,
   });
   assertEquals(h.saves.length, 3);
 });
@@ -3453,6 +3455,7 @@ Deno.test("sweepStaleRecords: leaves a live owner's lease, queued dispatch and w
     pendingDispatches: 0,
     workers: 0,
     deferredOwners: [OWNER_A],
+    failed: 0,
   });
 });
 
@@ -3535,4 +3538,59 @@ Deno.test("sweepStaleRecords: without a judge settles owned records as before", 
 
   assertEquals(h.saves.length, 3);
   assertEquals(result.deferredOwners, []);
+});
+
+Deno.test("sweepStaleRecords: with workerWrites settles workers inside that ordering and re-reads each record there", async () => {
+  const h = createHarness(ownedRecords(OWNER_A));
+  const key = "swamp/worker/def-worker-w1/state-main";
+  const result = await sweepStaleRecords({
+    ...h.deps,
+    onlyOwner: "owner-a",
+    workerWrites: {
+      // the worker re-enrolls here after the listing, before the settle runs
+      serialize: (fn) => {
+        h.contentMap.set(
+          key,
+          encoder.encode(
+            JSON.stringify({ name: "w1", status: "idle", owner: OWNER_B }),
+          ),
+        );
+        return fn();
+      },
+      holds: () => false,
+    },
+  });
+
+  assertEquals(result.workers, 0);
+  assertEquals(h.saves.map((s) => s.modelType), [
+    "swamp/step-lease",
+    "swamp/pending-dispatch",
+  ]);
+});
+
+Deno.test("sweepStaleRecords: leaves a worker the gateway holds", async () => {
+  const h = createHarness(ownedRecords(OWNER_A));
+  const serialized: string[] = [];
+  const result = await sweepStaleRecords({
+    ...h.deps,
+    onlyOwner: "owner-a",
+    workerWrites: {
+      serialize: (fn) => {
+        serialized.push("workers");
+        return fn();
+      },
+      holds: (name) => name === "w1",
+    },
+  });
+
+  assertEquals(serialized, ["workers"]);
+  assertEquals(result.workers, 0);
+});
+
+Deno.test("sweepStaleRecords: counts the records whose settling write failed", async () => {
+  const h = createHarness(ownedRecords(OWNER_A), { failSave: true });
+  const result = await sweepStaleRecords({ ...h.deps, onlyOwner: "owner-a" });
+
+  assertEquals(result.failed, 3);
+  assertEquals(result.leases + result.pendingDispatches + result.workers, 0);
 });

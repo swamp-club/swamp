@@ -73,7 +73,21 @@ async function withRepo(
   fn: (ctx: RepositoryContext, run: ModelMethodRunner) => Promise<void>,
 ): Promise<void> {
   const dir = await Deno.makeTempDir();
-  const ctx = createRepositoryContext({ repoDir: dir, enableIndexing: false });
+  let ctx: RepositoryContext | undefined;
+  try {
+    ctx = createRepositoryContext({ repoDir: dir, enableIndexing: false });
+    await fn(ctx, runnerFor(dir, ctx));
+  } finally {
+    ctx?.catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+function runnerFor(dir: string, ctx: RepositoryContext): ModelMethodRunner {
   const run: ModelMethodRunner = (input) =>
     runInRootUnitOfWork(ctx, { flush: undefined }, async () => {
       const deps = await createWorkerModelRunDeps(dir, ctx, {
@@ -99,16 +113,7 @@ async function withRepo(
         }
       }
     });
-  try {
-    await fn(ctx, run);
-  } finally {
-    ctx.catalogStore.close();
-    if (Deno.build.os === "windows") {
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
-    } else {
-      await Deno.remove(dir, { recursive: true });
-    }
-  }
+  return run;
 }
 
 async function stored(
@@ -141,23 +146,7 @@ async function seedServeA(
     methodRunnerWorkerStatusStore(run),
   );
   const stamp = owner === undefined ? {} : { owner };
-  await run({
-    typeArg: WORKER_MODEL_TYPE.normalized,
-    definitionName: workerDefinitionName("w1"),
-    methodName: "enroll",
-    inputs: {
-      instanceUuid: "uuid-1",
-      tokenName: "w1",
-      workerName: "w1",
-      labels: {},
-      platform: "linux",
-      arch: "x86_64",
-      swampVersion: "1.0.0",
-      protocolVersion: 7,
-      capacity: 1,
-      ...stamp,
-    },
-  });
+  await enrollW1(run, owner);
   await leases.acquire({
     leaseId: "l1",
     dispatchId: "l1",
@@ -256,5 +245,57 @@ Deno.test("sweepStaleRecords: records an older serve wrote with no owner are set
       Error,
       "only active leases record writes",
     );
+  });
+});
+
+function enrollW1(
+  run: ModelMethodRunner,
+  owner: OrchestratorOwner | undefined,
+) {
+  return run({
+    typeArg: WORKER_MODEL_TYPE.normalized,
+    definitionName: workerDefinitionName("w1"),
+    methodName: "enroll",
+    inputs: {
+      instanceUuid: "uuid-1",
+      tokenName: "w1",
+      workerName: "w1",
+      labels: {},
+      platform: "linux",
+      arch: "x86_64",
+      swampVersion: "1.0.0",
+      protocolVersion: 7,
+      capacity: 1,
+      ...(owner === undefined ? {} : { owner }),
+    },
+  });
+}
+
+Deno.test("sweepStaleRecords: settling a gone owner's records leaves its worker once it has re-enrolled with this serve", async () => {
+  await withRepo(async (ctx, run) => {
+    await seedServeA(ctx, run, SERVE_A);
+    const serveB = { instanceId: SERVE_B, pid: 4102, host: "host-1" };
+    const settled = await sweepStaleRecords({
+      repoContext: ctx,
+      onlyOwner: SERVE_A.instanceId,
+      workerWrites: {
+        // the worker reaches serve B after the listing, before the write
+        serialize: async (fn) => {
+          await enrollW1(run, serveB);
+          return await fn();
+        },
+        holds: () => false,
+      },
+    });
+
+    assertEquals([settled.leases, settled.pendingDispatches], [1, 1]);
+    assertEquals(settled.workers, 0);
+    const worker = await stored(
+      ctx,
+      WORKER_MODEL_TYPE,
+      workerDefinitionName("w1"),
+      WORKER_STATE_DATA_NAME,
+    );
+    assertEquals([worker.status, worker.owner], ["idle", serveB]);
   });
 });
