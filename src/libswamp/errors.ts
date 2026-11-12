@@ -24,16 +24,11 @@ import {
   type WordedText,
   wordedText,
 } from "../domain/behavior_wording.ts";
+import { isLapsedServeRequest } from "../domain/datastore_v3/writer_lease.ts";
 import {
-  CommitUnreachableError,
-  RunPartlyCommittedError,
-} from "../domain/datastore_v3/commit_log_unit_of_work.ts";
-import { ReadModelCatchUpUnreachableError } from "../domain/datastore_v3/read_model.ts";
-import {
-  isLapsedServeRequest,
-  V3StorageUnreachableError,
-} from "../domain/datastore_v3/writer_lease.ts";
-import { ServeUnreachableError } from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
+  isDatastoreOutage,
+  MAX_OUTAGE_CAUSE_DEPTH,
+} from "../infrastructure/datastore_v3/datastore_outage.ts";
 
 export interface SwampError {
   readonly code: string;
@@ -150,17 +145,7 @@ export function validationFailed(
   };
 }
 
-const MAX_CAUSE_DEPTH = 8;
-
 /** the outages v3 teardown reads as storage it could not reach */
-function isDatastoreOutage(error: unknown): boolean {
-  return error instanceof CommitUnreachableError ||
-    error instanceof RunPartlyCommittedError ||
-    error instanceof V3StorageUnreachableError ||
-    error instanceof ReadModelCatchUpUnreachableError ||
-    error instanceof ServeUnreachableError;
-}
-
 function hasOutageCode(error: Error): error is Error & { code: string } {
   const code = (error as { code?: unknown }).code;
   return typeof code === "string" &&
@@ -178,7 +163,7 @@ export function datastoreOutageOf(
   let current = error;
   for (
     let depth = 0;
-    depth < MAX_CAUSE_DEPTH && current instanceof Error;
+    depth < MAX_OUTAGE_CAUSE_DEPTH && current instanceof Error;
     depth++
   ) {
     chain.push(current);

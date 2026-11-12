@@ -25,6 +25,7 @@
 
 import { Commit } from "../../domain/datastore_v3/commit.ts";
 import { FeedDivergedError } from "./sqlite_commit_store.ts";
+import { v3CommitsDbPath } from "./v3_datastore.ts";
 import { holdsCurrentV3WriterLease } from "./v3_writer_lock.ts";
 import { v3ReplicatesAt } from "./v3_datastore_binding.ts";
 import { type V3DatastoreConfig, v3DatastoreFor } from "./v3_repo_context.ts";
@@ -52,7 +53,7 @@ export async function v3FollowerWalBytes(
   config: V3DatastoreConfig,
 ): Promise<number | undefined> {
   try {
-    const commitsDb = v3DatastoreFor(repoDir, config).commitsDbPath;
+    const commitsDb = v3CommitsDbPath(config.path, repoDir);
     return (await Deno.stat(`${commitsDb}-wal`)).size;
   } catch (error) {
     return error instanceof Deno.errors.NotFound ? 0 : undefined;

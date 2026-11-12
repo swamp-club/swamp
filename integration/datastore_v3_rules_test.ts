@@ -271,6 +271,7 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/litestream/v3_replication.ts",
   "src/cli/v3_teardown.ts -> src/domain/datastore_v3/litestream_replication.ts",
   "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
   // swamp-club#3473: the end-of-command retention pass compacts v3 history
   // after a pass, as the writer, before teardown closes the hold.
   "src/cli/retention_teardown.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
@@ -300,9 +301,6 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/model_method_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/commands/workflow_resume.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/cli/commands/workflow_run.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/read_model.ts",
-  "src/cli/v3_teardown.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/read_model.ts",
   // status says what to do about a run record refused for
@@ -496,10 +494,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/copy_setup_raced_error.ts",
   // swamp-club#4679: a workflow or method failure keeps a datastore or serve
   // outage in its cause and reports its code, so teardown and the exit see it.
-  "src/libswamp/errors.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/libswamp/errors.ts -> src/domain/datastore_v3/read_model.ts",
   "src/libswamp/errors.ts -> src/domain/datastore_v3/writer_lease.ts",
-  "src/libswamp/errors.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
+  "src/libswamp/errors.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
   // an admin force-releases a lease by id without opening the checkout's
   // copy; a refused step names the lease-lost code; a lapsed lease decides a
   // run's exit; serve unreachable bounds the teardown.
@@ -508,7 +504,6 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/cli/commands/workflow_resume.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
   "src/cli/commands/workflow_run.ts -> src/infrastructure/datastore_v3/serve_lock.ts",
   "src/cli/repo_context.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
-  "src/cli/v3_teardown.ts -> src/infrastructure/datastore_v3/serve_upstream_errors.ts",
   // a namespace merge keeps file times, so it owes the checkout a full recovery
   "src/cli/commands/datastore_namespace.ts -> src/infrastructure/datastore_v3/v3_catalog.ts",
   // a --server run's start reads serve's not-leader refusal and reports the
