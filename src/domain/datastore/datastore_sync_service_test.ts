@@ -25,11 +25,13 @@ import {
 } from "@std/assert";
 import { UserError } from "../errors.ts";
 import {
+  DatastorePushFailedError,
   DataVersionConflictError,
   HydrateContractViolationError,
   isUnpublishedDataError,
   ModelLockLostError,
   SyncTimeoutError,
+  toPushFailure,
   UnpublishedDataVersionError,
 } from "./datastore_sync_service.ts";
 
@@ -221,4 +223,30 @@ Deno.test("DataVersionConflictError: carries and names a failure publishing the 
     both.message,
     "Publishing the run's other data failed too: push failed",
   );
+});
+
+Deno.test("DatastorePushFailedError: names the cause, the retry and a stable code", () => {
+  const cause = new Error("@repro/faulty-dir push failed: fetch failed.");
+  const err = new DatastorePushFailedError(cause);
+  assertInstanceOf(err, UserError);
+  assertEquals(err.code, "datastore_push_failed");
+  assertEquals(err.cause, cause);
+  assertStringIncludes(
+    err.message,
+    "did not reach the datastore (@repro/faulty-dir push failed: fetch failed)",
+  );
+  assertStringIncludes(err.message, "swamp datastore sync --push");
+});
+
+Deno.test("toPushFailure: wraps an untyped error and keeps a typed refusal", () => {
+  const wrapped = toPushFailure(new Error("fetch failed"));
+  assertInstanceOf(wrapped, DatastorePushFailedError);
+
+  const timeout = new SyncTimeoutError("@swamp/s3-datastore", "push", 1_000);
+  assertEquals(toPushFailure(timeout), timeout);
+
+  const lost = new ModelLockLostError([]);
+  assertEquals(toPushFailure(lost), lost);
+
+  assertInstanceOf(toPushFailure("a string"), DatastorePushFailedError);
 });

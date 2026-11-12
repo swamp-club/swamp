@@ -56,6 +56,7 @@ import {
 } from "./repo_context.ts";
 import { runCommandInRootUnit } from "./command_root_unit.ts";
 import {
+  pushBoundOf,
   pushNamespace,
   pushNamespaceCounted,
 } from "../infrastructure/persistence/push_paths.ts";
@@ -104,7 +105,7 @@ export async function pushManagedConfigChanges(
     : undefined;
   try {
     await syncService.markDirty();
-    await pushNamespace(syncService, namespace);
+    await pushNamespace(syncService, namespace, pushBoundOf(datastoreConfig));
   } catch (error) {
     throw toUnpublishedError(error);
   }
@@ -129,7 +130,7 @@ export async function publishManagedConfigChanges(
     ? datastoreConfig.namespace
     : undefined;
   try {
-    await pushNamespace(syncService, namespace);
+    await pushNamespace(syncService, namespace, pushBoundOf(datastoreConfig));
   } catch (error) {
     throw toUnpublishedError(error);
   }
@@ -165,8 +166,19 @@ export async function runManagedConfigMutation<T>(
   );
 }
 
+/** only a repo with managedConfig turns a completed mutation's failed push into ManagedConfigUnpublishedError */
+export function managedConfigPushFailure(
+  error: unknown,
+  mutated: boolean,
+  marker: RepoMarkerData | null,
+): unknown {
+  return mutated && marker?.datastore?.managedConfig === true
+    ? toUnpublishedError(error)
+    : error;
+}
+
 /**
- * after a completed mutation a failed push throws
+ * after a completed mutation a failed release throws
  * ManagedConfigUnpublishedError; otherwise the error goes to onCleanupError so
  * it cannot replace one already propagating
  */
@@ -176,9 +188,8 @@ export function reportManagedConfigCleanupError(
   marker: RepoMarkerData | null,
   onCleanupError: (error: unknown) => void,
 ): void {
-  if (mutated && marker?.datastore?.managedConfig === true) {
-    throw toUnpublishedError(error);
-  }
+  const failure = managedConfigPushFailure(error, mutated, marker);
+  if (failure !== error) throw failure;
   onCleanupError(error);
 }
 

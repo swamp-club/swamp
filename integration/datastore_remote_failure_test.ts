@@ -43,7 +43,10 @@ import {
 } from "../src/cli/managed_config_sync.ts";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import { UserError } from "../src/domain/errors.ts";
-import { SyncTimeoutError } from "../src/domain/datastore/datastore_sync_service.ts";
+import {
+  DatastorePushFailedError,
+  SyncTimeoutError,
+} from "../src/domain/datastore/datastore_sync_service.ts";
 import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import {
@@ -280,6 +283,66 @@ for (
   });
 }
 
+for (
+  const { label, options, hangOp } of [
+    {
+      label: "single-phase push",
+      options: SINGLE_PHASE,
+      hangOp: "pushChanged" as const,
+    },
+    {
+      label: "two-phase prepare",
+      options: TWO_PHASE,
+      hangOp: "preparePush" as const,
+    },
+  ]
+) {
+  Deno.test(`acquireModelLocks: a ${label} that never settles fails at the sync deadline, releases the model lock, and the next flush publishes the write`, async () => {
+    await withRepos(options, async (repos) => {
+      const model = await saveModel(repos.serveRepo, "writer");
+      await writeData(repos, model, "item");
+      const written = await localFilesOf(repos, model);
+      assert(written.size > 0, "the save wrote files into A's cache");
+
+      // ignores the signal, as a wedged extension would: only core's deadline
+      // can end it
+      const signals: (AbortSignal | undefined)[] = [];
+      const service = repos.a.syncService!;
+      const wedged = new Proxy(service, {
+        get(target, prop) {
+          if (prop === hangOp) {
+            return (opts?: { signal?: AbortSignal }) => {
+              signals.push(opts?.signal);
+              return new Promise(() => {});
+            };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const locks = await acquireModelLocks(
+        { ...repos.a.datastoreConfig, syncTimeoutMs: 200 },
+        modelsOf(repos, model),
+        repos.repoA,
+        wedged,
+        undefined,
+        quiet,
+      );
+      const thrown = await assertRejects(() => locks.flush(), SyncTimeoutError);
+      assertEquals(thrown.direction, "push");
+      assertEquals(thrown.timeoutMs, 200);
+      assertEquals(signals.length, 1);
+      assertEquals(signals[0]?.aborted, true, "the extension was told to stop");
+      assertEquals(getRegisteredLockKeys(), [], "model locks released");
+      assertEquals(remoteKeysOf(repos, model), []);
+
+      const retry = await lockOnA(repos, model);
+      await retry.flush();
+      assertEquals(remoteKeysOf(repos, model), [...written.keys()]);
+    });
+  });
+}
+
 async function failedFlushOutcome(
   options: RowRepoOptions,
   failOp: "push" | "prepare",
@@ -381,7 +444,7 @@ Deno.test("acquireModelLocks: a two-phase commit failing on flush releases the l
   });
 });
 
-Deno.test("flushDatastoreSync: a failed push warns and resolves, keeps the write dirty, and the next flush publishes it", async () => {
+Deno.test("flushDatastoreSync: a failed push throws after releasing the lock, keeps the write dirty, and the next flush publishes it", async () => {
   await withRepos(SINGLE_PHASE, async (repos) => {
     const model = await saveModel(repos.serveRepo, "writer");
     const ctx = await requireInitializedRepo({
@@ -390,6 +453,7 @@ Deno.test("flushDatastoreSync: a failed push warns and resolves, keeps the write
     });
     let written: Map<string, Uint8Array>;
     let logs: LogRecord[];
+    let error: unknown;
     try {
       await writeData(repos, model, "item", ctx.repoContext);
       written = await localFilesOf(repos, model);
@@ -398,24 +462,20 @@ Deno.test("flushDatastoreSync: a failed push warns and resolves, keeps the write
       repos.remote.failNext("push", new Error("injected push failure"), {
         instance: "A",
       });
-      // the coordinator warns and does not throw, unlike the per-model flush: a
-      // transient push error must not fail a command that already did its work
-      logs = await captureDatastoreLogs(() => flushDatastoreSync());
+      // the data did not reach the remote, so the command must not exit 0;
+      // the error is rendered once at the top, never logged here as well
+      logs = await captureDatastoreLogs(async () => {
+        error = await assertRejects(() => flushDatastoreSync());
+      });
     } finally {
       ctx.repoContext.catalogStore.close();
     }
+    assertInstanceOf(error, DatastorePushFailedError);
     assertEquals(
-      logs.map((record) => [
-        record.category.join("."),
-        record.level,
-        renderRecord(record),
-      ]),
-      [[
-        "datastore.sync",
-        "warning",
-        `${typeName(repos)} push failed: injected push failure`,
-      ]],
+      (error.cause as Error).message,
+      `${typeName(repos)} push failed: injected push failure`,
     );
+    assertEquals(logs, []);
     assertEquals(getRegisteredLockKeys(), []);
 
     assertEquals(await localFilesOf(repos, model), written);
@@ -668,10 +728,16 @@ const FLUSH_PATHS: FlushPath[] = [
     pushOps: ["push"],
     offlineOp: "push",
     failFlush: async (repos, flush, message) => {
-      const logs = await captureDatastoreLogs(flush);
-      assertEquals(logs.map(renderRecord), [
+      let thrown: unknown;
+      const logs = await captureDatastoreLogs(async () => {
+        thrown = await assertRejects(flush, DatastorePushFailedError);
+      });
+      assertInstanceOf(thrown, DatastorePushFailedError);
+      assertEquals(
+        (thrown.cause as Error).message,
         `${typeName(repos)} push failed: ${message}`,
-      ]);
+      );
+      assertEquals(logs, []);
       assertEquals(getRegisteredLockKeys(), []);
     },
   },
@@ -1010,6 +1076,42 @@ Deno.test("worker token revoke: a failed mid-command push throws the push error,
   });
 });
 
+for (
+  const { label, options, failOp } of [
+    { label: "single-phase", options: SINGLE_PHASE, failOp: "push" as const },
+    { label: "two-phase", options: TWO_PHASE, failOp: "prepare" as const },
+  ]
+) {
+  Deno.test(`model method run: a ${label} push that fails after an update run succeeded fails the command with datastore_push_failed and releases the lock`, async () => {
+    await withRepos(options, async (repos) => {
+      await saveModel(repos.serveRepo, "m1");
+      await settle(repos);
+      repos.remote.failNext(failOp, new Error("fetch failed"), {
+        instance: "A",
+      });
+      const error = await runCliRejecting({
+        args: [
+          "model",
+          "method",
+          "run",
+          "m1",
+          "touch",
+          "--repo-dir",
+          repos.repoA,
+          "--json",
+        ],
+      });
+      assertInstanceOf(error, DatastorePushFailedError);
+      assertEquals(error.code, "datastore_push_failed");
+      assertEquals(
+        (error.cause as Error).message,
+        `${typeName(repos)} push failed: fetch failed`,
+      );
+      assertEquals(getRegisteredLockKeys(), [], "locks released");
+    });
+  });
+}
+
 async function captureWarnings(
   fn: () => Promise<void>,
 ): Promise<string[]> {
@@ -1046,21 +1148,22 @@ function injectedTimeout(repos: RowRepos): SyncTimeoutError {
   return new SyncTimeoutError(typeName(repos), "push", 1000);
 }
 
-Deno.test("workflow delete: a failed coordinator push warns once after the command succeeded, and releases the global lock", async () => {
+Deno.test("workflow delete: a failed coordinator push after the command succeeded throws DatastorePushFailedError and releases the global lock", async () => {
   await withRepos(SINGLE_PHASE, async (repos) => {
     await seedWorkflow(repos);
     const base = baseline(repos);
     repos.remote.failNext("push", new Error("injected push failure"), {
       instance: "A",
     });
+    let error: unknown;
     const warnings = await captureWarnings(async () => {
-      await runCli({ args: [...workflowDelete(repos, "wf1"), "--json"] });
+      error = await assertRejects(() =>
+        runCli({ args: [...workflowDelete(repos, "wf1"), "--json"] })
+      );
     });
-    assertEquals(warnings, [
-      `datastore.sync warning: ${
-        typeName(repos)
-      } push failed: injected push failure`,
-    ]);
+    assertInstanceOf(error, DatastorePushFailedError);
+    assertEquals(error.code, "datastore_push_failed");
+    assertEquals(warnings, []);
     assertEquals(syncOrder(repos, base), ["pull", "release"]);
     assertEquals(getRegisteredLockKeys(), [], "global lock released");
   });

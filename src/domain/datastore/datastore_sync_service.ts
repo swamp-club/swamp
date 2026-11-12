@@ -373,6 +373,30 @@ export class SyncTimeoutError extends UserError {
   }
 }
 
+export class DatastorePushFailedError extends UserError {
+  override readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    const reason = (cause instanceof Error ? cause.message : String(cause))
+      .replace(/\.$/, "");
+    super(
+      `This command's changes are saved on this host but did not reach the ` +
+        `datastore (${reason}). Run 'swamp datastore sync --push' to publish ` +
+        `them.`,
+      "datastore_push_failed",
+    );
+    this.name = "DatastorePushFailedError";
+    this.cause = cause;
+  }
+}
+
+/** a typed refusal keeps its own code and exit status */
+export function toPushFailure(error: unknown): UserError {
+  return error instanceof UserError
+    ? error
+    : new DatastorePushFailedError(error);
+}
+
 export class HydrateContractViolationError extends UserError {
   readonly datastoreType: string;
   readonly relPath: string;

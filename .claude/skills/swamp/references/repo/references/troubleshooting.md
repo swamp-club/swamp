@@ -149,6 +149,19 @@ host/runner that is no longer running, the lock is orphaned.
   in milliseconds. Default 300000 (5 minutes). Increase for very large
   datastores on slow networks; decrease to fail faster in tight CI loops.
 
+### Push Failed After the Command Succeeded
+
+**Symptom**: a command finishes its work, then exits non-zero with
+`datastore_push_failed`:
+`This command's changes are saved on this host but did
+not reach the datastore (...)`.
+
+**Cause**: the push to the remote datastore failed (a dropped connection, a
+refused upload). The local change is kept; only the remote copy is missing.
+
+**Fix**: run `swamp datastore sync --push` once the datastore is reachable. The
+next command that pushes publishes the change too.
+
 ## Recovery Procedures
 
 ### Recover from Corrupted Repository

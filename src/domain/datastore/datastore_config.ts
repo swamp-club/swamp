@@ -416,6 +416,11 @@ export function resolveSyncTimeoutMs(
   if (isCustomDatastoreConfig(config) && config.syncTimeoutMs != null) {
     if (config.syncTimeoutMs > 0) return config.syncTimeoutMs;
   }
+  return resolveEnvSyncTimeoutMs();
+}
+
+/** for a caller that has no datastore config to read syncTimeoutMs from */
+export function resolveEnvSyncTimeoutMs(): number {
   const envValue = Deno.env.get(SYNC_TIMEOUT_ENV_VAR);
   if (envValue) {
     const parsed = Number.parseInt(envValue, 10);

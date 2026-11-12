@@ -127,7 +127,10 @@ import type { AuditWal } from "../../domain/serve_audit/audit_wal.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SyncGate } from "../sync_gate.ts";
 import type { RunWriteFence } from "../../domain/workflows/run_write_fence.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import type { FollowerGate } from "../follower_requests.ts";
 import type { LeaderLink } from "../leader_link.ts";
 import type { V3CommitFeedSource } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -169,7 +172,11 @@ export async function pushChangedToRemote(
     ? ctx.datastoreConfig.namespace
     : undefined;
   try {
-    await pushNamespace(syncService, namespace);
+    await pushNamespace(
+      syncService,
+      namespace,
+      pushBoundOf(ctx.datastoreConfig),
+    );
   } catch (pushError) {
     const error = pushError instanceof Error
       ? pushError.message

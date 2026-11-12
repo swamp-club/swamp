@@ -32,7 +32,10 @@ import {
   requireInitializedRepoUnlocked,
   signalWaitsOf,
 } from "../repo_context.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { holdFromOutcome } from "../committed_output.ts";
@@ -642,7 +645,11 @@ export const workflowResumeCommand = withRemoteOptions(
         {
           push: syncService
             ? async () => {
-              await pushNamespace(syncService, namespace);
+              await pushNamespace(
+                syncService,
+                namespace,
+                pushBoundOf(unlocked.datastoreConfig),
+              );
             }
             : undefined,
           output: cliCtx.outputMode === "log" ? "live-until-outcome" : "held",

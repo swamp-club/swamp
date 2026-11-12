@@ -32,7 +32,10 @@ import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -296,7 +299,13 @@ const accessGrantCreateCommand = new Command()
         push: modelLocks?.push ??
           (syncService
             ? async () => {
-              if (!markFailed) await pushNamespace(syncService, namespace);
+              if (!markFailed) {
+                await pushNamespace(
+                  syncService,
+                  namespace,
+                  pushBoundOf(datastoreConfig),
+                );
+              }
             }
             : undefined),
         release: modelLocks?.release,

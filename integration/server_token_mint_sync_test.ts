@@ -159,9 +159,16 @@ Deno.test("createDeviceAuthDeps: mintServerToken sends only per-path markDirty b
       );
       const tokenName = token.split(".")[0];
 
+      const pushes = events.filter((
+        e,
+      ): e is Exclude<SyncEvent, MarkEvent> => e.kind === "push");
       assertEquals(
-        events.filter((e) => e.kind === "push"),
-        [{ kind: "push", options: { namespace: "infra" } }],
+        pushes.map((e) => ({ kind: e.kind, namespace: e.options?.namespace })),
+        [{ kind: "push", namespace: "infra" }],
+      );
+      assert(
+        pushes[0].options?.signal instanceof AbortSignal,
+        "the push runs under the sync deadline",
       );
       assertEquals(
         events.at(-1)?.kind,

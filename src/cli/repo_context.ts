@@ -95,6 +95,7 @@ import {
   flushDatastoreSyncNamed,
   registerDatastoreSync,
   registerDatastoreSyncNamed,
+  runBoundedSync,
   SLOW_LOCK_NAMESPACE_ADVICE,
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
@@ -3943,6 +3944,11 @@ export async function acquireModelLocks(
     throw new ModelLockLostError(lost);
   };
 
+  // each attempt is bounded inside the wrapped call, so time spent waiting on
+  // serve's sync gate never counts toward the deadline
+  const syncTimeoutMs = isCustomDatastoreConfig(config)
+    ? resolveSyncTimeoutMs(config)
+    : 0;
   // beforePush runs inside the same wrapped call as the push, so in serve no
   // run pull can land between it and the upload
   const pushOnce = async (
@@ -3961,37 +3967,57 @@ export async function acquireModelLocks(
         caps?.twoPhaseSync && syncService.preparePush &&
         syncService.commitPush
       ) {
-        await wrapSync(async () => {
-          await assertModelLocksHeld(versions);
-          await beforePush?.();
-          return await flushTwoPhasePush(
-            provider,
-            syncService,
-            config,
-            caps,
-            unique,
-            pushNs,
-            catalogStore,
-            logger,
-            progressWriter,
-          );
-        }, kind);
+        await wrapSync(
+          () =>
+            runBoundedSync(
+              config.type,
+              "push",
+              syncTimeoutMs,
+              async (signal) => {
+                await assertModelLocksHeld(versions);
+                await beforePush?.();
+                return await flushTwoPhasePush(
+                  provider,
+                  syncService,
+                  config,
+                  caps,
+                  unique,
+                  pushNs,
+                  catalogStore,
+                  logger,
+                  progressWriter,
+                  signal,
+                );
+              },
+            ),
+          kind,
+        );
       } else {
-        await wrapSync(async () => {
-          await assertModelLocksHeld(versions);
-          await beforePush?.();
-          return await flushSinglePhasePush(
-            provider,
-            syncService,
-            config,
-            caps,
-            unique,
-            pushNs,
-            catalogStore,
-            logger,
-            progressWriter,
-          );
-        }, kind);
+        await wrapSync(
+          () =>
+            runBoundedSync(
+              config.type,
+              "push",
+              syncTimeoutMs,
+              async (signal) => {
+                await assertModelLocksHeld(versions);
+                await beforePush?.();
+                return await flushSinglePhasePush(
+                  provider,
+                  syncService,
+                  config,
+                  caps,
+                  unique,
+                  pushNs,
+                  catalogStore,
+                  logger,
+                  progressWriter,
+                  signal,
+                );
+              },
+            ),
+          kind,
+        );
       }
     }
   };
@@ -4160,10 +4186,12 @@ export async function acquireModelLocks(
           stage,
         );
         if (!syncService.fetchContent || targets.length === 0) return [];
-        const behind = await unpublishedTargets(
-          targets,
-          syncService.fetchContent.bind(syncService),
-          config.namespace,
+        const fetchContent = syncService.fetchContent.bind(syncService);
+        const behind = await runBoundedSync(
+          config.type,
+          "push",
+          syncTimeoutMs,
+          () => unpublishedTargets(targets, fetchContent, config.namespace),
         );
         if (behind === undefined || behind.length === 0) return [];
         pending = behind.map((t) => t.written);
@@ -4287,6 +4315,38 @@ export function runUnderModelLocks<T>(
   return processLockHolderMarker.runHolding(lockResult?.lentLocks ?? [], fn);
 }
 
+/**
+ * an extension that ignores the signal never settles, so the push lock's
+ * finally would never run; this settles at the deadline instead, and past it
+ * never starts the push
+ */
+function settleByDeadline<T>(
+  start: () => Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal === undefined) return start();
+  if (signal.aborted) return Promise.reject(signal.reason);
+  const work = start();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) {
+      work.catch(() => {});
+      return onAbort();
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function flushSinglePhasePush(
   provider: DatastoreProvider,
   syncService: DatastoreSyncService,
@@ -4297,6 +4357,7 @@ export async function flushSinglePhasePush(
   catalogStore: CatalogStore | undefined,
   logger: ReturnType<typeof getSwampLogger>,
   progressWriter?: LockProgressWriter,
+  signal?: AbortSignal,
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
 
@@ -4320,7 +4381,7 @@ export async function flushSinglePhasePush(
   );
   try {
     const lockStart = Date.now();
-    await pushLock.acquire();
+    await pushLock.acquire(signal);
     const lockMs = Date.now() - lockStart;
     if (
       slowLockAdvice({
@@ -4338,11 +4399,16 @@ export async function flushSinglePhasePush(
     }
     write(dim("Pushing changes to datastore..."));
 
-    const pushed = await pushModelLockScope(
-      syncService,
-      caps?.scopedSync === true,
-      models,
-      namespace,
+    const pushed = await settleByDeadline(
+      () =>
+        pushModelLockScope(
+          syncService,
+          caps?.scopedSync === true,
+          models,
+          namespace,
+          signal,
+        ),
+      signal,
     );
     if (pushed && pushed > 0) {
       write(dim(`Pushed ${pushed} file(s) to datastore`));
@@ -4350,6 +4416,8 @@ export async function flushSinglePhasePush(
       write(dim("Push complete, no changes"));
     }
   } catch (error) {
+    // the deadline's own error is rendered once by its caller
+    if (signal?.aborted) throw signal.reason;
     const { summary, fields } = summarizeSyncError(
       "push",
       config.type,
@@ -4376,6 +4444,7 @@ export async function flushTwoPhasePush(
   catalogStore: CatalogStore | undefined,
   logger: ReturnType<typeof getSwampLogger>,
   progressWriter?: LockProgressWriter,
+  signal?: AbortSignal,
 ): Promise<void> {
   const write = progressWriter ?? defaultLockWriter;
   await writeCatalogExportIfNeeded(
@@ -4389,7 +4458,7 @@ export async function flushTwoPhasePush(
   let manifest: PushManifest;
   try {
     write(dim("Preparing push (uploading files)..."));
-    const prepareOpts = caps?.scopedSync
+    const scope = caps?.scopedSync
       ? {
         context: { models: [...models] } as SyncContext,
         ...(namespace ? { namespace } : {}),
@@ -4397,8 +4466,14 @@ export async function flushTwoPhasePush(
       : namespace
       ? { namespace }
       : undefined;
-    manifest = await syncService.preparePush!(prepareOpts);
+    const prepareOpts = signal === undefined ? scope : { ...scope, signal };
+    manifest = await settleByDeadline(
+      () => syncService.preparePush!(prepareOpts),
+      signal,
+    );
   } catch (error) {
+    // the deadline's own error is rendered once by its caller
+    if (signal?.aborted) throw signal.reason;
     const { summary, fields } = summarizeSyncError(
       "push",
       config.type,
@@ -4417,7 +4492,7 @@ export async function flushTwoPhasePush(
   );
   try {
     const lockStart = Date.now();
-    await pushLock.acquire();
+    await pushLock.acquire(signal);
     const lockMs = Date.now() - lockStart;
     if (
       slowLockAdvice({
@@ -4435,14 +4510,24 @@ export async function flushTwoPhasePush(
     }
     write(dim("Committing index update..."));
 
-    const commitOpts = namespace ? { namespace } : undefined;
-    const pushed = await syncService.commitPush!(manifest, commitOpts);
+    const commitOpts = namespace || signal
+      ? {
+        ...(namespace ? { namespace } : {}),
+        ...(signal ? { signal } : {}),
+      }
+      : undefined;
+    const pushed = await settleByDeadline(
+      () => syncService.commitPush!(manifest, commitOpts),
+      signal,
+    );
     if (pushed && pushed > 0) {
       write(dim(`Committed ${pushed} file(s) to datastore index`));
     } else {
       write(dim("Commit complete, no index changes"));
     }
   } catch (error) {
+    // the deadline's own error is rendered once by its caller
+    if (signal?.aborted) throw signal.reason;
     const { summary, fields } = summarizeSyncError(
       "push",
       config.type,

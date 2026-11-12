@@ -270,7 +270,10 @@ import {
 } from "./telemetry_invocation.ts";
 import { findEmptyOptionValue } from "./empty_option_value.ts";
 import type { AnyCommand } from "./cli_schema.ts";
-import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import {
+  flushDatastoreSync,
+  warnDroppedPushFailure,
+} from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import {
   getTracer,
   withActiveSpan,
@@ -2943,8 +2946,8 @@ async function runInvocation(
     // telemetry recording below must still run
     try {
       await flushDatastoreSync();
-    } catch {
-      // Best effort — don't shadow the original error.
+    } catch (flushError) {
+      warnDroppedPushFailure(flushError);
     }
     // a command that committed nothing is not told its changes are saved
     const failure = await closeV3DatastoresAfterFailure(error);

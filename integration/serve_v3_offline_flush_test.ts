@@ -277,7 +277,9 @@ async function lockedSave(
       }
       return await runCommandInRootUnit(
         ctx.repoContext,
-        { push: undefined, release: locks.release },
+        // the lock's own push, as a behavior run passes it: offline work that
+        // queues must still resolve
+        { push: () => locks.pushWritten([]), release: locks.release },
         () => saveOut(ctx, serve, by),
       );
     } finally {

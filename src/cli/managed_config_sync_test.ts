@@ -208,7 +208,7 @@ Deno.test("runManagedConfigMutation: marks bare after the mutation, then pushes 
   assertEquals(value, "created");
   assertEquals(events, ["mutate", "mark", "push"]);
   assertEquals(markDirtyCalls, [undefined]);
-  assertEquals(pushCalls, [{ namespace: "ns1" }]);
+  assertEquals(pushCalls.map((call) => call?.namespace), ["ns1"]);
 });
 
 Deno.test("runManagedConfigMutation: a failed mutation marks and pushes nothing", async () => {

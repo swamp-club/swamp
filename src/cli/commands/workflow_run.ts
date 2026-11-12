@@ -43,7 +43,10 @@ import {
   requireInitializedRepoUnlocked,
   signalWaitsOf,
 } from "../repo_context.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import { methodKindOf } from "../../libswamp/models/method_run_lock_mode.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
@@ -495,7 +498,11 @@ export const workflowRunCommand = new Command()
         {
           push: syncService
             ? async () => {
-              await pushNamespace(syncService, namespace);
+              await pushNamespace(
+                syncService,
+                namespace,
+                pushBoundOf(unlocked.datastoreConfig),
+              );
             }
             : undefined,
           output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
