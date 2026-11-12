@@ -940,7 +940,40 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped plain steps name the step", async
   });
   assertEquals(skippedLines(lines), [
     "main │ skipped rollback (dependency)",
-    "main │ skipped cleanup (guarded) · guard: true",
+    "main │ skipped cleanup (guarded) · guard: true \u2192 true",
+  ]);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a guarded skip shows what a data guard returned", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-pipeline",
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "evaluating_workflow" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-pipeline",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "step_skipped",
+      jobId: "main",
+      stepId: "notify",
+      reason: "guarded",
+      guardExpression: 'data.latest("doc", "doctor").attributes.needsHuman',
+      guardResult: ["disk full", "cert expiring"],
+    },
+    { kind: "job_completed", jobId: "main", status: "succeeded" },
+    { kind: "completed", run: makeRunView("succeeded") },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(skippedLines(lines), [
+    'main │ skipped notify (guarded) · guard: data.latest("doc", "doctor").attributes.needsHuman \u2192 [2 items]',
   ]);
 });
 
@@ -1007,7 +1040,7 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped forEach iterations name the expan
     await consumeStream(toStream(events), renderer.handlers());
   });
   assertEquals(skippedLines(lines), [
-    'fetch[0] │ skipped fetch-dev (guarded) · guard: self.env != "prod"',
+    'fetch[0] │ skipped fetch-dev (guarded) · guard: self.env != "prod" \u2192 true',
   ]);
 });
 
@@ -1122,7 +1155,7 @@ Deno.test("ConsoleWorkflowRunRenderer: skipped templated forEach iterations are 
   });
   assertEquals(skippedLines(lines), [
     "rollback-dev │ skipped rollback-dev (dependency)",
-    "warm-us-east-1 │ skipped warm-us-east-1 (guarded) · guard: true",
+    "warm-us-east-1 │ skipped warm-us-east-1 (guarded) · guard: true \u2192 true",
   ]);
 });
 

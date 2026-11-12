@@ -911,7 +911,9 @@ fails the step with a `step_failed` event containing the error message.
 
 **Events and rendering:** Guard-skipped steps emit a `step_skipped` event with
 `reason: "guarded"` (vs `"dependency"` for dependency skips). The console
-renderer shows `skipped <step> (guarded)` to distinguish from dependency skips.
+renderer shows `skipped <step> (guarded) · guard: <expr> → <result>`, where
+`<result>` is what the guard returned (always truthy, since only a truthy guard
+skips). A list or map result shows as a count such as `[3 items]`.
 
 A forEach step whose `forEach.in` resolves to no items emits `step_skipped` with
 `reason: "empty_collection"` and `collectionExpression`, and the console shows

@@ -3629,10 +3629,12 @@ Guard-skipped steps emit a `step_skipped` event with `reason: "guarded"`
 (the raw CEL string) and `guardResult` (the evaluated value), so consumers can
 show why the step was skipped.
 
-Console output names the skipped step and shows the guard expression inline:
+Console output names the skipped step and shows the guard expression and what
+it returned inline, so a skip reads as a truthy guard. A list or map result is
+shown as a count and text is cut short and escaped:
 
 ```
-   main │ skipped do-work (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0
+   main │ skipped do-work (guarded) · guard: data.latest("checker", "result").attributes.exitCode == 0 → true
 ```
 
 In `--json` mode, each guarded skip writes a line with both fields to stderr:

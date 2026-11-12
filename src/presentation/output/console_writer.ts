@@ -21,7 +21,10 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { unicodeWidth } from "@std/cli/unicode-width";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
-import { mapControlCharacters } from "../../domain/control_characters.ts";
+import {
+  escapeControlCharacters,
+  mapControlCharacters,
+} from "../../domain/control_characters.ts";
 import { dataQueryCommand } from "../../domain/data/data_query_command.ts";
 import {
   SUMMARY_DISPLAY_HIDDEN,
@@ -178,10 +181,14 @@ export class PipeWriter {
     reason?: string,
     guardExpression?: string,
     collectionExpression?: string,
+    guardResult?: unknown,
   ): string {
     const extra = reason ? ` (${reason})` : "";
+    const result = guardResult === undefined
+      ? ""
+      : ` \u2192 ${formatGuardResult(guardResult)}`;
     const guard = guardExpression
-      ? ` ${dim(`· guard: ${guardExpression}`)}`
+      ? ` ${dim(`· guard: ${guardExpression}${result}`)}`
       : "";
     const collection = collectionExpression
       ? ` ${dim(`· in: ${collectionExpression}`)}`
@@ -389,6 +396,39 @@ export function renderDataBox(
 
 const BOX_CONTENT_WIDTH = 80;
 const ELLIPSIS = "...";
+const GUARD_RESULT_MAX_CHARS = 40;
+
+// the result can come from repo data, so lists and maps are counted rather
+// than printed and text is escaped before it reaches the terminal
+function formatGuardResult(value: unknown): string {
+  if (
+    value === null || typeof value === "boolean" ||
+    typeof value === "number" || typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.length} ${value.length === 1 ? "item" : "items"}]`;
+  }
+  if (typeof value === "object" && isPlainObject(value)) {
+    const keys = Object.keys(value).length;
+    return `{${keys} ${keys === 1 ? "key" : "keys"}}`;
+  }
+  const text = cutToChars(String(value), GUARD_RESULT_MAX_CHARS);
+  return typeof value === "string" ? `"${text}"` : text;
+}
+
+function isPlainObject(value: object): boolean {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function cutToChars(value: string, max: number): string {
+  const chars = Array.from(value);
+  const cut = chars.length > max ? chars.slice(0, max).join("") : value;
+  const escaped = escapeControlCharacters(cut);
+  return chars.length > max ? `${escaped}${ELLIPSIS}` : escaped;
+}
 
 interface BoxSegment {
   readonly text: string;

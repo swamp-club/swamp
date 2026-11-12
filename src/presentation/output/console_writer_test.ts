@@ -278,6 +278,100 @@ Deno.test("PipeWriter.skippedStepLine: includes guard expression when provided",
   });
 });
 
+function guardedLine(
+  result: unknown,
+  expression = "x",
+): string {
+  return noColor(() =>
+    new PipeWriter(["main"]).skippedStepLine(
+      "main",
+      "notify",
+      "guarded",
+      expression,
+      undefined,
+      result,
+    )
+  );
+}
+
+Deno.test("PipeWriter.skippedStepLine: shows what the guard returned after the expression", () => {
+  assertEquals(
+    guardedLine(true, "size(items) > 0"),
+    " main │ skipped notify (guarded) · guard: size(items) > 0 \u2192 true",
+  );
+});
+
+Deno.test("PipeWriter.skippedStepLine: shows a number, null and a quoted string as they are", () => {
+  assertEquals(
+    guardedLine(38),
+    " main │ skipped notify (guarded) · guard: x \u2192 38",
+  );
+  assertEquals(
+    guardedLine(null),
+    " main │ skipped notify (guarded) · guard: x \u2192 null",
+  );
+  assertEquals(
+    guardedLine("ready"),
+    ' main │ skipped notify (guarded) · guard: x \u2192 "ready"',
+  );
+});
+
+Deno.test("PipeWriter.skippedStepLine: counts a list or map result rather than printing it", () => {
+  assertEquals(
+    guardedLine(["a", "b", "c"]),
+    " main │ skipped notify (guarded) · guard: x \u2192 [3 items]",
+  );
+  assertEquals(
+    guardedLine(["a"]),
+    " main │ skipped notify (guarded) · guard: x \u2192 [1 item]",
+  );
+  assertEquals(
+    guardedLine({ id: "i-1", attributes: { secret: "s" } }),
+    " main │ skipped notify (guarded) · guard: x \u2192 {2 keys}",
+  );
+  assertEquals(
+    guardedLine({ id: 1 }),
+    " main │ skipped notify (guarded) · guard: x \u2192 {1 key}",
+  );
+});
+
+Deno.test("PipeWriter.skippedStepLine: cuts a long string result without splitting a character", () => {
+  const value = "a".repeat(39) + "\u{1F600}" + "tail";
+  assertEquals(
+    guardedLine(value),
+    ` main │ skipped notify (guarded) · guard: x \u2192 "${
+      "a".repeat(39)
+    }\u{1F600}..."`,
+  );
+});
+
+Deno.test("PipeWriter.skippedStepLine: escapes control characters in a string result", () => {
+  assertEquals(
+    guardedLine("ok\x1b[2Jdone\x9b"),
+    ' main │ skipped notify (guarded) · guard: x \u2192 "ok\\x1b[2Jdone\\x9b"',
+  );
+});
+
+Deno.test("PipeWriter.skippedStepLine: an absent result or expression adds no arrow", () => {
+  assertEquals(
+    guardedLine(undefined),
+    " main │ skipped notify (guarded) · guard: x",
+  );
+  assertEquals(
+    noColor(() =>
+      new PipeWriter(["main"]).skippedStepLine(
+        "main",
+        "notify",
+        "guarded",
+        undefined,
+        undefined,
+        true,
+      )
+    ),
+    " main │ skipped notify (guarded)",
+  );
+});
+
 Deno.test("PipeWriter.skippedStepLine: includes the forEach collection when provided", () => {
   noColor(() => {
     const pipe = new PipeWriter(["main"]);
