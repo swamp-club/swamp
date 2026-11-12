@@ -205,7 +205,8 @@ export type EnrollmentBindingCutoffCause =
   | "revoked"
   | "reminted"
   | "deleted"
-  | "expired";
+  | "expired"
+  | "retired";
 
 export type EnrollmentBindingVerdict =
   | { readonly keep: true }
@@ -238,7 +239,9 @@ export function enrollmentTokenBindingVerdict(
   // Only a newer mint is a re-mint; an older record is a stale read of the
   // mint the worker holds, never a reason to cut it off.
   if (Date.parse(token.createdAt) > Date.parse(boundCreatedAt)) {
-    return { keep: false, cause: "reminted" };
+    const retired = token.predecessor !== undefined &&
+      Date.parse(token.predecessor.createdAt) > Date.parse(boundCreatedAt);
+    return { keep: false, cause: retired ? "retired" : "reminted" };
   }
   return { keep: true };
 }

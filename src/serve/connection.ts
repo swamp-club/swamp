@@ -4484,7 +4484,7 @@ export function handleMessage(
               principal,
             ))
         ),
-        auditOpts("admin", "worker", "*"),
+        auditOpts("admin", "worker", request.payload.name),
       );
       break;
     case "data.gc":

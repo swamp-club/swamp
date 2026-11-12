@@ -56,7 +56,7 @@ const ROTATED = {
   createdAt: "2026-02-01T00:00:00.000Z",
   expiresAt: "2026-03-01T00:00:00.000Z",
   vaultName: "local",
-  secretKey: "worker-token-web-01.r1769904000000",
+  secretKey: "worker-rotated-token-web-01-1769904000000",
   maxEnrollments: 1,
   bindings: [{
     machineId: "m-1",
@@ -93,7 +93,7 @@ Deno.test("workerTokenRotate: reads the successor secret and reports a local rot
 
   assertEquals(events[0], { kind: "rotating", name: "web-01" });
   assertEquals(runs, [{ definitionId: "def-web-01", durationMs: 60_000 }]);
-  assertEquals(reads, ["local/worker-token-web-01.r1769904000000"]);
+  assertEquals(reads, ["local/worker-rotated-token-web-01-1769904000000"]);
   assertEquals(events[1], {
     kind: "completed",
     data: {

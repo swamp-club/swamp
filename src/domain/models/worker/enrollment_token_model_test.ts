@@ -34,6 +34,7 @@ import {
   type MaxEnrollments,
   rotatedTokenSecretKey,
   tokenSecretKey,
+  WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
@@ -729,7 +730,9 @@ Deno.test("enrollmentTokenModel: a failed record write leaves the old secret and
   );
   assertEquals(harness.store.get("token-main"), before);
   assertEquals(
-    [...harness.vault.keys()].filter((k) => k.includes(".r")),
+    [...harness.vault.keys()].filter((k) =>
+      k.includes(WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX)
+    ),
     [],
   );
   await enrollmentTokenModel.methods.redeem.execute(
@@ -920,7 +923,7 @@ Deno.test("enrollmentTokenBindingVerdict: a rotation keeps workers on the predec
       "2025-12-31T23:00:00.000Z",
       beforeDeadline,
     ),
-    { keep: false, cause: "reminted" },
+    { keep: false, cause: "retired" },
   );
 });
 

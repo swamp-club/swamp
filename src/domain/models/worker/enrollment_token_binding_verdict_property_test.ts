@@ -48,7 +48,7 @@ const arbToken: fc.Arbitrary<EnrollmentToken | null> = fc.option(
       predecessor: {
         createdAt: predecessorCreatedAt,
         expiresAt: fields.expiresAt,
-        secretKey: "worker-token-ci-runner-3.r1",
+        secretKey: "worker-rotated-token-ci-runner-3-1",
       },
     }),
   } as EnrollmentToken)),

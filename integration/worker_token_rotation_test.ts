@@ -49,6 +49,7 @@ import {
 import {
   handleWorkerTokenCreate,
   handleWorkerTokenReveal,
+  handleWorkerTokenRevoke,
   handleWorkerTokenRotate,
 } from "../src/serve/handlers/admin_handlers.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
@@ -264,8 +265,6 @@ Deno.test("worker token rotate through serve hands the worker its successor, whi
     assertEquals(await f.revalidation.runOnce(), []);
     assertEquals(f.gateway.worker("w-rot")?.connected, true);
 
-    // a reconnect presenting the token read back from the file binds the
-    // successor mint
     await enroll(
       connectWorker(f.gateway),
       (await Deno.readTextFile(tokenFile)).trim(),
@@ -403,5 +402,47 @@ Deno.test("worker token rotate writes a successor key cloud vaults accept", asyn
       true,
     );
     assertEquals(/^[a-z0-9-]+$/.test(record?.secretKey ?? ""), true);
+  });
+});
+
+Deno.test("worker token rotate racing a revoke through serve never loses the rotation or un-revokes the token", async () => {
+  await withFixture(async (f) => {
+    for (let round = 0; round < 4; round++) {
+      const name = `w-race-${round}`;
+      await mintToken(f, name);
+      const rotateSocket = createMockSocket();
+      const revokeSocket = createMockSocket();
+      await Promise.all([
+        handleWorkerTokenRotate(
+          rotateSocket,
+          f.ctx,
+          "req-rotate",
+          { name },
+          new AbortController(),
+          null,
+        ),
+        handleWorkerTokenRevoke(
+          revokeSocket,
+          f.ctx,
+          "req-revoke",
+          { name },
+          new AbortController(),
+          null,
+        ),
+      ]);
+      const rotated = JSON.parse(rotateSocket.sent[0]);
+      const record = (await f.gateway.readTokenRecords()).get(name);
+      assertEquals(record?.state, "revoked", rotateSocket.sent[0]);
+      if (rotated.type === "worker.token.rotate") {
+        assertEquals(record?.predecessor !== undefined, true);
+        assertEquals(
+          record?.secretKey.startsWith(`worker-rotated-token-${name}-`),
+          true,
+        );
+      } else {
+        assertEquals(rotated.type, "error");
+        assertEquals(record?.predecessor, undefined);
+      }
+    }
   });
 });

@@ -118,6 +118,7 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
   reminted: "re-minted",
   deleted: "deleted",
   expired: "expired",
+  retired: "retired by a rotation",
 };
 
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
@@ -205,6 +206,8 @@ interface WorkerEntry {
   protocolVersion: number;
   /** the optional verbs the worker declared at enrollment */
   capabilities: readonly string[];
+  /** the machine its token binding names */
+  machineId?: string;
   channel: RpcChannel | null;
   closeSocket: (() => void) | null;
   status: "idle" | "busy" | "unverified" | "draining";
@@ -477,6 +480,14 @@ export class WorkerGateway {
     return this.#recordTransition("settle_left_workers", fn);
   }
 
+  /**
+   * runs a token record write in order with redeem and rotate, which read and
+   * rewrite the same record on this tail
+   */
+  serializeTokenWrite<T>(fn: () => Promise<T>): Promise<T> {
+    return this.#recordTransition("token_write", fn);
+  }
+
   worker(name: string): WorkerSnapshot | null {
     const entry = this.#workers.get(name);
     return entry ? this.#snapshot(entry) : null;
@@ -573,6 +584,7 @@ export class WorkerGateway {
             name: entry.name,
             instanceUuid: entry.instanceUuid,
             tokenCreatedAt: entry.tokenCreatedAt,
+            machineId: entry.machineId,
             canRotate: entry.capabilities.includes(
               WorkerCapability.tokenRotate,
             ),
@@ -730,8 +742,10 @@ export class WorkerGateway {
         }
         : entry
     );
-    const retiredBindings = record.bindings.filter((b) => isRetired(b.mint))
-      .length;
+    // a binding's mint moves only on redeem, so a member that took the
+    // successor still carries the old one; only machines with no member count
+    const members = new Set(targets.map((t) => t.machineId));
+    const unattended = record.bindings.filter((b) => !members.has(b.machineId));
     return {
       tokenName,
       token,
@@ -739,12 +753,8 @@ export class WorkerGateway {
       predecessorExpiresAt: record.predecessor?.expiresAt ?? null,
       rotated,
       notRotated: reported,
-      unconnectedBindings: Math.max(
-        0,
-        record.bindings.length - retiredBindings -
-          (targets.length - retiredWorkers.size),
-      ),
-      retiredBindings: Math.max(0, retiredBindings - retiredWorkers.size),
+      unconnectedBindings: unattended.filter((b) => !isRetired(b.mint)).length,
+      retiredBindings: unattended.filter((b) => isRetired(b.mint)).length,
     };
   }
 
@@ -1092,6 +1102,7 @@ export class WorkerGateway {
         existing.capacity = capacity;
         existing.protocolVersion = params.protocolVersion;
         existing.capabilities = params.capabilities ?? [];
+        existing.machineId = params.machineId;
         await preparing(() =>
           this.#workerStatus.recordStatus(
             workerName,
@@ -1147,6 +1158,7 @@ export class WorkerGateway {
         swampVersion: params.swampVersion,
         protocolVersion: params.protocolVersion,
         capabilities: params.capabilities ?? [],
+        machineId: params.machineId,
         channel: state.channel,
         closeSocket: state.closeSocket,
         status: initialStatus,

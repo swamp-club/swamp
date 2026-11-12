@@ -2992,7 +2992,7 @@ function rotationHarness(options?: {
       ...previous,
       createdAt: ROTATED_MINT,
       expiresAt: options?.rotatedExpiresAt ?? "2099-06-01T00:00:00.000Z",
-      secretKey: `worker-token-ci-runner-3.r${Date.parse(ROTATED_MINT)}`,
+      secretKey: `worker-rotated-token-ci-runner-3-${Date.parse(ROTATED_MINT)}`,
       predecessor: {
         createdAt: previous.createdAt,
         expiresAt: previous.expiresAt,
@@ -3019,7 +3019,9 @@ Deno.test("WorkerGateway: rotateToken delivers the successor and re-stamps the w
 
   const report = await h.rotate();
 
-  const secretKey = `worker-token-ci-runner-3.r${Date.parse(ROTATED_MINT)}`;
+  const secretKey = `worker-rotated-token-ci-runner-3-${
+    Date.parse(ROTATED_MINT)
+  }`;
   assertEquals(report.token, `ci-runner-3.secret-for-${secretKey}`);
   assertEquals(report.rotated, [{ worker: "ci-runner-3", persisted: true }]);
   assertEquals(report.notRotated, []);
@@ -3170,7 +3172,7 @@ Deno.test("WorkerGateway: a shortened rotation cuts an unrotated worker off at t
     ...record,
     createdAt: ROTATED_MINT,
     expiresAt: clamped,
-    secretKey: "worker-token-ci-runner-3.r1",
+    secretKey: "worker-rotated-token-ci-runner-3-1",
     predecessor: {
       createdAt: BASE_MINT,
       expiresAt: clamped,
@@ -3358,4 +3360,54 @@ Deno.test("WorkerGateway: a secret that cannot be read after the rotation lands 
     h.transitions.filter((t) => t.methodName === "rotate").length,
     1,
   );
+});
+
+Deno.test("WorkerGateway: a worker that took both rotations is not counted as holding a retired token", async () => {
+  const mintA = "2026-02-01T00:00:00.000Z";
+  const mintB = "2026-03-01T00:00:00.000Z";
+  // a binding's mint moves only on redeem, so it stays on the first mint
+  const bindings = [
+    { machineId: "machine-1", enrolledAt: BASE_MINT, mint: BASE_MINT },
+    { machineId: "machine-2", enrolledAt: BASE_MINT, mint: BASE_MINT },
+  ];
+  let record: EnrollmentToken = mintRecord("ci-runner-3", BASE_MINT);
+  const h = createHarness({
+    readTokenRecord: () => Promise.resolve(record),
+    readTokenSecret: () => Promise.resolve("s"),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  workerChannel.register(
+    WorkerMethod.rotateToken,
+    () => Promise.resolve({ persisted: true }),
+  );
+  await enroll(workerChannel, rotatableParams);
+
+  record = {
+    ...mintRecord("ci-runner-3", mintA),
+    bindings,
+    predecessor: {
+      createdAt: BASE_MINT,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      secretKey: "worker-token-ci-runner-3",
+    },
+  };
+  const first = await h.gateway.rotateToken("ci-runner-3");
+  assertEquals(first.unconnectedBindings, 1);
+  assertEquals(first.retiredBindings, 0);
+
+  record = {
+    ...mintRecord("ci-runner-3", mintB),
+    bindings,
+    predecessor: {
+      createdAt: mintA,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      secretKey: "worker-rotated-token-ci-runner-3-1",
+    },
+  };
+  const second = await h.gateway.rotateToken("ci-runner-3");
+
+  assertEquals(second.rotated, [{ worker: "ci-runner-3", persisted: true }]);
+  assertEquals(second.notRotated, []);
+  assertEquals(second.unconnectedBindings, 0);
+  assertEquals(second.retiredBindings, 1);
 });

@@ -2808,17 +2808,21 @@ export async function handleWorkerTokenRevoke(
         );
 
         let result: Record<string, unknown> | undefined;
-        await consumeStream(
-          workerTokenRevoke(libCtx, deps, { name: payload.name }),
-          withDefaults({
-            completed: (e) => {
-              result = e.data as unknown as Record<string, unknown>;
-            },
-            error: (e) => {
-              throw new Error(e.error.message);
-            },
-          }),
-        );
+        const revoke = () =>
+          consumeStream(
+            workerTokenRevoke(libCtx, deps, { name: payload.name }),
+            withDefaults({
+              completed: (e) => {
+                result = e.data as unknown as Record<string, unknown>;
+              },
+              error: (e) => {
+                throw new Error(e.error.message);
+              },
+            }),
+          );
+        // on the gateway's tail, or a rotate or redeem that read the record
+        // first would write over the revoke
+        await (ctx.workerGateway?.serializeTokenWrite(revoke) ?? revoke());
 
         // the revoke is persisted even if the request was cancelled, and an
         // already-revoked token may still hold workers this instance missed, so

@@ -208,7 +208,6 @@ export const WorkerCapability = {
   tokenRotate: "token.rotate",
 } as const;
 
-/** serve hands a connected worker the successor to the token it enrolled on */
 export const RotateTokenParamsSchema = z.object({
   token: z.string().min(1),
   expiresAtMs: z.number().int(),

@@ -124,7 +124,7 @@ Deno.test("WorkerTokenRevalidationService: a rotation keeps workers on the prede
     readTokens: () =>
       Promise.resolve(tokens(tokenRecord({
         createdAt: rotatedMint,
-        secretKey: "worker-token-ci-runner-3.r1767225900000",
+        secretKey: "worker-rotated-token-ci-runner-3-1767225900000",
         predecessor: {
           createdAt: MINT,
           expiresAt: "2099-01-01T00:00:00.000Z",

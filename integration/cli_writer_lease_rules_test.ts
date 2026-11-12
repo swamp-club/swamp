@@ -74,6 +74,7 @@ const PINNED = [
   "src/cli/commands/vault_remove.ts :: vaultRemoveCommand",
   "src/cli/commands/worker_prune.ts :: workerPruneCommand",
   "src/cli/commands/worker_token_create.ts :: workerTokenCreateCommand",
+  // Generates and stores the token encryption key on first use.
   "src/cli/commands/worker_token_reveal.ts :: workerTokenRevealCommand",
   "src/cli/commands/worker_token_revoke.ts :: workerTokenRevokeCommand",
   "src/cli/commands/worker_token_rotate.ts :: workerTokenRotateCommand",

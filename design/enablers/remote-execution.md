@@ -646,7 +646,9 @@ cut off in three ways:
   `revokeToken` after the revoke is saved, even when the request was cancelled
   or the token was already revoked, and returns the removed names as
   `disconnectedWorkers`. It runs on the gateway's transition tail, so an
-  enrollment already in progress lands first and is cut off too.
+  enrollment already in progress lands first and is cut off too. The revoke's
+  own record write runs on that tail as well (`serializeTokenWrite`), so a
+  redeem or rotate that read the record first cannot write over it.
 - **On revalidation.** `WorkerTokenRevalidationService`
   (`src/serve/worker_token_revalidation_service.ts`) reads the token records
   once every 30 s and applies `enrollmentTokenBindingVerdict` to each bound
@@ -666,7 +668,9 @@ cut off in three ways:
 A rotation's predecessor is not a re-mint: `enrollmentTokenBindingVerdict`
 keeps a worker bound to the predecessor's `createdAt` until the predecessor's
 `expiresAt`, and cuts it off as `expired` after that, so revalidation and HA
-peers enforce a shortened rotation's clamp too.
+peers enforce a shortened rotation's clamp too. A worker on a mint older than
+the predecessor is cut off as `retired`, since a second rotation dropped the
+secret it holds.
 
 **Rotating a token.** `rotate` replaces the secret and lifetime in place and
 keeps the name, the bindings and the allowance, so each worker keeps its pool
@@ -707,7 +711,9 @@ original secret, so `swamp worker token reveal` reads the current credential
 back, locally or through `--server`; the rotate command names it when its reply
 does not arrive, and serve's own failure to read the new secret names it too.
 Serve sends the reply even when the request was cancelled, since the rotation
-has already landed.
+has already landed. Rolling serve back to a release without rotation strands
+every worker still on the old token: that serve knows no predecessor, refuses
+the old secret as a mismatch, and the worker stops for good.
 
 The printed credential is **`<name>.<secret>`**. The name half finds the token
 aggregate at enrollment without scanning the pool. The secret half is compared
