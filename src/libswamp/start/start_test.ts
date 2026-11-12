@@ -988,7 +988,6 @@ Deno.test("startLaunchTask: saves a swampify task, picks the agent and opens it 
     assertEquals(task.step, "launched");
     assertEquals(task.task?.kind, "swampify");
     assertEquals(task.harness, "claude");
-    // Clicking Swampify! is the trust confirmation, as start's Launch is.
     assert(task.toData().trustConfirmedAt);
   });
 });

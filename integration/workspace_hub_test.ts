@@ -1124,7 +1124,6 @@ Deno.test("workspaceHub: Swampify's launch starts the task in the workspace and 
     ws.send(JSON.stringify(LAUNCH_FRAME));
     ws.send(read("ping"));
     await waitFor(() => seen.length === 2, "the launch reply and the echo");
-    // The child echoes what reaches it: only the read did.
     assertEquals(seen.filter((f) => f.type === "echo").length, 1);
     assertEquals(seen.find((f) => f.type !== "echo"), {
       type: "swampify.launch",

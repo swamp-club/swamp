@@ -960,7 +960,6 @@ Deno.test("swampifyBuildTask: is the brief's task, context and steps, a level do
   assert(!/^# /m.test(task));
   assertStringIncludes(task, "\n## Context\n");
   assertStringIncludes(task, "\n## How to work on this\n");
-  // Every line of the copied brief's body is in the task, headings aside.
   for (const line of brief.split("\n").slice(1)) {
     if (line.startsWith("# ") || line === "") continue;
     assertStringIncludes(task, line);

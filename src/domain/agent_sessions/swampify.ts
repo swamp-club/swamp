@@ -1361,10 +1361,8 @@ function buildParts(input: SwampifyBuildInput): {
 }
 
 /**
- * The brief that hands a picked option to the user's agent. Like the swampify
- * skill's own handoff brief it carries the option's name, why, outline and
- * counts, never labels or excerpts, so no transcript text reaches the file.
- * Null when the behavior name could break out of its command line.
+ * carries counts, never labels or excerpts, so no transcript text reaches the
+ * file; null when the behavior name could leave its command line
  */
 export function swampifyBuildBrief(input: SwampifyBuildInput): string | null {
   const parts = buildParts(input);
