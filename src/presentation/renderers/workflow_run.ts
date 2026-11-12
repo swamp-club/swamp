@@ -457,6 +457,7 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
             e.reason === "empty_collection" ? "empty forEach" : e.reason,
             e.guardExpression,
             e.collectionExpression,
+            e.guardResult,
           ),
         );
       },
