@@ -44,6 +44,7 @@ export interface AuditEvent {
   initiatedBy: string;
   principalUsername?: string;
   principalEmail?: string;
+  client?: string;
   sourceIp: string;
   requestId: string;
   methodName?: string;

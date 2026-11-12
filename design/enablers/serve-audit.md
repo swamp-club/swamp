@@ -258,7 +258,10 @@ webhook, store and WebSocket sinks) carry them. Syslog, CEF, CSV export and the
 carry `client`: a `client=` key in syslog, `cs4` with `cs4Label=client` in CEF,
 a `client` column after `initiatedBy` in CSV, so consumers must parse CSV by its
 header, and a last `CLIENT` column in the table. The dashboard's Activity view
-names the actor by username, email, or both, falling back to `initiatedBy`.
+names the actor by username, email, or both, falling back to `initiatedBy`, and
+appends `via <client>` for a client that is not `direct:*`; the expanded event
+shows any client. Run detail does the same for who started the run and for each
+approval or rejection.
 
 ## Query API
 

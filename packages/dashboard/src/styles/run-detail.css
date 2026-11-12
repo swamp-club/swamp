@@ -201,7 +201,7 @@
   gap: 8px;
 }
 .rd-by {
-  max-width: 220px;
+  max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

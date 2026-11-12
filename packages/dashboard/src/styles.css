@@ -644,6 +644,11 @@ a.start-dashboard-link {
   font-family: "JetBrains Mono", monospace;
 }
 
+/* The client after an actor ("via integration:slackwater") */
+.client-via {
+  color: var(--text-3);
+}
+
 /* Card grids */
 .card-grid {
   display: grid;

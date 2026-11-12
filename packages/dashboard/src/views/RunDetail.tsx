@@ -17,14 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "../styles/run-detail.css";
 import { useRequest } from "../client/useRequest.ts";
 import { useSwamp } from "../client/SwampProvider.tsx";
@@ -100,6 +93,7 @@ import {
   STEP_PARAM,
 } from "./run_links.ts";
 import { RunItemDrawer } from "./RunItemDrawer.tsx";
+import { Fact, RunByFact } from "./RunHeaderFacts.tsx";
 
 interface LogsData {
   path?: string;
@@ -129,6 +123,7 @@ interface WorkflowRun {
   completedAt?: string;
   duration?: number;
   initiatedBy?: string;
+  client?: string;
   jobs: JobRun[];
   workflowDataArtifacts?: ArtifactRef[];
 }
@@ -751,11 +746,7 @@ function RunHeader(
             : <Skeleton width={84} height={14} />}
         </Fact>
         {run?.initiatedBy && (
-          <Fact label="By">
-            <span className="rd-by" title={run.initiatedBy}>
-              {run.initiatedBy}
-            </span>
-          </Fact>
+          <RunByFact initiatedBy={run.initiatedBy} client={run.client} />
         )}
       </dl>
 
@@ -765,15 +756,6 @@ function RunHeader(
         runStatus={run?.status}
       />
     </header>
-  );
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="rd-fact">
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
   );
 }
 

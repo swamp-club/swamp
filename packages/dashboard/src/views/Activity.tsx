@@ -18,11 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { useMemo, useState } from "react";
-import type { AuditEvent, AuditStream } from "../client/useAuditStream.ts";
+import type { AuditStream } from "../client/useAuditStream.ts";
 import { copyText } from "../components/clipboard.ts";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { formatAbsoluteTime, formatCount, pluralize } from "../lib/format.ts";
-import { actorLabel } from "./actor_label.ts";
+import { formatCount, pluralize } from "../lib/format.ts";
+import { EventRow } from "./ActivityEventRow.tsx";
 import {
   AUDIT_COLUMNS,
   AuditDeniedState,
@@ -33,126 +33,6 @@ import {
   AuditLiveToggle,
 } from "./AuditStates.tsx";
 import "../styles/activity.css";
-
-// Category hues come from the theme's status tokens so both themes read.
-const CATEGORY_TONE: Record<string, string> = {
-  auth: "info",
-  access: "warning",
-  execution: "success",
-  secrets: "danger",
-  admin: "running",
-  data: "info",
-  system: "cancelled",
-};
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-function CategoryBadge({ category }: { category: string }) {
-  const tone = CATEGORY_TONE[category] ?? "cancelled";
-  return <span className={`act-cat act-tone-${tone}`}>{category}</span>;
-}
-
-function OutcomeDot({ outcome }: { outcome: string }) {
-  return (
-    <span
-      className={`act-outcome act-outcome-${outcome}`}
-      title={outcome}
-      role="img"
-      aria-label={`Outcome: ${outcome}`}
-    />
-  );
-}
-
-function DetailField(
-  { label, value, wide }: { label: string; value: string; wide?: boolean },
-) {
-  return (
-    <div className={wide ? "act-field act-field-wide" : "act-field"}>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-    </div>
-  );
-}
-
-function EventRow({ event }: { event: AuditEvent }) {
-  const [expanded, setExpanded] = useState(false);
-  const detailId = `audit-${event.id}`;
-  const d = event.decision as Record<string, string> | undefined;
-
-  return (
-    <div className={`act-event${expanded ? " expanded" : ""}`}>
-      <button
-        type="button"
-        className="act-row act-row-grid"
-        aria-expanded={expanded}
-        aria-controls={detailId}
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span
-          className="mono act-time"
-          title={formatAbsoluteTime(event.timestamp)}
-        >
-          {formatTime(event.timestamp)}
-        </span>
-        <OutcomeDot outcome={event.outcome} />
-        <CategoryBadge category={event.category} />
-        <span className="mono act-ellipsis">{event.action}</span>
-        <span className="act-ellipsis act-muted">{actorLabel(event)}</span>
-        <span className="mono act-ellipsis act-muted act-resource">
-          {event.resourceKind}:{event.resourceName}
-        </span>
-      </button>
-      {expanded && (
-        <dl className="act-detail" id={detailId}>
-          <DetailField label="ID" value={event.id} />
-          <DetailField label="Request" value={event.requestId} />
-          <DetailField
-            label="Time"
-            value={formatAbsoluteTime(event.timestamp)}
-          />
-          <DetailField label="Instance" value={event.instanceId} />
-          <DetailField label="Source IP" value={event.sourceIp} />
-          <DetailField label="Initiated by" value={event.initiatedBy} />
-          <DetailField label="Principal kind" value={event.principalKind} />
-          <DetailField label="Principal ID" value={event.principalId} />
-          {event.principalUsername && (
-            <DetailField label="Username" value={event.principalUsername} />
-          )}
-          {event.principalEmail && (
-            <DetailField label="Email" value={event.principalEmail} />
-          )}
-          {event.methodName && (
-            <DetailField label="Method" value={event.methodName} />
-          )}
-          {event.detail && (
-            <DetailField label="Detail" value={event.detail} wide />
-          )}
-          {d && (
-            <div
-              className={`act-decision act-decision-${
-                d.effect === "deny" ? "deny" : "allow"
-              }`}
-            >
-              <strong>Decision</strong> {d.effect} {d.action} on{" "}
-              {d.resourceKind}:{d.resourceName}
-              {d.grantId && (
-                <span className="act-muted">{` (grant ${d.grantId})`}</span>
-              )}
-            </div>
-          )}
-        </dl>
-      )}
-    </div>
-  );
-}
 
 const CATEGORIES = [
   "auth",
