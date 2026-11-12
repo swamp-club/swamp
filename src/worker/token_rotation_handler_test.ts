@@ -61,10 +61,11 @@ async function refusalCode(promise: Promise<unknown>): Promise<string> {
   return error.code;
 }
 
-Deno.test("registerTokenRotationHandler: writes the successor to the token file and swaps the credential", async () => {
+Deno.test("registerTokenRotationHandler: writes the successor to the token file, keeping its mode, and swaps the credential", async () => {
   await withTempDir(async (dir) => {
     const tokenFile = join(dir, "token");
     await Deno.writeTextFile(tokenFile, "web-01.old\n");
+    if (Deno.build.os !== "windows") await Deno.chmod(tokenFile, 0o640);
     const { worker, orchestrator } = channelPair();
     const credential: WorkerCredential = { token: "web-01.old" };
     registerTokenRotationHandler({ channel: worker, credential, tokenFile });
@@ -75,7 +76,7 @@ Deno.test("registerTokenRotationHandler: writes the successor to the token file 
     assertEquals(credential.token, "web-01.new");
     assertEquals(await Deno.readTextFile(tokenFile), "web-01.new\n");
     if (Deno.build.os !== "windows") {
-      assertEquals((await Deno.stat(tokenFile)).mode! & 0o777, 0o600);
+      assertEquals((await Deno.stat(tokenFile)).mode! & 0o777, 0o640);
     }
   });
 });
@@ -161,7 +162,7 @@ Deno.test("registerTokenRotationHandler: refuses a malformed token before touchi
   assertEquals(writes, 0);
 });
 
-Deno.test("registerTokenRotationHandler: a failed write keeps the credential the worker enrolled with", async () => {
+Deno.test("registerTokenRotationHandler: a token file it cannot write still takes the successor in memory", async () => {
   const { worker, orchestrator } = channelPair();
   const credential: WorkerCredential = { token: "web-01.old" };
   registerTokenRotationHandler({
@@ -172,9 +173,6 @@ Deno.test("registerTokenRotationHandler: a failed write keeps the credential the
       Promise.reject(new Deno.errors.PermissionDenied("read-only")),
   });
 
-  assertEquals(
-    await refusalCode(rotate(orchestrator, "web-01.new")),
-    "token_file_write_failed",
-  );
-  assertEquals(credential.token, "web-01.old");
+  assertEquals(await rotate(orchestrator, "web-01.new"), { persisted: false });
+  assertEquals(credential.token, "web-01.new");
 });

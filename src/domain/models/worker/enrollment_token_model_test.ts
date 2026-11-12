@@ -733,6 +733,46 @@ Deno.test("enrollmentTokenModel: a failed record write leaves the old secret and
   );
 });
 
+Deno.test("enrollmentTokenModel: the current secret still redeems when the predecessor's key is gone", async () => {
+  const harness = await mintToken();
+  const { successor } = await rotateToken(harness);
+  harness.vault.delete(`local/${tokenSecretKey("ci-runner-3")}`);
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: successor, machineId: "machine-1" },
+    harness.context,
+  );
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: "wrong", machineId: "machine-2" },
+        harness.context,
+      ),
+    Error,
+    "does not match",
+  );
+});
+
+Deno.test("enrollmentTokenModel: re-minting a rotated token deletes its per-mint keys", async () => {
+  const harness = await mintToken();
+  const first = await rotateToken(harness);
+  const second = await rotateToken(harness);
+  await enrollmentTokenModel.methods.revoke.execute({}, harness.context);
+  await enrollmentTokenModel.methods.mint.execute(mintArgs, harness.context);
+
+  assertEquals(
+    harness.vault.has(`local/${first.token.secretKey as string}`),
+    false,
+  );
+  assertEquals(
+    harness.vault.has(`local/${second.token.secretKey as string}`),
+    false,
+  );
+  assertEquals(
+    harness.vault.has(`local/${tokenSecretKey("ci-runner-3")}`),
+    true,
+  );
+});
+
 Deno.test("enrollmentTokenModel: rotate refuses a revoked token", async () => {
   const harness = await mintToken();
   await enrollmentTokenModel.methods.revoke.execute({}, harness.context);
@@ -842,7 +882,7 @@ Deno.test("enrollmentTokenBindingVerdict: an older record is a stale read, not a
   );
 });
 
-Deno.test("enrollmentTokenBindingVerdict: a rotation keeps workers still on the predecessor", () => {
+Deno.test("enrollmentTokenBindingVerdict: a rotation keeps workers on the predecessor until its deadline", () => {
   const token = tokenRecord({
     createdAt: "2026-01-01T00:05:00.000Z",
     predecessor: {
@@ -851,12 +891,29 @@ Deno.test("enrollmentTokenBindingVerdict: a rotation keeps workers still on the 
       secretKey: tokenSecretKey("ci-runner-3"),
     },
   });
+  const beforeDeadline = Date.parse("2026-01-01T00:30:00.000Z");
   assertEquals(
-    enrollmentTokenBindingVerdict(token, "2026-01-01T00:00:00.000Z"),
+    enrollmentTokenBindingVerdict(
+      token,
+      "2026-01-01T00:00:00.000Z",
+      beforeDeadline,
+    ),
     { keep: true },
   );
   assertEquals(
-    enrollmentTokenBindingVerdict(token, "2025-12-31T23:00:00.000Z"),
+    enrollmentTokenBindingVerdict(
+      token,
+      "2026-01-01T00:00:00.000Z",
+      Date.parse("2026-01-01T01:00:00.000Z"),
+    ),
+    { keep: false, cause: "expired" },
+  );
+  assertEquals(
+    enrollmentTokenBindingVerdict(
+      token,
+      "2025-12-31T23:00:00.000Z",
+      beforeDeadline,
+    ),
     { keep: false, cause: "reminted" },
   );
 });

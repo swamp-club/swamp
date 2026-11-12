@@ -354,13 +354,13 @@ Deno.test({
   },
 });
 
-Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 7, and serve enrolls 5, 6 and 7", () => {
-  assertEquals(REMOTE_PROTOCOL_VERSION, 7);
+Deno.test("remote secrets baseline: dispatch payload: REMOTE_PROTOCOL_VERSION is 8, and serve enrolls 5 through 8", () => {
+  assertEquals(REMOTE_PROTOCOL_VERSION, 8);
   assertEquals(LEGACY_PLAINTEXT_PROTOCOL_VERSION, 5);
-  assertEquals(SUPPORTED_REMOTE_PROTOCOL_VERSIONS, [5, 6, 7]);
+  assertEquals(SUPPORTED_REMOTE_PROTOCOL_VERSIONS, [5, 6, 7, 8]);
 });
 
-for (const refusedVersion of [4, 8]) {
+for (const refusedVersion of [4, 9]) {
   Deno.test({
     name:
       `remote secrets baseline: dispatch payload: enrollment at protocol version ${refusedVersion} is refused with protocol_mismatch and registers no worker`,

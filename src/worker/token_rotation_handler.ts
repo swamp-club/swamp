@@ -53,7 +53,11 @@ async function writeTokenFileAtomically(
 ): Promise<void> {
   // a symlinked token file keeps its link; the write lands on the target
   const target = await Deno.realPath(path);
-  await atomicWriteTextFile(target, `${token}\n`, { mode: 0o600, sync: {} });
+  const mode = (await Deno.stat(target)).mode;
+  await atomicWriteTextFile(target, `${token}\n`, {
+    mode: mode === null ? 0o600 : mode & 0o777,
+    sync: {},
+  });
 }
 
 export function registerTokenRotationHandler(
@@ -83,10 +87,13 @@ export function registerTokenRotationHandler(
           "a token issued under another name",
       });
     }
-    const persisted = options.tokenFile !== undefined;
+    let persisted = false;
     if (options.tokenFile !== undefined) {
+      // a read-only file (a Kubernetes Secret mount) still takes the successor
+      // in memory, so this process outlives the old token
       try {
         await write(options.tokenFile, next);
+        persisted = true;
       } catch (error) {
         logger.warn(
           "Could not write the rotated token to {path}: {error}",
@@ -95,11 +102,6 @@ export function registerTokenRotationHandler(
             error: error instanceof Error ? error.message : String(error),
           },
         );
-        throw new RpcError({
-          code: "token_file_write_failed",
-          message: "The worker could not write its token file; it keeps " +
-            "the token it enrolled with",
-        });
       }
     }
     options.credential.token = next;

@@ -660,7 +660,9 @@ cut off in three ways:
   predecessor clears the predecessor instead of expiring the token.
 
 A rotation's predecessor is not a re-mint: `enrollmentTokenBindingVerdict`
-keeps a worker bound to the predecessor's `createdAt`.
+keeps a worker bound to the predecessor's `createdAt` until the predecessor's
+`expiresAt`, and cuts it off as `expired` after that, so revalidation and HA
+peers enforce a shortened rotation's clamp too.
 
 **Rotating a token.** `rotate` replaces the secret and lifetime in place and
 keeps the name, the bindings and the allowance, so each worker keeps its pool
@@ -673,20 +675,26 @@ leaves the old key and record as they were. The record keeps the old mint as
 `secretKey`). `redeem` accepts either secret until the predecessor's deadline
 and records in the machine's binding which mint it redeemed (`mint`), so the
 gateway binds a reconnect to that mint and arms its deadline. A second
-rotation drops the oldest mint and deletes its key.
+rotation drops the oldest mint and deletes its key; a re-mint after revoke or
+expiry deletes the rotated keys the old record named.
 
 Through `--server`, `WorkerGateway.rotateToken` runs in three phases so
 enrollments never wait behind a slow worker: the `rotate` method on the
 transition tail; then, off the tail and with a timeout per worker,
 `worker.token.rotate` to every connected pool member on protocol 8; then, on
 the tail, each worker that acknowledged and still has the same `instanceUuid`
-moves to the new mint and deadline. A worker started with `--token-file`
-writes the successor back to that file atomically (mode 0600, through a
-symlink to its target); one started with an inline token holds it in memory
-only. A worker refuses a successor under another name. Workers on older
+moves forward to the new mint and deadline (never back, when a later rotation
+already moved it), and every worker left on the predecessor has its deadline
+pulled in to the predecessor's clamped `expiresAt`. A worker started with
+`--token-file` writes the successor back to that file atomically, keeping the
+file's mode and writing through a symlink to its target; when the file cannot
+be written (a read-only Kubernetes Secret mount) or the token came inline, it
+holds the successor in memory only and reports it unpersisted. A worker refuses a successor under another name. Workers on older
 protocols, that refuse, time out or are offline stay on the predecessor until
 it lapses; the command reports them and prints the new credential once for
-them. A rotation without `--server` reaches no worker.
+them. A rotation without `--server` reaches no worker. The credential is shown
+only in the rotation's reply: if that reply is lost, rotating again retires
+the original secret, so read the new one back from the vault instead.
 
 The printed credential is **`<name>.<secret>`**. The name half finds the token
 aggregate at enrollment without scanning the pool. The secret half is compared

@@ -185,7 +185,7 @@ async function deleteSecretBestEffort(
       await vaultService.delete(
         vaultName,
         secretKey,
-        "model:enrollment-token-rotate",
+        "model:enrollment-token-retire",
       );
     }
   } catch (error) {
@@ -199,7 +199,11 @@ async function deleteSecretBestEffort(
   }
 }
 
-export type EnrollmentBindingCutoffCause = "revoked" | "reminted" | "deleted";
+export type EnrollmentBindingCutoffCause =
+  | "revoked"
+  | "reminted"
+  | "deleted"
+  | "expired";
 
 export type EnrollmentBindingVerdict =
   | { readonly keep: true }
@@ -207,12 +211,13 @@ export type EnrollmentBindingVerdict =
 
 /**
  * whether a worker enrolled on this mint may stay connected. Minting after a
- * revoke reuses the name, so a newer createdAt is a different credential.
- * Expiry is not a cause; the gateway arms its own timer.
+ * revoke reuses the name, so a newer createdAt is a different credential. Only
+ * a rotation's predecessor expires here; the gateway times the current mint.
  */
 export function enrollmentTokenBindingVerdict(
   token: EnrollmentToken | null,
   boundCreatedAt: string,
+  nowMs: number = Date.now(),
 ): EnrollmentBindingVerdict {
   if (token === null) {
     return { keep: false, cause: "deleted" };
@@ -224,7 +229,9 @@ export function enrollmentTokenBindingVerdict(
     token.predecessor !== undefined &&
     sameInstant(token.predecessor.createdAt, boundCreatedAt)
   ) {
-    return { keep: true };
+    return Date.parse(token.predecessor.expiresAt) > nowMs
+      ? { keep: true }
+      : { keep: false, cause: "expired" };
   }
   // Only a newer mint is a re-mint; an older record is a stale read of the
   // mint the worker holds, never a reason to cut it off.
@@ -252,11 +259,12 @@ async function mint(
     throw new Error("Minting an enrollment token requires a vault service");
   }
   const existing = await context.readResource!(TOKEN_DATA_NAME);
+  let previous: EnrollmentToken | undefined;
   if (existing !== null) {
-    const parsed = EnrollmentTokenSchema.parse(existing);
+    previous = EnrollmentTokenSchema.parse(existing);
     if (
-      parsed.state !== "revoked" && parsed.state !== "expired" &&
-      !isExpired(parsed, Date.now())
+      previous.state !== "revoked" && previous.state !== "expired" &&
+      !isExpired(previous, Date.now())
     ) {
       throw new Error(
         `Enrollment token '${context.definition.name}' already exists — revoke it or wait for expiry before re-minting`,
@@ -281,6 +289,16 @@ async function mint(
     bindings: [] as Binding[],
   };
   const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);
+  // a rotated token's keys are per mint, so a re-mint leaves them behind
+  if (previous !== undefined) {
+    for (
+      const retired of [previous.secretKey, previous.predecessor?.secretKey]
+    ) {
+      if (retired !== undefined && retired !== secretKey) {
+        await deleteSecretBestEffort(context, previous.vaultName, retired);
+      }
+    }
+  }
   return { dataHandles: [handle] };
 }
 
@@ -290,9 +308,9 @@ const RedeemArgsSchema = z.object({
 });
 
 /**
- * redeems at enrollment or re-authenticates a bound machine; a known machineId
- * re-auths without writing, and past expiresAt every machine is rejected (hard
- * deadline). Every failure throws.
+ * redeems at enrollment or re-authenticates a bound machine; a re-auth writes
+ * only when the machine moves between a rotation's mints, and past expiresAt
+ * every machine is rejected (hard deadline). Every failure throws.
  */
 async function redeem(
   args: z.infer<typeof RedeemArgsSchema>,
@@ -319,13 +337,15 @@ async function redeem(
   const matchesCurrent = timingSafeEqual(secret, args.presentedToken);
   const predecessor = livePredecessor(token, Date.now());
   let matchesPredecessor = false;
-  if (predecessor !== undefined) {
+  if (!matchesCurrent && predecessor !== undefined) {
+    // a key a concurrent rotation already deleted is no match, never a failure
     const previous = await context.vaultService.get(
       token.vaultName,
       predecessor.secretKey,
       "model:enrollment-token-verify",
-    );
-    matchesPredecessor = timingSafeEqual(previous, args.presentedToken);
+    ).catch(() => null);
+    matchesPredecessor = previous !== null &&
+      timingSafeEqual(previous, args.presentedToken);
   }
   if (!matchesCurrent && !matchesPredecessor) {
     throw new Error(`Enrollment token '${name}' does not match`);

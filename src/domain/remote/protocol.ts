@@ -46,13 +46,16 @@ export const LEGACY_PLAINTEXT_PROTOCOL_VERSION = 5;
 /** 6 still sends queryData and readOutput lists over the control socket */
 export const CONTROL_SOCKET_READS_PROTOCOL_VERSION = 6;
 
+/** reads queryData and the readOutput lists over the data plane */
+export const DATA_PLANE_READS_PROTOCOL_VERSION = 7;
+
 /** the first version whose worker answers WorkerMethod.rotateToken */
 export const TOKEN_ROTATION_PROTOCOL_VERSION = 8;
 
 export const SUPPORTED_REMOTE_PROTOCOL_VERSIONS: readonly number[] = [
   LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   CONTROL_SOCKET_READS_PROTOCOL_VERSION,
-  7,
+  DATA_PLANE_READS_PROTOCOL_VERSION,
   TOKEN_ROTATION_PROTOCOL_VERSION,
 ];
 

@@ -117,6 +117,7 @@ const CUTOFF_REASONS: Record<EnrollmentBindingCutoffCause, string> = {
   revoked: "revoked",
   reminted: "re-minted",
   deleted: "deleted",
+  expired: "expired",
 };
 
 /** setTimeout overflows past 2^31-1 ms; longer waits are chained. */
@@ -206,6 +207,8 @@ interface WorkerEntry {
   probeRefusedForCapacity?: boolean;
   graceTimer?: ReturnType<typeof setTimeout>;
   expiryTimer?: ReturnType<typeof setTimeout>;
+  /** the deadline expiryTimer is armed for */
+  expiresAtMs?: number;
 }
 
 export type ModelMethodRunner = (input: {
@@ -618,9 +621,10 @@ export class WorkerGateway {
         const restamped: { worker: string; persisted: boolean }[] = [];
         for (const ack of acknowledged) {
           const entry = this.#workers.get(ack.name);
+          // a later rotation may already have moved it; never move it back
           if (
             entry?.tokenName === tokenName &&
-            entry.tokenCreatedAt === record.createdAt
+            Date.parse(entry.tokenCreatedAt) >= Date.parse(record.createdAt)
           ) {
             restamped.push({ worker: ack.name, persisted: ack.persisted });
             continue;
@@ -656,6 +660,25 @@ export class WorkerGateway {
                 error: error instanceof Error ? error.message : String(error),
               },
             );
+          }
+        }
+        // a shortened rotation clamps the predecessor's deadline, so a worker
+        // still on it must not outlive the clamp
+        const predecessor = record.predecessor;
+        if (predecessor !== undefined) {
+          const clampMs = Date.parse(predecessor.expiresAt);
+          for (const entry of this.#workers.values()) {
+            if (
+              entry.tokenName === tokenName &&
+              entry.tokenCreatedAt === predecessor.createdAt &&
+              (entry.expiresAtMs === undefined || clampMs < entry.expiresAtMs)
+            ) {
+              if (entry.expiryTimer !== undefined) {
+                clearTimeout(entry.expiryTimer);
+                entry.expiryTimer = undefined;
+              }
+              this.#scheduleTokenExpiry(entry, clampMs);
+            }
           }
         }
         return restamped;
@@ -1248,6 +1271,7 @@ export class WorkerGateway {
     if (Number.isNaN(deadlineMs)) {
       return;
     }
+    entry.expiresAtMs = deadlineMs;
     const delay = deadlineMs - Date.now();
     if (delay > MAX_TIMEOUT_MS) {
       entry.expiryTimer = setTimeout(

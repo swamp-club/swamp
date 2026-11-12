@@ -2909,6 +2909,11 @@ export async function handleWorkerTokenRotate(
           );
         }
 
+        if (data === undefined) {
+          throw new Error(
+            `Rotating token '${payload.name}' ended without completing`,
+          );
+        }
         if (controller.signal.aborted) {
           sendError(socket, requestId, "cancelled", "Operation was cancelled");
           return;
@@ -2917,7 +2922,7 @@ export async function handleWorkerTokenRotate(
         send(socket, {
           type: "worker.token.rotate",
           id: requestId,
-          payload: { data: (data ?? {}) as unknown as Record<string, unknown> },
+          payload: { data: data as unknown as Record<string, unknown> },
         });
       } catch (error) {
         const message = sanitizeErrorForClient(error);

@@ -271,7 +271,7 @@ Deno.test("worker token rotate through serve hands the worker its successor, whi
 Deno.test("worker token rotate leaves an unrotated fleet member on the old token until it lapses, without expiring the token", async () => {
   await withFixture(async (f) => {
     const original = await mintToken(f, "w-fleet", {
-      durationMs: 1_500,
+      durationMs: 3_000,
       maxEnrollments: 2,
     });
     const credential: WorkerCredential = { token: original };
