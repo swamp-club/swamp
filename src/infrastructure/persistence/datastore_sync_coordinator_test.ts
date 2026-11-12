@@ -42,7 +42,10 @@ import {
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
-import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
+import {
+  DatastorePushFailedError,
+  SyncTimeoutError,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { withMockedEnv } from "./path_test_helpers.ts";
 
@@ -191,7 +194,7 @@ Deno.test("registerDatastoreSync enriches pullChanged failure with SDK metadata"
   assertEquals(thrown.cause, opaqueError);
 });
 
-Deno.test("flushDatastoreSync swallows pushChanged failures (warn-only)", async () => {
+Deno.test("flushDatastoreSync: a failed pushChanged releases the lock and throws DatastorePushFailedError", async () => {
   const failingService = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => {
@@ -201,15 +204,21 @@ Deno.test("flushDatastoreSync swallows pushChanged failures (warn-only)", async 
     },
     markDirty: () => Promise.resolve(),
   };
+  const lock = new FakeLock();
 
   await registerDatastoreSync({
     service: failingService,
+    lock,
     label: "@test/syncfail",
   });
 
-  // Must NOT throw — the coordinator's push path is intentionally
-  // warn-and-swallow so a successful command doesn't fail on cleanup.
-  await flushDatastoreSync();
+  const error = await assertRejects(
+    () => flushDatastoreSync(),
+    DatastorePushFailedError,
+    "@test/syncfail",
+  );
+  assertEquals(error.code, "datastore_push_failed");
+  assertEquals(lock.releaseCount, 1);
   assertEquals(getRegisteredLockKeys().length, 0);
 });
 

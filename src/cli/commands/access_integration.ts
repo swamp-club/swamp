@@ -36,7 +36,10 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import {
   createIntegrationListDeps,
   integrationList,
@@ -205,28 +208,23 @@ export async function runIntegrationChange(
   fn: () => Promise<void>,
 ): Promise<void> {
   const push = options.push;
-  const pushFailures: unknown[] = [];
   await runCommandInRootUnit(repoContext, {
     ...options,
     push: push && (async (outcome) => {
       try {
         await push(outcome);
       } catch (error) {
-        pushFailures.push(error);
-        throw error;
+        if (!outcome.completed) throw error;
+        const cause = error instanceof Error ? error.message : String(error);
+        const retry = run.methodName === "register"
+          ? ""
+          : " Run the same command again to send it.";
+        throw new UserError(
+          `${run.verb} '${run.id}' was saved on this machine but didn't reach the datastore, so serve still uses the old record: ${cause}.${retry}`,
+        );
       }
     }),
   }, fn);
-  if (pushFailures.length === 0) return;
-  const cause = pushFailures[0] instanceof Error
-    ? pushFailures[0].message
-    : String(pushFailures[0]);
-  const retry = run.methodName === "register"
-    ? ""
-    : " Run the same command again to send it.";
-  throw new UserError(
-    `${run.verb} '${run.id}' was saved on this machine but didn't reach the datastore, so serve still uses the old record: ${cause}.${retry}`,
-  );
 }
 
 /** every write is a behavior run, so serve's existing admin check decides it */
@@ -351,7 +349,12 @@ async function runIntegrationMethod(
     {
       push: modelLocks?.push ??
         (syncService
-          ? async () => await pushNamespace(syncService, namespace)
+          ? async () =>
+            await pushNamespace(
+              syncService,
+              namespace,
+              pushBoundOf(datastoreConfig),
+            )
           : undefined),
       release: modelLocks?.release,
       onCleanupError: (cleanupError) => {

@@ -57,7 +57,10 @@ import {
   libSwampContextForRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
-import { reportManagedConfigCleanupError } from "../managed_config_sync.ts";
+import {
+  managedConfigPushFailure,
+  reportManagedConfigCleanupError,
+} from "../managed_config_sync.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -200,11 +203,16 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
           runCommandInRootUnit(
             repoContext,
             {
-              push: lockResult.push,
+              push: async () => {
+                try {
+                  await lockResult.push();
+                } catch (error) {
+                  throw managedConfigPushFailure(error, deleted, marker);
+                }
+              },
               release: lockResult.release,
-              // After a completed delete the push is what publishes it, so a
-              // failure there throws; before that it must not mask the original
-              // error.
+              // before a completed delete a failure must not mask the original
+              // error
               onCleanupError: (cleanupError) =>
                 reportManagedConfigCleanupError(
                   cleanupError,

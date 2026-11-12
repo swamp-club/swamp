@@ -397,11 +397,21 @@ source giving a positive value wins:
 4. `DEFAULT_SYNC_TIMEOUT_MS`: 5 minutes.
 
 The deadline raises `SyncTimeoutError` even if the extension ignores the
-`AbortSignal` passed to `pushChanged(options)` / `pullChanged(options)`. A
-timeout exits the CLI non-zero, so the user sees the data did not reach the
-remote. Other push errors are still downgraded to warnings, as before, so a
-brief S3 failure does not kill a run. Managed-config writes are the exception:
-any failed push exits non-zero (see "Where mutations write").
+`AbortSignal` passed to `pushChanged(options)` / `pullChanged(options)`. It
+bounds the coordinator's pull and push, each publish attempt of a behavior
+lock's push (`acquireModelLocks`: the extension push, the staging before it and
+the check after it, timed from inside serve's sync gate so a wait there never
+counts), and `pushNamespace`, which takes the datastore's resolved timeout or,
+without one, the environment's. A timed-out lock push releases its locks, so a
+wedged push no longer holds a behavior until the process is killed.
+
+A command whose work completed exits non-zero whenever its push fails or times
+out, so the user sees the data did not reach the remote: a timeout as
+`SyncTimeoutError`, a typed refusal with its own code, and any other failure as
+`DatastorePushFailedError` (code `datastore_push_failed`), which names
+`swamp datastore sync --push` as the retry. The data stays on this host and the
+next push publishes it. Managed-config writes fail with their own error (see
+"Where mutations write").
 
 **Setup timeouts.** In `datastore setup extension`, a push or pull
 timeout is recoverable. The datastore type is still written to `.swamp.yaml`,
@@ -1834,8 +1844,10 @@ operation inside a unit of work:
     datastore config migrate) pass `pushWhen: "completed"`, which
     `runInRootUnitOfWork` applies (swamp-club#3055), so a failed command
     still pushes nothing.
-  - A push or release failure reaches the handler the command used before:
-    the release error replaces the push error, as a `finally` did, and neither
+  - A push that fails after the command completed is always thrown, past the
+    command's `onCleanupError`, and a release that fails after it is logged
+    and never replaces it (swamp-club#4673). `onCleanupError` gets a failed
+    release, and a failed push only when the command itself threw, so neither
     hides the command's own error.
   - Former bare marks are `root.stage({ kind: "bulk", reason })`. Access token
     mint and worker token create and revoke also push mid-command (mint and
@@ -10942,7 +10954,7 @@ lockfile:
 | Mutation type | Config-tier path | CLI push | Serve push |
 |---------------|-----------------|----------|------------|
 | Behavior definition create/edit | `config/models/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
-| Behavior definition delete | `config/models/` | Per-behavior lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-behavior lock flush |
+| Behavior definition delete | `config/models/` | Per-behavior lock push as its root unit's flush, which `managedConfigPushFailure` turns into `ManagedConfigUnpublishedError` after a completed delete | Via per-behavior lock flush |
 | Workflow definition create/edit | `config/workflows/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
 | Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile at its root's checkpoint under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate, publishing at the checkpoint of the root it opens for each run; a failed publish is logged and left pending |

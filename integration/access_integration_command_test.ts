@@ -703,7 +703,8 @@ Deno.test("runIntegrationChange: a failed push fails the change, and says it can
   );
   assertStringIncludes(error.message, "upload refused");
   assertStringIncludes(error.message, "Run the same command again");
-  assertEquals(warned, true);
+  // the failure is the change's error, not a cleanup warning as well
+  assertEquals(warned, false);
 });
 
 Deno.test("runIntegrationChange: a register can't be re-sent, so it doesn't say to", async () => {

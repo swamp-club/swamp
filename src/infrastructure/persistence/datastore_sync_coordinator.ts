@@ -27,6 +27,7 @@ import {
   SyncTimeoutError,
 } from "../../domain/datastore/mod.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
+import { DatastorePushFailedError } from "../../domain/datastore/datastore_sync_service.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { getTracer, SpanStatusCode } from "../tracing/mod.ts";
 import {
@@ -382,9 +383,8 @@ export async function flushDatastoreSync(): Promise<void> {
 }
 
 /**
- * push errors warn-downgrade so a transient blip does not abort the run, but
- * SyncTimeoutError propagates: a timeout means data did not reach the remote
- * and needs a non-zero exit
+ * a failed push propagates after the lock is released: the data did not reach
+ * the remote, so the command needs a non-zero exit
  */
 export async function flushDatastoreSyncNamed(key: string): Promise<void> {
   const entry = entries.get(key);
@@ -428,25 +428,27 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
     } catch (error) {
       const { summary, fields } = summarizeSyncError("push", label, error);
       syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: summary });
-      // timeouts propagate for a non-zero exit while other push errors warn; a
-      // timeout is not logged here because the top-level renderError shows it
-      // and logging would double the output
-      if (error instanceof SyncTimeoutError) {
-        if (entry.lock) {
-          try {
-            await entry.lock.release();
-          } catch (releaseError) {
-            logger.warn("Failed to release sync lock after timeout: {error}", {
+      // not logged above debug: the top-level renderError shows it, and logging
+      // would double the output
+      logger.debug("{summary}", { summary, ...fields });
+      if (entry.lock) {
+        try {
+          await entry.lock.release();
+        } catch (releaseError) {
+          logger.warn(
+            "Failed to release sync lock after a failed push: {error}",
+            {
               error: releaseError instanceof Error
                 ? releaseError.message
                 : String(releaseError),
-            });
-          }
+            },
+          );
         }
-        maybeRemoveSignalHandler();
-        throw error;
       }
-      logger.warn("{summary}", { summary, ...fields });
+      maybeRemoveSignalHandler();
+      throw error instanceof SyncTimeoutError
+        ? error
+        : new DatastorePushFailedError(new Error(summary, { cause: error }));
     } finally {
       syncSpan.end();
     }

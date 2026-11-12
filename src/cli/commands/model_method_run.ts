@@ -773,12 +773,37 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           };
           const locks = modelLocks;
           const publishTo = publishModel;
-          // why a read or list run's publish failed, other than a conflict,
-          // which is only logged.
-          let publishFailure: { error: unknown } | undefined;
           // Set once every input set ran and succeeded: only then does a
           // failed publish fail the command; otherwise it is logged.
           let runSucceeded = false;
+          const publishFailed = (error: unknown): UserError | undefined => {
+            if (!runSucceeded) {
+              publishLogger.error(
+                "This run's data was not published to the datastore: {error}",
+                {
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              );
+              return undefined;
+            }
+            // A typed error (a lock timeout, an unpublished version) keeps
+            // its own code and exit status, as on a mutating run's push.
+            if (error instanceof UserError) {
+              publishLogger.error(
+                "This run's data was not published to the datastore",
+              );
+              return error;
+            }
+            const message = error instanceof Error
+              ? error.message
+              : String(error);
+            return new UserError(
+              `This run's data was not published to the datastore ` +
+                `(${message.replace(/\.$/, "")}). It is on this host only; ` +
+                `run the method again to write and publish it.`,
+              "datastore_publish_failed",
+            );
+          };
           // in JSON mode a read or list run's result waits for its publish, so
           // it can name the versions left unpublished.
           const holdResults = ctx.outputMode === "json" &&
@@ -890,8 +915,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       leaveUnpublished(publishTo, "unauthorized");
                       return;
                     }
-                    publishFailure = { error: cause };
-                    throw cause;
+                    const failure = publishFailed(cause);
+                    if (failure !== undefined) throw failure;
                   }
                 }
                 : undefined,
@@ -900,19 +925,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 ? {}
                 : { releaseWithEnd: modelLocks.releasableLease() }),
               onCleanupError: (releaseError) => {
-                if (releaseError === publishFailure?.error) {
-                  // A run that succeeded fails below instead.
-                  if (runSucceeded) return;
-                  publishLogger.error(
-                    "This run's data was not published to the datastore: {error}",
-                    {
-                      error: releaseError instanceof Error
-                        ? releaseError.message
-                        : String(releaseError),
-                    },
-                  );
-                  return;
-                }
                 publishLogger.warn(
                   "Failed to release locks during cleanup: {error}",
                   {
@@ -1077,26 +1089,6 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             throw lapsed;
           }
           if (!finished) return;
-          if (publishFailure !== undefined) {
-            const { error } = publishFailure;
-            // A typed error (a lock timeout, an unpublished version) keeps
-            // its own code and exit status, as on a mutating run's push.
-            if (error instanceof UserError) {
-              publishLogger.error(
-                "This run's data was not published to the datastore",
-              );
-              throw error;
-            }
-            const message = error instanceof Error
-              ? error.message
-              : String(error);
-            throw new UserError(
-              `This run's data was not published to the datastore ` +
-                `(${message.replace(/\.$/, "")}). It is on this host only; ` +
-                `run the method again to write and publish it.`,
-              "datastore_publish_failed",
-            );
-          }
 
           ctx.logger.debug("Method run command completed");
         } finally {

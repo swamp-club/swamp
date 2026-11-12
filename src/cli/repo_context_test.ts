@@ -136,6 +136,7 @@ import {
   isCustomDatastoreConfig,
 } from "../domain/datastore/datastore_config.ts";
 import type {
+  DatastoreSyncOptions,
   DatastoreSyncService,
   PushManifest,
 } from "../domain/datastore/datastore_sync_service.ts";
@@ -3299,10 +3300,12 @@ Deno.test("acquireModelLocks - no capabilities calls pull/push with no args", as
       await lockResult.flush();
 
       assertEquals(pushArgs.length, 1);
+      const [pushOptions, ...rest] = pushArgs[0] as unknown[];
+      assertEquals(rest, []);
       assertEquals(
-        (pushArgs[0] as unknown[]).length,
-        0,
-        "pushChanged must be called with no arguments when capabilities absent",
+        Object.keys(pushOptions as object),
+        ["signal"],
+        "pushChanged must carry no scope when capabilities are absent, only the deadline's signal",
       );
     });
   } finally {
@@ -4222,6 +4225,152 @@ Deno.test("flushSinglePhasePush: calls pushChanged under global lock", async () 
   assertEquals(events, [
     "global-lock-acquire",
     "pushChanged",
+    "global-lock-release",
+  ]);
+});
+
+Deno.test("flushTwoPhasePush: passes the deadline's signal to both phases and the global lock", async () => {
+  const seen: (AbortSignal | undefined)[] = [];
+  const provider = {
+    ...createMockProvider([]),
+    createLock: () => ({
+      ...createMockProvider([]).createLock(),
+      acquire: (signal?: AbortSignal) => {
+        seen.push(signal);
+        return Promise.resolve();
+      },
+    }),
+  };
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+    preparePush: (options?: DatastoreSyncOptions) => {
+      seen.push(options?.signal);
+      return Promise.resolve({} as unknown as PushManifest);
+    },
+    commitPush: (_manifest: PushManifest, options?: DatastoreSyncOptions) => {
+      seen.push(options?.signal);
+      return Promise.resolve(1);
+    },
+  };
+  const signal = new AbortController().signal;
+
+  await flushTwoPhasePush(
+    provider,
+    syncService,
+    createMockConfig("ns"),
+    { twoPhaseSync: true },
+    [{ modelType: "test", modelId: "m1" }],
+    "ns",
+    undefined,
+    createMockLogger(),
+    undefined,
+    signal,
+  );
+
+  assertEquals(seen, [signal, signal, signal]);
+});
+
+Deno.test("flushSinglePhasePush: an aborted deadline rethrows its own reason, not a wrapped push failure", async () => {
+  const controller = new AbortController();
+  const reason = new Error("deadline");
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: (options?: DatastoreSyncOptions) => {
+      controller.abort(reason);
+      return Promise.reject(options?.signal?.reason);
+    },
+    markDirty: () => Promise.resolve(),
+  };
+
+  const thrown = await assertRejects(() =>
+    flushSinglePhasePush(
+      createMockProvider([]),
+      syncService,
+      createMockConfig(),
+      undefined,
+      [{ modelType: "test", modelId: "m1" }],
+      undefined,
+      undefined,
+      createMockLogger(),
+      undefined,
+      controller.signal,
+    )
+  );
+  assertEquals(thrown, reason);
+});
+
+Deno.test("flushSinglePhasePush: a pushChanged that ignores the signal still releases the global lock at the deadline", async () => {
+  const events: string[] = [];
+  const controller = new AbortController();
+  const reason = new Error("deadline");
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      events.push("pushChanged");
+      controller.abort(reason);
+      return new Promise<number>(() => {});
+    },
+    markDirty: () => Promise.resolve(),
+  };
+
+  const thrown = await assertRejects(() =>
+    flushSinglePhasePush(
+      createMockProvider(events),
+      syncService,
+      createMockConfig(),
+      undefined,
+      [{ modelType: "test", modelId: "m1" }],
+      undefined,
+      undefined,
+      createMockLogger(),
+      undefined,
+      controller.signal,
+    )
+  );
+  assertEquals(thrown, reason);
+  assertEquals(events, [
+    "global-lock-acquire",
+    "pushChanged",
+    "global-lock-release",
+  ]);
+});
+
+Deno.test("flushTwoPhasePush: a commitPush that ignores the signal still releases the global lock at the deadline", async () => {
+  const events: string[] = [];
+  const controller = new AbortController();
+  const reason = new Error("deadline");
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+    preparePush: () => Promise.resolve({} as unknown as PushManifest),
+    commitPush: () => {
+      events.push("commitPush");
+      controller.abort(reason);
+      return new Promise<number>(() => {});
+    },
+  };
+
+  const thrown = await assertRejects(() =>
+    flushTwoPhasePush(
+      createMockProvider(events),
+      syncService,
+      createMockConfig(),
+      { twoPhaseSync: true },
+      [{ modelType: "test", modelId: "m1" }],
+      undefined,
+      undefined,
+      createMockLogger(),
+      undefined,
+      controller.signal,
+    )
+  );
+  assertEquals(thrown, reason);
+  assertEquals(events, [
+    "global-lock-acquire",
+    "commitPush",
     "global-lock-release",
   ]);
 });

@@ -25,7 +25,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
@@ -297,7 +300,11 @@ export const datastoreConfigMigrateCommand = new Command()
     const publish = syncService
       ? async () => {
         try {
-          await pushNamespace(syncService, namespace);
+          await pushNamespace(
+            syncService,
+            namespace,
+            pushBoundOf(datastoreConfig),
+          );
         } catch (error) {
           throw new ManagedConfigUnpublishedError(
             error,

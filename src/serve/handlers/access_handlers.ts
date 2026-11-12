@@ -168,7 +168,10 @@ import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
 } from "../../domain/models/access/server_token_model.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
@@ -985,7 +988,12 @@ export async function handleAccessReload(
         // and still pushes
         const syncService = ctx.syncService;
         await stageWritesThenPush(ctx.repoContext, writtenPaths, {
-          flush: () => pushNamespace(syncService, namespace),
+          flush: () =>
+            pushNamespace(
+              syncService,
+              namespace,
+              pushBoundOf(ctx.datastoreConfig),
+            ),
         });
       } catch (error) {
         logger

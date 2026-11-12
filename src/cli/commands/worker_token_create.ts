@@ -29,7 +29,10 @@ import {
   type ModelLockResult,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
@@ -220,7 +223,11 @@ export const workerTokenCreateCommand = withRemoteOptions(
       push: modelLocks?.push,
       checkpoint: syncService
         ? async () => {
-          await pushNamespace(syncService, namespace);
+          await pushNamespace(
+            syncService,
+            namespace,
+            pushBoundOf(datastoreConfig),
+          );
         }
         : undefined,
       release: modelLocks?.release,

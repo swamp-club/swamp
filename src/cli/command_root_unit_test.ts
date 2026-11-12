@@ -19,10 +19,12 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  DatastorePushFailedError,
   DataVersionConflictError,
   type MarkDirtyHook,
   ModelLockLostError,
 } from "../domain/datastore/datastore_sync_service.ts";
+import { UserError } from "../domain/errors.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { openRepoUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { runCommandInRootUnit } from "./command_root_unit.ts";
@@ -110,16 +112,17 @@ Deno.test("runCommandInRootUnit: a push error is thrown after the release when f
   const { events, repoContext, push, release } = recorder({
     failPush: "push failed",
   });
-  await assertRejects(
+  const error = await assertRejects(
     () =>
       runCommandInRootUnit(
         repoContext,
         { push, release },
         () => Promise.resolve(),
       ),
-    Error,
+    DatastorePushFailedError,
     "push failed",
   );
+  assertEquals((error.cause as Error).message, "push failed");
   assertEquals(events, ["push", "release"]);
 });
 
@@ -137,27 +140,90 @@ Deno.test("runCommandInRootUnit: fn's error wins over a push error without a han
   );
 });
 
-Deno.test("runCommandInRootUnit: a release error replaces the push error, as a finally does", async () => {
+Deno.test("runCommandInRootUnit: a failed push still fails a command that resolved when the release fails after it", async () => {
   const { events, repoContext, push, release } = recorder({
     failPush: "push failed",
     failRelease: "release failed",
   });
   const reported: string[] = [];
-  await runCommandInRootUnit(
-    repoContext,
-    {
-      push,
-      release,
-      onCleanupError: (error) => reported.push((error as Error).message),
-    },
-    () => Promise.resolve(),
+  await assertRejects(
+    () =>
+      runCommandInRootUnit(
+        repoContext,
+        {
+          push,
+          release,
+          onCleanupError: (error) => reported.push((error as Error).message),
+        },
+        () => Promise.resolve(),
+      ),
+    DatastorePushFailedError,
+    "push failed",
   );
   assertEquals(events, ["push", "release"]);
-  assertEquals(reported, ["release failed"]);
+  assertEquals(reported, []);
 });
 
-Deno.test("runCommandInRootUnit: the cleanup handler sees the push error and fn's value is returned", async () => {
+Deno.test("runCommandInRootUnit: a push that failed after fn resolved fails the command past a cleanup handler that only logs", async () => {
   const { repoContext, push, release } = recorder({ failPush: "push failed" });
+  const reported: string[] = [];
+  await assertRejects(
+    () =>
+      runCommandInRootUnit(
+        repoContext,
+        {
+          push,
+          release,
+          onCleanupError: (error) => reported.push((error as Error).message),
+        },
+        () => Promise.resolve("done"),
+      ),
+    DatastorePushFailedError,
+    "push failed",
+  );
+  assertEquals(reported, []);
+});
+
+Deno.test("runCommandInRootUnit: a typed push refusal after fn resolved keeps its own error", async () => {
+  const { repoContext } = recorder();
+  const refusal = new UserError("lock timed out", "lock_timeout");
+  const error = await assertRejects(() =>
+    runCommandInRootUnit(
+      repoContext,
+      { push: () => Promise.reject(refusal), onCleanupError: () => {} },
+      () => Promise.resolve(),
+    )
+  );
+  assertEquals(error, refusal);
+});
+
+Deno.test("runCommandInRootUnit: when fn threw, the cleanup handler sees the push error then the release error", async () => {
+  const { repoContext, push, release } = recorder({
+    failPush: "push failed",
+    failRelease: "release failed",
+  });
+  const reported: string[] = [];
+  await assertRejects(
+    () =>
+      runCommandInRootUnit(
+        repoContext,
+        {
+          push,
+          release,
+          onCleanupError: (error) => reported.push((error as Error).message),
+        },
+        () => Promise.reject(new Error("use case failed")),
+      ),
+    Error,
+    "use case failed",
+  );
+  assertEquals(reported, ["push failed", "release failed"]);
+});
+
+Deno.test("runCommandInRootUnit: the cleanup handler sees a release error and fn's value is returned", async () => {
+  const { repoContext, push, release } = recorder({
+    failRelease: "release failed",
+  });
   const reported: string[] = [];
   const value = await runCommandInRootUnit(
     repoContext,
@@ -169,17 +235,20 @@ Deno.test("runCommandInRootUnit: the cleanup handler sees the push error and fn'
     () => Promise.resolve("done"),
   );
   assertEquals(value, "done");
-  assertEquals(reported, ["push failed"]);
+  assertEquals(reported, ["release failed"]);
 });
 
 Deno.test("runCommandInRootUnit: an error the cleanup handler throws propagates", async () => {
-  const { repoContext, push } = recorder({ failPush: "push failed" });
+  const { repoContext, push, release } = recorder({
+    failRelease: "release failed",
+  });
   await assertRejects(
     () =>
       runCommandInRootUnit(
         repoContext,
         {
           push,
+          release,
           onCleanupError: () => {
             throw new Error("unpublished");
           },

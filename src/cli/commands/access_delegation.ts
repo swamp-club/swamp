@@ -24,7 +24,10 @@ import {
   DELEGATION_MODEL_TYPE,
   DelegationPhaseSchema,
 } from "../../domain/models/access/delegation_model.ts";
-import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
+import {
+  pushBoundOf,
+  pushNamespace,
+} from "../../infrastructure/persistence/push_paths.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import {
   createDelegationEndDeps,
@@ -181,7 +184,12 @@ async function endInRepo(
     {
       push: locks.push ??
         (syncService
-          ? async () => await pushNamespace(syncService, namespace)
+          ? async () =>
+            await pushNamespace(
+              syncService,
+              namespace,
+              pushBoundOf(datastoreConfig),
+            )
           : undefined),
       pushWhen: "completed",
       release: locks.release,

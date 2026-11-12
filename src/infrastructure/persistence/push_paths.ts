@@ -25,7 +25,13 @@
 import {
   flushDatastoreSyncNamed,
   GLOBAL_LOCK_KEY,
+  runBoundedSync,
 } from "./datastore_sync_coordinator.ts";
+import {
+  type DatastoreConfig,
+  resolveEnvSyncTimeoutMs,
+  resolveSyncTimeoutMs,
+} from "../../domain/datastore/datastore_config.ts";
 import type { RootFlushOutcome } from "./repo_unit_of_work.ts";
 import type {
   DatastoreSyncService,
@@ -46,11 +52,30 @@ export async function pushGlobalLockAtEnd(
   }
 }
 
+export interface PushBound {
+  readonly label: string;
+  readonly timeoutMs: number;
+}
+
+export function pushBoundOf(config: DatastoreConfig): PushBound {
+  return { label: config.type, timeoutMs: resolveSyncTimeoutMs(config) };
+}
+
+/** without a bound it takes the environment's sync timeout, never none */
 export async function pushNamespace(
   syncService: Pick<DatastoreSyncService, "pushChanged">,
   namespace: string | undefined,
+  bound: PushBound = {
+    label: "datastore",
+    timeoutMs: resolveEnvSyncTimeoutMs(),
+  },
 ): Promise<void> {
-  await pushNamespaceCounted(syncService, namespace);
+  await runBoundedSync(
+    bound.label,
+    "push",
+    bound.timeoutMs,
+    (signal) => pushNamespaceCounted(syncService, namespace, signal),
+  );
 }
 
 export function pushNamespaceCounted(
@@ -68,14 +93,17 @@ export function pushModelLockScope(
   scoped: boolean,
   models: ReadonlyArray<{ modelType: string; modelId: string }>,
   namespace: string | undefined,
+  signal?: AbortSignal,
 ): Promise<number | void> {
+  const bounded = signal === undefined ? {} : { signal };
   if (scoped) {
     const context: SyncContext = { models: [...models] };
     return syncService.pushChanged({
       context,
       ...(namespace ? { namespace } : {}),
+      ...bounded,
     });
   }
-  if (namespace) return syncService.pushChanged({ namespace });
-  return syncService.pushChanged();
+  if (namespace) return syncService.pushChanged({ namespace, ...bounded });
+  return syncService.pushChanged(signal === undefined ? undefined : bounded);
 }

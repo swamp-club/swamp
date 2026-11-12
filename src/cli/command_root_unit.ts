@@ -17,10 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  DataVersionConflictError,
-  ModelLockLostError,
-} from "../domain/datastore/datastore_sync_service.ts";
+import { toPushFailure } from "../domain/datastore/datastore_sync_service.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
@@ -48,9 +45,10 @@ export interface CommandRootUnitOptions {
   /** a lease the root's final commits end with them, sparing a release */
   releaseWithEnd?: string;
   /**
-   * without it a cleanup error is thrown when fn resolved and only logged when
-   * fn threw, so it never hides fn's error; a lost model lock or data version
-   * conflict is always thrown.
+   * gets a failed release, and a failed push only when fn threw, so neither
+   * hides fn's error; a push that failed after fn resolved is always thrown.
+   * Without it a failed release is thrown when fn resolved and logged when fn
+   * threw.
    */
   onCleanupError?: (error: unknown) => void;
   /**
@@ -77,19 +75,16 @@ export async function runCommandInRootUnit<T>(
   fn: (root: RootUnitOfWork) => Promise<T>,
 ): Promise<T> {
   const push = options.push;
-  let cleanup: { error: unknown } | undefined;
-  let refused: ModelLockLostError | DataVersionConflictError | undefined;
+  // kept apart: a release that fails after a failed push must not replace it
+  let pushFailure: { error: unknown } | undefined;
+  let releaseFailure: { error: unknown } | undefined;
   const flush = push === undefined
     ? undefined
     : async (outcome: RootFlushOutcome) => {
       try {
         await push(outcome);
       } catch (error) {
-        if (
-          error instanceof ModelLockLostError ||
-          error instanceof DataVersionConflictError
-        ) refused = error;
-        cleanup = { error };
+        pushFailure = { error };
       }
     };
 
@@ -129,26 +124,34 @@ export async function runCommandInRootUnit<T>(
     try {
       await options.release();
     } catch (error) {
-      cleanup = { error };
+      releaseFailure = { error };
     }
   }
 
-  // The refused writes were not pushed, so a command that resolved must not
-  // exit as if they were published; a release error after it is only logged.
-  if (refused !== undefined && !("error" in outcome)) {
-    if (cleanup !== undefined && cleanup.error !== refused) {
-      logger.warn`Failed to release locks: ${cleanup.error}`;
+  // The writes did not reach the datastore, so a command that resolved must
+  // not exit as if they were published; a release error after it is only logged.
+  if (pushFailure !== undefined && !("error" in outcome)) {
+    if (releaseFailure !== undefined) {
+      logger.warn`Failed to release locks: ${releaseFailure.error}`;
     }
-    throw refused;
+    throw toPushFailure(pushFailure.error);
   }
 
-  if (cleanup !== undefined) {
+  if (pushFailure !== undefined) {
     if (options.onCleanupError !== undefined) {
-      options.onCleanupError(cleanup.error);
-    } else if ("error" in outcome) {
-      logger.warn`Failed to push changes to remote datastore: ${cleanup.error}`;
+      options.onCleanupError(pushFailure.error);
     } else {
-      throw cleanup.error;
+      logger
+        .warn`Failed to push changes to remote datastore: ${pushFailure.error}`;
+    }
+  }
+  if (releaseFailure !== undefined) {
+    if (options.onCleanupError !== undefined) {
+      options.onCleanupError(releaseFailure.error);
+    } else if ("error" in outcome) {
+      logger.warn`Failed to release locks: ${releaseFailure.error}`;
+    } else {
+      throw releaseFailure.error;
     }
   }
   if ("error" in outcome) throw outcome.error;
