@@ -835,7 +835,27 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             {
               // progress streams in log mode; the result waits for the commit.
               output: ctx.outputMode === "log" ? "live-until-outcome" : "held",
-              push: locks ? () => pushWritten(locks) : publishTo
+              push: locks
+                ? async () => {
+                  try {
+                    await pushWritten(locks);
+                  } catch (error) {
+                    // a run that failed keeps its own exit, and a lease lapse
+                    // that stopped it is thrown once the root has ended
+                    if (runSucceeded || isUnpublishedDataError(error)) {
+                      throw error;
+                    }
+                    publishLogger.error(
+                      "This run's data was not published to the datastore: {error}",
+                      {
+                        error: error instanceof Error
+                          ? error.message
+                          : String(error),
+                      },
+                    );
+                  }
+                }
+                : publishTo
                 ? async () => {
                   if (written.length === 0) return;
                   try {

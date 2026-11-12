@@ -45,10 +45,8 @@ export interface CommandRootUnitOptions {
   /** a lease the root's final commits end with them, sparing a release */
   releaseWithEnd?: string;
   /**
-   * gets a failed release, and a failed push only when fn threw, so neither
-   * hides fn's error; a push that failed after fn resolved is always thrown.
-   * Without it a failed release is thrown when fn resolved and logged when fn
-   * threw.
+   * a push that failed after fn resolved is always thrown, never passed here;
+   * otherwise cleanup errors come here so they never hide fn's error
    */
   onCleanupError?: (error: unknown) => void;
   /**
@@ -128,8 +126,7 @@ export async function runCommandInRootUnit<T>(
     }
   }
 
-  // The writes did not reach the datastore, so a command that resolved must
-  // not exit as if they were published; a release error after it is only logged.
+  // the writes did not reach the datastore: a resolved command must not exit 0
   if (pushFailure !== undefined && !("error" in outcome)) {
     if (releaseFailure !== undefined) {
       logger.warn`Failed to release locks: ${releaseFailure.error}`;

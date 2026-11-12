@@ -26,6 +26,7 @@ import {
   flushDatastoreSyncNamed,
   GLOBAL_LOCK_KEY,
   runBoundedSync,
+  warnDroppedPushFailure,
 } from "./datastore_sync_coordinator.ts";
 import {
   type DatastoreConfig,
@@ -39,8 +40,8 @@ import type {
 } from "../../domain/datastore/datastore_sync_service.ts";
 
 /**
- * a SyncTimeoutError is thrown after the lock is released when the command
- * completed, and dropped when it failed so the command's error wins
+ * a failed push is thrown after the lock is released when the command
+ * completed, and only logged when it failed so the command's error wins
  */
 export async function pushGlobalLockAtEnd(
   outcome: RootFlushOutcome,
@@ -49,6 +50,7 @@ export async function pushGlobalLockAtEnd(
     await flushDatastoreSyncNamed(GLOBAL_LOCK_KEY);
   } catch (error) {
     if (outcome.completed) throw error;
+    warnDroppedPushFailure(error);
   }
 }
 

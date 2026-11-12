@@ -30,9 +30,11 @@ import {
 } from "./datastore_sync_coordinator.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import {
+  DatastorePushFailedError,
   type DatastoreSyncOptions,
   SyncTimeoutError,
 } from "../../domain/datastore/datastore_sync_service.ts";
+import { configure, type LogRecord } from "@logtape/logtape";
 import {
   pushBoundOf,
   pushGlobalLockAtEnd,
@@ -190,4 +192,48 @@ Deno.test("pushGlobalLockAtEnd: a push timeout after the command failed is dropp
   await pushGlobalLockAtEnd({ completed: false });
   assertEquals(lock.releases(), 1);
   assertEquals(getRegisteredLockKeys(), []);
+});
+
+Deno.test("pushGlobalLockAtEnd: a failed push after the command failed is dropped with a warning, and the lock is released", async () => {
+  const { service } = recordingService(() =>
+    Promise.reject(new Error("fetch failed"))
+  );
+  const lock = countingLock();
+  await registerDatastoreSync({ service, lock, label: "@test/store" });
+  const captured: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => captured.push(record) },
+    loggers: [
+      { category: ["datastore"], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "fatal", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await pushGlobalLockAtEnd({ completed: false });
+  } finally {
+    await initializeLogging({ _reset: true });
+  }
+  assertEquals(lock.releases(), 1);
+  assertEquals(getRegisteredLockKeys(), []);
+  assertEquals(captured.length, 1);
+  assertEquals(captured[0].level, "warning");
+  assertEquals(
+    captured[0].properties.error,
+    "@test/store push failed: fetch failed",
+  );
+});
+
+Deno.test("pushGlobalLockAtEnd: a failed push after the command completed is thrown as DatastorePushFailedError", async () => {
+  const { service } = recordingService(() =>
+    Promise.reject(new Error("fetch failed"))
+  );
+  const lock = countingLock();
+  await registerDatastoreSync({ service, lock, label: "@test/store" });
+  const error = await assertRejects(
+    () => pushGlobalLockAtEnd({ completed: true }),
+    DatastorePushFailedError,
+  );
+  assertEquals(error.code, "datastore_push_failed");
+  assertEquals(lock.releases(), 1);
 });

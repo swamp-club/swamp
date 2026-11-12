@@ -1798,12 +1798,15 @@ Deno.test("decideSubjectAccess: refuses a subject with no token or no principal,
 
 function pushCtx(
   fail?: Error,
-): { ctx: ConnectionContext; pushes: { namespace?: string }[] } {
-  const pushes: { namespace?: string }[] = [];
+): {
+  ctx: ConnectionContext;
+  pushes: { namespace?: string; signal?: AbortSignal }[];
+} {
+  const pushes: { namespace?: string; signal?: AbortSignal }[] = [];
   const ctx = {
     ...makeCtx([], "none"),
     syncService: {
-      pushChanged: (options: { namespace?: string }) => {
+      pushChanged: (options: { namespace?: string; signal?: AbortSignal }) => {
         pushes.push(options);
         return fail ? Promise.reject(fail) : Promise.resolve();
       },
@@ -1815,7 +1818,8 @@ function pushCtx(
 Deno.test("pushChangedToRemote: pushes once, with no namespace for a filesystem datastore", async () => {
   const { ctx, pushes } = pushCtx();
   await pushChangedToRemote(ctx);
-  assertEquals(pushes, [{ namespace: undefined }]);
+  assertEquals(pushes.map((push) => push?.namespace), [undefined]);
+  assertEquals(pushes[0]?.signal instanceof AbortSignal, true);
 });
 
 Deno.test("pushChangedToRemote: does nothing without a sync service", async () => {

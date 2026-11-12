@@ -28,6 +28,7 @@ import {
 } from "../../domain/datastore/mod.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import { DatastorePushFailedError } from "../../domain/datastore/datastore_sync_service.ts";
+import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { getTracer, SpanStatusCode } from "../tracing/mod.ts";
 import {
@@ -446,7 +447,7 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
         }
       }
       maybeRemoveSignalHandler();
-      throw error instanceof SyncTimeoutError
+      throw error instanceof UserError
         ? error
         : new DatastorePushFailedError(new Error(summary, { cause: error }));
     } finally {
@@ -466,6 +467,22 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
   }
 
   maybeRemoveSignalHandler();
+}
+
+/**
+ * for a caller that drops a push failure because the command already failed:
+ * the user still learns the remote differs; a timeout stays quiet as before
+ */
+export function warnDroppedPushFailure(error: unknown): void {
+  if (error instanceof SyncTimeoutError) return;
+  getSwampLogger(["datastore", "sync"]).warn("{error}", {
+    error: error instanceof DatastorePushFailedError &&
+        error.cause instanceof Error
+      ? error.cause.message
+      : error instanceof Error
+      ? error.message
+      : String(error),
+  });
 }
 
 export function getRegisteredLockKeys(): string[] {

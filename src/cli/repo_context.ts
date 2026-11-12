@@ -4317,13 +4317,16 @@ export function runUnderModelLocks<T>(
 
 /**
  * an extension that ignores the signal never settles, so the push lock's
- * finally would never run; this settles at the deadline instead
+ * finally would never run; this settles at the deadline instead, and past it
+ * never starts the push
  */
 function settleByDeadline<T>(
-  work: Promise<T>,
+  start: () => Promise<T>,
   signal: AbortSignal | undefined,
 ): Promise<T> {
-  if (signal === undefined) return work;
+  if (signal === undefined) return start();
+  if (signal.aborted) return Promise.reject(signal.reason);
+  const work = start();
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason);
     if (signal.aborted) {
@@ -4397,13 +4400,14 @@ export async function flushSinglePhasePush(
     write(dim("Pushing changes to datastore..."));
 
     const pushed = await settleByDeadline(
-      pushModelLockScope(
-        syncService,
-        caps?.scopedSync === true,
-        models,
-        namespace,
-        signal,
-      ),
+      () =>
+        pushModelLockScope(
+          syncService,
+          caps?.scopedSync === true,
+          models,
+          namespace,
+          signal,
+        ),
       signal,
     );
     if (pushed && pushed > 0) {
@@ -4464,7 +4468,7 @@ export async function flushTwoPhasePush(
       : undefined;
     const prepareOpts = signal === undefined ? scope : { ...scope, signal };
     manifest = await settleByDeadline(
-      syncService.preparePush!(prepareOpts),
+      () => syncService.preparePush!(prepareOpts),
       signal,
     );
   } catch (error) {
@@ -4513,7 +4517,7 @@ export async function flushTwoPhasePush(
       }
       : undefined;
     const pushed = await settleByDeadline(
-      syncService.commitPush!(manifest, commitOpts),
+      () => syncService.commitPush!(manifest, commitOpts),
       signal,
     );
     if (pushed && pushed > 0) {

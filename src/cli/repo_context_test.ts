@@ -4375,6 +4375,38 @@ Deno.test("flushTwoPhasePush: a commitPush that ignores the signal still release
   ]);
 });
 
+Deno.test("flushSinglePhasePush: past the deadline it never starts the push, and releases the global lock", async () => {
+  const events: string[] = [];
+  const controller = new AbortController();
+  const reason = new Error("deadline");
+  controller.abort(reason);
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      events.push("pushChanged");
+      return Promise.resolve(0);
+    },
+    markDirty: () => Promise.resolve(),
+  };
+
+  const thrown = await assertRejects(() =>
+    flushSinglePhasePush(
+      createMockProvider(events),
+      syncService,
+      createMockConfig(),
+      undefined,
+      [{ modelType: "test", modelId: "m1" }],
+      undefined,
+      undefined,
+      createMockLogger(),
+      undefined,
+      controller.signal,
+    )
+  );
+  assertEquals(thrown, reason);
+  assertEquals(events, ["global-lock-acquire", "global-lock-release"]);
+});
+
 Deno.test("flushTwoPhasePush: preparePush failure skips global lock", async () => {
   const events: string[] = [];
   const provider = createMockProvider(events);

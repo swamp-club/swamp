@@ -222,6 +222,24 @@ Deno.test("flushDatastoreSync: a failed pushChanged releases the lock and throws
   assertEquals(getRegisteredLockKeys().length, 0);
 });
 
+Deno.test("flushDatastoreSync: a typed refusal from pushChanged keeps its own code", async () => {
+  const refusal = new UserError("the datastore refused", "datastore_refused");
+  const lock = new FakeLock();
+  await registerDatastoreSync({
+    service: {
+      pullChanged: () => Promise.resolve(0),
+      pushChanged: () => Promise.reject(refusal),
+      markDirty: () => Promise.resolve(),
+    },
+    lock,
+    label: "@test/refused",
+  });
+
+  const error = await assertRejects(() => flushDatastoreSync());
+  assertEquals(error, refusal);
+  assertEquals(lock.releaseCount, 1);
+});
+
 Deno.test("SyncTimeoutError is a UserError so the CLI error boundary renders message only", () => {
   // if this regresses, renderError dumps a stack trace that buries the
   // actionable lock-release hint

@@ -166,7 +166,7 @@ export async function runManagedConfigMutation<T>(
   );
 }
 
-/** after a completed mutation a failed push is a ManagedConfigUnpublishedError */
+/** only a repo with managedConfig turns a completed mutation's failed push into ManagedConfigUnpublishedError */
 export function managedConfigPushFailure(
   error: unknown,
   mutated: boolean,
