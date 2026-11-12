@@ -457,14 +457,6 @@ export function Sidebar({
           active={activeView === "overview"}
           onClick={onNavigate}
         />
-        {swampifyVisible && (
-          <NavItem
-            label="Swampify"
-            view="swampify"
-            active={activeView === "swampify"}
-            onClick={onNavigate}
-          />
-        )}
       </div>
 
       <div style={{ padding: "0 8px", marginBottom: 24 }}>
@@ -520,6 +512,14 @@ export function Sidebar({
           onClick={onNavigate}
           off={off.activity}
         />
+        {swampifyVisible && (
+          <NavItem
+            label="Swampify"
+            view="swampify"
+            active={activeView === "swampify"}
+            onClick={onNavigate}
+          />
+        )}
         {
           // Hidden, not "Off": this deliberately departs from the faded
           // items operationsOff() gives (swamp-club#4155). A Preview page
