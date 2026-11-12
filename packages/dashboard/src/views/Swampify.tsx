@@ -19,7 +19,11 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
+import { useCallback } from "react";
 import { useComparisonRecords, useSwampify } from "../client/useSwampify.ts";
+import { useSwamp } from "../client/SwampProvider.tsx";
+import { PAGE_WORKSPACE } from "../client/workspace_path.ts";
+import type { SwampifyLauncher } from "../lib/swampify_view.ts";
 import { navigateTo } from "../hooks/useRouter.ts";
 import { SwampifyPage } from "./swampify/SwampifyPage.tsx";
 import "../styles/swampify.css";
@@ -28,12 +32,23 @@ import "../styles/swampify.css";
 export function Swampify({ optionId }: { optionId: string | null }) {
   const state = useSwampify();
   const { records, load } = useComparisonRecords();
+  const { request } = useSwamp();
+  const launch = useCallback<SwampifyLauncher>(async (text, harness) => {
+    const reply = await request<
+      { data?: { opened?: boolean; command?: string } }
+    >("swampify.launch", { text, harness, trustConfirmed: true });
+    return {
+      opened: reply.data?.opened === true,
+      command: reply.data?.command ?? "",
+    };
+  }, [request]);
   return (
     <SwampifyPage
       state={state}
       records={records}
       onLoadComparison={(row) => void load(row)}
       optionId={optionId}
+      launch={PAGE_WORKSPACE === null ? undefined : launch}
       onOpenOption={(id) =>
         navigateTo({
           view: "swampify",

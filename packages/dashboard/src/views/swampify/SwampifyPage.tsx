@@ -34,6 +34,7 @@ import {
   offerView,
   optionByCandidate,
   setFullness,
+  type SwampifyLauncher,
 } from "../../lib/swampify_view.ts";
 import { formatAbsoluteTime, pluralize } from "../../lib/format.ts";
 import { CandidatesTable } from "./SwampifyCandidates.tsx";
@@ -92,6 +93,8 @@ export interface SwampifyPageProps {
   /** The option whose review the address shows, or none for the list. */
   readonly optionId: string | null;
   readonly onOpenOption: (optionId: string | null) => void;
+  /** The local dashboard's launch; absent under serve, which only copies. */
+  readonly launch?: SwampifyLauncher;
   /** Tests open a row from the start. */
   readonly initialOpen?: string;
   readonly initialTab?: Tab;
@@ -133,6 +136,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
         records={props.records}
         onLoadComparison={props.onLoadComparison}
         onBack={() => onOpenOption(null)}
+        launch={props.launch}
       />
     );
   }

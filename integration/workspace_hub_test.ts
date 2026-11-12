@@ -24,7 +24,10 @@ import {
   createWorkspaceHub,
   type HubChild,
   type WorkspaceHub,
+  type WorkspaceHubDeps,
 } from "../src/serve/local/workspace_hub.ts";
+import type { SwampifyLaunchRequest } from "../src/serve/local/local_actions.ts";
+import type { StartLaunchEvent } from "../src/libswamp/start/start.ts";
 import { TrustedHosts } from "../src/serve/local/trusted_hosts.ts";
 
 type FakeChild = HubChild & {
@@ -154,6 +157,7 @@ async function withHub(
     idleMs?: number;
     actions?: ActionRunner;
     trustedHosts?: TrustedHosts;
+    launchSwampify?: WorkspaceHubDeps["launchSwampify"];
   } = {},
 ): Promise<void> {
   const spawned: string[] = [];
@@ -186,6 +190,9 @@ async function withHub(
       : { switchable: options.switchable }),
     ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }),
     ...(options.actions === undefined ? {} : { actions: options.actions }),
+    ...(options.launchSwampify === undefined
+      ? {}
+      : { launchSwampify: options.launchSwampify }),
     ...(options.trustedHosts === undefined
       ? {}
       : { trustedHosts: options.trustedHosts }),
@@ -1080,5 +1087,106 @@ Deno.test("workspaceHub: with no trusted hosts, an https origin is refused even 
       403,
     );
     assertEquals(spawned, []);
+  });
+});
+
+function fakeSwampifyLaunch(events: StartLaunchEvent[]) {
+  const calls: Array<{ repoDir: string; request: SwampifyLaunchRequest }> = [];
+  const launch: WorkspaceHubDeps["launchSwampify"] = async function* (
+    repoDir,
+    request,
+  ) {
+    calls.push({ repoDir, request });
+    for (const event of events) yield event;
+  };
+  return { launch, calls };
+}
+
+const LAUNCH_FRAME = {
+  type: "swampify.launch",
+  id: "s1",
+  payload: { text: "Automate it", harness: "claude", trustConfirmed: true },
+};
+
+Deno.test("workspaceHub: Swampify's launch starts the task in the workspace and replies with how it opened, never reaching the child", async () => {
+  const { launch, calls } = fakeSwampifyLaunch([
+    { kind: "checking" },
+    {
+      kind: "launched",
+      method: "linux_terminal",
+      command: "claude",
+      opened: true,
+    },
+  ]);
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify(LAUNCH_FRAME));
+    ws.send(read("ping"));
+    await waitFor(() => seen.length === 2, "the launch reply and the echo");
+    // The child echoes what reaches it: only the read did.
+    assertEquals(seen.filter((f) => f.type === "echo").length, 1);
+    assertEquals(seen.find((f) => f.type !== "echo"), {
+      type: "swampify.launch",
+      id: "s1",
+      payload: { data: { opened: true, command: "claude" } },
+    });
+    assertEquals(calls, [{
+      repoDir: "/repos/alpha",
+      request: { text: "Automate it", harness: "claude" },
+    }]);
+    await closeSocket(ws);
+  }, { launchSwampify: launch });
+});
+
+Deno.test("workspaceHub: a refused Swampify launch is an error frame with start's message", async () => {
+  const { launch } = fakeSwampifyLaunch([
+    { kind: "checking" },
+    {
+      kind: "error",
+      error: { code: "not_signed_in", message: "Sign in to Swamp Club first." },
+    },
+  ]);
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify(LAUNCH_FRAME));
+    await waitFor(() => seen.length === 1, "the refusal");
+    assertEquals(seen[0], {
+      type: "error",
+      id: "s1",
+      error: { code: "not_signed_in", message: "Sign in to Swamp Club first." },
+    });
+    await closeSocket(ws);
+  }, { launchSwampify: launch });
+});
+
+Deno.test("workspaceHub: a Swampify launch without the trust confirmation launches nothing", async () => {
+  const { launch, calls } = fakeSwampifyLaunch([]);
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify({
+      ...LAUNCH_FRAME,
+      payload: { text: "Automate it", harness: "claude" },
+    }));
+    await waitFor(() => seen.length === 1, "the refusal");
+    assertEquals(seen[0].type, "error");
+    assertEquals(calls, []);
+    await closeSocket(ws);
+  }, { launchSwampify: launch });
+});
+
+Deno.test("workspaceHub: with no launcher, a Swampify launch is refused like any write", async () => {
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify(LAUNCH_FRAME));
+    await waitFor(() => seen.length === 1, "the refusal");
+    assertEquals(
+      (seen[0].error as { code: string }).code,
+      "not_available_locally",
+    );
+    await closeSocket(ws);
   });
 });

@@ -176,24 +176,42 @@ their output. The agent then reads a few example sessions per candidate.
 Where the data then goes is the user's choice, as for any repo data: kept
 local, synced to a datastore, or served with `swamp serve`.
 
-## The panel
+## The page
 
-The dashboard's [Agent sessions page](./agent-sessions.md#the-page) shows a
-Swampify panel above its session list whenever the viewer can read a candidate
-set. Its requests are in `packages/dashboard/src/client/swampify.ts`, and
-`integration/swampify_panel_test.ts` sends them through serve's handlers.
+The dashboard's Swampify page, at `/swampify` above Agent sessions in the
+sidebar, shows the latest assessment and what to build from it. The sidebar
+item shows only when one `data.query` with
+`SWAMPIFY_CANDIDATES_QUERY_PREDICATE` and a limit of 1 finds a candidate set
+the viewer can read; hiding is not access control. Its requests are in
+`packages/dashboard/src/client/swampify.ts`, and
+`integration/swampify_page_test.ts` sends them through serve's handlers.
 
 - **What it reads.** One list per item kind, by type tag with
-  `SWAMPIFY_LIST_SELECT`, so no body loads until the panel opens the set and
+  `SWAMPIFY_LIST_SELECT`, so no body loads until the page opens the set and
   the offer that `newestSwampifyItem` picks. Comparisons are listed once and
   grouped by their `optionId` tag, the newest per option by the same rule; a
   comparison's body is read only when it is opened.
-- **What it shows.** The offer first, when there is one: its state, what read
-  the sessions, and each option with the candidates it stands for, the pick
-  and the target. Then the set's window, scope and owner, and its candidates
-  by rank, each opening to its ranges, excerpts, session refs and the offer's
-  reason for leaving it out. A session ref links to that session when the page
-  has loaded it, and is plain text otherwise.
+- **Candidates tab.** One sentence says when the set was assessed, from which
+  harnesses, over which window and with which exclusions. The offer's options
+  not yet built show as top candidates, then the candidates those options
+  stand for, by rank; before there is an offer, every candidate. A candidate
+  opens to its ranges, excerpts and session refs, and to the option it is
+  part of.
+- **Built tab.** Each option built or compared, opening to its comparison.
+- **An option's review.** At `/swampify/options/<optionId>`, so Back returns to
+  the list. What swamp would build and the hand-off come first, then the
+  comparison, then the evidence.
+- **The hand-off.** The brief, `swampifyBuildBrief`, carries the option's
+  name, why, outline and counts, never labels or excerpts. Copy brief puts it
+  on the clipboard. On the local dashboard, **Swampify!** sends the same
+  brief's task text (`swampifyBuildTask`) as a `swampify.launch` request: the
+  hub saves it as a [start](./start.md) task of kind `swampify` in the repo it
+  serves and launches the offer's reading harness on it, with start's
+  sign-in, PATH and trust checks; the click is the trust confirmation, as
+  start's Launch is. The page shows the agent opened, the command to run when
+  no terminal could open, or start's refusal. Under `swamp serve` the page is
+  review-only: Copy brief and no launch. The page writes no Swampify data;
+  the agent records the pick.
 - **Computes nothing.** It shows the ranges, counts, rates and break-even the
   writers stored, and only formats them; the thin flag comes from the summary
   tag.
@@ -204,5 +222,4 @@ set. Its requests are in `packages/dashboard/src/client/swampify.ts`, and
   With the set skipped, an offer's candidates show as not readable.
 - **Access.** Under `swamp serve`, `data.query` drops what the viewer may not
   read before its limit, so an unreadable comparison leaves its option showing
-  as not compared, and the panel adds no access logic of its own. It ignores
-  the page's repo and session filters, since an assessment spans repos.
+  as not compared, and the page adds no access logic of its own.

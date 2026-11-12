@@ -50,6 +50,21 @@ export function renderBrief(input: {
   harnessDisplayName: string;
   imported?: boolean;
 }): string {
+  if (input.task.kind === "swampify") {
+    // The Swampify task carries its own steps, and is always the user's repo.
+    return [
+      BRIEF_HEADER,
+      "# Task",
+      "",
+      input.task.text,
+      "",
+      "# Context",
+      "",
+      `- Workspace: ${input.workspacePath}. This is the user's own swamp repo; leave files unrelated to the task alone.`,
+      `- Agent: ${input.harnessDisplayName}`,
+      "",
+    ].join("\n");
+  }
   const workspaceLine = input.imported
     ? `- Workspace: ${input.workspacePath}. This is the user's existing project, registered as a Swamp workspace; leave files unrelated to the task alone.`
     : `- Workspace: ${input.workspacePath}. Created by \`swamp start\`; it holds only Swamp's files.`;

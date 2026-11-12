@@ -43,7 +43,10 @@ import {
   type TrustMode,
 } from "../../domain/start/start_session.ts";
 import type { StartSessionRepository } from "../../domain/start/start_session_repository.ts";
-import { StartTask } from "../../domain/start/start_task.ts";
+import {
+  StartTask,
+  type StartTaskKind,
+} from "../../domain/start/start_task.ts";
 import type { TerminalLauncher } from "../../domain/start/terminal_launcher.ts";
 import {
   parseWorkspaceName,
@@ -599,18 +602,26 @@ export function startStatus(
 export function startSaveTask(
   _ctx: LibSwampContext,
   deps: StartDeps,
-  input: { workspacePath: string; taskId?: string; text: string },
+  input: {
+    workspacePath: string;
+    taskId?: string;
+    text: string;
+    kind?: StartTaskKind;
+  },
 ): AsyncIterable<StartStatusEvent> {
   if (input.taskId !== undefined) {
     return taskCommand(deps, input.workspacePath, input.taskId, async (s) => {
       await requireSignedIn(deps);
-      s.saveTask(StartTask.create(input.text));
+      // An edit from the start page keeps the kind the task was made with.
+      s.saveTask(
+        StartTask.create(input.text, input.kind ?? s.task?.kind ?? "task"),
+      );
     });
   }
   return (async function* () {
     try {
       await requireSignedIn(deps);
-      const task = StartTask.create(input.text);
+      const task = StartTask.create(input.text, input.kind);
       const session = StartSession.create(
         deps.randomUUID(),
         input.workspacePath,
@@ -1333,6 +1344,7 @@ export async function* startLaunch(
         deps.os,
         "task",
         briefFile,
+        session.task!.kind,
       ),
       input.workspacePath,
     );
@@ -1351,6 +1363,72 @@ export async function* startLaunch(
   } catch (error) {
     yield errorEvent(error);
   }
+}
+
+/**
+ * Saves a task, picks its agent and launches it in one go, for a page that
+ * hands over a finished task (the Swampify page) rather than walking start's
+ * screens. Clicking launch there confirms trust, as start's Launch does.
+ */
+export async function* startLaunchTask(
+  ctx: LibSwampContext,
+  deps: StartDeps,
+  input: {
+    workspacePath: string;
+    text: string;
+    kind: StartTaskKind;
+    harness: string;
+  },
+): AsyncIterable<StartLaunchEvent> {
+  try {
+    yield { kind: "checking" };
+    await requireSignedIn(deps, "before launching");
+    // Checked before the task is saved, so a missing agent leaves no task.
+    const harness = findHarness(input.harness);
+    if (!harness?.launchable) {
+      throw new UserError(
+        `${
+          harness?.displayName ?? input.harness
+        } can't be started with a task.`,
+      );
+    }
+    if (!await resolveHarnessBinary(deps, harness.binary)) {
+      throw new UserError(
+        `${harness.displayName} (\`${harness.binary}\`) isn't on your PATH. Install it, or copy the brief to another agent.`,
+      );
+    }
+  } catch (error) {
+    yield errorEvent(error);
+    return;
+  }
+  let taskId: string | undefined;
+  const steps = [
+    () =>
+      startSaveTask(ctx, deps, {
+        workspacePath: input.workspacePath,
+        text: input.text,
+        kind: input.kind,
+      }),
+    () =>
+      startChooseHarness(ctx, deps, {
+        workspacePath: input.workspacePath,
+        taskId: taskId!,
+        harness: input.harness,
+      }),
+  ];
+  for (const step of steps) {
+    for await (const event of step()) {
+      if (event.kind === "error") {
+        yield event;
+        return;
+      }
+      taskId = event.data.taskId;
+    }
+  }
+  yield* startLaunch(ctx, deps, {
+    workspacePath: input.workspacePath,
+    taskId: taskId!,
+  });
 }
 
 export async function* startResume(

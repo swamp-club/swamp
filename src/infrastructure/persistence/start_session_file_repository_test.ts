@@ -420,3 +420,19 @@ Deno.test("migrateLegacy: unreadable old files are kept, never deleted", async (
     assertEquals(await repo.list(ws), []);
   });
 });
+
+Deno.test("StartSessionFileRepository: round-trips a swampify task's kind", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new StartSessionFileRepository();
+    const session = StartSession.create(crypto.randomUUID(), dir, NOW_FOR_KIND);
+    session.saveTask(StartTask.create("build it", "swampify"));
+    await repo.save(session);
+    const raw = JSON.parse(
+      await Deno.readTextFile(recordPath(dir, session.id)),
+    );
+    assertEquals(raw.task.taskKind, "swampify");
+    assertEquals((await repo.load(dir, session.id))?.task?.kind, "swampify");
+  });
+});
+
+const NOW_FOR_KIND = new Date("2026-10-03T10:00:00.000Z");

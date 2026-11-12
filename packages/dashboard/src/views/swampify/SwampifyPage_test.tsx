@@ -48,9 +48,9 @@ import {
   thinCandidateSet,
 } from "./swampify_fixtures.ts";
 import { SwampifyPage } from "./SwampifyPage.tsx";
-import { OptionReview } from "./SwampifyReview.tsx";
+import { type LaunchState, OptionReview } from "./SwampifyReview.tsx";
 import { builtOptions, BuiltPane } from "./SwampifyBuilt.tsx";
-import { offerView } from "../../lib/swampify_view.ts";
+import { offerView, type SwampifyLauncher } from "../../lib/swampify_view.ts";
 
 const noop = () => {};
 
@@ -139,12 +139,16 @@ function review(
     behavior = "swampify",
     briefShown = true,
     row,
+    launch,
+    launchState,
   }: {
     set?: SwampifyCandidateSet;
     optionId?: string;
     behavior?: string;
     briefShown?: boolean;
     row?: SwampifyRow;
+    launch?: SwampifyLauncher;
+    launchState?: LaunchState;
   } = {},
 ): string {
   const view = offerView(offer, set, set.generatedAt);
@@ -160,9 +164,14 @@ function review(
       onLoadComparison={noop}
       onBack={noop}
       initialBriefShown={briefShown}
+      launch={launch}
+      initialLaunch={launchState}
     />,
   );
 }
+
+const launcher: SwampifyLauncher = () =>
+  Promise.resolve({ opened: true, command: "claude" });
 
 function read(reading: SwampifyComparisonReading): ComparisonRecord {
   return { state: "read", reading };
@@ -374,6 +383,73 @@ Deno.test("OptionReview: a behavior name unsafe for a command gives no brief", (
   const html = review(fixtureOffer("offered"), { behavior: "bad name`x" });
   assert(!html.includes("Copy brief"));
   assertStringIncludes(html, "can&#x27;t be written into a brief safely");
+});
+
+Deno.test("OptionReview: under serve there is no Swampify! and Copy brief is the action", () => {
+  const html = review(fixtureOffer("offered"));
+  assert(!html.includes("Swampify!"));
+  assertStringIncludes(
+    html,
+    '<button type="button" class="sw-btn sw-btn-primary">Copy brief</button>',
+  );
+});
+
+Deno.test("OptionReview: on the local dashboard Swampify! leads, names the agent and asks for trust", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    briefShown: false,
+  });
+  assertStringIncludes(
+    html,
+    '<button type="button" class="sw-btn sw-btn-primary">Swampify!</button>',
+  );
+  assertStringIncludes(
+    html,
+    '<button type="button" class="sw-btn">Copy brief</button>',
+  );
+  assert(html.indexOf("Swampify!") < html.indexOf("Copy brief"));
+  assertStringIncludes(html, "Swampify! opens Claude Code in this repo");
+  assertStringIncludes(
+    html,
+    "Clicking Swampify! confirms you trust this folder.",
+  );
+});
+
+Deno.test("OptionReview: an opened agent is said, and Swampify! can't run twice", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    launchState: { kind: "opened" },
+    briefShown: false,
+  });
+  assertStringIncludes(html, "Opened Claude Code");
+  assertStringIncludes(html, "in a new terminal.");
+  assertStringIncludes(html, 'disabled="">Swampify!</button>');
+  assert(!html.includes("confirms you trust"));
+});
+
+Deno.test("OptionReview: with no terminal to open, the command to run is shown", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    launchState: { kind: "command", command: "cd /repo && claude" },
+    briefShown: false,
+  });
+  assertStringIncludes(html, "No terminal could be opened.");
+  assertStringIncludes(
+    html,
+    '<pre class="sw-brief">cd /repo &amp;&amp; claude</pre>',
+  );
+});
+
+Deno.test("OptionReview: a refused launch says why and leaves Copy brief", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    launchState: { kind: "failed", message: "Sign in to Swamp Club first." },
+    briefShown: false,
+  });
+  assertStringIncludes(html, 'role="alert">Sign in to Swamp Club first.');
+  assertStringIncludes(html, "You can still copy the brief.");
+  assertStringIncludes(html, ">Copy brief</button>");
+  assert(!html.includes('disabled="">Swampify!'));
 });
 
 Deno.test("OptionReview: a built option shows what was built and its comparison, with no brief", () => {

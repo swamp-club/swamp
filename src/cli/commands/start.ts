@@ -26,6 +26,7 @@ import {
   createStartDeps,
   type SignedInState,
   startInspect,
+  startLaunchTask,
   startListWorkspaces,
   startPrepare,
 } from "../../libswamp/start/start.ts";
@@ -290,7 +291,8 @@ export async function runStart(
     token,
     distDir: getDashboardDistDir(),
     // `swamp dashboard` serves no start page, so its token can't change
-    // the swamp start workspaces.
+    // the swamp start workspaces; it may only launch a Swampify task in the
+    // repo it serves.
     startPage: fixed === null,
     idleStop: fixed === null,
     port: serving?.port ?? 0,
@@ -316,6 +318,13 @@ export async function runStart(
       switchable: fixed === null,
       trustedHosts: serving?.trustedHosts ?? TrustedHosts.NONE,
       spawnChild: spawnDashboardChild,
+      launchSwampify: (repoDir, request) =>
+        startLaunchTask(ctx, deps, {
+          workspacePath: repoDir,
+          text: request.text,
+          kind: "swampify",
+          harness: request.harness,
+        }),
     }),
     claims: createWorkspaceClaims(() => ({ port, token })),
     onWorkspaceOpened: (path, created) =>

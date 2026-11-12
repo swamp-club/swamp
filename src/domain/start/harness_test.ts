@@ -290,3 +290,10 @@ Deno.test("canResume: only the harnesses with a verified resume", () => {
     ["claude", "codex", "opencode"],
   );
 });
+
+Deno.test("launchPrompt: a swampify task names the swampify skill", () => {
+  assertEquals(
+    launchPrompt("tasks/2026-10-12-release-docs.md", "swampify"),
+    "Read tasks/2026-10-12-release-docs.md and use the swampify skill.",
+  );
+});

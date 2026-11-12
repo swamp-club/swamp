@@ -22,14 +22,20 @@
 import { useMemo, useState } from "react";
 import type { SwampifyRow } from "../../client/swampify.ts";
 import type { ComparisonRecord } from "../../client/useSwampify.ts";
-import { swampifyBuildBrief } from "../../lib/agent_sessions/swampify.ts";
+import {
+  swampifyBuildBrief,
+  swampifyBuildTask,
+} from "../../lib/agent_sessions/swampify.ts";
 import {
   formatDay,
   formatRate,
   formatTokens,
+  harnessName,
   KIND_LABEL,
   type OfferView,
   type OptionView,
+  startHarnessId,
+  type SwampifyLauncher,
 } from "../../lib/swampify_view.ts";
 import { formatCount, pluralize } from "../../lib/format.ts";
 import { ComparisonBlock } from "./SwampifyComparison.tsx";
@@ -48,8 +54,12 @@ export interface OptionReviewProps {
   readonly records: ReadonlyMap<string, ComparisonRecord>;
   readonly onLoadComparison: (row: SwampifyRow) => void;
   readonly onBack: () => void;
+  /** The local dashboard's launch; absent under serve. */
+  readonly launch?: SwampifyLauncher;
   /** Tests start with the brief shown. */
   readonly initialBriefShown?: boolean;
+  /** Tests start in a launch state. */
+  readonly initialLaunch?: LaunchState;
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -61,15 +71,37 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+export type LaunchState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "launching" }
+  | { readonly kind: "opened" }
+  | { readonly kind: "command"; readonly command: string }
+  | { readonly kind: "failed"; readonly message: string };
+
 function HandOff(
-  { brief, becomes, initialShown = false }: {
+  {
+    brief,
+    task,
+    becomes,
+    harness,
+    launch,
+    initialShown = false,
+    initialLaunch,
+  }: {
     brief: string | null;
+    task: string | null;
     becomes: string;
+    harness: string;
+    launch: SwampifyLauncher | undefined;
     initialShown?: boolean;
+    initialLaunch?: LaunchState;
   },
 ) {
   const [shown, setShown] = useState(initialShown);
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  const [launched, setLaunched] = useState<LaunchState>(
+    initialLaunch ?? { kind: "idle" },
+  );
   if (brief === null) {
     return (
       <p className="sw-muted">
@@ -79,18 +111,49 @@ function HandOff(
       </p>
     );
   }
+  const agent = harnessName(harness);
+  const startId = startHarnessId(harness);
+  const canLaunch = launch !== undefined && task !== null && startId !== null;
+  const onLaunch = async () => {
+    if (!canLaunch) return;
+    setLaunched({ kind: "launching" });
+    try {
+      const outcome = await launch(task, startId);
+      setLaunched(
+        outcome.opened
+          ? { kind: "opened" }
+          : { kind: "command", command: outcome.command },
+      );
+    } catch (error) {
+      setLaunched({
+        kind: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const busy = launched.kind === "launching";
+  const done = launched.kind === "opened" || launched.kind === "command";
   return (
     <>
       <p className="sw-small">
-        Hand it to your agent: the brief tells it to record your pick, build the
-        {" "}
-        {becomes}, run it once and show you the result. Paste it to your agent
-        in this repo.
+        {canLaunch
+          ? `Swampify! opens ${agent} in this repo on a brief that tells it to record your pick, build the ${becomes}, run it once and show you the result.`
+          : `Hand it to your agent: the brief tells it to record your pick, build the ${becomes}, run it once and show you the result. Paste it to your agent in this repo.`}
       </p>
       <div className="sw-handoff-actions">
+        {canLaunch && (
+          <button
+            type="button"
+            className="sw-btn sw-btn-primary"
+            disabled={busy || done}
+            onClick={() => void onLaunch()}
+          >
+            {busy ? `Opening ${agent}…` : "Swampify!"}
+          </button>
+        )}
         <button
           type="button"
-          className="sw-btn sw-btn-primary"
+          className={canLaunch ? "sw-btn" : "sw-btn sw-btn-primary"}
           onClick={() =>
             void copyText(brief).then((ok) =>
               setCopied(ok ? "copied" : "failed")
@@ -107,6 +170,35 @@ function HandOff(
           {shown || copied === "failed" ? "Hide the brief" : "See the brief"}
         </button>
       </div>
+      {canLaunch && (launched.kind === "idle" || busy) && (
+        <p className="sw-muted sw-small">
+          {agent}{" "}
+          opens in a new terminal and can read, edit and run files in this repo.
+          Clicking Swampify! confirms you trust this folder.
+        </p>
+      )}
+      <div role="status" className="sw-small">
+        {launched.kind === "opened" && (
+          <p>
+            Opened {agent}{" "}
+            in a new terminal. It records your pick, then builds the {becomes}.
+          </p>
+        )}
+        {launched.kind === "command" && (
+          <>
+            <p>
+              No terminal could be opened. Run this in a terminal to start{" "}
+              {agent} on the brief:
+            </p>
+            <pre className="sw-brief">{launched.command}</pre>
+          </>
+        )}
+      </div>
+      {launched.kind === "failed" && (
+        <p className="sw-fail sw-small" role="alert">
+          {launched.message} You can still copy the brief.
+        </p>
+      )}
       {copied === "failed" && (
         <p className="sw-fail sw-small" role="alert">
           The browser refused the clipboard. Select the brief below and copy it.
@@ -129,6 +221,10 @@ export function OptionReview(props: OptionReviewProps) {
   const candidates = useMemo(() => foundCandidates(view), [view]);
   const brief = useMemo(
     () => swampifyBuildBrief({ behavior: props.behavior, option, candidates }),
+    [props.behavior, option, candidates],
+  );
+  const task = useMemo(
+    () => swampifyBuildTask({ behavior: props.behavior, option, candidates }),
     [props.behavior, option, candidates],
   );
   const status = optionStatus(view, offer);
@@ -172,8 +268,12 @@ export function OptionReview(props: OptionReviewProps) {
             : (
               <HandOff
                 brief={brief}
+                task={task}
                 becomes={option.becomes}
+                harness={offer.offer.reading.harness}
+                launch={props.launch}
                 initialShown={props.initialBriefShown}
+                initialLaunch={props.initialLaunch}
               />
             )}
         </div>

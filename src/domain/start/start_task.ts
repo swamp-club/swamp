@@ -23,14 +23,20 @@ export const MAX_TASK_BYTES = 32 * 1024;
 
 export const MAX_TITLE_CHARS = 120;
 
+/** a swampify task is a build brief from the Swampify page, worked in the user's repo */
+export type StartTaskKind = "task" | "swampify";
+
 /**
  * kept verbatim (only outer whitespace trimmed) because it goes into the brief
  * unchanged; swamp never summarises or interprets it
  */
 export class StartTask {
-  private constructor(readonly text: string) {}
+  private constructor(
+    readonly text: string,
+    readonly kind: StartTaskKind,
+  ) {}
 
-  static create(text: string): StartTask {
+  static create(text: string, kind: StartTaskKind = "task"): StartTask {
     const trimmed = text.trim();
     if (trimmed.length === 0) {
       throw new UserError("Describe the task before continuing.");
@@ -42,7 +48,7 @@ export class StartTask {
         } KiB. Shorten it and try again.`,
       );
     }
-    return new StartTask(trimmed);
+    return new StartTask(trimmed, kind);
   }
 
   title(): string {

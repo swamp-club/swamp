@@ -43,6 +43,7 @@ export {
   SWAMPIFY_THIN_BELOW,
   SWAMPIFY_UPDATED_AT_TAG,
   swampifyBuildBrief,
+  swampifyBuildTask,
   swampifyComparisonDataName,
   swampifyComparisonPredicate,
 } from "../../../../../src/domain/agent_sessions/swampify.ts";

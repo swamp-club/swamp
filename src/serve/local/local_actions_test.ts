@@ -17,12 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   actionCommand,
   actionErrorCode,
   attachedReply,
   isDelegatedAction,
+  swampifyLaunchRequest,
 } from "./local_actions.ts";
 
 const RUN = "321991e2-f182-4bb2-9937-f94c18ed1bfd";
@@ -217,5 +218,28 @@ Deno.test("actionCommand: a value that is not a time is refused, not dropped", (
       }).kind,
       "invalid",
     );
+  }
+});
+
+Deno.test("swampifyLaunchRequest: needs the trust confirmation, a brief and an agent that can't read as a flag", () => {
+  assertEquals(
+    swampifyLaunchRequest({
+      text: "Automate it",
+      harness: "claude",
+      trustConfirmed: true,
+    }),
+    { text: "Automate it", harness: "claude" },
+  );
+  for (
+    const payload of [
+      { text: "Automate it", harness: "claude" },
+      { text: "Automate it", harness: "claude", trustConfirmed: "yes" },
+      { text: " ", harness: "claude", trustConfirmed: true },
+      { text: "Automate it", harness: "--yolo", trustConfirmed: true },
+      { text: "Automate it", trustConfirmed: true },
+      null,
+    ]
+  ) {
+    assert("error" in swampifyLaunchRequest(payload), JSON.stringify(payload));
   }
 });

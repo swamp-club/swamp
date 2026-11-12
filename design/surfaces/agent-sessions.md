@@ -13,8 +13,8 @@ repo data; the dashboard's agent sessions page reads it (swamp-club#4154,
 version 2 from swamp-club#4178). The
 extension imports the harnesses' own session files (Claude Code transcripts,
 Codex rollouts), so no hooks or setup are needed. The same extension's
-`assess` method writes Swampify candidate sets, which the page's Swampify
-panel shows; [swampify.md](./swampify.md) describes them.
+`assess` method writes Swampify candidate sets, which the dashboard's
+Swampify page shows; [swampify.md](./swampify.md) describes them.
 
 The record is a read model built per session. It is not the observation event
 stream or its OTEL mapping from the agent observation exploration; those are
@@ -287,15 +287,12 @@ with a Preview chip. Its requests are in
 `packages/dashboard/src/client/agent_sessions.ts`, and
 `integration/agent_sessions_page_test.ts` sends them through serve's handlers.
 
-- **Visibility.** The sidebar item shows only when the viewer can read a
-  top-level session or a Swampify candidate set: two `data.query` probes,
-  `AGENT_SESSION_TOP_LEVEL_PREDICATE` and `SWAMPIFY_CANDIDATES_QUERY_PREDICATE`,
-  each with a limit of 1 and decided on the type tag, so a repo with neither
-  costs two one-row queries. That departs from the faded "Off" items on
-  purpose: with no such data there is nothing to turn on. The checks run when
-  the dashboard loads and when it reconnects, so data imported while it is
-  open shows after a reload. A repo with candidate sets and no session records
-  shows the page with the panel and an empty session list. Hiding is not access control: the route answers
+- **Visibility.** The sidebar item shows only when one `data.query` with
+  `AGENT_SESSION_TOP_LEVEL_PREDICATE` and a limit of 1 finds a session the
+  viewer can read. That departs from the faded "Off" items on purpose: with
+  no session data there is nothing to turn on. The check runs when the
+  dashboard loads and when it reconnects, so sessions imported while it is
+  open show after a reload. Hiding is not access control: the route answers
   a direct URL, and every request it sends is read-gated.
 - **The list.** Top-level sessions come from tags alone. The page reads the
   newest 1,000 with `sort: tags.startedAt desc` (swamp-club#4177) and, when
@@ -312,9 +309,6 @@ with a Preview chip. Its requests are in
   loaded. A subagent opens under the call that started it, at full detail.
   Findings are only read, never computed: the opened session's and its
   loaded subagents' are shown together, most severe first.
-- **Swampify.** A panel above the list shows the latest assessment, the
-  offer made from it and comparisons; see
-  [swampify.md](./swampify.md#the-panel).
 - **Skips.** A record that does not read shows its note, never its content.
   A summary tag that does not read leaves the row's numbers blank; the
   session still opens.

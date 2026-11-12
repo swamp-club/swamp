@@ -163,6 +163,22 @@ const HARNESS_NAME: Readonly<Record<string, string>> = {
   codex: "Codex",
 };
 
+const START_HARNESS: Readonly<Record<string, string>> = {
+  "claude-code": "claude",
+  codex: "codex",
+};
+
+/** The agent `swamp start` launches for a session harness, or null. */
+export function startHarnessId(harness: string): string | null {
+  return START_HARNESS[harness] ?? null;
+}
+
+/** Hands a start task to the local hub, which opens the agent on it. */
+export type SwampifyLauncher = (
+  text: string,
+  harness: string,
+) => Promise<{ readonly opened: boolean; readonly command: string }>;
+
 /** A harness id as people say it; an unknown one as stored. */
 export function harnessName(harness: string): string {
   return HARNESS_NAME[harness] ?? harness;

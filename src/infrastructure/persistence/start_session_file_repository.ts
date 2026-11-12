@@ -140,6 +140,7 @@ const TaskDataSchema = z.object({
   createdAt: z.string().datetime(),
   step: z.enum(["task", "agent", "trust", "launched"]),
   task: z.string().optional(),
+  taskKind: z.enum(["swampify"]).optional(),
   harness: z.enum(TOOL_IDS).optional(),
   tools: z.array(z.enum(TOOL_IDS)).optional(),
   trustConfirmedAt: z.string().optional(),

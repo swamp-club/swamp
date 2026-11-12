@@ -119,6 +119,14 @@ up by a run. A resume that exits before its run starts is reported with the
 command to run by hand. The page's detach (`cancel` with the request id) stays in
 the hub.
 
+The Swampify page's `swampify.launch` is not a CLI command: the hub calls
+start's `startLaunchTask` in its own process for the workspace's folder, which
+saves the brief as a `swampify` start task and opens the agent
+([start](./start.md), [swampify](./swampify.md#the-page)). The request carries
+the task text, a harness id that must not start with `-`, and
+`trustConfirmed: true`; the reply's `data` says whether a terminal opened and
+the command, or the error frame carries start's refusal.
+
 ## Lifetime
 
 - The hub is `swamp start`'s server: a dashboard tab counts as an open page, so

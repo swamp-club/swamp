@@ -40,6 +40,7 @@ import {
   SWAMPIFY_SUMMARY_TAG,
   SWAMPIFY_UPDATED_AT_TAG,
   swampifyBuildBrief,
+  swampifyBuildTask,
   type SwampifyCandidate,
   swampifyCandidateId,
   type SwampifyCandidateSet,
@@ -944,4 +945,28 @@ Deno.test("swampifyBuildBrief: refuses a behavior name that could leave its comm
       behavior,
     );
   }
+});
+
+Deno.test("swampifyBuildTask: is the brief's task, context and steps, a level down and without start's header", () => {
+  const input = {
+    behavior: "swampify",
+    option: option({ registryType: "@acme/notes" }) as SwampifyOfferOption,
+    candidates: [candidate() as SwampifyCandidate],
+  };
+  const task = swampifyBuildTask(input) ?? "";
+  const brief = swampifyBuildBrief(input) ?? "";
+  assert(task.startsWith("Automate this repeated chore as a swamp workflow"));
+  assert(!isSwampBrief(task));
+  assert(!/^# /m.test(task));
+  assertStringIncludes(task, "\n## Context\n");
+  assertStringIncludes(task, "\n## How to work on this\n");
+  // Every line of the copied brief's body is in the task, headings aside.
+  for (const line of brief.split("\n").slice(1)) {
+    if (line.startsWith("# ") || line === "") continue;
+    assertStringIncludes(task, line);
+  }
+  assertEquals(
+    swampifyBuildTask({ ...input, behavior: "a b" }),
+    null,
+  );
 });
