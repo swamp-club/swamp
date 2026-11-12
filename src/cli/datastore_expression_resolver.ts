@@ -21,12 +21,15 @@ import { join, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { UserError } from "../domain/errors.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
+import type { VaultConfiguration } from "../domain/vaults/vault_provider.ts";
+import type { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { YamlVaultConfigRepository } from "../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { withRuntimeBaseDir } from "../domain/vaults/local_encryption_key_source.ts";
 import { RENAMED_VAULT_TYPES } from "../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import {
   fixCjsEsmInterop,
+  installZodGlobal,
   rewriteZodImports,
 } from "../domain/models/bundle.ts";
 import { scanExpressions } from "../domain/expressions/expression_scanner.ts";
@@ -43,9 +46,23 @@ export interface DatastoreExpressionContext {
   repoDir: string;
   managedConfig?: boolean;
   vaultServiceFactory?: (repoDir: string) => Promise<VaultService>;
+  /** absent or null: only vault types already installed in the checkout are used */
+  autoResolver?: Pick<ExtensionAutoResolver, "resolve"> | null;
+}
+
+interface SkippedVault {
+  configuration: VaultConfiguration;
+  error: unknown;
+}
+
+interface EarlyVaults {
+  service: VaultService;
+  skipped: Map<string, SkippedVault>;
 }
 
 async function loadCachedVaultBundles(repoDir: string): Promise<void> {
+  // rewriteZodImports makes each bundle read zod from this global
+  installZodGlobal();
   const bundlesDir = join(repoDir, ".swamp", "vault-bundles");
   try {
     for await (const fpDir of Deno.readDir(bundlesDir)) {
@@ -93,13 +110,13 @@ async function loadCachedVaultBundles(repoDir: string): Promise<void> {
   }
 }
 
-async function createEarlyVaultService(
-  repoDir: string,
-): Promise<VaultService> {
+async function createEarlyVaults(repoDir: string): Promise<EarlyVaults> {
   await loadCachedVaultBundles(repoDir);
 
   const vaultsDir = join(repoDir, "vaults");
   const vaultService = new VaultService();
+  const skipped = new Map<string, SkippedVault>();
+  const registered = new Set<string>();
   const vaultRepo = new YamlVaultConfigRepository(
     repoDir,
     undefined,
@@ -110,38 +127,59 @@ async function createEarlyVaultService(
   try {
     vaultConfigs = await vaultRepo.findAll();
   } catch {
-    return vaultService;
+    return { service: vaultService, skipped };
   }
 
   for (const vaultConfig of vaultConfigs) {
+    let vaultType = vaultConfig.type;
+    const renamedTo = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
+    if (renamedTo) vaultType = renamedTo;
+    const configuration: VaultConfiguration = {
+      name: vaultConfig.name,
+      type: vaultType,
+      config: withRuntimeBaseDir(vaultType, vaultConfig.config, repoDir),
+      auditReads: vaultConfig.auditReads,
+    };
     try {
-      let vaultType = vaultConfig.type;
-      const renamedTo = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
-      if (renamedTo) vaultType = renamedTo;
-
-      vaultService.registerVault({
-        name: vaultConfig.name,
-        type: vaultType,
-        config: withRuntimeBaseDir(vaultType, vaultConfig.config, repoDir),
-        auditReads: vaultConfig.auditReads,
-      });
+      vaultService.registerVault(configuration);
+      registered.add(vaultConfig.name);
+      skipped.delete(vaultConfig.name);
     } catch (error) {
+      // a vault.get naming it reports this cause in its own error
       logger
-        .warn`Vault ${vaultConfig.name} not available for datastore config expressions: ${error}`;
+        .debug`Vault ${vaultConfig.name} not available for datastore config expressions: ${error}`;
+      // a same-named definition that registered keeps serving the name
+      if (!registered.has(vaultConfig.name)) {
+        skipped.set(vaultConfig.name, { configuration, error });
+      }
     }
   }
 
-  return vaultService;
+  return { service: vaultService, skipped };
+}
+
+function skippedVaultMessage(vault: SkippedVault): string {
+  const { name, type } = vault.configuration;
+  if (type.startsWith("@") && !vaultTypeRegistry.has(type)) {
+    return `Vault '${name}' is defined in vaults/, but its vault type ` +
+      `'${type}' is not installed in this checkout. ` +
+      `Install it with: swamp extension pull ${type}`;
+  }
+  const reason = vault.error instanceof Error
+    ? vault.error.message
+    : String(vault.error);
+  return `Vault '${name}' is defined in vaults/ but could not be loaded: ${reason}`;
 }
 
 export async function resolveDatastoreExpressions(
   config: Record<string, unknown>,
   context: DatastoreExpressionContext,
 ): Promise<Record<string, unknown>> {
-  let vaultService: VaultService | null = null;
+  let earlyVaults: EarlyVaults | null = null;
+  const typeResolutions = new Map<string, Promise<boolean>>();
 
-  async function getVaultService(): Promise<VaultService> {
-    if (vaultService) return vaultService;
+  async function getEarlyVaults(): Promise<EarlyVaults> {
+    if (earlyVaults) return earlyVaults;
     if (context.managedConfig) {
       throw new UserError(
         "Vault expressions in datastore config are not supported when " +
@@ -151,12 +189,55 @@ export async function resolveDatastoreExpressions(
           "expressions instead.",
       );
     }
-    const factory = context.vaultServiceFactory ?? createEarlyVaultService;
     logger
       .debug`Creating vault service for datastore config expression resolution`;
-    vaultService = await factory(context.repoDir);
+    earlyVaults = context.vaultServiceFactory
+      ? {
+        service: await context.vaultServiceFactory(context.repoDir),
+        skipped: new Map(),
+      }
+      : await createEarlyVaults(context.repoDir);
     logger.debug`Vault service created successfully`;
-    return vaultService;
+    return earlyVaults;
+  }
+
+  // never touches vaultTypeRegistry.ensureLoaded: the vault loader awaits the
+  // datastore resolution this call is part of, so loading through it deadlocks
+  async function recoverSkippedVault(
+    vaults: EarlyVaults,
+    vault: SkippedVault,
+  ): Promise<void> {
+    const { name, type } = vault.configuration;
+    if (
+      context.autoResolver && type.startsWith("@") &&
+      !vaultTypeRegistry.has(type)
+    ) {
+      let resolution = typeResolutions.get(type);
+      if (!resolution) {
+        resolution = context.autoResolver.resolve(type).catch((error) => {
+          logger.debug`Auto-resolving vault type ${type} failed: ${error}`;
+          return false;
+        });
+        typeResolutions.set(type, resolution);
+      }
+      await resolution;
+    }
+    // a concurrent vault.get on the same vault may have registered it already
+    if (!vaults.skipped.has(name)) return;
+    if (vaultTypeRegistry.has(type)) {
+      try {
+        vaults.service.registerVault(vault.configuration);
+        vaults.skipped.delete(name);
+        return;
+      } catch (error) {
+        vault.error = error;
+      }
+    }
+    throw new UserError(
+      `Failed to resolve vault expression in datastore config: ${
+        skippedVaultMessage(vault)
+      }`,
+    );
   }
 
   async function resolveExpression(expr: string): Promise<string> {
@@ -177,9 +258,15 @@ export async function resolveDatastoreExpressions(
     if (vaultMatch) {
       const vaultName = vaultMatch[2] ?? vaultMatch[3];
       const secretKey = vaultMatch[5] ?? vaultMatch[6];
-      const service = await getVaultService();
+      const vaults = await getEarlyVaults();
+      const skipped = vaults.skipped.get(vaultName);
+      if (skipped) await recoverSkippedVault(vaults, skipped);
       try {
-        return await service.get(vaultName, secretKey, "datastore-config");
+        return await vaults.service.get(
+          vaultName,
+          secretKey,
+          "datastore-config",
+        );
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         throw new UserError(

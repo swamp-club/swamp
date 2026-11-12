@@ -1008,6 +1008,81 @@ Deno.test("parseDatastoreEnvVar: autoResolve false never consults the auto-resol
   });
 });
 
+async function withExtensionVaultDatastoreRepo(
+  collective: string,
+  fn: (repoDir: string, marker: RepoMarkerData) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_ds_vault_type_" });
+  try {
+    const type = `@${collective}/vault`;
+    const id = crypto.randomUUID();
+    await Deno.mkdir(join(repoDir, "vaults", type), { recursive: true });
+    await Deno.writeTextFile(
+      join(repoDir, "vaults", type, `${id}.yaml`),
+      JSON.stringify({
+        id,
+        name: "dsauth",
+        type,
+        config: {},
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await fn(repoDir, {
+      swampVersion: "0.1.0",
+      initializedAt: "2024-01-01",
+      repoId: "test-repo",
+      datastore: {
+        type: "filesystem",
+        path: "./ds",
+        directories: ["${{ vault.get(dsauth, DIR) }}"],
+      },
+    });
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("resolveDatastoreConfig: auto-resolves a missing vault type the datastore config reads by default", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+    await withRecordingAutoResolver(collective, async (lookups) => {
+      await withExtensionVaultDatastoreRepo(
+        collective,
+        async (repoDir, marker) => {
+          await assertRejects(
+            () => resolveDatastoreConfig(marker, undefined, repoDir),
+            UserError,
+            `swamp extension pull @${collective}/vault`,
+          );
+          assertEquals(lookups.length > 0, true);
+        },
+      );
+    });
+  });
+});
+
+Deno.test("resolveDatastoreConfig: autoResolve false never auto-resolves a vault type the datastore config reads", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    const collective = `t${crypto.randomUUID().slice(0, 8)}`;
+    await withRecordingAutoResolver(collective, async (lookups) => {
+      await withExtensionVaultDatastoreRepo(
+        collective,
+        async (repoDir, marker) => {
+          await assertRejects(
+            () =>
+              resolveDatastoreConfig(marker, undefined, repoDir, {
+                autoResolve: false,
+              }),
+            UserError,
+            `swamp extension pull @${collective}/vault`,
+          );
+          assertEquals(lookups, []);
+        },
+      );
+    });
+  });
+});
+
 const tierMarker = (
   datastore: RepoMarkerData["datastore"],
 ): RepoMarkerData => ({

@@ -17,14 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { z } from "zod";
 import {
   type DatastoreExpressionContext,
   resolveDatastoreExpressions,
 } from "./datastore_expression_resolver.ts";
 import { UserError } from "../domain/errors.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
+import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
+import { MockVaultProvider } from "../domain/vaults/mock_vault_provider.ts";
 import { withMockedEnv } from "../infrastructure/persistence/path_test_helpers.ts";
 
 function baseContext(
@@ -342,5 +345,284 @@ Deno.test("resolveDatastoreExpressions: never imports bundles from install stagi
     assertEquals(await Deno.readTextFile(join(staging, "v.js")), source);
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
+async function makeTempRepo(): Promise<string> {
+  return await Deno.makeTempDir({ prefix: "swamp_ds_expr_vault_type_" });
+}
+
+async function removeTempRepo(repoDir: string): Promise<void> {
+  await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+}
+
+function uniqueExtensionVaultType(): string {
+  return `@t${crypto.randomUUID().slice(0, 8)}/vault`;
+}
+
+async function writeVaultDef(
+  repoDir: string,
+  name: string,
+  type: string,
+  config: Record<string, unknown>,
+): Promise<void> {
+  const id = crypto.randomUUID();
+  const dir = join(repoDir, "vaults", type);
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(
+    join(dir, `${id}.yaml`),
+    JSON.stringify({
+      id,
+      name,
+      type,
+      config,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+}
+
+function registerMockVaultType(type: string): void {
+  vaultTypeRegistry.register({
+    type,
+    name: type,
+    description: "test extension vault type",
+    isBuiltIn: false,
+    createProvider: (name, config) =>
+      new MockVaultProvider(name, config as Record<string, string>),
+  });
+}
+
+function installingResolver(calls: string[]) {
+  return {
+    resolve: (type: string): Promise<boolean> => {
+      calls.push(type);
+      registerMockVaultType(type);
+      return Promise.resolve(true);
+    },
+  };
+}
+
+Deno.test("resolveDatastoreExpressions: auto-resolves the missing extension type of a vault.get target once", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  try {
+    await writeVaultDef(repoDir, "dsauth", type, { DIR: "secret-dir" });
+    const calls: string[] = [];
+    const result = await resolveDatastoreExpressions(
+      {
+        first: "${{ vault.get(dsauth, DIR) }}",
+        second: "${{ vault.get(dsauth, DIR) }}",
+      },
+      { repoDir, autoResolver: installingResolver(calls) },
+    );
+    assertEquals(result, { first: "secret-dir", second: "secret-dir" });
+    assertEquals(calls, [type]);
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: a later resolution uses the auto-resolved type without resolving again", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  try {
+    await writeVaultDef(repoDir, "dsauth", type, { DIR: "secret-dir" });
+    const calls: string[] = [];
+    const ctx = { repoDir, autoResolver: installingResolver(calls) };
+    const config = { dir: "${{ vault.get(dsauth, DIR) }}" };
+    await resolveDatastoreExpressions(config, ctx);
+    const result = await resolveDatastoreExpressions(config, ctx);
+    assertEquals(result, { dir: "secret-dir" });
+    assertEquals(calls, [type]);
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: never auto-resolves the type of a vault no vault.get names", async () => {
+  const repoDir = await makeTempRepo();
+  const used = uniqueExtensionVaultType();
+  const unused = uniqueExtensionVaultType();
+  try {
+    await writeVaultDef(repoDir, "dsauth", used, { DIR: "secret-dir" });
+    await writeVaultDef(repoDir, "other", unused, {});
+    const calls: string[] = [];
+    await resolveDatastoreExpressions(
+      { dir: "${{ vault.get(dsauth, DIR) }}" },
+      { repoDir, autoResolver: installingResolver(calls) },
+    );
+    assertEquals(calls, [used]);
+  } finally {
+    vaultTypeRegistry.invalidateType(used);
+    vaultTypeRegistry.invalidateType(unused);
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: without an auto-resolver names the uninstalled vault type and the pull command", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  try {
+    await writeVaultDef(repoDir, "dsauth", type, {});
+    const error = await assertRejects(
+      () =>
+        resolveDatastoreExpressions(
+          { dir: "${{ vault.get(dsauth, DIR) }}" },
+          { repoDir },
+        ),
+      UserError,
+    );
+    assertStringIncludes(error.message, `vault type '${type}'`);
+    assertStringIncludes(error.message, `swamp extension pull ${type}`);
+  } finally {
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: an auto-resolver that cannot install the type yields the pull command", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  try {
+    await writeVaultDef(repoDir, "dsauth", type, {});
+    const calls: string[] = [];
+    const error = await assertRejects(
+      () =>
+        resolveDatastoreExpressions(
+          { dir: "${{ vault.get(dsauth, DIR) }}" },
+          {
+            repoDir,
+            autoResolver: {
+              resolve: (t) => {
+                calls.push(t);
+                return Promise.reject(new Error("registry unreachable"));
+              },
+            },
+          },
+        ),
+      UserError,
+    );
+    assertEquals(calls, [type]);
+    assertStringIncludes(error.message, `swamp extension pull ${type}`);
+  } finally {
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: a vault skipped for its config reports that error", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  vaultTypeRegistry.register({
+    type,
+    name: type,
+    description: "test extension vault type with required config",
+    isBuiltIn: false,
+    configSchema: z.object({ token: z.string().describe("API token") }),
+    createProvider: (name) => new MockVaultProvider(name),
+  });
+  try {
+    await writeVaultDef(repoDir, "dsauth", type, {});
+    const calls: string[] = [];
+    const error = await assertRejects(
+      () =>
+        resolveDatastoreExpressions(
+          { dir: "${{ vault.get(dsauth, DIR) }}" },
+          { repoDir, autoResolver: installingResolver(calls) },
+        ),
+      UserError,
+    );
+    assertEquals(calls, []);
+    assertStringIncludes(error.message, "could not be loaded");
+    assertStringIncludes(error.message, "token");
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: auto-resolving a vault type never runs the vault type registry loader", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  let loaderRuns = 0;
+  vaultTypeRegistry.setLoader(() => {
+    loaderRuns++;
+    return Promise.resolve();
+  });
+  vaultTypeRegistry.setTypeLoader(() => {
+    loaderRuns++;
+    return Promise.resolve();
+  });
+  try {
+    await writeVaultDef(repoDir, "dsauth", type, { DIR: "secret-dir" });
+    await resolveDatastoreExpressions(
+      { dir: "${{ vault.get(dsauth, DIR) }}" },
+      { repoDir, autoResolver: installingResolver([]) },
+    );
+    assertEquals(loaderRuns, 0);
+  } finally {
+    vaultTypeRegistry.clearLoadersForTesting();
+    vaultTypeRegistry.invalidateType(type);
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: a cached vault bundle that imports zod loads before any extension loader ran", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  const previousZod = globalThis.__swamp_zod;
+  globalThis.__swamp_zod = undefined;
+  try {
+    const bundleDir = join(repoDir, ".swamp", "vault-bundles", "abc12345");
+    await Deno.mkdir(bundleDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(bundleDir, "v.js"),
+      `import { z } from "zod";
+export const vault = {
+  type: ${JSON.stringify(type)},
+  configSchema: z.object({ DIR: z.string() }),
+  createProvider(name, config) {
+    return {
+      getName: () => name,
+      get: (key) => Promise.resolve(config[key]),
+      put: () => Promise.resolve(),
+      list: () => Promise.resolve(Object.keys(config)),
+    };
+  },
+};
+`,
+    );
+    await writeVaultDef(repoDir, "dsauth", type, { DIR: "bundled-dir" });
+    const result = await resolveDatastoreExpressions(
+      { dir: "${{ vault.get(dsauth, DIR) }}" },
+      { repoDir },
+    );
+    assertEquals(result, { dir: "bundled-dir" });
+  } finally {
+    globalThis.__swamp_zod = previousZod;
+    vaultTypeRegistry.invalidateType(type);
+    await removeTempRepo(repoDir);
+  }
+});
+
+Deno.test("resolveDatastoreExpressions: a failing definition never displaces a same-named vault that registered", async () => {
+  const repoDir = await makeTempRepo();
+  const working = uniqueExtensionVaultType();
+  const missing = uniqueExtensionVaultType();
+  registerMockVaultType(working);
+  try {
+    await writeVaultDef(repoDir, "dsauth", working, { DIR: "working-dir" });
+    await writeVaultDef(repoDir, "dsauth", missing, { DIR: "other-dir" });
+    const calls: string[] = [];
+    const result = await resolveDatastoreExpressions(
+      { dir: "${{ vault.get(dsauth, DIR) }}" },
+      { repoDir, autoResolver: installingResolver(calls) },
+    );
+    assertEquals(result, { dir: "working-dir" });
+    assertEquals(calls, []);
+  } finally {
+    vaultTypeRegistry.invalidateType(working);
+    vaultTypeRegistry.invalidateType(missing);
+    await removeTempRepo(repoDir);
   }
 });

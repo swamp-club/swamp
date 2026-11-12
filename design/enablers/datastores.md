@@ -307,8 +307,12 @@ datastore:
 - Only `env.*` and `vault.get()` work. The full CEL context (behavior
   references, data lookups) does not exist this early in startup.
 - Extension vault bundles load straight from the `.swamp/vault-bundles/` cache
-  during early boot, bypassing the extension loader. Install an extension vault
-  before referencing it here.
+  during early boot, bypassing the extension loader. When a vault named in a
+  `vault.get()` has an extension type that is not cached, as on a fresh clone
+  or worktree, it is auto-resolved from the trusted collectives, as the
+  datastore type is, unless the caller runs installed-only
+  (`autoResolve: false`). Otherwise the error names the vault type and the
+  `swamp extension pull` command.
 - Vault expressions do not work with `managedConfig: true`, which stores vault
   configs in the datastore tier and would create a circular dependency. Use
   environment variables instead.
