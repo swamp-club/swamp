@@ -39,6 +39,7 @@ import {
 } from "../../lib/swampify_view.ts";
 import { formatCount, pluralize } from "../../lib/format.ts";
 import { ComparisonBlock } from "./SwampifyComparison.tsx";
+import { CheckIcon, CopyIcon } from "./SwampifyParts.tsx";
 import {
   createLine,
   foundCandidates,
@@ -154,20 +155,11 @@ function HandOff(
         <button
           type="button"
           className={canLaunch ? "sw-btn" : "sw-btn sw-btn-primary"}
-          onClick={() =>
-            void copyText(brief).then((ok) =>
-              setCopied(ok ? "copied" : "failed")
-            )}
-        >
-          {copied === "copied" ? "Copied" : "Copy brief"}
-        </button>
-        <button
-          type="button"
-          className="sw-link"
-          aria-expanded={shown || copied === "failed"}
+          aria-expanded={shown}
+          aria-controls="sw-brief"
           onClick={() => setShown(!shown)}
         >
-          {shown || copied === "failed" ? "Hide the brief" : "See the brief"}
+          {shown ? "Hide brief" : "Show brief"}
         </button>
       </div>
       {canLaunch && (launched.kind === "idle" || busy) && (
@@ -196,16 +188,31 @@ function HandOff(
       </div>
       {launched.kind === "failed" && (
         <p className="sw-fail sw-small" role="alert">
-          {launched.message} You can still copy the brief.
+          {launched.message} You can still show the brief and copy it.
         </p>
+      )}
+      {shown && (
+        <div className="sw-brief-wrap">
+          <pre id="sw-brief" className="sw-brief">{brief}</pre>
+          <button
+            type="button"
+            className="sw-icon-btn sw-copy"
+            aria-label={copied === "copied" ? "Copied" : "Copy brief"}
+            title={copied === "copied" ? "Copied" : "Copy brief"}
+            onClick={() =>
+              void copyText(brief).then((ok) =>
+                setCopied(ok ? "copied" : "failed")
+              )}
+          >
+            {copied === "copied" ? <CheckIcon /> : <CopyIcon />}
+          </button>
+        </div>
       )}
       {copied === "failed" && (
         <p className="sw-fail sw-small" role="alert">
-          The browser refused the clipboard. Select the brief below and copy it.
+          The browser refused the clipboard. Select the brief above and copy it.
         </p>
       )}
-      {(shown || copied === "failed") &&
-        <pre className="sw-brief">{brief}</pre>}
     </>
   );
 }

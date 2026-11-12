@@ -613,6 +613,20 @@ button.sw-icon-btn:hover,
   cursor: pointer;
 }
 
+.sw-brief-wrap {
+  position: relative;
+}
+
+.sw-brief-wrap .sw-brief {
+  padding-right: 48px;
+}
+
+.sw-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
 .sw-btn:disabled {
   opacity: 0.6;
   cursor: default;

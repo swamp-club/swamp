@@ -350,16 +350,17 @@ Deno.test("OptionReview: shows what swamp would build and the evidence", () => {
   assertStringIncludes(html, "It stands for 2 candidates:");
   assertStringIncludes(html, "release the docs site and post the changelog");
   assertStringIncludes(html, "Hand it to your agent");
-  assertStringIncludes(html, "Copy brief");
+  assertStringIncludes(html, "Hide brief");
   // building and handing off come first, the evidence after
-  assert(html.indexOf("Copy brief") < html.indexOf("The evidence"));
-  assert(html.indexOf("What swamp would build") < html.indexOf("Copy brief"));
+  assert(html.indexOf("Hide brief") < html.indexOf("The evidence"));
+  assert(html.indexOf("What swamp would build") < html.indexOf("Hide brief"));
 });
 
 Deno.test("OptionReview: the brief records the pick and leaves out labels and excerpts", () => {
   const html = review(fixtureOffer("offered"));
-  const brief = html.match(/<pre class="sw-brief">([\s\S]*?)<\/pre>/)?.[1] ??
-    "";
+  const brief =
+    html.match(/<pre id="sw-brief" class="sw-brief">([\s\S]*?)<\/pre>/)?.[1] ??
+      "";
   assertStringIncludes(brief, "&lt;!-- swamp start brief v1 --&gt;");
   assertStringIncludes(
     brief,
@@ -375,8 +376,9 @@ Deno.test("OptionReview: the brief records the pick and leaves out labels and ex
 
 Deno.test("OptionReview: the brief stays hidden until asked for", () => {
   const html = review(fixtureOffer("offered"), { briefShown: false });
-  assertStringIncludes(html, "See the brief");
-  assert(!html.includes("sw-brief"));
+  assertStringIncludes(html, ">Show brief</button>");
+  assert(!html.includes('<pre id="sw-brief"'));
+  assert(!html.includes("Copy brief"));
 });
 
 Deno.test("OptionReview: a behavior name unsafe for a command gives no brief", () => {
@@ -385,12 +387,21 @@ Deno.test("OptionReview: a behavior name unsafe for a command gives no brief", (
   assertStringIncludes(html, "can&#x27;t be written into a brief safely");
 });
 
-Deno.test("OptionReview: under serve there is no Swampify! and Copy brief is the action", () => {
+Deno.test("OptionReview: the shown brief has a copy icon button in it", () => {
+  const html = review(fixtureOffer("offered"));
+  assertStringIncludes(html, '<div class="sw-brief-wrap"><pre id="sw-brief"');
+  assertStringIncludes(
+    html,
+    'class="sw-icon-btn sw-copy" aria-label="Copy brief" title="Copy brief"><svg',
+  );
+});
+
+Deno.test("OptionReview: under serve there is no Swampify! and Show brief is the action", () => {
   const html = review(fixtureOffer("offered"));
   assert(!html.includes("Swampify!"));
   assertStringIncludes(
     html,
-    '<button type="button" class="sw-btn sw-btn-primary">Copy brief</button>',
+    'class="sw-btn sw-btn-primary" aria-expanded="true" aria-controls="sw-brief">Hide brief</button>',
   );
 });
 
@@ -405,9 +416,9 @@ Deno.test("OptionReview: on the local dashboard Swampify! leads, names the agent
   );
   assertStringIncludes(
     html,
-    '<button type="button" class="sw-btn">Copy brief</button>',
+    'class="sw-btn" aria-expanded="false" aria-controls="sw-brief">Show brief</button>',
   );
-  assert(html.indexOf("Swampify!") < html.indexOf("Copy brief"));
+  assert(html.indexOf("Swampify!") < html.indexOf("Show brief"));
   assertStringIncludes(html, "Swampify! opens Claude Code in this repo");
   assertStringIncludes(
     html,
@@ -440,15 +451,15 @@ Deno.test("OptionReview: with no terminal to open, the command to run is shown",
   );
 });
 
-Deno.test("OptionReview: a refused launch says why and leaves Copy brief", () => {
+Deno.test("OptionReview: a refused launch says why and leaves Show brief", () => {
   const html = review(fixtureOffer("offered"), {
     launch: launcher,
     launchState: { kind: "failed", message: "Sign in to Swamp Club first." },
     briefShown: false,
   });
   assertStringIncludes(html, 'role="alert">Sign in to Swamp Club first.');
-  assertStringIncludes(html, "You can still copy the brief.");
-  assertStringIncludes(html, ">Copy brief</button>");
+  assertStringIncludes(html, "You can still show the brief and copy it.");
+  assertStringIncludes(html, ">Show brief</button>");
   assert(!html.includes('disabled="">Swampify!'));
 });
 

@@ -178,7 +178,7 @@ local, synced to a datastore, or served with `swamp serve`.
 
 ## The page
 
-The dashboard's Swampify page, at `/swampify` above Agent sessions in the
+The dashboard's Swampify page, at `/swampify` below Agent sessions in the
 sidebar, shows the latest assessment and what to build from it. The sidebar
 item shows only when one `data.query` with
 `SWAMPIFY_CANDIDATES_QUERY_PREDICATE` and a limit of 1 finds a candidate set
