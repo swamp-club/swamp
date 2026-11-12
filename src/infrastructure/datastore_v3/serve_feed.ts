@@ -44,6 +44,22 @@ export function v3FollowerCopyCursor(
 }
 
 /**
+ * undefined when it cannot be read, as before the copy's first restore: an
+ * unknown size never takes the node out of rotation
+ */
+export async function v3FollowerWalBytes(
+  repoDir: string,
+  config: V3DatastoreConfig,
+): Promise<number | undefined> {
+  try {
+    const commitsDb = v3DatastoreFor(repoDir, config).commitsDbPath;
+    return (await Deno.stat(`${commitsDb}-wal`)).size;
+  } catch (error) {
+    return error instanceof Deno.errors.NotFound ? 0 : undefined;
+  }
+}
+
+/**
  * Applies `changes` from the leader's feed, in order, then catches the read
  * model up. Does nothing on a node that holds the writer lease: its own
  * commits are the log.

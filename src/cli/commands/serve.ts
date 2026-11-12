@@ -803,13 +803,17 @@ import {
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
 import { followerHttpForward } from "../../serve/follower_requests.ts";
 import { LeaderLink } from "../../serve/leader_link.ts";
-import { FollowerFeed } from "../../serve/follower_feed.ts";
+import {
+  FollowerFeed,
+  followerUnreadyReason,
+} from "../../serve/follower_feed.ts";
 import { awaitFirstFollowerCatchUp } from "../../serve/follower_ready.ts";
 import type { ServeCommitEffects } from "../../serve/serve_commit_effects.ts";
 import { wireFollowerPolicy } from "../../serve/follower_policy_wiring.ts";
 import {
   applyV3LeaderChanges,
   v3FollowerCopyCursor,
+  v3FollowerWalBytes,
 } from "../../infrastructure/datastore_v3/serve_feed.ts";
 import {
   forwardCredentialOf,
@@ -9782,7 +9786,7 @@ export const serveCommand = new Command()
         }
 
         // Readiness endpoint — returns 200 only after full startup and
-        // before shutdown begins
+        // before shutdown begins, and never for a follower broken on its own
         if (req.method === "GET" && new URL(req.url).pathname === "/ready") {
           if (shuttingDown) {
             return Response.json(
@@ -9793,6 +9797,19 @@ export const serveCommand = new Command()
           if (!isReady) {
             return Response.json(
               { status: "not_ready", instanceId },
+              { status: 503 },
+            );
+          }
+          const broken = serveLeadership?.role === "follower" &&
+              serveFollowerFeed !== undefined && v3Location !== undefined
+            ? followerUnreadyReason({
+              localApplyFailures: serveFollowerFeed.localApplyFailures,
+              walBytes: await v3FollowerWalBytes(resolvedRepoDir, v3Location),
+            })
+            : undefined;
+          if (broken !== undefined) {
+            return Response.json(
+              { status: "follower_broken", reason: broken, instanceId },
               { status: 503 },
             );
           }

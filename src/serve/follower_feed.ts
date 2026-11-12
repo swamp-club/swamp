@@ -21,6 +21,7 @@ import {
   LEASE_OPS_FEATURE,
   STEP_STARTS_FEATURE,
 } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
+import { isNetworkFailure } from "../infrastructure/datastore_v3/network_failure.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
@@ -50,6 +51,50 @@ export interface FollowerCatchUpState {
   readonly applied: number;
   readonly lastAskedLeaderHead: number | null;
   readonly lastFrameAgoMs: number | null;
+}
+
+/** local apply failures in a row after which /ready reports the follower broken */
+export const FOLLOWER_UNREADY_APPLY_FAILURES = 3;
+
+/**
+ * a follower's WAL past this is not being checkpointed: SQLite's default keeps
+ * it near 4 MiB
+ */
+export const FOLLOWER_UNREADY_WAL_BYTES = 1024 ** 3;
+
+/**
+ * why /ready reports this follower broken, or undefined: only failures of its
+ * own, never a slow or leaderless copy, since the load balancer drops a node
+ * whose /ready fails
+ */
+export function followerUnreadyReason(state: {
+  readonly localApplyFailures: number;
+  readonly walBytes: number | undefined;
+}): string | undefined {
+  if (state.localApplyFailures >= FOLLOWER_UNREADY_APPLY_FAILURES) {
+    return `applying the leader's commits failed ${state.localApplyFailures} times in a row on this node`;
+  }
+  if (
+    state.walBytes !== undefined && state.walBytes > FOLLOWER_UNREADY_WAL_BYTES
+  ) {
+    return `the copy's WAL is ${state.walBytes} bytes, past ${FOLLOWER_UNREADY_WAL_BYTES}`;
+  }
+  return undefined;
+}
+
+/**
+ * a divergence is repaired by a restore and a network failure is the storage's
+ * or the leader's: neither says this node is broken
+ */
+function isLocalApplyFailure(error: unknown): boolean {
+  if (isNetworkFailure(error)) return false;
+  let current = error;
+  for (let depth = 0; depth < 8; depth++) {
+    if (!(current instanceof Error)) return true;
+    if (current.name === "FeedDivergedError") return false;
+    current = current.cause;
+  }
+  return true;
 }
 
 export interface FeedChange {
@@ -84,6 +129,7 @@ export class FollowerFeed implements FollowerCopyFeed {
   #queuedCaughtUp: Promise<boolean> | undefined;
   #followedAt: number | undefined;
   #generation = 0;
+  #localApplyFailures = 0;
 
   constructor(options: FollowerFeedOptions) {
     this.#options = options;
@@ -104,6 +150,14 @@ export class FollowerFeed implements FollowerCopyFeed {
 
   get live(): boolean {
     return this.current(this.#leader);
+  }
+
+  /**
+   * applies of the leader's commits that failed on this node since the last
+   * frame applied; failures the leader or the network caused never count
+   */
+  get localApplyFailures(): number {
+    return this.#localApplyFailures;
   }
 
   /** for logs: how far this copy is from the head the leader last named */
@@ -306,10 +360,12 @@ export class FollowerFeed implements FollowerCopyFeed {
         if (generation !== this.#generation) return;
         this.#applied = Math.max(this.#applied, cursor);
         this.#lastFrameAt = this.#now();
+        this.#localApplyFailures = 0;
         this.#options.onFresh();
         this.#wakeAppliedWaiters();
       } catch (error) {
         if (generation !== this.#generation) return;
+        if (isLocalApplyFailure(error)) this.#localApplyFailures++;
         logger
           .info`Applying the leader's commit feed failed; the copy is restored from the lineage instead: ${error}`;
         this.#fail();
