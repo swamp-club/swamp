@@ -3102,6 +3102,13 @@ inside one.
   About 80% of a full replay is `Commit.fromJSON` recomputing inline digests.
   Replay grows with the partition, and a short-lived CLI command pays it on
   its first append to that partition, so the store snapshots.
+
+  Real commits cost far more to replay than the bench's. On a team member
+  (GCE e2-standard-2), rebuilding a 1,352-commit partition whose 352 commits
+  past its snapshot carry 6 MB of inline content took about 1.0 s, and every
+  command paid it for each partition serve's commits touched
+  (swamp-club#4631). A follower store therefore appends without a rebuild
+  where it can; see "Follower mode".
 - **Cache.** Each store keeps rebuilt partitions in an LRU of 1,024 entries.
   Serve is long-lived and every workflow run is a new partition, so the
   number of cached partitions is bounded. When an append writes a snapshot,
@@ -7616,6 +7623,20 @@ serve binding opens: a rules test pins it) appends through
 
 Duplicates, the partition rule and the fence ordering still hold. One file is
 always opened in the same mode.
+
+A follower appends to a partition it has not loaded without rebuilding it
+(swamp-club#4631). For an observed commit, `appendObserved` refuses only a
+duplicate txnId, a seq at or below the head, a fence below the highest fence,
+a missing fence once one was seen, and a lease op below the lease fence. The
+head row holds the seq and highest fence, the txnId index answers duplicates,
+and the lease fence is the newest lease op replayed after the snapshot, else
+the snapshot's own, which is what a rebuild reaches. The store judges the
+commit from those in the append's transaction and writes the same rows. It
+rebuilds only for a partition it already holds, a commit that makes a snapshot
+due, or a body it cannot read. A command applying serve's commits to
+partitions it never reads, such as another writer's busy behavior, then
+appends each in a few milliseconds rather than a rebuild's hundreds. A property test holds the two paths to
+the same results, rows and rebuilt state.
 
 **Writing.** `createServeCommitSink` (`serve_commit_sink.ts`) is the outbox
 sink over a commit store whose append forwards to serve, so the outbox still

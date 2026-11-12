@@ -660,7 +660,8 @@ interface PendingAppend {
 interface GroupedAppend {
   readonly entry: PendingAppend;
   readonly cacheKey: string;
-  readonly partition: Partition;
+  /** undefined: a follower commit judged from the file, see #appendUnloaded */
+  readonly partition: Partition | undefined;
 }
 
 /** A partition snapshot an append wrote. */
@@ -732,6 +733,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #follower: boolean;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
+  #rebuilds = 0;
   /** {@link onHeadMoved}'s listeners. */
   readonly #headListeners = new Set<(replaced: boolean) => void>();
   /** The leader's cursor {@link appendFromLeader} inserts its commit at. */
@@ -752,6 +754,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #insertCommit: StatementSync;
   readonly #upsertHead: StatementSync;
   readonly #selectPartitionPage: StatementSync;
+  readonly #selectNewestAfter: StatementSync;
   readonly #selectChanges: StatementSync;
   readonly #selectSnapshot: StatementSync;
   readonly #upsertSnapshot: StatementSync;
@@ -819,6 +822,9 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     this.#selectPartitionPage = db.prepare(
       "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
         "WHERE namespace = ? AND partition = ? AND seq >= ? ORDER BY seq LIMIT ?",
+    );
+    this.#selectNewestAfter = db.prepare(
+      "SELECT body FROM commits WHERE namespace = ? AND partition = ? AND seq > ? ORDER BY seq DESC",
     );
     this.#selectChanges = db.prepare(
       "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits WHERE cursor > ? ORDER BY cursor LIMIT ?",
@@ -908,6 +914,11 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
    */
   get appendTransactions(): number {
     return this.#appendTransactions;
+  }
+
+  /** for tests */
+  get rebuilds(): number {
+    return this.#rebuilds;
   }
 
   /** How many rebuilt partitions the store holds; for tests and diagnostics. */
@@ -1346,6 +1357,10 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const namespace = commit.namespace;
     const partitionKey = commit.partition.toString();
     const cacheKey = cacheKeyOf(namespace, partitionKey);
+    if (!retried && this.#mayAppendUnloaded(cacheKey)) {
+      const unloaded = this.#appendUnloaded(commit);
+      if (unloaded !== "load") return unloaded;
+    }
     const partition = await this.#partition(namespace, commit.partition);
 
     // Synchronous from BEGIN to COMMIT: nothing else runs in between.
@@ -1435,6 +1450,13 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       const { namespace, partition: key } = entry.commit;
       const cacheKey = cacheKeyOf(namespace, key.toString());
       let partition = partitions.get(cacheKey);
+      if (
+        partition === undefined &&
+        this.#mayAppendUnloaded(cacheKey)
+      ) {
+        batch.push({ entry, cacheKey, partition: undefined });
+        continue;
+      }
       if (partition === undefined) {
         try {
           partition = await this.#partition(namespace, key);
@@ -1452,6 +1474,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const settle: (() => void)[] = [];
     const snapshots: {
       grouped: GroupedAppend;
+      partition: Partition;
       snapshot: WrittenSnapshot;
     }[] = [];
     let tried = 0;
@@ -1464,12 +1487,19 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
         this.#db.exec(`SAVEPOINT ${GROUP_SAVEPOINT}`);
         let outcome: CommitStoreAppendResult | "stale";
         try {
-          outcome = this.#applyInTransaction(
-            entry.commit,
-            partition,
-            false,
-            (snapshot) => snapshots.push({ grouped, snapshot }),
-          );
+          if (partition === undefined) {
+            // Needing its partition, it is appended after this group as a
+            // stale one is.
+            const unloaded = this.#applyUnloadedInTransaction(entry.commit);
+            outcome = unloaded === "load" ? "stale" : unloaded;
+          } else {
+            outcome = this.#applyInTransaction(
+              entry.commit,
+              partition,
+              false,
+              (snapshot) => snapshots.push({ grouped, partition, snapshot }),
+            );
+          }
         } catch (error) {
           this.#rollbackSavepoint();
           if (error instanceof CommitRejectedError) {
@@ -1512,11 +1542,11 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       ];
     }
     for (const run of settle) run();
-    for (const { grouped, snapshot } of snapshots) {
+    for (const { grouped, partition, snapshot } of snapshots) {
       this.#restoreFromSnapshot(
         grouped.entry.commit,
         grouped.cacheKey,
-        grouped.partition,
+        partition,
         snapshot,
       );
     }
@@ -1667,6 +1697,24 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       }
       return { kind: "duplicate", seq: row.seq };
     }
+    // A lease op can raise the fence too, so take it from the partition.
+    this.#writeAppended(commit, partition.seq, partition.highestFence);
+    if (this.#snapshotDue(before, partition.seq)) {
+      const body = JSON.stringify(partition.snapshot());
+      this.#upsertSnapshot.run(namespace, partitionKey, partition.seq, body);
+      onSnapshot({ seq: partition.seq, body });
+    }
+    this.#afterAppendWrites?.(commit);
+    return applied;
+  }
+
+  #writeAppended(
+    commit: Commit,
+    headSeq: number,
+    highestFence: number | undefined,
+  ): void {
+    const namespace = commit.namespace;
+    const partitionKey = commit.partition.toString();
     if (this.#leaderCursor !== undefined) {
       // A team follower keeps the leader's cursor, so a cursor a client
       // read from either node means the same commit (swamp-club#4120).
@@ -1699,20 +1747,128 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       this.#insertChunkRef.run(namespace, sha256);
       this.#insertChunkPartition.run(namespace, sha256, partitionKey);
     }
-    // A lease op can raise the fence too, so take it from the partition.
     this.#upsertHead.run(
       namespace,
       partitionKey,
-      partition.seq,
-      partition.highestFence ?? null,
+      headSeq,
+      highestFence ?? null,
     );
-    if (this.#snapshotDue(before, partition.seq)) {
-      const body = JSON.stringify(partition.snapshot());
-      this.#upsertSnapshot.run(namespace, partitionKey, partition.seq, body);
-      onSnapshot({ seq: partition.seq, body });
+  }
+
+  /**
+   * appendObserved's rules read only the head row, the txnId index and the
+   * lease fence, so serve's commits to partitions a command never reads skip
+   * their rebuild
+   */
+  #mayAppendUnloaded(cacheKey: string): boolean {
+    return this.#follower && !this.#cache.has(cacheKey);
+  }
+
+  /** "load" when the commit needs its partition rebuilt first */
+  #appendUnloaded(commit: Commit): CommitStoreAppendResult | "load" {
+    this.#db.exec("BEGIN IMMEDIATE");
+    let outcome: CommitStoreAppendResult | "load";
+    try {
+      outcome = this.#applyUnloadedInTransaction(commit);
+      if (outcome !== "load" && outcome.kind === "appended") {
+        this.#db.exec("COMMIT");
+        this.#appendTransactions++;
+      } else {
+        this.#db.exec("ROLLBACK");
+      }
+    } catch (error) {
+      rollbackQuietly(this.#db);
+      throw error;
     }
+    return outcome;
+  }
+
+  /** Partition.appendObserved's refusals, in its order */
+  #applyUnloadedInTransaction(
+    commit: Commit,
+  ): CommitStoreAppendResult | "load" {
+    const namespace = commit.namespace;
+    const key = commit.partition.toString();
+    const head = this.#selectHead.get(namespace, key) as
+      | { seq: number; highest_fence: number | null }
+      | undefined;
+    const headSeq = head?.seq ?? 0;
+    const highest = head?.highest_fence ?? undefined;
+    const held = this.#selectTxnSeq.get(namespace, key, commit.txnId) as
+      | { seq: number }
+      | undefined;
+    if (held !== undefined) return { kind: "duplicate", seq: held.seq };
+    if (commit.seq <= headSeq) {
+      throw new CommitRejectedError(
+        "seq-gap",
+        `Partition ${key} is at seq ${headSeq}; it accepts only a later seq, not ${commit.seq}`,
+      );
+    }
+    if (commit.fence !== undefined) {
+      if (highest !== undefined && commit.fence < highest) {
+        throw new CommitRejectedError(
+          "stale-fence",
+          `Fence ${commit.fence} is below partition ${key}'s highest fence ${highest}`,
+        );
+      }
+    } else if (highest !== undefined) {
+      throw new CommitRejectedError(
+        "unfenced",
+        `Partition ${key} has seen fence ${highest}; a commit without a fence is refused`,
+      );
+    }
+    const leases = commit.ops.filter((op) => op.kind === "lease");
+    if (leases.length > 0) {
+      let leaseFence = this.#leaseFenceOf(namespace, key);
+      if (leaseFence === "load") return "load";
+      for (const lease of leases) {
+        if (leaseFence !== undefined && lease.fence < leaseFence) {
+          throw new CommitRejectedError(
+            "stale-lease",
+            `Lease fence ${lease.fence} is below partition ${key}'s lease fence ${leaseFence}`,
+          );
+        }
+        leaseFence = lease.fence;
+      }
+    }
+    if (this.#snapshotDue(headSeq, commit.seq)) return "load";
+    this.#writeAppended(commit, commit.seq, commit.fence);
     this.#afterAppendWrites?.(commit);
-    return applied;
+    return { kind: "appended", seq: commit.seq };
+  }
+
+  /**
+   * The lease fence a rebuild reaches: lease fences only rise, so it is the
+   * newest lease op replayed after the snapshot, else the snapshot's own.
+   * "load" leaves a body it cannot read to the rebuild, which reports it.
+   */
+  #leaseFenceOf(namespace: string, key: string): number | undefined | "load" {
+    const snapshot = this.#selectSnapshot.get(namespace, key) as
+      | { seq: number; body: string }
+      | undefined;
+    const rows = this.#selectNewestAfter.iterate(
+      namespace,
+      key,
+      snapshot?.seq ?? 0,
+    ) as Iterable<{ body: string }>;
+    for (const { body } of rows) {
+      const ops = parsedField(body, "ops");
+      if (!Array.isArray(ops)) return "load";
+      let fence: number | undefined;
+      for (const op of ops) {
+        if (op?.kind === "lease") {
+          if (!Number.isSafeInteger(op.fence) || op.fence < 0) return "load";
+          fence = op.fence;
+        }
+      }
+      if (fence !== undefined) return fence;
+    }
+    if (snapshot === undefined) return undefined;
+    const fence = parsedField(snapshot.body, "leaseFence");
+    if (fence === undefined) return undefined;
+    return Number.isSafeInteger(fence) && (fence as number) >= 0
+      ? fence as number
+      : "load";
   }
 
   /**
@@ -1742,6 +1898,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       return cached;
     }
     const partition = await this.#rebuild(namespace, key);
+    this.#rebuilds++;
     this.#cache.set(cacheKey, partition);
     if (this.#cache.size > this.#cachedPartitions) {
       const oldest = this.#cache.keys().next().value;
@@ -4029,5 +4186,16 @@ export class FeedDivergedError extends Error {
   constructor(detail: string) {
     super(`The commit feed diverged from this copy: ${detail}`);
     this.name = "FeedDivergedError";
+  }
+}
+
+function parsedField(body: string, field: string): unknown {
+  try {
+    const value = JSON.parse(body);
+    return typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)[field]
+      : "unreadable";
+  } catch {
+    return "unreadable";
   }
 }
