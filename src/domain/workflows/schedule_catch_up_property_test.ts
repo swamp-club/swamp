@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { Cron } from "croner";
 import { parseDataDuration } from "../data/duration.ts";
+import { nextSlotAfter } from "./cron_slots.ts";
 import {
   evaluateMissedFires,
   MISSED_FIRE_COUNT_CAP,
@@ -29,6 +30,39 @@ import {
 } from "./schedule_catch_up.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+
+// each zone's 2026 transitions, fall-back first, so a draw lands in its
+// repeated or skipped hour often rather than once in thousands of runs
+const ZONES: Record<string, readonly string[]> = {
+  "UTC": [],
+  "America/Chicago": ["2026-11-01T07:00:00Z", "2026-03-08T08:00:00Z"],
+  "Europe/London": ["2026-10-25T01:00:00Z", "2026-03-29T01:00:00Z"],
+  "Australia/Lord_Howe": ["2026-04-04T15:00:00Z", "2026-10-03T15:30:00Z"],
+  "America/Santiago": ["2026-04-05T03:00:00Z", "2026-09-06T04:00:00Z"],
+};
+
+const arbYearMs = fc.integer({
+  min: Date.UTC(2026, 0, 1),
+  max: Date.UTC(2027, 0, 1),
+});
+
+function arbNear(at: string): fc.Arbitrary<number> {
+  return fc.integer({ min: -2 * HOUR_MS, max: 2 * HOUR_MS }).map((offset) =>
+    Date.parse(at) + offset
+  );
+}
+
+const arbZoneAndWatermark = fc.constantFrom(...Object.keys(ZONES)).chain((
+  timezone,
+) =>
+  fc.record({
+    timezone: fc.constant(timezone),
+    watermarkMs: ZONES[timezone].length === 0
+      ? arbYearMs
+      : fc.oneof(arbYearMs, ...ZONES[timezone].map(arbNear)),
+  })
+);
 
 const arbExpression = fc.constantFrom(
   "*/15 * * * *",
@@ -47,24 +81,25 @@ const arbCatchUp: fc.Arbitrary<ScheduleCatchUp | undefined> = fc.oneof(
   })),
 );
 
-const arbWindow = fc.record({
-  watermarkMs: fc.integer({
-    min: Date.UTC(2026, 0, 1),
-    max: Date.UTC(2027, 0, 1),
-  }),
-  gapMs: fc.integer({ min: -DAY_MS, max: 40 * DAY_MS }),
-});
+const arbGapMs = fc.integer({ min: -DAY_MS, max: 40 * DAY_MS });
 
 Deno.test("evaluateMissedFires: a catch-up is the latest missed slot, never after now nor older than maxDelay", () => {
   fc.assert(
     fc.property(
       arbExpression,
-      arbWindow,
+      arbZoneAndWatermark,
+      arbGapMs,
       arbCatchUp,
-      (expression, { watermarkMs, gapMs }, catchUp) => {
+      (expression, { timezone, watermarkMs }, gapMs, catchUp) => {
         const watermark = new Date(watermarkMs);
         const now = new Date(watermarkMs + gapMs);
-        const result = evaluateMissedFires(expression, watermark, now, catchUp);
+        const result = evaluateMissedFires(
+          expression,
+          watermark,
+          now,
+          catchUp,
+          timezone,
+        );
 
         assert(result.missedCount >= 0);
         assert(result.missedCount <= MISSED_FIRE_COUNT_CAP);
@@ -93,6 +128,39 @@ Deno.test("evaluateMissedFires: a catch-up is the latest missed slot, never afte
   );
 });
 
+Deno.test("evaluateMissedFires: a watermark in or around a fall-back hour never has a slot at or before it missed", () => {
+  const fallBacks = Object.entries(ZONES).flatMap(([timezone, transitions]) =>
+    transitions.length === 0 ? [] : [{ timezone, at: transitions[0] }]
+  );
+  fc.assert(
+    fc.property(
+      fc.constantFrom("*/15 * * * *", "30 1 * * *", "*/20 * * * * *"),
+      fc.constantFrom(...fallBacks).chain(({ timezone, at }) =>
+        fc.record({ timezone: fc.constant(timezone), watermarkMs: arbNear(at) })
+      ),
+      fc.integer({ min: 1, max: 6 * HOUR_MS }),
+      (expression, { timezone, watermarkMs }, gapMs) => {
+        const watermark = new Date(watermarkMs);
+        const now = new Date(watermarkMs + gapMs);
+        const result = evaluateMissedFires(
+          expression,
+          watermark,
+          now,
+          undefined,
+          timezone,
+        );
+        if (result.oldestMissed) {
+          assert(result.oldestMissed.getTime() > watermark.getTime());
+        }
+        if (result.latestMissed) {
+          assert(result.latestMissed.getTime() <= now.getTime());
+        }
+      },
+    ),
+    { numRuns: 200 },
+  );
+});
+
 // dense second-level schedules over long windows would hit the cap
 const arbSparseExpression = fc.constantFrom(
   "*/15 * * * *",
@@ -105,16 +173,29 @@ Deno.test("missedAroundRecordedSlot: the split misses exactly the slots after th
   fc.assert(
     fc.property(
       arbSparseExpression,
-      fc.integer({ min: Date.UTC(2026, 0, 1), max: Date.UTC(2027, 0, 1) }),
+      arbZoneAndWatermark,
       fc.integer({ min: 1, max: 5 * DAY_MS }),
       fc.double({ min: 0, max: 1, noNaN: true }),
       arbCatchUp,
-      (expression, watermarkMs, windowMs, pick, catchUp) => {
+      (expression, { timezone, watermarkMs }, windowMs, pick, catchUp) => {
         const watermark = new Date(watermarkMs);
         const now = new Date(watermarkMs + windowMs);
-        const all = evaluateMissedFires(expression, watermark, now);
+        const all = evaluateMissedFires(
+          expression,
+          watermark,
+          now,
+          undefined,
+          timezone,
+        );
         fc.pre(all.missedCount > 0 && !all.saturated);
-        const slots = new Cron(expression).nextRuns(all.missedCount, watermark);
+        const cron = new Cron(expression, { timezone, paused: true });
+        const slots: Date[] = [];
+        let cursor = watermark;
+        while (slots.length < all.missedCount) {
+          cursor = nextSlotAfter(cron, cursor)!;
+          slots.push(cursor);
+        }
+        cron.stop();
         const recorded =
           slots[Math.min(slots.length - 1, Math.floor(pick * slots.length))];
 
@@ -124,12 +205,13 @@ Deno.test("missedAroundRecordedSlot: the split misses exactly the slots after th
           recorded,
           now,
           catchUp,
+          timezone,
         );
         assertEquals(split.missedCount, all.missedCount - 1);
         assertEquals(split.saturated, false);
         assertEquals(
           split.catchUpFireTime,
-          evaluateMissedFires(expression, recorded, now, catchUp)
+          evaluateMissedFires(expression, recorded, now, catchUp, timezone)
             .catchUpFireTime,
         );
         if (split.missedCount > 0) {

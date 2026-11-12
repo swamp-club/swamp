@@ -2782,6 +2782,12 @@ jobs:
   are accepted.
 - Validated at parse time by building a croner `Cron`
   (`src/domain/workflows/workflow.ts`).
+- Slots follow the host time zone. Across a DST fall-back croner's `nextRun`
+  can return a time at or before its argument, so slot arithmetic goes through
+  `nextSlotAfter` (`src/domain/workflows/cron_slots.ts`), which follows
+  croner's own chain to the first slot strictly after the instant. Catch-up,
+  the next run in the schedule listing, and the canonical fire time never
+  return a slot at or before the instant they measure from.
 - On `swamp serve` startup, every workflow with a schedule is registered.
 - A filesystem watcher on the effective workflows directory reloads live: the
   repo's `workflows/` directory, or the managed config `workflows/` directory

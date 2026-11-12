@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   evaluateMissedFires,
   firstRecordedSlot,
@@ -473,4 +473,42 @@ Deno.test("missedAroundRecordedSlot: two parts that together pass the cap satura
   );
   assertEquals(result.missedCount, MISSED_FIRE_COUNT_CAP);
   assertEquals(result.saturated, true);
+});
+
+Deno.test("evaluateMissedFires: in America/Chicago just after the fall-back, nothing at or before the watermark is missed", () => {
+  const watermark = new Date("2026-11-01T07:00:00.000Z");
+  const result = evaluateMissedFires(
+    "*/15 * * * *",
+    watermark,
+    new Date(watermark.getTime() + 1),
+    { policy: "latest", maxDelay: "1m" },
+    "America/Chicago",
+  );
+  assertEquals(result.missedCount, 0);
+  assertEquals(result.oldestMissed, null);
+  assertEquals(result.catchUpFireTime, null);
+});
+
+Deno.test("evaluateMissedFires: across a fall-back hour every missed slot is after the watermark and at or before now", () => {
+  const cases = [
+    { timezone: "America/Chicago", at: Date.parse("2026-11-01T07:00:00Z") },
+    { timezone: "Europe/London", at: Date.parse("2026-10-25T01:00:00Z") },
+  ];
+  for (const { timezone, at } of cases) {
+    for (let t = at - 3 * 3_600_000; t < at + 3 * 3_600_000; t += 300_000) {
+      const watermark = new Date(t);
+      const now = new Date(t + 2 * 3_600_000);
+      const result = evaluateMissedFires(
+        "*/15 * * * *",
+        watermark,
+        now,
+        LATEST_6H,
+        timezone,
+      );
+      const label = `${timezone} ${watermark.toISOString()}`;
+      assert(result.missedCount > 0, label);
+      assert(result.oldestMissed!.getTime() > watermark.getTime(), label);
+      assert(result.latestMissed!.getTime() <= now.getTime(), label);
+    }
+  }
 });

@@ -20,6 +20,7 @@
 import { Cron } from "croner";
 import { z } from "zod";
 import { parseDataDuration } from "../data/duration.ts";
+import { nextSlotAfter } from "./cron_slots.ts";
 
 export const CATCH_UP_POLICIES = ["none", "latest"] as const;
 
@@ -135,13 +136,15 @@ export interface MissedFires {
 
 /**
  * the slots of a schedule strictly after the watermark and at or before now;
- * a slot equal to now is missed because the scheduler's first tick is after it
+ * a slot equal to now is missed because the scheduler's first tick is after it.
+ * timezone defaults to the host zone, the one serve's scheduler fires in
  */
 export function evaluateMissedFires(
   cronExpression: string,
   lastEvaluatedFireTime: Date,
   now: Date,
   catchUp?: ScheduleCatchUp,
+  timezone?: string,
 ): MissedFires {
   const none: MissedFires = {
     missedCount: 0,
@@ -152,13 +155,13 @@ export function evaluateMissedFires(
   };
   if (lastEvaluatedFireTime.getTime() >= now.getTime()) return none;
 
-  const cron = new Cron(cronExpression);
+  const cron = new Cron(cronExpression, timezone ? { timezone } : undefined);
   let count = 0;
   let oldest: Date | null = null;
   let latest: Date | null = null;
   let cursor: Date = lastEvaluatedFireTime;
   while (count < MISSED_FIRE_COUNT_CAP) {
-    const next = cron.nextRun(cursor);
+    const next = nextSlotAfter(cron, cursor);
     if (!next || next.getTime() > now.getTime()) break;
     oldest ??= next;
     latest = next;
@@ -170,7 +173,12 @@ export function evaluateMissedFires(
   const saturated = count === MISSED_FIRE_COUNT_CAP &&
     nextAtOrBefore(cron, cursor, now) !== null;
   if (saturated) {
-    latest = latestAtOrBefore(cron, cursor, now) ?? latest;
+    // nextSlotAfter can skip forward non-monotonically in a fall-back hour,
+    // so the bisection may land before the walk's own latest slot
+    const bisected = latestAtOrBefore(cron, cursor, now);
+    if (bisected && (!latest || bisected.getTime() > latest.getTime())) {
+      latest = bisected;
+    }
   }
 
   return {
@@ -192,14 +200,23 @@ export function missedAroundRecordedSlot(
   recorded: Date,
   now: Date,
   catchUp?: ScheduleCatchUp,
+  timezone?: string,
 ): MissedFires {
   // the upper bound is inclusive and slots have second precision
   const gap = evaluateMissedFires(
     cronExpression,
     lastEvaluatedFireTime,
     new Date(recorded.getTime() - 1),
+    undefined,
+    timezone,
   );
-  const after = evaluateMissedFires(cronExpression, recorded, now, catchUp);
+  const after = evaluateMissedFires(
+    cronExpression,
+    recorded,
+    now,
+    catchUp,
+    timezone,
+  );
   const sum = gap.missedCount + after.missedCount;
   return {
     missedCount: Math.min(sum, MISSED_FIRE_COUNT_CAP),
@@ -223,21 +240,21 @@ function catchUpTime(
 }
 
 function nextAtOrBefore(cron: Cron, after: Date, now: Date): Date | null {
-  const next = cron.nextRun(after);
+  const next = nextSlotAfter(cron, after);
   return next && next.getTime() <= now.getTime() ? next : null;
 }
 
 /**
- * nextRun is non-decreasing in its argument, so the latest slot at or before
- * now is found by bisecting for the last instant whose next slot is not past
- * now; floor must have such a slot after it
+ * the next slot is non-decreasing in its argument outside a fall-back hour, so
+ * the latest slot at or before now is found by bisecting for the last instant
+ * whose next slot is not past now; floor must have such a slot after it
  */
 function latestAtOrBefore(cron: Cron, floor: Date, now: Date): Date | null {
   let lo = floor.getTime();
   let hi = now.getTime();
   while (hi - lo > 1) {
     const mid = lo + Math.floor((hi - lo) / 2);
-    const next = cron.nextRun(new Date(mid));
+    const next = nextSlotAfter(cron, new Date(mid));
     if (next && next.getTime() <= now.getTime()) lo = mid;
     else hi = mid;
   }
