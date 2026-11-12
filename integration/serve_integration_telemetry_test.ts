@@ -32,7 +32,6 @@ import {
 import { handleMessage } from "../src/serve/connection.ts";
 import {
   type ConnectionContext,
-  sendError,
   setConnectionClient,
   setConnectionDelegation,
   watchRequestError,
@@ -471,7 +470,7 @@ Deno.test("serve telemetry: the dashboard's cancel of a live run is counted by t
       } as unknown as WebSocket;
       setConnectionClient(ws, "direct:dashboard");
       const active = new Map<string, AbortController>();
-      handleMessage(
+      await handleMessage(
         ws,
         ctx,
         active,
@@ -620,7 +619,6 @@ Deno.test("serve telemetry: a request reusing an active id is counted on its own
       } as unknown as WebSocket;
       const id = crypto.randomUUID();
       const original = watchRequestError(ws, id);
-      sendError(ws, id, "unauthorized", "Access denied");
       const active = new Map([[id, new AbortController()]]);
       await handleMessage(
         ws,
@@ -636,7 +634,8 @@ Deno.test("serve telemetry: a request reusing an active id is counted on its own
         CALLER,
       );
 
-      assertEquals(original(), "unauthorized");
+      // the original has answered nothing yet, so it still settles as a success
+      assertEquals(original(), undefined);
       const sent = eventsOf(telemetry);
       assertEquals(sent.length, 1);
       assertEquals(sent[0].result.errorType, "duplicate_id");

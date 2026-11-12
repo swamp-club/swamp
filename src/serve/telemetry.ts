@@ -78,6 +78,8 @@ export interface CommandTelemetry {
    * replaced by its type and its error messages are not sent
    */
   resolveType(modelType: string | undefined): void;
+  /** a type the caller named: it can only add concealment, never remove it */
+  hintType(modelType: string | undefined): void;
   finish(error: Error | null): Promise<void>;
 }
 
@@ -115,6 +117,10 @@ export function createCommandTelemetry(
     resolveType: (modelType) => {
       if (modelType === undefined) return;
       label = concealedModelLabel(modelType, target.modelName);
+    },
+    hintType: (modelType) => {
+      if (modelType === undefined) return;
+      label = concealedModelLabel(modelType, target.modelName) ?? label;
     },
     finish: async (error: Error | null): Promise<void> => {
       const invocation = buildMethodRunInvocation(

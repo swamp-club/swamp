@@ -433,12 +433,28 @@ Deno.test("createCommandTelemetry: a type named before the target fails to resol
       methodName: "create",
     });
     assertExists(telemetry);
-    telemetry.resolveType("@swamp/group");
+    telemetry.hintType("@swamp/group");
     telemetry.resolveType(undefined);
     await telemetry.finish(new Error("payroll-admins could not be read"));
 
     const data = repo.saved[0].toData();
     assertEquals(data.invocation.args, ["@swamp/group", "create"]);
     assertEquals(JSON.stringify(data).includes("payroll-admins"), false);
+  });
+});
+
+Deno.test("createCommandTelemetry: a type the caller names can add concealment but never remove it", async () => {
+  await withActiveService(async (repo) => {
+    const telemetry = createCommandTelemetry({
+      modelName: "integration-acme-slack",
+      methodName: "revoke",
+    });
+    assertExists(telemetry);
+    telemetry.hintType("acme/other");
+    await telemetry.finish(new Error("integration-acme-slack not found"));
+
+    const data = repo.saved[0].toData();
+    assertEquals(data.invocation.args, ["<REDACTED>", "revoke"]);
+    assertEquals(JSON.stringify(data).includes("acme-slack"), false);
   });
 });

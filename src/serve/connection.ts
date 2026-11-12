@@ -250,6 +250,7 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  sendUnownedError,
   setConnectionTeardown,
   subscribeUntilDetach,
   withGcMutex,
@@ -2056,7 +2057,7 @@ export function handleMessage(
   }
 
   if (activeRequests.size >= MAX_ACTIVE_REQUESTS) {
-    sendError(
+    sendUnownedError(
       socket,
       request.id,
       "too_many_requests",
@@ -2066,7 +2067,7 @@ export function handleMessage(
   }
 
   if (activeRequests.has(request.id)) {
-    sendError(
+    sendUnownedError(
       socket,
       request.id,
       "duplicate_id",

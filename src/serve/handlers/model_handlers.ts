@@ -852,7 +852,7 @@ export async function handleModelMethodRun(
       );
     };
     // the named type counts even when the target then fails to resolve
-    telemetry?.resolveType(payload.typeArg);
+    telemetry?.hintType(payload.typeArg);
     try {
       const target = await resolveMethodRunTarget(ctx, payload);
       telemetry?.resolveType(

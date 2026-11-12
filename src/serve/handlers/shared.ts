@@ -2777,6 +2777,30 @@ export function sendError(
 ): void {
   const watched = watchedRequestErrors.get(socket);
   if (watched?.has(id) && watched.get(id) === undefined) watched.set(id, code);
+  sendErrorFrame(socket, id, code, message, details, retryAfterSeconds);
+}
+
+/**
+ * a refusal of a message that reused an id another request owns: that
+ * request's watch keeps its own outcome
+ */
+export function sendUnownedError(
+  socket: WebSocket,
+  id: string,
+  code: string,
+  message: string,
+): void {
+  sendErrorFrame(socket, id, code, message);
+}
+
+function sendErrorFrame(
+  socket: WebSocket,
+  id: string,
+  code: string,
+  message: string,
+  details?: unknown,
+  retryAfterSeconds?: number,
+): void {
   let errors = erroredRequests.get(socket);
   if (!errors) {
     errors = new Set();

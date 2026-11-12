@@ -109,7 +109,7 @@ export class ClubHeartbeatService {
     } while (this.#beatAgain && !this.#disposed);
   }
 
-  /** resolves once an extra beat stop() aborted has finished */
+  /** resolves once an extra beat has finished; stop() already aborts interval beats */
   async settled(): Promise<void> {
     await this.#extraBeat;
   }
