@@ -20,6 +20,7 @@
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import { join } from "@std/path";
 import {
+  type CatalogSurplus,
   type DoctorDatastoresEvent,
   MIXED_KIND_NAMES_LISTED,
   type MixedKindNamesSummary,
@@ -31,6 +32,7 @@ import {
   type RepairUnmigratedDataEvent,
   type RepairUnpushedFilesEvent,
   type RepairUnreadableVersionsEvent,
+  surplusRecordCount,
   type UnreadableRecordRepair,
   type UnreadableVersionsSummary,
   type V3ContentSummary,
@@ -409,18 +411,26 @@ class LogDoctorDatastoresRenderer implements DoctorDatastoresRenderer {
 
         if (data.catalogCompletenessFinding) {
           const cc = data.catalogCompletenessFinding;
-          writeOutput(`\n${red("Catalog index incomplete:")}`);
-          for (const s of cc.shortfalls) {
+          if (cc.shortfalls.length > 0) {
+            writeOutput(`\n${red("Catalog index incomplete:")}`);
+            for (const s of cc.shortfalls) {
+              writeOutput(
+                `  ${
+                  bold(s.typeNormalized)
+                }: ${s.catalogRecords.toLocaleString()} indexed of ${s.diskRecords.toLocaleString()} on disk`,
+              );
+            }
+          }
+          if (cc.surplus.length > 0) {
             writeOutput(
-              `  ${
-                bold(s.typeNormalized)
-              }: ${s.catalogRecords.toLocaleString()} indexed of ${s.diskRecords.toLocaleString()} on disk`,
+              `\n${red("Catalog index holds records with no data on disk:")}`,
             );
+            writeOutput(surplusLines(cc.surplus).join("\n"));
           }
           writeOutput(
             dim(
-              "\n  Data on disk is intact — only the query index is short.\n" +
-                "  Run 'swamp doctor datastores --repair' to preview a rebuild.",
+              "\n  Data on disk is intact — only the query index is out of step.\n" +
+                "  Run 'swamp doctor datastores --repair' to preview the repair.",
             ),
           );
         }
@@ -1186,6 +1196,14 @@ const FOREIGN_ROWS_NOTICE =
   "(they describe data that is not on local disk, so the rebuild cannot " +
   "recreate them). Restore them with: swamp datastore catalog pull";
 
+function surplusLines(surplus: ReadonlyArray<CatalogSurplus>): string[] {
+  return surplus.map((s) =>
+    `  ${
+      bold(s.typeNormalized)
+    }: ${s.catalogRecords.toLocaleString()} record(s) of ${s.dataNames.toLocaleString()} data name(s)`
+  );
+}
+
 class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
   overallStatus: CatalogIndexRepairStatus = "pass";
 
@@ -1197,16 +1215,35 @@ class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
       preview: (e) => {
         this.overallStatus = "preview";
         const { completeness } = e;
-        writeOutput(`\n${bold("Catalog index rebuild:")}`);
-        for (const s of completeness.shortfalls) {
+        if (completeness.shortfalls.length > 0) {
+          writeOutput(`\n${bold("Catalog index rebuild:")}`);
+          for (const s of completeness.shortfalls) {
+            writeOutput(
+              `  ${s.typeNormalized}: index ${s.catalogRecords.toLocaleString()} of ${s.diskRecords.toLocaleString()} record(s) on disk`,
+            );
+          }
+          if (completeness.surplus.length > 0) {
+            writeOutput(
+              `  Drop ${
+                surplusRecordCount(completeness.surplus).toLocaleString()
+              } record(s) with no data on disk`,
+            );
+          }
           writeOutput(
-            `  ${s.typeNormalized}: index ${s.catalogRecords.toLocaleString()} of ${s.diskRecords.toLocaleString()} record(s) on disk`,
+            `  Remove the catalog index (rebuilds on the next data query)`,
+          );
+          writeOutput(dim(`\n  ${FOREIGN_ROWS_NOTICE}`));
+        } else {
+          writeOutput(
+            `\n${bold("Remove catalog records with no data on disk:")}`,
+          );
+          writeOutput(surplusLines(completeness.surplus).join("\n"));
+          writeOutput(
+            dim(
+              "\n  Only these records are removed; rows pulled from other namespaces are kept.",
+            ),
           );
         }
-        writeOutput(
-          `  Remove the catalog index (rebuilds on the next data query)`,
-        );
-        writeOutput(dim(`\n  ${FOREIGN_ROWS_NOTICE}`));
         writeOutput(dim("\n  Run with -y to proceed."));
       },
       step: (e) => {
@@ -1214,15 +1251,39 @@ class LogCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
       },
       completed: (e) => {
         this.overallStatus = "pass";
+        if (e.result.mode === "rebuild") {
+          writeOutput(
+            `\n${green("✓")} ${
+              bold("Catalog index invalidated — will rebuild on next query:")
+            }`,
+          );
+          writeOutput(
+            `  ${e.result.missingRecords.toLocaleString()} missing record(s) across ${e.result.shortfalls.length} behavior type(s) will be re-indexed on the next data query`,
+          );
+          if (e.result.surplusRecords > 0) {
+            writeOutput(
+              `  ${e.result.surplusRecords.toLocaleString()} record(s) with no data on disk are gone with it`,
+            );
+          }
+          writeOutput(dim(`\n  ${FOREIGN_ROWS_NOTICE}`));
+          return;
+        }
+        if (e.result.surplus.length === 0) {
+          writeOutput(
+            dim(
+              "Nothing left to remove: the data reappeared on disk before the repair took the lock.",
+            ),
+          );
+          return;
+        }
         writeOutput(
           `\n${green("✓")} ${
-            bold("Catalog index invalidated — will rebuild on next query:")
+            bold(
+              `Removed ${e.result.surplusRecords.toLocaleString()} catalog record(s) with no data on disk:`,
+            )
           }`,
         );
-        writeOutput(
-          `  ${e.result.missingRecords.toLocaleString()} missing record(s) across ${e.result.shortfalls.length} behavior type(s) will be re-indexed on the next data query`,
-        );
-        writeOutput(dim(`\n  ${FOREIGN_ROWS_NOTICE}`));
+        writeOutput(surplusLines(e.result.surplus).join("\n"));
       },
       not_needed: () => {
         this.overallStatus = "pass";
@@ -1253,7 +1314,9 @@ class JsonCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
         this.#report.record("catalog", {
           status: "catalog_preview",
           completeness: e.completeness,
-          foreignRowsNotice: FOREIGN_ROWS_NOTICE,
+          ...(e.completeness.shortfalls.length > 0
+            ? { foreignRowsNotice: FOREIGN_ROWS_NOTICE }
+            : {}),
         });
       },
       step: () => {},
@@ -1262,7 +1325,9 @@ class JsonCatalogIndexRepairRenderer implements CatalogIndexRepairRenderer {
         this.#report.record("catalog", {
           status: "catalog_completed",
           result: e.result,
-          foreignRowsNotice: FOREIGN_ROWS_NOTICE,
+          ...(e.result.mode === "rebuild"
+            ? { foreignRowsNotice: FOREIGN_ROWS_NOTICE }
+            : {}),
         });
       },
       not_needed: () => {

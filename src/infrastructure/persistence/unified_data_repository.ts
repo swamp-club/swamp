@@ -3178,6 +3178,30 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return result;
   }
 
+  /** false for a name no layout path can hold; follows a symlink the walk does not */
+  async hasDataNameDir(
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): Promise<boolean> {
+    let dir: string;
+    try {
+      dir = this.getDataNameDir(
+        ModelType.create(typeNormalized),
+        modelId,
+        dataName,
+      );
+    } catch {
+      return false;
+    }
+    try {
+      return (await Deno.stat(dir)).isDirectory;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+  }
+
   /**
    * highest version a name had when its newest were deleted, so a write never
    * reuses a number another clone may hold; named with .. so it is never a data

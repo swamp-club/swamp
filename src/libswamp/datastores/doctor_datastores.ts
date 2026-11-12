@@ -71,14 +71,30 @@ export interface CatalogShortfall {
   catalogRecords: number;
 }
 
+/** catalog rows of one type whose data names have no directory on disk */
+export interface CatalogSurplus {
+  typeNormalized: string;
+  dataNames: number;
+  catalogRecords: number;
+}
+
 /**
  * the catalog is a local index of data on disk; when the walk sees records the
- * index lacks, queries silently under-report
+ * index lacks, queries silently under-report, and rows with nothing on disk
+ * behind them come back as stale or duplicate results
  */
 export interface CatalogCompletenessSummary {
   diskRecords: number;
   catalogRecords: number;
   shortfalls: ReadonlyArray<CatalogShortfall>;
+  /** empty where the disk is not authoritative (lazy or remote datastores) */
+  surplus: ReadonlyArray<CatalogSurplus>;
+}
+
+export function surplusRecordCount(
+  surplus: ReadonlyArray<CatalogSurplus>,
+): number {
+  return surplus.reduce((sum, s) => sum + s.catalogRecords, 0);
 }
 
 export const UNREADABLE_VERSIONS_LISTED = 20;
@@ -585,16 +601,36 @@ export async function* doctorDatastores(
         const isLazy = isCustom &&
           (config as CustomDatastoreConfig).hydrationStrategy === "lazy";
         const summary = await deps.checkCatalogCompleteness();
-        if (summary && summary.shortfalls.length > 0) {
+        if (
+          summary &&
+          (summary.shortfalls.length > 0 || summary.surplus.length > 0)
+        ) {
           catalogCompletenessFinding = summary;
-          const missing = summary.diskRecords - summary.catalogRecords;
+          const problems: string[] = [];
+          if (summary.shortfalls.length > 0) {
+            const missing = summary.diskRecords - summary.catalogRecords;
+            problems.push(
+              `Catalog index is missing ${missing} record(s) across ${summary.shortfalls.length} model type(s) ` +
+                `that exist on disk. Queries against them return nothing.`,
+            );
+          }
+          if (summary.surplus.length > 0) {
+            const dataNames = summary.surplus.reduce(
+              (sum, s) => sum + s.dataNames,
+              0,
+            );
+            problems.push(
+              `Catalog index holds ${dataNames} data name(s) (${
+                surplusRecordCount(summary.surplus)
+              } record(s)) across ${summary.surplus.length} model type(s) ` +
+                `with no data on disk behind them. Queries return them as stale or duplicate results.`,
+            );
+          }
           healthFindings.push({
             check: "catalog_completeness",
             passed: false,
-            message:
-              `Catalog index is missing ${missing} record(s) across ${summary.shortfalls.length} model type(s) ` +
-              `that exist on disk. Queries against them return nothing. ` +
-              `Run 'swamp doctor datastores --repair' to preview a rebuild.`,
+            message: `${problems.join(" ")} ` +
+              `Run 'swamp doctor datastores --repair' to preview the repair.`,
           });
         } else if (summary) {
           const qualifier = isLazy
@@ -1462,8 +1498,12 @@ export async function* repairUnreadableVersions(
 }
 
 export interface CatalogIndexRepairResult {
+  /** rebuild removes the catalog database; clear removes only the surplus rows */
+  mode: "rebuild" | "clear";
   shortfalls: ReadonlyArray<CatalogShortfall>;
   missingRecords: number;
+  surplus: ReadonlyArray<CatalogSurplus>;
+  surplusRecords: number;
 }
 
 export type RepairCatalogIndexEvent =
@@ -1477,12 +1517,16 @@ export type RepairCatalogIndexEvent =
 export interface RepairCatalogIndexDeps {
   checkCompleteness: () => Promise<CatalogCompletenessSummary | null>;
   invalidateCatalog: () => Promise<void>;
+  /**
+   * recounts the surplus with writers drained under the datastore lock, so a
+   * name saved since the preview is kept, and removes what is still surplus
+   */
+  clearSurplus: () => Promise<ReadonlyArray<CatalogSurplus>>;
 }
 
 /**
- * repair deletes the catalog database and the next data query backfills it from
- * disk, so it cannot hide a wrong walk; foreign-namespace rows are dropped and
- * only catalog pull restores them
+ * a shortfall removes the whole catalog database, so it cannot hide a wrong
+ * walk, and foreign-namespace rows are lost until catalog pull restores them
  */
 export async function* repairCatalogIndex(
   _ctx: LibSwampContext,
@@ -1496,7 +1540,11 @@ export async function* repairCatalogIndex(
       yield { kind: "scanning" };
 
       const completeness = await deps.checkCompleteness();
-      if (!completeness || completeness.shortfalls.length === 0) {
+      if (
+        !completeness ||
+        (completeness.shortfalls.length === 0 &&
+          completeness.surplus.length === 0)
+      ) {
         yield { kind: "not_needed" };
         return;
       }
@@ -1506,20 +1554,55 @@ export async function* repairCatalogIndex(
         return;
       }
 
+      if (completeness.shortfalls.length > 0) {
+        try {
+          yield {
+            kind: "step",
+            description:
+              "Removing the catalog index (rebuilds on the next data query)",
+          };
+          await deps.invalidateCatalog();
+
+          yield {
+            kind: "completed",
+            result: {
+              mode: "rebuild",
+              shortfalls: completeness.shortfalls,
+              missingRecords: completeness.diskRecords -
+                completeness.catalogRecords,
+              surplus: completeness.surplus,
+              surplusRecords: surplusRecordCount(completeness.surplus),
+            },
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          yield {
+            kind: "error",
+            error: {
+              code: "catalog_repair_failed",
+              message:
+                `Could not remove the catalog index: ${message}. No changes were made.`,
+              cause: err instanceof Error ? err : undefined,
+            },
+          };
+        }
+        return;
+      }
+
       try {
         yield {
           kind: "step",
-          description:
-            "Removing the catalog index (rebuilds on the next data query)",
+          description: "Removing catalog records with no data on disk",
         };
-        await deps.invalidateCatalog();
-
+        const removed = await deps.clearSurplus();
         yield {
           kind: "completed",
           result: {
-            shortfalls: completeness.shortfalls,
-            missingRecords: completeness.diskRecords -
-              completeness.catalogRecords,
+            mode: "clear",
+            shortfalls: [],
+            missingRecords: 0,
+            surplus: removed,
+            surplusRecords: surplusRecordCount(removed),
           },
         };
       } catch (err) {
@@ -1529,7 +1612,7 @@ export async function* repairCatalogIndex(
           error: {
             code: "catalog_repair_failed",
             message:
-              `Could not remove the catalog index: ${message}. No changes were made.`,
+              `Could not remove the catalog records with no data on disk: ${message}. No changes were made.`,
             cause: err instanceof Error ? err : undefined,
           },
         };

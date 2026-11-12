@@ -22,6 +22,7 @@ import {
   cacheWipeRefusal,
   type CatalogCompletenessSummary,
   type CatalogShortfall,
+  type CatalogSurplus,
   doctorDatastores,
   type DoctorDatastoresData,
   type DoctorDatastoresDeps,
@@ -63,7 +64,11 @@ import {
   type UnpushedFilesRepairStatus,
 } from "../../presentation/renderers/doctor_datastores.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
-import { datastoreGlobalLock } from "../../infrastructure/persistence/datastore_global_lock.ts";
+import {
+  datastoreGlobalLock,
+  datastoreGlobalLockOptions,
+} from "../../infrastructure/persistence/datastore_global_lock.ts";
+import { FileLock } from "../../infrastructure/persistence/file_lock.ts";
 import { loadedDatastoreExtension } from "../../infrastructure/persistence/datastore_extension_version.ts";
 import {
   type DatastoreSyncService,
@@ -80,6 +85,7 @@ import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
+  waitForPerModelLocks,
 } from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import {
@@ -100,8 +106,10 @@ import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
+  type FilesystemDatastoreConfig,
   getDatastoreDirectories,
   isCustomDatastoreConfig,
+  resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
@@ -146,9 +154,12 @@ import {
 } from "../../infrastructure/persistence/repository_factory.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
-import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import type {
+  CatalogDataName,
+  CatalogStore,
+} from "../../infrastructure/persistence/catalog_store.ts";
+import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
-import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { Namespace } from "../../domain/data/namespace.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { UnreadableDataVersion } from "../../domain/data/unreadable_data_version.ts";
@@ -383,7 +394,8 @@ async function createDoctorDatastoresDeps(
         dryRun: true,
       });
     },
-    checkCatalogCompleteness: () => checkCatalogCompleteness(repoDir),
+    checkCatalogCompleteness: () =>
+      checkCatalogCompleteness(repoDir, v2Filesystem),
     checkMixedKindNames: () => scanRepoMixedKindNames(repoDir),
     // only where every file is local: lazy hydration leaves files missing on
     // purpose, and a v3 checkout has its own content check.
@@ -417,13 +429,14 @@ async function createDoctorDatastoresDeps(
 
 /**
  * reads the catalog directly, not via a data query: a query triggers the
- * catalog backfill, which repairs the very condition being measured. Only
- * shortfalls are reported; extra indexed rows look like foreign-namespace rows.
+ * catalog backfill, which repairs the very condition being measured. Surplus
+ * is looked for only where the caller says the disk is authoritative.
  */
 export async function compareCatalogToDisk(
   catalogStore: CatalogStore,
-  dataRepo: UnifiedDataRepository,
+  dataRepo: FileSystemUnifiedDataRepository,
   namespace: Namespace,
+  options: { surplus: boolean } = { surplus: false },
 ): Promise<CatalogCompletenessSummary> {
   const diskByType = new Map<string, number>();
   for (const record of await dataRepo.findAllGlobal()) {
@@ -448,7 +461,58 @@ export async function compareCatalogToDisk(
     }
   }
 
-  return { diskRecords, catalogRecords, shortfalls };
+  const surplus = options.surplus
+    ? (await findCatalogSurplus(catalogStore, dataRepo, namespace)).surplus
+    : [];
+  return { diskRecords, catalogRecords, shortfalls, surplus };
+}
+
+/**
+ * names this namespace indexes with no name directory on disk, so a name whose
+ * metadata is unreadable or missing is never surplus; a pending name belongs to
+ * a write in flight
+ */
+export async function findCatalogSurplus(
+  catalogStore: CatalogStore,
+  dataRepo: Pick<
+    FileSystemUnifiedDataRepository,
+    "iterateDataNames" | "hasDataNameDir"
+  >,
+  namespace: Namespace,
+): Promise<{ surplus: CatalogSurplus[]; names: CatalogDataName[] }> {
+  const keyOf = (type: string, modelId: string, dataName: string) =>
+    `${type}\0${modelId}\0${dataName}`;
+  const onDisk = new Set<string>();
+  for await (const name of dataRepo.iterateDataNames()) {
+    onDisk.add(keyOf(name.type.normalized, name.modelId, name.dataName));
+  }
+  const byType = new Map<string, CatalogSurplus>();
+  const names: CatalogDataName[] = [];
+  for (const name of catalogStore.dataNameCounts(namespace)) {
+    if (name.pending) continue;
+    if (
+      onDisk.has(keyOf(name.type_normalized, name.model_id, name.data_name))
+    ) {
+      continue;
+    }
+    // the walk skips a model directory with no version metadata at all
+    if (
+      await dataRepo.hasDataNameDir(
+        name.type_normalized,
+        name.model_id,
+        name.data_name,
+      )
+    ) {
+      continue;
+    }
+    names.push(name);
+    const entry = byType.get(name.type_normalized) ??
+      { typeNormalized: name.type_normalized, dataNames: 0, catalogRecords: 0 };
+    entry.dataNames++;
+    entry.catalogRecords += name.rows;
+    byType.set(name.type_normalized, entry);
+  }
+  return { surplus: [...byType.values()], names };
 }
 
 /**
@@ -461,9 +525,17 @@ export function catalogCompletenessDataDir(
   return datastoreResolver.resolvePath(SWAMP_SUBDIRS.data);
 }
 
-async function checkCatalogCompleteness(
+interface CompletenessRepos {
+  config: DatastoreConfig;
+  catalogStore: CatalogStore;
+  dataRepo: FileSystemUnifiedDataRepository;
+  namespace: Namespace;
+}
+
+async function withCompletenessRepos<T>(
   repoDir: string,
-): Promise<CatalogCompletenessSummary | null> {
+  fn: (repos: CompletenessRepos) => Promise<T>,
+): Promise<T> {
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(RepoPath.create(repoDir));
   const config = await resolveDatastoreConfig(marker, undefined, repoDir);
@@ -479,11 +551,61 @@ async function checkCatalogCompleteness(
       undefined,
       namespace,
     );
-    return await compareCatalogToDisk(catalogStore, dataRepo, namespace);
+    return await fn({ config, catalogStore, dataRepo, namespace });
   } finally {
     // Release the SQLite handle before any repair removes the file — Windows
     // refuses to delete a database that still has an open connection.
     catalogStore.close();
+  }
+}
+
+function checkCatalogCompleteness(
+  repoDir: string,
+  surplus: boolean,
+): Promise<CatalogCompletenessSummary | null> {
+  return withCompletenessRepos(
+    repoDir,
+    ({ catalogStore, dataRepo, namespace }) =>
+      compareCatalogToDisk(catalogStore, dataRepo, namespace, { surplus }),
+  );
+}
+
+/**
+ * the global lock stops new per-model writers and the drains wait out those
+ * already writing, as a structural command does, so a name saved since the
+ * preview is on disk by the recount and kept
+ */
+export async function clearCatalogSurplus(
+  repos: Omit<CompletenessRepos, "config">,
+  config: FilesystemDatastoreConfig,
+): Promise<CatalogSurplus[]> {
+  const { catalogStore, dataRepo, namespace } = repos;
+  await waitForPerModelLocks(config.path, config.namespace);
+  const lock = new FileLock(config.path, {
+    ...datastoreGlobalLockOptions(config),
+    maxWaitMs: resolveLockTimeoutMs(),
+  });
+  await lock.acquire();
+  try {
+    await waitForPerModelLocks(config.path, config.namespace, {
+      publishSkipping: (lockIds) => lock.publishSkipping(lockIds),
+    });
+    const { surplus, names } = await findCatalogSurplus(
+      catalogStore,
+      dataRepo,
+      namespace,
+    );
+    if (names.length > 0) {
+      const keyOf = (n: CatalogDataName) =>
+        `${n.type_normalized}\0${n.model_id}\0${n.data_name}`;
+      const cleared = new Set(names.map(keyOf));
+      catalogStore.clearRows((row) =>
+        row.namespace === namespace && cleared.has(keyOf(row))
+      );
+    }
+    return surplus;
+  } finally {
+    await lock.release();
   }
 }
 
@@ -614,10 +736,19 @@ function createUnreadableVersionsRepairDeps(
  * other repairs carry: the catalog is a local index, and a plain local repo is
  * exactly where an incomplete one goes unnoticed.
  */
-function createCatalogRepairDeps(repoDir: string): RepairCatalogIndexDeps {
+function createCatalogRepairDeps(
+  repoDir: string,
+  v2Filesystem: boolean,
+): RepairCatalogIndexDeps {
   return {
-    checkCompleteness: () => checkCatalogCompleteness(repoDir),
+    checkCompleteness: () => checkCatalogCompleteness(repoDir, v2Filesystem),
     invalidateCatalog: () => removeCatalogDb(repoDir),
+    clearSurplus: () =>
+      withCompletenessRepos(repoDir, async ({ config, ...repos }) => {
+        // surplus is only reported on a v2 filesystem datastore
+        if (isCustomDatastoreConfig(config)) return [];
+        return await clearCatalogSurplus(repos, config);
+      }),
   };
 }
 
@@ -975,7 +1106,11 @@ async function runDatastoreRepairs(
     report,
   );
   await consumeStream(
-    repairCatalogIndex(libCtx, createCatalogRepairDeps(repoDir), { confirm }),
+    repairCatalogIndex(
+      libCtx,
+      createCatalogRepairDeps(repoDir, v2Filesystem),
+      { confirm },
+    ),
     catalogRenderer.handlers(),
   );
   if (catalogRenderer.overallStatus === "fail") {

@@ -827,7 +827,23 @@ const completeSummary: CatalogCompletenessSummary = {
   diskRecords: 42,
   catalogRecords: 42,
   shortfalls: [],
+  surplus: [],
 };
+
+const surplusSummary: CatalogCompletenessSummary = {
+  diskRecords: 12,
+  catalogRecords: 24,
+  shortfalls: [],
+  surplus: [
+    {
+      typeNormalized: "@williamjtlacroix/es-events",
+      dataNames: 12,
+      catalogRecords: 19818,
+    },
+  ],
+};
+
+const noClear = () => Promise.reject(new Error("clearSurplus must not run"));
 
 const shortSummary: CatalogCompletenessSummary = {
   diskRecords: 330,
@@ -839,6 +855,7 @@ const shortSummary: CatalogCompletenessSummary = {
       catalogRecords: 0,
     },
   ],
+  surplus: [],
 };
 
 Deno.test("doctorDatastores: reports a complete catalog as passing", async () => {
@@ -946,6 +963,7 @@ Deno.test("repairCatalogIndex: no shortfall means nothing to repair", async () =
           invalidated++;
           return Promise.resolve();
         },
+        clearSurplus: noClear,
       },
       { confirm: true },
     ),
@@ -966,6 +984,7 @@ Deno.test("repairCatalogIndex: previews without deleting when not confirmed", as
           invalidated++;
           return Promise.resolve();
         },
+        clearSurplus: noClear,
       },
       { confirm: false },
     ),
@@ -993,6 +1012,7 @@ Deno.test("repairCatalogIndex: invalidates the catalog exactly once when confirm
           callLog.push("invalidateCatalog");
           return Promise.resolve();
         },
+        clearSurplus: noClear,
       },
       { confirm: true },
     ),
@@ -1015,6 +1035,7 @@ Deno.test("repairCatalogIndex: reports a failed deletion without claiming succes
         checkCompleteness: () => Promise.resolve(shortSummary),
         invalidateCatalog: () =>
           Promise.reject(new Deno.errors.PermissionDenied("locked")),
+        clearSurplus: noClear,
       },
       { confirm: true },
     ),
@@ -1026,6 +1047,159 @@ Deno.test("repairCatalogIndex: reports a failed deletion without claiming succes
   if (errorEvent?.kind === "error") {
     assertStringIncludes(errorEvent.error.message, "No changes were made");
   }
+});
+
+Deno.test("doctorDatastores: reports catalog records with no data on disk and names the remedy", async () => {
+  const deps: DoctorDatastoresDeps = {
+    ...makeDeps(
+      filesystemConfig,
+      { healthy: true, message: "Datastore is accessible", latencyMs: 1 },
+      [],
+    ),
+    checkCatalogCompleteness: () => Promise.resolve(surplusSummary),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const finding = completed.data.healthFindings.find(
+      (f) => f.check === "catalog_completeness",
+    );
+    assertEquals(finding?.passed, false);
+    assertStringIncludes(
+      finding?.message ?? "",
+      "12 data name(s) (19818 record(s))",
+    );
+    assertStringIncludes(finding?.message ?? "", "no data on disk");
+    assertEquals(finding?.message.includes("is missing"), false);
+    assertStringIncludes(
+      finding?.message ?? "",
+      "swamp doctor datastores --repair",
+    );
+    assertEquals(completed.data.catalogCompletenessFinding?.surplus.length, 1);
+  }
+});
+
+Deno.test("repairCatalogIndex: surplus alone clears only the surplus rows and keeps the catalog", async () => {
+  const callLog: string[] = [];
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(surplusSummary),
+        invalidateCatalog: () => {
+          callLog.push("invalidateCatalog");
+          return Promise.resolve();
+        },
+        clearSurplus: () => {
+          callLog.push("clearSurplus");
+          return Promise.resolve(surplusSummary.surplus);
+        },
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(callLog, ["clearSurplus"]);
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.result.mode, "clear");
+    assertEquals(completed.result.surplusRecords, 19818);
+    assertEquals(completed.result.missingRecords, 0);
+  }
+});
+
+Deno.test("repairCatalogIndex: reports what the locked recount removed, not what the preview counted", async () => {
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(surplusSummary),
+        invalidateCatalog: () => Promise.resolve(),
+        clearSurplus: () => Promise.resolve([]),
+      },
+      { confirm: true },
+    ),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  assertEquals(completed.result.surplus, []);
+  assertEquals(completed.result.surplusRecords, 0);
+});
+
+Deno.test("repairCatalogIndex: a shortfall with surplus rebuilds the catalog instead of clearing rows", async () => {
+  const callLog: string[] = [];
+  const both: CatalogCompletenessSummary = {
+    ...shortSummary,
+    surplus: surplusSummary.surplus,
+  };
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(both),
+        invalidateCatalog: () => {
+          callLog.push("invalidateCatalog");
+          return Promise.resolve();
+        },
+        clearSurplus: () => {
+          callLog.push("clearSurplus");
+          return Promise.resolve([]);
+        },
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(callLog, ["invalidateCatalog"]);
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("no completed event");
+  assertEquals(completed.result.mode, "rebuild");
+  assertEquals(completed.result.surplusRecords, 19818);
+});
+
+Deno.test("repairCatalogIndex: previews surplus without clearing when not confirmed", async () => {
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(surplusSummary),
+        invalidateCatalog: () => Promise.resolve(),
+        clearSurplus: noClear,
+      },
+      { confirm: false },
+    ),
+  );
+
+  const preview = events.find((e) => e.kind === "preview");
+  if (preview?.kind !== "preview") throw new Error("no preview event");
+  assertEquals(preview.completeness.surplus.length, 1);
+});
+
+Deno.test("repairCatalogIndex: reports a failed surplus clear without claiming success", async () => {
+  const events = await collect<RepairCatalogIndexEvent>(
+    repairCatalogIndex(
+      createLibSwampContext(),
+      {
+        checkCompleteness: () => Promise.resolve(surplusSummary),
+        invalidateCatalog: () => Promise.resolve(),
+        clearSurplus: () => Promise.reject(new Error("lock wait timed out")),
+      },
+      { confirm: true },
+    ),
+  );
+
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+  const errorEvent = events.find((e) => e.kind === "error");
+  if (errorEvent?.kind !== "error") throw new Error("no error event");
+  assertEquals(errorEvent.error.code, "catalog_repair_failed");
+  assertStringIncludes(errorEvent.error.message, "lock wait timed out");
+  assertStringIncludes(errorEvent.error.message, "No changes were made");
 });
 
 Deno.test("repairCatalogDuplicateLatest: not_needed when no duplicates", async () => {

@@ -56,6 +56,7 @@ reach for it last.
 | Record reads `content: {}` / not found after crash   | Tier 1 → `swamp doctor datastores --repair`                 |
 | Data `datastore setup` migrated never reached S3/GCS | Tier 1 → `swamp doctor datastores --repair` (preview, `-y`) |
 | A data version missing from `data list` / type query | Tier 1 → `swamp doctor datastores` (`mixed_kind_names`)     |
+| Query returns each item twice / data of a moved type | Tier 1 → `swamp doctor datastores --repair` (preview, `-y`) |
 | Run stuck in "running" / orphaned after crash        | Tier 1 → `swamp run doctor --fix`                           |
 | `run_record_unreadable` from any command             | Tier 1 → `swamp run doctor --fix`, if it had not finished   |
 | "Is anything running right now?"                     | Tier 1 → `swamp run history --active`                       |

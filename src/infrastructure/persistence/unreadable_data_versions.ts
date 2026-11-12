@@ -49,21 +49,31 @@ export async function scanUnreadableVersions(
     names.set(keyOf(name.type.normalized, name.modelId, name.dataName), name);
   }
   const rowsByName = new Map<string, CatalogVersionKey[]>();
+  const surplus = new Set<string>();
   for (const row of catalogStore.versionKeys(namespace)) {
     const key = keyOf(row.type_normalized, row.model_id, row.data_name);
-    const rows = rowsByName.get(key);
-    if (rows) rows.push(row);
-    else rowsByName.set(key, [row]);
-    if (names.has(key)) continue;
-    try {
+    if (surplus.has(key)) continue;
+    if (!names.has(key)) {
+      // a name with no directory on disk is catalog surplus, not unreadable data
+      if (
+        !await dataRepo.hasDataNameDir(
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+        )
+      ) {
+        surplus.add(key);
+        continue;
+      }
       names.set(key, {
         type: ModelType.create(row.type_normalized),
         modelId: row.model_id,
         dataName: row.data_name,
       });
-    } catch {
-      // A row whose type is not a valid model type names no layout path.
     }
+    const rows = rowsByName.get(key);
+    if (rows) rows.push(row);
+    else rowsByName.set(key, [row]);
   }
 
   const findings: UnreadableDataVersion[] = [];

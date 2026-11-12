@@ -10555,7 +10555,18 @@ datastore extensions, close it.
   completeness check walks the data dir every command reads
   (`resolvePath("data")`: the external path or the cache), not the repo's own
   `.swamp/data`, which holds only the catalog when the datastore lives
-  elsewhere (swamp-club#3238).
+  elsewhere (swamp-club#3238). On a v2 filesystem datastore it also reports
+  surplus: data names this namespace's catalog indexes, by rows or a rename
+  forward, with no name directory on disk (`iterateDataNames`, then
+  `hasDataNameDir` for a name the walk skipped, such as one under a model
+  directory with no version metadata, so an unreadable name is never surplus);
+  pending names are skipped and foreign-namespace rows are never compared. No
+  custom datastore reports surplus: a lazy cache is incomplete on purpose. A shortfall still repairs by
+  removing the catalog database, which takes the surplus with it. Surplus alone
+  is cleared row by row through `clearRows`, keeping foreign rows and the
+  populated mark: the repair drains per-model writers, takes the datastore global
+  lock, drains again, then recounts the surplus before clearing, so a name saved
+  since the preview is kept (swamp-club#4502).
 
 ## Setup and Migration
 
