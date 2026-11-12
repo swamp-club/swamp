@@ -22,6 +22,8 @@ import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
   commandLanded,
+  commandMayHaveLanded,
+  intentKindsOfOps,
   noteCommandLanded,
   noteCommandMayHaveLanded,
   resetCommandLandedForTesting,
@@ -88,7 +90,62 @@ Deno.test("noteCommandLanded: a run's bookkeeping does not count, a behavior's d
   );
 });
 
-Deno.test("noteCommandMayHaveLanded: an unknown outcome counts", () => {
-  assertEquals(landedAfter(() => noteCommandMayHaveLanded()), true);
+Deno.test("noteCommandMayHaveLanded: an unknown outcome with effects counts, as landed and as may-have-landed", () => {
   resetCommandLandedForTesting();
+  noteCommandMayHaveLanded(SHELL, ["data.save"]);
+  assertEquals(commandLanded(), true);
+  assertEquals(commandMayHaveLanded(), true);
+  resetCommandLandedForTesting();
+  assertEquals(commandMayHaveLanded(), false);
+});
+
+Deno.test("noteCommandMayHaveLanded: bookkeeping and run checkpoints are filtered as noteCommandLanded filters them", () => {
+  for (
+    const [partition, kinds] of [
+      [RUN, ["run.update"]],
+      [RUN, ["data.save"]],
+      [WORKFLOW, ["data.save"]],
+      [SHELL, ["output.save", "evaluated-definition.save"]],
+      [SHELL, []],
+    ] as const
+  ) {
+    resetCommandLandedForTesting();
+    noteCommandMayHaveLanded(partition, kinds);
+    assertEquals(commandMayHaveLanded(), false, `${partition} ${kinds}`);
+    assertEquals(commandLanded(), false, `${partition} ${kinds}`);
+  }
+  resetCommandLandedForTesting();
+});
+
+Deno.test("commandMayHaveLanded: a confirmed landing alone is not a may-have-landed", () => {
+  resetCommandLandedForTesting();
+  noteCommandLanded(SHELL, ["data.save"]);
+  assertEquals(commandLanded(), true);
+  assertEquals(commandMayHaveLanded(), false);
+  resetCommandLandedForTesting();
+});
+
+Deno.test("intentKindsOfOps: data-version and lease ops name no intent by design and drop out; another intent-less op counts as an effect", () => {
+  assertEquals(
+    intentKindsOfOps([
+      { kind: "put", intent: { kind: "data.save" } },
+      { kind: "data-version" },
+      { kind: "lease" },
+      { kind: "tombstone", intent: { kind: "output.delete" } },
+    ]),
+    ["data.save", "output.delete"],
+  );
+  assertEquals(intentKindsOfOps([{ kind: "some-new-op" }]), [undefined]);
+  assertEquals(
+    landedAfter(() =>
+      noteCommandLanded(
+        SHELL,
+        intentKindsOfOps([
+          { kind: "put", intent: { kind: "output.save" } },
+          { kind: "data-version" },
+        ]),
+      )
+    ),
+    false,
+  );
 });

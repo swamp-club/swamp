@@ -57,6 +57,7 @@ import {
 } from "../../domain/datastore_v3/read_model.ts";
 import {
   COMMIT_LEASE_LOST_CODE,
+  COMMIT_MAY_LAND_CODE,
   COMMIT_UNREACHABLE_CODE,
   CommitLeaseLostError,
   LEASE_LAPSED_CODE,
@@ -75,10 +76,38 @@ const logger = getSwampLogger(["error"]);
  */
 function forwardedInFlight(err: Error): boolean {
   if ((err as { code?: unknown }).code !== SERVE_NOT_LEADER_CODE) return false;
+  return carriesInFlight(err);
+}
+
+function carriesInFlight(err: Error): boolean {
   if ((err as { inFlight?: unknown }).inFlight === true) return true;
   const details = (err as { details?: unknown }).details;
   return typeof details === "object" && details !== null &&
     (details as { inFlight?: unknown }).inFlight === true;
+}
+
+/**
+ * a may-land error keeps the inFlight its own flag, or a cause that was in
+ * flight (a forwarded request lost at the leader, or a send that may have
+ * reached serve), gives it
+ */
+function mayLandInFlight(err: Error): boolean {
+  if ((err as { code?: unknown }).code !== COMMIT_MAY_LAND_CODE) return false;
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    if (current === err ? carriesInFlight(err) : forwardedInFlight(current)) {
+      return true;
+    }
+    const code = (current as { code?: unknown }).code;
+    if (
+      (code === V3_SERVE_UNREACHABLE_CODE || code === LEASE_LAPSED_CODE) &&
+      (current as { sent?: unknown }).sent === "maybe"
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
 }
 
 /** what the failed command did, which a retry-safe exit depends on */
@@ -88,7 +117,49 @@ export interface ErrorPresentationContext {
    * landed and exit 1; the unreachable codes keep their exit 75
    */
   readonly commandLanded?: boolean;
+  /** a change with effects whose outcome is unknown */
+  readonly commandMayHaveLanded?: boolean;
   readonly workflowCommand?: boolean;
+}
+
+/** the outages that end a command without saying what its last change did */
+const MAY_LAND_OUTAGE_CODES: ReadonlySet<string> = new Set([
+  V3_SERVE_UNREACHABLE_CODE,
+  COMMIT_UNREACHABLE_CODE,
+  LEASE_LAPSED_CODE,
+  SERVE_NOT_LEADER_CODE,
+]);
+
+/**
+ * an outage ending a command whose change may have landed, as the may-land
+ * error the user is shown; keyed on the top-level code, so a wrapper carrying
+ * the outage's code is covered. A lease-lost refusal keeps its own code
+ */
+function mayLandRelabelOf(
+  error: unknown,
+  context: ErrorPresentationContext,
+): UserError | undefined {
+  if (context.commandMayHaveLanded !== true) return undefined;
+  const code = (error as { code?: unknown } | undefined)?.code;
+  if (typeof code !== "string" || !MAY_LAND_OUTAGE_CODES.has(code)) {
+    return undefined;
+  }
+  if (leaseLostRefusalOf(error) !== undefined) return undefined;
+  const reason = error instanceof Error ? error.message : String(error);
+  const next = context.workflowCommand === true
+    ? "Check the run with swamp workflow history and the datastore once it " +
+      "is reachable, then resume or recover the run rather than running the " +
+      "workflow again."
+    : "Check the datastore once it is reachable before running this " +
+      "command again.";
+  const relabelled = new UserError(
+    `The outcome of this command's last change is unknown: ${reason} ` +
+      `That change may or may not have been committed, and any change this ` +
+      `command committed before it stays committed. ${next}`,
+    COMMIT_MAY_LAND_CODE,
+  );
+  relabelled.cause = error;
+  return relabelled;
 }
 
 /** the writer that took over found nothing of this command committed */
@@ -155,7 +226,7 @@ export function buildErrorJson(
       ? "lock_timeout"
       : maybeCode;
   }
-  if (forwardedInFlight(err)) data.inFlight = true;
+  if (forwardedInFlight(err) || mayLandInFlight(err)) data.inFlight = true;
   if (err instanceof AuthGateBlockedError) {
     // Why the auth gate blocked, as data: `kind` plus any retry or age hint,
     // so scripts and agents can branch without parsing the message.
@@ -215,6 +286,7 @@ export function exitCodeForError(
   error: unknown,
   context: ErrorPresentationContext = {},
 ): number {
+  if (mayLandRelabelOf(error, context) !== undefined) return 1;
   const nothingLanded = context.commandLanded === false;
   if (isLapsedServeRequest(error)) {
     return context.commandLanded === true ? 1 : 75;
@@ -340,9 +412,10 @@ export function renderError(
   surface: CommandSurface = "behavior",
   context: ErrorPresentationContext = {},
 ): void {
+  const relabelled = mayLandRelabelOf(error, context);
   // a refused stale config edit is the user's to resolve, not a crash
-  const leaseError = leaseErrorOf(error);
-  const err = configEditConflictOf(error) ?? leaseError ??
+  const leaseError = relabelled === undefined ? leaseErrorOf(error) : undefined;
+  const err = relabelled ?? configEditConflictOf(error) ?? leaseError ??
     runInitiatorMismatchOf(error) ??
     (error instanceof Error ? error : new Error(String(error)));
   const message = messageFor(err, surface);

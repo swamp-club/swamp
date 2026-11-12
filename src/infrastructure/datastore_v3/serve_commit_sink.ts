@@ -24,13 +24,17 @@
  */
 
 import { latchServeUnreachable } from "./serve_datastore_client.ts";
-import { noteCommandLanded } from "./command_landed.ts";
+import {
+  intentKindsOfOps,
+  noteCommandMayHaveLanded,
+} from "./command_landed.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
 import type { CommitOutbox } from "../../domain/datastore_v3/commit_outbox.ts";
 import type { CommitStoreAppendResult } from "../../domain/datastore_v3/commit_store.ts";
 import type { DatastoreStorage } from "../../domain/datastore/datastore_storage.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import {
   CommitNotTriedError,
   CommitQueuedOfflineError,
@@ -48,6 +52,7 @@ import {
   noteServeLeaseReleased,
   quietServeLeaseForRelease,
   resumeServeLease,
+  settleServeLeaseUnreleased,
 } from "./serve_lease_registry.ts";
 import { storageNamespaceOf } from "./serve_datastore_storage.ts";
 import {
@@ -70,7 +75,6 @@ import {
 } from "./serve_upstream_errors.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { withSpan } from "../tracing/tracer.ts";
-import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
@@ -250,6 +254,14 @@ export function createServeCommitSink(
 
   const leaseOf = options.leaseOf ?? (() => undefined);
 
+  /** the send may have run at serve, or at the leader a follower forwarded to */
+  const mayHaveRun = (error: unknown): boolean =>
+    (error instanceof ServeUnreachableError && error.sent === "maybe") ||
+    (error instanceof ServeNotLeaderError && error.inFlight);
+
+  const noteMayHaveRun = (commit: Commit): void =>
+    noteCommandMayHaveLanded(commit.partition, intentKindsOfOps(commit.ops));
+
   const forward = (
     commit: Commit,
     leaseId: string | undefined,
@@ -263,15 +275,8 @@ export function createServeCommitSink(
         } catch (error) {
           if (error instanceof ServeUnreachableError) {
             latchServeUnreachable(client.baseUrl, error);
-            if (error.sent === "maybe") {
-              noteCommandLanded(
-                commit.partition,
-                commit.ops.flatMap((op) =>
-                  "intent" in op ? [op.intent.kind] : []
-                ),
-              );
-            }
           }
+          if (mayHaveRun(error)) noteMayHaveRun(commit);
           throw error;
         }
       },
@@ -562,9 +567,11 @@ export function createServeCommitSink(
       );
     } catch (error) {
       // a release that may have reached serve is not renewed again
-      const mayHaveEnded = error instanceof ServeUnreachableError &&
-        error.sent === "maybe";
-      if (quieted !== undefined && !mayHaveEnded) resumeServeLease(quieted);
+      const mayHaveEnded = mayHaveRun(error);
+      if (quieted !== undefined) {
+        if (mayHaveEnded) settleServeLeaseUnreleased(quieted);
+        else resumeServeLease(quieted);
+      }
       // a follower older than its leader has no batch route
       if (
         error instanceof ServeUpstreamError &&
@@ -578,14 +585,7 @@ export function createServeCommitSink(
       }
       for (const [index, entry] of waiting.entries()) {
         noteCarriedFailure(entry.commit, sentChunks[index] ?? [], error);
-        if (mayHaveEnded) {
-          noteCommandLanded(
-            entry.commit.partition,
-            entry.commit.ops.flatMap((op) =>
-              "intent" in op ? [op.intent.kind] : []
-            ),
-          );
-        }
+        if (mayHaveEnded) noteMayHaveRun(entry.commit);
         entry.reject(await refusedWith(entry.commit, error, signal));
       }
       return;

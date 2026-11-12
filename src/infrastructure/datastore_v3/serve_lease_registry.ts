@@ -147,6 +147,7 @@ export function heldServeLeaseOf(
 interface ReleasableLease {
   readonly quiet: () => Promise<void>;
   readonly resume: () => void;
+  readonly settledUnreleased: () => void;
   released: boolean;
 }
 
@@ -155,20 +156,33 @@ const releasable = new Map<string, ReleasableLease>();
 
 /**
  * offered by a command's own hold; `quiet` stops its renewals, so a renewal
- * after serve ended the lease is never read as a lapse
+ * after serve ended the lease is never read as a lapse. `settledUnreleased`
+ * ends the quiet without renewing, for a commit serve may or may not have run
  */
 export function offerServeLeaseRelease(
   leaseId: string,
   quiet: () => Promise<void>,
   resume: () => void,
+  settledUnreleased: () => void,
 ): void {
-  releasable.set(leaseId, { quiet, resume, released: false });
+  releasable.set(leaseId, {
+    quiet,
+    resume,
+    settledUnreleased,
+    released: false,
+  });
 }
 
 /** renews the quieted hold again: serve did not end the lease after all */
 export function resumeServeLease(leaseId: string): void {
   const lease = releasable.get(leaseId);
   if (lease !== undefined && !lease.released) lease.resume();
+}
+
+/** the quieted hold's commit may have ended the lease at serve, or not */
+export function settleServeLeaseUnreleased(leaseId: string): void {
+  const lease = releasable.get(leaseId);
+  if (lease !== undefined && !lease.released) lease.settledUnreleased();
 }
 
 export function withdrawServeLeaseRelease(leaseId: string): void {

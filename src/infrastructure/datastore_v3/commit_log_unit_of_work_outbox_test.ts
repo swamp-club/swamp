@@ -47,6 +47,10 @@ import {
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { MemorySink } from "./commit_log_test_helpers.ts";
 import {
+  commandMayHaveLanded,
+  resetCommandLandedForTesting,
+} from "./command_landed.ts";
+import {
   CommitQueuedOfflineError,
   createCommitLogUnitOfWork,
 } from "./commit_log_unit_of_work.ts";
@@ -1058,4 +1062,92 @@ Deno.test("commit-log unit with an outbox: a retry partly withdrawn since its fa
     [dataKey("kept", 1).toString()],
   );
   assertEquals(sink.entries.size, 0);
+});
+
+Deno.test("commit-log unit with an outbox: a landing that cannot be read may have landed only when its group has effects", async () => {
+  for (const run of [false, true]) {
+    resetCommandLandedForTesting();
+    try {
+      const sink = new OutboxMemorySink();
+      sink.outbox.landedSeq = () => Promise.reject(new Error("serve is down"));
+      sink.beforeAppend = () => {
+        throw new Error("the reply was lost");
+      };
+      const uow = createCommitLogUnitOfWork(
+        contextHook(),
+        unitOptions(sink, memory()),
+      );
+      await uow.stageOp(
+        run
+          ? { partition: runPartition(), op: await runPut("r") }
+          : { partition: MODEL, op: await savePut("a", 1) },
+      );
+      await assertRejects(() => uow.commit(), MayLandLaterError);
+      assertEquals(commandMayHaveLanded(), !run, run ? "run" : "data");
+    } finally {
+      resetCommandLandedForTesting();
+    }
+  }
+});
+
+Deno.test("commit-log unit with an outbox: a refused mixed group whose give-up cannot be recorded may have landed, through its data partition's intents", async () => {
+  resetCommandLandedForTesting();
+  try {
+    const sink = new OutboxMemorySink();
+    const options = unitOptions(sink, memory());
+    const first = createCommitLogUnitOfWork(contextHook(), options);
+    await first.stageOp({
+      partition: MODEL,
+      op: await savePut("a", 1, "a", "absent"),
+    });
+    await first.commit();
+    resetCommandLandedForTesting();
+    Object.assign(sink.outbox, {
+      abandon: () => Promise.reject(new Error("database or disk is full")),
+    });
+    sink.beforeRemove = () => {
+      throw new Error("database or disk is full");
+    };
+    const uow = createCommitLogUnitOfWork(contextHook(), options);
+    await uow.stageOp({
+      partition: MODEL,
+      op: await savePut("a", 1, "again", "absent"),
+    });
+    await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+    await assertRejects(() => uow.commit(), MayLandLaterError);
+    assertEquals(commandMayHaveLanded(), true);
+  } finally {
+    resetCommandLandedForTesting();
+  }
+});
+
+Deno.test("commit-log unit with an outbox: an end whose give-up cannot be recorded may have landed only for the groups it lost", async () => {
+  for (const run of [false, true]) {
+    resetCommandLandedForTesting();
+    try {
+      const sink = new OutboxMemorySink();
+      const down = { on: false };
+      const uow = createCommitLogUnitOfWork(
+        contextHook(),
+        unitOptions(sink, failingWhen(memory(), down, refused)),
+      );
+      await uow.stageOp(
+        run
+          ? { partition: runPartition(), op: await runPut("r") }
+          : blobChange("a"),
+      );
+      sink.beforeAppend = () => {
+        throw new Error("disk full");
+      };
+      await assertRejects(() => uow.checkpoint(), Error, "disk full");
+      down.on = true;
+      sink.beforeRemove = () => {
+        throw new Error("outbox locked");
+      };
+      await assertRejects(() => uow.commit(), MayLandLaterError);
+      assertEquals(commandMayHaveLanded(), !run, run ? "run" : "data");
+    } finally {
+      resetCommandLandedForTesting();
+    }
+  }
 });

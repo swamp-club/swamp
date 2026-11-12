@@ -157,6 +157,8 @@ export class ServeLock implements DistributedLock {
   #local: DistributedLock | undefined;
   /** Set while the hold is released: a renewal in flight cannot lapse it. */
   #releasing = false;
+  /** a lapse met while releasing: it fires if the hold outlives the release */
+  #lapsedWhileReleasing: string | undefined;
   #localOnly = false;
 
   constructor(options: ServeLockOptions) {
@@ -251,6 +253,7 @@ export class ServeLock implements DistributedLock {
           delivered = reply.catchUp;
           this.#acquiredAt = this.#now();
           this.#lost = false;
+          this.#lapsedWhileReleasing = undefined;
           // Measured from when the request was sent: serve's TTL started
           // no earlier.
           this.#armDeadline(askedMonotonic);
@@ -351,6 +354,7 @@ export class ServeLock implements DistributedLock {
     };
     this.#acquiredAt = this.#now();
     this.#lost = false;
+    this.#lapsedWhileReleasing = undefined;
     this.#local = local;
     this.#armDeadline(asked);
     this.#startHeartbeat();
@@ -394,6 +398,7 @@ export class ServeLock implements DistributedLock {
       };
       this.#acquiredAt = this.#now();
       this.#lost = false;
+      this.#lapsedWhileReleasing = undefined;
       this.#local = local;
       held = true;
       // The recorded end, less the skew allowed for: the work under the
@@ -437,6 +442,7 @@ export class ServeLock implements DistributedLock {
         lease.leaseId,
         () => this.#quiet(),
         () => this.#resume(),
+        () => this.#settledUnreleased(),
       );
     }
   }
@@ -444,7 +450,26 @@ export class ServeLock implements DistributedLock {
   #resume(): void {
     if (this.#lease === undefined || this.#lost || !this.#releasing) return;
     this.#releasing = false;
+    if (this.#lapseMetWhileReleasing()) return;
     if (this.#heartbeat === undefined) this.#startHeartbeat();
+  }
+
+  /**
+   * serve may have ended the lease, so it is not renewed, but the hold no
+   * longer counts as releasing: its deadline lapses it as any other
+   */
+  #settledUnreleased(): void {
+    if (this.#lease === undefined || this.#lost || !this.#releasing) return;
+    this.#releasing = false;
+    this.#lapseMetWhileReleasing();
+  }
+
+  #lapseMetWhileReleasing(): boolean {
+    const reason = this.#lapsedWhileReleasing;
+    if (reason === undefined) return false;
+    this.#lapsedWhileReleasing = undefined;
+    this.#lapse(reason);
+    return true;
   }
 
   /** no renewal from here on: the commit closing the hold may end the lease */
@@ -473,6 +498,7 @@ export class ServeLock implements DistributedLock {
   async #release(): Promise<void> {
     this.#stopHeartbeat();
     this.#clearDeadline();
+    this.#lapsedWhileReleasing = undefined;
     if (this.#localOnly) {
       this.#localOnly = false;
       this.#acquiredAt = undefined;
@@ -685,10 +711,9 @@ export class ServeLock implements DistributedLock {
    */
   #lapse(reason: string): void {
     const lease = this.#lease;
-    if (
-      lease === undefined || lease.fence === undefined || this.#lost ||
-      this.#releasing
-    ) {
+    if (lease === undefined || lease.fence === undefined || this.#lost) return;
+    if (this.#releasing) {
+      this.#lapsedWhileReleasing ??= reason;
       return;
     }
     this.#lost = true;

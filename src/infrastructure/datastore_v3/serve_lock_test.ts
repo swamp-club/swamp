@@ -56,6 +56,7 @@ import {
   resetServeLeasesForTesting,
   resumeServeLease,
   serveLeaseReleasedByCommit,
+  settleServeLeaseUnreleased,
 } from "./serve_lease_registry.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -1009,6 +1010,150 @@ Deno.test("ServeLock: a hold quieted for a release serve did not make renews aga
       serve.calls.filter((c) => c.startsWith("release")),
       [`release ${leaseId}`],
     );
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+/** a renewal held open until the test answers it */
+class HeldRenewalServe extends FakeServe {
+  #answer: ((lease: LockLease | undefined) => void) | undefined;
+
+  override renewLock(
+    leaseId: string,
+    _ttlMs: number,
+    _signal?: AbortSignal,
+  ): Promise<LockLease | undefined> {
+    this.calls.push(`renew ${leaseId}`);
+    return new Promise((resolve) => this.#answer = resolve);
+  }
+
+  get renewalPending(): boolean {
+    return this.#answer !== undefined;
+  }
+
+  /** serve no longer holds the lease */
+  answerExpired(): void {
+    const answer = this.#answer;
+    this.#answer = undefined;
+    answer?.(undefined);
+  }
+}
+
+/** quiets the hold while a renewal is in flight, which serve answers expired */
+async function lapseWhileReleasing(
+  serve: HeldRenewalServe,
+  subject: ServeLock,
+  lost: Error[],
+): Promise<string> {
+  await subject.acquire();
+  const leaseId = subject.lease!.leaseId;
+  await waitFor(() => serve.renewalPending, "a renewal in flight");
+  const quieted = quietServeLeaseForRelease(leaseId);
+  serve.answerExpired();
+  assertEquals(await quieted, true);
+  assertEquals(lost, [], "no lapse while the hold is releasing");
+  return leaseId;
+}
+
+Deno.test("ServeLock: a lapse met while a quieted hold was releasing fires when the hold resumes, once", async () => {
+  resetServeLeasesForTesting();
+  const serve = new HeldRenewalServe();
+  serve.fence = 1;
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    // renews at a third of it, well before its deadline
+    ttlMs: 3_000,
+    root: ROOT,
+    onLost: (error) => lost.push(error),
+  });
+  try {
+    const leaseId = await lapseWhileReleasing(serve, subject, lost);
+    resumeServeLease(leaseId);
+    assertEquals(lost.length, 1);
+    assertStringIncludes(lost[0].message, "serve no longer holds it");
+    assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
+    resumeServeLease(leaseId);
+    settleServeLeaseUnreleased(leaseId);
+    assertEquals(lost.length, 1, "onLost fires once");
+    await subject.release();
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("ServeLock: a lapse met while releasing fires when the releasing commit settles without a release", async () => {
+  resetServeLeasesForTesting();
+  const serve = new HeldRenewalServe();
+  serve.fence = 1;
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    // renews at a third of it, well before its deadline
+    ttlMs: 3_000,
+    root: ROOT,
+    onLost: (error) => lost.push(error),
+  });
+  try {
+    const leaseId = await lapseWhileReleasing(serve, subject, lost);
+    settleServeLeaseUnreleased(leaseId);
+    assertEquals(lost.length, 1);
+    settleServeLeaseUnreleased(leaseId);
+    assertEquals(lost.length, 1, "onLost fires once");
+    await subject.release();
+  } finally {
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("ServeLock: a hold settled without a release does not renew, and its deadline lapses it", async () => {
+  resetServeLeasesForTesting();
+  const serve = new FakeServe();
+  serve.fence = 1;
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    ttlMs: 30,
+    root: ROOT,
+    onLost: (error) => lost.push(error),
+  });
+  try {
+    await subject.acquire();
+    const leaseId = subject.lease!.leaseId;
+    await quietServeLeaseForRelease(leaseId);
+    const renewals = serve.calls.filter((c) => c.startsWith("renew")).length;
+    settleServeLeaseUnreleased(leaseId);
+    await waitFor(() => lost.length > 0, "the lapse at the deadline");
+    assertEquals(lost.length, 1);
+    assertStringIncludes(lost[0].message, "could not be renewed in time");
+    assertEquals(
+      serve.calls.filter((c) => c.startsWith("renew")).length,
+      renewals,
+      "no renewal once settled",
+    );
+    await subject.release();
+  } finally {
+    clearServeUnreachableLatches();
+    resetServeLeasesForTesting();
+  }
+});
+
+Deno.test("ServeLock: a lapse met while the hold is released by the commit never fires", async () => {
+  resetServeLeasesForTesting();
+  const serve = new HeldRenewalServe();
+  serve.fence = 1;
+  const lost: Error[] = [];
+  const subject = lock(serve, {
+    // renews at a third of it, well before its deadline
+    ttlMs: 3_000,
+    root: ROOT,
+    onLost: (error) => lost.push(error),
+  });
+  try {
+    const leaseId = await lapseWhileReleasing(serve, subject, lost);
+    noteServeLeaseReleased(leaseId);
+    resumeServeLease(leaseId);
+    settleServeLeaseUnreleased(leaseId);
+    await subject.release();
+    assertEquals(lost, []);
   } finally {
     resetServeLeasesForTesting();
   }

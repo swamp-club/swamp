@@ -19,11 +19,13 @@
 
 import "../src/domain/models/models.ts";
 import { assert, assertEquals } from "@std/assert";
+import { exists } from "@std/fs";
 import { Command } from "@cliffy/command";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { workflowRunCommand } from "../src/cli/commands/workflow_run.ts";
 import { registerCompletionTypes } from "../src/cli/completion_types.ts";
+import { closeV3DatastoresAfterFailure } from "../src/cli/v3_teardown.ts";
 import {
   resetImplicitServeRouting,
   setImplicitServeRouting,
@@ -37,12 +39,22 @@ import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import {
   commandLanded,
+  commandMayHaveLanded,
   resetCommandLandedForTesting,
 } from "../src/infrastructure/datastore_v3/command_landed.ts";
+import { writerMarkerPath } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
 import { serveUpstreamLocalRoot } from "../src/infrastructure/datastore_v3/serve_upstream_binding.ts";
 import { tryAcquireV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { exitCodeForError } from "../src/presentation/output/error_output.ts";
+import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
+import {
+  type ReadableSpan,
+  withCapturedSpans,
+} from "../src/infrastructure/tracing/span_test_helpers.ts";
+import {
+  exitCodeForError,
+  renderError,
+} from "../src/presentation/output/error_output.ts";
 import {
   type Client,
   endCommand,
@@ -73,19 +85,39 @@ const ALICE_ALL: readonly GrantSpec[] = [
   },
 ];
 
-/** the requirement: a member cut off from serve hears so within this */
-const ENDS_WITHIN_MS = 45_000;
+/** a hang, not a latency bound: each case waits out the real lease */
+const ENDS_WITHIN_MS = 240_000;
 const MAY_LAND_CODE = "datastore_v3_commit_may_land";
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 /** a serve whose connection is silently dropped: stalled requests never answer */
 interface StallProxy {
   readonly origin: string;
-  readonly requests: { at: number; line: string }[];
-  /** commits serve has answered */
-  answeredCommits: number;
+  /** run-partition commits answered since `arm` */
+  answeredRunCommits: number;
   inFlight: number;
   stall: boolean;
+  /** from now, the first run-partition commit cuts serve off as it is sent */
+  armed: boolean;
   down(): Promise<void>;
+}
+
+/** a single commit names its partition in the path, a batch in its header */
+function commitsRunPartition(url: URL, body: Uint8Array | undefined): boolean {
+  if (url.pathname.includes("/partitions/run--")) return true;
+  if (!url.pathname.endsWith("/commits") || body === undefined) return false;
+  if (body.byteLength < 4) return false;
+  const length = new DataView(body.buffer, body.byteOffset).getUint32(0);
+  try {
+    const header = JSON.parse(
+      new TextDecoder().decode(body.subarray(4, 4 + length)),
+    ) as { items?: { partition?: unknown }[] };
+    return header.items?.some((item) =>
+      typeof item.partition === "string" && item.partition.startsWith("run--")
+    ) ?? false;
+  } catch {
+    return false;
+  }
 }
 
 function startStallProxy(target: string): StallProxy {
@@ -95,15 +127,14 @@ function startStallProxy(target: string): StallProxy {
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     async (request) => {
       const url = new URL(request.url);
-      proxy.requests.push({
-        at: performance.now(),
-        line: `${request.method} ${url.pathname}`,
-      });
       proxy.inFlight++;
       try {
         const body = request.body === null
           ? undefined
           : new Uint8Array(await request.arrayBuffer());
+        const runCommit = request.method === "POST" &&
+          url.pathname.endsWith("/commits") && commitsRunPartition(url, body);
+        if (runCommit && proxy.armed && !proxy.stall) proxy.stall = true;
         if (proxy.stall) {
           await unstalled;
           return new Response("closing", { status: 503 });
@@ -121,13 +152,11 @@ function startStallProxy(target: string): StallProxy {
           },
         );
         const answer = await response.arrayBuffer();
-        if (request.method === "POST" && url.pathname.endsWith("/commits")) {
-          proxy.answeredCommits++;
-        }
-        return new Response(answer, {
-          status: response.status,
-          headers: response.headers,
-        });
+        if (runCommit) proxy.answeredRunCommits++;
+        return new Response(
+          NULL_BODY_STATUSES.has(response.status) ? null : answer,
+          { status: response.status, headers: response.headers },
+        );
       } finally {
         proxy.inFlight--;
       }
@@ -136,10 +165,10 @@ function startStallProxy(target: string): StallProxy {
   let closed = false;
   const proxy: StallProxy = {
     origin: `http://127.0.0.1:${server.addr.port}`,
-    requests: [],
-    answeredCommits: 0,
+    answeredRunCommits: 0,
     inFlight: 0,
     stall: false,
+    armed: false,
     async down() {
       if (closed) return;
       closed = true;
@@ -153,6 +182,8 @@ function startStallProxy(target: string): StallProxy {
 /** s1's method waits here; the later steps record that they ran */
 interface Steps {
   s1Started: boolean;
+  /** called as s1 starts, before anything after its start is sent */
+  onS1Start: () => void;
   release(): void;
   readonly later: string[];
 }
@@ -160,7 +191,12 @@ interface Steps {
 function registerSteps(type: ModelType): Steps {
   let release: () => void = () => {};
   const released = new Promise<void>((resolve) => release = resolve);
-  const steps: Steps = { s1Started: false, release, later: [] };
+  const steps: Steps = {
+    s1Started: false,
+    onS1Start: () => {},
+    release,
+    later: [],
+  };
   modelRegistry.invalidateType(type);
   modelRegistry.register({
     type,
@@ -178,6 +214,7 @@ function registerSteps(type: ModelType): Steps {
         arguments: z.object({}),
         execute: async (_args, context) => {
           steps.s1Started = true;
+          steps.onS1Start();
           const cancelled = new Promise<void>((resolve) => {
             if (context.signal.aborted) resolve();
             context.signal.addEventListener("abort", () => resolve(), {
@@ -206,7 +243,11 @@ interface Outcome {
   readonly ended: boolean;
   readonly exitCode: number;
   readonly code: unknown;
+  readonly shownCode: unknown;
   readonly message: string | undefined;
+  readonly mayHaveLanded: boolean;
+  readonly markerKept: boolean;
+  readonly teardownRecoveries: number;
 }
 
 async function assertWriterFree(client: Client, origin: string) {
@@ -217,15 +258,39 @@ async function assertWriterFree(client: Client, origin: string) {
   await release();
 }
 
+/** the code main.ts reports for the error, as its JSON output shows it */
+function renderedCode(
+  error: unknown,
+  context: Parameters<typeof renderError>[3],
+): unknown {
+  const printed: string[] = [];
+  const consoleError = console.error;
+  console.error = (...args: unknown[]) => printed.push(args.join(" "));
+  try {
+    renderError(error, "json", "behavior", context);
+  } finally {
+    console.error = consoleError;
+  }
+  return (JSON.parse(printed.join("\n")) as { code?: unknown }).code;
+}
+
+function droppedWorkRecoveries(spans: readonly ReadableSpan[]): number {
+  return spans.filter((span) =>
+    span.name === "swamp.datastore.v3.readmodel.recover" &&
+    span.attributes["swamp.datastore.v3.readmodel.recover.entry"] ===
+      "dropped_work"
+  ).length;
+}
+
 /**
  * runs `workflow run` as the binary does, cuts serve off once s1 runs, and
- * turns a thrown error into the exit code main.ts gives it
+ * turns a thrown error into the exit code and code main.ts gives it
  */
 async function runCutOff(
   scratch: Scratch,
   options: {
     readonly s1FinishesAfterCut: boolean;
-    /** the cut catches s1's running checkpoint in flight */
+    /** the cut catches the first run checkpoint after s1 starts in flight */
     readonly checkpointInFlight?: boolean;
   },
 ): Promise<{ outcome: Outcome; steps: Steps }> {
@@ -265,33 +330,48 @@ async function runCutOff(
     );
 
     resetCommandLandedForTesting();
+    steps.onS1Start = () => {
+      if (options.checkpointInFlight === true) proxy.armed = true;
+      proxy.answeredRunCommits = 0;
+    };
     const exitCodeBefore = Deno.exitCode;
     Deno.exitCode = 0;
     let thrown: unknown;
     let done = false;
+    let teardownRecoveries = 0;
     try {
-      const run = withClientEnv(scratch, env, ["workflow", "run"], async () => {
-        const root = registerCompletionTypes(new Command())
-          .globalOption("--json", "JSON output")
-          .command("cmd", workflowRunCommand);
-        // as mod.ts does for a v3 checkout: it runs locally, serve its upstream
-        setImplicitServeRouting(false);
+      const run = withCapturedSpans(async (spans) => {
         try {
-          await root.parse([
-            "cmd",
-            workflow.name,
-            "--json",
-            "--repo-dir",
-            client.repoDir,
-          ]);
+          await withClientEnv(scratch, env, ["workflow", "run"], async () => {
+            const root = registerCompletionTypes(new Command())
+              .globalOption("--json", "JSON output")
+              .command("cmd", workflowRunCommand);
+            // as mod.ts does for a v3 checkout: it runs locally, serve its
+            // upstream
+            setImplicitServeRouting(false);
+            try {
+              await root.parse([
+                "cmd",
+                workflow.name,
+                "--json",
+                "--repo-dir",
+                client.repoDir,
+              ]);
+            } catch (error) {
+              // as mod.ts tears down a failed command
+              await flushDatastoreSync();
+              thrown = await closeV3DatastoresAfterFailure(error);
+            } finally {
+              resetImplicitServeRouting();
+              await endCommand();
+            }
+          });
+        } catch (error) {
+          thrown = error;
         } finally {
-          resetImplicitServeRouting();
-          await endCommand();
+          teardownRecoveries = droppedWorkRecoveries(spans);
+          done = true;
         }
-      }).catch((error) => {
-        thrown = error;
-      }).finally(() => {
-        done = true;
       });
 
       await waitFor(() => steps.s1Started, "s1 to start", {
@@ -300,14 +380,18 @@ async function runCutOff(
       });
       if (options.checkpointInFlight !== true) {
         // as in the field: s1's running checkpoint landed, nothing in flight
-        const answeredAtStart = proxy.answeredCommits;
         await waitFor(
-          () => proxy.answeredCommits > answeredAtStart && proxy.inFlight === 0,
+          () => proxy.answeredRunCommits > 0 && proxy.inFlight === 0,
           "s1's checkpoint to land",
-          { timeoutMs: 30_000, intervalMs: 20 },
+          { timeoutMs: 60_000, intervalMs: 20 },
         );
+        proxy.stall = true;
+      } else {
+        await waitFor(() => proxy.stall, "s1's checkpoint to be cut off", {
+          timeoutMs: 60_000,
+          intervalMs: 20,
+        });
       }
-      proxy.stall = true;
       if (options.s1FinishesAfterCut) steps.release();
       let ended = true;
       try {
@@ -323,18 +407,27 @@ async function runCutOff(
       await proxy.down();
       await run;
       await assertWriterFree(client, proxy.origin);
+      const context = {
+        commandLanded: commandLanded(),
+        commandMayHaveLanded: commandMayHaveLanded(),
+        workflowCommand: true,
+      };
       const exitCode = thrown === undefined
         ? Deno.exitCode
-        : exitCodeForError(thrown, {
-          commandLanded: commandLanded(),
-          workflowCommand: true,
-        });
+        : exitCodeForError(thrown, context);
+      const code = (thrown as { code?: unknown } | undefined)?.code;
       return {
         outcome: {
           ended,
           exitCode,
-          code: (thrown as { code?: unknown } | undefined)?.code,
+          code,
+          shownCode: thrown === undefined
+            ? undefined
+            : renderedCode(thrown, context),
           message: thrown instanceof Error ? thrown.message : undefined,
+          mayHaveLanded: context.commandMayHaveLanded,
+          markerKept: await exists(writerMarkerPath(client.repoDir)),
+          teardownRecoveries,
         },
         steps,
       };
@@ -349,12 +442,18 @@ async function runCutOff(
 function assertCutOffOutcome(outcome: Outcome, steps: Steps) {
   const seen = JSON.stringify(outcome);
   assertEquals(steps.later, [], `no step after s1 started: ${seen}`);
-  assert(outcome.ended, `the command ended within the bound: ${seen}`);
+  assert(outcome.ended, `the command ended: ${seen}`);
   assert(
     outcome.exitCode === 75 ||
-      (outcome.exitCode === 1 && outcome.code === MAY_LAND_CODE),
+      (outcome.exitCode === 1 && outcome.shownCode === MAY_LAND_CODE),
     `exit 75, or 1 only for a commit that may have landed: ${seen}`,
   );
+  assertEquals(
+    outcome.teardownRecoveries,
+    0,
+    `teardown left the dropped work to the next command: ${seen}`,
+  );
+  assert(outcome.markerKept, `the dropped-work marker is kept: ${seen}`);
 }
 
 Deno.test({

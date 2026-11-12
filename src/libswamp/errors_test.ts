@@ -20,8 +20,26 @@
 import { assertEquals, assertInstanceOf } from "@std/assert";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import {
+  AppendUnrecordedError,
+  CommitUnreachableError,
+  LEASE_LAPSED_CODE,
+  RunPartlyCommittedError,
+} from "../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { ReadModelCatchUpUnreachableError } from "../domain/datastore_v3/read_model.ts";
+import {
+  isLapsedServeRequest,
+  V3StorageUnreachableError,
+} from "../domain/datastore_v3/writer_lease.ts";
+import { StepStartUnrecordedError } from "../domain/workflows/step_start.ts";
+import {
+  ServeLeaseLapsedLatch,
+  ServeLeaseLapsedRequestError,
+  ServeUnreachableError,
+} from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
+import {
   alreadyExists,
   cancelled,
+  datastoreOutageOf,
   invalidApiKey,
   isSwampError,
   notAuthenticated,
@@ -117,4 +135,96 @@ Deno.test("userErrorFromSwampError: marks nothing when there is no cause", () =>
   const error = userErrorFromSwampError(notFound("Model", "x"));
   assertEquals(error.code, "not_found");
   assertEquals(errorPaths(error), []);
+});
+
+function serveCutOff(): ServeUnreachableError {
+  return new ServeUnreachableError(
+    "http://serve.test",
+    "maybe",
+    new Error("Serve did not start its reply"),
+  );
+}
+
+Deno.test("userErrorFromSwampError: a serve outage in the cause is kept, and the outermost datastore code in the chain is reported", () => {
+  const unreachable = serveCutOff();
+  const start = new StepStartUnrecordedError(
+    new AppendUnrecordedError(unreachable, false),
+    { workflowId: "w", workflowName: "deploy", runId: "r", stepName: "s2" },
+  );
+  const error = userErrorFromSwampError({
+    code: "workflow_execution_failed",
+    message: `Workflow execution failed: ${start.message}`,
+    cause: start,
+  });
+  assertEquals(error.code, "datastore_v3_commit_unreachable");
+  assertEquals(error.cause, start);
+  const direct = userErrorFromSwampError({
+    code: "workflow_execution_failed",
+    message: "Workflow execution failed",
+    cause: new Error("the run stopped", { cause: unreachable }),
+  });
+  assertEquals(direct.code, "datastore_v3_serve_unreachable");
+});
+
+Deno.test("userErrorFromSwampError: each outage class teardown walks for is kept", () => {
+  const unreachable = serveCutOff();
+  for (
+    const outage of [
+      unreachable,
+      new CommitUnreachableError(new Error("down")),
+      new V3StorageUnreachableError("/store", new Error("down")),
+      new ReadModelCatchUpUnreachableError(new Error("down")),
+      new RunPartlyCommittedError(new Error("down"), [{
+        workflowId: "w",
+        runId: "r",
+      }]),
+    ]
+  ) {
+    const error = userErrorFromSwampError({
+      code: "workflow_execution_failed",
+      message: "Workflow execution failed",
+      cause: outage,
+    });
+    assertEquals(error.cause, outage, outage.name);
+    assertEquals(error.code, (outage as { code?: string }).code, outage.name);
+  }
+});
+
+Deno.test("userErrorFromSwampError: a lapsed request's wrapper exits as the lapse does", () => {
+  const error = userErrorFromSwampError({
+    code: "workflow_execution_failed",
+    message: "Workflow execution failed",
+    cause: new ServeLeaseLapsedRequestError(
+      "http://serve.test",
+      "maybe",
+      new ServeLeaseLapsedLatch("data/x/y/.lock"),
+      { route: "commits", bodyBytes: 0 },
+    ),
+  });
+  assertEquals(error.code, LEASE_LAPSED_CODE);
+  assertEquals(isLapsedServeRequest(error), true);
+});
+
+Deno.test("userErrorFromSwampError: a failure without an outage keeps no cause and its own code", () => {
+  for (
+    const cause of [
+      new Error("the method failed"),
+      new UserError("refused", "datastore_v3_commit_rejected"),
+      new UserError("not the leader", "serve_not_leader"),
+    ]
+  ) {
+    const error = userErrorFromSwampError({
+      code: "workflow_execution_failed",
+      message: "Workflow execution failed",
+      cause,
+    });
+    assertEquals(error.code, "workflow_execution_failed");
+    assertEquals(error.cause, undefined);
+  }
+});
+
+Deno.test("datastoreOutageOf: undefined without an outage in the chain", () => {
+  assertEquals(datastoreOutageOf(new Error("boom")), undefined);
+  assertEquals(datastoreOutageOf("boom"), undefined);
+  assertEquals(datastoreOutageOf(undefined), undefined);
 });

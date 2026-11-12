@@ -43,12 +43,17 @@ import {
 } from "./v3_teardown.ts";
 import { reportedV3Failure } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
+  AppendUnrecordedError,
   CommitUnreachableError,
   MayLandLaterError,
   RunPartlyCommittedError,
 } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { V3_STORAGE_UNREACHABLE_CODE } from "../domain/datastore_v3/writer_lease.ts";
 import { exitCodeForError } from "../presentation/output/error_output.ts";
+import { StepStartUnrecordedError } from "../domain/workflows/step_start.ts";
+import { ServeUnreachableError } from "../infrastructure/datastore_v3/serve_upstream_errors.ts";
+import { userErrorFromSwampError } from "../libswamp/errors.ts";
+import { workflowExecutionFailed } from "../libswamp/workflows/run.ts";
 
 const NOTHING_COMMITTED = { committed: false, datastorePath: "/ds" } as const;
 const COMMITTED = { committed: true } as const;
@@ -228,4 +233,46 @@ Deno.test("closeV3DatastoresAfterSuccess: a closing sync that fails for a comman
     V3ReplicationError,
     "saved locally",
   );
+});
+
+Deno.test("closeV3DatastoresAfterFailure: a workflow failure cut off from serve keeps its cause, so the close defers dropped-work recovery and the exit is 75", async () => {
+  const start = new StepStartUnrecordedError(
+    new AppendUnrecordedError(
+      new ServeUnreachableError(
+        "http://serve.test",
+        "maybe",
+        new Error("Serve did not start its reply"),
+      ),
+      false,
+    ),
+    { workflowId: "w", workflowName: "deploy", runId: "r", stepName: "s2" },
+  );
+  const failure = userErrorFromSwampError(workflowExecutionFailed(start));
+  const closes: { storageUnreachable?: boolean }[] = [];
+  const reported = await closeV3DatastoresAfterFailure(
+    failure,
+    (options) => {
+      closes.push(options);
+      return Promise.resolve();
+    },
+    () => COMMITTED,
+  );
+  assertEquals(closes, [{ storageUnreachable: true }]);
+  assertEquals(exitCodeForError(reported, { commandLanded: false }), 75);
+});
+
+Deno.test("closeV3DatastoresAfterFailure: a workflow failure with no outage keeps no cause and closes as usual", async () => {
+  const failure = userErrorFromSwampError(
+    workflowExecutionFailed(new Error("step s1 failed")),
+  );
+  const closes: { storageUnreachable?: boolean }[] = [];
+  await closeV3DatastoresAfterFailure(
+    failure,
+    (options) => {
+      closes.push(options);
+      return Promise.resolve();
+    },
+    () => COMMITTED,
+  );
+  assertEquals(closes, [{ storageUnreachable: false }]);
 });
