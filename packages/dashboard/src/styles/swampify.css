@@ -210,21 +210,6 @@
   color: var(--text-2);
 }
 
-.sw-cta-btn {
-  padding: 0;
-  border: none;
-  background: none;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.sw-cta-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-  border-radius: 8px;
-}
-
 .sw-detail-action {
   grid-column: 1 / -1;
   display: flex;
@@ -519,7 +504,6 @@
 
 button.sw-icon-btn:hover,
 .sw-option:hover .sw-icon-btn,
-.sw-cta-btn:hover .sw-icon-btn,
 .sw-btn.sw-btn-primary:hover {
   background: color-mix(in srgb, var(--accent) 22%, var(--surface));
 }

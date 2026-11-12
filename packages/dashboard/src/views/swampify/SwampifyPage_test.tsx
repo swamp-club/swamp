@@ -259,7 +259,7 @@ Deno.test("SwampifyPage: before an offer every candidate is listed, with no acti
   assert(!html.includes("Review and build"));
 });
 
-Deno.test("SwampifyPage: an open row names its option and has Review and build", () => {
+Deno.test("SwampifyPage: an open row names its option and has the Review and build icon button", () => {
   const closed = render(state({ offer: fixtureOffer("offered") }));
   assert(!closed.includes("sw-detail-action"));
   const html = render(state({ offer: fixtureOffer("offered") }), {
@@ -268,7 +268,7 @@ Deno.test("SwampifyPage: an open row names its option and has Review and build",
   assertStringIncludes(html, "Part of <strong>Release the docs site</strong>");
   assertStringIncludes(
     html,
-    '<button type="button" class="sw-cta sw-cta-btn">Review and build<span class="sw-icon-btn"',
+    '<button type="button" class="sw-icon-btn" aria-label="Review and build Release the docs site" title="Review and build">',
   );
 });
 

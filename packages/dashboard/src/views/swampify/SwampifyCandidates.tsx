@@ -63,13 +63,12 @@ function CandidateDetail(
           </span>
           <button
             type="button"
-            className="sw-cta sw-cta-btn"
+            className="sw-icon-btn"
+            aria-label={`Review and build ${option.name}`}
+            title="Review and build"
             onClick={() => onReview(option.id)}
           >
-            Review and build
-            <span className="sw-icon-btn" aria-hidden="true">
-              <ReviewIcon />
-            </span>
+            <ReviewIcon />
           </button>
         </div>
       )}
