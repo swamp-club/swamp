@@ -3131,7 +3131,13 @@ root or as files under it) is a ConflictError for the top-level extension.
 output (`skillDirs`) list them apart from overwritten files, since the install
 writes into them rather than replacing them. With
 `--force`, and for dependencies, the install merges into the dir and logs a
-warning naming it. The auto-resolver retries conflicts on pulled skill dirs, and
+warning naming it. `extension update`, from the CLI and through serve, installs
+with force for the extension's own files but still refuses a skill dir
+conflict for the upgraded extension: `UpgradeExtensionService` sets
+`refuseSkillConflicts`, and the update reports that extension as not updated,
+naming the dir and the `extension pull` of that version, which asks first.
+A dependency the upgrade installs still merges, as it does on pull. The
+auto-resolver retries conflicts on pulled skill dirs, and
 on skill dirs the pinned entry records, with force, as it does for stale bundle
 output.
 
@@ -3457,7 +3463,9 @@ that cannot be deleted, for example because of a permission error or a file
 locked on Windows, does not stop the rm. It is listed in `failedFiles` for the
 user to remove by hand, since nothing tracks it any more. A tracked path that
 another installed extension also claims (a shared skill dir that extension
-lists, or lists files under) is kept and reported in `retainedFiles`. Tracked
+lists, or lists files under, or a file inside a skill dir that extension lists)
+is kept and reported in `retainedFiles`, as orphan prune keeps it. A file merged
+into another extension's skill dir therefore stays with that dir. Tracked
 paths are checked with `lstat`, so a symlink is unlinked rather than followed.
 
 If other installed extensions depend on the target (found by scanning their

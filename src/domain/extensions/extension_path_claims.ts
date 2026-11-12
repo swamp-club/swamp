@@ -64,3 +64,23 @@ export function findClaimants(
   }
   return out.sort();
 }
+
+/**
+ * rm keeps a path another entry claims at, below or above it: a file merged
+ * into a skill dir another entry owns stays with that dir, as orphan prune does
+ */
+export function findRetainingClaimants(
+  path: string,
+  selfName: string,
+  entries: Readonly<Record<string, PathClaimEntry>>,
+): string[] {
+  const out: string[] = [];
+  for (const [name, entry] of Object.entries(entries)) {
+    if (name === selfName) continue;
+    const files = entry.files ?? [];
+    if (claimsPath(files, path) || files.some((f) => pathCovers(f, path))) {
+      out.push(name);
+    }
+  }
+  return out.sort();
+}

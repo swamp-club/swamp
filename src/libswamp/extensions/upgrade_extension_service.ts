@@ -53,7 +53,9 @@ export class UpgradeExtensionService {
   ): Promise<InstallResult | undefined> {
     return await this.installService.execute(
       { name, version: newVersion },
-      ctx,
+      // the upgraded extension never merges into a skill dir it does not own;
+      // its dependencies still do, as on pull
+      { ...ctx, refuseSkillConflicts: true },
     );
   }
 }

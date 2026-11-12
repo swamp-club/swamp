@@ -319,3 +319,30 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "UpgradeExtensionService.execute: installs with refuseSkillConflicts on a copy of the caller's context",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ctx = {
+          ...makeInstallContext(repoDir, lockfileRepository),
+          force: true,
+        };
+        let seen: InstallContext | undefined;
+        await new UpgradeExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: stubInstallExtension((_ref, installCtx) => {
+            seen = installCtx;
+            return Promise.resolve(undefined);
+          }),
+        }).execute(`@test/upgrade-${crypto.randomUUID()}`, "2026.05.05.2", ctx);
+        assertEquals(seen?.refuseSkillConflicts, true);
+        assertEquals(seen?.force, true);
+        assertEquals(seen?.lockfileRepository, lockfileRepository);
+        assertEquals(ctx.refuseSkillConflicts, undefined);
+      },
+    );
+  },
+);

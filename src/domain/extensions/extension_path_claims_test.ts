@@ -22,6 +22,7 @@ import {
   canonicalClaimPath,
   claimsPath,
   findClaimants,
+  findRetainingClaimants,
   pathCovers,
 } from "./extension_path_claims.ts";
 
@@ -91,5 +92,30 @@ Deno.test("findClaimants: an ancestor dir in another entry does not claim a file
   assertEquals(
     findClaimants(".claude/skills/foo/SKILL.md", "@t/merger", entries),
     [],
+  );
+});
+
+Deno.test("findRetainingClaimants: an ancestor dir in another entry retains a file under it", () => {
+  const entries = {
+    "@t/owner": { files: [".claude\\skills\\FOO"] },
+    "@t/other": { files: [".claude/skills/bar"] },
+  };
+  assertEquals(
+    findRetainingClaimants(".claude/skills/foo/SKILL.md", "@t/merger", entries),
+    ["@t/owner"],
+  );
+});
+
+Deno.test("findRetainingClaimants: claims at or below the path count too, and self never does", () => {
+  const entries = {
+    "@t/self": { files: [".claude/skills"] },
+    "@t/zeta": { files: [".claude/skills/foo/extra.md"] },
+    "@t/alpha": { files: [".claude/skills/foo"] },
+    "@t/other": { files: [".claude/skills/foobar"] },
+    "@t/empty": {},
+  };
+  assertEquals(
+    findRetainingClaimants(".claude/skills/foo", "@t/self", entries),
+    ["@t/alpha", "@t/zeta"],
   );
 });

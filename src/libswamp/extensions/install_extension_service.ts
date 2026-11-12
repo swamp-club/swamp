@@ -110,7 +110,8 @@ export class InstallExtensionService {
   }
 
   /**
-   * throws ConflictError on a filesystem conflict when ctx.force is false, and
+   * throws ConflictError on a filesystem conflict when ctx.force is false, or
+   * on a skill dir conflict when ctx.refuseSkillConflicts is set, and
    * DuplicateTypeUserError on a cross-extension type collision after rolling
    * back to the previous versions
    */

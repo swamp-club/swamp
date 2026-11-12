@@ -1276,6 +1276,44 @@ Deno.test(
 );
 
 Deno.test(
+  "RemoveExtensionService.execute: a file merged into a skill dir another extension claims is retained and reported",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const id = crypto.randomUUID();
+        const owner = `@test/owner-${id}`;
+        const merger = `@test/merger-${id}`;
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        await Deno.writeTextFile(join(skillDir, "SKILL.md"), "merged");
+        const skillMd = relative(repoDir, join(skillDir, "SKILL.md"));
+        await lockfileRepository.writeEntry(owner, "1.0.0", [
+          relative(repoDir, skillDir),
+        ]);
+        await lockfileRepository.writeEntry(merger, "1.0.0", [skillMd]);
+
+        const result = await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(merger);
+
+        assertEquals(result.retainedFiles, [{
+          path: canonicalLockfilePath(skillMd),
+          claimedBy: [owner],
+        }]);
+        assertEquals(result.filesDeleted, 0);
+        assertEquals(
+          await Deno.readTextFile(join(skillDir, "SKILL.md")),
+          "merged",
+        );
+        assertEquals(lockfileRepository.getEntry(merger), null);
+      },
+    );
+  },
+);
+
+Deno.test(
   "RemoveExtensionService.execute: a claim differing only in case and separators still retains the dir",
   async () => {
     await withFixtureRepo(

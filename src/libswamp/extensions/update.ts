@@ -30,7 +30,11 @@ import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_u
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
-import type { InstallResult, ShadowedTypeInfo } from "./pull.ts";
+import {
+  ConflictError,
+  type InstallResult,
+  type ShadowedTypeInfo,
+} from "./pull.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
@@ -38,6 +42,17 @@ import {
   refreshManagedLockfile,
 } from "./managed_lockfile_transaction.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
+
+function skillConflictMessage(
+  name: string,
+  version: string,
+  skillDirs: string[],
+): string {
+  const noun = skillDirs.length === 1 ? "directory" : "directories";
+  return `${name} does not own the existing skill ${noun} ` +
+    `${skillDirs.join(", ")}; not updated. Run ` +
+    `'swamp extension pull ${name}@${version}' to review and confirm.`;
+}
 
 function resolveServerUrl(): string {
   return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
@@ -292,7 +307,11 @@ export async function* extensionUpdate(
               channel: s.channel,
             });
           } catch (error) {
-            const message = error instanceof Error
+            // update has no --force; a skill dir conflict sends the user to
+            // pull, which asks before writing into the dir.
+            const message = error instanceof ConflictError
+              ? skillConflictMessage(s.name, s.latestVersion, error.skillDirs)
+              : error instanceof Error
               ? error.message
               : String(error);
             // A collision whose rollback could not restore the lockfile
