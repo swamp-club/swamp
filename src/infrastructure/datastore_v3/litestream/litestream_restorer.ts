@@ -136,11 +136,15 @@ export async function restoreV3Copy(
       replicaType: request.replica.type,
       signal,
     });
+    request.signal?.throwIfAborted();
     const truncated = await withSpan(
       "swamp.datastore.v3.restore.truncate",
       {},
       () => truncateToMark(temp, request.head, target),
     );
+    // the last point a caller's abort is honoured: once installed, the restore
+    // runs to its end
+    request.signal?.throwIfAborted();
     await withSpan("swamp.datastore.v3.restore.install", {}, async () => {
       await syncFile(temp);
       await request.install(temp);
@@ -216,6 +220,7 @@ export async function restoreAndCheck(
       }: ${exact.message}`,
     );
   }
+  request.signal.throwIfAborted();
   await withSpan(
     "swamp.datastore.v3.restore.integrity_check",
     {},

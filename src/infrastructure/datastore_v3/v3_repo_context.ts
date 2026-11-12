@@ -384,11 +384,14 @@ export function refuseV3FollowerWrite(datastorePath: string): void {
 
 /**
  * restored from the published lineage when behind, then its read model caught
- * up; does nothing while this process leads
+ * up; does nothing while this process leads. An abort before the restore is
+ * installed leaves the copy as it was and not current; after, only the
+ * catch-up is skipped, which the next refresh or a take resumes.
  */
 export async function refreshV3FollowerCopy(
   repoDir: string,
   config: V3DatastoreConfig,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (holdsCurrentV3WriterLease(config.path)) return;
   const key = handleKey(repoDir, config);
@@ -398,8 +401,10 @@ export async function refreshV3FollowerCopy(
     // writer's: the refresh then leaves it to the retake's own restore.
     await ensureV3CopyCurrent(repoDir, config, "read", {
       stillCurrent: () => !holdsCurrentV3WriterLease(config.path),
+      ...(signal !== undefined ? { signal } : {}),
     });
   }
+  signal?.throwIfAborted();
   await opened.get(key)?.catchUp();
 }
 
@@ -575,7 +580,7 @@ export async function ensureV3CopyCurrent(
   repoDir: string,
   config: V3DatastoreConfig,
   mode: "read" | "write",
-  options: { readonly stillCurrent?: () => boolean } = {},
+  options: EnsureV3CopyOptions = {},
 ): Promise<V3CopyRefresh & { readonly stale?: true }> {
   const key = handleKey(repoDir, config);
   if (!v3ReplicatesAt(config.path)) {
@@ -591,12 +596,18 @@ export async function ensureV3CopyCurrent(
   );
 }
 
+interface EnsureV3CopyOptions {
+  readonly stillCurrent?: () => boolean;
+  /** honoured until the restore is installed; the rebuild after it completes */
+  readonly signal?: AbortSignal;
+}
+
 async function ensureV3CopyCurrentNow(
   repoDir: string,
   config: V3DatastoreConfig,
   mode: "read" | "write",
   key: string,
-  options: { readonly stillCurrent?: () => boolean },
+  options: EnsureV3CopyOptions,
 ): Promise<V3CopyRefresh & { readonly stale?: true }> {
   await Deno.mkdir(resolve(repoDir), { recursive: true });
   const copy = copyOf(repoDir, config);
@@ -605,6 +616,7 @@ async function ensureV3CopyCurrentNow(
     mode,
     ...(handle !== undefined ? { openStore: handle.commitStore } : {}),
     lockWaitMs: resolveLockTimeoutMs(),
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
   });
   const datastore = resolve(config.path);
   const copies = copiesByDatastore.get(datastore) ?? [];
