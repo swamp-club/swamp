@@ -222,6 +222,7 @@ export function renderWorkerTokenRotate(
     console.log(JSON.stringify(data, null, 2));
     return;
   }
+  const oldUntil = data.predecessorExpiresAt ?? data.expiresAt;
   const lines = [
     `${green(checkmark)} Token ${bold(data.name)} rotated.`,
     `${bold(cyan("Expires:"))} ${data.expiresAt}`,
@@ -232,9 +233,10 @@ export function renderWorkerTokenRotate(
     );
   }
   if (!data.delivered) {
+    // never suggest rotating again: a second rotation retires the old token
     lines.push(
       yellow(
-        "No connected worker was sent the new token; run with --server to deliver it. Workers keep running on the old token until it expires.",
+        `No connected worker was sent the new token (a rotation without --server reaches no worker). Workers keep the old token until ${oldUntil}; restart them with the new token before then.`,
       ),
     );
   }
@@ -243,7 +245,9 @@ export function renderWorkerTokenRotate(
       worker.persisted
         ? `  ${green(checkmark)} ${bold(worker.worker)} rotated`
         : `  ${yellow("!")} ${bold(worker.worker)} rotated in memory only ${
-          dim("(no --token-file; a restart falls back to the old token)")
+          dim(
+            `(no token file was written; after a restart it presents the old token, valid until ${oldUntil})`,
+          )
         }`,
     );
   }
@@ -254,10 +258,10 @@ export function renderWorkerTokenRotate(
       }`,
     );
   }
-  if (data.delivered && data.unconnectedBindings > 0) {
+  if (data.unconnectedBindings !== null && data.unconnectedBindings > 0) {
     lines.push(
       dim(
-        `${data.unconnectedBindings} enrolled machine(s) not connected — they can enroll with the old token until it expires.`,
+        `${data.unconnectedBindings} enrolled machine(s) not connected — they can enroll with the old token until ${oldUntil}.`,
       ),
     );
   }
@@ -266,7 +270,7 @@ export function renderWorkerTokenRotate(
     `  ${bold(data.token)}`,
     "",
     yellow(
-      "The new token is shown once — store it now for hosts that were not rotated.",
+      "The new token is shown once — store it now. Give it to hosts that were not rotated: swamp worker connect <url> --token-file <file>",
     ),
   );
   writeOutput(lines.join("\n"));

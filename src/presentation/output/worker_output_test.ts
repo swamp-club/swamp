@@ -655,6 +655,8 @@ Deno.test("renderWorkerTokenRotate: log mode reports each worker and shows the t
   );
   assertStringIncludes(output, "web-01-aa11bb22 rotated");
   assertStringIncludes(output, "web-01-cc33dd44 rotated in memory only");
+  assertStringIncludes(output, "no token file was written");
+  assertEquals(output.includes("no --token-file"), false);
   assertStringIncludes(
     output,
     "web-01-ee55ff66 not rotated (protocol version 7 cannot rotate)",
@@ -672,10 +674,16 @@ Deno.test("renderWorkerTokenRotate: a local rotation says no worker was sent the
         delivered: false,
         rotated: [],
         notRotated: [],
+        unconnectedBindings: null,
       }, "log")
     ),
   );
   assertStringIncludes(output, "No connected worker was sent the new token");
+  assertStringIncludes(
+    output,
+    "Workers keep the old token until 2026-06-10T00:00:00.000Z",
+  );
+  assertEquals(output.includes("run with --server"), false);
   assertEquals(output.includes("not connected"), false);
 });
 

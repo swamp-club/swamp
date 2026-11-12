@@ -63,8 +63,10 @@ export const workerTokenRotateCommand = withRemoteOptions(
 The token keeps its name, so its workers keep theirs. With --server the
 new token is sent to every connected worker over its own connection;
 a worker started with --token-file writes it back to that file. The old
-token stays valid until its original expiry, so machines that were not
-connected can still enroll with it. The new token is printed once.`,
+token stays valid until its original expiry (or the new token's, if
+sooner), so machines that were not connected can still enroll with it.
+Rotating again retires the old token at once. The new token is printed
+once.`,
     )
     .example(
       "Rotate a token and deliver it to its connected workers",

@@ -103,7 +103,7 @@ Deno.test("workerTokenRotate: reads the successor secret and reports a local rot
       delivered: false,
       rotated: [],
       notRotated: [],
-      unconnectedBindings: 1,
+      unconnectedBindings: null,
     },
   });
 });

@@ -38,7 +38,8 @@ export interface WorkerTokenRotateData {
   delivered: boolean;
   rotated: { worker: string; persisted: boolean }[];
   notRotated: { worker: string; reason: string }[];
-  unconnectedBindings: number;
+  /** null for a local rotation, which cannot see which machines are connected */
+  unconnectedBindings: number | null;
 }
 
 export type WorkerTokenRotateEvent =
@@ -145,7 +146,7 @@ export async function* workerTokenRotate(
             delivered: false,
             rotated: [],
             notRotated: [],
-            unconnectedBindings: token.bindings.length,
+            unconnectedBindings: null,
           },
         };
       })(),

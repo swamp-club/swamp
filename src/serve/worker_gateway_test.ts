@@ -3093,7 +3093,7 @@ Deno.test("WorkerGateway: a worker that refuses the successor keeps the predeces
 
   assertEquals(report.notRotated, [{
     worker: "ci-runner-3",
-    reason: "token_file_write_failed",
+    reason: "refused (token_file_write_failed)",
   }]);
   assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, BASE_MINT);
 });

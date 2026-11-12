@@ -125,6 +125,16 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 const DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS = 10_000;
 
+const ROTATION_REFUSALS: Record<string, string> = {
+  invalid_token: "refused a malformed token",
+  invalid_params: "refused a malformed request",
+  token_rename_refused: "refused a token under another name",
+};
+
+function rotationRefusalReason(code: string): string {
+  return ROTATION_REFUSALS[code] ?? `refused (${code})`;
+}
+
 export interface TokenRotationReport {
   tokenName: string;
   /** the successor credential `<name>.<secret>`, for hosts it did not reach */
@@ -607,7 +617,7 @@ export class WorkerGateway {
         notRotated.push({
           worker: target.name,
           reason: error instanceof RpcError
-            ? error.code
+            ? rotationRefusalReason(error.code)
             : error instanceof ChannelClosedError
             ? "disconnected"
             : "no acknowledgement",

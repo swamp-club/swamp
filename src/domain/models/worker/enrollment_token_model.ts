@@ -454,13 +454,15 @@ async function rotate(
   }
   const token = await readToken(context);
   const name = context.definition.name;
-  if (token.state === "revoked") {
-    throw new Error(`Enrollment token '${name}' has been revoked`);
-  }
   const now = Date.now();
-  if (token.state === "expired" || isExpired(token, now)) {
+  if (
+    token.state === "revoked" || token.state === "expired" ||
+    isExpired(token, now)
+  ) {
     throw new Error(
-      `Enrollment token '${name}' has expired — mint a new one instead`,
+      `Enrollment token '${name}' has ${
+        token.state === "revoked" ? "been revoked" : "expired"
+      } and cannot be rotated — mint a new one with: swamp worker token create ${name} --duration <duration>`,
     );
   }
 

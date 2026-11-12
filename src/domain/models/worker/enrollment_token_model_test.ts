@@ -776,11 +776,12 @@ Deno.test("enrollmentTokenModel: re-minting a rotated token deletes its per-mint
 Deno.test("enrollmentTokenModel: rotate refuses a revoked token", async () => {
   const harness = await mintToken();
   await enrollmentTokenModel.methods.revoke.execute({}, harness.context);
-  await assertRejects(
+  const error = await assertRejects(
     () => enrollmentTokenModel.methods.rotate.execute({}, harness.context),
     Error,
     "revoked",
   );
+  assertStringIncludes(error.message, "swamp worker token create");
 });
 
 Deno.test("enrollmentTokenModel: rotate refuses an expired token", async () => {
