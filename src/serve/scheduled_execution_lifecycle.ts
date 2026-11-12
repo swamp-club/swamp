@@ -287,7 +287,7 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     const aborted: StoppedTriggerRun[] = [];
     for (const result of results) {
       if (result.status === "rejected") throw result.reason;
-      aborted.push(...result.value);
+      for (const run of result.value) aborted.push(run);
     }
     return aborted;
   }
