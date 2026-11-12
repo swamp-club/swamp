@@ -70,6 +70,7 @@ import {
 } from "./serve_upstream_errors.ts";
 import type { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { withSpan } from "../tracing/tracer.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "serve"]);
 
@@ -318,6 +319,11 @@ export function createServeCommitSink(
       );
     }
     if (error instanceof ServeUnreachableError && error.sent === "never") {
+      neverSent.add(commit.txnId);
+    }
+    // refused before serve took it; one a follower forwarded before losing the
+    // leader says inFlight, and may have run
+    if (error instanceof ServeNotLeaderError && !error.inFlight) {
       neverSent.add(commit.txnId);
     }
     return error;

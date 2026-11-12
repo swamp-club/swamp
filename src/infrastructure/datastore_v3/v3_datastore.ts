@@ -161,6 +161,7 @@ import {
   commitLogParentFor,
   commitLogRootFor,
   createCommitLogUnitOfWork,
+  type DataNameOfKey,
   type ForwardedCommit,
   type UnitTracker,
 } from "./commit_log_unit_of_work.ts";
@@ -184,6 +185,14 @@ import {
 } from "./commit_outbox_recovery.ts";
 import { localProcess } from "./process_identity.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import {
+  DEEP_SCOPE_SUFFIX,
+  scopeCovers,
+  TouchedScopeJournal,
+  touchedScopeOf,
+  WHOLE_CHECKOUT_SCOPE,
+} from "./touched_scope_journal.ts";
+import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
 import { commandStopSignal } from "../process/shutdown_handlers.ts";
 import { recordLastChange } from "./record_last_change.ts";
 import { readModelStateDir, v3CatalogPath } from "./record_path_guard.ts";
@@ -368,6 +377,11 @@ export interface OpenV3DatastoreOptions {
    */
   readonly assertCollectable?: () => Promise<void>;
   readonly clock?: () => Date;
+  /**
+   * the commit cursor a replica has confirmed, or undefined for a datastore
+   * that does not replicate, whose landed commits are already durable
+   */
+  readonly replicatedMark?: () => number | undefined;
 }
 
 export interface CutoffCompaction {
@@ -627,7 +641,11 @@ export interface V3Datastore {
   recoverInterruptedWriter(
     since: number,
     signal?: AbortSignal,
-    options?: { readonly entry?: RecoveryEntry },
+    options?: {
+      readonly entry?: RecoveryEntry;
+      /** the interrupted writer recorded where it wrote before writing */
+      readonly journaled?: boolean;
+    },
   ): Promise<string[]>;
   droppedWork():
     | { readonly since: number; readonly openUnits: number }
@@ -670,6 +688,8 @@ export interface V3Datastore {
    */
   compactBefore(cutoff: Date, signal: AbortSignal): Promise<CutoffCompaction>;
   describe(): Promise<{ storedCommits: number; compactedThrough: number }>;
+  /** releases settled units whose commits the replica now confirms */
+  releaseReplicated(): void;
   close(): Promise<void>;
 }
 
@@ -1280,12 +1300,115 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       throw error;
     }
   };
+  const journal = new TouchedScopeJournal(v3CatalogPath(repoDir));
+  const cacheRoot = v3CacheRoot(repoDir, namespace);
+  let canonicalRoot: string | undefined;
+  const canonicalCacheRoot = () => canonicalRoot ??= canonicalPath(cacheRoot);
+  /** settled units waiting for the replica to confirm their commits */
+  let awaitingReplica: {
+    readonly journalId: string;
+    readonly names: readonly DataNameOfKey[];
+    readonly mark: number;
+  }[] = [];
+  const recordTouched = (journalId: string, scope: string): void => {
+    try {
+      if (journal.record(journalId, namespace, scope)) return;
+    } catch (error) {
+      // unrecorded, only a full recovery is sure to see what follows
+      logger
+        .warn`Recording a v3 write before it lands failed, so the next recovery runs in full: ${error}`;
+      catalogStore.markFullRecoveryRequired();
+    }
+  };
+  const release = (
+    journalId: string,
+    names: readonly DataNameOfKey[],
+  ): void => {
+    try {
+      catalogStore.releaseUnit(
+        journalId,
+        names.map((name) => ({
+          namespace,
+          type_normalized: name.type,
+          model_id: name.modelId,
+          data_name: name.name,
+        })),
+      );
+      journal.forget(journalId);
+    } catch (error) {
+      // left recorded, a later recovery or teardown only does more
+      logger
+        .debug`Releasing what a settled v3 unit touched failed: ${error}`;
+    }
+  };
+  const releaseReplicated = (): void => {
+    const mark = options.replicatedMark?.();
+    const due = awaitingReplica.filter((unit) =>
+      mark === undefined || unit.mark <= mark
+    );
+    if (due.length === 0) return;
+    awaitingReplica = awaitingReplica.filter((unit) => !due.includes(unit));
+    for (const unit of due) release(unit.journalId, unit.names);
+  };
   const tracker: UnitTracker = {
     opened: () => {
       units.open++;
     },
     ended: () => {
       units.open--;
+    },
+    writing: (journalId, change) => {
+      if (change.kind === "bulk") {
+        recordTouched(journalId, WHOLE_CHECKOUT_SCOPE);
+        return;
+      }
+      const scope = touchedScopeOf(
+        cacheRoot,
+        change.path,
+        canonicalCacheRoot,
+      );
+      if (scope === undefined) return;
+      const name = dataNameOfKey(scope);
+      // a name's whole directory removed may be cut short in any version
+      const removesName = change.kind === "remove" && name !== undefined &&
+        scope === `data/${name.type}/${name.modelId}/${name.name}`;
+      recordTouched(
+        journalId,
+        removesName ? `${scope}${DEEP_SCOPE_SUFFIX}` : scope,
+      );
+    },
+    staging: (journalId, keys) => {
+      const scopes = journal.recordedFor(journalId, namespace);
+      for (const key of keys) {
+        if (!admits(key) || scopes.some((scope) => scopeCovers(scope, key))) {
+          continue;
+        }
+        // a write that signalled nothing first: only a walk of everything
+        // is sure to find it
+        logger
+          .debug`A v3 write of ${key} was not recorded before it landed; the next recovery walks the whole checkout`;
+        recordTouched(journalId, WHOLE_CHECKOUT_SCOPE);
+        return;
+      }
+    },
+    settled: (journalId, names) => {
+      // a unit that wrote nothing holds nothing to release
+      if (
+        names.length === 0 &&
+        journal.recordedFor(journalId, namespace).length === 0
+      ) {
+        return;
+      }
+      if (options.replicatedMark?.() === undefined) {
+        release(journalId, names);
+        return;
+      }
+      awaitingReplica.push({
+        journalId,
+        names,
+        mark: commitStore.highWaterMark().cursor,
+      });
+      releaseReplicated();
     },
     dropped: (openedAt, versionDirs, sentTxnIds) => {
       // its files may hold later writes that never committed over the commits
@@ -1438,6 +1561,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ...(recoverOptions?.entry !== undefined
           ? { entry: recoverOptions.entry }
           : {}),
+        ...(recoverOptions?.journaled === true ? { journaled: true } : {}),
         targeted: true,
       });
     },
@@ -1459,6 +1583,8 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         signal: signal ?? lifetime.signal,
         entry: "dropped_work",
         droppedDirs: [...units.droppedDirs.get(namespace) ?? []],
+        // this process's own units, which all record their writes
+        journaled: true,
         targeted: true,
       });
       units.recovering = recovery;
@@ -1762,10 +1888,12 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     describe() {
       return commitStore.history();
     },
+    releaseReplicated,
     async close() {
       if (closed) return;
       closed = true;
       lifetime.abort();
+      journal.close();
       try {
         await sink.retryOwedRemovals();
       } catch (error) {

@@ -342,7 +342,7 @@ function hookReferencesOutsideSignalChange(
           );
           const after = source.slice(start + match[0].length);
           if (
-            /\b(?:signalChange|withChangeSignalled|stageTyped|typedStagingActive|versionFloorSource|unitAdmitsKey|storedVersionOf|forwardsToServe)\(\s*$/
+            /\b(?:signalChange|withChangeSignalled|removeSignalled|stageTyped|typedStagingActive|versionFloorSource|unitAdmitsKey|storedVersionOf|forwardsToServe)\(\s*$/
               .test(
                 before,
               ) &&
@@ -628,10 +628,10 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
 // path that exists after, a remove one that is gone;
 // repository_dirty_coverage_test checks this against the disk
 const PINNED_STAGED_CHANGES: readonly string[] = [
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x11)",
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository remove (x12)",
   // reassertLatestVersion writes the version directory and latest marker;
   // deleting a name's newest version writes its version floor (v2 only)
-  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x13)",
+  "src/infrastructure/persistence/unified_data_repository.ts: FileSystemUnifiedDataRepository write (x14)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository remove (x3)",
   "src/infrastructure/persistence/yaml_output_repository.ts: YamlOutputRepository write",
   // "write|remove" is a delete whose resolved path is kept when it holds
@@ -645,7 +645,7 @@ const PINNED_STAGED_CHANGES: readonly string[] = [
   "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts: YamlEvaluatedWorkflowRepository write (x2)",
   "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write",
   "src/infrastructure/persistence/yaml_workflow_repository.ts: YamlWorkflowRepository write|remove",
-  "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository remove (x3)",
+  "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository remove (x4)",
   "src/infrastructure/persistence/yaml_workflow_run_repository.ts: YamlWorkflowRunRepository write",
   "src/infrastructure/persistence/yaml_vault_config_repository.ts: YamlVaultConfigRepository remove",
   "src/infrastructure/persistence/yaml_vault_config_repository.ts: YamlVaultConfigRepository write",
@@ -1504,6 +1504,9 @@ const PINNED_CATALOG_STORE_CONSTRUCTIONS: readonly string[] = [
   // returns on v3
   "src/infrastructure/datastore_v3/v3_catalog.ts: V3Catalog",
   "src/infrastructure/datastore_v3/v3_datastore.ts: openV3Datastore",
+  // An in-memory scratch catalog a reconcile replays into, never a
+  // repository's.
+  "src/infrastructure/persistence/catalog_store.ts: CatalogStore",
 ];
 
 Deno.test("datastore write seams: catalog stores are built on the catalog path for their engine (swamp-club#3279)", () => {

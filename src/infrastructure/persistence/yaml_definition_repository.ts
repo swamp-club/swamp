@@ -28,6 +28,7 @@ import {
 } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
+  removeSignalled,
   stageTyped,
   typedStagingActive,
   withChangeSignalled,
@@ -1593,7 +1594,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       !(await this.declaresOther(previousPath, id))
     ) {
       try {
-        await Deno.remove(previousPath);
+        await removeSignalled(this.markDirtyHook, previousPath);
         removed.push(previousPath);
         logger.debug`Migrated definition file from ${
           basename(previousPath)
@@ -1613,7 +1614,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       !(await this.declaresOther(legacyPath, id))
     ) {
       try {
-        await Deno.remove(legacyPath);
+        await removeSignalled(this.markDirtyHook, legacyPath);
         removed.push(legacyPath);
         logger.debug`Migrated definition file from ${basename(legacyPath)} to ${
           basename(targetPath)

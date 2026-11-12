@@ -1258,6 +1258,24 @@ export class ReadModelState {
     );
   }
 
+  /** decided keys, present or removed, equal to `key` or under `key/` */
+  decidedKeysAtOrUnder(namespace: string, key: string): string[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT record_key FROM materialised_keys WHERE namespace = ? AND (record_key = ? OR (record_key > ? AND record_key < ?)) ORDER BY record_key",
+    ).all(namespace, key, `${key}/`, `${key}0`) as { record_key: string }[])
+      .map((row) => row.record_key);
+  }
+
+  /** present keys equal to `key` or under `key/`, a primary-key range */
+  presentKeysAtOrUnder(namespace: string, key: string): string[] {
+    this.#requireOpen();
+    return (this.#db.prepare(
+      "SELECT record_key FROM materialised_keys WHERE namespace = ? AND present = 1 AND (record_key = ? OR (record_key > ? AND record_key < ?)) ORDER BY record_key",
+    ).all(namespace, key, `${key}/`, `${key}0`) as { record_key: string }[])
+      .map((row) => row.record_key);
+  }
+
   /**
    * keys under `prefix/` any commit decided, present or removed: a replay
    * leaves each as the state says, a primary-key range

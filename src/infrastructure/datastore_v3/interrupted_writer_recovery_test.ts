@@ -32,6 +32,7 @@ import {
   recoverySince,
   removeOwnWriterMarker,
   setV3RecoveryProgress,
+  WRITER_JOURNAL_VERSION,
   writerMarkerPath,
   writerMarkerState,
   writeWriterMarker,
@@ -250,6 +251,45 @@ function recordingHandle(dir: string, calls: number[]): V3Datastore {
     },
   } as unknown as V3Datastore;
 }
+
+Deno.test("recoverInterruptedWriter: only a marker this swamp wrote says its writer recorded where it wrote; an older one's, or an unreadable one, does not (swamp-club#4677)", async () => {
+  await withTempDir(async (dir) => {
+    const journaled: unknown[] = [];
+    const handle = {
+      datastorePath: dir,
+      recoverInterruptedWriter: (
+        _since: number,
+        _signal: unknown,
+        options?: { readonly journaled?: boolean },
+      ) => {
+        journaled.push(options?.journaled);
+        return Promise.resolve([]);
+      },
+    } as unknown as V3Datastore;
+    const older = {
+      hostname: Deno.hostname(),
+      pid: 4242,
+      instance: crypto.randomUUID(),
+      since: 0,
+    };
+    for (
+      const text of [
+        JSON.stringify({ ...older, journal: WRITER_JOURNAL_VERSION }),
+        JSON.stringify(older),
+        "",
+      ]
+    ) {
+      await writeRaw(dir, text);
+      await recoverInterruptedWriter(handle, dir, { holdsWriterLock: true });
+    }
+    assertEquals(journaled, [true, false, false]);
+    await writeWriterMarker(dir);
+    assertEquals(
+      (await readWriterMarker(dir))?.journal,
+      WRITER_JOURNAL_VERSION,
+    );
+  });
+});
 
 Deno.test("recoverInterruptedWriter: a writer recovers an unreadable marker from its modification time, then removes it (swamp-club#3617)", async () => {
   await withTempDir(async (dir) => {

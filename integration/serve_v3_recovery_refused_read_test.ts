@@ -29,6 +29,12 @@ import {
 import { V3_STORAGE_UNREACHABLE_CODE } from "../src/domain/datastore_v3/writer_lease.ts";
 import { SERVE_NOT_LEADER_CODE } from "../src/domain/datastore_v3/serve_leader.ts";
 import { writerMarkerPath } from "../src/infrastructure/datastore_v3/interrupted_writer_recovery.ts";
+import { v3CatalogPath } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
+import {
+  TouchedScopeJournal,
+  touchedScopeOf,
+} from "../src/infrastructure/datastore_v3/touched_scope_journal.ts";
+import { v3CacheRoot } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import {
   SERVE_DATASTORE_LOG_HEADER,
   setServeReadRefusalBudgetForTesting,
@@ -101,6 +107,13 @@ async function tearRecordFile(
     if (entry.isSymlink) continue;
     const text = await Deno.readTextFile(entry.path).catch(() => "");
     if (!text.includes(LARGE)) continue;
+    const journal = new TouchedScopeJournal(v3CatalogPath(repoDir));
+    try {
+      const scope = touchedScopeOf(v3CacheRoot(repoDir, ""), entry.path);
+      if (scope !== undefined) journal.record(crypto.randomUUID(), "", scope);
+    } finally {
+      journal.close();
+    }
     await Deno.writeTextFile(entry.path, text.slice(0, 100));
     if (modifiedAt !== undefined) {
       await Deno.utime(entry.path, modifiedAt, modifiedAt);

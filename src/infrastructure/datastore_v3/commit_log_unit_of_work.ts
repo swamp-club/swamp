@@ -24,6 +24,7 @@
  */
 
 import { withSpan } from "../tracing/tracer.ts";
+import { dataNameOfKey } from "../../domain/datastore_v3/recovery_scope.ts";
 import {
   noteCommandLanded,
   noteCommandMayHaveLanded,
@@ -301,9 +302,20 @@ export interface CommitLogUnitOptions {
   readonly clockOffsetMs?: () => number | undefined;
 }
 
+export type DataNameOfKey = NonNullable<ReturnType<typeof dataNameOfKey>>;
+
 export interface UnitTracker {
   opened(): void;
   ended(): void;
+  /** before a write into the checkout, under the root's journal id */
+  writing?(journalId: string, change: StagedChange): void;
+  /** the record keys of changes staged, which every write before covers */
+  staging?(journalId: string, keys: readonly string[]): void;
+  /**
+   * a root that ended with every commit it sent landed and none dropped or
+   * queued: what it touched may be released once its commits are confirmed
+   */
+  settled?(journalId: string, names: readonly DataNameOfKey[]): void;
   /**
    * openedAt is its root's open time in epoch ms: nothing it wrote is older;
    * sentTxnIds are the commits handed to its sink, landed or not, which the
@@ -350,6 +362,10 @@ interface Group {
 
 interface CommitLogState {
   readonly hook: MarkDirtyHook;
+  /** the root's outbox unit id, which a child's writes are recorded under */
+  readonly journalId: string;
+  /** a root never settles once it or a child dropped work */
+  noteDropped(): void;
   isOpen(): boolean;
   readonly parent: UnitOfWork | undefined;
   readonly openedAt: number;
@@ -478,12 +494,15 @@ export function createCommitLogUnitOfWork(
    */
   let touched = false;
   let versionDirs: string[] = [];
+  let droppedAny = false;
+  let queuedAny = false;
   /**
    * a refusal that drops only some partitions names them: the commits the unit
    * sent to the others still hold work it goes on to commit
    */
   const dropWork = (partitions?: readonly PartitionKey[]): void => {
     if (!touched) return;
+    state.noteDropped();
     const named = partitions?.map((partition) => partition.toString());
     const sentTxnIds = [...outbox.sent]
       .filter(([, partition]) => named?.includes(partition) ?? true)
@@ -536,6 +555,9 @@ export function createCommitLogUnitOfWork(
     prepared: new Map(),
     sent: new Map(),
   };
+  const journalId = parent === undefined
+    ? outbox.unitId
+    : states.get(parent)!.journalId;
 
   /**
    * a later put or tombstone of the same key leaves the same record, and the
@@ -600,6 +622,13 @@ export function createCommitLogUnitOfWork(
     requireBatchWithinLimit(changes);
     if (changes.length === 0) return;
     touched = true;
+    options.tracker?.staging?.(
+      journalId,
+      changes.flatMap((change) => {
+        const key = keyOfChange(change);
+        return key === undefined ? [] : [key];
+      }),
+    );
     const batch: TypedChange[] = [];
     staged.push(batch);
     for (const change of changes) {
@@ -676,7 +705,9 @@ export function createCommitLogUnitOfWork(
                 stored,
                 supersededInFlight,
                 outbox,
-                undefined,
+                () => {
+                  queuedAny = true;
+                },
                 batch === undefined ? undefined : { batch, slot },
               )
             ),
@@ -780,6 +811,11 @@ export function createCommitLogUnitOfWork(
 
   const state: CommitLogState = {
     hook: markDirty,
+    journalId,
+    noteDropped() {
+      droppedAny = true;
+      if (parent !== undefined) states.get(parent)?.noteDropped();
+    },
     isOpen: () => ended === undefined,
     parent,
     openedAt,
@@ -904,6 +940,9 @@ export function createCommitLogUnitOfWork(
       throw error;
     }
     throwUnconfirmed();
+    if (!droppedAny && !queuedAny) {
+      options.tracker?.settled?.(journalId, namesOf(all));
+    }
   };
 
   const uow: CommitLogUnitOfWork = {
@@ -1026,6 +1065,7 @@ export function createCommitLogUnitOfWork(
           own,
           () => {
             queued = true;
+            queuedAny = true;
           },
         );
       } catch (error) {
@@ -1064,8 +1104,9 @@ export function createCommitLogUnitOfWork(
   };
   states.set(uow, state);
   unitOfWorkBinding.bind(uow, markDirty);
-  unitWrites.register(uow, () => {
+  unitWrites.register(uow, (change) => {
     touched = true;
+    if (change !== undefined) options.tracker?.writing?.(journalId, change);
   });
   options.tracker?.opened();
   if (options.admits !== undefined) {
@@ -1087,6 +1128,18 @@ export function createCommitLogUnitOfWork(
     () => state.isOpen() ? uow : nearestOpenAncestor(parent),
   );
   return uow;
+}
+
+function namesOf(changes: readonly TypedChange[]): DataNameOfKey[] {
+  const names = new Map<string, DataNameOfKey>();
+  for (const change of changes) {
+    const key = keyOfChange(change);
+    const name = key === undefined ? undefined : dataNameOfKey(key);
+    if (name !== undefined) {
+      names.set(`${name.type}\0${name.modelId}\0${name.name}`, name);
+    }
+  }
+  return [...names.values()];
 }
 
 function keyOfChange(change: TypedChange): string | undefined {

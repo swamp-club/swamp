@@ -48,7 +48,15 @@ import {
   type CommitStore,
   type PartitionBase,
 } from "../../domain/datastore_v3/commit_store.ts";
-import { catalogActionsForNames } from "../../domain/datastore_v3/name_history_replay.ts";
+import {
+  scopeCovers,
+  scopeKey,
+  WHOLE_CHECKOUT_SCOPE,
+} from "./touched_scope_journal.ts";
+import {
+  catalogActionsForNames,
+  catalogNamesOfCommit,
+} from "../../domain/datastore_v3/name_history_replay.ts";
 import {
   type CatalogNameKey,
   dataNameOfKey,
@@ -134,6 +142,7 @@ import {
   type DirtyNamePin,
   ProjectedCatalog,
   type ReadModelCatalog,
+  type TouchedScope,
   V3Catalog,
 } from "./v3_catalog.ts";
 import { isNetworkFailure } from "./network_failure.ts";
@@ -288,6 +297,8 @@ export interface SqliteReadModelOptions {
   readonly ownWorkApplied?: (commit: Commit) => void;
   /** MAX_TARGETED_SHARE by default; a benchmark lifts it to compare */
   readonly targetedShare?: number;
+  /** TARGETED_COMMITS_CEILING by default */
+  readonly targetedCommitsCeiling?: number;
 }
 
 interface ChangeSource {
@@ -318,8 +329,11 @@ export const TARGETED_FILES_FLOOR = 500;
 /** below this many touched names the share cap does not apply */
 export const TARGETED_NAMES_FLOOR = 100;
 
-/** below this many history commits the share cap does not apply */
-export const TARGETED_COMMITS_FLOOR = 1_000;
+/**
+ * past this many commits of the touched names a targeted recovery would hold
+ * them all in memory at once; a full replay pages instead
+ */
+export const TARGETED_COMMITS_CEILING = 100_000;
 
 /** why a recovery ran in full rather than targeted, recorded on its span */
 export type RecoveryFallback =
@@ -339,6 +353,66 @@ export type RecoveryFallback =
   | "scope_too_large"
   | "error";
 
+interface ReprojectCounts {
+  commits: number;
+  baseNames: number;
+  actions: number;
+  liveVersions: number;
+  replayMs: number;
+  compareMs: number;
+  writeMs: number;
+}
+
+/** the scopes no other one contains, as a walk of each covers its subtree */
+function outermostScopes(scopes: readonly string[]): string[] {
+  const unique = new Set(scopes);
+  return [...unique].filter((scope) => {
+    const segments = scope.split("/");
+    for (let depth = 1; depth < segments.length; depth++) {
+      if (unique.has(segments.slice(0, depth).join("/"))) return false;
+    }
+    return true;
+  }).sort();
+}
+
+function nameIdentity(name: CatalogNameKey): string {
+  return [name.namespace, name.type, name.modelId, name.name].join("\0");
+}
+
+function listedPerSubdir(listed: ReadonlySet<string>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const key of listed) {
+    const subdir = key.slice(0, key.indexOf("/"));
+    const attribute =
+      `swamp.datastore.v3.readmodel.recover.files_listed.${subdir}`;
+    counts[attribute] = (counts[attribute] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function newReprojectCounts(): ReprojectCounts {
+  return {
+    commits: 0,
+    baseNames: 0,
+    actions: 0,
+    liveVersions: 0,
+    replayMs: 0,
+    compareMs: 0,
+    writeMs: 0,
+  };
+}
+
+function reprojectAttributes(counts: ReprojectCounts): Record<string, number> {
+  const prefix = "swamp.datastore.v3.readmodel.recover.reproject";
+  return {
+    [`${prefix}.actions`]: counts.actions,
+    [`${prefix}.live_versions`]: counts.liveVersions,
+    [`${prefix}.replay_ms`]: Math.round(counts.replayMs),
+    [`${prefix}.compare_ms`]: Math.round(counts.compareMs),
+    [`${prefix}.write_ms`]: Math.round(counts.writeMs),
+  };
+}
+
 class TargetedRecoveryFallback extends Error {
   constructor(readonly reason: RecoveryFallback, detail: string) {
     super(detail);
@@ -354,11 +428,16 @@ export interface RecoverOptions {
   readonly entry?: RecoveryEntry;
   /** repair only what the dead writer could have touched, when that can be judged */
   readonly targeted?: boolean;
+  /** the writer recorded where it wrote before writing, so its scopes bound the walk */
+  readonly journaled?: boolean;
 }
 
 interface NameHistory {
   readonly base: PartitionBase;
+  /** only those with an op on a scoped name */
   readonly commits: readonly Commit[];
+  /** the last seq read, whether or not its commit touched a scoped name */
+  readonly reached: number;
 }
 
 interface ScanResult {
@@ -396,6 +475,7 @@ export class SqliteReadModel implements ReadModel {
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
   readonly #ownWorkApplied: ((commit: Commit) => void) | undefined;
   readonly #targetedShare: number;
+  readonly #targetedCommitsCeiling: number;
   /**
    * set while recover replays: it puts back every file, so no commit is taken
    * for work the files hold; a root waiting on the recovery counts as open
@@ -492,6 +572,8 @@ export class SqliteReadModel implements ReadModel {
     this.#ownWorkApplied = options.ownWorkApplied;
     this.#forcedFolding = options.spellingFolding;
     this.#targetedShare = options.targetedShare ?? MAX_TARGETED_SHARE;
+    this.#targetedCommitsCeiling = options.targetedCommitsCeiling ??
+      TARGETED_COMMITS_CEILING;
   }
 
   static open(options: SqliteReadModelOptions): SqliteReadModel {
@@ -707,17 +789,30 @@ export class SqliteReadModel implements ReadModel {
     }
     // a resumed rebuild replays as the run it continues did
     if (resuming) this.#replaying = true;
-    await this.#retryAtRiskCopies(options.signal);
+    await withSpan(
+      "swamp.datastore.v3.readmodel.recover.at_risk",
+      {},
+      () => this.#retryAtRiskCopies(options.signal),
+    );
     this.#recovering = true;
     try {
-      await this.#catchUpFeed(options.signal);
+      await withSpan(
+        "swamp.datastore.v3.readmodel.recover.replay",
+        {},
+        () => this.#catchUpFeed(options.signal),
+      );
     } finally {
       this.#recovering = false;
     }
-    const removed = await this.#sweepUnowned(namespace, {
-      ...options,
-      since,
-    });
+    const removed = await withSpan(
+      "swamp.datastore.v3.readmodel.recover.sweep",
+      {},
+      () =>
+        this.#sweepUnowned(namespace, {
+          ...options,
+          since,
+        }),
+    );
     this.#catalog.dirtyTracking?.()?.forgetAllDirty();
     this.#state.clearRebuild();
     return removed;
@@ -780,15 +875,48 @@ export class SqliteReadModel implements ReadModel {
     const scanStarted = performance.now();
     const scope = new RecoveryScope();
     const dirty = tracking.dirtyNames();
+    this.#judgeNameShare(
+      new Set([
+        ...dirty.map(nameIdentity),
+        ...(options.droppedDirs ?? []).flatMap((dir) => {
+          const name = dataNameOfKey(dir);
+          return name === undefined
+            ? []
+            : [nameIdentity({ namespace, ...name })];
+        }),
+      ]).size,
+    );
+    const touchedRows = tracking.touchedScopes().filter((row) =>
+      row.namespace === namespace
+    );
+    let boundedWalk: readonly string[] | undefined;
     const scanned = await withSpan(
       "swamp.datastore.v3.readmodel.recover.scan",
       {},
       async (scanSpan) => {
+        const bounded = await this.#boundedScopes(
+          namespace,
+          options,
+          tracking,
+          dirty,
+          touchedRows,
+        );
+        const boundedAttributes = {
+          "swamp.datastore.v3.readmodel.recover.bounded": bounded !== undefined,
+          ...(bounded === undefined ? {} : {
+            "swamp.datastore.v3.readmodel.recover.walked_scopes":
+              bounded.walk.length,
+          }),
+        };
+        scanSpan.setAttributes(boundedAttributes);
+        span.setAttributes(boundedAttributes);
         const scan = await this.#scanSince(namespace, {
           ...options,
           owned: true,
+          ...(bounded === undefined ? {} : { scopes: bounded.walk }),
         });
         for (const name of dirty) scope.addName(name);
+        for (const name of bounded?.names ?? []) scope.addName(name);
         for (const dir of options.droppedDirs ?? []) {
           const name = dataNameOfKey(dir);
           if (name !== undefined) scope.addName({ namespace, ...name });
@@ -797,7 +925,12 @@ export class SqliteReadModel implements ReadModel {
           scope.addRemoval(namespace, key, path);
         }
         for (const key of scan.changed) scope.addKeyToCheck(namespace, key);
-        const missing = await this.#missingKeys(namespace, scan, options);
+        const missing = await this.#missingKeys(
+          namespace,
+          scan,
+          options,
+          bounded?.missing,
+        );
         for (const key of missing) scope.addKeyToCheck(namespace, key);
         // checked first, as rewriting files one by one is what costs
         const suspect = scan.changed.length + scan.unowned.length +
@@ -818,29 +951,34 @@ export class SqliteReadModel implements ReadModel {
             `a touched name has no model partition: ${scope.unscopable}`,
           );
         }
-        // every file of a touched name a commit decided, whatever its mtime
-        for (const name of scope.names()) {
-          for (
-            const key of this.#state.decidedKeysUnder(
-              name.namespace,
-              dataNamePrefix(name),
-            )
-          ) {
-            scope.addKeyToCheck(name.namespace, key);
+        if (bounded === undefined) {
+          // every file of a touched name a commit decided, whatever its mtime
+          for (const name of scope.names()) {
+            for (
+              const key of this.#state.decidedKeysUnder(
+                name.namespace,
+                dataNamePrefix(name),
+              )
+            ) {
+              scope.addKeyToCheck(name.namespace, key);
+            }
+          }
+        } else {
+          // every file a commit decided where the writer wrote, whatever its
+          // mtime
+          for (const walked of outermostScopes(bounded.walk)) {
+            for (
+              const key of this.#state.decidedKeysAtOrUnder(namespace, walked)
+            ) {
+              scope.addKeyToCheck(namespace, key);
+            }
           }
         }
-        const liveNames = this.#state.liveNameCount();
-        if (
-          scope.nameCount > TARGETED_NAMES_FLOOR &&
-          scope.nameCount > this.#targetedShare * Math.max(liveNames, 1)
-        ) {
-          throw new TargetedRecoveryFallback(
-            "scope_too_large",
-            `${scope.nameCount} data names touched against ${liveNames} the read model holds`,
-          );
-        }
+        boundedWalk = bounded?.walk;
+        this.#judgeNameShare(scope.nameCount);
         scanSpan.setAttributes({
           "swamp.datastore.v3.readmodel.recover.files_listed": scan.listed.size,
+          ...listedPerSubdir(scan.listed),
         });
         return scan;
       },
@@ -853,9 +991,10 @@ export class SqliteReadModel implements ReadModel {
           scoped: ScopedPartition;
           history: NameHistory;
         }[] = [];
+        const held = { commits: 0 };
         for (const scoped of scope.partitions()) {
           signal.throwIfAborted();
-          const history = await this.#readHistory(scoped, signal);
+          const history = await this.#readHistory(scoped, signal, held);
           histories.push({ scoped, history });
           // a tombstone of a key no commit owned yet leaves no state row, and
           // a replay removes whatever file sits there
@@ -865,25 +1004,16 @@ export class SqliteReadModel implements ReadModel {
               if (op.kind !== "tombstone") continue;
               const key = op.key.toString();
               const name = dataNameOfKey(key)?.name;
-              if (name !== undefined && names.has(name)) {
+              // bounded, only where the writer wrote can a file sit there
+              if (
+                name !== undefined && names.has(name) &&
+                (boundedWalk === undefined ||
+                  boundedWalk.some((walked) => scopeCovers(walked, key)))
+              ) {
                 scope.addKeyToCheck(scoped.namespace, key);
               }
             }
           }
-        }
-        const commits = histories.reduce(
-          (total, { history }) => total + history.commits.length,
-          0,
-        );
-        const applied = this.#state.cursor();
-        if (
-          commits > TARGETED_COMMITS_FLOOR &&
-          commits > this.#targetedShare * Math.max(applied, 1)
-        ) {
-          throw new TargetedRecoveryFallback(
-            "scope_too_large",
-            `${commits} history commits to read against ${applied} the read model applied`,
-          );
         }
         return histories;
       },
@@ -912,10 +1042,13 @@ export class SqliteReadModel implements ReadModel {
           batch.discard();
         }
         const counts = { restored: 0 };
+        let filesRead = 0;
         for (const { namespace: ns, keys } of scope.keysToCheck()) {
+          const expected = this.#state.expectedFiles(ns, keys);
+          filesRead += expected.length;
           if (
             !await this.#restoreFiles(
-              this.#state.expectedFiles(ns, keys),
+              expected,
               { syncMatching: false, rethrowRefusals: true, counts },
               signal,
             )
@@ -929,6 +1062,7 @@ export class SqliteReadModel implements ReadModel {
         restoreSpan.setAttributes({
           "swamp.datastore.v3.readmodel.recover.files_restored":
             counts.restored,
+          "swamp.datastore.v3.readmodel.recover.restore.files_read": filesRead,
         });
         span.setAttributes({
           "swamp.datastore.v3.readmodel.recover.files_restored":
@@ -940,21 +1074,23 @@ export class SqliteReadModel implements ReadModel {
     const reprojected = await withSpan(
       "swamp.datastore.v3.readmodel.recover.reproject",
       {},
-      () => {
-        let historyCommits = 0;
-        let baseNames = 0;
+      (reprojectSpan) => {
+        const counts = newReprojectCounts();
         for (const { scoped, history } of histories) {
           signal.throwIfAborted();
-          const counted = this.#reprojectNames(
+          this.#reprojectNames(
             scoped,
             history,
             tracking,
             options.admits,
+            counts,
           );
-          historyCommits += counted.commits;
-          baseNames += counted.baseNames;
         }
-        return Promise.resolve({ historyCommits, baseNames });
+        reprojectSpan.setAttributes(reprojectAttributes(counts));
+        return Promise.resolve({
+          historyCommits: counts.commits,
+          baseNames: counts.baseNames,
+        });
       },
     );
     span.setAttributes({
@@ -971,17 +1107,159 @@ export class SqliteReadModel implements ReadModel {
       "swamp.datastore.v3.readmodel.recover.scan_ms": scanMs,
       "swamp.datastore.v3.readmodel.recover.files_listed": scanned.listed.size,
     });
+    tracking.forgetTouched(touchedRows.map((row) => row.id));
     return removed;
+  }
+
+  /**
+   * what an unfinished writer could have touched, from the scopes writers
+   * recorded before writing; undefined when they cannot be trusted
+   */
+  async #boundedScopes(
+    namespace: string,
+    options: RecoverOptions,
+    tracking: CatalogDirtyTracking,
+    dirty: readonly CatalogNameKey[],
+    rows: readonly TouchedScope[],
+  ): Promise<
+    | {
+      readonly walk: string[];
+      readonly missing: string[];
+      readonly names: CatalogNameKey[];
+    }
+    | undefined
+  > {
+    const since = tracking.touchedTrackingSince();
+    if (
+      options.journaled !== true || since === undefined ||
+      since >= options.since - DIRTY_TRACKING_MARGIN_MS
+    ) {
+      return undefined;
+    }
+    if (rows.some((row) => row.scope === WHOLE_CHECKOUT_SCOPE)) {
+      return undefined;
+    }
+    const nameScopes = new Set<string>();
+    const walk: string[] = [...options.droppedDirs ?? []];
+    const names: CatalogNameKey[] = [];
+    for (const name of dirty) {
+      if (name.namespace === namespace) nameScopes.add(dataNamePrefix(name));
+    }
+    for (const row of rows) {
+      const scope = scopeKey(row.scope);
+      const name = dataNameOfKey(scope);
+      if (name !== undefined) {
+        names.push({ namespace, ...name });
+        // a writer under a name may move its latest marker or drop a version
+        // without naming them, so the name is always listed too
+        const prefix = dataNamePrefix({ namespace, ...name });
+        nameScopes.add(prefix);
+        if (scope === row.scope && scope === prefix) continue;
+      }
+      walk.push(scope);
+    }
+    for (const dir of options.droppedDirs ?? []) {
+      const name = dataNameOfKey(dir);
+      if (name !== undefined) names.push({ namespace, ...name });
+    }
+    const missing = [...walk];
+    for (const prefix of nameScopes) {
+      options.signal.throwIfAborted();
+      const expanded = await this.#nameScope(namespace, prefix);
+      for (const scope of expanded.walk) {
+        walk.push(scope);
+        missing.push(scope);
+      }
+      for (const scope of expanded.missing) missing.push(scope);
+    }
+    return { walk, missing, names };
+  }
+
+  /**
+   * a writer under a name creates version directories, prunes whole ones and
+   * appends only to the latest: one listing of the name's directory finds
+   * what it could have changed without visiting every version
+   */
+  async #nameScope(
+    namespace: string,
+    prefix: string,
+  ): Promise<{ readonly walk: string[]; readonly missing: string[] }> {
+    const versions = new Map<string, number>();
+    for (const key of this.#state.presentKeysAtOrUnder(namespace, prefix)) {
+      const rest = key.slice(prefix.length + 1);
+      const slash = rest.indexOf("/");
+      if (slash > 0) versions.set(rest.slice(0, slash), 1);
+    }
+    let entries: Deno.DirEntry[] = [];
+    try {
+      entries = await Array.fromAsync(
+        this.#readDir(join(this.#cacheRoot(namespace), ...prefix.split("/"))),
+      );
+    } catch (error) {
+      if (
+        !(error instanceof Deno.errors.NotFound) &&
+        !(error instanceof Deno.errors.NotADirectory)
+      ) {
+        throw error;
+      }
+    }
+    const walk: string[] = [];
+    const listed = new Set<string>();
+    for (const entry of entries) {
+      if (entry.isSymlink) continue;
+      const name = entry.name.normalize("NFC");
+      listed.add(name);
+      // a known version but the latest holds what a commit left there
+      if (!entry.isDirectory || !versions.has(name)) {
+        walk.push(`${prefix}/${name}`);
+      }
+    }
+    const latest = [...versions.keys()].reduce<string | undefined>(
+      (newest, version) =>
+        newest === undefined || Number(version) > Number(newest)
+          ? version
+          : newest,
+      undefined,
+    );
+    if (latest !== undefined) walk.push(`${prefix}/${latest}`);
+    const missing = [...versions.keys()]
+      .filter((version) => !listed.has(version))
+      .map((version) => `${prefix}/${version}`);
+    // files directly under the name, such as its latest marker
+    for (const key of this.#state.presentKeysAtOrUnder(namespace, prefix)) {
+      if (!key.slice(prefix.length + 1).includes("/")) missing.push(key);
+    }
+    return { walk, missing };
+  }
+
+  /** judged before the walk on the names already known, and again after it */
+  #judgeNameShare(touched: number): void {
+    if (touched <= TARGETED_NAMES_FLOOR) return;
+    const liveNames = this.#state.liveNameCount();
+    if (touched > this.#targetedShare * Math.max(liveNames, 1)) {
+      throw new TargetedRecoveryFallback(
+        "scope_too_large",
+        `${touched} data names touched against ${liveNames} the read model holds`,
+      );
+    }
   }
 
   async #missingKeys(
     namespace: string,
     scan: ScanResult,
     options: RecoverOptions,
+    scopes?: readonly string[],
   ): Promise<string[]> {
     const missing: string[] = [];
     const root = this.#cacheRoot(namespace);
-    for (const key of this.#state.presentKeys(namespace)) {
+    const present = scopes === undefined
+      ? this.#state.presentKeys(namespace)
+      : new Set(
+        outermostScopes(scopes).flatMap((scope) =>
+          this.#state.presentKeysAtOrUnder(namespace, scope)
+        ),
+      );
+    for (const key of present) {
       if (scan.listed.has(key) || scan.listed.has(key.normalize("NFC"))) {
         continue;
       }
@@ -1021,14 +1299,19 @@ export class SqliteReadModel implements ReadModel {
     { base, commits }: NameHistory,
     tracking: CatalogDirtyTracking,
     admits: (key: string) => boolean,
-  ): { commits: number; baseNames: number } {
+    counts: ReprojectCounts,
+  ): void {
     const { namespace, partition, names } = scoped;
     const identity = partition.identity;
-    if (identity.kind !== "model") return { commits: 0, baseNames: 0 };
+    if (identity.kind !== "model") return;
     const key = partition.toString();
+    let started = performance.now();
     const replay = catalogActionsForNames(base, commits, new Set(names));
+    counts.replayMs += performance.now() - started;
+    started = performance.now();
     for (const name of names) {
       const held = this.#state.liveVersions(namespace, key, name);
+      counts.liveVersions += held.length;
       const replayed = replay.live.get(name) ?? [];
       if (!sameVersions(held, replayed)) {
         throw new TargetedRecoveryFallback(
@@ -1037,12 +1320,14 @@ export class SqliteReadModel implements ReadModel {
         );
       }
     }
+    counts.compareMs += performance.now() - started;
     const nameKeys: CatalogNameKey[] = names.map((name) => ({
       namespace,
       type: identity.type,
       modelId: identity.id,
       name,
     }));
+    started = performance.now();
     this.#catalog.beginBatch();
     try {
       tracking.clearNames(nameKeys, admits);
@@ -1052,13 +1337,17 @@ export class SqliteReadModel implements ReadModel {
     } finally {
       this.#catalog.rollbackBatch();
     }
-    return { commits: replay.commits, baseNames: base.names.size };
+    counts.writeMs += performance.now() - started;
+    counts.actions += replay.actions.length;
+    counts.commits += replay.commits;
+    counts.baseNames += base.names.size;
   }
 
   /** checked to reach the seq the state applied */
   async #readHistory(
     scoped: ScopedPartition,
     signal: AbortSignal,
+    held: { commits: number },
   ): Promise<NameHistory> {
     const key = scoped.partition.toString();
     const applied = this.#state.appliedSeq(scoped.namespace, key);
@@ -1067,8 +1356,9 @@ export class SqliteReadModel implements ReadModel {
       scoped,
       applied,
       signal,
+      held,
     );
-    const reached = history.commits.at(-1)?.seq ?? history.base.compactedSeq;
+    const reached = history.reached;
     if (reached !== applied) {
       throw new TargetedRecoveryFallback(
         "seq_not_reached",
@@ -1083,7 +1373,9 @@ export class SqliteReadModel implements ReadModel {
     scoped: ScopedPartition,
     applied: number,
     signal: AbortSignal,
+    held: { commits: number },
   ): Promise<NameHistory> {
+    const names = new Set(scoped.names);
     for (let attempt = 1;; attempt++) {
       signal.throwIfAborted();
       const base = await this.#commitStore.readPartitionBase(
@@ -1092,6 +1384,8 @@ export class SqliteReadModel implements ReadModel {
         scoped.names,
       );
       const commits: Commit[] = [];
+      let reached = base.compactedSeq;
+      const heldBefore = held.commits;
       try {
         let from = base.compactedSeq + 1;
         while (from <= applied) {
@@ -1104,15 +1398,31 @@ export class SqliteReadModel implements ReadModel {
           );
           for (const change of page) {
             if (change.commit.seq > applied) break;
+            reached = change.commit.seq;
+            // a commit on other names projects nothing for these
+            if (
+              !catalogNamesOfCommit(change.commit).some((name) =>
+                names.has(name)
+              )
+            ) {
+              continue;
+            }
             commits.push(change.commit);
+            if (++held.commits > this.#targetedCommitsCeiling) {
+              throw new TargetedRecoveryFallback(
+                "scope_too_large",
+                `more than ${this.#targetedCommitsCeiling} commits of the touched names to hold`,
+              );
+            }
           }
           const last = page.at(-1)?.commit.seq;
           if (page.length < this.#pageSize || last === undefined) break;
           from = last + 1;
         }
-        return { base, commits };
+        return { base, commits, reached };
       } catch (error) {
         if (!(error instanceof CommitsCompactedError)) throw error;
+        held.commits = heldBefore;
         if (attempt >= BASE_READ_ATTEMPTS) {
           throw new TargetedRecoveryFallback(
             "base_compacted",
@@ -1131,6 +1441,7 @@ export class SqliteReadModel implements ReadModel {
   async releaseDirtyNames(
     pending: readonly DirtyNamePin[],
     landed: (pin: DirtyNamePin) => Promise<boolean>,
+    keepUnits: readonly string[] = [],
   ): Promise<void> {
     if (this.#closed) return;
     const tracking = this.#catalog.dirtyTracking?.();
@@ -1151,7 +1462,7 @@ export class SqliteReadModel implements ReadModel {
         landedPins.push({ partition: pin.partition, txnId: pin.txnId });
       }
     }
-    tracking.releaseDirty(pending, landedPins);
+    tracking.releaseDirty(pending, landedPins, keepUnits);
   }
 
   #ensureDirtyTracking(): void {
@@ -1162,6 +1473,13 @@ export class SqliteReadModel implements ReadModel {
     } catch (error) {
       // left missing, every recovery runs in full
       logger.debug`Cannot install the catalog's dirty-name tracking: ${error}`;
+    }
+    try {
+      tracking.ensureTouchedTracking(this.#clock().getTime());
+    } catch (error) {
+      // left missing, every targeted recovery walks the whole checkout
+      logger
+        .debug`Cannot install the catalog's touched-scope tracking: ${error}`;
     }
   }
 
@@ -1387,6 +1705,8 @@ export class SqliteReadModel implements ReadModel {
       readonly signal: AbortSignal;
       readonly droppedDirs?: readonly string[];
       readonly owned: boolean;
+      /** record keys to walk under instead of every materialised file */
+      readonly scopes?: readonly string[];
     },
   ): Promise<ScanResult> {
     const unowned: { key: string; path: string }[] = [];
@@ -1401,34 +1721,51 @@ export class SqliteReadModel implements ReadModel {
       }
       return false;
     };
-    await this.#forEachMaterialisedFile(
-      namespace,
-      options.admits,
-      options.signal,
-      async (key, path, spellings) => {
-        for (const spelling of spellings) listed.add(spelling);
-        const owner = spellings.find((spelling) =>
-          this.#state.fileOwnership(namespace, spelling)?.present === true
-        );
-        if (owner !== undefined) {
-          // a file this section wrote or checked holds what the state says
-          if (!options.owned || this.#guarded.has(path)) return true;
-          const modified = (await Deno.lstat(path)).mtime?.getTime();
-          if (modified === undefined || modified >= options.since) {
-            changed.push(owner);
-          }
-          return true;
+    const classify = async (
+      key: string,
+      path: string,
+      spellings: readonly string[],
+    ): Promise<boolean> => {
+      for (const spelling of spellings) listed.add(spelling);
+      const owner = spellings.find((spelling) =>
+        this.#state.fileOwnership(namespace, spelling)?.present === true
+      );
+      if (owner !== undefined) {
+        // a file this section wrote or checked holds what the state says
+        if (!options.owned || this.#guarded.has(path)) return true;
+        const modified = (await Deno.lstat(path)).mtime?.getTime();
+        if (modified === undefined || modified >= options.since) {
+          changed.push(owner);
         }
-        const segments = key.split("/");
-        const composed = spellings[spellings.length - 1].split("/");
-        if (!inDroppedDir(segments) && !inDroppedDir(composed)) {
-          const modified = (await Deno.lstat(path)).mtime?.getTime();
-          if (modified === undefined || modified < options.since) return true;
-        }
-        unowned.push({ key, path });
         return true;
-      },
-    );
+      }
+      const segments = key.split("/");
+      const composed = spellings[spellings.length - 1].split("/");
+      if (!inDroppedDir(segments) && !inDroppedDir(composed)) {
+        const modified = (await Deno.lstat(path)).mtime?.getTime();
+        if (modified === undefined || modified < options.since) return true;
+      }
+      unowned.push({ key, path });
+      return true;
+    };
+    if (options.scopes === undefined) {
+      await this.#forEachMaterialisedFile(
+        namespace,
+        options.admits,
+        options.signal,
+        classify,
+      );
+    } else {
+      for (const scope of outermostScopes(options.scopes)) {
+        await this.#forEachFileUnder(
+          namespace,
+          scope,
+          options.admits,
+          options.signal,
+          classify,
+        );
+      }
+    }
     return { unowned, changed, listed };
   }
 
@@ -1446,9 +1783,13 @@ export class SqliteReadModel implements ReadModel {
       path: string,
       spellings: readonly string[],
     ) => Promise<boolean>,
+    from?: { readonly dir: string; readonly segments: readonly string[] },
   ): Promise<void> {
     const root = this.#cacheRoot(namespace);
-    const visit = async (dir: string, segments: string[]): Promise<boolean> => {
+    const visit = async (
+      dir: string,
+      segments: readonly string[],
+    ): Promise<boolean> => {
       let entries: Deno.DirEntry[];
       try {
         entries = await Array.fromAsync(this.#readDir(dir));
@@ -1485,9 +1826,67 @@ export class SqliteReadModel implements ReadModel {
       }
       return true;
     };
+    if (from !== undefined) {
+      await visit(from.dir, from.segments);
+      return;
+    }
     for (const subdir of MATERIALISED_SUBDIRS) {
       if (!await visit(join(root, subdir), [subdir])) return;
     }
+  }
+
+  /**
+   * every file at or under one record key, judged as #forEachMaterialisedFile
+   * judges it; nothing when the key is absent
+   */
+  async #forEachFileUnder(
+    namespace: string,
+    scope: string,
+    admits: (key: string) => boolean,
+    signal: AbortSignal,
+    fn: (
+      key: string,
+      path: string,
+      spellings: readonly string[],
+    ) => Promise<boolean>,
+  ): Promise<void> {
+    const segments = scope.split("/");
+    if (!MATERIALISED_SUBDIRS.has(segments[0])) return;
+    const root = this.#cacheRoot(namespace);
+    const path = join(root, ...segments);
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.lstat(path);
+    } catch (error) {
+      if (
+        error instanceof Deno.errors.NotFound ||
+        error instanceof Deno.errors.NotADirectory
+      ) {
+        return;
+      }
+      throw error;
+    }
+    if (info.isSymlink) return;
+    if (info.isDirectory) {
+      await this.#forEachMaterialisedFile(namespace, admits, signal, fn, {
+        dir: path,
+        segments,
+      });
+      return;
+    }
+    if (!info.isFile) return;
+    const composed = segments.map((segment) => segment.normalize("NFC"));
+    if (isCheckoutLocalKey(segments) || isCheckoutLocalKey(composed)) return;
+    const spellings = [...new Set([scope, composed.join("/")])];
+    if (
+      spellings.some((spelling) =>
+        !admits(spelling) ||
+        unprojectedReason(namespace, spelling, this.#checkout) !== undefined
+      )
+    ) {
+      return;
+    }
+    await fn(scope, path, spellings);
   }
 
   catchUpPartition(

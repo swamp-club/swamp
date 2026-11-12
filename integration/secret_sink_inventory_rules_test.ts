@@ -265,6 +265,8 @@ const AUTHORED_SOURCE = "Persists authored source, where secrets appear only " +
 
 const NOT_A_SINK: Record<string, Record<string, string>> = {
   "sqlite": {
+    "src/infrastructure/datastore_v3/touched_scope_journal.ts: TouchedScopeJournal":
+      "Holds only unit ids and the record keys of checkout paths a writer is about to write, never a value derived from an expression.",
     "src/infrastructure/datastore_v3/serve_upstream_state.ts: openStateDatabase":
       "Holds only serve's feed cursor and partition heads: integers and partition keys, never a value derived from an expression.",
     "src/infrastructure/datastore_v3/litestream/litestream_restorer.ts: checkDatabase":

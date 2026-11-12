@@ -74,12 +74,16 @@ import {
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
-  TARGETED_COMMITS_FLOOR,
   TARGETED_FILES_FLOOR,
   TARGETED_NAMES_FLOOR,
 } from "./sqlite_read_model.ts";
 import type { SpellingFolding } from "./spelling_folding.ts";
 import { catalogRow, requireFullV3Recovery, V3Catalog } from "./v3_catalog.ts";
+import {
+  DEEP_SCOPE_SUFFIX,
+  TouchedScopeJournal,
+  WHOLE_CHECKOUT_SCOPE,
+} from "./touched_scope_journal.ts";
 import { datastoreKeyFilter, v3CacheRoot } from "./v3_datastore.ts";
 
 interface Env {
@@ -1021,6 +1025,7 @@ function targetedOptions(since: number) {
     signal: signal(),
     entry: "interrupted_writer" as const,
     targeted: true,
+    journaled: true,
   };
 }
 
@@ -1037,6 +1042,17 @@ function proxied<T extends object>(
       return typeof value === "function" ? value.bind(inner) : value;
     },
   });
+}
+
+function recordWholeCheckout(env: Env): void {
+  const journal = new TouchedScopeJournal(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+  );
+  try {
+    journal.record(crypto.randomUUID(), "", WHOLE_CHECKOUT_SCOPE);
+  } finally {
+    journal.close();
+  }
 }
 
 function writeUncommittedRow(
@@ -1072,6 +1088,7 @@ Deno.test("SqliteReadModel.recover: a targeted recovery records what it touched,
     await touchAfter(compacted, since);
     await Deno.remove(stored);
     await writeUncommittedRow(env, "r12", 2);
+    recordWholeCheckout(env);
     const readModel = env.open({ clock, pageSize: 5 });
     try {
       const { attributes, spanNames } = await recoverWithSpan(
@@ -1350,18 +1367,20 @@ Deno.test("SqliteReadModel.recover: a targeted recovery touching more than a qua
   });
 });
 
-Deno.test("SqliteReadModel.recover: a targeted recovery that would read more than a quarter of the applied commits runs in full, and one under the floor stays targeted (swamp-club#4581)", async () => {
+Deno.test("SqliteReadModel.recover: a targeted recovery of a name holding most of the log stays targeted, holds only that name's commits, and runs in full past the ceiling (swamp-club#4677)", async () => {
   for (
-    const [commits, path] of [
-      [TARGETED_COMMITS_FLOOR + 200, "full"],
-      [TARGETED_COMMITS_FLOOR - 100, "targeted"],
+    const [ceiling, path] of [
+      [undefined, "targeted"],
+      [100, "full"],
     ] as const
   ) {
     await withEnv(async (env) => {
+      const commits = 1_500;
       for (let seq = 1; seq <= commits; seq++) {
+        const name = seq % 10 === 0 ? "cold" : "a";
         await env.append(seq, "", [
-          await savePut("a", seq),
-          versionOp("a", seq),
+          await savePut(name, seq),
+          versionOp(name, seq),
         ]);
       }
       const readModel = env.open({ clock: () => new Date(1_000) });
@@ -1372,15 +1391,19 @@ Deno.test("SqliteReadModel.recover: a targeted recovery that would read more tha
       }
       const since = Date.now() + 60_000;
       await writeUncommittedRow(env, "a", commits + 1);
-      const reopened = env.open();
+      const reopened = env.open(
+        ceiling === undefined ? {} : { targetedCommitsCeiling: ceiling },
+      );
       try {
         const result = await recoverWithSpan(
           reopened,
           targetedOptions(since),
         );
-        assertEquals(result.attributes["path"], path, `${commits} commits`);
+        assertEquals(result.attributes["path"], path, `ceiling ${ceiling}`);
         if (path === "full") {
           assertEquals(result.attributes["fallback"], "scope_too_large");
+        } else {
+          assertEquals(result.attributes["history_commits"], 1_350);
         }
       } finally {
         await reopened.close();
@@ -1409,6 +1432,7 @@ Deno.test("SqliteReadModel.recover: a targeted recovery whose files changed, app
         await Deno.writeTextFile(path, "torn");
         await touchAfter(path, since);
       }
+      recordWholeCheckout(env);
     };
     await tear(TARGETED_FILES_FLOOR + 100);
     readModel = env.open();
@@ -1617,6 +1641,7 @@ const FALLBACKS: readonly {
       const torn = env.contentPath("", "r1", 1);
       await Deno.writeTextFile(torn, "torn");
       await touchAfter(torn, since);
+      recordWholeCheckout(env);
       return {
         options: {
           commitStore: proxied(env.store, {
@@ -3187,5 +3212,254 @@ Deno.test("SqliteReadModel.close: a catch-up still under way when the command en
       held.close();
     }
     await catchingUp;
+  });
+});
+
+function recordScopes(env: Env, scopes: readonly string[]): void {
+  const journal = new TouchedScopeJournal(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+  );
+  try {
+    const unit = crypto.randomUUID();
+    for (const scope of scopes) journal.record(unit, "", scope);
+  } finally {
+    journal.close();
+  }
+}
+
+function nameScope(name: string): string {
+  return dirname(dirname(dataKey(name, 1).toString()));
+}
+
+function touchedScopesLeft(env: Env): number {
+  const store = new CatalogStore(
+    join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+  );
+  try {
+    return store.touchedScopes().length;
+  } finally {
+    store.close();
+  }
+}
+
+Deno.test("SqliteReadModel.recover: with the writer's scopes recorded, a targeted recovery walks only them, removes the version it left uncommitted, repairs its latest version and forgets the scopes (swamp-club#4677)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const uncommitted = env.contentPath("", "r12", 2);
+    await Deno.mkdir(dirname(uncommitted), { recursive: true });
+    await Deno.writeTextFile(uncommitted, "uncommitted");
+    await touchAfter(uncommitted, since);
+    const latest = env.contentPath("", "r12", 1);
+    await Deno.writeTextFile(latest, "torn");
+    await touchAfter(latest, since);
+    // no writer recorded r30: only a full rebuild would see it
+    const elsewhere = env.contentPath("", "r30", 1);
+    await Deno.writeTextFile(elsewhere, "outside");
+    await touchAfter(elsewhere, since);
+    await writeUncommittedRow(env, "r12", 2);
+    recordScopes(env, [nameScope("r12")]);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["bounded"], true);
+      assert((attributes["files_listed"] as number) <= 2);
+      assertEquals(attributes["files_restored"], 1);
+      assertEquals(attributes["files_removed"], 1);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(uncommitted), undefined);
+    assertEquals(await readOrAbsent(latest), "r12@1");
+    assertEquals(await readOrAbsent(elsewhere), "outside");
+    assertEquals(env.catalogRows().length, RECOVERY_COMMITS);
+    assertEquals(touchedScopesLeft(env), 0);
+  });
+});
+
+Deno.test("SqliteReadModel.recover: scopes recorded by tracking that started after the writer are not trusted, so the recovery walks the whole checkout (swamp-club#4677)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const elsewhere = env.contentPath("", "r30", 1);
+    await Deno.writeTextFile(elsewhere, "torn");
+    await touchAfter(elsewhere, since);
+    recordScopes(env, [nameScope("r12")]);
+    const db = new DatabaseSync(
+      join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+    );
+    try {
+      db.prepare(
+        "UPDATE catalog_meta SET value = ? WHERE key = 'touched_tracking_since'",
+      ).run(String(since));
+    } finally {
+      db.close();
+    }
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["bounded"], false);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(elsewhere), "r30@1");
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a bounded targeted recovery lists the same files however large the checkout is (swamp-club#4677)", async () => {
+  const listed: unknown[] = [];
+  for (const names of [20, 400]) {
+    await withEnv(async (env) => {
+      for (let i = 1; i <= names; i++) {
+        await env.append(i, "", [
+          await savePut(`n${i}`, 1),
+          versionOp(`n${i}`, 1),
+        ]);
+      }
+      const first = env.open({ pageSize: 100 });
+      try {
+        await first.catchUp(signal());
+      } finally {
+        await first.close();
+      }
+      const since = Date.now() + 60_000;
+      await writeUncommittedRow(env, "n7", 2);
+      recordScopes(env, [nameScope("n7")]);
+      const readModel = env.open({ clock: () => new Date(since + 60_000) });
+      try {
+        const { attributes } = await recoverWithSpan(
+          readModel,
+          targetedOptions(since),
+        );
+        assertEquals(attributes["bounded"], true);
+        listed.push(attributes["files_listed"]);
+      } finally {
+        await readModel.close();
+      }
+    });
+  }
+  assertEquals(listed[0], listed[1]);
+});
+
+Deno.test("SqliteReadModel.recover: dirty names already past the share run in full before any walk (swamp-club#4677)", async () => {
+  await withEnv(async (env) => {
+    const names = 150;
+    for (let i = 1; i <= names; i++) {
+      await env.append(i, "", [
+        await savePut(`n${i}`, 1),
+        versionOp(`n${i}`, 1),
+      ]);
+    }
+    const first = env.open({ pageSize: 100 });
+    try {
+      await first.catchUp(signal());
+    } finally {
+      await first.close();
+    }
+    const since = Date.now() + 60_000;
+    for (let i = 1; i <= names; i++) await writeUncommittedRow(env, `n${i}`, 2);
+    const readModel = env.open({ clock: () => new Date(since + 60_000) });
+    try {
+      const { attributes, spanNames } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "full");
+      assertEquals(attributes["fallback"], "scope_too_large");
+      assert(
+        !spanNames.includes("swamp.datastore.v3.readmodel.recover.scan"),
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a name whose directory a writer removed under a record of the name alone gets every committed version back (swamp-club#4677)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await env.append(RECOVERY_COMMITS + 1, "", [
+      await savePut("r12", 2),
+      versionOp("r12", 2),
+    ]);
+    const caughtUp = env.open({ pageSize: 5 });
+    try {
+      await caughtUp.catchUp(signal());
+    } finally {
+      await caughtUp.close();
+    }
+    const nameDir = dirname(dirname(env.contentPath("", "r12", 1)));
+    await Deno.remove(nameDir, { recursive: true });
+    recordScopes(env, [nameScope("r12")]);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["bounded"], true);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(env.contentPath("", "r12", 1)), "r12@1");
+    assertEquals(await readOrAbsent(env.contentPath("", "r12", 2)), "r12@2");
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a writer that recorded nothing, as an older swamp's, gets the whole checkout walked though tracking predates it (swamp-club#4677)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    const elsewhere = env.contentPath("", "r30", 1);
+    await Deno.writeTextFile(elsewhere, "torn");
+    await touchAfter(elsewhere, since);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(readModel, {
+        ...targetedOptions(since),
+        journaled: false,
+      });
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["bounded"], false);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(elsewhere), "r30@1");
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a removal of a whole name cut short in an older version is repaired from a deep scope, which a name scope would not reach (swamp-club#4677)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await env.append(RECOVERY_COMMITS + 1, "", [
+      await savePut("r12", 2),
+      versionOp("r12", 2),
+    ]);
+    const caughtUp = env.open({ pageSize: 5 });
+    try {
+      await caughtUp.catchUp(signal());
+    } finally {
+      await caughtUp.close();
+    }
+    const older = env.contentPath("", "r12", 1);
+    await Deno.remove(older);
+    recordScopes(env, [`${nameScope("r12")}${DEEP_SCOPE_SUFFIX}`]);
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["bounded"], true);
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await readOrAbsent(older), "r12@1");
   });
 });

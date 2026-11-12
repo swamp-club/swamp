@@ -50,6 +50,9 @@ export const CHUNK_BYTES = 16 * 1024 * 1024;
  */
 export const UNNAMESPACED_STORAGE_NAMESPACE = "_default";
 
+/** chunk reads a verification keeps in flight; storage calls dominate it */
+const VERIFY_CONCURRENCY = 8;
+
 export class ChunkIntegrityError extends Error {
   readonly namespace?: string;
   readonly sha256?: string;
@@ -363,18 +366,36 @@ export class ChunkStore {
     signal: AbortSignal,
   ): Promise<P[]> {
     const ns = storageNamespaceOf(namespace);
-    const damaged: P[] = [];
-    for (const part of parts) {
-      signal.throwIfAborted();
-      const bytes = await this.#storage.get(ns, part.sha256, signal);
-      if (
-        bytes === null || bytes.length !== part.size ||
-        sha256Hex(bytes) !== part.sha256
-      ) {
-        damaged.push(part);
+    const verdicts = new Array<boolean>(parts.length);
+    let next = 0;
+    let failed = false;
+    const verifyNext = async (): Promise<void> => {
+      while (next < parts.length && !failed) {
+        const index = next++;
+        const part = parts[index];
+        try {
+          signal.throwIfAborted();
+          const bytes = await this.#storage.get(ns, part.sha256, signal);
+          verdicts[index] = bytes === null || bytes.length !== part.size ||
+            sha256Hex(bytes) !== part.sha256;
+        } catch (error) {
+          // the other readers take no further part once one has failed
+          failed = true;
+          throw error;
+        }
       }
+    };
+    // every reader settles before the first failure is rethrown
+    const settled = await Promise.allSettled(
+      Array.from(
+        { length: Math.min(VERIFY_CONCURRENCY, parts.length) },
+        verifyNext,
+      ),
+    );
+    for (const outcome of settled) {
+      if (outcome.status === "rejected") throw outcome.reason;
     }
-    return damaged;
+    return parts.filter((_, index) => verdicts[index]);
   }
 
   async stat(

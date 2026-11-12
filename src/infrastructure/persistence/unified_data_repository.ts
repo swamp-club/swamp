@@ -2450,13 +2450,31 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             this.catalogUpsert(receipt.type, receipt.modelId, data);
           }
         };
-        await this.advanceLatestMarker(
-          receipt.type,
-          receipt.modelId,
-          receipt.dataName,
-          receipt.version,
-          publish,
-        );
+        const advance = () =>
+          this.advanceLatestMarker(
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+            receipt.version,
+            publish,
+          );
+        // a refused signal outside a unit must not stop the promotion; its
+        // staging below reports the refusal
+        if (typedStagingActive(this.markDirty)) {
+          await this.staged({
+            kind: "write",
+            path: join(
+              this.getDataNameDir(
+                receipt.type,
+                receipt.modelId,
+                receipt.dataName,
+              ),
+              "latest",
+            ),
+          }, advance);
+        } else {
+          await advance();
+        }
         publish();
         if (
           data && this.enableWriteGc &&
@@ -2531,7 +2549,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.dataName,
           receipt.version,
         );
-        await Deno.remove(versionDir, { recursive: true });
+        const remove = () => Deno.remove(versionDir, { recursive: true });
+        // outside a unit the rollback goes on; its staging reports the refusal
+        if (typedStagingActive(this.markDirty)) {
+          await this.staged({ kind: "remove", path: versionDir }, remove);
+        } else {
+          await remove();
+        }
         this.catalogStore.removeVersion(
           this.namespace,
           receipt.type.normalized,

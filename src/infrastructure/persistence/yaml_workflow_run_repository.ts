@@ -21,6 +21,7 @@ import { ensureDir } from "@std/fs";
 import { basename, join, resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
+  removeSignalled,
   stageTyped,
   typedStagingActive,
   withChangeSignalled,
@@ -1155,10 +1156,26 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     if (!isSinglePathSegment(runId)) return [];
     const startsDir = join(dir, STEP_STARTS_DIR, runId);
     const names = await this.listStartFiles(startsDir);
+    let present = true;
     try {
-      await Deno.remove(startsDir, { recursive: true });
+      await Deno.lstat(startsDir);
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
+      present = false;
+    }
+    if (present) {
+      await withChangeSignalled(
+        this.markDirty,
+        { kind: "remove", path: startsDir },
+        { typed: true },
+        async () => {
+          try {
+            await Deno.remove(startsDir, { recursive: true });
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+          }
+        },
+      );
     }
     await cleanupEmptyParentDirs(join(startsDir, "start.yaml"), dir);
     return names;
@@ -1322,7 +1339,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const dir = this.getStartsDir(workflowId, runId);
     for (const start of starts) {
       try {
-        await Deno.remove(join(dir, start.fileName));
+        await removeSignalled(this.markDirty, join(dir, start.fileName));
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) throw error;
       }

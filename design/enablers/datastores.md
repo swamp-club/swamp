@@ -5875,27 +5875,70 @@ leave every checkout with the same records.
     later commits (`catalogActionsForNames`, beside `projectCatalog`), which
     is the same action stream a full rebuild applies to that name; the
     replay's live versions must equal the state's `data_versions` or the
-    recovery falls back.
+    recovery falls back. Only the partition's commits with an op on a touched
+    name are held for the replay (swamp-club#4677), and the catalog takes the
+    replay through `reconcileNames`: the same writer code runs into an
+    in-memory scratch catalog seeded with the rows the clear would keep, and
+    only the rows and forwards that differ are written. Two indexes on
+    (name, flag, version) let clearing an earlier version's latest flags seek
+    the flagged rows, so replaying a name's history is linear in its versions
+    rather than quadratic, in a recovery and in a full replay alike.
   - **A dead writer may leave catalog rows for uncommitted data.** SQLite
     triggers on `catalog` and `catalog_renames` record every name any
     writer changes in `catalog_dirty`; the read model's own committed applies
-    skip them, and never clear a name a writer left dirty. A clean teardown
-    forgets the dirty names except those of outbox entries not yet landed,
-    which stay pinned until a later teardown finds them landed: a refused or
-    abandoned entry's rows are rebuilt by the next recovery.
+    skip them, and never clear a name a writer left dirty. A root unit that
+    ends with every commit it sent landed, none dropped and none queued
+    offline releases its names (swamp-club#4677): on a replicating
+    datastore once the replica's published mark covers its commits, else at
+    once. A name stays dirty while a pin or another unit's touched scope
+    holds it. A clean teardown is the backstop: it forgets the dirty names
+    except those of outbox entries not yet landed, which stay pinned until a
+    later teardown finds them landed, and keeps the touched scopes of those
+    entries' units: a refused or abandoned entry's rows are rebuilt by the
+    next recovery.
+  - **A dead writer's files are where it said it would write**
+    (swamp-club#4677). Every write into a checkout but the two below signals its
+    path before it begins, and the unit records that path's record key in
+    `catalog_touched`, in the catalog database, through its own connection with
+    `synchronous=FULL`, so no file it signalled is on disk without its scope,
+    even after an OS crash. A data save records the name's directory before it
+    allocates a version (the mkdir picks it), which also covers the version it
+    creates; a removal of a name's whole directory records a deep scope
+    (`<name>/**`), walked through every version, since a removal cut short can
+    leave any version partly gone. A removal of a file that is already absent
+    signals nothing (`removeSignalled`), so a v2 push is never told of a path
+    nothing removed. A unit's scopes go with its release. A staged key no scope
+    covers, or a bulk change, records the whole checkout instead, so a missed
+    signal costs a walk, never a miss. A scope by `appendNow`'s own outbox entry
+    is not kept by teardown; its names stay pinned, and a dirty name with no
+    scope is checked as a name scope. Two writes signal nothing: a step start,
+    which its caller commits on its own outside the unit, and the files config
+    adoption writes after its commit; a stray one either leaves is outside every
+    scope and stays, where the whole-checkout walk removed it once newer than
+    the marker.
 
   Files are not re-projected per partition: which commit a file shows is
   decided across partitions by feed position. They are put back from the
   read model's state, which only commits build (`#restoreFiles`; content of a
   compacted commit is read from its base record, checked by hash).
 
-  The touched names are the dirty names, the names of dropped directories,
-  and the names of unowned, changed or missing keys found by one walk
-  (`#scanSince`); every key a commit decided under a touched name is checked.
-  A targeted recovery catches the feed up from its cursor and never loads the
-  whole compacted base; it writes no rebuild marker, and each partition's
-  names are cleared, re-projected and forgotten in one catalog batch, so a
-  stopped one is simply run again.
+  The touched names are the dirty names, the names of dropped directories, the
+  names of touched scopes, and the names of unowned, changed or missing keys
+  found by one walk (`#scanSince`). When the interrupted writer's marker says it
+  records its writes (`journal`, which an older swamp's marker lacks; a dropped
+  unit is this process's own), touched tracking started before the marker's
+  start, and no scope is the whole checkout, the walk covers only the touched
+  scopes, the dropped directories and each dirty name or name under a touched
+  scope: a name scope is one listing of the name's directory, walking the
+  version directories the state does not know, the latest version (an append
+  writes it in place) and the files directly under the name, and taking the
+  known versions it no longer lists as missing. Every key a commit decided under
+  a walked scope is checked. Otherwise the walk covers every materialised file
+  and every key a commit decided under a touched name is checked. A targeted
+  recovery catches the feed up from its cursor and never loads the whole
+  compacted base; it writes no rebuild marker, and each partition's names are
+  cleared, re-projected and forgotten in one catalog batch, so a stopped one is
+  simply run again.
 
   It falls back to the full rebuild below, naming the reason on the recover
   span (`swamp.datastore.v3.readmodel.recover.fallback`; the path is
@@ -5903,13 +5946,19 @@ leave every checkout with the same records.
   the marker's start (the first recovery after an upgrade), a rebuild already
   in progress, a view change or restore, the state reset in this section, the
   compaction point past the cursor, a touched scope over a quarter of the
-  data names, the history commits or the owned files (`MAX_TARGETED_SHARE`,
-  each above a floor), a base that moved while read, a seq
+  data names (judged on the dirty and dropped names before any walk, and
+  again after it) or the owned files (`MAX_TARGETED_SHARE`, each above a
+  floor), more commits of the touched names than a recovery holds in memory
+  (`TARGETED_COMMITS_CEILING`), a base that moved while read, a seq
   or live-version mismatch, a file it cannot restore, or an admin merge or
   rename that kept file mtimes (`datastore namespace` sets
-  `full_recovery_required`). It repairs what changed since the marker's start
-  plus every dirty name; an owned file outside those names rewritten with an
-  old mtime is left as it is, which a full rebuild would fix.
+  `full_recovery_required`; a journal record that cannot be written sets it
+  too). It repairs what changed since the marker's start plus every dirty
+  name; an owned file outside those names rewritten with an old mtime is left
+  as it is, which a full rebuild would fix, and with touched tracking so is
+  an owned file outside every touched scope that something other than a swamp
+  writer changed. A targeted recovery that finishes forgets the touched
+  scopes it read; a full rebuild forgets them all.
 
   The full rebuild: under the read model's lock, recovery deletes the
   catalog rows of the data commits carry, keeping the rows of data the
@@ -8221,6 +8270,16 @@ a lost lease, a lapsed lease, a fenced writer and an unreachable commit exit
 CLI process): a commit to any partition but a run's counts, as does one that
 may have reached serve; run records do not, since a rerun makes a new run
 (`command_landed.ts`).
+
+**A commit refused as not the leader before serve took it never landed**
+(swamp-club#4677). A `503 serve_not_leader` without `inFlight` (a follower with
+no leader to forward to, or a leader whose fence check refused the append)
+means nothing landed, so the sink counts the commit never sent, as it does
+`ServeUnreachableError` with `sent: "never"`: the check of whether it landed
+answers at once without reading serve, which during a failover may not
+answer, and the unit discards its outbox entry instead of leaving it for a
+later recovery. A refusal with `inFlight` (a follower that forwarded before
+losing the leader) may have run and is looked for at serve as before.
 
 **A run with no explicit lease stops when serve is gone.** It stops at its
 next commit, or when its model lease lapses locally, whichever comes first;

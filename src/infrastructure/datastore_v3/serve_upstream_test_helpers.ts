@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import { Commit, type CommitJSON } from "../../domain/datastore_v3/commit.ts";
 import type {
   ObservedBaseEntry,
@@ -75,7 +76,9 @@ export interface PostedCommit {
 export type PostFault =
   | { readonly kind: "never" }
   | { readonly kind: "maybe" }
-  | { readonly kind: "collect"; readonly hashes: readonly string[] };
+  | { readonly kind: "collect"; readonly hashes: readonly string[] }
+  /** serve's 503: in flight, a forwarded commit landed before the refusal */
+  | { readonly kind: "not-leader"; readonly inFlight: boolean };
 
 type Client = Pick<
   ServeDatastoreClient,
@@ -403,6 +406,9 @@ export class FakeServe implements Client {
     }
     const fault = this.postFaults.shift();
     if (fault?.kind === "never") throw this.#unreachable("never");
+    if (fault?.kind === "not-leader" && !fault.inFlight) {
+      throw new ServeNotLeaderError(undefined, false, false);
+    }
     if (fault?.kind === "collect") {
       for (const hash of fault.hashes) this.chunks.delete(hash);
     }
@@ -427,6 +433,9 @@ export class FakeServe implements Client {
       json,
     });
     if (fault?.kind === "maybe") throw this.#unreachable("maybe");
+    if (fault?.kind === "not-leader") {
+      throw new ServeNotLeaderError(undefined, false, true);
+    }
     const parent = log[commit.seq - 2];
     return {
       seq: commit.seq,
