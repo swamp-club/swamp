@@ -2883,6 +2883,8 @@ export async function handleWorkerTokenRotate(
         let data: WorkerTokenRotateData | undefined;
         const gateway = ctx.workerGateway;
         if (gateway !== undefined) {
+          // delivery holds the sync gate at most one per-worker timeout, since
+          // workers are contacted in parallel
           const report = await gateway.rotateToken(
             payload.name,
             payload.durationMs !== undefined

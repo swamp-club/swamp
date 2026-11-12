@@ -33,6 +33,7 @@ import {
 } from "../model.ts";
 import { generateOpaqueToken } from "../../remote/session_credential.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
+import { isSecretNotFoundError } from "../../vaults/secret_not_found_error.ts";
 
 export const ENROLLMENT_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/enrollment-token",
@@ -239,6 +240,7 @@ export function enrollmentTokenBindingVerdict(
   // Only a newer mint is a re-mint; an older record is a stale read of the
   // mint the worker holds, never a reason to cut it off.
   if (Date.parse(token.createdAt) > Date.parse(boundCreatedAt)) {
+    // a revoke and re-mint before the rotation also reads as retired here
     const retired = token.predecessor !== undefined &&
       Date.parse(token.predecessor.createdAt) > Date.parse(boundCreatedAt);
     return { keep: false, cause: retired ? "retired" : "reminted" };
@@ -343,12 +345,16 @@ async function redeem(
   const predecessor = livePredecessor(token, Date.now());
   let matchesPredecessor = false;
   if (!matchesCurrent && predecessor !== undefined) {
-    // a key a concurrent rotation already deleted is no match, never a failure
+    // only a key a concurrent rotation deleted is no match: no match is a
+    // permanent refusal, so any other vault failure must stay retryable
     const previous = await context.vaultService.get(
       token.vaultName,
       predecessor.secretKey,
       "model:enrollment-token-verify",
-    ).catch(() => null);
+    ).catch((error: unknown) => {
+      if (isSecretNotFoundError(error)) return null;
+      throw error;
+    });
     matchesPredecessor = previous !== null &&
       timingSafeEqual(previous, args.presentedToken);
   }

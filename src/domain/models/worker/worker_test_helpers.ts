@@ -21,6 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import type { DataHandle, MethodContext } from "../model.ts";
 import type { ModelType } from "../model_type.ts";
 import { generateDataId } from "../../data/data_id.ts";
+import { SecretNotFoundError } from "../../vaults/secret_not_found_error.ts";
 
 export interface InMemoryWorkerContext {
   context: MethodContext;
@@ -76,9 +77,7 @@ export function createInMemoryWorkerContext(
       get: (vaultName: string, secretKey: string) => {
         const value = vault.get(`${vaultName}/${secretKey}`);
         if (value === undefined) {
-          return Promise.reject(
-            new Error(`Secret '${secretKey}' not found in '${vaultName}'`),
-          );
+          return Promise.reject(new SecretNotFoundError(vaultName, secretKey));
         }
         return Promise.resolve(value);
       },

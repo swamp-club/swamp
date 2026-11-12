@@ -120,7 +120,15 @@ once; if that output is lost, read it back with "swamp worker token reveal".`,
     } catch (error) {
       // a refusal serve sent is final; a lost reply may follow a landed
       // rotation, and rotating again would retire the original token
-      if (error instanceof ServerResponseError) throw error;
+      if (error instanceof ServerResponseError) {
+        if (error.code === "invalid_request") {
+          throw new UserError(
+            "The server does not support rotating a worker token; upgrade swamp on the server.",
+            "unsupported_by_server",
+          );
+        }
+        throw error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new UserError(
         `${message}\nThe rotation may already have landed. Read the current token with: swamp worker token reveal ${name} --server ${server}`,

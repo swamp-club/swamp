@@ -45,7 +45,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(await Deno.realPath(dir));
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 }
 

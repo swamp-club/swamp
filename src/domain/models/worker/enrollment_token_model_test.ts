@@ -760,6 +760,30 @@ Deno.test("enrollmentTokenModel: the current secret still redeems when the prede
   );
 });
 
+Deno.test("enrollmentTokenModel: a vault failure reading the old secret stays retryable, never a mismatch", async () => {
+  const harness = await mintToken();
+  await rotateToken(harness);
+  const failing = {
+    ...harness.context,
+    vaultService: {
+      ...harness.context.vaultService!,
+      get: (vaultName: string, secretKey: string) =>
+        secretKey === tokenSecretKey("ci-runner-3")
+          ? Promise.reject(new Error("vault timed out"))
+          : harness.context.vaultService!.get(vaultName, secretKey),
+    },
+  } as typeof harness.context;
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: harness.plaintext, machineId: "machine-1" },
+        failing,
+      ),
+    Error,
+    "vault timed out",
+  );
+});
+
 Deno.test("enrollmentTokenModel: re-minting a rotated token deletes its per-mint keys", async () => {
   const harness = await mintToken();
   const first = await rotateToken(harness);
