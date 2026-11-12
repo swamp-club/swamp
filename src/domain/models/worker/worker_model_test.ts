@@ -24,6 +24,7 @@ import {
   SetStatusArgsSchema,
   WORKER_MODEL_TYPE,
   workerModel,
+  WorkerStateSchema,
 } from "./worker_model.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
 
@@ -279,4 +280,30 @@ Deno.test("parseStoredWorkerState: nothing stored names the worker's definition"
 
 Deno.test("workerModel: set_status output records expire after a day", () => {
   assertEquals(workerModel.methods.set_status.outputLifetime, "1d");
+});
+
+Deno.test("workerModel: enroll and set_status record the owning serve process, and a status write without one keeps it", async () => {
+  const owner = { instanceId: "serve-a", pid: 4101, host: "host-1" };
+  const next = { instanceId: "serve-b", pid: 4102, host: "host-1" };
+  const { context, store } = createInMemoryWorkerContext(
+    WORKER_MODEL_TYPE,
+    "w-owned",
+  );
+  await workerModel.methods.enroll.execute({ ...enrollArgs, owner }, context);
+  assertEquals(store.get("state-main")!.owner, owner);
+  await workerModel.methods.set_status.execute({ status: "busy" }, context);
+  assertEquals(store.get("state-main")!.owner, owner);
+  await workerModel.methods.set_status.execute(
+    { status: "idle", owner: next },
+    context,
+  );
+  assertEquals(store.get("state-main")!.owner, next);
+});
+
+Deno.test("WorkerStateSchema: a malformed owner reads as none", () => {
+  const parsed = WorkerStateSchema.parse({
+    ...storedWorker,
+    owner: { instanceId: 7 },
+  });
+  assertEquals(parsed.owner, undefined);
 });

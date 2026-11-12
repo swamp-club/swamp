@@ -2903,3 +2903,54 @@ Deno.test("WorkerGateway: an observer that throws on the cancel fields neither f
     setExecutionObserver(undefined);
   }
 });
+
+Deno.test("WorkerGateway: stamps its owner on the enrollment and every status write", async () => {
+  const owner = { instanceId: "serve-a", pid: 4101, host: "host-1" };
+  const h = createHarness({ owner });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  workerChannel.register(WorkerMethod.dispatch, () =>
+    Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    }));
+  await h.gateway.dispatch("ci-runner-3", dispatchParams());
+
+  const writes = h.transitions.filter((t) =>
+    t.methodName === "enroll" || t.methodName === "set_status"
+  );
+  assertEquals(writes.map((t) => t.methodName), [
+    "enroll",
+    "set_status",
+    "set_status",
+  ]);
+  for (const write of writes) assertEquals(write.inputs.owner, owner);
+});
+
+Deno.test("WorkerGateway: serializeWorkerWrites runs after an enrollment in flight, which by then holds the worker", async () => {
+  const held = Promise.withResolvers<void>();
+  let enrollStarted = false;
+  const h = createHarness({
+    runModelMethod: (input) => {
+      if (input.methodName !== "enroll") return Promise.resolve();
+      enrollStarted = true;
+      return held.promise;
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const enrolled = enroll(workerChannel);
+  await waitFor(() => enrollStarted, "the enrollment to start writing");
+
+  let heldWhenRun: boolean | undefined;
+  const settled = h.gateway.serializeWorkerWrites(() => {
+    heldWhenRun = h.gateway.worker("ci-runner-3") !== null;
+    return Promise.resolve();
+  });
+  held.resolve();
+  await enrolled;
+  await settled;
+
+  assertEquals(heldWhenRun, true);
+});

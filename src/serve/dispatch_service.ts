@@ -36,6 +36,7 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { EndedLeaseState } from "../domain/models/worker/step_lease_model.ts";
+import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_owner.ts";
 import { PENDING_DISPATCH_END_METHODS } from "../domain/models/worker/pending_dispatch_model.ts";
 import {
   captureEnvironmentSnapshot,
@@ -212,6 +213,8 @@ export interface DispatchServiceOptions {
   bundles: BundleRegistry;
   queueTimeoutMs?: number;
   runModelMethod?: ModelMethodRunner;
+  /** stamped on each lease and queue entry, so another serve's sweep leaves them while this process lives */
+  owner?: OrchestratorOwner;
   /**
    * Serve's `dispatch-env-allow`: the only variables the environment
    * snapshot ships. Unset ships the full snapshot (minus the denylist).
@@ -428,6 +431,7 @@ export class DispatchService {
           modelType: request.modelType.normalized,
           methodName: request.methodName,
           queuedAt: new Date().toISOString(),
+          ...(this.#options.owner ? { owner: this.#options.owner } : {}),
         }));
     };
 
@@ -895,6 +899,7 @@ export class DispatchService {
         workflowRunId: request.workflowRunId,
         jobName: request.jobName,
         stepName: request.stepName,
+        ...(this.#options.owner ? { owner: this.#options.owner } : {}),
       }));
 
     if (request.declaredWrites) {

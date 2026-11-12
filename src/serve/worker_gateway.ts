@@ -52,6 +52,7 @@ import {
   WORKER_MODEL_TYPE,
   workerDefinitionName,
 } from "../domain/models/worker/worker_model.ts";
+import type { OrchestratorOwner } from "../domain/models/worker/orchestrator_owner.ts";
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   type EnrollmentBindingCutoffCause,
@@ -244,6 +245,8 @@ export interface WorkerGatewayOptions {
    * Absent, every node takes them.
    */
   acceptsWorkers?: () => boolean;
+  /** stamped on every worker record this gateway writes, so another serve's sweep leaves it while this process lives */
+  owner?: OrchestratorOwner;
   repoDir: string;
   repoContext: RepositoryContext;
   capabilityService: {
@@ -318,12 +321,17 @@ export class WorkerGateway {
     this.#graceWindowMs = options.graceWindowMs ?? DEFAULT_GRACE_WINDOW_MS;
     this.#runModelMethod = options.runModelMethod ??
       ((input) => this.#defaultRunModelMethod(input));
-    this.#workerStatus = options.runModelMethod
+    const workerStatus = options.runModelMethod
       ? methodRunnerWorkerStatusStore(options.runModelMethod)
       : new WorkerStatusLedger(
         options.repoContext,
         methodRunnerWorkerStatusStore(this.#runModelMethod),
       );
+    const owner = options.owner;
+    this.#workerStatus = owner === undefined ? workerStatus : {
+      recordStatus: (workerName, args) =>
+        workerStatus.recordStatus(workerName, { ...args, owner }),
+    };
     this.#findTokenDefinitionId = options.findTokenDefinitionId ??
       (async (tokenName) =>
         (await options.repoContext.definitionRepo.findByName(
@@ -425,6 +433,11 @@ export class WorkerGateway {
 
   workers(): WorkerSnapshot[] {
     return [...this.#workers.values()].map((entry) => this.#snapshot(entry));
+  }
+
+  /** runs fn in the order of this gateway's worker writes, so no enrollment interleaves */
+  serializeWorkerWrites<T>(fn: () => Promise<T>): Promise<T> {
+    return this.#recordTransition("settle_left_workers", fn);
   }
 
   worker(name: string): WorkerSnapshot | null {
@@ -861,6 +874,7 @@ export class WorkerGateway {
             capacity,
             status: initialStatus,
             tokenCreatedAt,
+            ...(this.#options.owner ? { owner: this.#options.owner } : {}),
           },
         });
       }

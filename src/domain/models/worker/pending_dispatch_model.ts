@@ -20,6 +20,10 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
+  OrchestratorOwnerSchema,
+  RecordOwnerField,
+} from "./orchestrator_owner.ts";
+import {
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -65,6 +69,7 @@ export const PendingDispatchSchema = z.object({
   queuedAt: z.string().datetime(),
   dispatchId: z.string().optional(),
   endedAt: z.string().datetime().optional(),
+  owner: RecordOwnerField,
 });
 
 export type PendingDispatch = z.infer<typeof PendingDispatchSchema>;
@@ -94,6 +99,7 @@ const EnqueueArgsSchema = z.object({
   modelType: z.string(),
   methodName: z.string(),
   queuedAt: z.string().datetime(),
+  owner: OrchestratorOwnerSchema.optional(),
 });
 
 export type EnqueuePendingArgs = z.infer<typeof EnqueueArgsSchema>;

@@ -26,6 +26,10 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
+  OrchestratorOwnerSchema,
+  RecordOwnerField,
+} from "./orchestrator_owner.ts";
+import {
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -69,6 +73,7 @@ export const StepLeaseSchema = z.object({
   createdAt: z.string().datetime(),
   endedAt: z.string().datetime().optional(),
   error: z.string().optional(),
+  owner: RecordOwnerField,
 });
 
 export type StepLease = z.infer<typeof StepLeaseSchema>;
@@ -105,6 +110,7 @@ export const AcquireArgsSchema = z.object({
   workflowRunId: z.string().optional(),
   jobName: z.string().optional(),
   stepName: z.string().optional(),
+  owner: OrchestratorOwnerSchema.optional(),
 });
 
 export type AcquireLeaseArgs = z.infer<typeof AcquireArgsSchema>;

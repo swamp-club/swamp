@@ -274,3 +274,17 @@ Deno.test("pendingDispatchModel: a __proto__ label key is stored the same way by
   assertEquals(store.get("pending-q-1"), expected);
   assertEquals(expected.labels?.gpu, "a100");
 });
+
+Deno.test("startPendingDispatch: records the owning serve process when the args name one", () => {
+  const owner = { instanceId: "serve-a", pid: 4101, host: "host-1" };
+  assertEquals(
+    startPendingDispatch({ ...enqueueArgs, owner }, null).owner,
+    owner,
+  );
+  assertEquals("owner" in startPendingDispatch(enqueueArgs, null), false);
+});
+
+Deno.test("parseStoredPendingDispatch: a malformed owner reads as none", () => {
+  const stored = { ...startPendingDispatch(enqueueArgs, null), owner: "x" };
+  assertEquals(parseStoredPendingDispatch("q-1", stored).owner, undefined);
+});

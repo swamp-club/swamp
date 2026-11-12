@@ -20,6 +20,10 @@
 import { z } from "zod";
 import { ModelType } from "../model_type.ts";
 import {
+  OrchestratorOwnerSchema,
+  RecordOwnerField,
+} from "./orchestrator_owner.ts";
+import {
   defineModel,
   type MethodContext,
   type MethodResult,
@@ -66,6 +70,7 @@ export const WorkerStateSchema = z.object({
   verifyFailureReason: z.string().optional().describe(
     "Why the enrollment verification probe failed (present only when status is 'unverified')",
   ),
+  owner: RecordOwnerField,
 });
 
 export type WorkerState = z.infer<typeof WorkerStateSchema>;
@@ -100,6 +105,7 @@ const EnrollArgsSchema = z.object({
   capacity: z.number().int().min(1).default(1),
   status: z.enum(["idle", "unverified"]).optional(),
   tokenCreatedAt: z.string().datetime().optional(),
+  owner: OrchestratorOwnerSchema.optional(),
 });
 
 async function enroll(
@@ -124,6 +130,7 @@ async function enroll(
     lastSeenAt: now,
     capacity: args.capacity,
     activeDispatchIds: [],
+    ...(args.owner !== undefined ? { owner: args.owner } : {}),
   };
   const handle = await context.writeResource!(
     "state",
@@ -139,6 +146,7 @@ export const SetStatusArgsSchema = z.object({
   activeDispatchIds: z.array(z.string()).optional(),
   verifyFailureReason: z.string().optional(),
   tokenCreatedAt: z.string().datetime().optional(),
+  owner: OrchestratorOwnerSchema.optional(),
 });
 
 export type SetStatusArgs = z.infer<typeof SetStatusArgsSchema>;
@@ -162,6 +170,7 @@ export function nextWorkerState(
     ...(args.tokenCreatedAt !== undefined
       ? { tokenCreatedAt: args.tokenCreatedAt }
       : {}),
+    ...(args.owner !== undefined ? { owner: args.owner } : {}),
     verifyFailureReason: args.status === "unverified"
       ? args.verifyFailureReason
       : undefined,
