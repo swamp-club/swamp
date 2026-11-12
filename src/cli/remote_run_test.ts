@@ -27,8 +27,10 @@ import {
 import { UserError } from "../domain/errors.ts";
 import {
   buildErrorJson,
+  exitCodeForError,
   renderError,
 } from "../presentation/output/error_output.ts";
+import { COMMIT_MAY_LAND_CODE } from "../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
   commandTargetOf,
   createTlsHttpClient,
@@ -464,7 +466,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote run: a follower's in-flight refusal keeps inFlight in --json (swamp-club#4281)",
+    "remote run: a follower's in-flight refusal of a run's start reports the run may have started (swamp-club#4281)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -490,8 +492,8 @@ Deno.test({
         ) {}
       }, UserError);
       const json = buildErrorJson(error);
-      assertEquals(json.code, "serve_not_leader");
-      assertEquals(json.inFlight, true);
+      assertEquals(json.code, COMMIT_MAY_LAND_CODE);
+      assertStringIncludes(String(json.error), "may already have run");
     } finally {
       await server.shutdown();
     }
@@ -4196,7 +4198,7 @@ Deno.test({
       assertEquals(clock.delays, [1000, 2000]);
       assertEquals(clock.notices.length, 1);
       assertStringIncludes(clock.notices[0], "is restarting");
-      assertStringIncludes(clock.notices[0], "up to 30s");
+      assertStringIncludes(clock.notices[0], "up to 120s");
     } finally {
       await server?.shutdown();
     }
@@ -4381,7 +4383,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "remote run: a serve still draining when the 30s budget runs out fails with the refusal and how long it retried",
+    "remote run: a serve still draining when the 120s start budget runs out fails with the refusal and how long it retried",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -4405,8 +4407,14 @@ Deno.test({
       );
       assertEquals(error.code, "draining");
       assertStringIncludes(error.message, "serve is shutting down");
-      assertStringIncludes(error.message, "after retrying for 30s");
-      assertEquals(clock.delays, [1000, 2000, 4000, 8000, 8000, 7000]);
+      assertStringIncludes(error.message, "after retrying for 120s");
+      assertEquals(clock.delays, [
+        1000,
+        2000,
+        4000,
+        ...Array<number>(14).fill(8000),
+        1000,
+      ]);
       assertEquals(clock.notices.length, 1);
     } finally {
       await server.shutdown();
@@ -4464,6 +4472,184 @@ Deno.test({
       await server.shutdown();
     }
   },
+});
+
+type RunConnection =
+  | "never opens"
+  | ((request: { type: string; id: string }) => Record<string, unknown>[]);
+
+/** one scripted connection per connect, in order; frames are sent in order */
+function runSockets(connections: RunConnection[]): {
+  createSocket: () => WebSocket;
+  sent: { type: string }[];
+  connects: () => number;
+} {
+  const sent: { type: string }[] = [];
+  let connects = 0;
+  const createSocket = () => {
+    const connection = connections[connects++];
+    let onopen: (() => void) | null = null;
+    const socket = {
+      binaryType: "blob",
+      readyState: 0,
+      onmessage: null as ((event: { data: string }) => void) | null,
+      onerror: null,
+      onclose: null,
+      get onopen() {
+        return onopen;
+      },
+      set onopen(handler: (() => void) | null) {
+        onopen = handler;
+        if (handler && connection !== "never opens") {
+          queueMicrotask(() => {
+            socket.readyState = 1;
+            handler();
+          });
+        }
+      },
+      send(data: string) {
+        const request = JSON.parse(data);
+        sent.push(request);
+        if (typeof connection !== "function") return;
+        for (const frame of connection(request)) {
+          const text = JSON.stringify(frame);
+          queueMicrotask(() => socket.onmessage?.({ data: text }));
+        }
+      },
+      close() {},
+    };
+    return socket as unknown as WebSocket;
+  };
+  return { createSocket, sent, connects: () => connects };
+}
+
+const completesRun = (request: { id: string }) => [
+  {
+    type: "event",
+    id: request.id,
+    event: { kind: "started", runId: "run-f", workflowName: "wf", seq: 1 },
+  },
+  { type: "done", id: request.id },
+];
+
+const refusedNotLeader =
+  (details: Record<string, unknown>) => (request: { id: string }) => [{
+    type: "error",
+    id: request.id,
+    error: {
+      code: "serve_not_leader",
+      message: "This swamp serve node does not lead the datastore.",
+      details,
+    },
+  }];
+
+Deno.test("remote run: a connect that times out before the socket opens is retried, since nothing was sent", async () => {
+  const sockets = runSockets(["never opens", completesRun]);
+  const clock = fakeRetryClock();
+  const kinds = await drainRun(runWorkflowOverServer({
+    server: "ws://swamp.test",
+    headers: {},
+    payload: { workflowIdOrName: "wf" },
+    createSocket: sockets.createSocket,
+    connectTimeoutMs: 10,
+    ...clock.options,
+  }));
+  assertEquals(kinds, ["started"]);
+  assertEquals(sockets.connects(), 2);
+  assertEquals(sockets.sent.length, 1);
+  assertEquals(clock.delays, [1000]);
+  assertStringIncludes(clock.notices[0], "connect timed out");
+});
+
+Deno.test("remote run: a connect that times out past the budget exits 75, since nothing ran", async () => {
+  const sockets = runSockets(["never opens", "never opens"]);
+  const clock = fakeRetryClock();
+  const error = await assertRejects(
+    () =>
+      drainRun(runWorkflowOverServer({
+        server: "ws://swamp.test",
+        headers: {},
+        payload: { workflowIdOrName: "wf" },
+        createSocket: sockets.createSocket,
+        connectTimeoutMs: 10,
+        restartRetryBudgetMs: 1_000,
+        ...clock.options,
+      })),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Timed out connecting");
+  assertEquals(error.code, "datastore_v3_serve_unreachable");
+  assertEquals(exitCodeForError(error), 75);
+  assertEquals(sockets.sent.length, 0);
+});
+
+Deno.test({
+  name:
+    "remote run: a refused connect that outlasts the budget exits 75, since nothing ran",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const clock = fakeRetryClock();
+    const error = await assertRejects(
+      () =>
+        drainRun(runWorkflowOverServer({
+          server: `ws://127.0.0.1:${freePort()}`,
+          payload: { workflowIdOrName: "wf" },
+          ...clock.options,
+          restartRetryBudgetMs: 0,
+        })),
+      UserError,
+    );
+    assertEquals(error.code, "datastore_v3_serve_unreachable");
+    assertEquals(exitCodeForError(error), 75);
+  },
+});
+
+Deno.test("remote run: a follower's not-leader refusal that never reached the leader is retried until a leader starts the run", async () => {
+  const notSent = refusedNotLeader({
+    leader: { instanceId: "a", fence: 3, since: "2026-11-12T00:00:00Z" },
+  });
+  const sockets = runSockets([notSent, notSent, completesRun]);
+  const clock = fakeRetryClock();
+  const kinds = await drainRun(runWorkflowOverServer({
+    server: "ws://swamp.test",
+    headers: {},
+    payload: { workflowIdOrName: "wf" },
+    createSocket: sockets.createSocket,
+    ...clock.options,
+  }));
+  assertEquals(kinds, ["started"]);
+  assertEquals(sockets.sent.map((r) => r.type), [
+    "workflow.run",
+    "workflow.run",
+    "workflow.run",
+  ]);
+  assertEquals(clock.delays, [1000, 2000]);
+  assertStringIncludes(clock.notices[0], "serve_not_leader");
+});
+
+Deno.test("remote run: a not-leader refusal relayed in flight is never sent again and exits 1 as a run that may have started", async () => {
+  const sockets = runSockets([
+    refusedNotLeader({ inFlight: true }),
+    completesRun,
+  ]);
+  const clock = fakeRetryClock();
+  const error = await assertRejects(
+    () =>
+      drainRun(runModelMethodOverServer({
+        server: "ws://swamp.test",
+        headers: {},
+        payload: { modelIdOrName: "m", methodName: "run" },
+        createSocket: sockets.createSocket,
+        ...clock.options,
+      })),
+    UserError,
+  );
+  assertEquals(error.code, COMMIT_MAY_LAND_CODE);
+  assertEquals(exitCodeForError(error), 1);
+  assertStringIncludes(error.message, "swamp run history");
+  assertEquals(sockets.sent.length, 1);
+  assertEquals(clock.delays, []);
 });
 
 Deno.test({
