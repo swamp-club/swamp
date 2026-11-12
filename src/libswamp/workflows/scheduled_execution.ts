@@ -746,7 +746,7 @@ export class ScheduledExecutionService {
     return count;
   }
 
-  /** false when nothing was queued: a draining service or a run already held */
+  /** false when nothing was queued: a service shutting down or a run already held */
   enqueueForReplay(entry: {
     pendingRunId: string;
     workflowIdOrName: string;

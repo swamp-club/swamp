@@ -1840,11 +1840,7 @@ webhook and scheduler services' `stop()` report the runs they abort, and
 `runShutdownDrain` returns them beside the registry's, so a run cut off by a
 restart is recoverable however it started (swamp-club#4656). A run a user or a
 webhook cancel request cancelled before the abort is not reported and stays
-`cancelled`. A scheduler turned on by a reload first replays the cron runs it
-left pending; shutdown aborts that replay (its control-plane reads take the
-signal, and it queues and deletes nothing once aborted) and waits for it at most
-15 s (`REPLAY_SETTLE_TIMEOUT_MS`, `src/serve/scheduled_execution_lifecycle.ts`),
-so the runs stay pending for the next start (swamp-club#4660). Before it loads them it closes their run write fence
+`cancelled`. Before it loads them it closes their run write fence
 (`ServeRunWriteFence`, `src/serve/run_write_fence.ts`) and waits up to 2 s for
 a save already under way. An executor can outlive the abort grace, as one whose
 remote step answers after the abort does; with the fence closed it can no
@@ -1855,7 +1851,13 @@ deadline reports. Once shutdown has saved a run's record it takes the run over,
 and a commit of the executor's on v3 (an in-flight or trailing checkpoint, or
 one retried at the end commit) is withdrawn instead of landing after shutdown's
 (swamp-club#4171). A run shutdown leaves alone because it already ended is not
-taken over, so its executor's final record still commits.
+taken over, so its executor's final record still commits. A scheduler turned
+on by a reload first replays the cron runs it left pending; shutdown aborts
+that replay and waits for it at most 15 s (`REPLAY_SETTLE_TIMEOUT_MS`,
+`src/serve/scheduled_execution_lifecycle.ts`). Its control-plane gets take the
+abort signal, a listing does not and is cut off by the 15 s bound, and once
+aborted the replay queues and deletes nothing, so the runs stay pending for
+the next start (swamp-club#4660).
 The fence covers the top-level runs shutdown interrupts, not the child runs of
 nested workflows, which shutdown does not track. One 5 s deadline bounds the
 gate wait and the push together;
@@ -1872,7 +1874,8 @@ those runs' tracker rows as `interrupted` (`server_shutdown`), so the next boot
 does not skip them as still running. A row the run itself completed as
 `cancelled` when it settled from the abort is moved to `interrupted` too
 (`interruptCancelled`): resume reactivates only a suspended, failed or
-interrupted row, so a `cancelled` one would stay terminal under the resumed run. When the push fails, the runs are recorded
+interrupted row, so a `cancelled` one would stay terminal under the resumed
+run. When the push fails, the runs are recorded
 in `.swamp/serve-unpushed-interrupts.json` for the next start in this checkout
 to push, `--json` mode prints
 `{"status":"interrupt_push_failed","runIds":[…]}`, and the instance writes a
