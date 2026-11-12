@@ -228,6 +228,8 @@ export interface InstallContext {
   dependencySkillsDirs?: string[];
   repoDir: string;
   force: boolean;
+  /** under force, a skill dir this extension does not own still conflicts */
+  refuseSkillConflicts?: boolean;
   alreadyPulled: Set<string>;
   depth: number;
   /**
@@ -1898,9 +1900,14 @@ export async function applyInstall(
     })
     : null;
 
-  if (conflicts.length > 0 && !ctx.force) {
+  const blocking = !ctx.force
+    ? conflicts
+    : ctx.refuseSkillConflicts
+    ? skillConflicts
+    : [];
+  if (blocking.length > 0) {
     throw new ConflictError(
-      conflicts,
+      blocking,
       skillConflicts,
       replacement ?? undefined,
     );

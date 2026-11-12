@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert/equals";
 import { assertRejects } from "@std/assert/rejects";
+import { assertStringIncludes } from "@std/assert/string-includes";
 import { createLibSwampContext } from "../context.ts";
 import { result } from "../stream.ts";
 import { collect } from "../testing.ts";
@@ -32,6 +33,7 @@ import { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import { ManagedLockfileUnpublishedError } from "./managed_lockfile_transaction.ts";
+import { ConflictError } from "./pull.ts";
 
 function shorthandUpstream(
   versions: Readonly<Record<string, string>>,
@@ -214,6 +216,40 @@ Deno.test("extensionUpdate: update mode with install failure", async () => {
     assertEquals(completed.data.summary.failed, 1);
     assertEquals(completed.data.extensions[0].status, "failed");
   }
+});
+
+Deno.test("extensionUpdate: a skill dir conflict leaves the extension not updated, points at pull, and the bulk update continues", async () => {
+  const installed: string[] = [];
+  const deps = makeDeps({
+    upstream: { "@ns/a": "2026.01.01.1", "@ns/b": "2026.01.01.1" },
+    getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+    installExtension: (name) => {
+      installed.push(name);
+      if (name === "@ns/a") {
+        const dir = ".claude/skills/myskill";
+        return Promise.reject(new ConflictError([dir], [dir]));
+      }
+      return Promise.resolve(undefined);
+    },
+  });
+
+  const completed = await result<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), deps, { checkOnly: false }),
+  );
+
+  assertEquals(installed, ["@ns/a", "@ns/b"]);
+  assertEquals(completed.kind, "completed");
+  const a = completed.data.extensions.find((e) => e.name === "@ns/a");
+  assertEquals(a?.status, "failed");
+  const error = a?.status === "failed" ? a.error : "";
+  assertStringIncludes(error, ".claude/skills/myskill");
+  assertStringIncludes(error, "swamp extension pull @ns/a@2026.03.01.1");
+  assertEquals(error.includes("--force"), false);
+  assertEquals(error.includes("\n"), false);
+  assertEquals(
+    completed.data.extensions.find((e) => e.name === "@ns/b")?.status,
+    "updated",
+  );
 });
 
 function collision(

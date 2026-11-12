@@ -857,6 +857,90 @@ Deno.test(
 );
 
 Deno.test(
+  "installExtension: refuseSkillConflicts refuses another extension's skill dir even under force",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const owner = uniqueExtName();
+      const name = uniqueExtName();
+      const ownerArchive = await buildSkillArchive({
+        name: owner,
+        skills: { foo: { "SKILL.md": "from owner" } },
+      });
+      await installExtension(
+        { name: owner, version: null },
+        skillInstallContext(repoDir, lockfile, { [owner]: ownerArchive }),
+      );
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      const skillDir = join(repoDir, ".claude", "skills", "foo");
+      const error = await assertRejects(
+        () =>
+          installExtension(
+            { name, version: null },
+            {
+              ...skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+                force: true,
+              }),
+              refuseSkillConflicts: true,
+            },
+          ),
+        ConflictError,
+      );
+      assertEquals(error.skillDirs, [lockPath(repoDir, skillDir)]);
+      assertEquals(
+        await Deno.readTextFile(join(skillDir, "SKILL.md")),
+        "from owner",
+      );
+      assertEquals(lockfile.getEntry(name), null);
+      assertEquals(
+        lockfile.getEntry(owner)?.files?.includes(lockPath(repoDir, skillDir)),
+        true,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: refuseSkillConflicts still forces file conflicts and accepts the extension's own skill dir",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+        files: { "workflows/w.yaml": "x: 1\n" },
+      });
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }),
+      );
+      await assertRejects(
+        () =>
+          installExtension(
+            { name, version: null },
+            skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          ),
+        ConflictError,
+      );
+      const result = await installExtension(
+        { name, version: null },
+        {
+          ...skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+            force: true,
+          }),
+          refuseSkillConflicts: true,
+        },
+      );
+      const root = lockPath(repoDir, join(repoDir, ".claude", "skills", "foo"));
+      assertEquals(result?.name, name);
+      assertEquals(lockfile.getEntry(name)?.files?.includes(root), true);
+    });
+  },
+);
+
+Deno.test(
   "installExtension: ownership recorded per file with backslashes still counts",
   async () => {
     await withSkillRepo(async (repoDir, lockfile) => {
