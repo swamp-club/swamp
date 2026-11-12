@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   type RotateTokenResult,
@@ -53,10 +54,17 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-function rotate(orchestrator: RpcChannel, token: string) {
+let nextMint = 1;
+
+function rotate(
+  orchestrator: RpcChannel,
+  token: string,
+  mintMs: number = nextMint++,
+) {
   return orchestrator.call<RotateTokenResult>(WorkerMethod.rotateToken, {
     token,
     expiresAtMs: Date.parse("2027-01-01T00:00:00.000Z"),
+    mintMs,
   });
 }
 
@@ -162,6 +170,10 @@ Deno.test("registerTokenRotationHandler: refuses a malformed token before touchi
     ),
     "invalid_params",
   );
+  assertEquals(
+    await refusalCode(rotate(orchestrator, "web-01.new\nextra")),
+    "invalid_params",
+  );
   assertEquals(credential.token, "web-01.old");
   assertEquals(writes, 0);
 });
@@ -179,4 +191,59 @@ Deno.test("registerTokenRotationHandler: a token file it cannot write still take
 
   assertEquals(await rotate(orchestrator, "web-01.new"), { persisted: false });
   assertEquals(credential.token, "web-01.new");
+});
+
+Deno.test("registerTokenRotationHandler: an older successor arriving late never replaces a newer one", async () => {
+  const written: string[] = [];
+  const { worker, orchestrator } = channelPair();
+  const credential: WorkerCredential = { token: "web-01.old" };
+  registerTokenRotationHandler({
+    channel: worker,
+    credential,
+    tokenFile: "/token",
+    writeTokenFile: (_path, token) => {
+      written.push(token);
+      return Promise.resolve();
+    },
+  });
+
+  assertEquals(await rotate(orchestrator, "web-01.b", 200), {
+    persisted: true,
+  });
+  assertEquals(await rotate(orchestrator, "web-01.a", 100), {
+    persisted: true,
+  });
+  assertEquals(credential.token, "web-01.b");
+  assertEquals(written, ["web-01.b"]);
+});
+
+Deno.test("registerTokenRotationHandler: concurrent successors are written one at a time, in arrival order", async () => {
+  const events: string[] = [];
+  const release = Promise.withResolvers<void>();
+  const { worker, orchestrator } = channelPair();
+  const credential: WorkerCredential = { token: "web-01.old" };
+  registerTokenRotationHandler({
+    channel: worker,
+    credential,
+    tokenFile: "/token",
+    writeTokenFile: async (_path, token) => {
+      events.push(`start ${token}`);
+      if (token === "web-01.a") await release.promise;
+      events.push(`end ${token}`);
+    },
+  });
+
+  const first = rotate(orchestrator, "web-01.a", 100);
+  const second = rotate(orchestrator, "web-01.b", 200);
+  await waitFor(() => events.length === 1, "first write started");
+  release.resolve();
+  await Promise.all([first, second]);
+
+  assertEquals(events, [
+    "start web-01.a",
+    "end web-01.a",
+    "start web-01.b",
+    "end web-01.b",
+  ]);
+  assertEquals(credential.token, "web-01.b");
 });

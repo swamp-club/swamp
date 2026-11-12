@@ -103,7 +103,12 @@ const REDEEM_FAILURE_CODES: readonly [string, string][] = [
 ];
 
 function codedRedeemFailure(error: unknown): unknown {
-  if (!(error instanceof Error)) return error;
+  if (
+    !(error instanceof Error) || error instanceof RpcError ||
+    error instanceof ChannelClosedError
+  ) {
+    return error;
+  }
   const reason = withoutQuotedNames(error.message);
   for (const [phrase, code] of REDEEM_FAILURE_CODES) {
     if (reason.includes(phrase)) {
@@ -605,10 +610,14 @@ export class WorkerGateway {
     try {
       secret = await readTokenSecret(record.vaultName, record.secretKey);
     } catch (error) {
+      logger.warn("Could not read the rotated secret of {token}: {error}", {
+        token: tokenName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // the vault error stays in serve's log: it can name a path, which the
+      // client sanitizer would turn into a message without the reveal hint
       throw new Error(
-        `Enrollment token '${tokenName}' was rotated, but its new secret could not be read (${
-          error instanceof Error ? error.message : String(error)
-        }); read it with: swamp worker token reveal ${tokenName}`,
+        `Enrollment token '${tokenName}' was rotated, but its new secret could not be read; read it with: swamp worker token reveal ${tokenName}`,
       );
     }
     const token = `${tokenName}.${secret}`;
@@ -638,7 +647,7 @@ export class WorkerGateway {
       try {
         const result = await channel.call<RotateTokenResult>(
           WorkerMethod.rotateToken,
-          { token, expiresAtMs },
+          { token, expiresAtMs, mintMs: Date.parse(record.createdAt) },
           { timeoutMs },
         );
         acknowledged.push({

@@ -209,8 +209,11 @@ export const WorkerCapability = {
 } as const;
 
 export const RotateTokenParamsSchema = z.object({
-  token: z.string().min(1),
+  // written verbatim into the operator's token file
+  token: z.string().min(1).max(4096).regex(/^\S+$/),
   expiresAtMs: z.number().int(),
+  /** the successor's createdAt, so a worker never applies an older one late */
+  mintMs: z.number().int(),
 });
 
 export type RotateTokenParams = z.infer<typeof RotateTokenParamsSchema>;

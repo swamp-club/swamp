@@ -155,15 +155,15 @@ export async function* workerTokenRotate(
         let secret: string;
         try {
           secret = await deps.readSecret(token.vaultName, token.secretKey);
-        } catch (error) {
+        } catch {
+          // no vault detail: serve shows this message, and a path in it would
+          // make its sanitizer drop the reveal hint
           yield {
             kind: "error" as const,
             error: {
               code: "vault_read_failed",
               message:
-                `Enrollment token '${input.name}' was rotated, but its new secret could not be read (${
-                  error instanceof Error ? error.message : String(error)
-                }); read it with: swamp worker token reveal ${input.name}`,
+                `Enrollment token '${input.name}' was rotated, but its new secret could not be read; read it with: swamp worker token reveal ${input.name}`,
             },
           };
           return;

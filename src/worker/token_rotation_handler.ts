@@ -31,6 +31,11 @@ const logger = getLogger(["swamp", "worker", "token"]);
 /** the enrollment credential a reconnect presents; a rotation replaces it */
 export interface WorkerCredential {
   token: string;
+  /** createdAt of the newest successor applied, and whether it reached disk */
+  mintMs?: number;
+  persisted?: boolean;
+  /** rotations apply one at a time, so file writes never interleave */
+  applying?: Promise<unknown>;
 }
 
 export interface TokenRotationHandlerOptions {
@@ -87,6 +92,32 @@ export function registerTokenRotationHandler(
           "a token issued under another name",
       });
     }
+    const credential = options.credential;
+    const apply = async (): Promise<RotateTokenResult> => {
+      // overlapping rotations can arrive out of mint order; an older one late
+      // must not replace the newer token serve has recorded
+      if (
+        credential.mintMs !== undefined &&
+        parsed.data.mintMs <= credential.mintMs
+      ) {
+        return { persisted: credential.persisted === true };
+      }
+      const applied = await applySuccessor(next, parsed.data.expiresAtMs);
+      credential.mintMs = parsed.data.mintMs;
+      return applied;
+    };
+    const result = (credential.applying ?? Promise.resolve()).then(
+      apply,
+      apply,
+    );
+    credential.applying = result;
+    return await result;
+  });
+
+  async function applySuccessor(
+    next: string,
+    expiresAtMs: number,
+  ): Promise<RotateTokenResult> {
     let persisted = false;
     if (options.tokenFile !== undefined) {
       // a read-only file (a Kubernetes Secret mount) still takes the successor
@@ -105,7 +136,8 @@ export function registerTokenRotationHandler(
       }
     }
     options.credential.token = next;
-    const expiresAt = new Date(parsed.data.expiresAtMs).toISOString();
+    options.credential.persisted = persisted;
+    const expiresAt = new Date(expiresAtMs).toISOString();
     if (persisted) {
       logger.info("Enrollment token rotated; it now expires at {expiresAt}", {
         expiresAt,
@@ -117,7 +149,6 @@ export function registerTokenRotationHandler(
         { expiresAt },
       );
     }
-    const result: RotateTokenResult = { persisted };
-    return result;
-  });
+    return { persisted };
+  }
 }

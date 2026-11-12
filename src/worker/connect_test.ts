@@ -307,6 +307,7 @@ Deno.test("runWorker: a reconnect after a rotation presents the successor token"
         sockets[0].orchestrator.call(WorkerMethod.rotateToken, {
           token: "ci.new",
           expiresAtMs: Date.now() + 60_000,
+          mintMs: 1,
         }).finally(() => sockets[0].drop());
       }
       if (event.kind === "enrolled" && enrollments.length === 2) {

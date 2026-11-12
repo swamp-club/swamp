@@ -481,15 +481,27 @@ Deno.test("EnrollParamsSchema: capabilities are optional, so an older worker tha
   );
 });
 
-Deno.test("RotateTokenParamsSchema: refuses an empty token", () => {
-  assertEquals(
-    RotateTokenParamsSchema.safeParse({ token: "", expiresAtMs: 1 }).success,
-    false,
-  );
+Deno.test("RotateTokenParamsSchema: refuses an empty, oversized or whitespace-bearing token, and needs the mint", () => {
+  const ok = { token: "web-01.abc", expiresAtMs: 1, mintMs: 1 };
+  assertEquals(RotateTokenParamsSchema.safeParse(ok).success, true);
+  for (
+    const token of [
+      "",
+      "web-01.a b",
+      "web-01.a\nb",
+      `web-01.${"x".repeat(4096)}`,
+    ]
+  ) {
+    assertEquals(
+      RotateTokenParamsSchema.safeParse({ ...ok, token }).success,
+      false,
+      token.slice(0, 20),
+    );
+  }
   assertEquals(
     RotateTokenParamsSchema.safeParse({ token: "web-01.abc", expiresAtMs: 1 })
       .success,
-    true,
+    false,
   );
 });
 

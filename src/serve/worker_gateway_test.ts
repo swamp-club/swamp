@@ -3047,6 +3047,7 @@ Deno.test("WorkerGateway: rotateToken delivers the successor and re-stamps the w
   assertEquals(delivered, [{
     token: report.token,
     expiresAtMs: Date.parse("2099-06-01T00:00:00.000Z"),
+    mintMs: Date.parse(ROTATED_MINT),
   }]);
   assertEquals(h.gateway.boundTokens(), [{
     tokenName: "ci-runner-3",
@@ -3365,15 +3366,17 @@ Deno.test("WorkerGateway: a worker in its grace window is reported once, not aga
   assertEquals(report.retiredBindings, 0);
 });
 
-Deno.test("WorkerGateway: a secret that cannot be read after the rotation lands points at reveal", async () => {
+Deno.test("WorkerGateway: a secret that cannot be read after the rotation lands points at reveal, without the vault's detail", async () => {
   const h = createHarness({
-    readTokenSecret: () => Promise.reject(new Error("vault offline")),
+    readTokenSecret: () =>
+      Promise.reject(new Error("readfile '/srv/repo/.swamp/_control/x'")),
   });
-  await assertRejects(
+  const error = await assertRejects(
     () => h.gateway.rotateToken("ci-runner-3"),
     Error,
     "swamp worker token reveal ci-runner-3",
   );
+  assertEquals(error.message.includes("/srv/repo"), false);
   assertEquals(
     h.transitions.filter((t) => t.methodName === "rotate").length,
     1,
