@@ -44,7 +44,6 @@ import {
 import {
   serveDatastoreClientFor,
   serveRequestTimeoutMs,
-  warmServeConnection,
 } from "./serve_datastore_client.ts";
 import {
   registerServeUpstream,
@@ -106,7 +105,6 @@ export async function bindV3ServeUpstream(
     namespace,
     client: () => serveDatastoreClientFor(target, namespace),
   });
-  warmServeConnection(target);
   // Registered first: the copy it creates is then never a replicated one.
   const markerSeen = await v3MarkerState(root);
   if (markerSeen !== "v3") {

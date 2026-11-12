@@ -21,7 +21,6 @@ import {
   assert,
   assertEquals,
   assertInstanceOf,
-  assertNotEquals,
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
@@ -785,7 +784,6 @@ Deno.test("ServeLock.acquire: each ask tells serve what is left of the whole wai
 function stallingServe(stall: { acquire?: string; renew?: string }) {
   const answered: string[] = [];
   const remotePorts = new Set<number>();
-  const ports: { readonly method: string; readonly port: number }[] = [];
   let go!: () => void;
   const released = new Promise<void>((resolve) => go = resolve);
   const lease = (leaseId: string, lockKey: string, ttlMs: number) => ({
@@ -799,10 +797,6 @@ function stallingServe(stall: { acquire?: string; renew?: string }) {
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     async (request, info) => {
       remotePorts.add((info.remoteAddr as Deno.NetAddr).port);
-      ports.push({
-        method: request.method,
-        port: (info.remoteAddr as Deno.NetAddr).port,
-      });
       const path = new URL(request.url).pathname;
       if (request.method === "POST" && path.endsWith("/locks")) {
         const body = await request.json() as {
@@ -834,7 +828,6 @@ function stallingServe(stall: { acquire?: string; renew?: string }) {
     origin: `http://127.0.0.1:${server.addr.port}`,
     answered,
     remotePorts,
-    ports,
     go: () => go(),
     close: async () => {
       go();
@@ -935,41 +928,6 @@ Deno.test("createServeLock: a command's locks one after another reuse one kept c
         await lock.release();
       }
       assertEquals(serve.remotePorts.size, 1);
-    });
-  } finally {
-    await serve.close();
-  }
-});
-
-Deno.test("createServeLock: a lock's acquire and release ride the command's data connection, its renewals a connection of their own", async () => {
-  const serve = stallingServe({});
-  try {
-    await withLockBinding(serve.origin, async (root) => {
-      const data = await fetch(
-        `${serve.origin}/api/v1/datastore/_default/changes`,
-      );
-      await data.body?.cancel();
-      const lock = createServeLock(root, {
-        lockKey: "a/.lock",
-        maxWaitMs: 5_000,
-        ttlMs: 300,
-      })!;
-      await lock.acquire();
-      await waitFor(
-        () => serve.answered.includes("renew:lease-a/.lock"),
-        "the lease renewed",
-      );
-      await lock.release();
-      const portOf = (method: string) =>
-        serve.ports.find((request) => request.method === method)?.port;
-      const dataPort = portOf("GET");
-      assertEquals(portOf("POST"), dataPort, "acquire on the data connection");
-      assertEquals(
-        portOf("DELETE"),
-        dataPort,
-        "release on the data connection",
-      );
-      assertNotEquals(portOf("PUT"), dataPort, "renewals on their own");
     });
   } finally {
     await serve.close();

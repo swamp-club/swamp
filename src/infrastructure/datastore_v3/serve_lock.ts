@@ -721,17 +721,10 @@ export class ServeLock implements DistributedLock {
 export type ServeLockFactoryOptions = Omit<ServeLockOptions, "client">;
 
 /**
- * one pair per serve and caller for all of a process's locks: acquire and
- * release ride the command's warm connection, renewals a pool of their own
- * that opens another connection when one is busy, so no renewal waits
+ * one client per serve and caller for all of a process's locks, off the upload
+ * pool; it opens another connection when one is busy, so no renewal waits
  */
-const lockClients = new Map<
-  string,
-  {
-    readonly pooled: ServeLockClient & { close(): void };
-    readonly renewing: ServeLockClient & { close(): void };
-  }
->();
+const lockClients = new Map<string, ServeLockClient & { close(): void }>();
 
 function lockClientFor(
   binding: NonNullable<ReturnType<typeof serveUpstreamAt>>,
@@ -743,33 +736,27 @@ function lockClientFor(
     binding.target.extraHeaders ?? {},
     binding.target.caCerts ?? [],
   ]);
-  let clients = lockClients.get(key);
-  if (clients === undefined) {
-    clients = {
-      pooled: serveDatastoreClientFor(binding.target, binding.namespace),
-      renewing: serveDatastoreClientFor(binding.target, binding.namespace, {
-        ownConnection: true,
-      }),
-    };
-    lockClients.set(key, clients);
+  let client = lockClients.get(key);
+  if (client === undefined) {
+    client = serveDatastoreClientFor(binding.target, binding.namespace, {
+      ownConnection: true,
+    });
+    lockClients.set(key, client);
   }
-  const { pooled, renewing } = clients;
-  // no close: a hold that ends leaves the connections for the next lock
+  const shared = client;
+  // no close: a hold that ends leaves the connection for the next lock
   return {
-    acquireLock: (...args) => pooled.acquireLock(...args),
-    renewLock: (...args) => renewing.renewLock(...args),
-    releaseLock: (...args) => pooled.releaseLock(...args),
-    baseUrl: pooled.baseUrl,
-    timeoutMs: pooled.timeoutMs,
+    acquireLock: (...args) => shared.acquireLock(...args),
+    renewLock: (...args) => shared.renewLock(...args),
+    releaseLock: (...args) => shared.releaseLock(...args),
+    baseUrl: shared.baseUrl,
+    timeoutMs: shared.timeoutMs,
   };
 }
 
 /** once the process's holds have ended */
 export function closeServeLockClients(): void {
-  for (const { pooled, renewing } of lockClients.values()) {
-    pooled.close();
-    renewing.close();
-  }
+  for (const client of lockClients.values()) client.close();
   lockClients.clear();
 }
 

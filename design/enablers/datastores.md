@@ -7695,20 +7695,10 @@ own locks, held through its lock routes (`ServeLock`,
 `DatastoreLockLeases`, `src/serve/datastore_locks.ts`). The global datastore
 lock stays a local file lock.
 
-A lock's acquire and release go over the command's own connection to serve,
-which the process's data requests share, so a command's first lock does not
-open a connection of its own. Renewals use one HTTP client per serve and token,
-apart from the upload pool so a renewal never queues behind an upload; its
-pool opens another connection when one is busy, so a long acquire wait or a
-stalled renewal never holds up another lock's renewal.
-
-With a private CA, every data client of a serve borrows one process-wide HTTP
-client per CA set, as clients without one share Deno's fetch pool, so over h2
-a command's requests share one connection. A request on it that times out
-moves only that client to a connection of its own. When a checkout binds to
-serve, it sends `GET /ready` with the client's token so the connection is open
-before the first datastore request; teardown cuts it off if it is still
-pending (swamp-club#4631).
+One HTTP client per serve and token holds every lock of the process, apart
+from the upload pool so a renewal never queues behind an upload; its pool
+opens another connection when one is busy, so a long acquire wait or a stalled
+renewal never holds up another lock's renewal.
 
 These routes are the base model leases (`p5-leases`, swamp-club#4121) extend,
 not a second mechanism beside them: a lease carries a fencing token that serve
