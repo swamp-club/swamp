@@ -310,8 +310,9 @@ datastore:
   during early boot, bypassing the extension loader. When a vault named in a
   `vault.get()` has an extension type that is not cached, as on a fresh clone
   or worktree, it is auto-resolved from the trusted collectives, as the
-  datastore type is, and never when the caller is installed-only. Otherwise the
-  error names the vault type and the `swamp extension pull` command.
+  datastore type is, unless the caller runs installed-only
+  (`autoResolve: false`). Otherwise the error names the vault type and the
+  `swamp extension pull` command.
 - Vault expressions do not work with `managedConfig: true`, which stores vault
   configs in the datastore tier and would create a circular dependency. Use
   environment variables instead.

@@ -604,3 +604,25 @@ export const vault = {
     await removeTempRepo(repoDir);
   }
 });
+
+Deno.test("resolveDatastoreExpressions: a failing definition never displaces a same-named vault that registered", async () => {
+  const repoDir = await makeTempRepo();
+  const working = uniqueExtensionVaultType();
+  const missing = uniqueExtensionVaultType();
+  registerMockVaultType(working);
+  try {
+    await writeVaultDef(repoDir, "dsauth", working, { DIR: "working-dir" });
+    await writeVaultDef(repoDir, "dsauth", missing, { DIR: "other-dir" });
+    const calls: string[] = [];
+    const result = await resolveDatastoreExpressions(
+      { dir: "${{ vault.get(dsauth, DIR) }}" },
+      { repoDir, autoResolver: installingResolver(calls) },
+    );
+    assertEquals(result, { dir: "working-dir" });
+    assertEquals(calls, []);
+  } finally {
+    vaultTypeRegistry.invalidateType(working);
+    vaultTypeRegistry.invalidateType(missing);
+    await removeTempRepo(repoDir);
+  }
+});

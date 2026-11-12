@@ -116,6 +116,7 @@ async function createEarlyVaults(repoDir: string): Promise<EarlyVaults> {
   const vaultsDir = join(repoDir, "vaults");
   const vaultService = new VaultService();
   const skipped = new Map<string, SkippedVault>();
+  const registered = new Set<string>();
   const vaultRepo = new YamlVaultConfigRepository(
     repoDir,
     undefined,
@@ -141,11 +142,16 @@ async function createEarlyVaults(repoDir: string): Promise<EarlyVaults> {
     };
     try {
       vaultService.registerVault(configuration);
+      registered.add(vaultConfig.name);
+      skipped.delete(vaultConfig.name);
     } catch (error) {
       // a vault.get naming it reports this cause in its own error
       logger
         .debug`Vault ${vaultConfig.name} not available for datastore config expressions: ${error}`;
-      skipped.set(vaultConfig.name, { configuration, error });
+      // a same-named definition that registered keeps serving the name
+      if (!registered.has(vaultConfig.name)) {
+        skipped.set(vaultConfig.name, { configuration, error });
+      }
     }
   }
 
