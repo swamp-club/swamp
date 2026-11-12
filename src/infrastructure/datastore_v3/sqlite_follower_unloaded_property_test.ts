@@ -17,11 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import fc from "fast-check";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
+import { CommitStoreCorruptError } from "../../domain/datastore_v3/commit_store.ts";
 import { createIntent, modelRef } from "../../domain/datastore_v3/intent.ts";
 import { leaseOp, type Op, putOp } from "../../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
@@ -260,4 +261,41 @@ Deno.test("SqliteCommitStore follower: appends to an unloaded partition match th
     { numRuns: 500 },
   );
   console.log(`unloaded follower coverage: ${JSON.stringify(coverage)}`);
+});
+
+Deno.test("SqliteCommitStore follower: a lease commit over a snapshot whose lease fence a rebuild refuses is refused as the rebuild refuses it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-unloaded-lease-" });
+  try {
+    const path = join(dir, "commits.db");
+    const leased = async (seq: number, fence: number) =>
+      modelCommit(seq, [
+        await savePut(`n${seq}`, seq),
+        leaseOp({ holder: "serve", fence }),
+      ], { fence: 1 });
+    const first = SqliteCommitStore.open(path, {
+      follower: true,
+      snapshotInterval: 1,
+    });
+    await first.append(await leased(1, 1));
+    await first.close();
+    const db = new DatabaseSync(path);
+    try {
+      db.prepare(
+        "UPDATE partition_snapshots SET body = json_set(body, '$.leaseFence', '1')",
+      ).run();
+    } finally {
+      db.close();
+    }
+    const store = SqliteCommitStore.open(path, { follower: true });
+    try {
+      await assertRejects(
+        async () => store.append(await leased(2, 2)),
+        CommitStoreCorruptError,
+      );
+    } finally {
+      await store.close();
+    }
+  } finally {
+    await removeDir(dir);
+  }
 });

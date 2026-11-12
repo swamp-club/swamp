@@ -7635,7 +7635,7 @@ commit from those in the append's transaction and writes the same rows. It
 rebuilds only for a partition it already holds, a commit that makes a snapshot
 due, or a body it cannot read. A command applying serve's commits to
 partitions it never reads, such as another writer's busy behavior, then
-appends each in about a millisecond. A property test holds the two paths to
+appends each in a few milliseconds rather than a rebuild's hundreds. A property test holds the two paths to
 the same results, rows and rebuilt state.
 
 **Writing.** `createServeCommitSink` (`serve_commit_sink.ts`) is the outbox

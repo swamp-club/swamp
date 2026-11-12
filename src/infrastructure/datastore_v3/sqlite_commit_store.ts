@@ -1857,7 +1857,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       let fence: number | undefined;
       for (const op of ops) {
         if (op?.kind === "lease") {
-          if (typeof op.fence !== "number") return "load";
+          if (!Number.isSafeInteger(op.fence) || op.fence < 0) return "load";
           fence = op.fence;
         }
       }
@@ -1865,8 +1865,10 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     }
     if (snapshot === undefined) return undefined;
     const fence = parsedField(snapshot.body, "leaseFence");
-    if (fence === "unreadable") return "load";
-    return typeof fence === "number" ? fence : undefined;
+    if (fence === undefined) return undefined;
+    return Number.isSafeInteger(fence) && (fence as number) >= 0
+      ? fence as number
+      : "load";
   }
 
   /**
