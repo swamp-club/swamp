@@ -152,10 +152,10 @@ apart:
 frame set carried by `RpcChannel` (`src/domain/remote/rpc_channel.ts`), with a
 **handler registry on each side**:
 
-| Direction             | Methods the receiver handles                                                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| orchestrator → worker | `WorkerMethod.dispatch` (`worker.dispatch`), with cancellation as the `rpc.cancel` frame; `worker.token.rotate` (protocol 8) hands over a rotated token |
-| worker → orchestrator | `RemoteMethod`: `worker.enroll`, `worker.session.refresh`, `worker.drain`, and the nine `capability.*` verbs; run events ride `rpc.stream`              |
+| Direction             | Methods the receiver handles                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| orchestrator → worker | `WorkerMethod.dispatch` (`worker.dispatch`), with cancellation as the `rpc.cancel` frame; `worker.token.rotate` to a worker that declared the `token.rotate` capability |
+| worker → orchestrator | `RemoteMethod`: `worker.enroll`, `worker.session.refresh`, `worker.drain`, and the nine `capability.*` verbs; run events ride `rpc.stream`                              |
 
 Both sides share the framing, error envelope and `serializeEvent()`. Bulk bytes
 do not use this socket; they go over the HTTP/2 data plane (see
@@ -490,20 +490,23 @@ typed-secrets 5.2 enrollment accepts protocol versions 5 and 6
 and refuses any other with `protocol_mismatch`. Version 7 moves `queryData` and
 the `readOutput` list reads to the data plane (`POST /data/query`,
 `POST /data/outputs`); serve accepts 5, 6 and 7 and keeps both verbs on the
-control socket for 5 and 6. Version 8 adds `worker.token.rotate`, the only
-change from 7; serve accepts 5 through 8 and sends a rotated token only to a
-version 8 worker. A worker cannot enroll with a serve older than its version,
-so serve is upgraded before its workers. The gateway keeps each worker's
-enrolled version on its pool entry and snapshot, and serve builds every
-dispatch for the version of the worker it goes to (see secret delivery below).
-A version 5 enrollment logs a warning naming the worker and the 5.3 sunset. The
-version is what the worker declares: during the window a holder of a valid
-token can enroll at version 5 and so receive plaintext dispatches, the
-documented exception typed-secrets 5.3 removes. The
-`sessionCredential` is the short-lived bearer token for the worker's
-data-plane HTTP/2 requests. The pool addresses a worker by its token name (the
-positional `<name>` given to `swamp worker token create`) and its
-`instanceUuid`, and a step may target either (see
+control socket for 5 and 6. A version 7 worker cannot enroll with a version 6
+serve, so serve is upgraded before its workers. A verb serve calls on the
+worker is added without a version bump: the worker declares it in the optional
+`capabilities` list of `worker.enroll` (`WorkerCapability`), the gateway keeps
+the list on the pool entry and calls the verb only on a worker that declared
+it, an older serve drops the list, and an older worker sends none. So a newer
+worker still enrolls with an older serve, and rolling serve back keeps its
+workers. The gateway keeps each worker's enrolled version on its pool entry and
+snapshot, and serve builds every dispatch for the version of the worker it goes
+to (see secret delivery below). A version 5 enrollment logs a warning naming
+the worker and the 5.3 sunset. The version is what the worker declares: during
+the window a holder of a valid token can enroll at version 5 and so receive
+plaintext dispatches, the documented exception typed-secrets 5.3 removes. The
+`sessionCredential` is the short-lived bearer token for the worker's data-plane
+HTTP/2 requests. The pool addresses a worker by its token name (the positional
+`<name>` given to `swamp worker token create`) and its `instanceUuid`, and a
+step may target either (see
 [Scheduling](#scheduling-fan-out-and-provisioning)).
 
 Enrollments are recorded one at a time on the gateway's transition tail, so a
@@ -620,6 +623,7 @@ swamp worker token create <name> --duration <dur>   # mint; prints the credentia
 swamp worker token list                             # NAME, STATE, EXPIRES, ENROLLMENTS
 swamp worker token revoke <name>                    # invalidate before expiry
 swamp worker token rotate <name> [--duration <dur>] # new secret, same name
+swamp worker token reveal <name>                    # show the current credential
 ```
 
 **Cutting off a token's workers.** A token's authority ends for workers that
@@ -666,37 +670,44 @@ peers enforce a shortened rotation's clamp too.
 
 **Rotating a token.** `rotate` replaces the secret and lifetime in place and
 keeps the name, the bindings and the allowance, so each worker keeps its pool
-name and with it its placement targets, fleet label, lane pins and history.
-The successor is written under a fresh vault key
-(`worker-token-<name>.r<epoch-ms>`) and the record points at it, so the live
-secret is never overwritten before the record moves; a failed record write
-leaves the old key and record as they were. The record keeps the old mint as
-`predecessor` (`createdAt`, `expiresAt` clamped to the successor's,
-`secretKey`). `redeem` accepts either secret until the predecessor's deadline
-and records in the machine's binding which mint it redeemed (`mint`), so the
-gateway binds a reconnect to that mint and arms its deadline. A second
-rotation drops the oldest mint and deletes its key; a re-mint after revoke or
-expiry deletes the rotated keys the old record named.
+name and with it its placement targets, fleet label, lane pins and history. The
+successor is written under a fresh vault key
+(`worker-rotated-token-<name>-<epoch-ms>`, a reserved prefix of its own with no
+dot, which Azure Key Vault and GCP Secret Manager refuse) and the record points
+at it, so the live secret is never overwritten before the record moves; a
+failed record write leaves the old key and record as they were. The record
+keeps the old mint as `predecessor` (`createdAt`, `expiresAt` clamped to the
+successor's, `secretKey`). `redeem` accepts either secret until the
+predecessor's deadline and records in the machine's binding which mint it
+redeemed (`mint`), so the gateway binds a reconnect to that mint and arms its
+deadline. A second rotation drops the oldest mint and deletes its key; a
+re-mint after revoke or expiry deletes the rotated keys the old record named.
 
 Through `--server`, `WorkerGateway.rotateToken` runs in three phases so
 enrollments never wait behind a slow worker: the `rotate` method on the
 transition tail; then, off the tail and with a timeout per worker,
-`worker.token.rotate` to every connected pool member on protocol 8; then, on
-the tail, each worker that acknowledged and still has the same `instanceUuid`
-moves forward to the new mint and deadline (never back, when a later rotation
-already moved it), and every worker left on the predecessor has its deadline
-pulled in to the predecessor's clamped `expiresAt`. A worker started with
-`--token-file` writes the successor back to that file atomically, keeping the
-file's mode and writing through a symlink to its target; when the file cannot
-be written (a read-only Kubernetes Secret mount) or the token came inline, it
-holds the successor in memory only and reports it unpersisted. A worker refuses
-a successor under another name. Workers on older protocols, that refuse, time
-out or are offline stay on the predecessor until it lapses; the command reports
-them and prints the new credential once for them. A rotation without `--server`
-reaches no worker. The credential is shown only in the rotation's reply: if
-that reply is lost, rotating again retires the original secret, so read the new
-one back from the vault instead. Serve sends the reply even when the request
-was cancelled, since the rotation has already landed.
+`worker.token.rotate` to every connected pool member that declared the
+`token.rotate` capability; then, on the tail, each worker that acknowledged and
+still has the same `instanceUuid` moves forward to the new mint and deadline
+(never back, when a later rotation already moved it), and every worker left on
+the predecessor has its deadline pulled in to the predecessor's clamped
+`expiresAt`. A worker started with `--token-file` writes the successor back to
+that file atomically, keeping the file's mode and writing through a symlink to
+its target; when the file cannot be written (a read-only Kubernetes Secret
+mount) or the token came inline, it holds the successor in memory only and
+reports it unpersisted. A worker refuses a successor under another name.
+Workers without the capability, that refuse, time out or are offline stay on
+the predecessor until it lapses; the command reports them and prints the new
+credential once for them. A worker still on a mint older than the predecessor
+held a secret this rotation retired: the command says it will be disconnected,
+and counts unconnected machines in the same position apart from those that can
+still enroll on the predecessor. A rotation without `--server` reaches no
+worker. If the rotation's reply is lost, rotating again would retire the
+original secret, so `swamp worker token reveal` reads the current credential
+back, locally or through `--server`; the rotate command names it when its reply
+does not arrive, and serve's own failure to read the new secret names it too.
+Serve sends the reply even when the request was cancelled, since the rotation
+has already landed.
 
 The printed credential is **`<name>.<secret>`**. The name half finds the token
 aggregate at enrollment without scanning the pool. The secret half is compared

@@ -59,6 +59,7 @@ export const FOLLOWER_FORWARDED_REQUESTS: ReadonlySet<string> = new Set([
   "run.attach",
   // a follower can lag a mint or rotate it just forwarded
   "access.token.reveal",
+  "worker.token.reveal",
   // so an operator never reads a copy behind a revoke they just made
   "access.integration.list",
   "access.delegation.list",

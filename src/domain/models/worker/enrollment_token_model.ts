@@ -112,15 +112,17 @@ export function tokenSecretKey(tokenName: string): string {
   return `${WORKER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
 }
 
+export const WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX = "worker-rotated-token-";
+
 /**
  * a fresh key per rotation, so the live secret is never overwritten before the
- * record points elsewhere; a name holds no dot, so no other token's key matches
+ * record points elsewhere; its own prefix and no dot, which cloud vaults refuse
  */
 export function rotatedTokenSecretKey(
   tokenName: string,
   createdAtMs: number,
 ): string {
-  return `${tokenSecretKey(tokenName)}.r${createdAtMs}`;
+  return `${WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX}${tokenName}-${createdAtMs}`;
 }
 
 async function readToken(context: MethodContext): Promise<EnrollmentToken> {
@@ -580,6 +582,12 @@ async function expire(
 export const enrollmentTokenModel: ModelDefinition = defineModel({
   type: ENROLLMENT_TOKEN_MODEL_TYPE,
   version: "2026.11.12.1",
+  upgrades: [{
+    toVersion: "2026.11.12.1",
+    description:
+      "Adds token rotation; a token definition has no global arguments to migrate",
+    upgradeAttributes: (attributes) => attributes,
+  }],
   resources: {
     "token": {
       description:

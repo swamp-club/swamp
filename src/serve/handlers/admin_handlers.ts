@@ -122,6 +122,14 @@ import {
   type WorkerTokenRotateData,
 } from "../../libswamp/worker/token_rotate.ts";
 import {
+  createWorkerTokenRevealDeps,
+  workerTokenReveal,
+  type WorkerTokenRevealData,
+} from "../../libswamp/worker/token_reveal.ts";
+import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
+import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
+import {
   createNamespaceListDeps,
   datastoreNamespaceList,
 } from "../../libswamp/datastores/namespace_list.ts";
@@ -198,6 +206,7 @@ import type {
   WorkerProbeResult,
   WorkerPrunePayload,
   WorkerTokenCreatePayload,
+  WorkerTokenRevealPayload,
   WorkerTokenRevokePayload,
   WorkerTokenRotatePayload,
   WorkerVerifyPayload,
@@ -2865,6 +2874,7 @@ export async function handleWorkerTokenRotate(
     ctx.repoContext,
     { flush: () => pushChangedToRemote(ctx) },
     async () => {
+      let redactorHandle: string | undefined;
       try {
         let data: WorkerTokenRotateData | undefined;
         const gateway = ctx.workerGateway;
@@ -2884,6 +2894,7 @@ export async function handleWorkerTokenRotate(
             rotated: report.rotated,
             notRotated: report.notRotated,
             unconnectedBindings: report.unconnectedBindings,
+            retiredBindings: report.retiredBindings,
           };
         } else {
           const libCtx = handlerLibSwampContext(ctx);
@@ -2914,8 +2925,11 @@ export async function handleWorkerTokenRotate(
             `Rotating token '${payload.name}' ended without completing`,
           );
         }
-        // answered even when cancelled: the rotation is persisted, and this
-        // reply is the only place the new credential is shown
+        const redactor = new SecretRedactor();
+        redactor.addSecret(data.token);
+        redactor.addSecret(data.token.slice(data.name.length + 1));
+        redactorHandle = runFileSink.registerRedactor(redactor);
+        // answered even when cancelled: the rotation has landed either way
         send(socket, {
           type: "worker.token.rotate",
           id: requestId,
@@ -2924,9 +2938,96 @@ export async function handleWorkerTokenRotate(
       } catch (error) {
         const message = sanitizeErrorForClient(error);
         sendError(socket, requestId, "worker_token_rotate_failed", message);
+      } finally {
+        runFileSink.unregisterRedactor(redactorHandle);
       }
     },
   );
+}
+
+export async function handleWorkerTokenReveal(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerTokenRevealPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  // registered until nothing more is logged here, so a failed send that
+  // echoes the reply is masked too
+  let redactorHandle: string | undefined;
+  try {
+    const libCtx = handlerLibSwampContext(ctx);
+    const deps = createWorkerTokenRevealDeps(
+      ctx.repoContext.dataQueryService,
+      await VaultService.fromRepository(ctx.repoDir, {
+        vaultsDir: ctx.vaultsDir,
+      }),
+    );
+    let revealed: WorkerTokenRevealData | undefined;
+    let refusal: { code: string; message: string } | undefined;
+    await consumeStream(
+      workerTokenReveal(libCtx, deps, payload.name),
+      withDefaults({
+        completed: (e) => {
+          revealed = e.data;
+        },
+        error: (e) => {
+          refusal = e.error;
+        },
+      }),
+    );
+    if (revealed !== undefined) {
+      const redactor = new SecretRedactor();
+      redactor.addSecret(revealed.token);
+      redactor.addSecret(revealed.token.slice(revealed.name.length + 1));
+      redactorHandle = runFileSink.registerRedactor(redactor);
+    }
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    if (refusal !== undefined) {
+      sendError(
+        socket,
+        requestId,
+        refusal.code,
+        sanitizeErrorForClient(new Error(refusal.message)),
+      );
+      return;
+    }
+    if (revealed === undefined) {
+      sendError(
+        socket,
+        requestId,
+        "worker_token_reveal_failed",
+        `Revealing token '${payload.name}' ended without completing`,
+      );
+      return;
+    }
+    send(socket, {
+      type: "worker.token.reveal",
+      id: requestId,
+      payload: { data: revealed as unknown as Record<string, unknown> },
+    });
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "worker_token_reveal_failed",
+      sanitizeErrorForClient(error),
+    );
+  } finally {
+    runFileSink.unregisterRedactor(redactorHandle);
+  }
 }
 
 export async function handleWorkerPrune(

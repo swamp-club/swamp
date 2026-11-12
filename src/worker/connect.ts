@@ -27,6 +27,7 @@ import {
   RemoteMethod,
   type SessionRefreshResult,
   withoutQuotedNames,
+  WorkerCapability,
 } from "../domain/remote/protocol.ts";
 import { dataPlaneUrlFromConnectUrl } from "./data_plane_client.ts";
 import {
@@ -597,6 +598,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
             arch: Deno.build.arch,
             labels: options.labels ?? {},
             resourceLimits: { capacity: args.concurrency },
+            capabilities: [WorkerCapability.tokenRotate],
             ...(gate.admitted ? {} : { needsGatePass: true }),
           }),
         lifecycleTrace,

@@ -43,6 +43,8 @@ export interface WorkerTokenRotateData {
   notRotated: { worker: string; reason: string }[];
   /** null for a local rotation, which cannot see which machines are connected */
   unconnectedBindings: number | null;
+  /** unconnected machines whose secret this rotation retired; null when local */
+  retiredBindings: number | null;
 }
 
 export type WorkerTokenRotateEvent =
@@ -150,7 +152,22 @@ export async function* workerTokenRotate(
           return;
         }
         const token = parsed.data;
-        const secret = await deps.readSecret(token.vaultName, token.secretKey);
+        let secret: string;
+        try {
+          secret = await deps.readSecret(token.vaultName, token.secretKey);
+        } catch (error) {
+          yield {
+            kind: "error" as const,
+            error: {
+              code: "vault_read_failed",
+              message:
+                `Enrollment token '${input.name}' was rotated, but its new secret could not be read (${
+                  error instanceof Error ? error.message : String(error)
+                }); read it with: swamp worker token reveal ${input.name}`,
+            },
+          };
+          return;
+        }
 
         yield {
           kind: "completed" as const,
@@ -163,6 +180,7 @@ export async function* workerTokenRotate(
             rotated: [],
             notRotated: [],
             unconnectedBindings: null,
+            retiredBindings: null,
           },
         };
       })(),

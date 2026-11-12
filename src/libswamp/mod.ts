@@ -677,6 +677,13 @@ export {
   type WorkerTokenRotateEvent,
   type WorkerTokenRotateInput,
 } from "./worker/token_rotate.ts";
+export {
+  createWorkerTokenRevealDeps,
+  workerTokenReveal,
+  type WorkerTokenRevealData,
+  type WorkerTokenRevealDeps,
+  type WorkerTokenRevealEvent,
+} from "./worker/token_reveal.ts";
 export { createWorkerModelRunDeps } from "./worker/run_deps.ts";
 export {
   createWorkerQueueListDeps,

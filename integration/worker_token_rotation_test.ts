@@ -44,9 +44,11 @@ import {
   type EnrollResult,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  WorkerCapability,
 } from "../src/domain/remote/protocol.ts";
 import {
   handleWorkerTokenCreate,
+  handleWorkerTokenReveal,
   handleWorkerTokenRotate,
 } from "../src/serve/handlers/admin_handlers.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
@@ -220,18 +222,21 @@ function enroll(
   options: {
     instanceUuid?: string;
     machineId?: string;
-    protocolVersion?: number;
+    canRotate?: boolean;
   } = {},
 ): Promise<EnrollResult> {
   return channel.call<EnrollResult>(RemoteMethod.enroll, {
     token,
     instanceUuid: options.instanceUuid ?? "uuid-1",
     machineId: options.machineId ?? "machine-1",
-    protocolVersion: options.protocolVersion ?? REMOTE_PROTOCOL_VERSION,
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
     swampVersion: "1.0.0",
     platform: "linux",
     arch: "x86_64",
     labels: {},
+    ...(options.canRotate === false
+      ? {}
+      : { capabilities: [WorkerCapability.tokenRotate] }),
   });
 }
 
@@ -283,7 +288,7 @@ Deno.test("worker token rotate leaves an unrotated fleet member on the old token
     await enroll(connectWorker(f.gateway), original, {
       instanceUuid: "uuid-b",
       machineId: "machine-b",
-      protocolVersion: 7,
+      canRotate: false,
     });
 
     const report = await rotateThroughServe(f, "w-fleet", 60 * 60_000);
@@ -293,7 +298,7 @@ Deno.test("worker token rotate leaves an unrotated fleet member on the old token
     assertEquals(report.notRotated.length, 1);
     assertEquals(
       report.notRotated[0].reason,
-      "protocol version 7 cannot rotate",
+      "its swamp version cannot take a rotated token",
     );
     assertEquals(await f.revalidation.runOnce(), []);
     assertEquals(f.gateway.workers().length, 2);
@@ -363,5 +368,40 @@ Deno.test("worker token rotate from the local CLI never rotates another behavior
         error.error.message,
       );
     }
+  });
+});
+
+Deno.test("worker token reveal through serve returns the token a lost rotation reply carried", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-reveal");
+    await enroll(connectWorker(f.gateway), original, { canRotate: false });
+    const report = await rotateThroughServe(f, "w-reveal");
+
+    const socket = createMockSocket();
+    await handleWorkerTokenReveal(
+      socket,
+      f.ctx,
+      "req-reveal",
+      { name: "w-reveal" },
+      new AbortController(),
+      null,
+    );
+    const response = JSON.parse(socket.sent[0]);
+    assertEquals(response.type, "worker.token.reveal", socket.sent[0]);
+    assertEquals(response.payload.data.token, report.token);
+    assertEquals(response.payload.data.expired, false);
+  });
+});
+
+Deno.test("worker token rotate writes a successor key cloud vaults accept", async () => {
+  await withFixture(async (f) => {
+    await mintToken(f, "w-key");
+    await rotateThroughServe(f, "w-key");
+    const record = (await f.gateway.readTokenRecords()).get("w-key");
+    assertEquals(
+      record?.secretKey.startsWith("worker-rotated-token-w-key-"),
+      true,
+    );
+    assertEquals(/^[a-z0-9-]+$/.test(record?.secretKey ?? ""), true);
   });
 });

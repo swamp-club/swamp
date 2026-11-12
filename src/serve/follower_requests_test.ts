@@ -58,6 +58,13 @@ Deno.test("followerRefusal: a follower treats a worker token rotation as a write
   assertEquals(refusal.reads, false);
 });
 
+Deno.test("followerRefusal: a follower sends a worker token reveal to the leader, which may hold a rotation it has not pulled", () => {
+  assertInstanceOf(
+    followerRefusal("worker.token.reveal", gate("follower")),
+    ServeNotLeaderError,
+  );
+});
+
 Deno.test("followerRefusal: a follower refuses a request it does not know", () => {
   assertInstanceOf(
     followerRefusal("some.future.request", gate("follower")),

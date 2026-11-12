@@ -20,7 +20,6 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { markErrorPaths, UserError } from "../errors.ts";
 import {
-  acceptsTokenRotation,
   CONTROL_SOCKET_READS_PROTOCOL_VERSION,
   dispatchErrorCode,
   dispatchErrorPaths,
@@ -41,6 +40,7 @@ import {
   ResolveSecretParamsSchema,
   RotateTokenParamsSchema,
   shipsReferencesOnly,
+  WorkerCapability,
 } from "./protocol.ts";
 import { SENTINEL_SOURCE } from "../vaults/secret_bag_registry.ts";
 
@@ -429,7 +429,7 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
   // worker is refused at enrollment
   assertEquals(
     [REMOTE_PROTOCOL_VERSION, SENTINEL_SOURCE],
-    [8, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
+    [7, "__SWAMP_VSEC_[0-9a-f]{32}_\\d+__"],
   );
   assertEquals(
     DispatchParamsSchema.safeParse(
@@ -439,10 +439,10 @@ Deno.test("REMOTE_PROTOCOL_VERSION: pins the sentinel format a dispatch's secret
   );
 });
 
-Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5 through 8 until typed-secrets 5.3", () => {
+Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5, 6 and 7 until typed-secrets 5.3", () => {
   assertEquals(
-    [4, 5, 6, 7, 8, 9].map(isSupportedRemoteProtocolVersion),
-    [false, true, true, true, true, false],
+    [4, 5, 6, 7, 8].map(isSupportedRemoteProtocolVersion),
+    [false, true, true, true, false],
   );
   assertEquals(LEGACY_PLAINTEXT_PROTOCOL_VERSION, 5);
   assertEquals(CONTROL_SOCKET_READS_PROTOCOL_VERSION, 6);
@@ -454,12 +454,31 @@ Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5 through 8 
   assertEquals(shipsReferencesOnly(REMOTE_PROTOCOL_VERSION), true);
 });
 
-Deno.test("acceptsTokenRotation: only a version 8 worker is sent a successor token", () => {
+Deno.test("EnrollParamsSchema: capabilities are optional, so an older worker that sends none still enrolls", () => {
+  const base = {
+    token: "w.s",
+    instanceUuid: "u",
+    machineId: "m",
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
+    swampVersion: "1",
+    platform: "linux",
+    arch: "x86_64",
+  };
+  assertEquals(EnrollParamsSchema.parse(base).capabilities, undefined);
   assertEquals(
-    [5, 6, 7, 8].map(acceptsTokenRotation),
-    [false, false, false, true],
+    EnrollParamsSchema.parse({
+      ...base,
+      capabilities: [WorkerCapability.tokenRotate],
+    }).capabilities,
+    ["token.rotate"],
   );
-  assertEquals(acceptsTokenRotation(REMOTE_PROTOCOL_VERSION), true);
+  assertEquals(
+    EnrollParamsSchema.safeParse({
+      ...base,
+      capabilities: Array.from({ length: 33 }, (_, i) => `c${i}`),
+    }).success,
+    false,
+  );
 });
 
 Deno.test("RotateTokenParamsSchema: refuses an empty token", () => {

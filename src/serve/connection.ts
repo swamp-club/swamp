@@ -227,6 +227,7 @@ import {
   handleWorkerQueueList,
   handleWorkerTokenCreate,
   handleWorkerTokenList,
+  handleWorkerTokenReveal,
   handleWorkerTokenRevoke,
   handleWorkerTokenRotate,
   handleWorkerVerify,
@@ -1545,6 +1546,14 @@ const WorkerTokenRevokeRequestSchema = z.object({
   }),
 });
 
+const WorkerTokenRevealRequestSchema = z.object({
+  type: z.literal("worker.token.reveal"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+  }),
+});
+
 const WorkerTokenRotateRequestSchema = z.object({
   type: z.literal("worker.token.rotate"),
   id: z.string().min(1).max(256),
@@ -1740,6 +1749,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkerTokenListRequestSchema,
   WorkerTokenRevokeRequestSchema,
   WorkerTokenRotateRequestSchema,
+  WorkerTokenRevealRequestSchema,
   DataGcRequestSchema,
   DataPruneRequestSchema,
   RunGcRequestSchema,
@@ -4446,6 +4456,19 @@ export function handleMessage(
             ))
         ),
         auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "worker.token.reveal":
+      task = audited(
+        handleWorkerTokenReveal(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "worker", request.payload.name),
       );
       break;
     case "worker.token.rotate":

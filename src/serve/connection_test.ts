@@ -4934,6 +4934,29 @@ Deno.test("authorizeOrReject: worker.token.create requires admin on access:*", (
   );
 });
 
+Deno.test("authorizeOrReject: worker.token.reveal requires admin on access:*", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  using ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "worker.token.reveal",
+      id: "wtrev-1",
+      payload: { name: "wt" },
+    })),
+    testPrincipal,
+  );
+
+  await waitFor(() => mock.sent.length === 1, "reveal refused");
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+});
+
 Deno.test("authorizeOrReject: worker.token.rotate requires admin on access:*", async () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
@@ -5197,6 +5220,11 @@ Deno.test("authorizeOrReject: admin on access:* allows all new command types", a
     {
       type: "worker.token.rotate",
       id: "admin-wtrot",
+      payload: { name: "wt" },
+    },
+    {
+      type: "worker.token.reveal",
+      id: "admin-wtrev",
       payload: { name: "wt" },
     },
     { type: "data.gc", id: "admin-dgc" },

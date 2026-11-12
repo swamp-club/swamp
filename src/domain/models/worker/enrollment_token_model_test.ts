@@ -37,6 +37,7 @@ import {
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
+import { resolveStaleness } from "../../definitions/definition_staleness.ts";
 
 const mintArgs = {
   durationMs: 60_000,
@@ -936,4 +937,24 @@ Deno.test("timingSafeEqual: equal and unequal strings", () => {
   assertEquals(timingSafeEqual("abc", "abcd"), false);
   assertEquals(timingSafeEqual("", ""), true);
   assertEquals(timingSafeEqual("", "x"), false);
+});
+
+Deno.test("enrollmentTokenModel: a definition minted before rotation existed is upgradable, not stranded", () => {
+  const upgrades = enrollmentTokenModel.upgrades ?? [];
+  assertEquals(
+    resolveStaleness(
+      "2026.07.04.1",
+      enrollmentTokenModel.version,
+      upgrades.map((u) => u.toVersion),
+    ).state,
+    "upgradable",
+  );
+  assertEquals(upgrades.at(-1)?.upgradeAttributes({}), {});
+});
+
+Deno.test("rotatedTokenSecretKey: carries no dot and never collides with a token's own key", () => {
+  const key = rotatedTokenSecretKey("web-01", 1_767_225_600_000);
+  assertEquals(key, "worker-rotated-token-web-01-1767225600000");
+  assertEquals(key.includes("."), false);
+  assertEquals(key.startsWith(tokenSecretKey("")), false);
 });

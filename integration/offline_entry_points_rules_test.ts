@@ -81,6 +81,7 @@ const SINK: readonly string[] = [
   "vault_put.ts",
   "worker_prune.ts",
   "worker_token_create.ts",
+  "worker_token_reveal.ts",
   "worker_token_revoke.ts",
   "worker_token_rotate.ts",
   "workflow_approve.ts",

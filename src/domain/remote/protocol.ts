@@ -35,7 +35,7 @@ import {
  * dispatch; changing the verbs or SENTINEL_EXACT needs a bump, an optional
  * parameter on an existing verb does not
  */
-export const REMOTE_PROTOCOL_VERSION = 8;
+export const REMOTE_PROTOCOL_VERSION = 7;
 
 /**
  * this version's dispatch frame still carries plaintext arguments, secretValues
@@ -46,17 +46,10 @@ export const LEGACY_PLAINTEXT_PROTOCOL_VERSION = 5;
 /** 6 still sends queryData and readOutput lists over the control socket */
 export const CONTROL_SOCKET_READS_PROTOCOL_VERSION = 6;
 
-/** reads queryData and the readOutput lists over the data plane */
-export const DATA_PLANE_READS_PROTOCOL_VERSION = 7;
-
-/** the first version whose worker answers WorkerMethod.rotateToken */
-export const TOKEN_ROTATION_PROTOCOL_VERSION = 8;
-
 export const SUPPORTED_REMOTE_PROTOCOL_VERSIONS: readonly number[] = [
   LEGACY_PLAINTEXT_PROTOCOL_VERSION,
   CONTROL_SOCKET_READS_PROTOCOL_VERSION,
-  DATA_PLANE_READS_PROTOCOL_VERSION,
-  TOKEN_ROTATION_PROTOCOL_VERSION,
+  REMOTE_PROTOCOL_VERSION,
 ];
 
 export function isSupportedRemoteProtocolVersion(version: number): boolean {
@@ -65,10 +58,6 @@ export function isSupportedRemoteProtocolVersion(version: number): boolean {
 
 export function shipsReferencesOnly(version: number): boolean {
   return version > LEGACY_PLAINTEXT_PROTOCOL_VERSION;
-}
-
-export function acceptsTokenRotation(version: number): boolean {
-  return version >= TOKEN_ROTATION_PROTOCOL_VERSION;
 }
 
 export interface RpcStreamEvent {
@@ -211,6 +200,14 @@ export const WorkerMethod = {
   rotateToken: "worker.token.rotate",
 } as const;
 
+/**
+ * optional verbs a worker answers, declared at enrollment so a new verb needs
+ * no version bump: an older serve ignores the list, an older worker sends none
+ */
+export const WorkerCapability = {
+  tokenRotate: "token.rotate",
+} as const;
+
 /** serve hands a connected worker the successor to the token it enrolled on */
 export const RotateTokenParamsSchema = z.object({
   token: z.string().min(1),
@@ -246,6 +243,7 @@ export const EnrollParamsSchema = z.object({
    * redeeming the token, so no enrollment is spent
    */
   needsGatePass: z.boolean().optional(),
+  capabilities: z.array(z.string().min(1).max(64)).max(32).optional(),
 });
 
 export type EnrollParams = z.infer<typeof EnrollParamsSchema>;

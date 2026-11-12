@@ -48,6 +48,7 @@ import {
   requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  ServerResponseError,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { WorkerTokenRotateResponse } from "../../serve/protocol.ts";
@@ -68,7 +69,7 @@ to that file. The old
 token stays valid until its original expiry (or the new token's, if
 sooner), so machines that were not connected can still enroll with it.
 Rotating again retires the old token at once. The new token is printed
-once.`,
+once; if that output is lost, read it back with "swamp worker token reveal".`,
     )
     .example(
       "Rotate a token and deliver it to its connected workers",
@@ -107,13 +108,24 @@ once.`,
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(server, options);
-    const response = await requestServerResponse<WorkerTokenRotateResponse>(
-      { server, token },
-      {
-        type: "worker.token.rotate",
-        payload: durationMs !== undefined ? { name, durationMs } : { name },
-      },
-    );
+    let response: WorkerTokenRotateResponse;
+    try {
+      response = await requestServerResponse<WorkerTokenRotateResponse>(
+        { server, token },
+        {
+          type: "worker.token.rotate",
+          payload: durationMs !== undefined ? { name, durationMs } : { name },
+        },
+      );
+    } catch (error) {
+      // a refusal serve sent is final; a lost reply may follow a landed
+      // rotation, and rotating again would retire the original token
+      if (error instanceof ServerResponseError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(
+        `${message}\nThe rotation may already have landed. Read the current token with: swamp worker token reveal ${name} --server ${server}`,
+      );
+    }
     renderWorkerTokenRotate(
       response.data as unknown as WorkerTokenRotateData,
       cliCtx.outputMode,

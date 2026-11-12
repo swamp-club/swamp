@@ -65,6 +65,7 @@ import {
   PERMANENT_ENROLLMENT_ERROR_CODES,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  WorkerCapability,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import { SERVE_NOT_LEADER_CODE } from "../domain/datastore_v3/serve_leader.ts";
@@ -233,7 +234,7 @@ Deno.test("WorkerGateway: enrollment runs in a gateway-tail span (swamp-club#375
 });
 
 Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", async () => {
-  for (const protocolVersion of [4, 9, 99]) {
+  for (const protocolVersion of [4, 8, 99]) {
     const h = createHarness();
     const { workerChannel } = connectWorkerSocket(h.gateway);
     const error = await assertRejects(
@@ -246,8 +247,8 @@ Deno.test("WorkerGateway: protocol mismatch is rejected before any transition", 
   }
 });
 
-Deno.test("WorkerGateway: enrolls protocol versions 5 through 8, keeps each worker's version, and warns about version 5 only (typed-secrets 5.2)", async () => {
-  for (const protocolVersion of [5, 6, 7, 8]) {
+Deno.test("WorkerGateway: enrolls protocol versions 5, 6 and 7, keeps each worker's version, and warns about version 5 only (typed-secrets 5.2)", async () => {
+  for (const protocolVersion of [5, 6, 7]) {
     const h = createHarness();
     const { workerChannel } = connectWorkerSocket(h.gateway);
     const logs = await capturingGatewayLogs(async () => {
@@ -2957,6 +2958,11 @@ Deno.test("WorkerGateway: serializeWorkerWrites runs after an enrollment in flig
 
 const ROTATED_MINT = "2026-02-01T00:00:00.000Z";
 
+const rotatableParams = {
+  ...enrollParams,
+  capabilities: [WorkerCapability.tokenRotate],
+};
+
 function rotationHarness(options?: {
   rotatedExpiresAt?: string;
   readTokenExpiresAt?: WorkerGatewayOptions["readTokenExpiresAt"];
@@ -3009,7 +3015,7 @@ Deno.test("WorkerGateway: rotateToken delivers the successor and re-stamps the w
     delivered.push(params);
     return Promise.resolve({ persisted: true });
   });
-  await enroll(workerChannel);
+  await enroll(workerChannel, rotatableParams);
 
   const report = await h.rotate();
 
@@ -3052,7 +3058,7 @@ Deno.test("WorkerGateway: a rotated worker's expiry timer moves to the successor
     WorkerMethod.rotateToken,
     () => Promise.resolve({ persisted: true }),
   );
-  await enroll(workerChannel);
+  await enroll(workerChannel, rotatableParams);
   await h.rotate();
 
   await waitFor(() => h.removed.length === 1, "worker removed on expiry");
@@ -3064,17 +3070,17 @@ Deno.test("WorkerGateway: a rotated worker's expiry timer moves to the successor
   assertEquals(expire?.inputs, { mint: ROTATED_MINT });
 });
 
-Deno.test("WorkerGateway: a worker on an older protocol is reported and keeps the predecessor", async () => {
+Deno.test("WorkerGateway: a worker that declared no rotation capability is reported and keeps the predecessor", async () => {
   const h = rotationHarness();
   const { workerChannel } = connectWorkerSocket(h.gateway);
-  await enroll(workerChannel, { ...enrollParams, protocolVersion: 7 });
+  await enroll(workerChannel);
 
   const report = await h.rotate();
 
   assertEquals(report.rotated, []);
   assertEquals(report.notRotated, [{
     worker: "ci-runner-3",
-    reason: "protocol version 7 cannot rotate",
+    reason: "its swamp version cannot take a rotated token",
   }]);
   assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, BASE_MINT);
   assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
@@ -3087,7 +3093,7 @@ Deno.test("WorkerGateway: a worker that refuses the successor keeps the predeces
     Promise.reject(
       new RpcError({ code: "token_file_write_failed", message: "read-only" }),
     ));
-  await enroll(workerChannel);
+  await enroll(workerChannel, rotatableParams);
 
   const report = await h.rotate();
 
@@ -3106,13 +3112,13 @@ Deno.test("WorkerGateway: an unacknowledged delivery is never re-stamped, and en
     delivery.resolve();
     await new Promise(() => {});
   });
-  await enroll(first.workerChannel);
+  await enroll(first.workerChannel, rotatableParams);
 
   const rotating = h.rotate();
   await delivery.promise;
   const other = connectWorkerSocket(h.gateway);
   await enroll(other.workerChannel, {
-    ...enrollParams,
+    ...rotatableParams,
     token: "other.s3cret",
     instanceUuid: "uuid-2",
   });
@@ -3136,7 +3142,7 @@ Deno.test("WorkerGateway: a straggler's expiry clears the predecessor instead of
       Promise.resolve(new Date(Date.now() + 60).toISOString()),
   });
   const { workerChannel } = connectWorkerSocket(h.gateway);
-  await enroll(workerChannel, { ...enrollParams, protocolVersion: 7 });
+  await enroll(workerChannel);
   await h.rotate();
 
   await waitFor(() => h.removed.length === 1, "straggler removed on expiry");
@@ -3158,7 +3164,7 @@ Deno.test("WorkerGateway: a shortened rotation cuts an unrotated worker off at t
       Promise.resolve(new Date(Date.now() + 60_000).toISOString()),
   });
   const { workerChannel } = connectWorkerSocket(h.gateway);
-  await enroll(workerChannel, { ...enrollParams, protocolVersion: 7 });
+  await enroll(workerChannel);
 
   record = {
     ...record,
@@ -3206,7 +3212,7 @@ Deno.test("WorkerGateway: an acknowledgement never moves a worker back to an old
     if (calls === 1) await release.promise;
     return { persisted: true };
   });
-  await enroll(workerChannel);
+  await enroll(workerChannel, rotatableParams);
 
   record = rotatedTo(mintA);
   const slow = h.gateway.rotateToken("ci-runner-3");
@@ -3239,7 +3245,7 @@ Deno.test("WorkerGateway: a machine that redeemed the predecessor enrolls on it 
     },
   });
   const { workerChannel } = connectWorkerSocket(h.gateway);
-  await enroll(workerChannel);
+  await enroll(workerChannel, rotatableParams);
 
   assertEquals(h.gateway.boundTokens(), [{
     tokenName: "ci-runner-3",
@@ -3256,4 +3262,100 @@ Deno.test("WorkerGateway: rotateToken without a secret reader refuses before rot
     "cannot read enrollment token secrets",
   );
   assertEquals(h.transitions.filter((t) => t.methodName === "rotate"), []);
+});
+
+Deno.test("WorkerGateway: a second rotation reports a worker still on the retired token as about to be cut off", async () => {
+  const mintA = "2026-02-01T00:00:00.000Z";
+  const mintB = "2026-03-01T00:00:00.000Z";
+  const binding = { machineId: "machine-1", enrolledAt: BASE_MINT };
+  let record: EnrollmentToken = mintRecord("ci-runner-3", BASE_MINT);
+  const h = createHarness({
+    readTokenRecord: () => Promise.resolve(record),
+    readTokenSecret: () => Promise.resolve("s"),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  record = {
+    ...mintRecord("ci-runner-3", mintA),
+    bindings: [{ ...binding, mint: BASE_MINT }],
+    predecessor: {
+      createdAt: BASE_MINT,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      secretKey: "worker-token-ci-runner-3",
+    },
+  };
+  const first = await h.gateway.rotateToken("ci-runner-3");
+  assertEquals(first.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "its swamp version cannot take a rotated token",
+  }]);
+
+  record = {
+    ...mintRecord("ci-runner-3", mintB),
+    bindings: [{ ...binding, mint: BASE_MINT }],
+    predecessor: {
+      createdAt: mintA,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      secretKey: "worker-rotated-token-ci-runner-3-1",
+    },
+  };
+  const second = await h.gateway.rotateToken("ci-runner-3");
+  assertEquals(second.notRotated, [{
+    worker: "ci-runner-3",
+    reason:
+      "its swamp version cannot take a rotated token; its token was retired by this rotation, so it will be disconnected",
+  }]);
+  assertEquals(second.unconnectedBindings, 0);
+  assertEquals(second.retiredBindings, 0);
+});
+
+Deno.test("WorkerGateway: a worker in its grace window is reported once, not again as an unconnected binding", async () => {
+  let record: EnrollmentToken = mintRecord("ci-runner-3", BASE_MINT);
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    readTokenRecord: () => Promise.resolve(record),
+    readTokenSecret: () => Promise.resolve("s"),
+  });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, rotatableParams);
+  dropSocket();
+  await waitFor(() => h.disconnected.length === 1, "worker disconnected");
+
+  record = {
+    ...mintRecord("ci-runner-3", ROTATED_MINT),
+    bindings: [{
+      machineId: "machine-1",
+      enrolledAt: BASE_MINT,
+      mint: BASE_MINT,
+    }],
+    predecessor: {
+      createdAt: BASE_MINT,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      secretKey: "worker-token-ci-runner-3",
+    },
+  };
+  const report = await h.gateway.rotateToken("ci-runner-3");
+
+  assertEquals(report.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "disconnected",
+  }]);
+  assertEquals(report.unconnectedBindings, 0);
+  assertEquals(report.retiredBindings, 0);
+});
+
+Deno.test("WorkerGateway: a secret that cannot be read after the rotation lands points at reveal", async () => {
+  const h = createHarness({
+    readTokenSecret: () => Promise.reject(new Error("vault offline")),
+  });
+  await assertRejects(
+    () => h.gateway.rotateToken("ci-runner-3"),
+    Error,
+    "swamp worker token reveal ci-runner-3",
+  );
+  assertEquals(
+    h.transitions.filter((t) => t.methodName === "rotate").length,
+    1,
+  );
 });

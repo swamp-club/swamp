@@ -41,6 +41,7 @@ import {
   GATE_PASS_UNAVAILABLE,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
+  WorkerCapability,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 
@@ -327,6 +328,7 @@ Deno.test("runWorker: a reconnect after a rotation presents the successor token"
 
   await done;
   assertEquals(enrollments.map((e) => e.token), ["ci.old", "ci.new"]);
+  assertEquals(enrollments[0].capabilities, [WorkerCapability.tokenRotate]);
 });
 
 Deno.test("runWorker: a stable cache directory keeps the machine id across restarts", async () => {

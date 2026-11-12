@@ -31,7 +31,6 @@ import {
 } from "../domain/remote/rpc_channel.ts";
 import type { RpcTransport } from "../domain/remote/rpc_channel.ts";
 import {
-  acceptsTokenRotation,
   type DispatchParams,
   type DispatchResult,
   DispatchResultSchema,
@@ -47,6 +46,7 @@ import {
   shipsReferencesOnly,
   SUPPORTED_REMOTE_PROTOCOL_VERSIONS,
   withoutQuotedNames,
+  WorkerCapability,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import { SessionCredentialService } from "../domain/remote/session_credential.ts";
@@ -143,8 +143,10 @@ export interface TokenRotationReport {
   predecessorExpiresAt: string | null;
   rotated: { worker: string; persisted: boolean }[];
   notRotated: { worker: string; reason: string }[];
-  /** bound machines with no connected pool member, still on the old secret */
+  /** bound machines with no pool member, still able to enroll on the old secret */
   unconnectedBindings: number;
+  /** bound machines with no pool member whose secret this rotation retired */
+  retiredBindings: number;
 }
 
 export function splitEnrollmentToken(
@@ -201,6 +203,8 @@ interface WorkerEntry {
   arch: string;
   swampVersion: string;
   protocolVersion: number;
+  /** the optional verbs the worker declared at enrollment */
+  capabilities: readonly string[];
   channel: RpcChannel | null;
   closeSocket: (() => void) | null;
   status: "idle" | "busy" | "unverified" | "draining";
@@ -568,17 +572,27 @@ export class WorkerGateway {
           .map((entry) => ({
             name: entry.name,
             instanceUuid: entry.instanceUuid,
-            protocolVersion: entry.protocolVersion,
+            tokenCreatedAt: entry.tokenCreatedAt,
+            canRotate: entry.capabilities.includes(
+              WorkerCapability.tokenRotate,
+            ),
             channel: entry.channel,
           }));
         return { record, targets };
       },
     );
 
-    const token = `${tokenName}.${await readTokenSecret(
-      record.vaultName,
-      record.secretKey,
-    )}`;
+    let secret: string;
+    try {
+      secret = await readTokenSecret(record.vaultName, record.secretKey);
+    } catch (error) {
+      throw new Error(
+        `Enrollment token '${tokenName}' was rotated, but its new secret could not be read (${
+          error instanceof Error ? error.message : String(error)
+        }); read it with: swamp worker token reveal ${tokenName}`,
+      );
+    }
+    const token = `${tokenName}.${secret}`;
     const expiresAtMs = Date.parse(record.expiresAt);
     const timeoutMs = this.#options.rotationDeliveryTimeoutMs ??
       DEFAULT_ROTATION_DELIVERY_TIMEOUT_MS;
@@ -595,10 +609,10 @@ export class WorkerGateway {
         notRotated.push({ worker: target.name, reason: "disconnected" });
         return;
       }
-      if (!acceptsTokenRotation(target.protocolVersion)) {
+      if (!target.canRotate) {
         notRotated.push({
           worker: target.name,
-          reason: `protocol version ${target.protocolVersion} cannot rotate`,
+          reason: "its swamp version cannot take a rotated token",
         });
         return;
       }
@@ -696,16 +710,41 @@ export class WorkerGateway {
       },
     );
 
-    const connected =
-      targets.filter((t) => t.channel !== null && !t.channel.closed).length;
+    // a member still on a mint older than the predecessor held a secret this
+    // rotation retired: revalidation cuts it off unless it took the successor
+    const predecessorMs = record.predecessor === undefined
+      ? undefined
+      : Date.parse(record.predecessor.createdAt);
+    const isRetired = (mint: string | undefined) =>
+      predecessorMs !== undefined && mint !== undefined &&
+      Date.parse(mint) < predecessorMs;
+    const retiredWorkers = new Set(
+      targets.filter((t) => isRetired(t.tokenCreatedAt)).map((t) => t.name),
+    );
+    const reported = notRotated.map((entry) =>
+      retiredWorkers.has(entry.worker)
+        ? {
+          worker: entry.worker,
+          reason:
+            `${entry.reason}; its token was retired by this rotation, so it will be disconnected`,
+        }
+        : entry
+    );
+    const retiredBindings = record.bindings.filter((b) => isRetired(b.mint))
+      .length;
     return {
       tokenName,
       token,
       expiresAt: record.expiresAt,
       predecessorExpiresAt: record.predecessor?.expiresAt ?? null,
       rotated,
-      notRotated,
-      unconnectedBindings: Math.max(0, record.bindings.length - connected),
+      notRotated: reported,
+      unconnectedBindings: Math.max(
+        0,
+        record.bindings.length - retiredBindings -
+          (targets.length - retiredWorkers.size),
+      ),
+      retiredBindings: Math.max(0, retiredBindings - retiredWorkers.size),
     };
   }
 
@@ -1052,6 +1091,7 @@ export class WorkerGateway {
         existing.channel = state.channel;
         existing.capacity = capacity;
         existing.protocolVersion = params.protocolVersion;
+        existing.capabilities = params.capabilities ?? [];
         await preparing(() =>
           this.#workerStatus.recordStatus(
             workerName,
@@ -1106,6 +1146,7 @@ export class WorkerGateway {
         arch: params.arch,
         swampVersion: params.swampVersion,
         protocolVersion: params.protocolVersion,
+        capabilities: params.capabilities ?? [],
         channel: state.channel,
         closeSocket: state.closeSocket,
         status: initialStatus,

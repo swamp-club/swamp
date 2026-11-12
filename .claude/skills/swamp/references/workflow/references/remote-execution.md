@@ -33,16 +33,19 @@ disconnects the worker and rejects re-enrollment. To keep a worker past it, run
 keeps its name (so the worker keeps its own), connected workers receive the new
 secret over their connection, and one started with `--token-file` writes it back
 to that file. The old secret keeps working until its original expiry, and the
-command lists workers it could not rotate. Pass a stable `--cache-dir` to keep
+command lists workers it could not rotate. Rotating again retires the old secret
+at once, so if the new token is lost, read it back with
+`swamp worker token reveal <name>` instead. Pass a stable `--cache-dir` to keep
 the machine identity across restarts — the default temp cache directory yields a
 fresh identity (and thus needs a fresh token) per process. A token's secret is
 never released to a dispatched step, whatever vault holds it
 (`reserved_secret`), so deliver a token to its host outside workflows. Manage
-tokens with `swamp worker token list`, `swamp worker token rotate <name>` and
-`swamp worker token revoke <name>`; inspect the pool with `swamp worker list`,
-or visually in the dashboard's Workers view (`/dashboard/workers` on a serve
-started with `--dashboard`): workers grouped by label, per-slot lease state, and
-a selector box that shows where a step's placement would land.
+tokens with `swamp worker token list`, `swamp worker token rotate <name>`,
+`swamp worker token reveal <name>` and `swamp worker token revoke <name>`;
+inspect the pool with `swamp worker list`, or visually in the dashboard's
+Workers view (`/dashboard/workers` on a serve started with `--dashboard`):
+workers grouped by label, per-slot lease state, and a selector box that shows
+where a step's placement would land.
 
 ## Placing steps on workers
 
