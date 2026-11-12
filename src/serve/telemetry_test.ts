@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertExists } from "@std/assert";
-import { createCommandTelemetry, createRunTelemetry } from "./telemetry.ts";
+import {
+  createCommandTelemetry,
+  createControlTelemetry,
+  createRunTelemetry,
+  setServeCollectivesSource,
+} from "./telemetry.ts";
+import { UserError } from "../domain/errors.ts";
 import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import type { TelemetryEntry } from "../domain/telemetry/telemetry_entry.ts";
 import type { TelemetryRepository } from "../domain/telemetry/repositories.ts";
@@ -221,12 +227,17 @@ Deno.test("createRunTelemetry: omits initiatedBy when not provided", async () =>
 
 Deno.test("createCommandTelemetry: returns undefined when telemetry is disabled", () => {
   clearActiveTelemetryService();
-  assertEquals(createCommandTelemetry(TARGET, "user:test"), undefined);
+  assertEquals(
+    createCommandTelemetry(TARGET, { initiatedBy: "user:test" }),
+    undefined,
+  );
 });
 
 Deno.test("createCommandTelemetry: records a success entry with initiatedBy", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createCommandTelemetry(TARGET, "user:abc-123");
+    const telemetry = createCommandTelemetry(TARGET, {
+      initiatedBy: "user:abc-123",
+    });
     assertExists(telemetry);
 
     await telemetry.finish(null);
@@ -246,7 +257,9 @@ Deno.test("createCommandTelemetry: records a success entry with initiatedBy", as
 
 Deno.test("createCommandTelemetry: records an error entry with initiatedBy", async () => {
   await withActiveService(async (repo) => {
-    const telemetry = createCommandTelemetry(TARGET, "user:abc-123");
+    const telemetry = createCommandTelemetry(TARGET, {
+      initiatedBy: "user:abc-123",
+    });
     assertExists(telemetry);
 
     await telemetry.finish(new Error("method failed"));
@@ -256,4 +269,159 @@ Deno.test("createCommandTelemetry: records an error entry with initiatedBy", asy
     assertEquals(repo.saved[0].result.errorMessage, "method failed");
     assertEquals(repo.saved[0].initiatedBy, "user:abc-123");
   });
+});
+
+Deno.test("createRunTelemetry: carries the client kind, integration id and serve collectives", async () => {
+  const restore = setServeCollectivesSource(() => ["acme"]);
+  try {
+    await withActiveService(async (repo) => {
+      const telemetry = createRunTelemetry("api", "nightly", {
+        initiatedBy: "user:u1",
+        client: "integration:acme-slack",
+      });
+      assertExists(telemetry);
+      await telemetry.finish(null);
+
+      const data = repo.saved[0].toData();
+      assertEquals(data.client, "integration");
+      assertEquals(data.integrationId, "acme-slack");
+      assertEquals(data.serveCollectives, ["acme"]);
+      assertEquals(data.initiatedBy, "user:u1");
+    });
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("createCommandTelemetry: a direct client sends its kind, no id, and no empty collectives", async () => {
+  await withActiveService(async (repo) => {
+    const telemetry = createCommandTelemetry(TARGET, {
+      client: "direct:dashboard",
+    });
+    assertExists(telemetry);
+    await telemetry.finish(null);
+
+    const data = repo.saved[0].toData();
+    assertEquals(data.client, "direct:dashboard");
+    assertEquals("integrationId" in data, false);
+    assertEquals("serveCollectives" in data, false);
+  });
+});
+
+Deno.test("createCommandTelemetry: an integration or group behavior sends its type and no error message", async () => {
+  await withActiveService(async (repo) => {
+    const ceiling = createCommandTelemetry({
+      modelName: "integration-acme-slack",
+      methodName: "ceiling",
+    });
+    assertExists(ceiling);
+    ceiling.resolveType("swamp/integration");
+    await ceiling.finish(
+      new UserError("Integration 'acme-slack' was revoked"),
+    );
+
+    const addMember = createCommandTelemetry({
+      modelName: "payroll-admins",
+      methodName: "add-member",
+    });
+    assertExists(addMember);
+    addMember.resolveType("swamp/group");
+    await addMember.finish(new Error("Group 'payroll-admins' does not exist"));
+
+    const [first, second] = repo.saved.map((entry) => entry.toData());
+    assertEquals(first.invocation.args, ["@swamp/integration", "ceiling"]);
+    assertEquals(first.result, {
+      status: "user_error",
+      errorType: "UserError",
+      exitCode: 1,
+    });
+    assertEquals(second.invocation.args, ["@swamp/group", "add-member"]);
+    assertEquals(second.result.errorMessage, undefined);
+    const sent = JSON.stringify(repo.saved.map((entry) => entry.toData()));
+    assertEquals(sent.includes("acme-slack"), false);
+    assertEquals(sent.includes("payroll-admins"), false);
+  });
+});
+
+Deno.test("createCommandTelemetry: an integration name is concealed before its type resolves, and other types keep their name", async () => {
+  await withActiveService(async (repo) => {
+    const unresolved = createCommandTelemetry({
+      modelName: "integration-acme-slack",
+      methodName: "revoke",
+    });
+    assertExists(unresolved);
+    await unresolved.finish(new Error("Integration 'acme-slack' not found"));
+
+    const plain = createCommandTelemetry(TARGET);
+    assertExists(plain);
+    plain.resolveType("acme/enricher");
+    await plain.finish(new Error("enrich failed"));
+
+    const [first, second] = repo.saved.map((entry) => entry.toData());
+    assertEquals(first.invocation.args, ["<REDACTED>", "revoke"]);
+    assertEquals(first.result.errorMessage, undefined);
+    assertEquals(second.invocation.args, ["enricher", "enrich"]);
+    assertEquals(second.result.errorMessage, "enrich failed");
+  });
+});
+
+Deno.test("createControlTelemetry: each action records one event with its command path and outcome", async () => {
+  const restore = setServeCollectivesSource(() => ["acme", "beta"]);
+  try {
+    await withActiveService(async (repo) => {
+      const caller = {
+        initiatedBy: "user:u1",
+        client: "integration:acme-slack",
+      };
+      const approve = createControlTelemetry("approve", caller);
+      await approve.finish({ status: "success" });
+      await approve.finish({ status: "error", errorType: "internal" });
+
+      await createControlTelemetry("resume", caller).finish({
+        status: "user_error",
+        errorType: "resume_inputs_refused",
+      });
+      await createControlTelemetry("method cancel", caller).finish({
+        status: "success",
+      });
+      await createControlTelemetry("cancel all", caller).finish({
+        status: "success",
+        cancelledCount: 4,
+      });
+      createControlTelemetry("signal", caller).discard();
+
+      const sent = repo.saved.map((entry) => entry.toData());
+      assertEquals(
+        sent.map((data) => data.invocation.commandPath),
+        [
+          ["workflow", "approve"],
+          ["workflow", "resume"],
+          ["model", "method", "cancel"],
+          ["cancel", "all"],
+        ],
+      );
+      assertEquals(sent[0].result.status, "success");
+      assertEquals(sent[1].result, {
+        status: "user_error",
+        errorType: "resume_inputs_refused",
+        exitCode: 1,
+      });
+      assertEquals(sent[3].cancelledCount, 4);
+      for (const data of sent) {
+        assertEquals(data.invocation.args, []);
+        assertEquals(data.triggerSource, "api");
+        assertEquals(data.initiatedBy, "user:u1");
+        assertEquals(data.client, "integration");
+        assertEquals(data.integrationId, "acme-slack");
+        assertEquals(data.serveCollectives, ["acme", "beta"]);
+      }
+    });
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("createControlTelemetry: records nothing when telemetry is disabled", async () => {
+  clearActiveTelemetryService();
+  await createControlTelemetry("approve", {}).finish({ status: "success" });
 });

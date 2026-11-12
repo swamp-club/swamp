@@ -22,7 +22,15 @@
  * and `/`
  */
 
-import { parsePrincipal } from "../domain/access/principal.ts";
+import {
+  parsePrincipal,
+  principalToString,
+} from "../domain/access/principal.ts";
+import {
+  type ControlOutcome,
+  type ControlTelemetry,
+  createControlTelemetry,
+} from "./telemetry.ts";
 import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
@@ -199,6 +207,54 @@ export async function handleSignalHttpRequest(
     };
   }
 
+  const control = createControlTelemetry("signal", {
+    initiatedBy: caller.principal
+      ? principalToString(caller.principal)
+      : "ghost",
+    client: caller.client,
+  });
+  const outcome: { code?: string } = {};
+  const response = await answerSignal(
+    req,
+    route,
+    sourceIp,
+    deps,
+    caller,
+    tokenBinding,
+    control,
+    outcome,
+  );
+  await control.finish(signalOutcome(response.status, outcome.code));
+  return response;
+}
+
+function signalOutcome(
+  status: number,
+  code: string | undefined,
+): ControlOutcome {
+  if (status < 400) return { status: "success" };
+  return {
+    status: status >= 500 ? "error" : "user_error",
+    errorType: code ?? `http_${status}`,
+  };
+}
+
+async function answerSignal(
+  req: Request,
+  route: SignalRoute,
+  sourceIp: string,
+  deps: SignalHttpDeps,
+  caller: AccessCaller,
+  tokenBinding: TokenSessionBinding | undefined,
+  control: ControlTelemetry,
+  outcome: { code?: string },
+): Promise<Response> {
+  const { ctx } = deps;
+  const refuse = (code: string, message: string, status?: number) => {
+    outcome.code = code;
+    return badRequest(message, status);
+  };
+
   // The two gates every WebSocket request passes before it is dispatched
   // (`handleMessage`), so this route cannot be a way around either.
   if (
@@ -207,7 +263,8 @@ export async function handleSignalHttpRequest(
       ctx.auditWal?.hasDroppedEvents === true ||
       ctx.auditEmitter.durableStalled)
   ) {
-    return badRequest(
+    return refuse(
+      "audit_unavailable",
       "Request rejected: audit subsystem cannot durably record events (fail-secure mode)",
       503,
     );
@@ -218,7 +275,10 @@ export async function handleSignalHttpRequest(
   const forwarded = followerHttpForward(SIGNAL_REQUEST_TYPE, req, ctx, {
     clientIp: sourceIp,
   });
-  if (forwarded !== undefined) return await forwarded;
+  if (forwarded !== undefined) {
+    control.discard();
+    return await forwarded;
+  }
   const requestId = crypto.randomUUID();
   if (
     isRestrictedCommand(
@@ -233,19 +293,25 @@ export async function handleSignalHttpRequest(
       ctx,
     )
   ) {
-    return badRequest(
+    return refuse(
+      "forbidden",
       `Access denied: ${SIGNAL_REQUEST_TYPE} is restricted to admins on this server`,
       403,
     );
   }
 
   if (ctx.authConfig.mode === "none" && !hasJsonContentType(req)) {
-    return badRequest("Content-Type must be application/json", 415);
+    return refuse(
+      "invalid_request",
+      "Content-Type must be application/json",
+      415,
+    );
   }
 
   const bytes = await readBodyWithLimit(req, MAX_SIGNAL_BODY_BYTES);
   if (bytes === null) {
-    return badRequest(
+    return refuse(
+      "invalid_request",
       `Request body exceeds ${MAX_SIGNAL_BODY_BYTES} bytes`,
       413,
     );
@@ -254,13 +320,14 @@ export async function handleSignalHttpRequest(
   try {
     body = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
-    return badRequest("Request body must be JSON");
+    return refuse("invalid_request", "Request body must be JSON");
   }
   if (
     typeof body !== "object" || body === null || Array.isArray(body) ||
     !("payload" in body)
   ) {
-    return badRequest(
+    return refuse(
+      "invalid_request",
       'Request body must be a JSON object with a "payload" field',
     );
   }
@@ -278,7 +345,8 @@ export async function handleSignalHttpRequest(
       typeof key !== "string" || key.length === 0 ||
       key.length > SIGNAL_KEY_MAX_LENGTH || "waitId" in body
     ) {
-      return badRequest(
+      return refuse(
+        "invalid_request",
         `Request body must be {"workflow": ..., "key": ..., "payload": ...}: a workflow name or ID of at most ${SIGNAL_WORKFLOW_MAX_LENGTH} characters, a key of at most ${SIGNAL_KEY_MAX_LENGTH}, and no "waitId"`,
       );
     }
@@ -289,7 +357,8 @@ export async function handleSignalHttpRequest(
   // clients already send for it.
   const idempotencyKey = req.headers.get("idempotency-key") ?? undefined;
   if (idempotencyKey !== undefined && !isIdempotencyKey(idempotencyKey)) {
-    return badRequest(
+    return refuse(
+      "invalid_request",
       `The Idempotency-Key header must be ${IDEMPOTENCY_KEY_FORM}`,
     );
   }
@@ -317,6 +386,7 @@ export async function handleSignalHttpRequest(
   const { status, run: _run, workflow: _workflow, ...rest } = result as
     & typeof result
     & { run?: unknown; workflow?: unknown };
+  outcome.code = status;
   return Response.json({ status, ...rest }, { status: SIGNAL_STATUS[status] });
 }
 

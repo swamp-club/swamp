@@ -54,6 +54,7 @@ import {
   readCancelRequestReason,
   readTlsFile,
   resolveServeStartupSettings,
+  respondToBulkCancel,
   ROOT_CONTROL_PLANE_IMPORT_PREFIXES,
   shouldWarnGroupRefreshIgnored,
   teamModeManagedConfigWarning,
@@ -2497,4 +2498,45 @@ Deno.test("resolveServeStartupSettings: parses group refresh and dispatch-env-al
     ).groupRefreshMs,
     600_000,
   );
+});
+
+Deno.test("respondToBulkCancel: answers with the number of runs cancelled, and a refused body with none", async () => {
+  const ctx = {} as unknown as Parameters<typeof respondToBulkCancel>[0];
+  const caller = { principal: null, sourceIp: "127.0.0.1" };
+  const deps = () => {
+    const cancelRegistry = new RunCancelRegistry();
+    cancelRegistry.register("workflow-run", "a", new AbortController());
+    return {
+      cancelRegistry,
+      activeRunRegistry: new ActiveRunRegistry(),
+      scheduledCancelAll: () => 2,
+      webhookCancelAll: () => 0,
+    };
+  };
+  const post = (body: string) =>
+    new Request("http://serve.test/api/v1/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+
+  const done = await respondToBulkCancel(
+    ctx,
+    { req: post("{}"), caller },
+    deps(),
+  );
+  assertEquals(done.cancelledCount, 3);
+  assertEquals(await done.response.json(), {
+    status: "cancellation_requested",
+    count: 3,
+  });
+
+  const refused = await respondToBulkCancel(
+    ctx,
+    { req: post(JSON.stringify({ executionType: "other" })), caller },
+    deps(),
+  );
+  assertEquals(refused.cancelledCount, undefined);
+  assertEquals(refused.response.status, 400);
+  await refused.response.body?.cancel();
 });

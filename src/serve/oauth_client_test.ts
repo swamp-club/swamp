@@ -987,3 +987,43 @@ Deno.test("getUserInfo: non-string entries in the groups field are dropped with 
   assertEquals(warnings.length, 1);
   assertStringIncludes(warnings[0], "2 entries that are not strings");
 });
+
+Deno.test("sendInstanceHeartbeat: carries the reported integrations when given", async () => {
+  let receivedBody: unknown;
+  const mock = startMockServer(async (req) => {
+    receivedBody = await req.json();
+    return Response.json({
+      oauthClientId: "clt-1",
+      lastHeartbeatAt: "2026-11-12T00:00:00.000Z",
+      heartbeatCount: 2,
+    });
+  });
+  try {
+    await sendInstanceHeartbeat(
+      `http://localhost:${mock.port}`,
+      "my-token",
+      "clt-1",
+      "inst-1",
+      AbortSignal.timeout(5000),
+      [
+        {
+          id: "acme-slack",
+          state: "revoked",
+          createdAt: "2026-10-01T00:00:00.000Z",
+          revokedAt: "2026-11-01T00:00:00.000Z",
+        },
+      ],
+    );
+    assertEquals(receivedBody, {
+      instanceId: "inst-1",
+      integrations: [{
+        id: "acme-slack",
+        state: "revoked",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        revokedAt: "2026-11-01T00:00:00.000Z",
+      }],
+    });
+  } finally {
+    await mock.shutdown();
+  }
+});

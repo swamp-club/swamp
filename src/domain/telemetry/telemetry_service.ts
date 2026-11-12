@@ -26,15 +26,17 @@ import type {
   TelemetryFlushResult,
   TelemetrySender,
 } from "./telemetry_sender.ts";
-import { TelemetryEntry } from "./telemetry_entry.ts";
+import { type ServeEventFields, TelemetryEntry } from "./telemetry_entry.ts";
 import type { CommandInvocationData } from "./command_invocation.ts";
 import type { InvocationContextData } from "./invocation_context.ts";
 import { generateTelemetryId, type TelemetryId } from "./telemetry_id.ts";
 import type { WorkflowContextData } from "./workflow_context.ts";
 import {
+  createCodedErrorResult,
   createErrorResult,
   createSuccessResult,
   type InvocationResultData,
+  type InvocationStatus,
 } from "./invocation_result.ts";
 import type { WorkflowTriggerSource } from "./trigger_source.ts";
 import type { AuthMode } from "../auth/auth_gate_policy.ts";
@@ -137,6 +139,7 @@ export class TelemetryService {
     private readonly flushRecords?: TelemetryFlushRecordRepository,
     /** stamped on each entry so a later sender reports it as recorded */
     private readonly identity?: TelemetryIdentity,
+    private readonly serveFields?: ServeEventFields,
   ) {
     this.invocationId = invocationId ?? generateTelemetryId();
   }
@@ -158,6 +161,7 @@ export class TelemetryService {
   forkForRun(
     triggerSource?: WorkflowTriggerSource,
     initiatedBy?: string,
+    serveFields?: ServeEventFields,
   ): TelemetryService {
     return new TelemetryService(
       this.repository,
@@ -169,6 +173,7 @@ export class TelemetryService {
       this.endpoint,
       undefined,
       this.identity,
+      serveFields,
     );
   }
 
@@ -190,6 +195,7 @@ export class TelemetryService {
       initiatedBy: this.initiatedBy,
       endpoint: this.endpoint,
       ...this.identity,
+      ...this.serveFields,
     });
 
     await this.repository.save(entry);
@@ -220,6 +226,44 @@ export class TelemetryService {
       initiatedBy: this.initiatedBy,
       endpoint: this.endpoint,
       ...this.identity,
+      ...this.serveFields,
+    });
+
+    await this.repository.save(entry);
+  }
+
+  /** a result with no message, for an outcome known only by its code */
+  async recordOutcome(
+    invocation: CommandInvocationData,
+    startedAt: Date,
+    outcome:
+      | { status: "success"; cancelledCount?: number }
+      | {
+        status: Exclude<InvocationStatus, "success">;
+        errorType: string;
+        cancelledCount?: number;
+      },
+  ): Promise<void> {
+    const entry = TelemetryEntry.create({
+      id: this.invocationId,
+      invocation,
+      result: outcome.status === "success"
+        ? { ...createSuccessResult() }
+        : { ...createCodedErrorResult(outcome.status, outcome.errorType) },
+      startedAt,
+      completedAt: new Date(),
+      swampVersion: this.swampVersion,
+      denoVersion: Deno.version.deno,
+      platform: Deno.build.os,
+      invocationContext: this.invocationContext,
+      triggerSource: this.triggerSource,
+      initiatedBy: this.initiatedBy,
+      endpoint: this.endpoint,
+      ...this.identity,
+      ...this.serveFields,
+      ...(outcome.cancelledCount !== undefined
+        ? { cancelledCount: outcome.cancelledCount }
+        : {}),
     });
 
     await this.repository.save(entry);
@@ -257,6 +301,7 @@ export class TelemetryService {
       initiatedBy: this.initiatedBy,
       endpoint: this.endpoint,
       ...this.identity,
+      ...this.serveFields,
     });
 
     await this.repository.save(entry);

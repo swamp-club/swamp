@@ -79,6 +79,7 @@ export {
 
 export {
   type CreateTelemetryEntryProps,
+  type ServeEventFields,
   TelemetryEntry,
   type TelemetryEntryData,
 } from "./telemetry_entry.ts";

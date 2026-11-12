@@ -51,7 +51,47 @@ import {
   type WorkflowTriggerSource,
 } from "./trigger_source.ts";
 
-export interface CreateTelemetryEntryProps {
+/** what serve knows about a request; each field is absent when unknown */
+export interface ServeEventFields {
+  /** a client kind, never an integration's id */
+  readonly client?: string;
+  readonly integrationId?: string;
+  readonly serveCollectives?: readonly string[];
+  readonly cancelledCount?: number;
+}
+
+function serveEventFieldsFromData(
+  data: Partial<Record<keyof ServeEventFields, unknown>>,
+): ServeEventFields | undefined {
+  const fields: {
+    client?: string;
+    integrationId?: string;
+    serveCollectives?: string[];
+    cancelledCount?: number;
+  } = {};
+  if (typeof data.client === "string" && data.client) {
+    fields.client = data.client;
+  }
+  if (typeof data.integrationId === "string" && data.integrationId) {
+    fields.integrationId = data.integrationId;
+  }
+  if (
+    Array.isArray(data.serveCollectives) &&
+    data.serveCollectives.length > 0 &&
+    data.serveCollectives.every((slug) => typeof slug === "string")
+  ) {
+    fields.serveCollectives = [...data.serveCollectives];
+  }
+  if (
+    typeof data.cancelledCount === "number" &&
+    Number.isInteger(data.cancelledCount) && data.cancelledCount >= 0
+  ) {
+    fields.cancelledCount = data.cancelledCount;
+  }
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
+export interface CreateTelemetryEntryProps extends ServeEventFields {
   id?: string;
   invocation: CommandInvocationData;
   result: InvocationResultData;
@@ -95,6 +135,10 @@ export interface TelemetryEntryData {
   /** who ran it, recorded with the entry; absent on older spooled entries */
   repoId?: string;
   distinctId?: string;
+  client?: string;
+  integrationId?: string;
+  serveCollectives?: string[];
+  cancelledCount?: number;
 }
 
 export class TelemetryEntry {
@@ -116,6 +160,7 @@ export class TelemetryEntry {
     readonly endpoint?: string,
     readonly repoId?: string,
     readonly distinctId?: string,
+    readonly serveFields?: ServeEventFields,
   ) {}
 
   static create(props: CreateTelemetryEntryProps): TelemetryEntry {
@@ -146,6 +191,7 @@ export class TelemetryEntry {
       props.endpoint,
       props.repoId,
       props.distinctId,
+      serveEventFieldsFromData(props),
     );
   }
 
@@ -176,6 +222,7 @@ export class TelemetryEntry {
       typeof data.endpoint === "string" ? data.endpoint : undefined,
       typeof data.repoId === "string" ? data.repoId : undefined,
       typeof data.distinctId === "string" ? data.distinctId : undefined,
+      serveEventFieldsFromData(data),
     );
   }
 
@@ -219,6 +266,15 @@ export class TelemetryEntry {
     }
     if (this.distinctId) {
       data.distinctId = this.distinctId;
+    }
+    const serve = this.serveFields;
+    if (serve?.client) data.client = serve.client;
+    if (serve?.integrationId) data.integrationId = serve.integrationId;
+    if (serve?.serveCollectives) {
+      data.serveCollectives = [...serve.serveCollectives];
+    }
+    if (serve?.cancelledCount !== undefined) {
+      data.cancelledCount = serve.cancelledCount;
     }
     return data;
   }

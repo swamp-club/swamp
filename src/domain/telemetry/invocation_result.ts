@@ -43,6 +43,14 @@ export function createSuccessResult(): InvocationResult {
   };
 }
 
+/** a failure known only by its code: no message is kept */
+export function createCodedErrorResult(
+  status: "error" | "user_error",
+  errorType: string,
+): InvocationResult {
+  return { status, errorType, exitCode: 1 };
+}
+
 /**
  * paths the error marked with markErrorPaths are removed exactly alongside
  * knownValues, so a path the patterns cannot delimit is still replaced whole

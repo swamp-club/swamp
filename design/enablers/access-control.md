@@ -138,6 +138,9 @@ closed. `swamp access check --client integration:<id>` is the one exception: it
 explains the integration's own ceiling, through a decision-service option serve
 never sets.
 
+Serve reports the integrations it hosts to swamp-club, by id, state and dates
+only; see "Operator gate" in [serve](../primitives/serve.md).
+
 A refusal is an explicit deny, named `builtin:integration-ceiling`,
 `builtin:integration-unknown` or `builtin:integration-revoked`, never a null. Sites
 that fall back to an admin check on a null would otherwise let an admin person

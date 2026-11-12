@@ -193,6 +193,7 @@ import {
   type ConnectionContext,
   exceptionTypeForClient,
   filterByResources,
+  getConnectionClient,
   handlerLibSwampContext,
   isAdminOnlyModelType,
   isAuthorized,
@@ -816,7 +817,7 @@ export async function handleModelMethodRun(
         modelName: payload.modelIdOrName,
         methodName: payload.methodName,
       },
-      initiatedBy,
+      { initiatedBy, client: getConnectionClient(socket) },
     );
     const deregister = () => {
       if (deregistered) return;
@@ -852,6 +853,9 @@ export async function handleModelMethodRun(
     };
     try {
       const target = await resolveMethodRunTarget(ctx, payload);
+      telemetry?.resolveType(
+        executedDefinition(target)?.type.normalized ?? payload.typeArg,
+      );
       if (
         !authorizeMethodRun(socket, requestId, principal, payload, target, ctx)
       ) return;
@@ -1214,8 +1218,9 @@ export async function handleModelMethodRun(
       modelName: payload.modelIdOrName,
       methodName: payload.methodName,
     },
-    initiatedBy,
+    { initiatedBy, client: getConnectionClient(socket) },
   );
+  detachedTelemetry?.resolveType(preResult?.type.normalized ?? payload.typeArg);
 
   const detachedLockMode = preResult
     ? await runLockMode(

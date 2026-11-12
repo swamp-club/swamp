@@ -88,7 +88,7 @@ export const REDACTED_ARGUMENTS: ReadonlySet<string> = new Set([
   // The hidden shell-completion command's action, called by completion scripts.
   "action",
   "args",
-  // `access integration <verb> <id>`: an id the operator chose.
+  // `access delegation <verb> <id>`; `access integration` sends its id, below.
   "id",
   // `extension promote`: an extension name or a manifest path, so a path.
   "extension-or-manifest",
@@ -127,6 +127,9 @@ export function isSentArgument(
   commandPath: string[],
 ): boolean {
   if (commandPath[0] === "access" && commandPath[1] === "group") return false;
+  if (argName === "id") {
+    return commandPath[0] === "access" && commandPath[1] === "integration";
+  }
   if (argName === "key") return commandPath[0] === "config";
   return SENT_ARGUMENTS.has(argName);
 }

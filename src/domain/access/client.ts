@@ -106,6 +106,22 @@ export function isIntegrationClient(client: string | undefined): boolean {
   return integrationOfClient(client).kind !== "none";
 }
 
+/** usage telemetry names the kind; only an integration also names its id */
+export function telemetryClientOf(
+  client: string | undefined,
+): { readonly client?: string; readonly integrationId?: string } {
+  if (client === undefined) return {};
+  let parsed: Client;
+  try {
+    parsed = parseClient(client);
+  } catch {
+    return {};
+  }
+  return parsed.kind === "integration"
+    ? { client: "integration", integrationId: parsed.id }
+    : { client: clientToString(parsed) };
+}
+
 /** a token with no client is direct with no id; never stored or parsed */
 export const ABSENT_CLIENT_CONDITION_VALUE = "direct:";
 

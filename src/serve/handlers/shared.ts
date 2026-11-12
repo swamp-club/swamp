@@ -2743,6 +2743,30 @@ export function isServerFailureCode(code: string): boolean {
   return code.endsWith("_failed") && code !== "validation_failed";
 }
 
+// the first error code each watched request answered with
+const watchedRequestErrors = new WeakMap<
+  WebSocket,
+  Map<string, string | undefined>
+>();
+
+/** returns a reader of the request's first error code, which also stops the watch */
+export function watchRequestError(
+  socket: WebSocket,
+  id: string,
+): () => string | undefined {
+  let watched = watchedRequestErrors.get(socket);
+  if (!watched) {
+    watched = new Map();
+    watchedRequestErrors.set(socket, watched);
+  }
+  watched.set(id, undefined);
+  return () => {
+    const code = watched.get(id);
+    watched.delete(id);
+    return code;
+  };
+}
+
 export function sendError(
   socket: WebSocket,
   id: string,
@@ -2751,6 +2775,8 @@ export function sendError(
   details?: unknown,
   retryAfterSeconds?: number,
 ): void {
+  const watched = watchedRequestErrors.get(socket);
+  if (watched?.has(id) && watched.get(id) === undefined) watched.set(id, code);
   let errors = erroredRequests.get(socket);
   if (!errors) {
     errors = new Set();

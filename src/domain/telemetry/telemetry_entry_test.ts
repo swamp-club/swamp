@@ -647,3 +647,56 @@ Deno.test("TelemetryEntry: repoId and distinctId round-trip and stay absent on l
   assertEquals(decoded.repoId, undefined);
   assertEquals(decoded.distinctId, undefined);
 });
+
+Deno.test("TelemetryEntry: serve fields round-trip, stay absent when unset, and drop malformed values", () => {
+  const base = {
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success" as const, exitCode: 0 },
+    startedAt: new Date("2026-11-12T00:00:00.000Z"),
+    completedAt: new Date("2026-11-12T00:00:01.000Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.0.0",
+    platform: "linux",
+  };
+
+  const full = TelemetryEntry.create({
+    ...base,
+    client: "integration",
+    integrationId: "acme-slack",
+    serveCollectives: ["acme", "beta"],
+    cancelledCount: 3,
+  }).toData();
+  assertEquals(full.client, "integration");
+  assertEquals(full.integrationId, "acme-slack");
+  assertEquals(full.serveCollectives, ["acme", "beta"]);
+  assertEquals(full.cancelledCount, 3);
+  assertEquals(TelemetryEntry.fromData(full).toData(), full);
+
+  const bare = TelemetryEntry.create(base).toData();
+  for (
+    const key of [
+      "client",
+      "integrationId",
+      "serveCollectives",
+      "cancelledCount",
+    ]
+  ) {
+    assertEquals(key in bare, false);
+  }
+
+  const malformed = TelemetryEntry.fromData({
+    ...bare,
+    client: 7,
+    serveCollectives: [],
+    cancelledCount: -1,
+  } as unknown as TelemetryEntryData).toData();
+  assertEquals("client" in malformed, false);
+  assertEquals("serveCollectives" in malformed, false);
+  assertEquals("cancelledCount" in malformed, false);
+});

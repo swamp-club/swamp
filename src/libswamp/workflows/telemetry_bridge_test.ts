@@ -816,3 +816,51 @@ Deno.test("bridge marks the step's errorPaths on the error it records", async ()
   assertEquals(errorPaths(sink.calls[0].error), [path]);
   assertEquals(errorPaths(sink.calls[1].error), [path]);
 });
+
+Deno.test("bridge: a group or integration step is sent by type, with no error text", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  for (
+    const [stepId, modelName, modelType] of [
+      ["grant", "payroll-admins", "@swamp/group"],
+      ["tighten", "integration-acme-slack", "swamp/integration"],
+    ]
+  ) {
+    await bridge.observe({
+      kind: "model_resolved",
+      jobId: "access",
+      stepId,
+      runId: "run-1",
+      modelName,
+      modelType,
+      modelId: "test-model-id",
+      methodName: "apply",
+    });
+    await bridge.observe({
+      kind: "method_executing",
+      jobId: "access",
+      stepId,
+      runId: "run-1",
+      modelName,
+      methodName: "apply",
+    });
+    await bridge.observe({
+      kind: "step_failed",
+      jobId: "access",
+      stepId,
+      runId: "run-1",
+      error: `${modelName} refused`,
+    });
+  }
+  await bridge.finalize();
+
+  assertEquals(sink.calls.map((call) => call.invocation.args), [
+    ["run", "@swamp/group", "apply"],
+    ["run", "@swamp/integration", "apply"],
+  ]);
+  for (const call of sink.calls) {
+    assertEquals(call.error?.message, "<REDACTED>");
+  }
+});
