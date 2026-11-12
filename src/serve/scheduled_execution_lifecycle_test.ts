@@ -478,7 +478,7 @@ Deno.test("ScheduledExecutionLifecycle: shutdown aborts an own-run replay that n
 
 Deno.test("ScheduledExecutionLifecycle: a replay that ignores the abort holds shutdown no longer than the settle bound (swamp-club#4660)", async () => {
   const h = heldReplayHarness(() => new Promise<number>(() => {}), {
-    replaySettleTimeoutMs: 1,
+    replaySettleBound: () => Promise.resolve(),
   });
   await replayStarted(h, "turnOn");
   await h.lifecycle.stop();
@@ -501,4 +501,25 @@ Deno.test("ScheduledExecutionLifecycle: drain aborts the own-run replay alongsid
   await replaying;
   await h.lifecycle.stop();
   assertEquals(h.built[0].calls.includes("catchUp"), false);
+});
+
+Deno.test("ScheduledExecutionLifecycle: drain and stop share one settle bound, so a replay that ignores the abort holds shutdown once (swamp-club#4660)", async () => {
+  const bounds: PromiseWithResolvers<void>[] = [];
+  const h = heldReplayHarness(() => new Promise<number>(() => {}), {
+    replaySettleBound: () => {
+      const bound = Promise.withResolvers<void>();
+      bounds.push(bound);
+      return bound.promise;
+    },
+  });
+  await replayStarted(h, "turnOn");
+
+  const drained = h.lifecycle.drain(0);
+  await waitFor(() => bounds.length === 1, "drain starts the bound");
+  bounds[0].resolve();
+  await drained;
+  await h.lifecycle.stop();
+
+  assertEquals(bounds.length, 1);
+  assertEquals(h.built[0].calls.at(-1), "stop");
 });

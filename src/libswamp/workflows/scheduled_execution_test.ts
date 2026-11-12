@@ -440,12 +440,8 @@ Deno.test("ScheduledExecutionService.stop: reports the run it aborted, with the 
 
   assertEquals(abortMessage(executor.signals[0]), "server shutdown");
   assertEquals(
-    aborted.map(({ runId, workflowId, workflowName }) => ({
-      runId,
-      workflowId,
-      workflowName,
-    })),
-    [{ runId: "run-1", workflowId: "wf", workflowName: "wf" }],
+    aborted.map(({ runId, workflowName }) => ({ runId, workflowName })),
+    [{ runId: "run-1", workflowName: "wf" }],
   );
   assertEquals(aborted[0].startedAt instanceof Date, true);
 });

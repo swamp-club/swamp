@@ -60,7 +60,8 @@ export interface ScheduledExecutionLifecycleDeps<S extends LifecycleScheduler> {
     signal: AbortSignal,
   ): Promise<number>;
   readonly maxConcurrentRuns: number | undefined;
-  readonly replaySettleTimeoutMs?: number;
+  /** how long shutdown waits for an aborted replay; a REPLAY_SETTLE_TIMEOUT_MS timer when unset */
+  readonly replaySettleBound?: (signal: AbortSignal) => Promise<void>;
 }
 
 export interface TurnOnOptions {
@@ -89,6 +90,7 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
   /** own-cron replays in flight; shutdown aborts them and waits a bounded time */
   readonly #replays = new Set<Promise<void>>();
   readonly #replayAbort = new AbortController();
+  #replaysSettled: Promise<void> | undefined;
 
   constructor(deps: ScheduledExecutionLifecycleDeps<S>) {
     this.#deps = deps;
@@ -292,26 +294,39 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     return aborted;
   }
 
-  async #settleReplays(): Promise<void> {
+  #settleReplays(): Promise<void> {
     this.#replayAbort.abort(new Error("server shutdown"));
+    // drain and stop share one bound, so a replay that ignores the abort holds shutdown once
+    this.#replaysSettled ??= this.#awaitReplays();
+    return this.#replaysSettled;
+  }
+
+  async #awaitReplays(): Promise<void> {
     if (this.#replays.size === 0) return;
-    const timeoutMs = this.#deps.replaySettleTimeoutMs ??
-      REPLAY_SETTLE_TIMEOUT_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const bound = new Promise<"timeout">((resolve) => {
-      timer = setTimeout(() => resolve("timeout"), timeoutMs);
-    });
+    const boundDone = new AbortController();
+    const bound = this.#deps.replaySettleBound ?? settleTimer;
     try {
       const outcome = await Promise.race([
-        Promise.allSettled([...this.#replays]),
-        bound,
+        Promise.allSettled([...this.#replays]).then(() => "settled" as const),
+        bound(boundDone.signal).then(() => "timeout" as const),
       ]);
       if (outcome === "timeout") {
         logger
-          .warn`The replay of pending scheduled runs did not stop within ${timeoutMs}ms; shutdown goes on and they stay pending`;
+          .warn`The replay of pending scheduled runs did not stop within ${
+          REPLAY_SETTLE_TIMEOUT_MS / 1000
+        }s; shutdown continues and they stay pending`;
       }
     } finally {
-      clearTimeout(timer);
+      boundDone.abort();
     }
   }
+}
+
+function settleTimer(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, REPLAY_SETTLE_TIMEOUT_MS);
+    signal.addEventListener("abort", () => clearTimeout(timer), {
+      once: true,
+    });
+  });
 }

@@ -368,10 +368,9 @@ interface CatchUpPass {
   readonly deadline: AbortSignal;
 }
 
-/** a run stop() aborted for shutdown; shutdown marks it interrupted */
+/** a run stop() aborted for shutdown; no workflow id, as a replayed run is keyed by name */
 export interface AbortedScheduledRun {
   readonly runId: string;
-  readonly workflowId: string;
   readonly workflowName: string;
   readonly startedAt: Date;
 }
@@ -590,7 +589,6 @@ export class ScheduledExecutionService {
       if (entry.runId === "" || !entry.startedAt) continue;
       aborted.push({
         runId: entry.runId,
-        workflowId,
         workflowName: entry.workflowName ?? workflowId,
         startedAt: entry.startedAt,
       });
