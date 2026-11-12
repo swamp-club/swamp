@@ -158,7 +158,11 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
 lookup argument equals a `specName` tag shared by several data items under the
 same behavior. An exact data name that differs from the specName is unaffected,
 even if sibling items share the spec. Use `data.findBySpec()` to query by
-specName. The raw `data.query()` equivalent skips this check. When the lookup
+specName. The raw `data.query()` equivalent skips this check, and the error
+offers it alongside renaming the data item. A method run whose new data name
+creates the clash (`DataQueryService.specNameClash`, the same rule) logs a
+warning naming both fixes; it never fails the run, checks only version 1, and
+skips an unpopulated catalog rather than backfilling. When the lookup
 found the record through the behavior's definition, rows a retyped behavior left
 under its old type (same id, another type — what `data prune` reclaims as
 orphaned) are not counted as peers.

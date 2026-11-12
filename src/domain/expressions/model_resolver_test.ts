@@ -1553,10 +1553,20 @@ Deno.test("data.latest() throws on ambiguous specName matches", async () => {
 
     assertExists(ctx.data);
     const data = ctx.data;
+    const query = `data.query('modelName == "fleet" && name == "runResult"`;
     await assertRejects(
       () => data.latest("fleet", "runResult"),
       Error,
-      "Ambiguous data.latest() match",
+      `Ambiguous data.latest() match: "runResult" is both a data name of ` +
+        `"fleet" and the spec of 3 data items (run-exec-clara, ` +
+        `run-exec-thinkpad, runResult). Rename the data item "runResult" ` +
+        `so it differs from its spec, or read it with ${query} && ` +
+        `ns == ""')[0].`,
+    );
+    await assertRejects(
+      () => data.latest("*:fleet", "runResult"),
+      Error,
+      `${query}')[0].`,
     );
     catalog.close();
   });

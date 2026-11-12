@@ -3280,7 +3280,7 @@ Deno.test("checkSpecNameAmbiguity: excluded rows are neither peers nor named", (
   const { catalog, service } = t;
   catalog.upsert(makeRow({
     model_name: "shared",
-    data_name: "user-main",
+    data_name: "main",
     spec_name: "main",
     id: "data-user-001",
   }));
@@ -3379,7 +3379,7 @@ Deno.test("checkSpecNameAmbiguity: distinct data names under the resolved type s
         RETYPED_TO_BETA,
       ),
     UserError,
-    "resolves to 2 data items (foo, foo-y)",
+    "the spec of 2 data items (foo, foo-y)",
   );
   catalog.close();
 });
@@ -3396,7 +3396,7 @@ Deno.test("checkSpecNameAmbiguity: a different spelling of the resolved type kee
         modelId: "model-retyped",
       }),
     UserError,
-    "resolves to 2 data items (foo, foo-y)",
+    "the spec of 2 data items (foo, foo-y)",
   );
   catalog.close();
 });
@@ -3424,7 +3424,7 @@ Deno.test("checkSpecNameAmbiguity: rows under another model id still count with 
         RETYPED_TO_BETA,
       ),
     UserError,
-    "resolves to 2 data items (foo, foo)",
+    "the spec of 2 data items (foo, foo)",
   );
   catalog.close();
 });
@@ -3437,9 +3437,129 @@ Deno.test("checkSpecNameAmbiguity: without a resolved identity the old-type row 
   assertThrows(
     () => service.checkSpecNameAmbiguity("foo", "m1"),
     UserError,
-    "resolves to 2 data items (foo, foo)",
+    "the spec of 2 data items (foo, foo)",
   );
   catalog.close();
+});
+
+function upsertSpecRows(
+  catalog: CatalogStore,
+  modelName: string,
+  specName: string,
+  dataNames: string[],
+): void {
+  dataNames.forEach((dataName, i) =>
+    catalog.upsert(makeRow({
+      model_name: modelName,
+      data_name: dataName,
+      spec_name: specName,
+      id: `00000000-0000-1000-8000-00000000450${i}`,
+    }))
+  );
+}
+
+Deno.test("checkSpecNameAmbiguity: names the model and both fixes", () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  upsertSpecRows(catalog, "grafana", "signals", [
+    "signals",
+    "pattern-watch-signals",
+  ]);
+
+  const error = assertThrows(
+    () => service.checkSpecNameAmbiguity("signals", "grafana"),
+    UserError,
+  );
+  assertEquals(
+    error.message,
+    'Ambiguous data.latest() match: "signals" is both a data name of ' +
+      '"grafana" and the spec of 2 data items (pattern-watch-signals, ' +
+      'signals). Rename the data item "signals" so it differs from its ' +
+      'spec, or read it with data.query(\'modelName == "grafana" && ' +
+      'name == "signals"\')[0].',
+  );
+});
+
+Deno.test("checkSpecNameAmbiguity: the suggested query scopes to the namespace and escapes quotes", () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  catalog.upsert(makeRow({
+    namespace: "ops",
+    model_name: 'gra"fana',
+    data_name: "signals",
+    spec_name: "signals",
+    id: "00000000-0000-1000-8000-000000004510",
+  }));
+  catalog.upsert(makeRow({
+    namespace: "ops",
+    model_name: 'gra"fana',
+    data_name: "other",
+    spec_name: "signals",
+    id: "00000000-0000-1000-8000-000000004511",
+  }));
+
+  assertThrows(
+    () => service.checkSpecNameAmbiguity("signals", 'gra"fana', "ops"),
+    UserError,
+    `data.query('modelName == "gra\\"fana" && name == "signals" && ns == "ops"')[0]`,
+  );
+});
+
+Deno.test("specNameClash: the sorted data names when an item is named after its shared spec", () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  upsertSpecRows(catalog, "grafana", "signals", [
+    "signals",
+    "pattern-watch-signals",
+  ]);
+
+  assertEquals(service.specNameClash("signals", "grafana"), [
+    "pattern-watch-signals",
+    "signals",
+  ]);
+});
+
+Deno.test("specNameClash: no clash when no item is named after the spec", () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  upsertSpecRows(catalog, "fanout", "host", ["host-a", "host-b", "host-c"]);
+
+  assertEquals(service.specNameClash("host", "fanout"), null);
+});
+
+Deno.test("specNameClash: no clash with a single item under the spec", () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  upsertSpecRows(catalog, "grafana", "signals", ["signals"]);
+
+  assertEquals(service.specNameClash("signals", "grafana"), null);
+});
+
+Deno.test("specNameClash: the old-type rows of a retyped model are not peers", () => {
+  using t = setupTest();
+  const { catalog, service } = t;
+  upsertRetypedRows(catalog, "foo-x", ["foo"]);
+
+  assertEquals(
+    service.specNameClash("foo", "m1", undefined, [], RETYPED_TO_BETA),
+    null,
+  );
+  assertEquals(service.specNameClash("foo", "m1"), ["foo", "foo-x"]);
+});
+
+Deno.test("specNameClash: an unpopulated catalog answers null without a backfill", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-test-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  using _cleanup = cleanupOnDispose(catalog, dir);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+  upsertSpecRows(catalog, "grafana", "signals", [
+    "signals",
+    "pattern-watch-signals",
+  ]);
+
+  assertEquals(service.specNameClash("signals", "grafana"), null);
+  assertEquals(catalog.isPopulated(), false);
 });
 
 type DeclaredKeys<T> = keyof {

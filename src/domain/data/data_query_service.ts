@@ -75,6 +75,7 @@ import { BinaryContentPredicateError } from "./binary_content_predicate_error.ts
 import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
+import { specNameClashRemedy } from "./spec_name_clash.ts";
 import { garbageCollectionToColumn } from "./data_metadata.ts";
 
 export { type QueryProgram, type QueryView, QueryViewRefusal };
@@ -478,6 +479,51 @@ export class DataQueryService {
     if (!this.catalogStore.isPopulated()) {
       this.backfillSync();
     }
+    const names = this.clashingDataNames(
+      specName,
+      modelName,
+      namespace,
+      excludeModelTypes,
+      resolved,
+    );
+    if (names) {
+      throw new UserError(
+        `Ambiguous data.latest() match: "${specName}" is both a data name ` +
+          `of "${modelName}" and the spec of ${names.length} data items ` +
+          `(${names.join(", ")}). ` +
+          specNameClashRemedy(modelName, specName, namespace),
+      );
+    }
+  }
+
+  /**
+   * the data names that make data.latest(modelName, specName) ambiguous, or
+   * null; never backfills, so a write can ask without rebuilding the catalog
+   */
+  specNameClash(
+    specName: string,
+    modelName: string,
+    namespace?: string,
+    excludeModelTypes: readonly string[] = [],
+    resolved?: { modelType: ModelType; modelId: string },
+  ): string[] | null {
+    if (!specName || !this.catalogStore.isPopulated()) return null;
+    return this.clashingDataNames(
+      specName,
+      modelName,
+      namespace,
+      excludeModelTypes,
+      resolved,
+    );
+  }
+
+  private clashingDataNames(
+    specName: string,
+    modelName: string,
+    namespace: string | undefined,
+    excludeModelTypes: readonly string[],
+    resolved: { modelType: ModelType; modelId: string } | undefined,
+  ): string[] | null {
     // Excluded rows are neither peers nor named in the error.
     const peers = this.catalogStore.findLatestRowsBySpecName(
       modelName,
@@ -488,14 +534,12 @@ export class DataQueryService {
       (!resolved || r.model_id !== resolved.modelId ||
         r.type_normalized === resolved.modelType.normalized)
     );
-    if (peers.length > 1) {
-      const names = peers.map((r) => r.data_name).sort();
-      throw new UserError(
-        `Ambiguous data.latest() match: specName "${specName}" ` +
-          `resolves to ${peers.length} data items ` +
-          `(${names.join(", ")}). Use the specific data name instead.`,
-      );
+    // only a lookup by the spec's own name can mean the spec, so without a
+    // peer of that name every name is unambiguous
+    if (peers.length < 2 || !peers.some((r) => r.data_name === specName)) {
+      return null;
     }
+    return peers.map((r) => r.data_name).sort();
   }
 
   latestDataNamesForSpec(
