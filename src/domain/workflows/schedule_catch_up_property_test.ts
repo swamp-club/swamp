@@ -23,6 +23,12 @@ import { Cron } from "croner";
 import { parseDataDuration } from "../data/duration.ts";
 import { nextSlotAfter } from "./cron_slots.ts";
 import {
+  arbNear,
+  arbZoneAndWatermark,
+  HOUR_MS,
+  ZONES,
+} from "./schedule_dst_test_helpers.ts";
+import {
   evaluateMissedFires,
   MISSED_FIRE_COUNT_CAP,
   missedAroundRecordedSlot,
@@ -30,40 +36,6 @@ import {
 } from "./schedule_catch_up.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
-
-// each zone's 2026 transitions, fall-back first, so a draw lands in its
-// repeated or skipped hour often rather than once in thousands of runs
-const ZONES: Record<string, readonly string[]> = {
-  "UTC": [],
-  "America/Chicago": ["2026-11-01T07:00:00Z", "2026-03-08T08:00:00Z"],
-  "Europe/London": ["2026-10-25T01:00:00Z", "2026-03-29T01:00:00Z"],
-  "Australia/Lord_Howe": ["2026-04-04T15:00:00Z", "2026-10-03T15:30:00Z"],
-  "America/Santiago": ["2026-04-05T03:00:00Z", "2026-09-06T04:00:00Z"],
-};
-
-const arbYearMs = fc.integer({
-  min: Date.UTC(2026, 0, 1),
-  max: Date.UTC(2027, 0, 1),
-});
-
-function arbNear(at: string): fc.Arbitrary<number> {
-  return fc.integer({ min: -2 * HOUR_MS, max: 2 * HOUR_MS }).map((offset) =>
-    Date.parse(at) + offset
-  );
-}
-
-const arbZoneAndWatermark = fc.constantFrom(...Object.keys(ZONES)).chain((
-  timezone,
-) =>
-  fc.record({
-    timezone: fc.constant(timezone),
-    watermarkMs: ZONES[timezone].length === 0
-      ? arbYearMs
-      : fc.oneof(arbYearMs, ...ZONES[timezone].map(arbNear)),
-  })
-);
-
 const arbExpression = fc.constantFrom(
   "*/15 * * * *",
   "0 * * * *",
