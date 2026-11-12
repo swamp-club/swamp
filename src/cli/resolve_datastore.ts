@@ -186,7 +186,10 @@ export async function parseDatastoreEnvVar(
         let config: Record<string, unknown> = { bucket };
         if (prefix) config.prefix = prefix;
 
-        const envCtx = { repoDir: repoDir ?? Deno.cwd() };
+        const envCtx: DatastoreExpressionContext = {
+          repoDir: repoDir ?? Deno.cwd(),
+          autoResolver: autoResolverFor(options),
+        };
         config = await resolveDatastoreExpressions(config, envCtx);
 
         if (typeInfo.configSchema) {
@@ -259,7 +262,10 @@ export async function parseDatastoreEnvVar(
     }
   }
 
-  const envCtx = { repoDir: repoDir ?? Deno.cwd() };
+  const envCtx: DatastoreExpressionContext = {
+    repoDir: repoDir ?? Deno.cwd(),
+    autoResolver: autoResolverFor(options),
+  };
   config = await resolveDatastoreExpressions(config, envCtx);
 
   if (typeInfo.configSchema) {
@@ -379,6 +385,7 @@ export async function resolveDatastoreConfig(
         const exprCtx: DatastoreExpressionContext = {
           repoDir: repoDir ?? Deno.cwd(),
           managedConfig: resolvedManagedConfig,
+          autoResolver: autoResolverFor(options),
         };
         config = await resolveDatastoreExpressions(config, exprCtx);
         const dsFields = await resolveDatastoreFields(ds, exprCtx);
@@ -429,6 +436,7 @@ export async function resolveDatastoreConfig(
         : resolve(repoDir ?? Deno.cwd(), expanded);
       const fsExprCtx: DatastoreExpressionContext = {
         repoDir: repoDir ?? Deno.cwd(),
+        autoResolver: autoResolverFor(options),
       };
       const fsFields = await resolveDatastoreFields(ds, fsExprCtx);
       return {
@@ -476,6 +484,7 @@ export async function resolveDatastoreConfig(
     const exprCtx: DatastoreExpressionContext = {
       repoDir: repoDir ?? Deno.cwd(),
       managedConfig: resolvedManagedConfig,
+      autoResolver: autoResolverFor(options),
     };
     customConfig = await resolveDatastoreExpressions(customConfig, exprCtx);
     const dsFields = await resolveDatastoreFields(ds, exprCtx);
@@ -552,6 +561,7 @@ export async function resolveSetupConfigExpressions(
       marker?.datastore?.managedConfig,
       repoDir,
     ),
+    autoResolver: getAutoResolver(),
   });
 }
 
