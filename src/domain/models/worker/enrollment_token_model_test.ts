@@ -727,6 +727,10 @@ Deno.test("enrollmentTokenModel: a failed record write leaves the old secret and
     "datastore unavailable",
   );
   assertEquals(harness.store.get("token-main"), before);
+  assertEquals(
+    [...harness.vault.keys()].filter((k) => k.includes(".r")),
+    [],
+  );
   await enrollmentTokenModel.methods.redeem.execute(
     { presentedToken: harness.plaintext, machineId: "machine-1" },
     harness.context,

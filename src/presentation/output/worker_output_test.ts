@@ -691,3 +691,37 @@ Deno.test("renderWorkerTokenRotate: json mode emits the structured record", () =
   const output = captureLogs(() => renderWorkerTokenRotate(rotateData, "json"));
   assertEquals(JSON.parse(output), rotateData);
 });
+
+Deno.test("renderWorkerTokenRotate: a clean rotation gives no hand-over hint", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderWorkerTokenRotate({
+        ...rotateData,
+        rotated: [{ worker: "web-01", persisted: true }],
+        notRotated: [],
+        unconnectedBindings: 0,
+      }, "log")
+    ),
+  );
+  assertStringIncludes(output, "Workers:");
+  assertStringIncludes(output, "shown once");
+  assertEquals(output.includes("Give it to hosts"), false);
+});
+
+Deno.test("renderWorkerTokenRotate: a delivered rotation with no connected worker says so", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderWorkerTokenRotate({
+        ...rotateData,
+        rotated: [],
+        notRotated: [],
+        unconnectedBindings: 1,
+      }, "log")
+    ),
+  );
+  assertStringIncludes(
+    output,
+    "No connected workers were enrolled on this token.",
+  );
+  assertStringIncludes(output, "Give it to hosts that were not rotated");
+});

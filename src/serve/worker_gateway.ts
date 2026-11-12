@@ -680,7 +680,8 @@ export class WorkerGateway {
           for (const entry of this.#workers.values()) {
             if (
               entry.tokenName === tokenName &&
-              entry.tokenCreatedAt === predecessor.createdAt &&
+              Date.parse(entry.tokenCreatedAt) ===
+                Date.parse(predecessor.createdAt) &&
               (entry.expiresAtMs === undefined || clampMs < entry.expiresAtMs)
             ) {
               if (entry.expiryTimer !== undefined) {

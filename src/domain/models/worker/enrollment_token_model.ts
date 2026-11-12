@@ -499,11 +499,13 @@ async function rotate(
       secretKey: token.secretKey,
     },
   };
-  const handle = await context.writeResource!(
-    "token",
-    TOKEN_DATA_NAME,
-    rotated,
-  );
+  let handle;
+  try {
+    handle = await context.writeResource!("token", TOKEN_DATA_NAME, rotated);
+  } catch (error) {
+    await deleteSecretBestEffort(context, token.vaultName, secretKey);
+    throw error;
+  }
   if (dropped !== undefined && dropped.secretKey !== secretKey) {
     await deleteSecretBestEffort(context, token.vaultName, dropped.secretKey);
   }

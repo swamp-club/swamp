@@ -240,6 +240,11 @@ export function renderWorkerTokenRotate(
       ),
     );
   }
+  if (data.rotated.length > 0 || data.notRotated.length > 0) {
+    lines.push(`${bold(cyan("Workers:"))}`);
+  } else if (data.delivered) {
+    lines.push(dim("No connected workers were enrolled on this token."));
+  }
   for (const worker of data.rotated) {
     lines.push(
       worker.persisted
@@ -265,14 +270,22 @@ export function renderWorkerTokenRotate(
       ),
     );
   }
+  const leftBehind = !data.delivered || data.notRotated.length > 0 ||
+    data.rotated.some((worker) => !worker.persisted) ||
+    (data.unconnectedBindings ?? 0) > 0;
   lines.push(
     "",
     `  ${bold(data.token)}`,
     "",
-    yellow(
-      "The new token is shown once — store it now. Give it to hosts that were not rotated: swamp worker connect <url> --token-file <file>",
-    ),
+    yellow("The new token is shown once — store it now."),
   );
+  if (leftBehind) {
+    lines.push(
+      dim(
+        "Give it to hosts that were not rotated: swamp worker connect <url> --token-file <file>",
+      ),
+    );
+  }
   writeOutput(lines.join("\n"));
 }
 

@@ -689,12 +689,14 @@ pulled in to the predecessor's clamped `expiresAt`. A worker started with
 `--token-file` writes the successor back to that file atomically, keeping the
 file's mode and writing through a symlink to its target; when the file cannot
 be written (a read-only Kubernetes Secret mount) or the token came inline, it
-holds the successor in memory only and reports it unpersisted. A worker refuses a successor under another name. Workers on older
-protocols, that refuse, time out or are offline stay on the predecessor until
-it lapses; the command reports them and prints the new credential once for
-them. A rotation without `--server` reaches no worker. The credential is shown
-only in the rotation's reply: if that reply is lost, rotating again retires
-the original secret, so read the new one back from the vault instead.
+holds the successor in memory only and reports it unpersisted. A worker refuses
+a successor under another name. Workers on older protocols, that refuse, time
+out or are offline stay on the predecessor until it lapses; the command reports
+them and prints the new credential once for them. A rotation without `--server`
+reaches no worker. The credential is shown only in the rotation's reply: if
+that reply is lost, rotating again retires the original secret, so read the new
+one back from the vault instead. Serve sends the reply even when the request
+was cancelled, since the rotation has already landed.
 
 The printed credential is **`<name>.<secret>`**. The name half finds the token
 aggregate at enrollment without scanning the pool. The secret half is compared

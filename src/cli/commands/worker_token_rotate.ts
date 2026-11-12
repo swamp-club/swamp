@@ -43,6 +43,7 @@ import {
   type WorkerTokenRotateEvent,
 } from "../../libswamp/worker/token_rotate.ts";
 import { renderWorkerTokenRotate } from "../../presentation/output/worker_output.ts";
+import { initializeControlPlaneVaultForCli } from "../control_plane_vault.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -62,7 +63,8 @@ export const workerTokenRotateCommand = withRemoteOptions(
 
 The token keeps its name, so its workers keep theirs. With --server the
 new token is sent to every connected worker over its own connection;
-a worker started with --token-file writes it back to that file. The old
+a worker started with "swamp worker connect --token-file" writes it back
+to that file. The old
 token stays valid until its original expiry (or the new token's, if
 sooner), so machines that were not connected can still enroll with it.
 Rotating again retires the old token at once. The new token is printed
@@ -135,6 +137,16 @@ once.`,
   const namespace = isCustomDatastoreConfig(datastoreConfig)
     ? datastoreConfig.namespace
     : undefined;
+
+  // a locally minted token's secrets live in the control-plane vault
+  await initializeControlPlaneVaultForCli(
+    repoDir,
+    syncService,
+    {
+      namespace,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+    },
+  );
 
   const libCtx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
   const deps = await createWorkerTokenRotateDeps(

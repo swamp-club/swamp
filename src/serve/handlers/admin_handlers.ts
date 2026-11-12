@@ -2850,7 +2850,7 @@ export async function handleWorkerTokenRotate(
   ctx: ConnectionContext,
   requestId: string,
   payload: WorkerTokenRotatePayload,
-  controller: AbortController,
+  _controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -2914,11 +2914,8 @@ export async function handleWorkerTokenRotate(
             `Rotating token '${payload.name}' ended without completing`,
           );
         }
-        if (controller.signal.aborted) {
-          sendError(socket, requestId, "cancelled", "Operation was cancelled");
-          return;
-        }
-
+        // answered even when cancelled: the rotation is persisted, and this
+        // reply is the only place the new credential is shown
         send(socket, {
           type: "worker.token.rotate",
           id: requestId,
