@@ -137,6 +137,46 @@ function readCancelReason(dbPath: string, runId: string): string | null {
   }
 }
 
+Deno.test("RunTrackerStore: interruptCancelled moves a cancelled row to interrupted, which a resume can reactivate", () => {
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(makeRun({ id: "run-1" }));
+    store.complete("run-1", "cancelled", "server shutdown");
+    assertEquals(store.reactivate("run-1", 1, "host"), false);
+
+    store.interruptCancelled("run-1", "server_shutdown");
+
+    assertEquals(store.findById("run-1")?.status, "interrupted");
+    assertEquals(readCancelReason(dbPath, "run-1"), "server_shutdown");
+    assertEquals(store.reactivate("run-1", 1, "host"), true);
+    assertEquals(store.findById("run-1")?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: interruptCancelled leaves rows that did not end cancelled alone", () => {
+  using tempDb = makeTempDb();
+  const dbPath = tempDb.path;
+  const store = new RunTrackerStore(dbPath);
+  try {
+    store.register(makeRun({ id: "running" }));
+    store.register(makeRun({ id: "completed" }));
+    store.register(makeRun({ id: "failed" }));
+    store.complete("completed", "completed");
+    store.complete("failed", "failed");
+
+    for (const id of ["running", "completed", "failed"]) {
+      store.interruptCancelled(id, "server_shutdown");
+      assertEquals(store.findById(id)?.status, id);
+    }
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("RunTrackerStore: recordCancelReason sets the reason on a row its owner cancelled", () => {
   using tempDb = makeTempDb();
   const dbPath = tempDb.path;

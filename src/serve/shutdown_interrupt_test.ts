@@ -296,6 +296,11 @@ function tracker(
       rows.set(runId, status);
       completed.push(`${runId} ${status} ${reason}`);
     },
+    interruptCancelled: (runId, reason) => {
+      if (rows.get(runId) !== "cancelled") return;
+      rows.set(runId, "interrupted");
+      completed.push(`${runId} interrupted ${reason} (was cancelled)`);
+    },
   };
 }
 
@@ -328,16 +333,35 @@ Deno.test("interruptShutdownRuns: settles the tracker row of each interrupted ru
   assertEquals(runTracker.completed, [`${run.id} interrupted server_shutdown`]);
 });
 
-Deno.test("interruptShutdownRuns: a row the run already settled as cancelled is left alone", async () => {
+Deno.test("interruptShutdownRuns: a row the run settled as cancelled before its record was interrupted becomes interrupted, so a resume can reactivate it", async () => {
   const wf = workflow();
   const run = runningRun(wf);
   run.endAsCancelled("server shutdown");
   const { repoContext } = harness([run], wf.id);
-  const runTracker = tracker(new Map([[run.id, "cancelled"]]));
+  const rows = new Map<string, ActiveRunStatus>([[run.id, "cancelled"]]);
+  const runTracker = tracker(rows);
 
   await interruptShutdownRuns([active(run)], { repoContext, runTracker });
 
-  assertEquals(runTracker.completed, []);
+  assertEquals(runTracker.completed, [
+    `${run.id} interrupted server_shutdown (was cancelled)`,
+  ]);
+  assertEquals(rows.get(run.id), "interrupted");
+});
+
+Deno.test("interruptShutdownRuns: a cancelled row whose record could not be interrupted is left cancelled", async () => {
+  const wf = workflow();
+  const run = runningRun(wf);
+  run.endAsCancelled("server shutdown");
+  const { repoContext } = harness([run], wf.id);
+  repoContext.workflowRunRepo.save = () =>
+    Promise.reject(new Error("disk full"));
+  const rows = new Map<string, ActiveRunStatus>([[run.id, "cancelled"]]);
+  const runTracker = tracker(rows);
+
+  await interruptShutdownRuns([active(run)], { repoContext, runTracker });
+
+  assertEquals(rows.get(run.id), "cancelled");
 });
 
 Deno.test("interruptShutdownRuns: a run that completed during the drain keeps its tracker row", async () => {

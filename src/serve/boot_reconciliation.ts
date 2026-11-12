@@ -411,6 +411,8 @@ export interface ReplayPendingRunsDeps {
   ownCronOnly?: boolean;
   /** with ownCronOnly: a run queued from then on is the live scheduler's own */
   createdBefore?: string;
+  /** shutdown: stops the control-plane reads and every later write, leaving the runs pending */
+  signal?: AbortSignal;
 }
 
 export async function replayPendingRuns(
@@ -441,7 +443,10 @@ export async function replayPendingRuns(
       const remoteKeys = await deps.controlPlaneStore.list("pending-runs/");
       const localIds = new Set(localPending.map((e) => e.id));
       for (const key of remoteKeys) {
-        const data = await deps.controlPlaneStore.get(key);
+        if (deps.signal?.aborted) return 0;
+        const data = await deps.controlPlaneStore.get(key, {
+          signal: deps.signal,
+        });
         if (!data) continue;
         let entry: PendingRunEntry;
         try {
@@ -493,12 +498,14 @@ export async function replayPendingRuns(
       }
       remoteListed = true;
     } catch (err) {
+      if (deps.signal?.aborted) return 0;
       logger.warn(
         "Failed to list remote pending runs: {error}",
         { error: err instanceof Error ? err.message : String(err) },
       );
     }
   }
+  if (deps.signal?.aborted) return 0;
 
   // only a complete list of runs may prune
   if (remoteListed || !deps.controlPlaneStore) {
@@ -540,6 +547,7 @@ export async function replayPendingRuns(
 
   let replayed = 0;
   for (const entry of pending) {
+    if (deps.signal?.aborted) break;
     const ownCron = entry.source === "cron" &&
       deps.claimAs !== undefined &&
       entry.owner?.instanceId === deps.claimAs.instanceId;
@@ -648,10 +656,12 @@ export async function replayPendingRuns(
           );
           continue;
         }
-        deps.scheduledExecution.enqueueForReplay({
+        const queued = deps.scheduledExecution.enqueueForReplay({
           pendingRunId: entry.id,
           workflowIdOrName: entry.workflowIdOrName,
         });
+        // a draining scheduler leaves the run pending for the next start
+        if (!queued) continue;
         replayed++;
         logger
           .info`Replayed pending cron run for ${entry.workflowIdOrName}`;

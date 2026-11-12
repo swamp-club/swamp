@@ -22,6 +22,7 @@ import {
   type DrainableRunRegistry,
   type DrainableTriggerSource,
   runShutdownDrain,
+  type StoppedTriggerRun,
 } from "./shutdown_drain.ts";
 import type { ActiveRun } from "./active_run_registry.ts";
 import { RunEventBuffer } from "./run_event_buffer.ts";
@@ -40,9 +41,10 @@ class FakeSource implements DrainableTriggerSource {
     this.log.push(`${this.name}.drain(${timeoutMs})`);
     return this.drainImpl();
   }
-  stop(): Promise<void> {
+  aborted: StoppedTriggerRun[] = [];
+  stop(): Promise<readonly StoppedTriggerRun[]> {
     this.log.push(`${this.name}.stop`);
-    return Promise.resolve();
+    return Promise.resolve(this.aborted);
   }
 }
 
@@ -185,4 +187,63 @@ Deno.test("runShutdownDrain: refuses later registrations even when nothing is dr
     });
     assertEquals(registry.draining, true);
   }
+});
+
+Deno.test("runShutdownDrain: returns the webhook and cron runs the sources aborted, beside the registry's, for shutdown to interrupt", async () => {
+  const log: string[] = [];
+  const startedAt = new Date("2026-11-12T10:00:00Z");
+  const apiRun = fakeRun("api-1");
+  const webhooks = new FakeSource(log, "webhooks");
+  webhooks.aborted = [{
+    runId: "hook-1",
+    workflowId: "wf-hook",
+    workflowName: "deploy",
+    startedAt,
+  }];
+  const schedules = new FakeSource(log, "schedules");
+  schedules.aborted = [{ runId: "cron-1", workflowName: "nightly", startedAt }];
+
+  const aborted = await runShutdownDrain({
+    webhookService: webhooks,
+    scheduledExecution: schedules,
+    activeRunRegistry: new FakeRegistry(log, [apiRun]),
+    drainTimeoutMs: 0,
+    abortGraceMs: 5_000,
+  });
+
+  assertEquals(aborted[0], apiRun);
+  assertEquals(aborted.slice(1), [
+    {
+      runId: "hook-1",
+      kind: "workflow-run",
+      resourceName: "deploy",
+      resourceId: "wf-hook",
+      startedAt,
+    },
+    {
+      runId: "cron-1",
+      kind: "workflow-run",
+      resourceName: "nightly",
+      startedAt,
+    },
+  ]);
+});
+
+Deno.test("runShutdownDrain: a source whose stop fails contributes no runs and the rest still stop", async () => {
+  const log: string[] = [];
+  const failing = new FakeSource(log, "webhooks");
+  failing.stop = () => Promise.reject(new Error("boom"));
+  const schedules = new FakeSource(log, "schedules");
+  const startedAt = new Date();
+  schedules.aborted = [{ runId: "cron-1", workflowName: "nightly", startedAt }];
+
+  const aborted = await runShutdownDrain({
+    webhookService: failing,
+    scheduledExecution: schedules,
+    activeRunRegistry: null,
+    drainTimeoutMs: 0,
+    abortGraceMs: 5_000,
+  });
+
+  assertEquals(aborted.map((run) => run.runId), ["cron-1"]);
 });

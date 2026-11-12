@@ -76,7 +76,10 @@ export interface ShutdownInterruptDeps {
    * The run tracker whose rows the aborted runs settle as interrupted. A
    * row left running makes the next boot's reaper skip the run.
    */
-  readonly runTracker?: Pick<RunTrackerRepository, "complete">;
+  readonly runTracker?: Pick<
+    RunTrackerRepository,
+    "complete" | "interruptCancelled"
+  >;
   readonly unpushedMarkerPath?: string;
 }
 
@@ -109,9 +112,13 @@ export async function interruptShutdownRuns(
   if (workflowRuns.length === 0) return { interrupted };
   const { repoContext, syncService } = deps;
   await deps.runWriteFence?.close(workflowRuns.map((r) => r.runId));
-  const settleTrackerRow = (runId: string) => {
+  const settleTrackerRow = (runId: string, recordInterrupted = false) => {
     try {
       deps.runTracker?.complete(runId, "interrupted", "server_shutdown");
+      // a run that settled as cancelled before its record was interrupted
+      if (recordInterrupted) {
+        deps.runTracker?.interruptCancelled(runId, "server_shutdown");
+      }
     } catch (err) {
       logger.warn("Failed to settle the tracker row of run {runId}: {error}", {
         runId,
@@ -221,7 +228,7 @@ export async function interruptShutdownRuns(
             // withdrawn rather than landing over the interrupt
             deps.runWriteFence?.takeOver(run.runId);
             interrupted.push(run.runId);
-            settleTrackerRow(run.runId);
+            settleTrackerRow(run.runId, true);
             deps.onInterrupted?.(run.runId);
           }
         } catch (err) {

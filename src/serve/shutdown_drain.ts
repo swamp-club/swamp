@@ -28,10 +28,23 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "shutdown"]);
 
+/** a webhook or cron run a trigger source aborted when it stopped */
+export interface StoppedTriggerRun {
+  readonly runId: string;
+  readonly workflowId?: string;
+  readonly workflowName: string;
+  readonly startedAt: Date;
+}
+
 export interface DrainableTriggerSource {
   drain(timeoutMs: number): Promise<void>;
-  stop(): Promise<void>;
+  /** the runs it aborted, leaving out any already cancelled on purpose */
+  stop(): Promise<readonly StoppedTriggerRun[]>;
 }
+
+export type ShutdownAbortedRun =
+  & Pick<ActiveRun, "runId" | "kind" | "resourceName" | "startedAt">
+  & Partial<Pick<ActiveRun, "resourceId">>;
 
 export interface DrainableRunRegistry {
   readonly size: number;
@@ -58,7 +71,7 @@ export interface ShutdownDrainDeps {
 
 export async function runShutdownDrain(
   deps: ShutdownDrainDeps,
-): Promise<ReadonlyArray<ActiveRun>> {
+): Promise<ReadonlyArray<ShutdownAbortedRun>> {
   const { webhookService, scheduledExecution, activeRunRegistry } = deps;
   // First, whatever the drain does next: a run registered from here on
   // (a chained auto-resume, say) would never be drained or aborted.
@@ -103,8 +116,10 @@ export async function runShutdownDrain(
     }
   });
 
-  await stopSource("webhooks", webhookService);
-  await stopSource("schedules", scheduledExecution);
+  const stopped = [
+    ...await stopSource("webhooks", webhookService),
+    ...await stopSource("schedules", scheduledExecution),
+  ];
 
   const remaining = activeRunRegistry?.list() ?? [];
   if (remaining.length > 0) {
@@ -115,20 +130,30 @@ export async function runShutdownDrain(
     }
     await activeRunRegistry!.drainAll(deps.abortGraceMs);
   }
-  return remaining;
+  return [
+    ...remaining,
+    ...stopped.map((run): ShutdownAbortedRun => ({
+      runId: run.runId,
+      kind: "workflow-run",
+      resourceName: run.workflowName,
+      ...(run.workflowId !== undefined ? { resourceId: run.workflowId } : {}),
+      startedAt: run.startedAt,
+    })),
+  ];
 }
 
 async function stopSource(
   name: string,
   source: DrainableTriggerSource | null,
-): Promise<void> {
-  if (!source) return;
+): Promise<readonly StoppedTriggerRun[]> {
+  if (!source) return [];
   try {
-    await source.stop();
+    return await source.stop();
   } catch (error) {
     logger.warn("Stopping {source} failed: {error}", {
       source: name,
       error: error instanceof Error ? error.message : String(error),
     });
+    return [];
   }
 }

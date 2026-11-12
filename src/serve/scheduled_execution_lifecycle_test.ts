@@ -25,6 +25,7 @@ import {
   type ScheduledExecutionLifecycleDeps,
   type SchedulerBuildOptions,
 } from "./scheduled_execution_lifecycle.ts";
+import type { StoppedTriggerRun } from "./shutdown_drain.ts";
 
 class FakeScheduler implements LifecycleScheduler {
   readonly calls: string[] = [];
@@ -52,10 +53,12 @@ class FakeScheduler implements LifecycleScheduler {
     return Promise.resolve();
   }
 
-  stop(): Promise<void> {
+  aborted: StoppedTriggerRun[] = [];
+
+  stop(): Promise<readonly StoppedTriggerRun[]> {
     this.calls.push("stop");
     this.finish();
-    return Promise.resolve();
+    return Promise.resolve(this.aborted);
   }
 
   startCatchUp(): void {
@@ -336,7 +339,7 @@ Deno.test("ScheduledExecutionLifecycle: before the boot replay a reload can neit
 async function settledWhenStartIsHeld(
   shutdown: (
     lifecycle: ScheduledExecutionLifecycle<FakeScheduler>,
-  ) => Promise<void>,
+  ) => Promise<unknown>,
   release: (started: PromiseWithResolvers<void>) => void,
 ): Promise<void> {
   const started = Promise.withResolvers<void>();
@@ -368,4 +371,155 @@ Deno.test("ScheduledExecutionLifecycle: shutdown waits for a scheduler a reload 
     (lifecycle) => lifecycle.drain(0),
     (started) => started.reject(new Error("store closed")),
   );
+});
+
+Deno.test("ScheduledExecutionLifecycle: stop returns the runs every scheduler aborted, the current one's and a retiring one's", async () => {
+  const h = harness();
+  await h.lifecycle.turnOn(undefined);
+  const retiring = h.built[0];
+  retiring.run("nightly");
+  const startedAt = new Date();
+  retiring.aborted = [{ runId: "old-1", workflowName: "nightly", startedAt }];
+  const off = h.lifecycle.turnOff();
+  await h.lifecycle.turnOn(undefined);
+  h.built[1].aborted = [{ runId: "new-1", workflowName: "hourly", startedAt }];
+
+  const aborted = await h.lifecycle.stop();
+  await off;
+
+  assertEquals(aborted.map((run) => run.runId).sort(), ["new-1", "old-1"]);
+});
+
+function heldReplayHarness(
+  replay: (signal: AbortSignal) => Promise<number>,
+  extra: Partial<ScheduledExecutionLifecycleDeps<FakeScheduler>> = {},
+) {
+  const signals: AbortSignal[] = [];
+  const h = harness({
+    replayOwnCron: (service, _createdBefore, signal) => {
+      service.calls.push("replay");
+      signals.push(signal);
+      return replay(signal);
+    },
+    ...extra,
+  });
+  return { ...h, signals };
+}
+
+// returned in an object: an async function returning the held promise would wait on it
+async function replayStarted(
+  h: ReturnType<typeof heldReplayHarness>,
+  path: "turnOn" | "atLead",
+): Promise<{ replaying: Promise<void> }> {
+  let replaying: Promise<void>;
+  if (path === "turnOn") {
+    replaying = h.lifecycle.turnOn(undefined);
+  } else {
+    h.setLeads(false);
+    await h.lifecycle.turnOn(undefined);
+    h.setLeads(true);
+    replaying = h.lifecycle.atLead();
+  }
+  await waitFor(
+    () => h.built[0]?.calls.includes("replay") ?? false,
+    "the own-run replay has begun",
+  );
+  return { replaying };
+}
+
+async function stopWaitsForTheReplay(path: "turnOn" | "atLead") {
+  const replay = Promise.withResolvers<number>();
+  const h = heldReplayHarness(() => replay.promise);
+  const { replaying } = await replayStarted(h, path);
+  let settled = false;
+  const done = h.lifecycle.stop().then(() => settled = true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(
+    settled,
+    false,
+    `stop() resolved while the ${path} replay still reads the stores`,
+  );
+
+  replay.resolve(1);
+  await done;
+  await replaying;
+  assertEquals(h.built[0].calls.includes("catchUp"), false);
+  assertEquals(h.built[0].calls.at(-1), "stop");
+}
+
+Deno.test("ScheduledExecutionLifecycle: shutdown waits for the own-run replay of a turn-on that led, and no catch-up follows (swamp-club#4660)", async () => {
+  await stopWaitsForTheReplay("turnOn");
+});
+
+Deno.test("ScheduledExecutionLifecycle: shutdown waits for the own-run replay taken up at the lead, and no catch-up follows (swamp-club#4660)", async () => {
+  await stopWaitsForTheReplay("atLead");
+});
+
+Deno.test("ScheduledExecutionLifecycle: shutdown aborts an own-run replay that never settles on its own (swamp-club#4660)", async () => {
+  for (const path of ["turnOn", "atLead"] as const) {
+    const h = heldReplayHarness((signal) =>
+      new Promise<number>((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      })
+    );
+    const { replaying } = await replayStarted(h, path);
+    await h.lifecycle.stop();
+    assertEquals(
+      h.signals[0]?.aborted,
+      true,
+      `the ${path} replay was never handed an aborted signal`,
+    );
+    await replaying;
+    assertEquals(h.built[0].calls.includes("catchUp"), false);
+  }
+});
+
+Deno.test("ScheduledExecutionLifecycle: a replay that ignores the abort holds shutdown no longer than the settle bound (swamp-club#4660)", async () => {
+  const h = heldReplayHarness(() => new Promise<number>(() => {}), {
+    replaySettleBound: () => Promise.resolve(),
+  });
+  await replayStarted(h, "turnOn");
+  await h.lifecycle.stop();
+  assertEquals(h.built[0].calls.includes("catchUp"), false);
+  assertEquals(h.built[0].calls.at(-1), "stop");
+});
+
+Deno.test("ScheduledExecutionLifecycle: drain aborts the own-run replay alongside the scheduler drains (swamp-club#4660)", async () => {
+  const h = heldReplayHarness((signal) =>
+    new Promise<number>((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    })
+  );
+  const { replaying } = await replayStarted(h, "turnOn");
+  await h.lifecycle.drain(0);
+  assertEquals(h.signals[0].aborted, true);
+  assertEquals(h.built[0].calls.includes("drain:0"), true);
+  await replaying;
+  await h.lifecycle.stop();
+  assertEquals(h.built[0].calls.includes("catchUp"), false);
+});
+
+Deno.test("ScheduledExecutionLifecycle: drain and stop share one settle bound, so a replay that ignores the abort holds shutdown once (swamp-club#4660)", async () => {
+  const bounds: PromiseWithResolvers<void>[] = [];
+  const h = heldReplayHarness(() => new Promise<number>(() => {}), {
+    replaySettleBound: () => {
+      const bound = Promise.withResolvers<void>();
+      bounds.push(bound);
+      return bound.promise;
+    },
+  });
+  await replayStarted(h, "turnOn");
+
+  const drained = h.lifecycle.drain(0);
+  await waitFor(() => bounds.length === 1, "drain starts the bound");
+  bounds[0].resolve();
+  await drained;
+  await h.lifecycle.stop();
+
+  assertEquals(bounds.length, 1);
+  assertEquals(h.built[0].calls.at(-1), "stop");
 });

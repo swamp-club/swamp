@@ -9790,6 +9790,8 @@ class RecordingRunTracker implements RunTrackerRepository {
 
   recordCancelReason(_runId: string, _reason: string): void {}
 
+  interruptCancelled(_runId: string, _reason: string): void {}
+
   readonly reactivations: {
     runId: string;
     pid: number;
