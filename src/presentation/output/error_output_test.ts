@@ -60,6 +60,11 @@ import {
   LockWaitCycleError,
 } from "../../domain/datastore/distributed_lock.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
+import {
+  CORRUPT_LOCKFILE_CODE,
+  CorruptLockfileError,
+  corruptLockfileUserErrorOf,
+} from "../../domain/extensions/corrupt_lockfile_error.ts";
 import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_user_error.ts";
 import {
   InvalidDatastoreFormatMarkerError,
@@ -432,6 +437,20 @@ Deno.test("renderError: a refused stale config edit in json mode has its code an
 Deno.test("buildErrorJson: UserError produces error-only JSON", () => {
   const result = buildErrorJson(new UserError("Not found"));
   assertEquals(result.error, "Not found");
+  assertEquals(result.stack, undefined);
+});
+
+Deno.test("buildErrorJson: a translated corrupt lockfile error has its code and no stack", () => {
+  const raw = new CorruptLockfileError(
+    "Cannot parse lockfile /r/upstream_extensions.json: bad",
+    "/r/upstream_extensions.json",
+  );
+  assertEquals(typeof buildErrorJson(raw).stack, "string");
+  const translated = corruptLockfileUserErrorOf(raw);
+  if (translated === undefined) throw new Error("expected a translation");
+  const result = buildErrorJson(translated);
+  assertEquals(result.error, raw.message);
+  assertEquals(result.code, CORRUPT_LOCKFILE_CODE);
   assertEquals(result.stack, undefined);
 });
 

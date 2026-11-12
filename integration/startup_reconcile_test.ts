@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
@@ -44,6 +44,7 @@ import {
   RepoMarkerRepository,
 } from "../src/infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
+import { CorruptLockfileError } from "../src/domain/extensions/corrupt_lockfile_error.ts";
 
 import "../src/domain/models/models.ts";
 
@@ -404,5 +405,22 @@ Deno.test("configureExtensionAutoResolver: creates no extension catalog (swamp-c
     } finally {
       setAutoResolver(previous);
     }
+  });
+});
+
+Deno.test("configureStartupExtensions: a corrupt lockfile fails the loader without a repair warning repeating it", async () => {
+  await withRepo(async (fixture) => {
+    await Deno.writeTextFile(fixture.lockfilePath, "{\n");
+    const logs = await startup(fixture, async () => {
+      modelRegistry.resetLoadedFlag();
+      await assertRejects(
+        () => modelRegistry.ensureLoaded(),
+        CorruptLockfileError,
+      );
+    });
+    assertEquals(
+      logs.filter((line) => line.includes("Skipping extension catalog repair")),
+      [],
+    );
   });
 });
