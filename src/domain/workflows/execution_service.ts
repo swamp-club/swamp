@@ -2799,31 +2799,34 @@ export class DefaultStepExecutor implements StepExecutor {
       methodName: task.methodName,
     });
 
-    // register post-vault-resolution values from evaluatedDefinition with the
-    // redactor so they are scrubbed from the workflow log
-    if (ctx.secretRedactor) {
-      const globalArgSchema = modelDef.globalArguments;
-      if (globalArgSchema) {
-        for (
-          const secret of extractSensitiveFieldValues(
-            globalArgSchema,
-            evaluatedDefinition.globalArguments,
-          )
-        ) {
-          ctx.secretRedactor.addSecret(secret);
-        }
+    // post-vault-resolution values go to the redactor, so they are scrubbed
+    // from the workflow log, and to the run's display view
+    const sensitiveArgumentValues: string[] = [];
+    const globalArgSchema = modelDef.globalArguments;
+    if (globalArgSchema) {
+      for (
+        const secret of extractSensitiveFieldValues(
+          globalArgSchema,
+          evaluatedDefinition.globalArguments,
+        )
+      ) {
+        sensitiveArgumentValues.push(secret);
       }
-      const methodArgSchema = modelDef.methods[task.methodName]?.arguments;
-      if (methodArgSchema) {
-        for (
-          const secret of extractSensitiveFieldValues(
-            methodArgSchema,
-            evaluatedDefinition.getMethodArguments(task.methodName),
-          )
-        ) {
-          ctx.secretRedactor.addSecret(secret);
-        }
+    }
+    const methodArgSchema = modelDef.methods[task.methodName]?.arguments;
+    if (methodArgSchema) {
+      for (
+        const secret of extractSensitiveFieldValues(
+          methodArgSchema,
+          evaluatedDefinition.getMethodArguments(task.methodName),
+        )
+      ) {
+        sensitiveArgumentValues.push(secret);
       }
+    }
+    for (const secret of sensitiveArgumentValues) {
+      ctx.secretRedactor?.addSecret(secret);
+      ctx.sensitiveValues.addDisplayLiteral(secret);
     }
 
     return await executionService.executeWorkflow(
@@ -6698,7 +6701,7 @@ export class WorkflowExecutionService {
             guardResult: typeof guardResult === "number" ||
                 typeof guardResult === "boolean"
               ? guardResult
-              : options.sensitiveValues.masked(guardResult),
+              : run.mask(guardResult),
             forEachTemplate,
             forEachIndex,
           };
@@ -7073,7 +7076,7 @@ export class WorkflowExecutionService {
           stepId: stepName,
           // A resolved expression, shown masked: in a typed run a secret it
           // holds is a sentinel, which the run's record masks.
-          prompt: String(options.sensitiveValues.masked(task.prompt)),
+          prompt: String(run.mask(task.prompt)),
           timeout: task.timeout,
         };
         // Capture the clean workflow-level inputs so steps after the gate

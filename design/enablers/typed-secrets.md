@@ -155,8 +155,13 @@ Out of scope, each its own issue if it is needed:
   Both stay out of scope.
 - Treating literal inputs that a schema marks sensitive as secrets. Today's
   handling of literal sensitive arguments is unchanged: they are masked in run
-  output and in the evaluated caches, and `--last-evaluated` refuses a cache
-  holding the mask (swamp-club#3681), but they are not `Secret` values.
+  output, the workflow run view (its Arguments box and `--json`) and the
+  evaluated caches, and `--last-evaluated` refuses a cache holding the mask
+  (swamp-club#3681), but they are not `Secret` values. The run view masks
+  them in the process driving the run, a resume included, since the run
+  record names the masked input paths. A workflow input that carries one is
+  still stored as given in the run record, so `swamp workflow history` shows
+  it; pass secrets with `vault.get` instead.
 - Evaluating `vault.get` in a `forEach` iteration scope. `vault` stays a runtime
   root, so today's limitation remains. A later change can lift it, because
   `vault.get` no longer reads anything.

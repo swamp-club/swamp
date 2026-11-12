@@ -102,7 +102,10 @@ function encodeKeyForName(key: string): string {
 export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
   private readonly entries = new Map<string, SecretSource>();
   private readonly unread = new Map<string, UnreadSensitiveReference>();
+  private readonly displayLiterals = new Set<string>();
   private sorted: SensitiveEntry[] | undefined;
+  private maskedSecrets: MaskList | undefined;
+  private displaySecrets: MaskList | undefined;
 
   constructor(
     private readonly redactor?: SecretRedactor,
@@ -146,7 +149,21 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
     if (!this.entries.has(value)) {
       this.entries.set(value, source);
       this.sorted = undefined;
+      this.maskedSecrets = undefined;
+      this.displaySecrets = undefined;
     }
+  }
+
+  /**
+   * a sensitive value with no vault reference: masked in the run's display
+   * view only, never written back as a reference nor withheld from records
+   */
+  addDisplayLiteral(value: string): void {
+    if (value.length < MIN_SECRET_LENGTH || this.displayLiterals.has(value)) {
+      return;
+    }
+    this.displayLiterals.add(value);
+    this.displaySecrets = undefined;
   }
 
   recordUnread(reference: UnreadSensitiveReference): void {
@@ -265,13 +282,23 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
    */
   masked(value: unknown): unknown {
     if (this.isEmpty && !this.derivesFromSentinels) return value;
-    return this.maskDeep(value);
+    this.maskedSecrets ??= maskList(this.entries.keys());
+    return this.maskDeep(value, this.maskedSecrets);
   }
 
-  private maskDeep(value: unknown): unknown {
+  /** masked(), plus the display literals */
+  maskedForDisplay(value: unknown): unknown {
+    if (this.displayLiterals.size === 0) return this.masked(value);
+    this.displaySecrets ??= maskList(
+      new Set([...this.entries.keys(), ...this.displayLiterals]),
+    );
+    return this.maskDeep(value, this.displaySecrets);
+  }
+
+  private maskDeep(value: unknown, secrets: MaskList): unknown {
     if (typeof value === "string") {
       let result = this.withSentinelStandIns(value, () => "***");
-      for (const { value: secret } of this.list()) {
+      for (const secret of secrets.longestFirst) {
         if (result.includes(secret)) result = result.split(secret).join("***");
         const escaped = jsonEscaped(secret);
         if (escaped !== secret && result.includes(escaped)) {
@@ -280,17 +307,37 @@ export class RunSensitiveValues implements SecretSink, UnreadReferenceLookup {
       }
       return result;
     }
-    if (typeof value === "number" || typeof value === "boolean") {
+    if (typeof value === "number") {
+      return secrets.all.has(String(value)) ? "***" : value;
+    }
+    // a literal never masks a boolean: "true" would hide every flag
+    if (typeof value === "boolean") {
       return this.entries.has(String(value)) ? "***" : value;
     }
-    if (Array.isArray(value)) return value.map((item) => this.maskDeep(item));
+    if (Array.isArray(value)) {
+      return value.map((item) => this.maskDeep(item, secrets));
+    }
     if (value !== null && typeof value === "object") {
       const result: Record<string, unknown> = Object.create(null);
       for (const [key, item] of Object.entries(value)) {
-        definedEntry(result, key, this.maskDeep(item));
+        definedEntry(result, key, this.maskDeep(item, secrets));
       }
       return result;
     }
     return value;
   }
+}
+
+interface MaskList {
+  readonly longestFirst: readonly string[];
+  readonly all: ReadonlySet<string>;
+}
+
+/** longest first, so overlapping values never split */
+function maskList(values: Iterable<string>): MaskList {
+  const all = new Set(values);
+  return {
+    longestFirst: [...all].sort((a, b) => b.length - a.length),
+    all,
+  };
 }
