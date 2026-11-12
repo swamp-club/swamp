@@ -483,6 +483,13 @@ export class RunTrackerStore implements RunTrackerRepository {
     `).run(reason, runId);
   }
 
+  interruptCancelled(runId: string, reason: string): void {
+    this.db.prepare(`
+      UPDATE active_runs SET status = 'interrupted', cancel_reason = ?
+      WHERE id = ? AND status = 'cancelled'
+    `).run(reason, runId);
+  }
+
   reactivate(
     runId: string,
     pid: number,

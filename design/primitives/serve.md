@@ -1831,11 +1831,16 @@ run, up to `--max-concurrent-webhook-runs`), cron (every in-flight
 scheduled run, up to `--max-concurrent-scheduled-runs`) and API runs then drain
 together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
-aborted and gets 5 s more. It marks aborted API workflow runs
-`interrupted("server_shutdown")` in the run repository (aborted webhook and cron
-runs end `cancelled`) and, on a remote datastore, pushes those records under the
-shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
-swamp-club#3252). Before it loads them it closes their run write fence
+aborted and gets 5 s more. It marks aborted workflow runs
+`interrupted("server_shutdown")` in the run repository and, on a remote
+datastore, pushes those records under the shared sync gate
+(`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
+swamp-club#3252). That covers API runs and webhook and cron runs alike: the
+webhook and scheduler services' `stop()` report the runs they abort, and
+`runShutdownDrain` returns them beside the registry's, so a run cut off by a
+restart is recoverable however it started (swamp-club#4656). A run a user or a
+webhook cancel request cancelled before the abort is not reported and stays
+`cancelled`. Before it loads them it closes their run write fence
 (`ServeRunWriteFence`, `src/serve/run_write_fence.ts`) and waits up to 2 s for
 a save already under way. An executor can outlive the abort grace, as one whose
 remote step answers after the abort does; with the fence closed it can no
@@ -1860,7 +1865,10 @@ recorded for the next start, which commits them in its boot reap and then
 clears the record, and the stopped heartbeat lets a leader instance settle
 them meanwhile (swamp-club#3962). Shutdown completes
 those runs' tracker rows as `interrupted` (`server_shutdown`), so the next boot
-does not skip them as still running. When the push fails, the runs are recorded
+does not skip them as still running. A row the run itself completed as
+`cancelled` when it settled from the abort is moved to `interrupted` too
+(`interruptCancelled`): resume reactivates only a suspended, failed or
+interrupted row, so a `cancelled` one would stay terminal under the resumed run. When the push fails, the runs are recorded
 in `.swamp/serve-unpushed-interrupts.json` for the next start in this checkout
 to push, `--json` mode prints
 `{"status":"interrupt_push_failed","runIds":[…]}`, and the instance writes a

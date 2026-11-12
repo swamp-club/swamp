@@ -2001,6 +2001,65 @@ Deno.test("WebhookService.cancelAllRuns: aborts every in-flight run and counts t
   await service.stop();
 });
 
+function namedCancellableExecutor(runId: string, aborts: unknown[]) {
+  return ((
+    _repoDir: string,
+    _repoContext: unknown,
+    _datastoreConfig: unknown,
+    _input: unknown,
+    signal: AbortSignal,
+    onEvent: (event: unknown) => void,
+  ) => {
+    onEvent({ kind: "started", runId, workflowName: "deploy" });
+    return new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => {
+        aborts.push(signal.reason);
+        onEvent({ kind: "cancelled", run: { status: "cancelled" } });
+        resolve();
+      }, { once: true });
+    });
+  }) as unknown as NonNullable<
+    ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+  >;
+}
+
+Deno.test("WebhookService.stop: reports the run it aborted, with the server shutdown reason", async () => {
+  const aborts: unknown[] = [];
+  const { service, events } = await triggerService({
+    executeWorkflow: namedCancellableExecutor("run-1", aborts),
+  });
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_started"),
+    "run started",
+  );
+
+  const aborted = await service.stop();
+
+  assertEquals((aborts[0] as Error).message, "server shutdown");
+  assertEquals(aborted.map((run) => [run.runId, run.workflowName]), [
+    ["run-1", "deploy"],
+  ]);
+  assertEquals(aborted[0].startedAt instanceof Date, true);
+});
+
+Deno.test("WebhookService.stop: leaves out a run cancelled first, so it stays cancelled", async () => {
+  const aborts: unknown[] = [];
+  const { service, events } = await triggerService({
+    executeWorkflow: namedCancellableExecutor("run-1", aborts),
+  });
+  await service.handleRequest(await signedDelivery("{}"));
+  await waitFor(
+    () => events.some((e) => e.kind === "webhook_started"),
+    "run started",
+  );
+  assertEquals(service.cancelByRunId("run-1", "no longer needed"), true);
+
+  assertEquals(await service.stop(), []);
+  assertEquals(aborts.length, 1);
+  assertEquals((aborts[0] as Error).message, "no longer needed");
+});
+
 Deno.test("WebhookService.cancelByRunId: a run whose start is not recorded yet is not matched (swamp-club#3740)", async () => {
   let entered = false;
   let release!: () => void;

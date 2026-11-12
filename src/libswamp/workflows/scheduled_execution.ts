@@ -368,6 +368,21 @@ interface CatchUpPass {
   readonly deadline: AbortSignal;
 }
 
+/** a run stop() aborted for shutdown; shutdown marks it interrupted */
+export interface AbortedScheduledRun {
+  readonly runId: string;
+  readonly workflowId: string;
+  readonly workflowName: string;
+  readonly startedAt: Date;
+}
+
+interface RunningScheduledRun {
+  readonly controller: AbortController;
+  runId: string;
+  workflowName?: string;
+  startedAt?: Date;
+}
+
 export interface ScheduleStatus {
   readonly catchUp: ScheduleCatchUp | null;
   readonly lastMissed: MissedFire | null;
@@ -376,10 +391,9 @@ export interface ScheduleStatus {
 export class ScheduledExecutionService {
   private readonly scheduler: WorkflowScheduler;
   private readonly watcher: WorkflowWatcher;
-  private readonly running = new Map<
-    WorkflowId,
-    { controller: AbortController; runId: string }
-  >();
+  private readonly running = new Map<WorkflowId, RunningScheduledRun>();
+  /** aborted by stop(), not by a cancel, so shutdown interrupts rather than cancels them */
+  private readonly abortedAtStop = new Map<WorkflowId, RunningScheduledRun>();
   private readonly workflowNames = new Map<WorkflowId, string>();
   private readonly runQueue: QueuedRun[] = [];
   private maxConcurrentRuns: number;
@@ -532,7 +546,7 @@ export class ScheduledExecutionService {
     ]);
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<readonly AbortedScheduledRun[]> {
     this.stopped = true;
     this.abortBackgroundReads();
     await this.watcher.stop();
@@ -545,7 +559,7 @@ export class ScheduledExecutionService {
         "Aborting in-flight scheduled run for workflow {workflowId}",
         { workflowId },
       );
-      entry.controller.abort();
+      this.abortForStop(workflowId, entry);
     }
 
     await settleWithin(
@@ -570,6 +584,26 @@ export class ScheduledExecutionService {
     this.eventHandler = null;
 
     logger.info("Scheduled execution service stopped");
+    // read once the runs settled: a run aborted before its started event has its id by now
+    const aborted: AbortedScheduledRun[] = [];
+    for (const [workflowId, entry] of this.abortedAtStop) {
+      if (entry.runId === "" || !entry.startedAt) continue;
+      aborted.push({
+        runId: entry.runId,
+        workflowId,
+        workflowName: entry.workflowName ?? workflowId,
+        startedAt: entry.startedAt,
+      });
+    }
+    this.abortedAtStop.clear();
+    return aborted;
+  }
+
+  private abortForStop(workflowId: WorkflowId, entry: RunningScheduledRun) {
+    // a run a user cancelled first stays cancelled
+    if (entry.controller.signal.aborted) return;
+    this.abortedAtStop.set(workflowId, entry);
+    entry.controller.abort(new Error("server shutdown"));
   }
 
   private abortBackgroundReads(): void {
@@ -1848,9 +1882,10 @@ export class ScheduledExecutionService {
     // runId starts empty until the "started" event arrives with the real ID.
     // During this narrow window cancelByRunId() cannot match this run;
     // the window closes as soon as executeWorkflow emits "started".
-    this.running.set(workflowId, { controller, runId: "" });
+    const tracked: RunningScheduledRun = { controller, runId: "" };
+    this.running.set(workflowId, tracked);
     // stop() may have swept `running` while this run was still dequeuing.
-    if (this.stopped) controller.abort();
+    if (this.stopped) this.abortForStop(workflowId, tracked);
     let runId = "";
 
     try {
@@ -1895,7 +1930,9 @@ export class ScheduledExecutionService {
                   this.workflowNames.get(workflowId) ?? workflowName,
                   queueDelayMs,
                 );
-                this.running.set(workflowId, { controller, runId });
+                tracked.runId = runId;
+                tracked.workflowName = event.workflowName;
+                tracked.startedAt = new Date();
                 this.deps.activeRunHook?.write(
                   runId,
                   workflowName,

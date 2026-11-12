@@ -702,6 +702,21 @@ export interface WebhookEndpointInfo {
  * up to maxConcurrentRuns queued runs execute at once; runs of the same route
  * or workflow may overlap since per-model locks guard shared state
  */
+/** a run stop() aborted for shutdown; shutdown marks it interrupted */
+export interface AbortedWebhookRun {
+  readonly runId: string;
+  readonly workflowId?: string;
+  readonly workflowName: string;
+  readonly startedAt: Date;
+}
+
+interface RunningWebhookRun {
+  readonly controller: AbortController;
+  runId: string;
+  workflow?: { id?: string; name: string };
+  startedAt?: Date;
+}
+
 export class WebhookService {
   private readonly runQueue: QueuedWebhookRun[] = [];
   private maxConcurrentRuns: number;
@@ -709,14 +724,9 @@ export class WebhookService {
   private readonly inFlight = new Map<Promise<void>, QueuedWebhookRun>();
   private readonly lastQueueDelayMs = new Map<string, number>();
   private eventHandler: WebhookEventHandler | null = null;
-  private readonly running = new Map<
-    string,
-    {
-      controller: AbortController;
-      runId: string;
-      workflow?: { id?: string; name: string };
-    }
-  >();
+  private readonly running = new Map<string, RunningWebhookRun>();
+  /** aborted by stop(), not by a cancel, so shutdown interrupts rather than cancels them */
+  private readonly abortedAtStop = new Set<RunningWebhookRun>();
   private draining = false;
   private stopped = false;
   private endpoints: WebhookEndpoint[];
@@ -1248,16 +1258,36 @@ export class WebhookService {
     }
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<readonly AbortedWebhookRun[]> {
     this.stopped = true;
     for (const entry of this.runQueue) entry.queueObservation?.end("cancelled");
     this.runQueue.length = 0;
-    for (const { controller } of this.running.values()) {
-      controller.abort();
-    }
+    for (const entry of this.running.values()) this.abortForStop(entry);
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight.keys()]);
     }
+    // read once the runs settled: a run aborted before its started event has its id by now
+    const aborted: AbortedWebhookRun[] = [];
+    for (const entry of this.abortedAtStop) {
+      if (entry.runId === "" || !entry.startedAt || !entry.workflow) continue;
+      aborted.push({
+        runId: entry.runId,
+        ...(entry.workflow.id !== undefined
+          ? { workflowId: entry.workflow.id }
+          : {}),
+        workflowName: entry.workflow.name,
+        startedAt: entry.startedAt,
+      });
+    }
+    this.abortedAtStop.clear();
+    return aborted;
+  }
+
+  private abortForStop(entry: RunningWebhookRun): void {
+    // a run cancelled first, by a user or a webhook cancel request, stays cancelled
+    if (entry.controller.signal.aborted) return;
+    this.abortedAtStop.add(entry);
+    entry.controller.abort(new Error("server shutdown"));
   }
 
   workflowOfRun(runId: string): { id?: string; name: string } | undefined {
@@ -1422,14 +1452,10 @@ export class WebhookService {
     const execId = crypto.randomUUID();
     // runId starts empty until the "started" event arrives with the real ID.
     // During this narrow window cancelByRunId() cannot match this run.
-    const tracked: {
-      controller: AbortController;
-      runId: string;
-      workflow?: { id?: string; name: string };
-    } = { controller, runId: "" };
+    const tracked: RunningWebhookRun = { controller, runId: "" };
     this.running.set(execId, tracked);
     // stop() may have swept `running` while this run was still dequeuing.
-    if (this.stopped) controller.abort();
+    if (this.stopped) this.abortForStop(tracked);
     let runId = "";
 
     try {
@@ -1462,6 +1488,7 @@ export class WebhookService {
             entry.lastProgressAt = new Date(this.now()).toISOString();
             observation.attributes({ "workflow.run_id": runId });
             tracked.runId = runId;
+            tracked.startedAt = new Date();
             tracked.workflow = {
               id: authorization.workflowId,
               name: event.workflowName,

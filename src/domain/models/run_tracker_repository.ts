@@ -48,6 +48,13 @@ export interface RunTrackerRepository {
   recordCancelReason(runId: string, reason: string): void;
 
   /**
+   * moves a row its owner completed as cancelled to interrupted with reason,
+   * for a run whose record shutdown interrupted after the run settled; a
+   * cancelled row is never reactivated, so a resume would leave it terminal
+   */
+  interruptCancelled(runId: string, reason: string): void;
+
+  /**
    * hands a suspended, failed or interrupted row to the resuming process as
    * running with a fresh heartbeat. Interrupted counts because recover resets
    * the record but not the row. False if the row is gone.

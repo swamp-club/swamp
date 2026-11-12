@@ -25,6 +25,7 @@ import {
   type ScheduledExecutionLifecycleDeps,
   type SchedulerBuildOptions,
 } from "./scheduled_execution_lifecycle.ts";
+import type { StoppedTriggerRun } from "./shutdown_drain.ts";
 
 class FakeScheduler implements LifecycleScheduler {
   readonly calls: string[] = [];
@@ -52,10 +53,12 @@ class FakeScheduler implements LifecycleScheduler {
     return Promise.resolve();
   }
 
-  stop(): Promise<void> {
+  aborted: StoppedTriggerRun[] = [];
+
+  stop(): Promise<readonly StoppedTriggerRun[]> {
     this.calls.push("stop");
     this.finish();
-    return Promise.resolve();
+    return Promise.resolve(this.aborted);
   }
 
   startCatchUp(): void {
@@ -336,7 +339,7 @@ Deno.test("ScheduledExecutionLifecycle: before the boot replay a reload can neit
 async function settledWhenStartIsHeld(
   shutdown: (
     lifecycle: ScheduledExecutionLifecycle<FakeScheduler>,
-  ) => Promise<void>,
+  ) => Promise<unknown>,
   release: (started: PromiseWithResolvers<void>) => void,
 ): Promise<void> {
   const started = Promise.withResolvers<void>();
@@ -368,4 +371,21 @@ Deno.test("ScheduledExecutionLifecycle: shutdown waits for a scheduler a reload 
     (lifecycle) => lifecycle.drain(0),
     (started) => started.reject(new Error("store closed")),
   );
+});
+
+Deno.test("ScheduledExecutionLifecycle: stop returns the runs every scheduler aborted, the current one's and a retiring one's", async () => {
+  const h = harness();
+  await h.lifecycle.turnOn(undefined);
+  const retiring = h.built[0];
+  retiring.run("nightly");
+  const startedAt = new Date();
+  retiring.aborted = [{ runId: "old-1", workflowName: "nightly", startedAt }];
+  const off = h.lifecycle.turnOff();
+  await h.lifecycle.turnOn(undefined);
+  h.built[1].aborted = [{ runId: "new-1", workflowName: "hourly", startedAt }];
+
+  const aborted = await h.lifecycle.stop();
+  await off;
+
+  assertEquals(aborted.map((run) => run.runId).sort(), ["new-1", "old-1"]);
 });

@@ -38,13 +38,11 @@ import {
   handleWorkflowResume,
   handleWorkflowRun,
 } from "../src/serve/handlers/workflow_handlers.ts";
-import {
-  type ActiveRun,
-  ActiveRunRegistry,
-} from "../src/serve/active_run_registry.ts";
+import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import {
   runShutdownDrain,
   SHUTDOWN_ABORT_GRACE_MS,
+  type ShutdownAbortedRun,
 } from "../src/serve/shutdown_drain.ts";
 import { interruptShutdownRuns } from "../src/serve/shutdown_interrupt.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
@@ -218,10 +216,11 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
       const registry = new ActiveRunRegistry();
       // The shutdown's abort, fired from inside the step before the nested
       // one so the nested step's level is reached with the signal aborted.
-      let aborted: ReadonlyArray<ActiveRun> = [];
+      let aborted: ReadonlyArray<ShutdownAbortedRun> = [];
       onTrip = () => {
-        aborted = registry.list();
-        for (const run of aborted) {
+        const runs = registry.list();
+        aborted = runs;
+        for (const run of runs) {
           run.controller.abort(new Error("server shutdown"));
         }
       };

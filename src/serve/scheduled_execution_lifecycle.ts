@@ -19,7 +19,10 @@
 
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { TriggerOverride } from "../libswamp/workflows/scheduled_execution.ts";
-import type { DrainableTriggerSource } from "./shutdown_drain.ts";
+import type {
+  DrainableTriggerSource,
+  StoppedTriggerRun,
+} from "./shutdown_drain.ts";
 
 const logger = getSwampLogger(["serve", "scheduler"]);
 
@@ -242,7 +245,7 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
     }
   }
 
-  async stop(): Promise<void> {
+  async stop(): Promise<readonly StoppedTriggerRun[]> {
     this.#closed = true;
     await this.#starting;
     const current = this.#current;
@@ -253,8 +256,11 @@ export class ScheduledExecutionLifecycle<S extends LifecycleScheduler>
       ...retiring.map(([service]) => service.stop()),
     ]);
     await Promise.allSettled(retiring.map(([, retirement]) => retirement));
+    const aborted: StoppedTriggerRun[] = [];
     for (const result of results) {
       if (result.status === "rejected") throw result.reason;
+      aborted.push(...result.value);
     }
+    return aborted;
   }
 }

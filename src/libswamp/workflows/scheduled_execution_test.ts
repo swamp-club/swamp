@@ -425,6 +425,84 @@ Deno.test("ScheduledExecutionService.drain: returns at the timeout and stop then
   assertEquals(executor.signals[0].aborted, true);
 });
 
+Deno.test("ScheduledExecutionService.stop: reports the run it aborted, with the server shutdown reason", async () => {
+  const executor = createBlockingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
+  await waitFor(() => executor.signals.length === 1, "run started");
+
+  const aborted = await service.stop();
+
+  assertEquals(abortMessage(executor.signals[0]), "server shutdown");
+  assertEquals(
+    aborted.map(({ runId, workflowId, workflowName }) => ({
+      runId,
+      workflowId,
+      workflowName,
+    })),
+    [{ runId: "run-1", workflowId: "wf", workflowName: "wf" }],
+  );
+  assertEquals(aborted[0].startedAt instanceof Date, true);
+});
+
+Deno.test("ScheduledExecutionService.stop: leaves out a run a user cancelled first, so it stays cancelled", async () => {
+  const executor = createBlockingExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
+  await waitFor(() => executor.signals.length === 1, "run started");
+  assertEquals(service.cancelByRunId("run-1", "cancelled by user:alice"), true);
+
+  assertEquals(await service.stop(), []);
+  assertEquals(abortMessage(executor.signals[0]), "cancelled by user:alice");
+});
+
+Deno.test("ScheduledExecutionService.stop: a run aborted before its started event is reported once it starts, and one that never starts is not", async () => {
+  for (const startsOnAbort of [true, false]) {
+    const signals: AbortSignal[] = [];
+    const executeWorkflow: WorkflowExecutor = (input, signal, onEvent) => {
+      signals.push(signal);
+      return new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => {
+          if (startsOnAbort) {
+            onEvent({
+              kind: "started",
+              runId: "late-run",
+              workflowName: input.workflowIdOrName,
+              jobs: [],
+            });
+          }
+          resolve();
+        }, { once: true });
+      });
+    };
+    const service = new ScheduledExecutionService({
+      workflowRepo: createMockWorkflowRepo([]),
+      repoDir: "/tmp/nonexistent-test-repo",
+      executeWorkflow,
+    });
+    await service.start();
+    service.enqueueForReplay({ pendingRunId: "p-1", workflowIdOrName: "wf" });
+    await waitFor(() => signals.length === 1, "run dequeued");
+
+    const aborted = await service.stop();
+
+    assertEquals(
+      aborted.map((run) => run.runId),
+      startsOnAbort ? ["late-run"] : [],
+    );
+  }
+});
+
 async function withRunInFlight(
   fn: (
     service: ScheduledExecutionService,
