@@ -29,8 +29,7 @@ import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 /**
  * upgrade is install of the new version, which tombstones other versions in the
  * same saveAll transaction; bulk upgrades are independent; a collision restores
- * the previous lockfile entry and roots. Even under force it never writes into
- * a skill dir the extension does not own.
+ * the previous lockfile entry and roots
  */
 export class UpgradeExtensionService {
   private readonly installService: InstallExtensionService;
@@ -54,6 +53,8 @@ export class UpgradeExtensionService {
   ): Promise<InstallResult | undefined> {
     return await this.installService.execute(
       { name, version: newVersion },
+      // the upgraded extension never merges into a skill dir it does not own;
+      // its dependencies still do, as on pull
       { ...ctx, refuseSkillConflicts: true },
     );
   }

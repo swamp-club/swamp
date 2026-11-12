@@ -23,7 +23,7 @@ import {
   PathTraversalError,
 } from "../../infrastructure/persistence/safe_path.ts";
 import { tombstoneAll } from "../../domain/extensions/extension.ts";
-import { findClaimants } from "../../domain/extensions/extension_path_claims.ts";
+import { findRetainingClaimants } from "../../domain/extensions/extension_path_claims.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { lockfileRelative } from "../../infrastructure/persistence/upstream_extensions.ts";
@@ -204,7 +204,7 @@ export class RemoveExtensionService {
     const retainedFiles: RetainedFile[] = [];
     const parentDirs: string[] = [];
     for (const filePath of trackedFiles) {
-      const claimedBy = findClaimants(filePath, name, otherEntries);
+      const claimedBy = findRetainingClaimants(filePath, name, otherEntries);
       if (claimedBy.length > 0) {
         retainedFiles.push({ path: filePath, claimedBy });
         continue;
