@@ -572,7 +572,15 @@ applies the same gate, keyed on the auth mode the daemon will resolve
 API key to register the instance with the provider and resolve admin
 usernames. Every process registers under its own `instanceId` and names it in
 the hourly heartbeat; a heartbeat answered 404 registers again, once per beat
-(`src/serve/club_heartbeat_service.ts`). The key comes from
+(`src/serve/club_heartbeat_service.ts`). Registration and heartbeat carry the
+integrations the serve hosts as `integrations: [{ id, state, createdAt,
+revokedAt? }]`: the whole list each time, `[]` for none, and left out until
+the integration directory has read every record. A change to that list sends
+one extra heartbeat at once, so a revoke reaches swamp-club before the next
+hour (`src/serve/club_integration_report.ts`). This is the functional channel,
+sent whatever the telemetry opt-outs say, so it carries no names, ceilings or
+members. A serve that does not register (no OAuth, no allowed collective or no
+key) reports nothing. The key comes from
 `--club-api-key-file`, then `SWAMP_API_KEY_FILE`, then `SWAMP_API_KEY`
 (`src/infrastructure/persistence/api_key_source.ts`). Setting both env vars is
 an error. The flag is read from argv before Cliffy parses, so the operator

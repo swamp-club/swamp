@@ -324,3 +324,116 @@ Deno.test("IntegrationDirectory: credentialOf answers only for an active integra
   assertEquals(directory.credentialOf("missing"), undefined);
   await directory.dispose();
 });
+
+Deno.test("IntegrationDirectory.reported: ids, states and dates only, sorted, combining copies", async () => {
+  const directory = new IntegrationDirectory(repo({
+    rows: [
+      {
+        modelId: "1",
+        attrs: record("zeta", { createdAt: "2026-02-01T00:00:00.000Z" }),
+      },
+      {
+        modelId: "2",
+        attrs: record("alpha", {
+          state: "revoked",
+          revokedAt: "2026-03-01T00:00:00.000Z",
+        }),
+      },
+      {
+        modelId: "3",
+        attrs: record("zeta", {
+          createdAt: "2026-01-01T00:00:00.000Z",
+          state: "revoked",
+          revokedAt: "2026-04-01T00:00:00.000Z",
+        }),
+      },
+      { modelId: "4", attrs: { id: "broken", state: "active" } },
+    ],
+  }));
+  assertEquals(directory.reported(), undefined);
+  await directory.reload();
+  assertEquals(directory.reported(), [
+    {
+      id: "alpha",
+      state: "revoked",
+      createdAt: new Date(0).toISOString(),
+      revokedAt: "2026-03-01T00:00:00.000Z",
+    },
+    {
+      id: "zeta",
+      state: "revoked",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      revokedAt: "2026-04-01T00:00:00.000Z",
+    },
+  ]);
+  await directory.dispose();
+});
+
+Deno.test("IntegrationDirectory.onChanged: fires when the report changes, not on the first load or an identical reload", async () => {
+  const state = { rows: [{ modelId: "1", attrs: record("a") }], fail: false };
+  const directory = new IntegrationDirectory(repo(state), {
+    retryMs: 3_600_000,
+  });
+  let changes = 0;
+  directory.onChanged(() => changes++);
+
+  await directory.reload();
+  assertEquals(changes, 0);
+  state.rows = [...state.rows].reverse();
+  await directory.reload();
+  assertEquals(changes, 0);
+
+  state.rows = [{
+    modelId: "1",
+    attrs: record("a", {
+      state: "revoked",
+      revokedAt: "2026-05-01T00:00:00.000Z",
+    }),
+  }];
+  await directory.reload();
+  assertEquals(changes, 1);
+
+  state.fail = true;
+  await directory.reload();
+  assertEquals(directory.reported(), undefined);
+  assertEquals(changes, 1);
+  await directory.dispose();
+});
+
+Deno.test("IntegrationDirectory.reported: two revoked copies give the same report in either read order", async () => {
+  const early = record("a", {
+    state: "revoked",
+    revokedAt: "2026-03-01T00:00:00.000Z",
+  });
+  const late = record("a", {
+    state: "revoked",
+    revokedAt: "2026-04-01T00:00:00.000Z",
+  });
+  const reports = [];
+  for (const rows of [[early, late], [late, early]]) {
+    const directory = new IntegrationDirectory(repo({
+      rows: rows.map((attrs, i) => ({ modelId: String(i), attrs })),
+    }));
+    await directory.reload();
+    reports.push(directory.reported());
+    await directory.dispose();
+  }
+  assertEquals(reports[0], reports[1]);
+  assertEquals(reports[0]?.[0].revokedAt, "2026-03-01T00:00:00.000Z");
+});
+
+Deno.test("IntegrationDirectory.onChanged: a first load that follows a failed one fires, since registration went without a list", async () => {
+  const state = { rows: [{ modelId: "1", attrs: record("a") }], fail: true };
+  const directory = new IntegrationDirectory(repo(state), {
+    retryMs: 3_600_000,
+  });
+  let changes = 0;
+  directory.onChanged(() => changes++);
+  await directory.reload();
+  assertEquals(directory.reported(), undefined);
+  state.fail = false;
+  await directory.reload();
+  assertEquals(changes, 1);
+  assertEquals(directory.reported()?.map((r) => r.id), ["a"]);
+  await directory.dispose();
+});

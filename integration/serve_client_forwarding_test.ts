@@ -57,6 +57,13 @@ import {
   extractWebSocketToken,
 } from "../src/serve/token_auth.ts";
 import "../src/domain/models/models.ts";
+import { TelemetryService } from "../src/domain/telemetry/telemetry_service.ts";
+import type { TelemetryEntry } from "../src/domain/telemetry/telemetry_entry.ts";
+import type { TelemetryRepository } from "../src/domain/telemetry/repositories.ts";
+import {
+  clearActiveTelemetryService,
+  setActiveTelemetryService,
+} from "../src/cli/telemetry_integration.ts";
 import { z } from "zod";
 import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
@@ -653,5 +660,38 @@ Deno.test({
     } finally {
       modelRegistry.invalidateType(type);
     }
+  },
+});
+
+Deno.test({
+  name:
+    "serve client: an approval a follower forwards is counted once, on the leader, with the caller's client",
+  ...testOptions,
+  fn: async () => {
+    const saved: TelemetryEntry[] = [];
+    setActiveTelemetryService(
+      new TelemetryService(
+        {
+          save: (entry: TelemetryEntry) => {
+            saved.push(entry);
+            return Promise.resolve();
+          },
+        } as unknown as TelemetryRepository,
+        "1.0.0",
+      ),
+    );
+    try {
+      await withCluster(CLIENT, async ({ leader, followerAddress }) => {
+        await runAndApprove(followerAddress, leader.repo, "counted");
+      });
+    } finally {
+      clearActiveTelemetryService();
+    }
+    const approvals = saved
+      .map((entry) => entry.toData())
+      .filter((data) => data.invocation.subcommand === "approve");
+    assertEquals(approvals.length, 1);
+    assertEquals(approvals[0].result.status, "success");
+    assertEquals(approvals[0].client, "integration");
   },
 });

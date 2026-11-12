@@ -27,6 +27,7 @@ import {
   DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
 } from "./club_heartbeat_service.ts";
 import { InstanceNotRegisteredError } from "./oauth_client.ts";
+import type { ReportedIntegration } from "../domain/access/integration_directory.ts";
 
 Deno.test("DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS: is 1 hour", () => {
   assertEquals(DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS, 60 * 60 * 1000);
@@ -314,4 +315,100 @@ Deno.test("ClubHeartbeatService: stop aborts a heartbeat in flight", async () =>
     service.stop();
   }
   assertEquals(signal?.aborted, true);
+});
+
+Deno.test("ClubHeartbeatService.beatNow: sends the reported integrations at once, coalescing calls made while one runs", async () => {
+  const sent: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reported: ReportedIntegration[] = [
+    { id: "a", state: "active", createdAt: "t0" },
+  ];
+  const service = new ClubHeartbeatService({
+    providerUrl: "https://club.example.com",
+    oauthClientId: "clt-1",
+    instanceId: "inst-1",
+    reregister: () => Promise.resolve(),
+    intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
+    getAccessToken: () => Promise.resolve("key"),
+    sendHeartbeat: async (_url, _token, _client, _instance, _signal, list) => {
+      sent.push(list);
+      if (sent.length === 1) await gate;
+      return { heartbeatCount: sent.length };
+    },
+    reportedIntegrations: () => reported,
+  });
+
+  service.beatNow();
+  await waitFor(() => sent.length === 1, "the first extra beat to start");
+  reported = [{ id: "a", state: "revoked", createdAt: "t0" }];
+  service.beatNow();
+  service.beatNow();
+  release();
+  await service.settled();
+
+  assertEquals(sent, [
+    [{ id: "a", state: "active", createdAt: "t0" }],
+    [{ id: "a", state: "revoked", createdAt: "t0" }],
+  ]);
+  service.stop();
+});
+
+Deno.test("ClubHeartbeatService.beatNow: stop aborts a running extra beat and settled waits for it", async () => {
+  let aborted = false;
+  let called = false;
+  const service = new ClubHeartbeatService({
+    providerUrl: "https://club.example.com",
+    oauthClientId: "clt-1",
+    instanceId: "inst-1",
+    reregister: () => Promise.resolve(),
+    intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
+    getAccessToken: () => Promise.resolve("key"),
+    sendHeartbeat: (_url, _token, _client, _instance, signal) =>
+      new Promise((_resolve, reject) => {
+        called = true;
+        signal.addEventListener("abort", () => {
+          aborted = true;
+          reject(signal.reason);
+        });
+      }),
+  });
+
+  service.beatNow();
+  await waitFor(() => called, "the extra beat to reach swamp-club");
+  service.stop();
+  await service.settled();
+  assertEquals(aborted, true);
+  service.beatNow();
+  await service.settled();
+});
+
+Deno.test("ClubHeartbeatService: hourly and extra beats go out one at a time", async () => {
+  let inFlight = 0;
+  let most = 0;
+  let sent = 0;
+  const service = new ClubHeartbeatService({
+    providerUrl: "https://club.example.com",
+    oauthClientId: "clt-1",
+    instanceId: "inst-1",
+    reregister: () => Promise.resolve(),
+    intervalMs: 5,
+    getAccessToken: () => Promise.resolve("key"),
+    sendHeartbeat: async () => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      inFlight--;
+      sent++;
+      return { heartbeatCount: sent };
+    },
+  });
+  service.start();
+  service.beatNow();
+  await waitFor(() => sent >= 4, "several beats to go out");
+  service.stop();
+  await service.settled();
+  assertEquals(most, 1);
 });

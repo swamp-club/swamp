@@ -22,6 +22,7 @@ import {
   clientLiteralFinding,
   clientToString,
   parseClient,
+  telemetryClientOf,
 } from "./client.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 
@@ -78,4 +79,20 @@ Deno.test("clientLiteralFinding: a direct id is not a boundary, and an impossibl
   for (const literal of ["integration:Slack", "direct:nope", "slack", ""]) {
     assertEquals(clientLiteralFinding(literal)?.kind, "never-matches");
   }
+});
+
+Deno.test("telemetryClientOf: names the kind, adds an integration's id, and drops what doesn't parse", () => {
+  assertEquals(telemetryClientOf(undefined), {});
+  assertEquals(telemetryClientOf("direct:cli"), { client: "direct:cli" });
+  assertEquals(telemetryClientOf("direct:dashboard"), {
+    client: "direct:dashboard",
+  });
+  assertEquals(telemetryClientOf("direct:token"), { client: "direct:token" });
+  assertEquals(telemetryClientOf("integration:acme-slack"), {
+    client: "integration",
+    integrationId: "acme-slack",
+  });
+  assertEquals(telemetryClientOf("integration:Not Valid"), {});
+  assertEquals(telemetryClientOf("direct:"), {});
+  assertEquals(telemetryClientOf("delegation:d-123"), {});
 });

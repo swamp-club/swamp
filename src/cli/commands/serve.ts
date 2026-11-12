@@ -198,6 +198,17 @@ import { hasOAuthAccessToken } from "../../serve/oauth_access_token_lookup.ts";
 import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { principalToString } from "../../domain/access/principal.ts";
 import {
+  type ControlAction,
+  type ControlTelemetry,
+  createControlTelemetry,
+  setServeCollectivesSource,
+} from "../../serve/telemetry.ts";
+import { httpControlOutcome } from "../../serve/control_telemetry.ts";
+import {
+  beatOnIntegrationChange,
+  withReportedIntegrations,
+} from "../../serve/club_integration_report.ts";
+import {
   SCHEDULER_PRINCIPAL,
   WEBHOOK_PRINCIPAL,
 } from "../../domain/access/service_principal.ts";
@@ -1371,6 +1382,74 @@ export function cancelAllExecutions(
     count += deps.webhookCancelAll?.(reason) ?? 0;
   }
   return count;
+}
+
+export interface BulkCancelRequest {
+  req: Request;
+  caller: {
+    principal: Principal | null;
+    loginIdentity?: ActorIdentity;
+    client?: string;
+    sourceIp: string;
+  };
+}
+
+/** the leader's answer to a cancel of every execution; a follower forwards first */
+export async function respondToBulkCancel(
+  ctx: ConnectionContext,
+  { req, caller }: BulkCancelRequest,
+  deps: CancelAllDeps,
+): Promise<{ response: Response; cancelledCount?: number }> {
+  const requested = await readBulkCancelBody(req);
+  if (!requested.ok) {
+    return {
+      response: Response.json({
+        status: "error",
+        message: requested.message,
+      }, { status: requested.status }),
+    };
+  }
+  const body = requested.body;
+  const typeFilter = typeof body.executionType === "string"
+    ? body.executionType
+    : undefined;
+  if (
+    typeFilter && typeFilter !== "workflow-run" &&
+    typeFilter !== "method-run"
+  ) {
+    return {
+      response: Response.json({
+        status: "error",
+        message: "executionType must be 'workflow-run' or 'method-run'",
+      }, { status: 400 }),
+    };
+  }
+  const reason = cancelReasonFor(cancelActor(caller.principal, ctx));
+  const count = cancelAllExecutions(
+    deps,
+    typeFilter as ExecutionType | undefined,
+    reason,
+  );
+  emitRunCancelAudit(ctx, {
+    action: "cancel.all",
+    resourceKind: typeFilter === "method-run"
+      ? "model"
+      : typeFilter === "workflow-run"
+      ? "workflow"
+      : "execution",
+    resourceName: "*",
+    principal: caller.principal,
+    loginIdentity: caller.loginIdentity,
+    client: caller.client,
+    sourceIp: caller.sourceIp,
+    requestId: crypto.randomUUID(),
+    outcome: "success",
+    detail: `count=${count}`,
+  });
+  return {
+    response: Response.json({ status: "cancellation_requested", count }),
+    cancelledCount: count,
+  };
 }
 
 export const MAX_CANCEL_BODY_BYTES = 8 * 1024;
@@ -5825,26 +5904,29 @@ export const serveCommand = new Command()
         authConfig.oauthClientId &&
         authConfig.allowedCollectives.length > 0 &&
         clubApiKey
-        ? {
+        ? withReportedIntegrations({
           oauthClientId: authConfig.oauthClientId,
           instanceId,
           collectiveSlugs: [...authConfig.allowedCollectives],
           hostname: Deno.hostname(),
           version: VERSION,
           deploymentMode: deploymentMode.mode,
-        }
+        }, integrationDirectory)
         : undefined;
+    // a reload replaces the list's contents in place, so the getter stays current
+    setServeCollectivesSource(() => authConfig.allowedCollectives);
     // a reload changes the collectives, so every registration sends the ones in force
     const clubRegistrationNow = (
       oauthClientId: string,
-    ): RegisterInstanceRequest => ({
-      oauthClientId,
-      instanceId,
-      collectiveSlugs: [...authConfig.allowedCollectives],
-      hostname: Deno.hostname(),
-      version: VERSION,
-      deploymentMode: deploymentMode.mode,
-    });
+    ): RegisterInstanceRequest =>
+      withReportedIntegrations({
+        oauthClientId,
+        instanceId,
+        collectiveSlugs: [...authConfig.allowedCollectives],
+        hostname: Deno.hostname(),
+        version: VERSION,
+        deploymentMode: deploymentMode.mode,
+      }, integrationDirectory);
     if (clubRegistration !== undefined && clubApiKey) {
       try {
         await registerInstance(
@@ -7522,6 +7604,7 @@ export const serveCommand = new Command()
         intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
         getAccessToken: () => Promise.resolve(clubApiKey),
         sendHeartbeat: sendInstanceHeartbeat,
+        reportedIntegrations: () => integrationDirectory.reported(),
         reregister: (accessToken, signal) =>
           registerInstance(
             authConfig.oauthProvider,
@@ -7531,6 +7614,15 @@ export const serveCommand = new Command()
           ),
       });
       clubHeartbeatService.start();
+    }
+    beatOnIntegrationChange(integrationDirectory, () => clubHeartbeatService);
+    // a change between registering and subscribing would otherwise wait an hour
+    if (
+      clubHeartbeatService &&
+      JSON.stringify(integrationDirectory.reported()) !==
+        JSON.stringify(clubRegistration?.integrations)
+    ) {
+      clubHeartbeatService.beatNow();
     }
 
     const webhookSourceIsCliFlags = webhookFlags.length > 0;
@@ -8433,8 +8525,10 @@ export const serveCommand = new Command()
             name: "swamp-club re-registration",
             run: async () => {
               if (authConfig.allowedCollectives.length === 0) {
-                clubHeartbeatService?.stop();
+                const stopped = clubHeartbeatService;
                 clubHeartbeatService = null;
+                stopped?.stop();
+                await stopped?.settled();
                 return;
               }
               await registerInstance(
@@ -8451,6 +8545,7 @@ export const serveCommand = new Command()
                   intervalMs: DEFAULT_CLUB_HEARTBEAT_INTERVAL_MS,
                   getAccessToken: () => Promise.resolve(apiKey),
                   sendHeartbeat: sendInstanceHeartbeat,
+                  reportedIntegrations: () => integrationDirectory.reported(),
                   reregister: (accessToken, signal) =>
                     registerInstance(
                       authConfig.oauthProvider,
@@ -9043,6 +9138,10 @@ export const serveCommand = new Command()
           let cancelGroups: readonly string[] = [];
           // with no auth there is no caller to decide on, as on every route
           let cancelAuthority: CancelAuthority = "admin";
+          let cancelControl: ControlTelemetry | undefined;
+          const cancelAction: ControlAction = cancelMatch
+            ? cancelMatch[1] === "method-run" ? "method cancel" : "cancel"
+            : "cancel all";
           const cancelRemoteAddr = trustProxy
             ? (req.headers.get("x-forwarded-for")
               ?.split(",")[0]?.trim() ??
@@ -9134,6 +9233,10 @@ export const serveCommand = new Command()
               cancelClient = authResult.client;
               cancelCollectives = authResult.collectives;
               cancelGroups = authResult.groups;
+              cancelControl = createControlTelemetry(cancelAction, {
+                initiatedBy: principalToString(cancelPrincipal),
+                client: authResult.client,
+              });
               const authorization = authorizeCancelRequest(
                 connectionCtx,
                 policySnapshotLoader,
@@ -9153,10 +9256,20 @@ export const serveCommand = new Command()
                     : undefined,
                 },
               );
-              if ("refusal" in authorization) return authorization.refusal;
+              if ("refusal" in authorization) {
+                await cancelControl.finish(
+                  httpControlOutcome(authorization.refusal.status),
+                );
+                return authorization.refusal;
+              }
               cancelAuthority = authorization.authority;
+            } else {
+              cancelControl = createControlTelemetry(cancelAction, {
+                initiatedBy: "ghost",
+              });
             }
             if (authConfig.mode === "none" && !hasJsonContentType(req)) {
+              await cancelControl.finish(httpControlOutcome(415));
               return Response.json({
                 status: "error",
                 message: "Content-Type must be application/json",
@@ -9171,10 +9284,13 @@ export const serveCommand = new Command()
               connectionCtx,
               { clientIp: cancelRemoteAddr },
             );
-            if (cancelForwarded !== undefined) return await cancelForwarded;
+            if (cancelForwarded !== undefined) {
+              cancelControl.discard();
+              return await cancelForwarded;
+            }
           }
           if (cancelMatch) {
-            return await respondToRunCancel(
+            const cancelResponse = await respondToRunCancel(
               connectionCtx,
               {
                 req,
@@ -9192,32 +9308,23 @@ export const serveCommand = new Command()
               },
               { cancelRegistry, activeRunRegistry },
             );
+            await cancelControl?.finish(
+              httpControlOutcome(cancelResponse.status),
+            );
+            return cancelResponse;
           }
           if (url.pathname === "/api/v1/cancel") {
-            const requested = await readBulkCancelBody(req);
-            if (!requested.ok) {
-              return Response.json({
-                status: "error",
-                message: requested.message,
-              }, { status: requested.status });
-            }
-            const body = requested.body;
-            const typeFilter = typeof body.executionType === "string"
-              ? body.executionType
-              : undefined;
-            if (
-              typeFilter && typeFilter !== "workflow-run" &&
-              typeFilter !== "method-run"
-            ) {
-              return Response.json({
-                status: "error",
-                message: "executionType must be 'workflow-run' or 'method-run'",
-              }, { status: 400 });
-            }
-            const reason = cancelReasonFor(
-              cancelActor(cancelAuditPrincipal, connectionCtx),
-            );
-            const count = cancelAllExecutions(
+            const bulk = await respondToBulkCancel(
+              connectionCtx,
+              {
+                req,
+                caller: {
+                  principal: cancelAuditPrincipal,
+                  loginIdentity: cancelLoginIdentity,
+                  client: cancelClient,
+                  sourceIp: cancelRemoteAddr,
+                },
+              },
               {
                 cancelRegistry,
                 activeRunRegistry,
@@ -9229,26 +9336,11 @@ export const serveCommand = new Command()
                   ),
                 webhookCancelAll: (r) => webhookService.cancelAllRuns(r),
               },
-              typeFilter as ExecutionType | undefined,
-              reason,
             );
-            emitRunCancelAudit(connectionCtx, {
-              action: "cancel.all",
-              resourceKind: typeFilter === "method-run"
-                ? "model"
-                : typeFilter === "workflow-run"
-                ? "workflow"
-                : "execution",
-              resourceName: "*",
-              principal: cancelAuditPrincipal,
-              loginIdentity: cancelLoginIdentity,
-              client: cancelClient,
-              sourceIp: cancelRemoteAddr,
-              requestId: crypto.randomUUID(),
-              outcome: "success",
-              detail: `count=${count}`,
-            });
-            return Response.json({ status: "cancellation_requested", count });
+            await cancelControl?.finish(
+              httpControlOutcome(bulk.response.status, bulk.cancelledCount),
+            );
+            return bulk.response;
           }
         }
 
@@ -9921,7 +10013,9 @@ export const serveCommand = new Command()
         () => delegationSyncService.stop(),
       );
       if (clubHeartbeatService) {
-        clubHeartbeatService.stop();
+        const heartbeat = clubHeartbeatService;
+        heartbeat.stop();
+        await stages.run("swamp-club heartbeat", () => heartbeat.settled());
       }
       if (grantsDirectoryPoller) {
         const poller = grantsDirectoryPoller;

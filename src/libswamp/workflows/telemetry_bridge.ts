@@ -22,6 +22,27 @@ import type { CommandInvocationData } from "../../domain/telemetry/command_invoc
 import type { WorkflowContextData } from "../../domain/telemetry/workflow_context.ts";
 import type { WorkflowExecutionEvent } from "../../domain/workflows/execution_service.ts";
 import type { WorkflowTelemetrySink } from "./run.ts";
+import {
+  CONCEALED_MODEL_NAME,
+  concealedModelLabel,
+} from "../../domain/telemetry/concealed_models.ts";
+
+/** an integration's or group's step is sent by type, and its errors without text */
+function childReport(
+  tracked: { modelName: string; methodName: string; modelType?: string },
+  error: Error | null,
+): { invocation: CommandInvocationData; error: Error | null } {
+  const label = concealedModelLabel(tracked.modelType, tracked.modelName);
+  return {
+    invocation: buildChildInvocation(
+      label ?? tracked.modelName,
+      tracked.methodName,
+    ),
+    error: error !== null && label !== undefined
+      ? new Error(CONCEALED_MODEL_NAME)
+      : error,
+  };
+}
 
 /**
  * model and method names are not sensitive and are sent as-is; the shape
@@ -108,7 +129,7 @@ export class WorkflowTelemetryBridge {
         if (!tracked) return;
         this.inFlight.delete(key);
         await this.sink.recordChildInvocation(
-          buildChildInvocation(tracked.modelName, tracked.methodName),
+          childReport(tracked, null).invocation,
           tracked.startedAt,
           new Date(),
           null,
@@ -128,11 +149,15 @@ export class WorkflowTelemetryBridge {
 
         if (tracked) {
           this.inFlight.delete(key);
+          const report = childReport(
+            tracked,
+            markErrorPaths(new Error(event.error), event.errorPaths ?? []),
+          );
           await this.sink.recordChildInvocation(
-            buildChildInvocation(tracked.modelName, tracked.methodName),
+            report.invocation,
             tracked.startedAt,
             new Date(),
-            markErrorPaths(new Error(event.error), event.errorPaths ?? []),
+            report.error,
             this.sink.parentInvocationId,
             this.buildWorkflowContext(event.jobId, event.stepId, tracked),
           );
@@ -152,11 +177,15 @@ export class WorkflowTelemetryBridge {
           modelType: this.modelTypeByStep.get(key),
         };
         const sameInstant = new Date();
-        await this.sink.recordChildInvocation(
-          buildChildInvocation(event.modelName, event.methodName),
-          sameInstant,
-          sameInstant,
+        const report = childReport(
+          synthesized,
           markErrorPaths(new Error(event.error), event.errorPaths ?? []),
+        );
+        await this.sink.recordChildInvocation(
+          report.invocation,
+          sameInstant,
+          sameInstant,
+          report.error,
           this.sink.parentInvocationId,
           this.buildWorkflowContext(event.jobId, event.stepId, synthesized),
         );
@@ -189,11 +218,12 @@ export class WorkflowTelemetryBridge {
         `${baseReason}: step "${stepId}" in job "${jobId}" ` +
         `(method ${tracked.methodName} on ${tracked.modelName}, ` +
         `running for ${elapsedStr})`;
+      const report = childReport(tracked, new Error(errorMessage));
       await this.sink.recordChildInvocation(
-        buildChildInvocation(tracked.modelName, tracked.methodName),
+        report.invocation,
         tracked.startedAt,
         now,
-        new Error(errorMessage),
+        report.error,
         this.sink.parentInvocationId,
         this.buildWorkflowContext(jobId, stepId, tracked),
       );

@@ -74,6 +74,19 @@ something a primitive depends on, move it to `enablers/` and give it an
   records on its own (workflow steps, serve runs), have no `commandSpelling`.
   The mapping is applied only when the invocation is recorded
   (`toRecordedInvocation`); the auth gate reads the resolution as typed.
+  `access integration <verb> <id>` sends its id, since swamp-club already
+  knows it from the serve's report; every other `id` argument, such as a
+  delegation's, stays redacted. Serve's events add `client` (the kind:
+  `integration`, `direct:cli`, `direct:dashboard` or `direct:token`),
+  `integrationId` for an integration's requests, and `serveCollectives` (the
+  slugs serve allows); a delegation id is never sent
+  (`src/serve/telemetry.ts`). Approve, reject, resume, signal and cancel each
+  record one event on the node that answers them, with no arguments and with
+  a refusal's error code as `errorType` and no message; a bulk cancel is
+  `cancel all` with `cancelledCount` (`src/serve/control_telemetry.ts`). An
+  integration's or group's behavior is sent by its type, with no error text,
+  in method runs and workflow steps once that type is known
+  (`src/domain/telemetry/concealed_models.ts`).
 - **Tracing**: OpenTelemetry traces and logs, turned on only by `OTEL_*`
   environment variables and passed into dispatch runners.
   `src/infrastructure/tracing/`. A team member's requests to serve's datastore

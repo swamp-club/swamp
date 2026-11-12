@@ -63,6 +63,36 @@ export interface IntegrationNarrowed {
 
 type Listener = (changes: readonly IntegrationNarrowed[]) => void;
 
+/** what serve tells swamp-club about an integration: never its name or ceiling */
+export interface ReportedIntegration {
+  readonly id: string;
+  readonly state: "active" | "revoked";
+  readonly createdAt: string;
+  readonly revokedAt?: string;
+}
+
+function combinedReport(
+  a: ReportedIntegration,
+  b: ReportedIntegration,
+): ReportedIntegration {
+  // two revoked copies keep the earlier revoke, so read order never changes the report
+  const revoked = a.state !== "revoked"
+    ? b
+    : b.state !== "revoked"
+    ? a
+    : (a.revokedAt ?? "") <= (b.revokedAt ?? "")
+    ? a
+    : b;
+  const createdAt = a.createdAt < b.createdAt ? a.createdAt : b.createdAt;
+  return { ...revoked, createdAt };
+}
+
+function reportKey(reports: ReadonlyMap<string, ReportedIntegration>): string {
+  return JSON.stringify(
+    [...reports.values()].sort((x, y) => x.id < y.id ? -1 : 1),
+  );
+}
+
 const UNKNOWN: IntegrationStanding = { kind: "unknown" };
 
 const REVOKED: IntegrationStanding = { kind: "revoked" };
@@ -92,6 +122,9 @@ function combined(a: Entry, b: Entry): Entry {
 export class IntegrationDirectory implements IntegrationLookup {
   readonly #dataRepo: UnifiedDataRepository;
   readonly #listeners = new Set<Listener>();
+  readonly #changeListeners = new Set<() => void>();
+  #reports: ReadonlyMap<string, ReportedIntegration> = new Map();
+  #failedBeforeFirstLoad = false;
   readonly #unsubscribers: (() => void)[] = [];
   readonly #retryMs: number;
   #entries: ReadonlyMap<string, Entry> = new Map();
@@ -138,6 +171,18 @@ export class IntegrationDirectory implements IntegrationLookup {
     return entry?.standing.kind === "active" ? entry.credential : undefined;
   }
 
+  /** sorted by id; undefined until a load has read every record */
+  reported(): readonly ReportedIntegration[] | undefined {
+    if (!this.#whole) return undefined;
+    return [...this.#reports.values()].sort((x, y) => x.id < y.id ? -1 : 1);
+  }
+
+  /** called when reported() changes, and on a first load that follows a failed one */
+  onChanged(listener: () => void): () => void {
+    this.#changeListeners.add(listener);
+    return () => this.#changeListeners.delete(listener);
+  }
+
   onNarrowed(listener: Listener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -171,9 +216,11 @@ export class IntegrationDirectory implements IntegrationLookup {
     clearTimeout(this.#retry);
     this.#retry = undefined;
     let entries: Map<string, Entry>;
+    let reports: Map<string, ReportedIntegration>;
     try {
-      entries = await this.#read();
+      ({ entries, reports } = await this.#read());
     } catch (error) {
+      if (this.#lastGood === undefined) this.#failedBeforeFirstLoad = true;
       this.#whole = false;
       this.#reportFailure(error);
       this.#retry = setTimeout(() => {
@@ -183,9 +230,23 @@ export class IntegrationDirectory implements IntegrationLookup {
     }
     this.#lastFailure = undefined;
     const narrowed = this.#narrowedSince(entries);
+    // a first load after a failed one is news: registration went without a list
+    const reportsChanged = this.#lastGood === undefined
+      ? this.#failedBeforeFirstLoad
+      : reportKey(reports) !== reportKey(this.#reports);
     this.#entries = entries;
     this.#lastGood = entries;
+    this.#reports = reports;
     this.#whole = true;
+    if (reportsChanged) {
+      for (const listener of this.#changeListeners) {
+        try {
+          listener();
+        } catch (error) {
+          logger.error`An integration report listener failed: ${error}`;
+        }
+      }
+    }
     if (narrowed.length === 0) return;
     for (const listener of this.#listeners) {
       try {
@@ -226,7 +287,10 @@ export class IntegrationDirectory implements IntegrationLookup {
     return narrowed;
   }
 
-  async #read(): Promise<Map<string, Entry>> {
+  async #read(): Promise<{
+    entries: Map<string, Entry>;
+    reports: Map<string, ReportedIntegration>;
+  }> {
     const unreadable: UnreadableModelRecord[] = [];
     const type = INTEGRATION_MODEL_TYPE;
     const items = [
@@ -243,6 +307,7 @@ export class IntegrationDirectory implements IntegrationLookup {
       );
     }
     const entries = new Map<string, Entry>();
+    const reports = new Map<string, ReportedIntegration>();
     for (const { data, modelType, modelId } of items) {
       if (data.name !== INTEGRATION_DATA_NAME) continue;
       const content = await this.#dataRepo.getContent(
@@ -254,11 +319,18 @@ export class IntegrationDirectory implements IntegrationLookup {
       if (!content) {
         throw new Error(`Integration record ${modelId} has no content`);
       }
-      const { id, entry } = this.#parse(content, modelId);
+      const { id, entry, report } = this.#parse(content, modelId);
       const seen = entries.get(id);
       entries.set(id, seen ? combined(seen, entry) : entry);
+      if (report) {
+        const seenReport = reports.get(id);
+        reports.set(
+          id,
+          seenReport ? combinedReport(seenReport, report) : report,
+        );
+      }
     }
-    return entries;
+    return { entries, reports };
   }
 
   async #orphaned(unreadable: UnreadableModelRecord[]) {
@@ -277,7 +349,7 @@ export class IntegrationDirectory implements IntegrationLookup {
   #parse(
     content: Uint8Array,
     modelId: string,
-  ): { id: string; entry: Entry } {
+  ): { id: string; entry: Entry; report?: ReportedIntegration } {
     const attrs: unknown = JSON.parse(new TextDecoder().decode(content));
     const parsed = IntegrationSchema.safeParse(attrs);
     if (!parsed.success) {
@@ -289,12 +361,21 @@ export class IntegrationDirectory implements IntegrationLookup {
         .error`Integration record ${modelId} is invalid, so ${claimed} is refused`;
       return { id: claimed, entry: { standing: UNKNOWN } };
     }
+    const report: ReportedIntegration = {
+      id: parsed.data.id,
+      state: parsed.data.state,
+      createdAt: parsed.data.createdAt,
+      ...(parsed.data.state === "revoked" && parsed.data.revokedAt
+        ? { revokedAt: parsed.data.revokedAt }
+        : {}),
+    };
     if (parsed.data.state === "revoked") {
-      return { id: parsed.data.id, entry: { standing: REVOKED } };
+      return { id: parsed.data.id, entry: { standing: REVOKED }, report };
     }
     try {
       return {
         id: parsed.data.id,
+        report,
         entry: {
           standing: {
             kind: "active",
@@ -310,7 +391,7 @@ export class IntegrationDirectory implements IntegrationLookup {
     } catch (error) {
       logger
         .error`Integration ${parsed.data.id} has a ceiling this build can't read, so it is refused: ${error}`;
-      return { id: parsed.data.id, entry: { standing: UNKNOWN } };
+      return { id: parsed.data.id, entry: { standing: UNKNOWN }, report };
     }
   }
 }

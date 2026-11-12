@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ReportedIntegration } from "../domain/access/integration_directory.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "oauth-client"]);
@@ -219,6 +220,7 @@ export interface RegisterInstanceRequest {
   readonly version: string;
   readonly deploymentMode: string;
   readonly tags?: Record<string, string>;
+  readonly integrations?: readonly ReportedIntegration[];
 }
 
 export interface RegisterInstanceResponse {
@@ -274,6 +276,7 @@ export async function sendInstanceHeartbeat(
   oauthClientId: string,
   instanceId: string,
   signal: AbortSignal,
+  integrations?: readonly ReportedIntegration[],
 ): Promise<HeartbeatResponse> {
   const resp = await fetch(
     `${providerUrl}/api/v1/serve/instances/${
@@ -285,7 +288,10 @@ export async function sendInstanceHeartbeat(
         "content-type": "application/json",
         "authorization": `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ instanceId }),
+      body: JSON.stringify({
+        instanceId,
+        ...(integrations !== undefined ? { integrations } : {}),
+      }),
       signal,
     },
   );

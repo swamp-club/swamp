@@ -1173,3 +1173,70 @@ Deno.test("TelemetryService stamps its repo and distinct id on every record path
     assertEquals(entry.distinctId, "user-1");
   }
 });
+
+Deno.test("TelemetryService.forkForRun: stamps serve fields on run, error, outcome and child entries", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+  const fork = service.forkForRun("api", "user:u1", {
+    client: "integration",
+    integrationId: "acme-slack",
+    serveCollectives: ["acme"],
+  });
+  const invocation = {
+    command: "workflow",
+    subcommand: "approve",
+    args: [],
+    optionKeys: [],
+    globalOptions: [],
+  };
+
+  await fork.recordSuccess(invocation, new Date());
+  await fork.recordError(invocation, new Date(), new Error("boom"));
+  await fork.recordOutcome(invocation, new Date(), { status: "success" });
+  await fork.recordChildInvocation(
+    invocation,
+    new Date(),
+    new Date(),
+    null,
+    fork.invocationId,
+    { workflowName: "w", runId: "r", jobName: "j", stepName: "s" },
+  );
+
+  assertEquals(repo.savedEntries.length, 4);
+  for (const entry of repo.savedEntries) {
+    const data = entry.toData();
+    assertEquals(data.client, "integration");
+    assertEquals(data.integrationId, "acme-slack");
+    assertEquals(data.serveCollectives, ["acme"]);
+  }
+});
+
+Deno.test("TelemetryService.recordOutcome: a refusal keeps only its code", async () => {
+  const repo = new MockTelemetryRepository();
+  const fork = new TelemetryService(repo, "1.0.0").forkForRun("api");
+
+  await fork.recordOutcome(
+    {
+      command: "cancel",
+      subcommand: "all",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+    {
+      status: "user_error",
+      errorType: "resume_inputs_refused",
+      cancelledCount: 0,
+    },
+  );
+
+  const data = repo.savedEntries[0].toData();
+  assertEquals(data.result, {
+    status: "user_error",
+    errorType: "resume_inputs_refused",
+    exitCode: 1,
+  });
+  assertEquals(data.cancelledCount, 0);
+  assertEquals(data.client, undefined);
+});

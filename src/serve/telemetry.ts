@@ -20,13 +20,44 @@
 import type { WorkflowTelemetrySink } from "../libswamp/workflows/run.ts";
 import type {
   CommandInvocationData,
+  ServeEventFields,
   WorkflowTriggerSource,
 } from "../domain/telemetry/mod.ts";
 import { getActiveTelemetryService } from "../cli/telemetry_integration.ts";
+import { telemetryClientOf } from "../domain/access/client.ts";
+import { concealedModelLabel } from "../domain/telemetry/concealed_models.ts";
+import { UserError } from "../domain/errors.ts";
 
 export interface RunTelemetry {
   readonly sink: WorkflowTelemetrySink;
   finish(error: Error | null): Promise<void>;
+}
+
+/** who asked serve for something; delegation ids are never part of it */
+export interface ServeTelemetryCaller {
+  readonly initiatedBy?: string;
+  readonly client?: string;
+}
+
+let serveCollectivesSource: () => readonly string[] = () => [];
+
+/** read at each event, since a reload changes serve's collectives */
+export function setServeCollectivesSource(
+  source: () => readonly string[],
+): () => void {
+  const previous = serveCollectivesSource;
+  serveCollectivesSource = source;
+  return () => {
+    serveCollectivesSource = previous;
+  };
+}
+
+function serveFieldsFor(client: string | undefined): ServeEventFields {
+  const collectives = serveCollectivesSource();
+  return {
+    ...telemetryClientOf(client),
+    ...(collectives.length > 0 ? { serveCollectives: [...collectives] } : {}),
+  };
 }
 
 /** the workflow name is sent as-is, as the interactive CLI does */
@@ -42,6 +73,13 @@ function buildRunInvocation(workflowName: string): CommandInvocationData {
 }
 
 export interface CommandTelemetry {
+  /**
+   * the behavior's type, once known: an integration's or group's name is
+   * replaced by its type and its error messages are not sent
+   */
+  resolveType(modelType: string | undefined): void;
+  /** a type the caller named: it can only add concealment, never remove it */
+  hintType(modelType: string | undefined): void;
   finish(error: Error | null): Promise<void>;
 }
 
@@ -62,27 +100,43 @@ function buildMethodRunInvocation(
 
 export function createCommandTelemetry(
   target: { modelName: string; methodName: string },
-  initiatedBy?: string,
+  caller: ServeTelemetryCaller = {},
   startedAt: Date = new Date(),
 ): CommandTelemetry | undefined {
   const service = getActiveTelemetryService();
   if (!service) return undefined;
 
-  const runService = service.forkForRun("api", initiatedBy);
+  const runService = service.forkForRun(
+    "api",
+    caller.initiatedBy,
+    serveFieldsFor(caller.client),
+  );
+  let label = concealedModelLabel(undefined, target.modelName);
 
   return {
+    resolveType: (modelType) => {
+      if (modelType === undefined) return;
+      label = concealedModelLabel(modelType, target.modelName);
+    },
+    hintType: (modelType) => {
+      if (modelType === undefined) return;
+      label = concealedModelLabel(modelType, target.modelName) ?? label;
+    },
     finish: async (error: Error | null): Promise<void> => {
-      if (error) {
-        await runService.recordError(
-          buildMethodRunInvocation(target.modelName, target.methodName),
-          startedAt,
-          error,
-        );
+      const invocation = buildMethodRunInvocation(
+        label ?? target.modelName,
+        target.methodName,
+      );
+      if (!error) {
+        await runService.recordSuccess(invocation, startedAt);
+      } else if (label !== undefined) {
+        // these methods name the integration or group in their messages
+        await runService.recordOutcome(invocation, startedAt, {
+          status: error instanceof UserError ? "user_error" : "error",
+          errorType: error.constructor.name,
+        });
       } else {
-        await runService.recordSuccess(
-          buildMethodRunInvocation(target.modelName, target.methodName),
-          startedAt,
-        );
+        await runService.recordError(invocation, startedAt, error);
       }
     },
   };
@@ -96,13 +150,17 @@ export function createCommandTelemetry(
 export function createRunTelemetry(
   triggerSource: WorkflowTriggerSource,
   workflowName: string,
-  options?: { initiatedBy?: string; startedAt?: Date },
+  options?: { initiatedBy?: string; client?: string; startedAt?: Date },
 ): RunTelemetry | undefined {
   const service = getActiveTelemetryService();
   if (!service) return undefined;
 
   const startedAt = options?.startedAt ?? new Date();
-  const runService = service.forkForRun(triggerSource, options?.initiatedBy);
+  const runService = service.forkForRun(
+    triggerSource,
+    options?.initiatedBy,
+    serveFieldsFor(options?.client),
+  );
 
   return {
     sink: {
@@ -122,6 +180,69 @@ export function createRunTelemetry(
           startedAt,
         );
       }
+    },
+  };
+}
+
+export type ControlAction =
+  | "approve"
+  | "reject"
+  | "resume"
+  | "signal"
+  | "cancel"
+  | "method cancel"
+  | "cancel all";
+
+export type ControlOutcome =
+  | { readonly status: "success"; readonly cancelledCount?: number }
+  | {
+    readonly status: "user_error" | "error";
+    /** a serve error code, never a message */
+    readonly errorType: string;
+    readonly cancelledCount?: number;
+  };
+
+export interface ControlTelemetry {
+  /** only the first outcome is recorded */
+  finish(outcome: ControlOutcome): Promise<void>;
+  /** the request went to another node, which records it */
+  discard(): void;
+}
+
+/** run ids and workflow names are not sent: the action and outcome are */
+function buildControlInvocation(action: ControlAction): CommandInvocationData {
+  const commandPath = action === "method cancel"
+    ? ["model", "method", "cancel"]
+    : action === "cancel all"
+    ? ["cancel", "all"]
+    : ["workflow", action];
+  return {
+    command: commandPath[0],
+    subcommand: commandPath.slice(1).join(" "),
+    args: [],
+    optionKeys: [],
+    globalOptions: [],
+    commandPath,
+  };
+}
+
+export function createControlTelemetry(
+  action: ControlAction,
+  caller: ServeTelemetryCaller,
+  startedAt: Date = new Date(),
+): ControlTelemetry {
+  const service = getActiveTelemetryService();
+  let done = service === undefined;
+  return {
+    finish: async (outcome: ControlOutcome): Promise<void> => {
+      if (done || !service) return;
+      done = true;
+      await service
+        .forkForRun("api", caller.initiatedBy, serveFieldsFor(caller.client))
+        .recordOutcome(buildControlInvocation(action), startedAt, outcome);
+    },
+    discard: () => {
+      done = true;
     },
   };
 }

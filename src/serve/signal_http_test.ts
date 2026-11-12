@@ -30,6 +30,13 @@ import { checkIpBurst, resetRateLimitState } from "./rate_limiter.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
+import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
+import type { TelemetryEntry } from "../domain/telemetry/telemetry_entry.ts";
+import type { TelemetryRepository } from "../domain/telemetry/repositories.ts";
+import {
+  clearActiveTelemetryService,
+  setActiveTelemetryService,
+} from "../cli/telemetry_integration.ts";
 
 const WAIT_ID = "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90";
 
@@ -584,4 +591,100 @@ Deno.test("handleSignalHttpRequest: a request without a token does not count tow
   }
   assertEquals(checkIpBurst(sourceIp).allowed, true);
   resetRateLimitState();
+});
+
+async function withRecordedTelemetry(
+  fn: (saved: TelemetryEntry[]) => Promise<void>,
+): Promise<void> {
+  const saved: TelemetryEntry[] = [];
+  const repository = {
+    save: (entry: TelemetryEntry) => {
+      saved.push(entry);
+      return Promise.resolve();
+    },
+  } as unknown as TelemetryRepository;
+  setActiveTelemetryService(new TelemetryService(repository, "1.0.0"));
+  try {
+    await fn(saved);
+  } finally {
+    clearActiveTelemetryService();
+  }
+}
+
+function delegatedDeps(): SignalHttpDeps {
+  const base = deps();
+  return {
+    ...base,
+    authenticate: () =>
+      Promise.resolve({
+        ok: true as const,
+        principalId: "user:caller",
+        collectives: [],
+        groups: [],
+        tokenName: "slack",
+        tokenCreatedAt: "2026-01-01T00:00:00.000Z",
+        client: "integration:acme-slack",
+        delegation: "d-7c1e",
+      }),
+  };
+}
+
+Deno.test("handleSignalHttpRequest: a refused signal is counted once with its code, the client kind and the integration id", async () => {
+  resetRateLimitState();
+  await withRecordedTelemetry(async (saved) => {
+    const response = await handleSignalHttpRequest(
+      request({ token: "any.secret", body: "{not json" }),
+      { waitId: WAIT_ID },
+      "203.0.113.4",
+      delegatedDeps(),
+    );
+    assertEquals(response.status, 400);
+    await response.body?.cancel();
+
+    assertEquals(saved.length, 1);
+    const data = saved[0].toData();
+    assertEquals(data.invocation.commandPath, ["workflow", "signal"]);
+    assertEquals(data.result, {
+      status: "user_error",
+      errorType: "invalid_request",
+      exitCode: 1,
+    });
+    assertEquals(data.client, "integration");
+    assertEquals(data.integrationId, "acme-slack");
+    assertEquals(JSON.stringify(data).includes("d-7c1e"), false);
+  });
+});
+
+Deno.test("handleSignalHttpRequest: an unauthenticated signal and one a follower passes on are not counted there", async () => {
+  resetRateLimitState();
+  await withRecordedTelemetry(async (saved) => {
+    const anonymous = await handleSignalHttpRequest(
+      request(),
+      { waitId: WAIT_ID },
+      "203.0.113.4",
+      delegatedDeps(),
+    );
+    assertEquals(anonymous.status, 401);
+    await anonymous.body?.cancel();
+
+    const follower = delegatedDeps();
+    follower.ctx.followerGate = {
+      role: "follower",
+      leader: () => ({
+        instanceId: "lead",
+        fence: 2,
+        since: "2026-10-28T12:00:00.000Z",
+      }),
+      isStale: () => false,
+    };
+    const forwarded = await handleSignalHttpRequest(
+      request({ token: "any.secret" }),
+      { waitId: WAIT_ID },
+      "203.0.113.5",
+      follower,
+    );
+    await forwarded.body?.cancel();
+
+    assertEquals(saved.length, 0);
+  });
 });

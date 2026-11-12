@@ -112,13 +112,28 @@ function buildTree() {
     )
     .command(
       "access",
-      new Command().command(
-        "group",
-        new Command().command(
-          "create",
-          new Command().arguments("<name:string>").action(noop),
+      new Command()
+        .command(
+          "group",
+          new Command().command(
+            "create",
+            new Command().arguments("<name:string>").action(noop),
+          ),
+        )
+        .command(
+          "integration",
+          new Command().command(
+            "revoke",
+            new Command().arguments("<id:string>").action(noop),
+          ),
+        )
+        .command(
+          "delegation",
+          new Command().command(
+            "end",
+            new Command().arguments("<id:string>").action(noop),
+          ),
         ),
-      ),
     )
     .command(
       "config",
@@ -424,6 +439,24 @@ Deno.test("resolveTelemetryInvocation: access group names are redacted even as a
   ]);
   assertEquals(result.commandPath, ["access", "group", "create"]);
   assertEquals(result.args, ["create", REDACTED]);
+});
+
+Deno.test("resolveTelemetryInvocation: an integration id is sent and a delegation id is not", () => {
+  const integration = resolveTelemetryInvocation(buildTree(), [
+    "access",
+    "integration",
+    "revoke",
+    "acme-slack",
+  ]);
+  assertEquals(integration.args, ["revoke", "acme-slack"]);
+
+  const delegation = resolveTelemetryInvocation(buildTree(), [
+    "access",
+    "delegation",
+    "end",
+    "d-4f2a",
+  ]);
+  assertEquals(delegation.args, ["end", REDACTED]);
 });
 
 Deno.test("resolveTelemetryInvocation: a value typed as an option is not recorded as a key", () => {

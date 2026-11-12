@@ -2743,7 +2743,57 @@ export function isServerFailureCode(code: string): boolean {
   return code.endsWith("_failed") && code !== "validation_failed";
 }
 
+// the first error code each watched request answered with
+const watchedRequestErrors = new WeakMap<
+  WebSocket,
+  Map<string, string | undefined>
+>();
+
+/** reading the code also stops the watch */
+export function watchRequestError(
+  socket: WebSocket,
+  id: string,
+): () => string | undefined {
+  let watched = watchedRequestErrors.get(socket);
+  if (!watched) {
+    watched = new Map();
+    watchedRequestErrors.set(socket, watched);
+  }
+  watched.set(id, undefined);
+  return () => {
+    const code = watched.get(id);
+    watched.delete(id);
+    return code;
+  };
+}
+
 export function sendError(
+  socket: WebSocket,
+  id: string,
+  code: string,
+  message: string,
+  details?: unknown,
+  retryAfterSeconds?: number,
+): void {
+  const watched = watchedRequestErrors.get(socket);
+  if (watched?.has(id) && watched.get(id) === undefined) watched.set(id, code);
+  sendErrorFrame(socket, id, code, message, details, retryAfterSeconds);
+}
+
+/**
+ * a refusal of a message that reused an id another request owns: that
+ * request's watch keeps its own outcome
+ */
+export function sendUnownedError(
+  socket: WebSocket,
+  id: string,
+  code: string,
+  message: string,
+): void {
+  sendErrorFrame(socket, id, code, message);
+}
+
+function sendErrorFrame(
   socket: WebSocket,
   id: string,
   code: string,

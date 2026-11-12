@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ReportedIntegration } from "../domain/access/integration_directory.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { InstanceNotRegisteredError } from "./oauth_client.ts";
@@ -40,7 +41,11 @@ export interface ClubHeartbeatDeps {
     oauthClientId: string,
     instanceId: string,
     signal: AbortSignal,
+    integrations?: readonly ReportedIntegration[],
   ): Promise<{ heartbeatCount: number }>;
+
+  /** undefined leaves the field out, so swamp-club keeps what it stored */
+  reportedIntegrations?(): readonly ReportedIntegration[] | undefined;
 
   /** registers this process again, with the request it registered at boot */
   reregister(accessToken: string, signal: AbortSignal): Promise<unknown>;
@@ -51,6 +56,8 @@ export class ClubHeartbeatService {
   #timer: ReturnType<typeof setInterval> | null = null;
   #disposed = false;
   readonly #inFlight = new Set<AbortController>();
+  #extraBeat: Promise<void> | null = null;
+  #beatAgain = false;
 
   constructor(deps: ClubHeartbeatDeps) {
     this.#deps = deps;
@@ -66,16 +73,39 @@ export class ClubHeartbeatService {
       },
     );
     this.#timer = runDetached(() =>
-      setInterval(() => {
-        this.#beat().catch((err) => {
-          if (this.#disposed) return;
-          logger.warn("Club heartbeat failed: {error}", {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }, this.#deps.intervalMs)
+      // through beatNow's queue, so an hourly beat never lands after a newer list
+      setInterval(() => this.beatNow(), this.#deps.intervalMs)
     );
     Deno.unrefTimer(this.#timer);
+  }
+
+  /** an extra beat now; calls while one is running coalesce into one more */
+  beatNow(): void {
+    if (this.#disposed) return;
+    if (this.#extraBeat !== null) {
+      this.#beatAgain = true;
+      return;
+    }
+    this.#extraBeat = this.#extraBeats().finally(() => {
+      this.#extraBeat = null;
+    });
+  }
+
+  async #extraBeats(): Promise<void> {
+    do {
+      this.#beatAgain = false;
+      await this.#beat().catch((err) => {
+        if (this.#disposed) return;
+        logger.warn("Club heartbeat failed: {error}", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } while (this.#beatAgain && !this.#disposed);
+  }
+
+  /** resolves once a queued beat has finished */
+  async settled(): Promise<void> {
+    await this.#extraBeat;
   }
 
   stop(): void {
@@ -115,6 +145,7 @@ export class ClubHeartbeatService {
           this.#deps.oauthClientId,
           this.#deps.instanceId,
           callSignal(),
+          this.#deps.reportedIntegrations?.(),
         );
       } catch (err) {
         if (!(err instanceof InstanceNotRegisteredError)) throw err;

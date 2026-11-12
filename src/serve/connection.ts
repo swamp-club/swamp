@@ -18,6 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { principalToString } from "../domain/access/principal.ts";
+import {
+  type ControlRecording,
+  recordControl,
+  workflowControlActionOf,
+} from "./control_telemetry.ts";
+import { createControlTelemetry } from "./telemetry.ts";
 import { DelegationPhaseSchema } from "../domain/models/access/delegation_model.ts";
 import {
   SERVE_CAPABILITY_DATA_ARGUMENTS,
@@ -243,6 +250,7 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  sendUnownedError,
   setConnectionTeardown,
   subscribeUntilDetach,
   withGcMutex,
@@ -1985,6 +1993,20 @@ export function handleMessage(
     return;
   }
 
+  const caller = {
+    initiatedBy: principal ? principalToString(principal) : "ghost",
+    client: getConnectionClient(socket),
+  };
+  const controlAction = workflowControlActionOf(request.type);
+  // these refusals come before the request owns its id, so they leave its watch alone
+  const refuseControl = (code: string) =>
+    controlAction === undefined
+      ? undefined
+      : createControlTelemetry(controlAction, caller).finish({
+        status: "user_error",
+        errorType: code,
+      });
+
   if (request.type === "cancel") {
     const pendingController = activeRequests.get(request.id);
     if (pendingController) {
@@ -2006,13 +2028,23 @@ export function handleMessage(
     const cancelController = new AbortController();
     activeRequests.set(request.id, cancelController);
 
+    const cancelControl = recordControl(
+      socket,
+      request.id,
+      run.kind === "method-run" ? "method cancel" : "cancel",
+      caller,
+    );
     const cancelTask = handleCancelRun(
       socket,
       ctx,
       request.id,
       run,
       principal,
-    );
+      cancelControl,
+    ).catch(async (error: unknown) => {
+      await cancelControl.fail();
+      throw error;
+    });
     cancelTask
       .catch((error: unknown) => {
         logger.error("Unhandled request error for {requestId}: {error}", {
@@ -2025,27 +2057,30 @@ export function handleMessage(
   }
 
   if (activeRequests.size >= MAX_ACTIVE_REQUESTS) {
-    sendError(
+    sendUnownedError(
       socket,
       request.id,
       "too_many_requests",
       `Too many concurrent requests (limit: ${MAX_ACTIVE_REQUESTS}); wait for active requests to complete`,
     );
-    return;
+    return refuseControl("too_many_requests");
   }
 
   if (activeRequests.has(request.id)) {
-    sendError(
+    sendUnownedError(
       socket,
       request.id,
       "duplicate_id",
       `Request id '${request.id}' is already active`,
     );
-    return;
+    return refuseControl("duplicate_id");
   }
 
   const controller = new AbortController();
   activeRequests.set(request.id, controller);
+  const control = controlAction === undefined
+    ? undefined
+    : recordControl(socket, request.id, controlAction, caller);
 
   if (
     ctx.auditEmitter && ctx.auditFailOpen === false &&
@@ -2060,7 +2095,7 @@ export function handleMessage(
       "Request rejected: audit subsystem cannot durably record events (fail-secure mode)",
     );
     activeRequests.delete(request.id);
-    return;
+    return control?.settle();
   }
 
   if (
@@ -2081,7 +2116,7 @@ export function handleMessage(
       ).allowed
     ) {
       activeRequests.delete(request.id);
-      return;
+      return control?.settle();
     }
   }
 
@@ -2103,6 +2138,7 @@ export function handleMessage(
       () => activeRequests.delete(request.id),
     )
   ) {
+    control?.discard();
     return;
   }
   if (notLeader !== undefined) {
@@ -2115,7 +2151,7 @@ export function handleMessage(
       leader !== undefined ? { leader } : undefined,
     );
     activeRequests.delete(request.id);
-    return;
+    return control?.settle();
   }
 
   function auditOpts(
@@ -4524,6 +4560,8 @@ export function handleMessage(
     }
   }
 
+  if (control) task = settledWithControl(task, control);
+
   // settles once the request is answered and never rejects
   return task
     .catch((error: unknown) => {
@@ -4535,12 +4573,26 @@ export function handleMessage(
     .finally(() => activeRequests.delete(request.id));
 }
 
+async function settledWithControl(
+  task: Promise<void>,
+  control: ControlRecording,
+): Promise<void> {
+  try {
+    await task;
+  } catch (error) {
+    await control.fail();
+    throw error;
+  }
+  await control.settle();
+}
+
 async function handleCancelRun(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
   run: import("./active_run_registry.ts").ActiveRun,
   principal: Principal | null,
+  control: ControlRecording,
 ): Promise<void> {
   const resourceKind = run.kind === "method-run" ? "model" : "workflow";
   const resolution = await resolveRunResource(
@@ -4564,6 +4616,7 @@ async function handleCancelRun(
         "run_cancel_failed",
         sanitizeErrorForClient(resolution.error),
       );
+      await control.settle();
       return;
     }
     const cancelled = ctx.activeRunRegistry!.cancel(
@@ -4582,7 +4635,14 @@ async function handleCancelRun(
       outcome: cancelled ? "success" : "failure",
       detail: `${resourceKind}=${run.resourceName}`,
     });
+    await control.finish(
+      cancelled
+        ? { status: "success" }
+        : { status: "user_error", errorType: "run_not_cancelled" },
+    );
+    return;
   }
+  await control.finish({ status: "user_error", errorType: "forbidden" });
 }
 
 /**

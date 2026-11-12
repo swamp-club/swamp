@@ -584,6 +584,7 @@ export async function executeWorkflowWithLocks(
       workflow?.name ?? input.workflowIdOrName,
       {
         initiatedBy: options.initiatedBy,
+        client: input.client,
       },
     )
     : undefined;
