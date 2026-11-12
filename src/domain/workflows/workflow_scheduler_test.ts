@@ -126,7 +126,7 @@ function hhmm(iso: string): string {
   return iso.slice(11, 16);
 }
 
-Deno.test("WorkflowScheduler: a schedule armed in the repeated fall-back hour waits for its next slot and fires once", () => {
+Deno.test("WorkflowScheduler: a schedule armed in the repeated fall-back hour waits for its next slot and fires each once", () => {
   const { clock, scheduler, fires, record } = fakeScheduler(
     "2026-11-01T07:05:00Z",
     "America/Chicago",
@@ -137,11 +137,38 @@ Deno.test("WorkflowScheduler: a schedule armed in the repeated fall-back hour wa
   clock.advanceTo(new Date("2026-11-01T08:20:00Z"));
   scheduler.stop();
 
-  assertEquals(fires.map((f) => f.fireTime), [
-    "2026-11-01T08:00:00.000Z",
-    "2026-11-01T08:15:00.000Z",
+  assertEquals(fires.map((f) => hhmm(f.fireTime)), [
+    "07:15",
+    "07:30",
+    "07:45",
+    "08:00",
+    "08:15",
   ]);
   assertEquals(fires.map((f) => f.at), fires.map((f) => f.fireTime));
+});
+
+Deno.test("WorkflowScheduler: a second-level schedule fires every slot through the repeated fall-back hour", () => {
+  const { clock, scheduler, fires, record } = fakeScheduler(
+    "2026-11-01T06:50:00Z",
+    "America/Chicago",
+  );
+  scheduler.register(TEST_ID_1, "*/5 * * * * *");
+  scheduler.start(record);
+
+  clock.advanceTo(new Date("2026-11-01T08:00:10Z"));
+  scheduler.stop();
+
+  const expected: string[] = [];
+  for (
+    let t = Date.parse("2026-11-01T06:50:05Z");
+    t <= Date.parse("2026-11-01T08:00:10Z");
+    t += 5_000
+  ) {
+    expected.push(new Date(t).toISOString());
+  }
+  assertEquals(expected.length, 842);
+  assertEquals(fires.map((f) => f.fireTime), expected);
+  assertEquals(fires.map((f) => f.at), expected);
 });
 
 Deno.test("WorkflowScheduler: an ordinary hour fires each slot once", () => {
@@ -175,6 +202,10 @@ Deno.test("WorkflowScheduler: running through a fall-back fires a strictly incre
     "06:15",
     "06:30",
     "06:45",
+    "07:00",
+    "07:15",
+    "07:30",
+    "07:45",
     "08:00",
     "08:15",
   ]);
@@ -184,12 +215,23 @@ Deno.test("WorkflowScheduler: running through a fall-back fires a strictly incre
   london.scheduler.start(london.record);
   london.clock.advanceTo(new Date("2026-10-25T02:20:00Z"));
   london.scheduler.stop();
-  const times = london.fires.map((f) => Date.parse(f.fireTime));
-  assert(times.length > 0);
-  for (let i = 1; i < times.length; i++) assert(times[i] > times[i - 1]);
-  for (const fire of london.fires) {
-    assert(Date.parse(fire.at) >= Date.parse(fire.fireTime));
-  }
+  assertEquals(london.fires.map((f) => hhmm(f.fireTime)), [
+    "23:45",
+    "00:00",
+    "00:15",
+    "00:30",
+    "00:45",
+    "01:00",
+    "01:15",
+    "01:30",
+    "01:45",
+    "02:00",
+    "02:15",
+  ]);
+  assertEquals(
+    london.fires.map((f) => f.at),
+    london.fires.map((f) => f.fireTime),
+  );
 });
 
 Deno.test("WorkflowScheduler: a distant slot is waited for in steps of at most 30s and not fired early", () => {
