@@ -556,8 +556,11 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
+  // Off on every open connection before this node's sidecar starts on a copy
+  // a serve follower opened with the default (swamp-club#4679).
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3164",
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3118",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3191",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

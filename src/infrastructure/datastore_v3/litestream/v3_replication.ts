@@ -36,6 +36,7 @@ import {
 } from "./litestream_replicator.ts";
 import { defaultPrivateRoot } from "./replication_files.ts";
 import { v3ReplicaFor } from "../v3_datastore_binding.ts";
+import { stopAutoCheckpointAt } from "../sqlite_commit_store.ts";
 import { withSpan } from "../../tracing/tracer.ts";
 import { SERVE_REQUEST_SYNC_DEADLINE_MS } from "../serve_request_deadlines.ts";
 
@@ -147,6 +148,8 @@ export async function acquireV3Replication(
 ): Promise<ReplicationHandle | undefined> {
   const replica = v3ReplicaFor(datastorePath);
   if (replica === undefined) return undefined;
+  // before any sidecar starts on the file, whichever path starts it
+  stopAutoCheckpointAt(commitsDb);
   return await theReplicator().acquire({
     commitsDb,
     replica,

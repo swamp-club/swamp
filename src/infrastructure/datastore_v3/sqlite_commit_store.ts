@@ -51,7 +51,7 @@ import {
   type SQLInputValue,
   type StatementSync,
 } from "node:sqlite";
-import { dirname } from "@std/path";
+import { dirname, resolve } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { maxOf } from "../../domain/array_extrema.ts";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
@@ -601,7 +601,8 @@ export interface SqliteCommitStoreOptions {
    * Litestream 0.5.17 can lose its read lock after a sync request, and an
    * auto-checkpoint then restarts the WAL before Litestream has read its
    * newest frames: those writes never reach the replica, and every restore
-   * from that point fails SQLite's integrity check.
+   * from that point fails SQLite's integrity check. A store opened without
+   * it is switched by {@link stopAutoCheckpointAt} before a sidecar starts.
    */
   readonly replicated?: boolean;
   /**
@@ -731,6 +732,8 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #afterAppendWrites: ((commit: Commit) => void) | undefined;
   /** {@link SqliteCommitStoreOptions.follower}. */
   readonly #follower: boolean;
+  /** Its key in {@link storeConnections}. */
+  #connectionKey: string | undefined;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
   #rebuilds = 0;
@@ -896,8 +899,12 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     const snapshotInterval = options.snapshotInterval ??
       DEFAULT_SNAPSHOT_INTERVAL;
     requirePositive(snapshotInterval, "snapshotInterval");
-    return new SqliteCommitStore(
-      openCommitsDatabase(path, { replicated: options.replicated === true }),
+    const key = resolve(path);
+    const store = new SqliteCommitStore(
+      openCommitsDatabase(path, {
+        replicated: options.replicated === true ||
+          autoCheckpointOffAt.has(key),
+      }),
       cachedPartitions,
       snapshotInterval,
       options.groupCommit ?? true,
@@ -905,6 +912,14 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
       options.afterAppendWrites,
       options.follower === true,
     );
+    store.#connectionKey = key;
+    let connections = storeConnections.get(key);
+    if (connections === undefined) {
+      connections = new Set();
+      storeConnections.set(key, connections);
+    }
+    connections.add(store.#db);
+    return store;
   }
 
   /**
@@ -3112,12 +3127,47 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     this.#closed = true;
     await this.#queue;
     this.#cache.clear();
+    const key = this.#connectionKey;
+    const connections = key === undefined
+      ? undefined
+      : storeConnections.get(key);
+    connections?.delete(this.#db);
+    if (key !== undefined && connections?.size === 0) {
+      storeConnections.delete(key);
+    }
     this.#db.close();
   }
 
   #assertOpen(): void {
     if (this.#closed) throw closedError();
   }
+}
+
+/** The connection of each open store, by its `commits.db` path. */
+const storeConnections = new Map<string, Set<DatabaseSync>>();
+
+/** Paths {@link stopAutoCheckpointAt} named: stores open there with it off. */
+const autoCheckpointOffAt = new Set<string>();
+
+/**
+ * Turns auto-checkpoint off on every connection open stores hold to the
+ * `commits.db` at `path`, and on every store this process opens there
+ * later. Called before a Litestream sidecar starts on the file
+ * ({@link SqliteCommitStoreOptions.replicated}): a serve follower's copy,
+ * which no sidecar of its own replicates, keeps SQLite's default until then.
+ * Synchronous, so no commit lands between two connections' switches.
+ */
+export function stopAutoCheckpointAt(path: string): void {
+  const key = resolve(path);
+  autoCheckpointOffAt.add(key);
+  for (const db of storeConnections.get(key) ?? []) {
+    db.exec("PRAGMA wal_autocheckpoint=0");
+  }
+}
+
+/** The connections open stores hold to the `commits.db` at `path`. For tests. */
+export function storeConnectionsAt(path: string): readonly DatabaseSync[] {
+  return [...storeConnections.get(resolve(path)) ?? []];
 }
 
 /**

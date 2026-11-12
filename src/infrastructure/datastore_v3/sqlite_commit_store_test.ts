@@ -62,6 +62,8 @@ import {
   ObservedBaseStaging,
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
+  stopAutoCheckpointAt,
+  storeConnectionsAt,
 } from "./sqlite_commit_store.ts";
 
 const NEVER_OPENED = join("never", "created", "commits.db");
@@ -208,6 +210,37 @@ Deno.test("SqliteCommitStore.highWaterMark: is the compaction point once every c
     assertEquals(store.highWaterMark().commit?.seq, 3);
     await store.compactHistory(3);
     assertEquals(store.highWaterMark(), { cursor: 3 });
+  });
+});
+
+Deno.test("stopAutoCheckpointAt: turns auto-checkpoint off on every open store at the path and on stores opened there later, never at another path (swamp-club#4679)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const other = join(dir, "other.db");
+    const autoCheckpoints = (at: string) =>
+      storeConnectionsAt(at).map((db) =>
+        (db.prepare("PRAGMA wal_autocheckpoint").get() as {
+          wal_autocheckpoint: number;
+        }).wal_autocheckpoint
+      );
+    const first = SqliteCommitStore.open(path);
+    const second = SqliteCommitStore.open(path);
+    const elsewhere = SqliteCommitStore.open(other);
+    let later: SqliteCommitStore | undefined;
+    try {
+      assertEquals(autoCheckpoints(path), [1000, 1000]);
+      stopAutoCheckpointAt(path);
+      assertEquals(autoCheckpoints(path), [0, 0]);
+      later = SqliteCommitStore.open(path);
+      assertEquals(autoCheckpoints(path), [0, 0, 0]);
+      assertEquals(autoCheckpoints(other), [1000]);
+    } finally {
+      await first.close();
+      await second.close();
+      await later?.close();
+      await elsewhere.close();
+    }
+    assertEquals(storeConnectionsAt(path), []);
   });
 });
 

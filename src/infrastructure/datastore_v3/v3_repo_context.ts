@@ -352,6 +352,12 @@ const serveHolds = new Map<
  */
 const serveTeams = new Map<string, () => ServeLeader | undefined>();
 
+/**
+ * copies a serve follower opened, by handle key: no sidecar of this process
+ * replicates them until acquireV3Replication starts one
+ */
+const serveFollowerCopies = new Set<string>();
+
 export function enableV3ServeTeamMode(
   datastorePath: string,
   leader: () => ServeLeader | undefined,
@@ -460,6 +466,7 @@ export function v3DatastoreFor(
         ? { directories: config.directories }
         : {}),
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
+      ...(serveFollowerCopies.has(key) ? { serveFollower: true } : {}),
       writerFence: () => v3WriterFence(config.path),
       replicatedMark: () =>
         v3ReplicatesAt(config.path)
@@ -1064,6 +1071,7 @@ async function followV3Datastore(
   repoDir: string,
   ownerCheck: V3OwnerCheck | undefined,
 ): Promise<void> {
+  serveFollowerCopies.add(handleKey(repoDir, config));
   await ensureV3CopyCurrent(repoDir, config, "read");
   const handle = v3DatastoreFor(repoDir, config);
   const refusal = claimRefusal(
@@ -1954,6 +1962,7 @@ export async function closeV3Datastores(
   commandStartMarks.clear();
   serveHolds.clear();
   serveTeams.clear();
+  serveFollowerCopies.clear();
   // offline mode lasts the command; json mode says what it queued now, after
   // its result
   reportQueuedOffline();
