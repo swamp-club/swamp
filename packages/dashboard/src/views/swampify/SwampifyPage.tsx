@@ -29,7 +29,6 @@ import type { SwampifyRow } from "../../client/swampify.ts";
 import { LoadError } from "../../components/LoadError.tsx";
 import type { SwampifyCandidateSet } from "../../lib/agent_sessions/swampify.ts";
 import {
-  consideredById,
   formatShortDay,
   harnessName,
   offerView,
@@ -82,7 +81,7 @@ function Assessed({ set }: { set: SwampifyCandidateSet }) {
 type Tab = "candidates" | "built";
 
 const TABS: ReadonlyArray<readonly [Tab, string]> = [
-  ["candidates", "To swampify"],
+  ["candidates", "Candidates"],
   ["built", "Built"],
 ];
 
@@ -90,8 +89,10 @@ export interface SwampifyPageProps {
   readonly state: SwampifyState;
   readonly records: ReadonlyMap<string, ComparisonRecord>;
   readonly onLoadComparison: (row: SwampifyRow) => void;
-  /** Tests render an option's review or open rows from the start. */
-  readonly initialOptionId?: string;
+  /** The option whose review the address shows, or none for the list. */
+  readonly optionId: string | null;
+  readonly onOpenOption: (optionId: string | null) => void;
+  /** Tests open a row from the start. */
   readonly initialOpen?: string;
   readonly initialTab?: Tab;
 }
@@ -102,9 +103,7 @@ export interface SwampifyPageProps {
  */
 export function SwampifyPage(props: SwampifyPageProps) {
   const { state } = props;
-  const [optionId, setOptionId] = useState<string | null>(
-    props.initialOptionId ?? null,
-  );
+  const { optionId, onOpenOption } = props;
   const [open, setOpen] = useState<string | null>(props.initialOpen ?? null);
   const [tab, setTab] = useState<Tab>(props.initialTab ?? "candidates");
   const setRow = state.setRow.value;
@@ -117,7 +116,6 @@ export function SwampifyPage(props: SwampifyPageProps) {
     [offer, set, setRow],
   );
   const options = useMemo(() => optionByCandidate(offer), [offer]);
-  const considered = useMemo(() => consideredById(offer), [offer]);
   const comparisons = state.comparisons.value;
   const built = useMemo(() => builtOptions(view, comparisons), [
     view,
@@ -134,11 +132,16 @@ export function SwampifyPage(props: SwampifyPageProps) {
         comparison={comparisons.get(selected.option.id)}
         records={props.records}
         onLoadComparison={props.onLoadComparison}
-        onBack={() => setOptionId(null)}
+        onBack={() => onOpenOption(null)}
       />
     );
   }
 
+  const toBuild = view ? view.options.filter((o) => !built.includes(o)) : [];
+  // Once there is an offer, only the candidates it can build are listed.
+  const listed = set
+    ? view ? set.candidates.filter((c) => options.has(c.id)) : set.candidates
+    : [];
   const summary = setRow ? candidateSetSummaryOf(setRow) : undefined;
   const fullness = set ? setFullness(set, summary) : null;
   const errors: ReadonlyArray<readonly [string, string | null, () => void]> = [
@@ -199,8 +202,17 @@ export function SwampifyPage(props: SwampifyPageProps) {
             }}
           >
             {label}
+            {key === "candidates" && toBuild.length > 0 && (
+              <span className="sw-tab-count sw-tab-count-todo">
+                {toBuild.length}
+                <span className="sw-sr-only">to build</span>
+              </span>
+            )}
             {key === "built" && built.length > 0 && (
-              <span className="sw-tab-count">{built.length}</span>
+              <span className="sw-tab-count">
+                {built.length}
+                <span className="sw-sr-only">built</span>
+              </span>
             )}
           </button>
         ))}
@@ -233,8 +245,8 @@ export function SwampifyPage(props: SwampifyPageProps) {
             {view && (
               <OptionCards
                 view={view}
-                options={view.options.filter((o) => !built.includes(o))}
-                onOpen={setOptionId}
+                options={toBuild}
+                onOpen={onOpenOption}
               />
             )}
             {!view && set && set.candidates.length > 0 &&
@@ -261,16 +273,14 @@ export function SwampifyPage(props: SwampifyPageProps) {
                 repeated often enough to list.
               </div>
             )}
-            {set && set.candidates.length > 0 && (
+            {set && listed.length > 0 && (
               <CandidatesTable
-                candidates={set.candidates}
+                candidates={listed}
                 open={open}
                 onToggle={(id) =>
                   setOpen((current) => current === id ? null : id)}
                 options={options}
-                considered={considered}
-                offered={view !== null}
-                onReview={setOptionId}
+                onReview={onOpenOption}
                 about={<Assessed set={set} />}
               />
             )}
@@ -295,7 +305,6 @@ export function SwampifyPage(props: SwampifyPageProps) {
               comparisons={comparisons}
               records={props.records}
               onLoadComparison={props.onLoadComparison}
-              onOpen={setOptionId}
             />
           </div>
         )}

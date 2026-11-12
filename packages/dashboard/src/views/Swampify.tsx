@@ -20,11 +20,12 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 import { useComparisonRecords, useSwampify } from "../client/useSwampify.ts";
+import { navigateTo } from "../hooks/useRouter.ts";
 import { SwampifyPage } from "./swampify/SwampifyPage.tsx";
 import "../styles/swampify.css";
 
 /** The page wired to serve: reads its items and comparison bodies itself. */
-export function Swampify() {
+export function Swampify({ optionId }: { optionId: string | null }) {
   const state = useSwampify();
   const { records, load } = useComparisonRecords();
   return (
@@ -32,6 +33,12 @@ export function Swampify() {
       state={state}
       records={records}
       onLoadComparison={(row) => void load(row)}
+      optionId={optionId}
+      onOpenOption={(id) =>
+        navigateTo({
+          view: "swampify",
+          detail: id === null ? null : { kind: "swampifyOption", optionId: id },
+        })}
     />
   );
 }

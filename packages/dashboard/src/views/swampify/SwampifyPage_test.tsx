@@ -49,6 +49,7 @@ import {
 } from "./swampify_fixtures.ts";
 import { SwampifyPage } from "./SwampifyPage.tsx";
 import { OptionReview } from "./SwampifyReview.tsx";
+import { builtOptions, BuiltPane } from "./SwampifyBuilt.tsx";
 import { offerView } from "../../lib/swampify_view.ts";
 
 const noop = () => {};
@@ -123,7 +124,8 @@ function render(
       records={records}
       onLoadComparison={noop}
       initialOpen={open}
-      initialOptionId={optionId}
+      optionId={optionId ?? null}
+      onOpenOption={noop}
       initialTab={tab}
     />,
   );
@@ -192,7 +194,7 @@ Deno.test("SwampifyPage: a set with no offer shows its window, a note and ranked
   assertStringIncludes(html, 'title="~/private">1 path</span>.');
   assertStringIncludes(html, "Your agent hasn&#x27;t made its offer yet");
   assertStringIncludes(html, "release the docs site and post the changelog");
-  assert(!html.includes("Your agent suggests"));
+  assert(!html.includes("Top candidates"));
   // median weighted tokens and the failure rate, as stored
   assertStringIncludes(html, ">44.4K<");
   assertStringIncludes(html, ">22%<");
@@ -203,7 +205,7 @@ const CARD_NAME = (name: string) => `<span class="sw-option-name">${name}<`;
 Deno.test("SwampifyPage: the offer leads as option cards, in each state, built ones aside", () => {
   for (const kind of ["offered", "picked", "built", "declined"] as const) {
     const html = render(state({ offer: fixtureOffer(kind) }));
-    assert(html.indexOf("Your agent suggests") < html.indexOf("<table"));
+    assert(html.indexOf("Top candidates") < html.indexOf("<table"));
     assertStringIncludes(
       html,
       "Claude Code (claude-sonnet-5-5) read 18 example sessions for 6 candidates and offered 2 options.",
@@ -212,13 +214,13 @@ Deno.test("SwampifyPage: the offer leads as option cards, in each state, built o
       html.includes(CARD_NAME("Release the docs site")),
       kind !== "built",
     );
-    assertStringIncludes(html, "Becomes a behavior using @acme/ci-report");
-    // the card's button looks like the open row's: same icon, same words
+    assertStringIncludes(html, "Create a behavior using @acme/ci-report<");
+    assert(!html.includes("one in five runs fails"));
+    // the card's button reads like the open row's: words, then the arrow
     assertStringIncludes(
       html,
-      '<span class="sw-icon-btn" aria-hidden="true"><svg',
+      'Review and build<span class="sw-icon-btn" aria-hidden="true"><svg',
     );
-    assertStringIncludes(html, "</span>Review and build</span>");
     assertEquals(html.includes(">Picked</span>"), kind === "picked");
     assertEquals(html.includes(">Built</span>"), false);
     assertEquals(
@@ -228,32 +230,46 @@ Deno.test("SwampifyPage: the offer leads as option cards, in each state, built o
   }
 });
 
-Deno.test("SwampifyPage: candidates show where the offer placed them", () => {
+Deno.test("SwampifyPage: with an offer, only candidates it can build are listed, with no placement column", () => {
   const html = render(state({ offer: fixtureOffer("offered") }));
-  assertStringIncludes(html, "In “Release the docs site”");
-  assertStringIncludes(html, "Left out: low value");
-  assertStringIncludes(html, "Merged into #1");
-  assertStringIncludes(html, "Left out: not a chore");
+  const table = html.slice(html.indexOf("<table"));
+  for (
+    const label of ["release the docs site", "summarise yesterday", "make lint"]
+  ) {
+    assertStringIncludes(table, label);
+  }
+  for (
+    const label of [
+      "kubectl run directly",
+      "publish the docs and announce it",
+      "what does this error mean",
+    ]
+  ) {
+    assert(!table.includes(label), label);
+  }
+  assertStringIncludes(html, 'Candidates <span class="sw-muted">· 3, ranked');
+  assert(!html.includes("In the offer"));
+  assert(!html.includes("Left out"));
+  assertEquals(table.match(/<th /g)?.length, 7);
 });
 
-Deno.test("SwampifyPage: only an open row in an option gets the review button", () => {
-  const ROW_BUTTON = /<button type="button" class="sw-icon-btn"/g;
+Deno.test("SwampifyPage: before an offer every candidate is listed, with no action", () => {
+  const html = render(state(), { open: CANDIDATE_IDS[0] });
+  assertStringIncludes(html, "what does this error mean");
+  assert(!html.includes("Review and build"));
+});
+
+Deno.test("SwampifyPage: an open row names its option and has Review and build", () => {
   const closed = render(state({ offer: fixtureOffer("offered") }));
-  assert(!ROW_BUTTON.test(closed));
-  const inOption = render(state({ offer: fixtureOffer("offered") }), {
+  assert(!closed.includes("sw-detail-action"));
+  const html = render(state({ offer: fixtureOffer("offered") }), {
     open: CANDIDATE_IDS[0],
   });
-  assertEquals(inOption.match(ROW_BUTTON)?.length, 1);
+  assertStringIncludes(html, "Part of <strong>Release the docs site</strong>");
   assertStringIncludes(
-    inOption,
-    'aria-label="Review and build Release the docs site"',
+    html,
+    '<button type="button" class="sw-cta sw-cta-btn">Review and build<span class="sw-icon-btn"',
   );
-  const leftOut = render(state({ offer: fixtureOffer("offered") }), {
-    open: CANDIDATE_IDS[3],
-  });
-  assert(!leftOut.match(ROW_BUTTON));
-  const noOffer = render(state(), { open: CANDIDATE_IDS[0] });
-  assert(!noOffer.match(ROW_BUTTON));
 });
 
 Deno.test("SwampifyPage: an open row shows its excerpts, ranges and where it was seen", () => {
@@ -303,7 +319,7 @@ Deno.test("SwampifyPage: a skipped offer shows the note, never content", () => {
     },
   }));
   assertStringIncludes(html, "This offer was skipped, not valid");
-  assert(!html.includes("Your agent suggests"));
+  assert(!html.includes("Top candidates"));
   assert(!html.includes("hasn&#x27;t made its offer"));
 });
 
@@ -320,12 +336,15 @@ Deno.test("OptionReview: shows what swamp would build and the evidence", () => {
   const html = review(fixtureOffer("offered"));
   assertStringIncludes(html, "Release the docs site");
   assertStringIncludes(html, "one in five runs fails");
-  assertStringIncludes(html, "A workflow, in these steps:");
+  assertStringIncludes(html, "Create a workflow, in these steps:");
   assertStringIncludes(html, "<li>publish it</li>");
   assertStringIncludes(html, "It stands for 2 candidates:");
   assertStringIncludes(html, "release the docs site and post the changelog");
   assertStringIncludes(html, "Hand it to your agent");
   assertStringIncludes(html, "Copy brief");
+  // building and handing off come first, the evidence after
+  assert(html.indexOf("Copy brief") < html.indexOf("The evidence"));
+  assert(html.indexOf("What swamp would build") < html.indexOf("Copy brief"));
 });
 
 Deno.test("OptionReview: the brief records the pick and leaves out labels and excerpts", () => {
@@ -435,7 +454,7 @@ Deno.test("SwampifyPage: a limited comparison list says so on Built", () => {
   assertStringIncludes(html, "More comparisons exist than this page reads");
 });
 
-Deno.test("SwampifyPage: To swampify comes first; Built holds what was built, with its comparison", () => {
+Deno.test("SwampifyPage: Candidates comes first with a to-build count; Built lists what was built", () => {
   const s = state({
     offer: fixtureOffer("built"),
     comparisons: new Map([[OPTION_IDS[0], comparisonRow]]),
@@ -443,25 +462,49 @@ Deno.test("SwampifyPage: To swampify comes first; Built holds what was built, wi
   const first = render(s);
   assertStringIncludes(
     first,
-    'aria-selected="true" aria-controls="sw-panel-candidates" tabindex="0" class="sw-tab active">To swampify<',
+    'class="sw-tab active">Candidates<span class="sw-tab-count sw-tab-count-todo">1<span class="sw-sr-only">to build</span>',
   );
   assertStringIncludes(
     first,
-    'class="sw-tab">Built<span class="sw-tab-count">1</span>',
+    'class="sw-tab">Built<span class="sw-tab-count">1<span class="sw-sr-only">built</span>',
   );
-  assert(!first.includes("Built as the"));
 
   const built = render(s, { tab: "built" });
   assertStringIncludes(built, 'id="sw-panel-built"');
-  assertStringIncludes(built, "Release the docs site");
   assertStringIncludes(
     built,
-    "Built as the workflow <code>release-docs</code> on Nov 10",
+    '<span class="sw-built-name">Release the docs site</span>',
   );
-  assertStringIncludes(built, "Show comparison");
-  assertStringIncludes(built, "Open its review");
+  assertStringIncludes(
+    built,
+    "workflow <code>release-docs</code> · built Nov 10",
+  );
+  assertStringIncludes(built, 'aria-expanded="false"');
+  assertStringIncludes(built, "Run <span");
+  assert(!built.includes("Open its review"));
   assert(!built.includes("Nightly failed-build summary"));
   assert(!built.includes("<table"));
+});
+
+Deno.test("BuiltPane: an open row shows its comparison body", () => {
+  const offer = fixtureOffer("built");
+  const set = fixtureCandidateSet();
+  const view = offerView(offer, set, set.generatedAt);
+  const html = renderToStaticMarkup(
+    <BuiltPane
+      view={view}
+      options={builtOptions(view, new Map([[OPTION_IDS[0], comparisonRow]]))}
+      comparisons={new Map([[OPTION_IDS[0], comparisonRow]])}
+      records={new Map([[
+        comparisonKey(comparisonRow),
+        read({ kind: "record", record: comparison }),
+      ]])}
+      onLoadComparison={noop}
+      initialOpen={OPTION_IDS[0]}
+    />,
+  );
+  assertStringIncludes(html, 'aria-expanded="true"');
+  assertStringIncludes(html, "Past runs");
 });
 
 Deno.test("SwampifyPage: Built says so when nothing is built yet", () => {
@@ -469,10 +512,10 @@ Deno.test("SwampifyPage: Built says so when nothing is built yet", () => {
     tab: "built",
   });
   assertStringIncludes(html, "Nothing built yet");
-  assert(!html.includes("sw-tab-count"));
+  assert(!html.includes('<span class="sw-tab-count">'));
 });
 
-Deno.test("SwampifyPage: when every option is built, To swampify says so", () => {
+Deno.test("SwampifyPage: when every option is built, Candidates says so", () => {
   const offer = fixtureOffer("built");
   const html = render(
     state({

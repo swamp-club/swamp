@@ -530,6 +530,20 @@ Deno.test("parseRoute: schedule detail of a scoped workflow", () => {
   });
 });
 
+Deno.test("parseRoute: a Swampify option's review has its own path, under Swampify", () => {
+  const state = {
+    view: "swampify" as const,
+    detail: { kind: "swampifyOption" as const, optionId: "a1b2c3d4" },
+  };
+  assertEquals(buildPath(state), "/dashboard/swampify/options/a1b2c3d4");
+  assertEquals(parseRoute("/dashboard/swampify/options/a1b2c3d4"), state);
+  assertEquals(parseRoute("/dashboard/swampify/options"), {
+    view: "swampify",
+    detail: null,
+  });
+  assertEquals(parentOf(state.detail), null);
+});
+
 Deno.test("parseRoute: webhook detail decodes the route's slashes", () => {
   assertEquals(parseRoute("/dashboard/webhooks/%2Fhooks%2Fgithub-push"), {
     view: "webhooks",
@@ -808,6 +822,7 @@ const detailArb: fc.Arbitrary<NonNullable<DetailView>> = fc.oneof(
   }),
   fc.record({ kind: fc.constant("schedule" as const), workflowName: name }),
   fc.record({ kind: fc.constant("webhook" as const), route: name }),
+  fc.record({ kind: fc.constant("swampifyOption" as const), optionId: name }),
 );
 
 const routeArb: fc.Arbitrary<RouteState> = fc.oneof(

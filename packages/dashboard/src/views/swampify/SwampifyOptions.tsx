@@ -19,7 +19,10 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import type { SwampifyCandidate } from "../../lib/agent_sessions/swampify.ts";
+import type {
+  SwampifyCandidate,
+  SwampifyOfferOption,
+} from "../../lib/agent_sessions/swampify.ts";
 import {
   formatRate,
   formatTokens,
@@ -45,6 +48,13 @@ export function optionStatus(
   return offer.offer.state.kind === "built" ? "Built" : "Picked";
 }
 
+/** "Create a behavior using @acme/ci-report", or "Create a workflow". */
+export function createLine(option: SwampifyOfferOption): string {
+  return `Create a ${option.becomes}${
+    option.registryType ? ` using ${option.registryType}` : ""
+  }`;
+}
+
 function OptionCard(
   { option, offer, onOpen }: {
     option: OptionView;
@@ -54,14 +64,12 @@ function OptionCard(
 ) {
   const lead = foundCandidates(option)[0];
   const status = optionStatus(option, offer);
-  const count = option.option.candidateIds.length;
   return (
     <button type="button" className="sw-option" onClick={onOpen}>
       <span className="sw-option-head">
         <span className="sw-option-name">{option.option.name}</span>
         {status && <span className="sw-status">{status}</span>}
       </span>
-      <span className="sw-option-why">{option.option.why}</span>
       {lead
         ? (
           <span
@@ -89,18 +97,12 @@ function OptionCard(
             Its candidates are not in the shown assessment.
           </span>
         )}
-      <span className="sw-muted">
-        {`Becomes a ${option.option.becomes}${
-          option.option.registryType
-            ? ` using ${option.option.registryType}`
-            : ""
-        } · from ${pluralize(count, "candidate")}`}
-      </span>
+      <span className="sw-option-make">{createLine(option.option)}</span>
       <span className="sw-cta">
+        Review and build
         <span className="sw-icon-btn" aria-hidden="true">
           <ReviewIcon />
         </span>
-        Review and build
       </span>
     </button>
   );
@@ -119,7 +121,7 @@ export function OptionCards(
   return (
     <section className="sw-offer" aria-labelledby="sw-offer-h">
       <div className="sw-section-head">
-        <h2 id="sw-offer-h">Your agent suggests</h2>
+        <h2 id="sw-offer-h">Top candidates</h2>
         <span className="sw-muted">
           {reader} ({offer.reading.model}) read{" "}
           {pluralize(offer.reading.sessions, "example session")} for{" "}

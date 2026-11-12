@@ -387,7 +387,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
               )}
               {view === "activity" && <Activity auditStream={auditStream} />}
-              {view === "swampify" && <Swampify />}
+              {view === "swampify" && (
+                <Swampify
+                  optionId={detail?.kind === "swampifyOption"
+                    ? detail.optionId
+                    : null}
+                />
+              )}
               {view === "agent-sessions" && <AgentSessions />}
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}

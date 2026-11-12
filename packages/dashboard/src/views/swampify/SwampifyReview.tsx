@@ -33,7 +33,11 @@ import {
 } from "../../lib/swampify_view.ts";
 import { formatCount, pluralize } from "../../lib/format.ts";
 import { ComparisonBlock } from "./SwampifyComparison.tsx";
-import { foundCandidates, optionStatus } from "./SwampifyOptions.tsx";
+import {
+  createLine,
+  foundCandidates,
+  optionStatus,
+} from "./SwampifyOptions.tsx";
 
 export interface OptionReviewProps {
   readonly option: OptionView;
@@ -78,33 +82,36 @@ function HandOff(
   return (
     <>
       <p className="sw-small">
-        The brief tells your agent to record your pick, build the{" "}
+        Hand it to your agent: the brief tells it to record your pick, build the
+        {" "}
         {becomes}, run it once and show you the result. Paste it to your agent
         in this repo.
       </p>
-      <button
-        type="button"
-        className="sw-btn sw-btn-primary"
-        onClick={() =>
-          void copyText(brief).then((ok) =>
-            setCopied(ok ? "copied" : "failed")
-          )}
-      >
-        {copied === "copied" ? "Copied" : "Copy brief"}
-      </button>
+      <div className="sw-handoff-actions">
+        <button
+          type="button"
+          className="sw-btn sw-btn-primary"
+          onClick={() =>
+            void copyText(brief).then((ok) =>
+              setCopied(ok ? "copied" : "failed")
+            )}
+        >
+          {copied === "copied" ? "Copied" : "Copy brief"}
+        </button>
+        <button
+          type="button"
+          className="sw-link"
+          aria-expanded={shown || copied === "failed"}
+          onClick={() => setShown(!shown)}
+        >
+          {shown || copied === "failed" ? "Hide the brief" : "See the brief"}
+        </button>
+      </div>
       {copied === "failed" && (
         <p className="sw-fail sw-small" role="alert">
           The browser refused the clipboard. Select the brief below and copy it.
         </p>
       )}
-      <button
-        type="button"
-        className="sw-link"
-        aria-expanded={shown || copied === "failed"}
-        onClick={() => setShown(!shown)}
-      >
-        {shown || copied === "failed" ? "Hide the brief" : "See the brief"}
-      </button>
       {(shown || copied === "failed") &&
         <pre className="sw-brief">{brief}</pre>}
     </>
@@ -142,91 +149,78 @@ export function OptionReview(props: OptionReviewProps) {
         <p className="sw-why">{option.why}</p>
       </header>
 
-      <div className="sw-review">
-        <div className="sw-review-main">
-          {(props.comparison || target) && (
-            <section className="sw-card sw-pad" aria-labelledby="sw-cmp-h">
-              <h2 id="sw-cmp-h">Raw against swamp</h2>
-              <ComparisonBlock
-                row={props.comparison}
-                open={comparisonOpen}
-                onToggle={() =>
-                  setComparisonOpen(!comparisonOpen)}
-                records={props.records}
-                onLoad={props.onLoadComparison}
-              />
-            </section>
-          )}
-          <section className="sw-card sw-pad" aria-labelledby="sw-build-h">
-            <h2 id="sw-build-h">What swamp would build</h2>
-            <p>
-              A {option.becomes}
-              {option.registryType && (
-                <>
-                  {" "}using <code>{option.registryType}</code>
-                </>
-              )}
-              {option.outline ? ", in these steps:" : "."}
-            </p>
-            {option.outline && (
-              <ol className="sw-steps">
-                {option.outline.map((step, i) => <li key={i}>{step}</li>)}
-              </ol>
-            )}
-          </section>
-          <section className="sw-card sw-pad" aria-labelledby="sw-ev-h">
-            <h2 id="sw-ev-h">The evidence</h2>
-            <p>
-              It stands for {pluralize(view.candidates.length, "candidate")}:
-            </p>
-            {candidates.map((c) => (
-              <div key={c.id} className="sw-evidence">
-                <div className="sw-evidence-label">{c.label}</div>
-                <div className="sw-muted sw-small">
-                  {KIND_LABEL[c.kind]} · {formatCount(c.occurrences)} runs in
-                  {" "}
-                  {pluralize(c.sessions, "session")} ·{" "}
-                  {formatTokens(c.perOccurrence.weightedTokens.median)}{" "}
-                  tokens per run · {formatRate(c.failureRate)} failed ·{" "}
-                  {formatDay(c.firstSeen)} to {formatDay(c.lastSeen)}
-                </div>
-                {c.excerpts[0] && (
-                  <pre className="sw-excerpt">{c.excerpts[0].text}</pre>
-                )}
-              </div>
-            ))}
-            {unshown > 0 && (
-              <p className="sw-muted sw-small">
-                {pluralize(unshown, "candidate")} {unshown === 1 ? "is" : "are"}
-                {" "}
-                not in the shown assessment.
-              </p>
-            )}
-          </section>
-        </div>
-
-        <aside className="sw-card sw-pad sw-aside" aria-labelledby="sw-hand-h">
+      <section className="sw-card sw-pad sw-build" aria-labelledby="sw-build-h">
+        <h2 id="sw-build-h">
+          {target ? "What swamp built" : "What swamp would build"}
+        </h2>
+        <p>
+          {createLine(option)}
+          {option.outline ? ", in these steps:" : "."}
+        </p>
+        {option.outline && (
+          <ol className="sw-steps">
+            {option.outline.map((step, i) => <li key={i}>{step}</li>)}
+          </ol>
+        )}
+        <div className="sw-handoff">
           {target
             ? (
-              <>
-                <h2 id="sw-hand-h">Built</h2>
-                <p>
-                  Your agent built the {target.kind} <code>{target.name}</code>.
-                </p>
-              </>
+              <p>
+                Your agent built the {target.kind} <code>{target.name}</code>.
+              </p>
             )
             : (
-              <>
-                <h2 id="sw-hand-h">Hand it to your agent</h2>
-                <HandOff
-                  brief={brief}
-                  becomes={option.becomes}
-                  initialShown={props.initialBriefShown}
-                />
-              </>
+              <HandOff
+                brief={brief}
+                becomes={option.becomes}
+                initialShown={props.initialBriefShown}
+              />
             )}
-        </aside>
-      </div>
+        </div>
+      </section>
+
+      {(props.comparison || target) && (
+        <section className="sw-card sw-pad" aria-labelledby="sw-cmp-h">
+          <h2 id="sw-cmp-h">Raw against swamp</h2>
+          <ComparisonBlock
+            row={props.comparison}
+            open={comparisonOpen}
+            onToggle={() =>
+              setComparisonOpen(!comparisonOpen)}
+            records={props.records}
+            onLoad={props.onLoadComparison}
+          />
+        </section>
+      )}
+
+      <section className="sw-card sw-pad" aria-labelledby="sw-ev-h">
+        <h2 id="sw-ev-h">The evidence</h2>
+        <p className="sw-small">
+          It stands for {pluralize(view.candidates.length, "candidate")}:
+        </p>
+        {candidates.map((c) => (
+          <div key={c.id} className="sw-evidence">
+            <div className="sw-evidence-label">{c.label}</div>
+            <div className="sw-muted sw-small">
+              {KIND_LABEL[c.kind]} · {formatCount(c.occurrences)} runs in{" "}
+              {pluralize(c.sessions, "session")} ·{" "}
+              {formatTokens(c.perOccurrence.weightedTokens.median)}{" "}
+              tokens per run · {formatRate(c.failureRate)} failed ·{" "}
+              {formatDay(c.firstSeen)} to {formatDay(c.lastSeen)}
+            </div>
+            {c.excerpts[0] && (
+              <pre className="sw-excerpt">{c.excerpts[0].text}</pre>
+            )}
+          </div>
+        ))}
+        {unshown > 0 && (
+          <p className="sw-muted sw-small">
+            {pluralize(unshown, "candidate")} {unshown === 1 ? "is" : "are"}
+            {" "}
+            not in the shown assessment.
+          </p>
+        )}
+      </section>
     </div>
   );
 }

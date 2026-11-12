@@ -206,6 +206,66 @@
   color: var(--text-2);
 }
 
+.sw-option-make {
+  color: var(--text-2);
+}
+
+.sw-cta-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sw-cta-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+.sw-detail-action {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.sw-build p {
+  font-size: 0.88rem;
+  margin-bottom: 6px;
+}
+
+.sw-handoff {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sw-handoff p {
+  max-width: 720px;
+  line-height: 1.5;
+}
+
+.sw-handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.sw-handoff-actions .sw-link {
+  align-self: center;
+}
+
 .sw-cta {
   display: inline-flex;
   align-items: center;
@@ -286,17 +346,83 @@
   background: var(--accent-subtle);
 }
 
-.sw-panel,
-.sw-built-list {
+.sw-tab-count-todo {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.sw-panel {
   display: flex;
   flex-direction: column;
   gap: 18px;
 }
 
-.sw-built {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.sw-built-card {
+  overflow: hidden;
+}
+
+.sw-built-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sw-built-row + .sw-built-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sw-built-toggle {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 4px 16px;
+  width: 100%;
+  padding: 14px 18px;
+  border: none;
+  background: none;
+  color: var(--text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sw-built-toggle:hover,
+.sw-built-row.sw-row-open .sw-built-toggle {
+  background: var(--surface-hover);
+}
+
+.sw-built-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.sw-chevron {
+  color: var(--text-2);
+}
+
+.sw-built-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sw-built-body {
+  padding: 4px 18px 18px 50px;
+  background: var(--surface-inset);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 860px) {
+  .sw-built-toggle {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
+  .sw-built-toggle > :nth-child(n + 3) {
+    grid-column: 2;
+  }
+
+  .sw-built-body {
+    padding-left: 18px;
+  }
 }
 
 .sw-scroll {
@@ -373,9 +499,8 @@
 
 /* Tonal, not solid: a solid accent fill is too loud for a per-row action. */
 .sw-icon-btn,
-/* Tonal, not solid: a solid accent fill is too loud for a per-row action. */
-.sw-icon-btn,
-.sw-btn-primary {
+/* Tonal, not solid: a solid accent fill is too loud for a per-row action. */ .sw-icon-btn,
+.sw-btn.sw-btn-primary {
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
   background: var(--accent-subtle);
   color: var(--accent-hover);
@@ -394,7 +519,8 @@
 
 button.sw-icon-btn:hover,
 .sw-option:hover .sw-icon-btn,
-.sw-btn-primary:hover {
+.sw-cta-btn:hover .sw-icon-btn,
+.sw-btn.sw-btn-primary:hover {
   background: color-mix(in srgb, var(--accent) 22%, var(--surface));
 }
 
@@ -467,25 +593,6 @@ button.sw-icon-btn:hover,
   font-size: 0.88rem;
 }
 
-.sw-review {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
-  gap: 18px;
-  align-items: start;
-}
-
-.sw-review-main {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-.sw-review-main p {
-  font-size: 0.88rem;
-  margin-bottom: 6px;
-}
-
 .sw-evidence {
   display: flex;
   flex-direction: column;
@@ -497,19 +604,6 @@ button.sw-icon-btn:hover,
 .sw-evidence-label {
   font-weight: 500;
   overflow-wrap: anywhere;
-}
-
-.sw-aside {
-  position: sticky;
-  top: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.sw-aside p {
-  font-size: 0.85rem;
-  line-height: 1.5;
 }
 
 .sw-brief {
@@ -587,14 +681,6 @@ button.sw-icon-btn:hover,
 }
 
 @media (max-width: 860px) {
-  .sw-review {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .sw-aside {
-    position: static;
-  }
-
   .sw-detail {
     padding-left: 16px;
   }

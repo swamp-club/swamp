@@ -31,7 +31,6 @@ import {
   formatSpread,
   formatTokens,
   KIND_LABEL,
-  type SwampifyConsidered,
 } from "../../lib/swampify_view.ts";
 import { formatCount, pluralize } from "../../lib/format.ts";
 import { ReviewIcon } from "./SwampifyParts.tsx";
@@ -40,42 +39,40 @@ export interface CandidatesProps {
   readonly candidates: readonly SwampifyCandidate[];
   readonly open: string | null;
   readonly onToggle: (candidateId: string) => void;
+  /** The option each candidate is in; before an offer, none. */
   readonly options: ReadonlyMap<string, SwampifyOfferOption>;
-  readonly considered: ReadonlyMap<string, SwampifyConsidered>;
-  /** False before the agent has made its offer: no placements to show. */
-  readonly offered: boolean;
   readonly onReview: (optionId: string) => void;
   /** Where the candidates came from, under the heading. */
   readonly about?: ReactNode;
 }
 
-const LEFT_OUT: Readonly<Record<SwampifyConsidered["reason"], string>> = {
-  "not-a-chore": "Left out: not a chore",
-  "merged": "Merged",
-  "low-value": "Left out: low value",
-};
-
-function placement(
-  c: SwampifyCandidate,
-  props: CandidatesProps,
-  rankOf: ReadonlyMap<string, number>,
-): string {
-  if (!props.offered) return "";
-  const option = props.options.get(c.id);
-  if (option) return `In “${option.name}”`;
-  const left = props.considered.get(c.id);
-  if (!left) return "Not read";
-  if (left.reason === "merged" && left.into !== undefined) {
-    const rank = rankOf.get(left.into);
-    return rank === undefined ? "Merged" : `Merged into #${rank}`;
-  }
-  return LEFT_OUT[left.reason];
-}
-
-function CandidateDetail({ c }: { c: SwampifyCandidate }) {
+function CandidateDetail(
+  { c, option, onReview }: {
+    c: SwampifyCandidate;
+    option: SwampifyOfferOption | undefined;
+    onReview: (optionId: string) => void;
+  },
+) {
   const cost = c.perOccurrence;
   return (
     <div className="sw-detail">
+      {option && (
+        <div className="sw-detail-action">
+          <span className="sw-muted">
+            Part of <strong>{option.name}</strong>
+          </span>
+          <button
+            type="button"
+            className="sw-cta sw-cta-btn"
+            onClick={() => onReview(option.id)}
+          >
+            Review and build
+            <span className="sw-icon-btn" aria-hidden="true">
+              <ReviewIcon />
+            </span>
+          </button>
+        </div>
+      )}
       <div className="sw-detail-col">
         <div className="sw-sub">What it looks like</div>
         {c.steps && (
@@ -118,20 +115,20 @@ function CandidateDetail({ c }: { c: SwampifyCandidate }) {
 }
 
 /**
- * Every candidate by rank. A row opens to its evidence; an open row whose
- * candidate is in an option gets the button to that option's review.
+ * Candidates by rank. A row opens to its evidence and the button to its
+ * option's review.
  */
 export function CandidatesTable(props: CandidatesProps) {
-  const rankOf = new Map(props.candidates.map((c) => [c.id, c.rank]));
   return (
     <section className="sw-card sw-candidates" aria-labelledby="sw-cand-h">
       <div className="sw-pad sw-cand-head">
         <div className="sw-section-head">
           <h2 id="sw-cand-h">
-            All candidates{" "}
+            Candidates{" "}
             <span className="sw-muted">
-              · {formatCount(props.candidates.length)}{" "}
-              found, ranked by what they cost you
+              ·{" "}
+              {formatCount(props.candidates.length)}, ranked by what they cost
+              you
             </span>
           </h2>
           <span className="sw-muted sw-small">
@@ -150,7 +147,6 @@ export function CandidatesTable(props: CandidatesProps) {
             <col style={{ width: 84 }} />
             <col style={{ width: 84 }} />
             <col style={{ width: 70 }} />
-            <col style={{ width: 200 }} />
           </colgroup>
           <thead>
             <tr>
@@ -161,17 +157,12 @@ export function CandidatesTable(props: CandidatesProps) {
               <th scope="col" className="sw-num">Sessions</th>
               <th scope="col" className="sw-num">Tokens</th>
               <th scope="col" className="sw-num">Failed</th>
-              <th scope="col">
-                <span className="sw-sr-only">In the offer</span>
-              </th>
             </tr>
           </thead>
           <tbody>
             {props.candidates.map((c) => {
               const isOpen = props.open === c.id;
-              const option = props.offered
-                ? props.options.get(c.id)
-                : undefined;
+              const option = props.options.get(c.id);
               return (
                 <Fragment key={c.id}>
                   <tr
@@ -203,34 +194,15 @@ export function CandidatesTable(props: CandidatesProps) {
                     >
                       {formatRate(c.failureRate)}
                     </td>
-                    <td>
-                      <span className="sw-place">
-                        <span
-                          className={option ? "sw-place-in" : "sw-muted"}
-                        >
-                          {placement(c, props, rankOf)}
-                        </span>
-                        {isOpen && option && (
-                          <button
-                            type="button"
-                            className="sw-icon-btn"
-                            aria-label={`Review and build ${option.name}`}
-                            title="Review and build"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              props.onReview(option.id);
-                            }}
-                          >
-                            <ReviewIcon />
-                          </button>
-                        )}
-                      </span>
-                    </td>
                   </tr>
                   {isOpen && (
                     <tr className="sw-detail-row">
-                      <td colSpan={8}>
-                        <CandidateDetail c={c} />
+                      <td colSpan={7}>
+                        <CandidateDetail
+                          c={c}
+                          option={option}
+                          onReview={props.onReview}
+                        />
                       </td>
                     </tr>
                   )}

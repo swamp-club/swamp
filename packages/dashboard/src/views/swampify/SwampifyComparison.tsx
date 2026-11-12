@@ -65,7 +65,6 @@ export function ComparisonBlock(
     return <div className="sw-muted sw-compare">Not compared yet.</div>;
   }
   const summary = comparisonSummaryOf(row);
-  const record = records.get(comparisonKey(row));
   return (
     <div className="sw-compare">
       <div className="sw-compare-head">
@@ -98,27 +97,39 @@ export function ComparisonBlock(
           {open ? "Hide comparison" : "Show comparison"}
         </button>
       </div>
-      {open && (
-        record === undefined || record.state === "loading"
-          ? <div className="sw-muted">Loading the comparison…</div>
-          : record.state === "error"
-          ? (
-            <div className="sw-fail">
-              Could not load the comparison: {record.error}{" "}
-              <button
-                type="button"
-                className="sw-link"
-                onClick={() => onLoad(row)}
-              >
-                Retry
-              </button>
-            </div>
-          )
-          : record.reading.kind === "skipped"
-          ? <SkipNotice item="comparison" skipped={record.reading} />
-          : <ComparisonDetail comparison={record.reading.record} />
-      )}
+      {open && <ComparisonBody row={row} records={records} onLoad={onLoad} />}
     </div>
+  );
+}
+
+/** A comparison's body: loading, an error with a retry, a skip, or figures. */
+export function ComparisonBody(
+  { row, records, onLoad }: {
+    row: SwampifyRow;
+    records: ReadonlyMap<string, ComparisonRecord>;
+    onLoad: (row: SwampifyRow) => void;
+  },
+) {
+  const record = records.get(comparisonKey(row));
+  return (
+    record === undefined || record.state === "loading"
+      ? <div className="sw-muted">Loading the comparison…</div>
+      : record.state === "error"
+      ? (
+        <div className="sw-fail">
+          Could not load the comparison: {record.error}{" "}
+          <button
+            type="button"
+            className="sw-link"
+            onClick={() => onLoad(row)}
+          >
+            Retry
+          </button>
+        </div>
+      )
+      : record.reading.kind === "skipped"
+      ? <SkipNotice item="comparison" skipped={record.reading} />
+      : <ComparisonDetail comparison={record.reading.record} />
   );
 }
 
