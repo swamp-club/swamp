@@ -110,8 +110,6 @@ async function withMovedType(
     await query.query("true");
     catalog.bulkUpsertForeign("team", [foreignRow()]);
 
-    // the hand move: the type's folder moves to the new namespace, then the
-    // catalog is told to backfill, which only upserts
     const dataDir = join(swampDir, "data");
     await ensureDir(join(dataDir, "@liywjl"));
     await Deno.rename(
@@ -140,7 +138,6 @@ Deno.test("doctor datastores repair: a type moved by hand queries once per item 
         .map((r) => `${r.modelType}/${r.name}`)
         .sort();
 
-    // every item twice: under the moved type and the stale rows
     assertEquals((await localNames()).length, NAMES.length * 2);
 
     const events = await collect<RepairCatalogIndexEvent>(

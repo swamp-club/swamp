@@ -468,13 +468,16 @@ export async function compareCatalogToDisk(
 }
 
 /**
- * names this namespace indexes with no directory on disk; the walk reads no
- * metadata, so a name whose metadata is unreadable is never surplus, and a
- * pending name belongs to a write in flight
+ * names this namespace indexes with no name directory on disk, so a name whose
+ * metadata is unreadable or missing is never surplus; a pending name belongs to
+ * a write in flight
  */
 export async function findCatalogSurplus(
   catalogStore: CatalogStore,
-  dataRepo: Pick<FileSystemUnifiedDataRepository, "iterateDataNames">,
+  dataRepo: Pick<
+    FileSystemUnifiedDataRepository,
+    "iterateDataNames" | "hasDataNameDir"
+  >,
   namespace: Namespace,
 ): Promise<{ surplus: CatalogSurplus[]; names: CatalogDataName[] }> {
   const keyOf = (type: string, modelId: string, dataName: string) =>
@@ -489,6 +492,16 @@ export async function findCatalogSurplus(
     if (name.pending) continue;
     if (
       onDisk.has(keyOf(name.type_normalized, name.model_id, name.data_name))
+    ) {
+      continue;
+    }
+    // the walk skips a model directory with no version metadata at all
+    if (
+      await dataRepo.hasDataNameDir(
+        name.type_normalized,
+        name.model_id,
+        name.data_name,
+      )
     ) {
       continue;
     }

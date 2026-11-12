@@ -826,8 +826,8 @@ pending deferred write, is not published, so it is never unreadable.
   (`scanUnreadableVersions` in `unreadable_data_versions.ts`). It walks every
   data name on disk together with the non-pending catalog rows of those names in
   the repo's namespace (`CatalogStore.versionKeys`), and inspects each published
-  version. A name whose whole directory is gone is catalog surplus, which the
-  completeness check reports and repairs instead (swamp-club#4502).
+  version. A catalog name whose name directory is gone is catalog surplus,
+  which the completeness check reports and repairs instead (swamp-club#4502).
   An empty or unparseable marker is its own finding (`marker_unreadable`). The
   check runs before the completeness check, and the versions it reports are not
   warned about again when that walk reads them.

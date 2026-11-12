@@ -365,7 +365,6 @@ Deno.test(
     const query = new DataQueryService(catalog, dataRepo);
     await query.query("true");
 
-    // folders moved by hand, then a rebuild
     const dataDir = join(repoDir, ".swamp", "data");
     ensureDirSync(join(dataDir, "@new"));
     Deno.renameSync(
@@ -445,6 +444,39 @@ Deno.test(
     assertEquals(surplus, [
       { typeNormalized: "@scope/shows", dataNames: 1, catalogRecords: 2 },
     ]);
+  }),
+);
+
+Deno.test(
+  "findCatalogSurplus: a name under a model directory the walk skips, its metadata missing, is not surplus",
+  withFixture(async (repoDir, catalog) => {
+    writeDataItem(repoDir, ["@scope", "shows"], "model-001", "orphaned", 0);
+    Deno.removeSync(
+      join(
+        repoDir,
+        ".swamp",
+        "data",
+        "@scope",
+        "shows",
+        "model-001",
+        "orphaned",
+        "1",
+        "metadata.yaml",
+      ),
+    );
+    catalog.upsert(catalogRow({ data_name: "orphaned" }));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+
+    const { names } = await findCatalogSurplus(
+      catalog,
+      dataRepo,
+      SOLO_NAMESPACE,
+    );
+    assertEquals(names, []);
   }),
 );
 

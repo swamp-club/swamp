@@ -1069,7 +1069,10 @@ Deno.test("doctorDatastores: reports catalog records with no data on disk and na
       (f) => f.check === "catalog_completeness",
     );
     assertEquals(finding?.passed, false);
-    assertStringIncludes(finding?.message ?? "", "19818 record(s)");
+    assertStringIncludes(
+      finding?.message ?? "",
+      "12 data name(s) (19818 record(s))",
+    );
     assertStringIncludes(finding?.message ?? "", "no data on disk");
     assertEquals(finding?.message.includes("is missing"), false);
     assertStringIncludes(

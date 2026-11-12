@@ -615,10 +615,14 @@ export async function* doctorDatastores(
             );
           }
           if (summary.surplus.length > 0) {
+            const dataNames = summary.surplus.reduce(
+              (sum, s) => sum + s.dataNames,
+              0,
+            );
             problems.push(
-              `Catalog index holds ${
+              `Catalog index holds ${dataNames} data name(s) (${
                 surplusRecordCount(summary.surplus)
-              } record(s) across ${summary.surplus.length} model type(s) ` +
+              } record(s)) across ${summary.surplus.length} model type(s) ` +
                 `with no data on disk behind them. Queries return them as stale or duplicate results.`,
             );
           }
@@ -1521,10 +1525,8 @@ export interface RepairCatalogIndexDeps {
 }
 
 /**
- * a shortfall deletes the catalog database and the next data query backfills
- * it from disk, so it cannot hide a wrong walk; foreign-namespace rows are
- * dropped and only catalog pull restores them. Surplus alone removes just the
- * surplus rows, keeping foreign rows and the populated mark
+ * a shortfall removes the whole catalog database, so it cannot hide a wrong
+ * walk, and foreign-namespace rows are lost until catalog pull restores them
  */
 export async function* repairCatalogIndex(
   _ctx: LibSwampContext,

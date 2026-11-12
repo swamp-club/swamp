@@ -151,6 +151,16 @@ Deno.test("scanUnreadableVersions: a catalog name whose whole directory is gone 
   });
 });
 
+Deno.test("scanUnreadableVersions: a name under a model directory the walk skips, its only metadata gone, is still reported", async () => {
+  await withFixture(async (f) => {
+    await f.write("state", 1);
+    await Deno.remove(join(f.versionDir("state", 1), "metadata.yaml"));
+    const [finding] = await f.scan();
+    assertEquals(finding.dataName, "state");
+    assertEquals(finding.version, 1);
+  });
+});
+
 Deno.test("scanUnreadableVersions: an older unreadable version is reported but not as latest", async () => {
   await withFixture(async (f) => {
     await f.write("state", 3);

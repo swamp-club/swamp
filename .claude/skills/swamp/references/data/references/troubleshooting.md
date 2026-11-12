@@ -284,7 +284,8 @@ Only those records go; rows pulled from other namespaces stay. If the catalog is
 also missing records, the repair rebuilds the whole catalog instead, which drops
 pulled rows until `swamp datastore catalog pull` restores them. This is the
 supported way to reindex the catalog. It applies to the default and
-external-path filesystem datastores; lazy S3/GCS caches are never reported.
+external-path filesystem datastores; custom (S3/GCS) and v3 datastores are never
+reported.
 
 ### Moving a behavior type to another name
 
