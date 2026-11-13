@@ -608,6 +608,56 @@ Deno.test("ChunkStore.verifyParts: reports parts missing, short or holding other
   assertEquals(await store.verifyParts(NS, [parts[0]], live()), []);
 });
 
+Deno.test("ChunkStore.verifyParts: keeps several reads in flight, never more than its bound, and reports damage in the parts' order (swamp-club#4677)", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const content = bytesOf(4 * 20);
+  await store.write(NS, content, live());
+  const { parts } = await store.refOf(content, live());
+  storage.chunks.delete(`team-a/${parts[3].sha256}`);
+  storage.chunks.delete(`team-a/${parts[17].sha256}`);
+  let inFlight = 0;
+  let most = 0;
+  const get = storage.get.bind(storage);
+  storage.get = async (...args: Parameters<typeof storage.get>) => {
+    most = Math.max(most, ++inFlight);
+    try {
+      await Promise.resolve();
+      return await get(...args);
+    } finally {
+      inFlight--;
+    }
+  };
+  assertEquals(await store.verifyParts(NS, parts, live()), [
+    parts[3],
+    parts[17],
+  ]);
+  assert(most > 1, `${most} reads in flight`);
+  assert(most <= 8, `${most} reads in flight`);
+});
+
+Deno.test("ChunkStore.verifyParts: a failed read stops the other readers taking further parts, and is rethrown (swamp-club#4677)", async () => {
+  const storage = new StatMemoryStorage({ maxChunkBytes: 4 });
+  const store = new ChunkStore(storage);
+  const content = bytesOf(4 * 40);
+  await store.write(NS, content, live());
+  const { parts } = await store.refOf(content, live());
+  let reads = 0;
+  const get = storage.get.bind(storage);
+  storage.get = async (...args: Parameters<typeof storage.get>) => {
+    reads++;
+    await Promise.resolve();
+    if (args[1] === parts[0].sha256) throw new Error("storage unreachable");
+    return await get(...args);
+  };
+  await assertRejects(
+    () => store.verifyParts(NS, parts, live()),
+    Error,
+    "storage unreachable",
+  );
+  assert(reads < parts.length, `${reads} of ${parts.length} parts read`);
+});
+
 Deno.test("ChunkIntegrityError: names the chunk that failed its check (swamp-club#3617)", async () => {
   const storage = new MemoryStorage({ maxChunkBytes: 4 });
   const store = new ChunkStore(storage);

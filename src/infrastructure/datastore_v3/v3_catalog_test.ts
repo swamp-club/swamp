@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import type { DatabaseSync } from "node:sqlite";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
 import {
   metadata,
@@ -173,6 +174,75 @@ Deno.test("V3Catalog: applying committed work, batched or not, never marks a nam
           .sort(),
         ["a@1", "b@1", "w@1"],
       );
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    removeTempDir(dir);
+  }
+});
+
+/** counts the rows written to `catalog` through this connection */
+function countRowWrites(catalog: V3Catalog): () => number {
+  const db = (catalog.store as unknown as { db: DatabaseSync }).db;
+  db.exec(`
+    CREATE TEMP TABLE row_writes (n INTEGER NOT NULL);
+    INSERT INTO row_writes VALUES (0);
+    CREATE TEMP TRIGGER count_insert AFTER INSERT ON main.catalog
+      BEGIN UPDATE row_writes SET n = n + 1; END;
+    CREATE TEMP TRIGGER count_update AFTER UPDATE ON main.catalog
+      BEGIN UPDATE row_writes SET n = n + 1; END;
+    CREATE TEMP TRIGGER count_delete AFTER DELETE ON main.catalog
+      BEGIN UPDATE row_writes SET n = n + 1; END;
+  `);
+  return () =>
+    (db.prepare("SELECT n FROM row_writes").get() as { n: number }).n;
+}
+
+Deno.test("V3Catalog: a batch that clears names and replays only their actions writes only the rows that differ, and one whose actions reach another name applies in full (swamp-club#4677)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-v3-catalog-" });
+  try {
+    const catalog = V3Catalog.open(join(dir, "_catalog_v3.db"));
+    try {
+      const name = (n: string) => ({
+        namespace: "",
+        type: MODEL_TYPE.normalized,
+        modelId: MODEL_ID,
+        name: n,
+      });
+      const upsert = (n: string, version: number) => ({
+        kind: "upsert-version" as const,
+        metadata: DataMetadataSchema.parse(metadata(n, version)),
+      });
+      const history = Array.from({ length: 50 }, (_, i) => upsert("a", i + 1));
+      catalog.apply("", modelPartition(), history);
+      const written = countRowWrites(catalog);
+
+      catalog.beginBatch();
+      catalog.clearNames([name("a")], () => true);
+      catalog.apply("", modelPartition(), history);
+      catalog.commitBatch();
+      assertEquals(written(), 0);
+
+      catalog.beginBatch();
+      catalog.clearNames([name("a")], () => true);
+      catalog.apply("", modelPartition(), history.slice(0, 49));
+      catalog.commitBatch();
+      // v50 removed and v49 flagged latest again
+      assertEquals(written(), 2);
+
+      catalog.beginBatch();
+      catalog.clearNames([name("a")], () => true);
+      catalog.apply("", modelPartition(), [...history, upsert("b", 1)]);
+      catalog.commitBatch();
+      assertEquals(
+        [...catalog.store.iterate()]
+          .filter((r) => r.is_latest === 1)
+          .map((r) => `${r.data_name}@${r.version}`)
+          .sort(),
+        ["a@50", "b@1"],
+      );
+      assertEquals(written() > 50, true);
     } finally {
       catalog.close();
     }

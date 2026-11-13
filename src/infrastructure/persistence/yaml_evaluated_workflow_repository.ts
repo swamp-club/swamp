@@ -26,6 +26,7 @@ import { join, relative, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
 import {
+  removeSignalled,
   stageTyped,
   typedStagingActive,
   withChangeSignalled,
@@ -419,7 +420,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
 
         if (previousPath && previousPath !== targetPath) {
           try {
-            await Deno.remove(previousPath);
+            await removeSignalled(this.markDirtyHook, previousPath);
             removed.push(previousPath);
           } catch (error) {
             if (!(error instanceof Deno.errors.NotFound)) {
@@ -430,7 +431,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
 
         if (targetPath !== legacyPath && previousPath !== legacyPath) {
           try {
-            await Deno.remove(legacyPath);
+            await removeSignalled(this.markDirtyHook, legacyPath);
             removed.push(legacyPath);
           } catch (error) {
             if (!(error instanceof Deno.errors.NotFound)) {
@@ -526,7 +527,9 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         const removed: string[] = [];
         for (const path of pathsToTry) {
           try {
-            await Deno.remove(path);
+            // the outer signal already names the resolved path
+            if (path === resolvedPath) await Deno.remove(path);
+            else await removeSignalled(this.markDirtyHook, path);
             removed.push(path);
           } catch (error) {
             if (!(error instanceof Deno.errors.NotFound)) {

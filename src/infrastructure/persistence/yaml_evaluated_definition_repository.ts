@@ -24,6 +24,7 @@ import {
 import { ensureDir, walk } from "@std/fs";
 import { basename, join } from "@std/path";
 import {
+  removeSignalled,
   stageTyped,
   typedStagingActive,
   withChangeSignalled,
@@ -495,7 +496,7 @@ export class YamlEvaluatedDefinitionRepository {
       const previousPath = this.idToActualPath.get(definition.id);
       if (previousPath && previousPath !== targetPath) {
         try {
-          await Deno.remove(previousPath);
+          await removeSignalled(this.markDirty, previousPath);
           removed.push(previousPath);
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) {
@@ -507,7 +508,7 @@ export class YamlEvaluatedDefinitionRepository {
       const legacyPath = this.getLegacyPath(type, definition.id);
       if (targetPath !== legacyPath && previousPath !== legacyPath) {
         try {
-          await Deno.remove(legacyPath);
+          await removeSignalled(this.markDirty, legacyPath);
           removed.push(legacyPath);
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) {
@@ -563,7 +564,9 @@ export class YamlEvaluatedDefinitionRepository {
           await tally.measure("file_remove", async () => {
             for (const path of pathsToTry) {
               try {
-                await Deno.remove(path);
+                // the outer signal already names the resolved path
+                if (path === resolvedPath) await Deno.remove(path);
+                else await removeSignalled(this.markDirty, path);
                 removed.push(path);
 
                 const definitionsDir = swampPath(

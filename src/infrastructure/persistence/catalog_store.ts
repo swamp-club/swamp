@@ -252,6 +252,16 @@ export interface CatalogWriter {
   ): void;
   /** the names stop being dirty, and lose their pins */
   forgetDirty(names: readonly CatalogDataName[]): void;
+  /**
+   * leaves the names' rows and forwards as clearNames then `apply` would, but
+   * writes only the rows and forwards that differ; `apply` must touch no
+   * other name
+   */
+  reconcileNames(
+    names: readonly CatalogDataName[],
+    clears: (row: CatalogRowKey) => boolean,
+    apply: (writer: CatalogWriter) => void,
+  ): void;
 }
 
 export interface CatalogDataName {
@@ -266,6 +276,35 @@ export interface CatalogDataNameCount extends CatalogDataName {
   readonly rows: number;
   readonly pending: boolean;
 }
+
+/**
+ * a checkout path a unit recorded before writing under it; the data name when
+ * the path is under one, else empty strings
+ */
+export interface CatalogTouchedScope extends CatalogDataName {
+  readonly id: number;
+  readonly scope: string;
+  readonly unit_id: string;
+}
+
+/**
+ * written by every writer before it writes, kept until its commits are
+ * confirmed, so a recovery repairs only what an unfinished writer touched
+ */
+export const TOUCHED_TRACKING_SQL = `
+  CREATE TABLE IF NOT EXISTS catalog_touched (
+    id              INTEGER PRIMARY KEY,
+    unit_id         TEXT NOT NULL,
+    namespace       TEXT NOT NULL,
+    scope           TEXT NOT NULL,
+    type_normalized TEXT NOT NULL DEFAULT '',
+    model_id        TEXT NOT NULL DEFAULT '',
+    data_name       TEXT NOT NULL DEFAULT '',
+    UNIQUE (unit_id, namespace, scope)
+  );
+  CREATE INDEX IF NOT EXISTS idx_catalog_touched_name
+    ON catalog_touched(namespace, type_normalized, model_id, data_name);
+`;
 
 /** a dirty name held by a commit not known to have landed */
 export interface CatalogDirtyPin extends CatalogDataName {
@@ -338,6 +377,10 @@ function dataNameArgs(name: CatalogDataName): string[] {
  * it without a rebuild
  */
 const GROUP_STEP_INDEX = "idx_catalog_group_step_version";
+
+// Without it, clearing a step flag scans every earlier version of the name, so
+// replaying a name's history costs the square of its versions.
+const STEP_LATEST_FLAG_INDEX = "idx_catalog_group_step_latest_version";
 
 function groupWhere(alias: string): string {
   return `${alias}.namespace = ? AND ${alias}.type_normalized = ? AND ${alias}.model_id = ? AND ${alias}.data_name = ? AND ${alias}.is_pending = 0`;
@@ -506,6 +549,7 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS idx_namespace               ON catalog(namespace);
       CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
       CREATE INDEX IF NOT EXISTS ${GROUP_STEP_INDEX} ON catalog(namespace, type_normalized, model_id, data_name, step_name, version);
+      CREATE INDEX IF NOT EXISTS ${STEP_LATEST_FLAG_INDEX} ON catalog(namespace, type_normalized, model_id, data_name, is_step_latest, version);
       CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup ON catalog(model_name, data_name, is_latest, namespace);
 
       CREATE TABLE IF NOT EXISTS catalog_renames (
@@ -681,8 +725,9 @@ export class CatalogStore {
     ).get(...group, row.version, ...scope);
     const isLatest = higherFlagged ? 0 : 1;
     const isStepLatest = isLatest || !higherInScope ? 1 : 0;
+    // the planner would range over every earlier version by primary key
     this.#prepareCached(
-      `UPDATE catalog SET is_latest = 0
+      `UPDATE catalog INDEXED BY idx_catalog_is_latest SET is_latest = 0
        WHERE ${groupWhere} AND version < ? AND is_latest = 1`,
     ).run(...group, row.version);
     this.#prepareCached(
@@ -1447,6 +1492,95 @@ export class CatalogStore {
     }
   }
 
+  /** like ensureDirtyTracking: the start is set once, with the table */
+  ensureTouchedTracking(now: number): void {
+    if (this.touchedTrackingSince() !== undefined) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec(TOUCHED_TRACKING_SQL);
+      if (this.readMeta("touched_tracking_since") === undefined) {
+        this.writeMeta("touched_tracking_since", String(now));
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** undefined when the table is missing: no touched scope can be trusted */
+  touchedTrackingSince(): number | undefined {
+    if (!this.#hasTable("catalog_touched")) return undefined;
+    const since = this.readMeta("touched_tracking_since");
+    return since === undefined ? undefined : Number(since);
+  }
+
+  touchedScopes(): CatalogTouchedScope[] {
+    if (!this.#hasTable("catalog_touched")) return [];
+    return (this.db.prepare(
+      "SELECT id, unit_id, namespace, scope, type_normalized, model_id, data_name FROM catalog_touched ORDER BY id",
+    ).all() as unknown as CatalogTouchedScope[]).map((row) => ({ ...row }));
+  }
+
+  /** what a recovery repaired: the scopes it read, by id */
+  forgetTouched(ids: readonly number[]): void {
+    if (ids.length === 0 || !this.#hasTable("catalog_touched")) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const forget = this.#prepareCached(
+        "DELETE FROM catalog_touched WHERE id = ?",
+      );
+      for (const id of ids) forget.run(id);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * a unit whose commits are confirmed: its scopes go, and each of its names
+   * stops being dirty unless a pin or another unit's scope still holds it
+   */
+  releaseUnit(unitId: string, names: readonly CatalogDataName[]): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const touched = this.#hasTable("catalog_touched");
+      const all = [...names];
+      if (touched) {
+        for (
+          const name of this.db.prepare(
+            "SELECT DISTINCT namespace, type_normalized, model_id, data_name FROM catalog_touched WHERE unit_id = ? AND data_name != ''",
+          ).all(unitId) as unknown as CatalogDataName[]
+        ) {
+          all.push(name);
+        }
+        this.#prepareCached("DELETE FROM catalog_touched WHERE unit_id = ?")
+          .run(unitId);
+      }
+      if (this.#hasDirtyTable()) {
+        const forget = this.#prepareCached(
+          `DELETE FROM catalog_dirty WHERE ${DIRTY_NAME_WHERE}
+             AND NOT EXISTS (SELECT 1 FROM catalog_dirty_pins AS p WHERE p.namespace = catalog_dirty.namespace AND p.type_normalized = catalog_dirty.type_normalized AND p.model_id = catalog_dirty.model_id AND p.data_name = catalog_dirty.data_name)` +
+            (touched
+              ? " AND NOT EXISTS (SELECT 1 FROM catalog_touched AS t WHERE t.namespace = catalog_dirty.namespace AND t.type_normalized = catalog_dirty.type_normalized AND t.model_id = catalog_dirty.model_id AND t.data_name = catalog_dirty.data_name)"
+              : ""),
+        );
+        for (const name of all) forget.run(...dataNameArgs(name));
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #hasTable(name: string): boolean {
+    return this.#prepareCached(
+      "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(name) !== undefined;
+  }
+
   /** undefined when the triggers are missing: no dirty name can be trusted */
   dirtyTrackingSince(): number | undefined {
     if (this.#dirtyTriggers() !== DIRTY_TRIGGER_COUNT) return undefined;
@@ -1516,6 +1650,9 @@ export class CatalogStore {
           "DELETE FROM catalog_dirty; DELETE FROM catalog_dirty_pins;",
         );
       }
+      if (this.#hasTable("catalog_touched")) {
+        this.db.exec("DELETE FROM catalog_touched;");
+      }
       this.db.prepare(
         "DELETE FROM catalog_meta WHERE key = 'full_recovery_required'",
       ).run();
@@ -1533,10 +1670,25 @@ export class CatalogStore {
   releaseDirty(
     pins: readonly CatalogDirtyPin[],
     landed: readonly { readonly partition: string; readonly txn_id: string }[],
+    keepUnits: readonly string[] = [],
   ): void {
     if (!this.#hasDirtyTable()) return;
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const touched = this.#hasTable("catalog_touched");
+      if (touched) {
+        const keep = new Set(keepUnits);
+        const forget = this.#prepareCached(
+          "DELETE FROM catalog_touched WHERE unit_id = ?",
+        );
+        for (
+          const { unit_id } of this.db.prepare(
+            "SELECT DISTINCT unit_id FROM catalog_touched",
+          ).all() as { unit_id: string }[]
+        ) {
+          if (!keep.has(unit_id)) forget.run(unit_id);
+        }
+      }
       const pin = this.#prepareCached(
         "INSERT OR IGNORE INTO catalog_dirty_pins (namespace, type_normalized, model_id, data_name, partition, txn_id) VALUES (?, ?, ?, ?, ?, ?)",
       );
@@ -1550,7 +1702,12 @@ export class CatalogStore {
       this.db.exec(
         "DELETE FROM catalog_dirty WHERE NOT EXISTS (SELECT 1 FROM catalog_dirty_pins AS p " +
           "WHERE p.namespace = catalog_dirty.namespace AND p.type_normalized = catalog_dirty.type_normalized " +
-          "AND p.model_id = catalog_dirty.model_id AND p.data_name = catalog_dirty.data_name)",
+          "AND p.model_id = catalog_dirty.model_id AND p.data_name = catalog_dirty.data_name)" +
+          (touched
+            ? " AND NOT EXISTS (SELECT 1 FROM catalog_touched AS t WHERE t.namespace = catalog_dirty.namespace " +
+              "AND t.type_normalized = catalog_dirty.type_normalized AND t.model_id = catalog_dirty.model_id " +
+              "AND t.data_name = catalog_dirty.data_name)"
+            : ""),
       );
       this.db.exec("COMMIT");
     } catch (error) {
@@ -1588,6 +1745,82 @@ export class CatalogStore {
       }
       if (clears(name)) deleteRename.run(...args);
     }
+  }
+
+  #reconcileNames(
+    names: readonly CatalogDataName[],
+    clears: (row: CatalogRowKey) => boolean,
+    apply: (writer: CatalogWriter) => void,
+  ): void {
+    // A scratch catalog runs the same writer code, so flags and forwards come
+    // out exactly as a clear and replay here would leave them.
+    const scratch = new CatalogStore(":memory:");
+    try {
+      const before = names.map((name) => this.#nameContents(name));
+      scratch.db.exec("BEGIN");
+      for (const [index, name] of names.entries()) {
+        for (const row of before[index].rows) {
+          if (!clears({ ...name, version: row.version })) scratch.upsert(row);
+        }
+        const rename = before[index].rename;
+        if (rename !== undefined && !clears(name)) scratch.recordRename(rename);
+      }
+      scratch.db.exec("COMMIT");
+      scratch.applyInTransaction(apply);
+      const deleteRow = this.#prepareCached(
+        `DELETE FROM catalog WHERE ${DIRTY_NAME_WHERE} AND version = ?`,
+      );
+      for (const [index, name] of names.entries()) {
+        const after = scratch.#nameContents(name);
+        const kept = new Map(
+          after.rows.map((row) => [row.version, JSON.stringify(row)]),
+        );
+        for (const row of before[index].rows) {
+          if (!kept.has(row.version)) {
+            deleteRow.run(...dataNameArgs(name), row.version);
+          }
+        }
+        const held = new Map(
+          before[index].rows.map((row) => [row.version, JSON.stringify(row)]),
+        );
+        for (const row of after.rows) {
+          if (held.get(row.version) !== kept.get(row.version)) this.upsert(row);
+        }
+        const was = before[index].rename;
+        const is = after.rename;
+        if (is === undefined) {
+          if (was !== undefined) {
+            this.removeRename(
+              name.namespace,
+              name.type_normalized,
+              name.model_id,
+              name.data_name,
+            );
+          }
+        } else if (was?.renamed_to !== is.renamed_to) {
+          this.recordRename(is);
+        }
+      }
+    } finally {
+      scratch.close();
+    }
+  }
+
+  #nameContents(
+    name: CatalogDataName,
+  ): { rows: CatalogRow[]; rename: RenameForwardRow | undefined } {
+    const rows = (this.#prepareCached(
+      `SELECT * FROM catalog WHERE ${DIRTY_NAME_WHERE} ORDER BY version`,
+    ).all(...dataNameArgs(name)) as unknown as CatalogRow[]).map((row) => ({
+      ...row,
+    }));
+    const rename = this.#prepareCached(
+      `SELECT namespace, type_normalized, model_id, data_name, renamed_to FROM catalog_renames WHERE ${DIRTY_NAME_WHERE}`,
+    ).get(...dataNameArgs(name)) as unknown as RenameForwardRow | undefined;
+    return {
+      rows,
+      rename: rename === undefined ? undefined : { ...rename },
+    };
   }
 
   /**
@@ -1807,6 +2040,8 @@ export class CatalogStore {
         this.removeRename(namespace, typeNormalized, modelId, dataName),
       clearNames: (names, clears) => this.#clearNames(names, clears),
       forgetDirty: (names) => this.#forgetDirtyNames(names),
+      reconcileNames: (names, clears, apply) =>
+        this.#reconcileNames(names, clears, apply),
     };
     this.db.exec("BEGIN IMMEDIATE");
     try {

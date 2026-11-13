@@ -43,6 +43,11 @@ import type { SqliteReadModel } from "../src/infrastructure/datastore_v3/sqlite_
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import {
+  TouchedScopeJournal,
+  touchedScopeOf,
+  WHOLE_CHECKOUT_SCOPE,
+} from "../src/infrastructure/datastore_v3/touched_scope_journal.ts";
+import {
   findSpan,
   withCapturedSpans,
 } from "../src/infrastructure/tracing/span_test_helpers.ts";
@@ -331,6 +336,7 @@ async function recoverAndPath(
     touched: unknown;
     restored: unknown;
     removed: unknown;
+    bounded: unknown;
   }
 > {
   let found = {
@@ -339,6 +345,7 @@ async function recoverAndPath(
     touched: undefined as unknown,
     restored: undefined as unknown,
     removed: undefined as unknown,
+    bounded: undefined as unknown,
   };
   await withCapturedSpans(async (spans) => {
     await readModel.recover("", options);
@@ -352,6 +359,7 @@ async function recoverAndPath(
       touched: of("touched_names"),
       restored: of("files_restored"),
       removed: of("files_removed"),
+      bounded: of("bounded"),
     };
   });
   return found;
@@ -371,6 +379,8 @@ interface Coverage {
   catalogOnly: number;
   landed: number;
   committedAfter: number;
+  journaled: number;
+  bounded: number;
 }
 
 const coverage: Coverage = {
@@ -387,6 +397,8 @@ const coverage: Coverage = {
   catalogOnly: 0,
   landed: 0,
   committedAfter: 0,
+  journaled: 0,
+  bounded: 0,
 };
 
 /** a writer's repository call over files earlier steps tore may fail part way */
@@ -408,6 +420,8 @@ async function writerStep(
   repo: FileSystemUnifiedDataRepository,
   catalog: CatalogStore,
   writtenDirs: Set<string>,
+  /** what the writer records before it writes at a path */
+  touch: (path: string) => void,
 ): Promise<number | undefined> {
   const id = IDS[step.model];
   const root = env.cacheRoot("");
@@ -496,6 +510,7 @@ async function writerStep(
       const files = await presentFiles(root);
       if (files.length === 0) return;
       const path = files[step.pick % files.length];
+      touch(path);
       if (step.kind === "overwrite") {
         await Deno.writeTextFile(path, `overwritten ${step.pick}`);
       } else {
@@ -513,6 +528,8 @@ async function writerStep(
         String(90 + step.pick % 5),
         "raw",
       );
+      // a new version is allocated under its name, as a save records it
+      touch(dirname(dirname(path)));
       await Deno.mkdir(dirname(path), { recursive: true });
       await Deno.writeTextFile(path, "unowned");
       return;
@@ -557,7 +574,9 @@ Deno.test({
         ),
         fc.constantFrom("interrupted_writer" as const, "dropped_work" as const),
         fc.option(fc.integer({ min: 1, max: 3 }), { nil: undefined }),
-        async (steps, compactAt, writer, pinned, entry, abortAt) => {
+        // false: an older swamp's writer, which records no scopes
+        fc.boolean(),
+        async (steps, compactAt, writer, pinned, entry, abortAt, journaled) => {
           coverage.runs++;
           await withV3Env(async (env) => {
             const history = new History();
@@ -589,10 +608,25 @@ Deno.test({
             await backdate(root, new Date(Date.now() - 600_000));
             const since = Date.now() - 60_000;
             const catalog = new CatalogStore(catalogV3Path(env));
+            const journal = new TouchedScopeJournal(catalogV3Path(env));
+            const pinnedUnit = crypto.randomUUID();
+            let unit = pinnedUnit;
+            if (journaled) coverage.journaled++;
+            const touch = (path?: string) => {
+              if (!journaled) return;
+              const scope = path === undefined
+                ? WHOLE_CHECKOUT_SCOPE
+                : touchedScopeOf(root, path);
+              if (scope !== undefined) journal.record(unit, "", scope);
+            };
             const repo = new FileSystemUnifiedDataRepository(
               env.repoDir,
               undefined,
               catalog,
+              (path?: string) => {
+                touch(path);
+                return Promise.resolve();
+              },
             );
             const writtenDirs = new Set<string>();
             try {
@@ -610,6 +644,7 @@ Deno.test({
                       repo,
                       catalog,
                       writtenDirs,
+                      touch,
                     ),
                   );
                 }
@@ -626,6 +661,7 @@ Deno.test({
                   await readModel.releaseDirtyNames(
                     pins,
                     () => Promise.resolve(false),
+                    [pinnedUnit],
                   );
                   const landing = saved[0];
                   if (pinned.lands && landing !== undefined) {
@@ -652,10 +688,12 @@ Deno.test({
                     }
                     if (landed) coverage.landed++;
                     await readModel.catchUp(AbortSignal.timeout(30_000));
+                    const pending = landed ? pins.slice(1) : pins;
                     await readModel.releaseDirtyNames(
-                      landed ? pins.slice(1) : pins,
+                      pending,
                       (pin) =>
                         Promise.resolve(landed && pin.txnId === "pending-0"),
+                      pending.length > 0 ? [pinnedUnit] : [],
                     );
                   }
                 } finally {
@@ -668,6 +706,7 @@ Deno.test({
                 }
                 writtenDirs.clear();
               }
+              unit = crypto.randomUUID();
               for (const step of writer) {
                 await writerStep(
                   env,
@@ -676,9 +715,11 @@ Deno.test({
                   repo,
                   catalog,
                   writtenDirs,
+                  touch,
                 );
               }
             } finally {
+              journal.close();
               catalog.close();
             }
             if (entry === "dropped_work") coverage.dropped++;
@@ -687,6 +728,7 @@ Deno.test({
               admits: () => true,
               entry,
               targeted: true,
+              journaled,
               ...(entry === "dropped_work"
                 ? { droppedDirs: [...writtenDirs] }
                 : {}),
@@ -726,6 +768,7 @@ Deno.test({
                 ...options,
                 signal: AbortSignal.timeout(30_000),
               });
+              if (run.bounded === true) coverage.bounded++;
               if (run.path === "targeted") coverage.targeted++;
               else {
                 const reason = String(run.fallback);
@@ -768,5 +811,6 @@ Deno.test({
       { numRuns: 150 },
     );
     console.log(`targeted recovery coverage: ${JSON.stringify(coverage)}`);
+    assert(coverage.bounded > 0, "no run took the bounded walk");
   },
 });

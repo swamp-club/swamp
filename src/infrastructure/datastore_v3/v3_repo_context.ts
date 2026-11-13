@@ -461,6 +461,10 @@ export function v3DatastoreFor(
         : {}),
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
       writerFence: () => v3WriterFence(config.path),
+      replicatedMark: () =>
+        v3ReplicatesAt(config.path)
+          ? publishedMarks.get(resolve(config.path)) ?? -1
+          : undefined,
       assertWriterCurrent: () => {
         refuseV3FollowerWrite(config.path);
         assertV3WriterCurrent(config.path);
@@ -1838,6 +1842,7 @@ async function releaseDirtyNames(
     // an entry that cannot be read names no names to keep
     if (listing.unreadable.length > 0) return;
     const pins: DirtyNamePin[] = [];
+    const keepUnits = listing.entries.map((entry) => entry.unitId);
     for (const { commit } of listing.entries) {
       const identity = commit.partition.identity;
       if (identity.kind !== "model") continue;
@@ -1862,6 +1867,7 @@ async function releaseDirtyNames(
           PartitionKey.parse(pin.partition),
           pin.txnId,
         ) !== undefined,
+      keepUnits,
     );
   } catch (error) {
     logger
@@ -2335,6 +2341,11 @@ async function syncAndPublishNow(
     datastore,
     Math.max(publishedMarks.get(datastore) ?? 0, mark.cursor),
   );
+  for (const opened of handles) {
+    if (resolve(opened.datastorePath) === datastore) {
+      opened.releaseReplicated();
+    }
+  }
   for (const listener of [...(publishListeners.get(datastore) ?? [])]) {
     try {
       listener();

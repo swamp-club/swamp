@@ -1330,6 +1330,7 @@ Deno.test("CatalogStore: rebuilds a catalog whose recorded version is current bu
   const db = new DatabaseSync(dbPath);
   db.exec(`
     DROP INDEX idx_catalog_step_latest;
+    DROP INDEX idx_catalog_group_step_latest_version;
     ALTER TABLE catalog DROP COLUMN is_step_latest;
     INSERT INTO catalog (type_normalized, model_id, data_name, id, version, model_name, created_at)
       VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');
@@ -2822,6 +2823,113 @@ Deno.test("CatalogStore.vacuum: keeps the dirty-name triggers and marks no name 
     assertEquals(store.dirtyTrackingSince(), 1_000);
     store.upsertNewVersion(makeRow({ data_name: "c" }));
     assertEquals(dirtyOf(store), ["a", "c"]);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore: clearing an earlier version's flags seeks the flagged rows, so a name's history replays in linear time (swamp-club#4677)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    for (let version = 1; version <= 200; version++) {
+      store.upsertNewVersion(
+        makeRow({ version, step_name: version % 2 ? "a" : "" }),
+      );
+    }
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    const group =
+      "namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?";
+    const plans = [
+      `UPDATE catalog INDEXED BY idx_catalog_is_latest SET is_latest = 0 WHERE ${group} AND version < ? AND is_latest = 1`,
+      `UPDATE catalog SET is_step_latest = 0 WHERE ${group} AND version < ? AND (step_name = ? OR ? = '' OR step_name = '') AND is_step_latest = 1`,
+    ].map((sql) =>
+      (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(
+        ...["", "test-model", "model-001", "my-data", 100, "a", "a"].slice(
+          0,
+          (sql.match(/\?/g) ?? []).length,
+        ),
+      ) as { detail: string }[]).map((row) => row.detail).join(" ")
+    );
+    assertStringIncludes(plans[0], "idx_catalog_is_latest");
+    assertStringIncludes(plans[1], "idx_catalog_group_step_latest_version");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.releaseUnit: forgets the unit's scopes and its names' dirty marks, unless a pin or another unit's scope holds the name (swamp-club#4677)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    store.ensureTouchedTracking(1_000);
+    for (const name of ["a", "b", "c", "d"]) {
+      store.upsertNewVersion(makeRow({ data_name: name }));
+    }
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    const touch = (unit: string, name: string) =>
+      db.prepare(
+        "INSERT INTO catalog_touched (unit_id, namespace, scope, type_normalized, model_id, data_name) VALUES (?, '', ?, 'test-model', 'model-001', ?)",
+      ).run(unit, `data/test-model/model-001/${name}`, name);
+    touch("u1", "a");
+    touch("u1", "b");
+    touch("u2", "b");
+    store.releaseDirty(
+      [{
+        namespace: "",
+        type_normalized: "test-model",
+        model_id: "model-001",
+        data_name: "c",
+        partition: "p",
+        txn_id: "t",
+      }],
+      [],
+      ["u1", "u2"],
+    );
+    for (const name of ["a", "b", "c", "d"]) {
+      store.upsertNewVersion(makeRow({ data_name: name, version: 2 }));
+    }
+    const name = (data_name: string) => ({
+      namespace: "",
+      type_normalized: "test-model",
+      model_id: "model-001",
+      data_name,
+    });
+    store.releaseUnit("u1", [name("c"), name("d")]);
+    assertEquals(
+      store.dirtyNames().map((n) => n.data_name),
+      ["b", "c"],
+      "b by u2's scope, c by its pin",
+    );
+    assertEquals(store.touchedScopes().map((row) => row.unit_id), ["u2"]);
+    store.releaseUnit("u2", []);
+    assertEquals(store.dirtyNames().map((n) => n.data_name), ["c"]);
+    assertEquals(store.touchedScopes(), []);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("CatalogStore.releaseDirty: keeps the touched scopes of units whose commits have not landed, and the names they hold (swamp-club#4677)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    store.ensureTouchedTracking(1_000);
+    store.upsertNewVersion(makeRow({ data_name: "kept" }));
+    store.upsertNewVersion(makeRow({ data_name: "gone" }));
+    const db = (store as unknown as { db: DatabaseSync }).db;
+    for (const [unit, name] of [["pending", "kept"], ["landed", "gone"]]) {
+      db.prepare(
+        "INSERT INTO catalog_touched (unit_id, namespace, scope, type_normalized, model_id, data_name) VALUES (?, '', ?, 'test-model', 'model-001', ?)",
+      ).run(unit, `data/test-model/model-001/${name}`, name);
+    }
+    store.releaseDirty([], [], ["pending"]);
+    assertEquals(store.touchedScopes().map((row) => row.unit_id), ["pending"]);
+    assertEquals(store.dirtyNames().map((n) => n.data_name), ["kept"]);
+    store.forgetAllDirty();
+    assertEquals(store.touchedScopes(), []);
   } finally {
     store.close();
   }

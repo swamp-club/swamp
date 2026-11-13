@@ -1528,8 +1528,7 @@ Deno.test("openV3Datastore: dropped work is recovered targeted, rebuilding only 
         );
         assertEquals(
           span.attributes["swamp.datastore.v3.readmodel.recover.touched_names"],
-          // the kept saves' rows stay dirty until the command ends cleanly
-          2,
+          1,
         );
       });
       assertEquals(versions(), ["kept@1", "lost@1"]);
@@ -2127,5 +2126,130 @@ Deno.test("openV3Datastore: a flush made from a nested unit, as a step's batch i
     } finally {
       await handle.close();
     }
+  });
+});
+
+/** a checkout whose tracking predates the units the test runs */
+async function trackedCheckout(
+  dir: string,
+  options: { readonly replicatedMark?: () => number | undefined } = {},
+) {
+  await initializeV3Datastore(join(dir, "datastore"), "test");
+  const repoDir = join(dir, "a");
+  const tracked = new CatalogStore(v3CatalogPath(repoDir));
+  try {
+    tracked.ensureDirtyTracking(0);
+    tracked.ensureTouchedTracking(0);
+  } finally {
+    tracked.close();
+  }
+  const handle = openV3Datastore({
+    repoDir,
+    datastorePath: join(dir, "datastore"),
+    ...options,
+  });
+  const hook = () => Promise.resolve();
+  const engine = handle.engineFor(hook, () => {
+    throw new Error("no run repository needed");
+  });
+  const catalog = new CatalogStore(v3CatalogPath(repoDir));
+  const data = new FileSystemUnifiedDataRepository(
+    repoDir,
+    swampPath(repoDir, "data"),
+    catalog,
+    hook,
+    undefined,
+    SOLO_NAMESPACE,
+    true,
+  );
+  await handle.catchUp();
+  return {
+    handle,
+    engine,
+    catalog,
+    save: (name: string) =>
+      data.save(
+        MODEL_TYPE,
+        MODEL_ID,
+        dataNamed(name),
+        new TextEncoder().encode("v"),
+      ),
+    scopes: () => catalog.touchedScopes().map((row) => row.scope).sort(),
+    dirty: () => catalog.dirtyNames().map((name) => name.data_name).sort(),
+    async [Symbol.asyncDispose]() {
+      catalog.close();
+      await handle.close();
+    },
+  };
+}
+
+const dataPrefix = (name: string) =>
+  `data/${MODEL_TYPE.normalized}/${MODEL_ID}/${name}`;
+
+Deno.test("openV3Datastore: a unit records where it writes before writing, never the whole checkout, and a settled unit releases what it touched once its commits land (swamp-club#4677)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    let during: string[] = [];
+    let dirtyDuring: string[] = [];
+    await checkout.engine.runRoot({}, async () => {
+      await checkout.save("kept");
+      during = checkout.scopes();
+      dirtyDuring = checkout.dirty();
+    });
+    assertEquals(during, [dataPrefix("kept")]);
+    assertEquals(dirtyDuring, ["kept"]);
+    assertEquals(checkout.scopes(), []);
+    assertEquals(checkout.dirty(), []);
+  });
+});
+
+Deno.test("openV3Datastore: a name another open unit wrote stays dirty when a unit that wrote it too settles, until that one settles (swamp-club#4677)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    const { promise: written, resolve: wrote } = Promise.withResolvers<void>();
+    const { promise: finish, resolve: finished } = Promise.withResolvers<
+      void
+    >();
+    const open = checkout.engine.runRoot({}, async () => {
+      await checkout.save("shared");
+      wrote();
+      await finish;
+    });
+    await written;
+    await checkout.engine.runRoot({}, () => checkout.save("shared"));
+    assertEquals(checkout.dirty(), ["shared"]);
+    assertEquals(checkout.scopes().length > 0, true);
+    finished();
+    await open;
+    assertEquals(checkout.dirty(), []);
+    assertEquals(checkout.scopes(), []);
+  });
+});
+
+Deno.test("openV3Datastore: on a replicating datastore a settled unit is released only once the replica confirms its commits (swamp-club#4677)", async () => {
+  await withTempDir(async (dir) => {
+    let mark = -1;
+    await using checkout = await trackedCheckout(dir, {
+      replicatedMark: () => mark,
+    });
+    await checkout.engine.runRoot({}, () => checkout.save("replicated"));
+    assertEquals(checkout.dirty(), ["replicated"]);
+    checkout.handle.releaseReplicated();
+    assertEquals(checkout.dirty(), ["replicated"]);
+    mark = checkout.handle.commitStore.highWaterMark().cursor;
+    checkout.handle.releaseReplicated();
+    assertEquals(checkout.dirty(), []);
+    assertEquals(checkout.scopes(), []);
+  });
+});
+
+Deno.test("openV3Datastore: a unit that dropped its work keeps what it touched for the next recovery (swamp-club#4677)", async () => {
+  await withTempDir(async (dir) => {
+    await using checkout = await trackedCheckout(dir);
+    await checkout.engine.runRoot(
+      { disposition: () => "discard" },
+      () => checkout.save("dropped"),
+    );
+    assertEquals(checkout.scopes(), [dataPrefix("dropped")]);
   });
 });

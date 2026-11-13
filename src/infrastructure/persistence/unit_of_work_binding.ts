@@ -19,6 +19,7 @@
 
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type {
+  StagedChange,
   UnitOfWork,
   UnitOfWorkBinding,
 } from "../../domain/datastore/unit_of_work.ts";
@@ -84,14 +85,21 @@ export const unitAdmissions = {
     admissions.get(uow),
 };
 
-const writeSignals = new WeakMap<UnitOfWork, () => void>();
+const writeSignals = new WeakMap<
+  UnitOfWork,
+  (change: StagedChange | undefined) => void
+>();
 
 export const unitWrites = {
-  register(uow: UnitOfWork, onWrite: () => void): void {
+  register(
+    uow: UnitOfWork,
+    onWrite: (change: StagedChange | undefined) => void,
+  ): void {
     writeSignals.set(uow, onWrite);
   },
-  signal(uow: UnitOfWork): void {
-    writeSignals.get(uow)?.();
+  /** with the change when it is still to be written */
+  signal(uow: UnitOfWork, change?: StagedChange): void {
+    writeSignals.get(uow)?.(change);
   },
 };
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import { join } from "@std/path";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
@@ -516,6 +517,28 @@ Deno.test("createServeCommitSink: a unit whose commit serve never received fails
     assertEquals(serve.head(MODEL), 0);
     assertEquals((await store.head("", MODEL)).seq, 0);
     assertEquals(await outbox.hasEntries(), false);
+  });
+});
+
+Deno.test("createServeCommitSink: a commit serve refused as not the leader before taking it is never looked for at serve, and its unit keeps no outbox entry; one a follower forwarded is (swamp-club#4677)", async () => {
+  await withCheckout(async ({ outbox, serve, cache, sink }) => {
+    serve.postFaults.push({ kind: "not-leader", inFlight: false });
+    const uow = createCommitLogUnitOfWork(
+      contextHook(),
+      unitOptions(sink, cache),
+    );
+    await uow.stageOp(blobChange("a"));
+    const reads = serve.requests.partitionCommits;
+    await assertRejects(() => uow.commit());
+    assertEquals(serve.requests.partitionCommits, reads, "serve not asked");
+    assertEquals(serve.head(MODEL), 0);
+    assertEquals(await outbox.hasEntries(), false);
+  });
+  await withCheckout(async ({ serve, sink }) => {
+    const commit = modelCommit(1, [await savePut("a", 1)]);
+    serve.postFaults.push({ kind: "not-leader", inFlight: true });
+    await assertRejects(() => sink.append(commit), ServeNotLeaderError);
+    assertEquals(await sink.outbox!.landedSeq!("", MODEL, commit.txnId), 1);
   });
 });
 

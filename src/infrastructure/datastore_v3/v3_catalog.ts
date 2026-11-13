@@ -65,11 +65,28 @@ export interface CatalogDirtyTracking {
   ): void;
   forgetDirty(names: readonly CatalogNameKey[]): void;
   forgetAllDirty(): void;
-  /** forgets every dirty name but those `pins` hold or held and did not land */
+  /**
+   * forgets every dirty name but those `pins` hold or held and did not land,
+   * and every touched scope but those of `keepUnits`
+   */
   releaseDirty(
     pins: readonly DirtyNamePin[],
     landed: readonly { readonly partition: string; readonly txnId: string }[],
+    keepUnits?: readonly string[],
   ): void;
+  ensureTouchedTracking(now: number): void;
+  /** undefined when the table is missing */
+  touchedTrackingSince(): number | undefined;
+  touchedScopes(): TouchedScope[];
+  forgetTouched(ids: readonly number[]): void;
+}
+
+/** a path a unit recorded before writing under it, as a record key */
+export interface TouchedScope {
+  readonly id: number;
+  readonly unitId: string;
+  readonly namespace: string;
+  readonly scope: string;
 }
 
 export interface ReadModelCatalog {
@@ -178,7 +195,29 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
 
   #applySteps(steps: readonly HeldStep[]): void {
     this.#store.applyInTransaction((writer) => {
-      for (const step of steps) {
+      for (let index = 0; index < steps.length; index++) {
+        const step = steps[index];
+        if (step.kind === "clear-names") {
+          const replays = replaysOf(steps, index + 1, step.names);
+          if (replays.length > 0) {
+            writer.reconcileNames(
+              step.names.map(catalogDataName),
+              (row) => step.admits(catalogRowRecordKey(row)),
+              (scratch) => {
+                for (const replay of replays) {
+                  applyActions(
+                    scratch,
+                    replay.namespace,
+                    replay.partition,
+                    replay.actions,
+                  );
+                }
+              },
+            );
+            index += replays.length;
+            continue;
+          }
+        }
         switch (step.kind) {
           case "actions":
             applyActions(writer, step.namespace, step.partition, step.actions);
@@ -245,6 +284,7 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
   releaseDirty(
     pins: readonly DirtyNamePin[],
     landed: readonly { readonly partition: string; readonly txnId: string }[],
+    keepUnits: readonly string[] = [],
   ): void {
     this.#store.releaseDirty(
       pins.map((pin): CatalogDirtyPin => ({
@@ -253,7 +293,29 @@ export class V3Catalog implements ReadModelCatalog, CatalogDirtyTracking {
         txn_id: pin.txnId,
       })),
       landed.map((l) => ({ partition: l.partition, txn_id: l.txnId })),
+      keepUnits,
     );
+  }
+
+  ensureTouchedTracking(now: number): void {
+    this.#store.ensureTouchedTracking(now);
+  }
+
+  touchedTrackingSince(): number | undefined {
+    return this.#store.touchedTrackingSince();
+  }
+
+  touchedScopes(): TouchedScope[] {
+    return this.#store.touchedScopes().map((row) => ({
+      id: row.id,
+      unitId: row.unit_id,
+      namespace: row.namespace,
+      scope: row.scope,
+    }));
+  }
+
+  forgetTouched(ids: readonly number[]): void {
+    this.#store.forgetTouched(ids);
   }
 
   beginBatch(): void {
@@ -296,6 +358,44 @@ function catalogNameKey(name: CatalogDataName): CatalogNameKey {
     modelId: name.model_id,
     name: name.data_name,
   };
+}
+
+type ActionsStep = Extract<HeldStep, { kind: "actions" }>;
+
+/** the actions steps right after a clear that touch only the names it clears */
+function replaysOf(
+  steps: readonly HeldStep[],
+  from: number,
+  names: readonly CatalogNameKey[],
+): ActionsStep[] {
+  const cleared = new Set(names.map(nameIdentity));
+  const replays: ActionsStep[] = [];
+  for (let index = from; index < steps.length; index++) {
+    const step = steps[index];
+    if (step.kind !== "actions") break;
+    const identity = step.partition.identity;
+    if (identity.kind !== "model") return [];
+    for (const action of step.actions) {
+      const name = action.kind === "upsert-version"
+        ? action.metadata.name
+        : action.name;
+      const key = nameIdentity({
+        namespace: step.namespace,
+        type: identity.type,
+        modelId: identity.id,
+        name,
+      });
+      if (!cleared.has(key)) return [];
+    }
+    replays.push(step);
+  }
+  return replays;
+}
+
+function nameIdentity(name: CatalogNameKey): string {
+  return [name.namespace, name.type, name.modelId, name.name].join(
+    "\0",
+  );
 }
 
 function applyActions(

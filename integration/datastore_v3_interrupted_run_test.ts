@@ -532,7 +532,10 @@ Deno.test("v3 interrupted run: a writer that ends cleanly forgets the catalog na
         catalog.close();
       }
     };
-    assert(dirtyNames().includes("committed"), "the writer's rows are dirty");
+    assert(
+      !dirtyNames().includes("committed"),
+      "the settled writer's rows are released",
+    );
     // an entry queued offline, whose rows the writer wrote before staging
     const partition = partitionOf({
       kind: "model",

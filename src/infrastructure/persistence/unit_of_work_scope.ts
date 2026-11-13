@@ -75,7 +75,7 @@ export async function signalChange(
     // other is offered to the unit, which refuses a path-only change rather
     // than drop it
     const adopter = adoptingUnit();
-    if (adopter !== undefined) unitWrites.signal(adopter);
+    if (adopter !== undefined) unitWrites.signal(adopter, change);
     if (adopter !== undefined && !options.typed) await adopter.stage(change);
     return;
   }
@@ -87,7 +87,7 @@ export async function signalChange(
     // requires a unit, even one built before the hook was marked
     !(requiresUnit && legacyUnitOfWorkTarget(uow) !== undefined)
   ) {
-    unitWrites.signal(uow);
+    unitWrites.signal(uow, change);
     if (options.typed && typedStagers.stagerOf(uow) !== undefined) return;
     await uow.stage(change);
     return;
@@ -99,7 +99,7 @@ export async function signalChange(
     if (
       outer !== undefined && unitOfWorkBinding.boundHook(outer) === markDirty
     ) {
-      unitWrites.signal(outer);
+      unitWrites.signal(outer, change);
       if (options.typed && typedStagers.stagerOf(outer) !== undefined) return;
       await outer.stage(change);
       return;
@@ -199,6 +199,23 @@ export async function stageTyped(
   unitWrites.signal(bound.unit);
   const changes = await build();
   if (changes.length > 0) await bound.stage(changes);
+}
+
+/**
+ * removes a file that exists, signalled first; one already absent throws
+ * NotFound unsignalled, so a hook is never told of a path nothing removed
+ */
+export async function removeSignalled(
+  markDirty: MarkDirtyHook | undefined,
+  path: string,
+): Promise<void> {
+  await Deno.lstat(path);
+  await withChangeSignalled(
+    markDirty,
+    { kind: "remove", path },
+    { typed: true },
+    () => Deno.remove(path),
+  );
 }
 
 /**

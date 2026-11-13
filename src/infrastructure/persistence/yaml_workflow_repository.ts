@@ -20,6 +20,7 @@
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
 import {
+  removeSignalled,
   stageTyped,
   typedStagingActive,
   withChangeSignalled,
@@ -428,7 +429,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
 
         if (previousPath && previousPath !== targetPath) {
           try {
-            await Deno.remove(previousPath);
+            await removeSignalled(this.markDirtyHook, previousPath);
             removed.push(previousPath);
             logger.debug`Migrated workflow file from ${
               basename(previousPath)
@@ -447,7 +448,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           await this.exists(legacyPath)
         ) {
           try {
-            await Deno.remove(legacyPath);
+            await removeSignalled(this.markDirtyHook, legacyPath);
             removed.push(legacyPath);
             logger.debug`Migrated workflow file from ${
               basename(legacyPath)
@@ -544,7 +545,9 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           // workflow's file.
           if (await this.declaresOther(path, id, name)) continue;
           try {
-            await Deno.remove(path);
+            // the outer signal already names the resolved path
+            if (path === resolvedPath) await Deno.remove(path);
+            else await removeSignalled(this.markDirtyHook, path);
             deleted = true;
             removed.push(path);
           } catch (error) {

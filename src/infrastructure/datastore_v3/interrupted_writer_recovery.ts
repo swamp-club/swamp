@@ -89,7 +89,15 @@ export interface WriterMarker {
    */
   readonly process?: ProcessIdentity;
   readonly since: number;
+  /**
+   * set by a writer that records where it writes before writing; a marker
+   * without it is an older swamp's, whose recovery walks the whole checkout
+   */
+  readonly journal?: number;
 }
+
+/** what a writer marker's journal says this binary's writers record */
+export const WRITER_JOURNAL_VERSION = 1;
 
 const PROCESS_INSTANCE = crypto.randomUUID();
 
@@ -117,6 +125,7 @@ export async function writeWriterMarker(
     instance: PROCESS_INSTANCE,
     process: local.identity,
     since: recoverySince(Date.now()),
+    journal: WRITER_JOURNAL_VERSION,
   };
   await writeFileDurably(
     writerMarkerPath(repoDir),
@@ -205,6 +214,9 @@ function parseWriterMarker(text: string): WriterMarker | undefined {
         ...(value.instance !== undefined ? { instance: value.instance } : {}),
         ...(process !== undefined ? { process } : {}),
         since: value.since,
+        ...(Number.isSafeInteger(value.journal)
+          ? { journal: value.journal }
+          : {}),
       };
     }
   } catch {
@@ -406,6 +418,8 @@ async function recoverLocked(
   try {
     removed = await handle.recoverInterruptedWriter(since, signal, {
       entry: "interrupted_writer",
+      journaled: file.kind === "marker" &&
+        file.marker.journal === WRITER_JOURNAL_VERSION,
     });
     await restoreQueuedStepStarts(handle, repoDir);
   } finally {
