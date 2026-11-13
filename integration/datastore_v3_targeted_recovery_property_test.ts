@@ -542,6 +542,38 @@ async function writerStep(
   }
 }
 
+/** an unlanded delete that repoints a renamed-away name's latest marker */
+const RENAME_ONTO_DELETED_NAME: [
+  HistoryStep[],
+  number,
+  WriterStep[],
+  { pending: WriterStep[]; lands: boolean },
+  "interrupted_writer",
+  undefined,
+  boolean,
+] = [
+  [
+    { model: 0, kind: "rename", name: "c", to: "a", pick: 0 },
+    { model: 0, kind: "delete", name: "c", to: "a", pick: 0 },
+    { model: 0, kind: "append", name: "c", to: "a", pick: 0 },
+    { model: 0, kind: "save", name: "a", to: "a", pick: 0 },
+    { model: 0, kind: "save", name: "a", to: "a", pick: 0 },
+    { model: 0, kind: "rename", name: "c", to: "a", pick: 0 },
+  ],
+  0,
+  [{ model: 0, kind: "repo-save", name: "a", pick: 0 }],
+  {
+    pending: [
+      { model: 0, kind: "repo-save", name: "a", pick: 0 },
+      { model: 0, kind: "repo-delete", name: "c", pick: 1 },
+    ],
+    lands: false,
+  },
+  "interrupted_writer",
+  undefined,
+  false,
+];
+
 Deno.test({
   name:
     "targeted recovery: leaves the catalog, renames, files and live records a full rebuild leaves, whatever the history and whatever an interrupted writer or dropped work left (swamp-club#4581)",
@@ -808,7 +840,7 @@ Deno.test({
           });
         },
       ),
-      { numRuns: 150 },
+      { numRuns: 150, examples: [RENAME_ONTO_DELETED_NAME] },
     );
     console.log(`targeted recovery coverage: ${JSON.stringify(coverage)}`);
     assert(coverage.bounded > 0, "no run took the bounded walk");

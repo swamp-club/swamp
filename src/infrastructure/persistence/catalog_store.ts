@@ -1692,8 +1692,13 @@ export class CatalogStore {
       const pin = this.#prepareCached(
         "INSERT OR IGNORE INTO catalog_dirty_pins (namespace, type_normalized, model_id, data_name, partition, txn_id) VALUES (?, ?, ?, ?, ?, ?)",
       );
+      // a pinned name is dirty even when its write changed no catalog row
+      const mark = this.#prepareCached(
+        "INSERT OR IGNORE INTO catalog_dirty (namespace, type_normalized, model_id, data_name) VALUES (?, ?, ?, ?)",
+      );
       for (const p of pins) {
         pin.run(...dataNameArgs(p), p.partition, p.txn_id);
+        mark.run(...dataNameArgs(p));
       }
       const unpin = this.#prepareCached(
         "DELETE FROM catalog_dirty_pins WHERE partition = ? AND txn_id = ?",
