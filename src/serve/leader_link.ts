@@ -168,7 +168,9 @@ export class LeaderLink {
   readonly #clients = new Map<string, Deno.HttpClient | undefined>();
   readonly #closed = new AbortController();
   #frozen: { key: string; probeAt: number; probing: boolean } | undefined;
-  #unanswered: { key: string; count: number; lastAt: number } | undefined;
+  #unanswered: { key: string; count: number; seq: number } | undefined;
+  // a clock tick can hold a timeout and the next send alike; a sequence cannot
+  #timeoutSeq = 0;
 
   constructor(options: LeaderLinkOptions) {
     this.#options = options;
@@ -221,7 +223,7 @@ export class LeaderLink {
     if (admitted === "refuse") {
       return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
     }
-    const startedAt = this.#now();
+    const sentAtSeq = this.#timeoutSeq;
     const url = new URL(req.url);
     const target = leaderTarget(address, url.pathname, url.search);
     const headers = forwardedHeaders(
@@ -272,7 +274,7 @@ export class LeaderLink {
         // its connections may reach a leader that no longer answers
         this.#dropClient(address);
       }
-      this.#failed(key, admitted === "probe", startedAt, {
+      this.#failed(key, admitted === "probe", sentAtSeq, {
         neverSent: !inFlight,
         timedOut,
         abandoned: req.signal.aborted || this.#closed.signal.aborted,
@@ -335,7 +337,7 @@ export class LeaderLink {
   #failed(
     key: string,
     probe: boolean,
-    startedAt: number,
+    sentAtSeq: number,
     how: { neverSent: boolean; timedOut: boolean; abandoned: boolean },
   ): void {
     const frozen = this.#frozen?.key === key ? this.#frozen : undefined;
@@ -349,9 +351,9 @@ export class LeaderLink {
     }
     if (!how.timedOut) return;
     const prior = this.#unanswered?.key === key ? this.#unanswered : undefined;
-    if (prior !== undefined && startedAt <= prior.lastAt) return;
+    if (prior !== undefined && sentAtSeq < prior.seq) return;
     const count = (prior?.count ?? 0) + 1;
-    this.#unanswered = { key, count, lastAt: this.#now() };
+    this.#unanswered = { key, count, seq: ++this.#timeoutSeq };
     if (count >= FROZEN_AFTER_TIMEOUTS) this.#markFrozen(key);
   }
 

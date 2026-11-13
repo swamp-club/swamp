@@ -552,6 +552,22 @@ Deno.test("LeaderLink.forward: a leader that left two forwards in a row unanswer
   }
 });
 
+Deno.test("LeaderLink.forward: two forwards in a row left unanswered within one clock tick mark the leader frozen", async () => {
+  let calls = 0;
+  const forwarder = frozenLink((_input, init) => {
+    calls++;
+    return neverAnswered(init?.signal);
+  });
+  try {
+    assertEquals((await forwardOnce(forwarder)).inFlight, true);
+    assertEquals((await forwardOnce(forwarder)).inFlight, true);
+    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
+    assertEquals(calls, 2);
+  } finally {
+    forwarder.close();
+  }
+});
+
 Deno.test("LeaderLink.forward: while a probe of a frozen leader waits, other forwards are refused at once", async () => {
   let now = 0;
   let calls = 0;
