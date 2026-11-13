@@ -28,7 +28,8 @@ imports the names it needs through `packages/dashboard/src/lib/agent_sessions/sw
 
 1. **Start.** `swamp start` offers "Start from your past sessions" when it
    finds Claude Code or Codex history, says what will be read and where results
-   go, and creates the `swampify` behavior in the workspace.
+   go, and launches the user's agent on a [kick-off](#the-kick-off) task. The
+   agent pulls `@swamp/agent-sessions` and creates the `swampify` behavior.
 2. **Assess.** The extension's `assess` method mines transcripts, with no model,
    and writes a **candidate set**.
 3. **Offer.** The agent reads example sessions for the top candidates, merges
@@ -39,6 +40,37 @@ imports the names it needs through `packages/dashboard/src/lib/agent_sessions/sw
    workflow.
 5. **Compare.** `compare` writes a **comparison** for the picked option: what
    the chore cost raw, what the swamp run cost, and when the build pays back.
+
+## The kick-off
+
+The kick-off is a [start](./start.md#start-from-your-past-sessions) task of
+kind `swampify`, the kind the page's build hand-off uses, so its brief and
+launch prompt ("use the swampify skill") are the same. Core fills one
+constant with the window and excluded paths, and the skill recognises it by
+these lines, pinned by a test on both sides:
+
+- `Swampify kick-off: start from your past sessions`, the task's title;
+- `<!-- swampify kick-off v1 -->`, the line after it;
+- `Window: last <N> days`;
+- `Scope: every session on this machine`;
+- `Excluded paths: none`, or `Excluded paths:` followed by a `json` code fence
+  holding one JSON array of paths.
+
+Its steps pull `@swamp/agent-sessions`, create the `swampify` behavior unless
+one of that type exists, and follow the skill from its first state. The skill
+still gives its disclosure and waits for the user to agree before anything is
+read; it skips only its window and scope questions.
+
+A start workspace has no skill folders when the agent launches, and neither
+harness picks up a skill installed into a folder that did not exist at
+startup: Claude Code answers "Unknown skill", and Codex lists a new skill only
+from its next session. Reading `SKILL.md` by path worked in both, so the text
+names the installed paths (`.claude/skills/swampify/SKILL.md`,
+`.agents/skills/swampify/SKILL.md`) for when the skill isn't available.
+Start does not pull the extension itself: that would add a network step and a
+new failure to start for what one sentence covers. Codex's default sandbox
+refuses the pull's write to `.agents/`, so the text says to ask the user to
+run it outside the sandbox.
 
 ## The three items
 

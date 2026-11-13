@@ -1099,3 +1099,50 @@ export function railRequest(
   }
   return screen === "agent" || screen === "trust" ? "start.back" : null;
 }
+
+/** The agents "Start from your past sessions" can read with. */
+export type PastSessionsHarness = "claude" | "codex";
+
+/** The window choices offered, in days; the first default is 30. */
+export const PAST_SESSIONS_WINDOWS: readonly number[] = [7, 30, 90];
+export const PAST_SESSIONS_DEFAULT_WINDOW = 30;
+
+/** The harnesses whose history was found here, Claude Code first. */
+export function pastSessionsHarnesses(
+  signals: StartSignals,
+): PastSessionsHarness[] {
+  return [
+    ...(signals.claudeTranscripts === true ? ["claude" as const] : []),
+    ...(signals.codexSessions === true ? ["codex" as const] : []),
+  ];
+}
+
+/** Whether to offer "Start from your past sessions" at all. */
+export function showPastSessions(signals: StartSignals): boolean {
+  return pastSessionsHarnesses(signals).length > 0;
+}
+
+/**
+ * The workspace name to prefill: `swampify`, or `swampify-2`, `-3`… when
+ * taken.
+ */
+export function swampifyWorkspaceName(taken: readonly string[]): string {
+  const names = new Set(taken);
+  if (!names.has("swampify")) return "swampify";
+  let n = 2;
+  while (names.has(`swampify-${n}`)) n++;
+  return `swampify-${n}`;
+}
+
+/**
+ * The excluded paths typed one per line: trimmed, blanks dropped, repeats
+ * removed. The server checks each path; this only splits.
+ */
+export function parseExcludedPaths(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const path = line.trim();
+    if (path !== "" && !out.includes(path)) out.push(path);
+  }
+  return out;
+}

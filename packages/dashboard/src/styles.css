@@ -4806,6 +4806,41 @@ a.cron-badge:hover {
   margin-top: 16px;
 }
 
+/* swamp start: "Start from your past sessions" */
+.start-past-sessions {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.start-disclosure {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-2);
+}
+
+.start-past-agents {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+.start-past-agents legend {
+  margin-bottom: 6px;
+}
+
+.start-past-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* swamp start: the workspace list as compact cards under a sort header */
 .start-workspace-bar .start-ws-heading {
   margin: 0;

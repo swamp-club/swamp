@@ -49,8 +49,11 @@ import {
   newWorkspaceNameProblem,
   nextWorkspaceOrder,
   orderExamples,
+  parseExcludedPaths,
   parseTokenFromHash,
   parseWorkspaceOrder,
+  PAST_SESSIONS_WINDOWS,
+  pastSessionsHarnesses,
   pathLabel,
   pickFirstTaskIdea,
   planHistorySync,
@@ -61,10 +64,12 @@ import {
   screenComponentKey,
   setupSummary,
   showExtrasOpen,
+  showPastSessions,
   sortWorkspaces,
   splitHarnesses,
   splitTask,
   startErrorText,
+  swampifyWorkspaceName,
   taskCreatedLabel,
   taskStatusLabel,
   TITLE_MAX,
@@ -132,7 +137,14 @@ const EXAMPLES: ExamplePrompt[] = [
 ];
 
 function signals(partial: Partial<StartSignals>): StartSignals {
-  return { kubeconfig: false, awsConfig: false, gcloudAdc: false, ...partial };
+  return {
+    kubeconfig: false,
+    awsConfig: false,
+    gcloudAdc: false,
+    claudeTranscripts: false,
+    codexSessions: false,
+    ...partial,
+  };
 }
 
 Deno.test("orderExamples: keeps the order when no signal is present", () => {
@@ -1038,4 +1050,53 @@ Deno.test("planHistorySync: up adds one entry, down returns to the nearest one n
     delta: -1,
     to: 0,
   });
+});
+
+Deno.test("showPastSessions: only when Claude Code or Codex history is here", () => {
+  assertEquals(showPastSessions(signals({})), false);
+  assertEquals(
+    showPastSessions(signals({ kubeconfig: true, awsConfig: true })),
+    false,
+  );
+  assertEquals(showPastSessions(signals({ claudeTranscripts: true })), true);
+  assertEquals(showPastSessions(signals({ codexSessions: true })), true);
+});
+
+Deno.test("pastSessionsHarnesses: offers only harnesses whose history is here", () => {
+  assertEquals(pastSessionsHarnesses(signals({})), []);
+  assertEquals(pastSessionsHarnesses(signals({ claudeTranscripts: true })), [
+    "claude",
+  ]);
+  assertEquals(pastSessionsHarnesses(signals({ codexSessions: true })), [
+    "codex",
+  ]);
+  assertEquals(
+    pastSessionsHarnesses(
+      signals({ claudeTranscripts: true, codexSessions: true }),
+    ),
+    ["claude", "codex"],
+  );
+});
+
+Deno.test("swampifyWorkspaceName: swampify, else the first free swampify-N", () => {
+  assertEquals(swampifyWorkspaceName([]), "swampify");
+  assertEquals(swampifyWorkspaceName(["misty-heron"]), "swampify");
+  assertEquals(swampifyWorkspaceName(["swampify"]), "swampify-2");
+  assertEquals(
+    swampifyWorkspaceName(["swampify", "swampify-2", "swampify-4"]),
+    "swampify-3",
+  );
+  assertEquals(swampifyWorkspaceName(["swampify-2"]), "swampify");
+});
+
+Deno.test("parseExcludedPaths: one path per line, trimmed, no blanks or repeats", () => {
+  assertEquals(parseExcludedPaths(""), []);
+  assertEquals(
+    parseExcludedPaths("  ~/src/client \r\n\n/srv/a\n~/src/client\n  "),
+    ["~/src/client", "/srv/a"],
+  );
+});
+
+Deno.test("PAST_SESSIONS_WINDOWS: offers the 30-day default", () => {
+  assertEquals(PAST_SESSIONS_WINDOWS.includes(30), true);
 });

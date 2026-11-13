@@ -24,6 +24,7 @@ import {
   startAddTools,
   startBack,
   startCheckFolder,
+  startCheckSwampifyKickoff,
   startCheckWorkspaceLocation,
   startChooseHarness,
   type StartDeps,
@@ -37,6 +38,7 @@ import {
   startOpenWorkspace,
   startPickFolder,
   startResume,
+  startSaveSwampifyKickoff,
   startSaveTask,
   startSignIn,
   type StartSignInEvent,
@@ -48,6 +50,11 @@ import {
 import { MAX_WORKSPACE_PARENT_LENGTH } from "../../libswamp/workspace/workspace_store.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { findHarness } from "../../domain/start/harness.ts";
+import {
+  SWAMPIFY_KICKOFF_EXCLUDE_MAX,
+  SWAMPIFY_KICKOFF_PATH_MAX,
+  SWAMPIFY_KICKOFF_WINDOW_MAX,
+} from "../../domain/start/swampify_kickoff.ts";
 import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
 import { validateWebSocketOrigin } from "../origin.ts";
 import { serveDashboardRoute } from "../dashboard_assets.ts";
@@ -179,6 +186,19 @@ const RequestSchema = z.discriminatedUnion("type", [
     }),
   }),
   z.object({ type: z.literal("start.workspace.leave"), id: z.string() }),
+  // No free text: core builds the kick-off from these fields alone.
+  z.object({
+    type: z.literal("start.swampify.kickoff"),
+    id: z.string(),
+    payload: z.object({
+      name: z.string().max(64),
+      parent: z.string().max(MAX_WORKSPACE_PARENT_LENGTH).optional(),
+      windowDays: z.number().int().min(1).max(SWAMPIFY_KICKOFF_WINDOW_MAX),
+      exclude: z.array(z.string().max(SWAMPIFY_KICKOFF_PATH_MAX))
+        .max(SWAMPIFY_KICKOFF_EXCLUDE_MAX).optional(),
+      harness: z.string().max(32),
+    }),
+  }),
   z.object({
     type: z.literal("start.workspace.import"),
     id: z.string(),
@@ -766,6 +786,42 @@ export function startStartServer(
         );
       case "start.workspace.leave":
         return respond(await leaveWorkspace());
+      case "start.swampify.kickoff":
+        return respond(
+          await signedIn(async () => {
+            const { name, parent, ...kickoff } = request.payload;
+            // Checked before the workspace opens, so a refusal creates none.
+            try {
+              await startCheckSwampifyKickoff(deps, kickoff);
+            } catch (error) {
+              if (error instanceof UserError) {
+                throw new StartServerError(
+                  error.code ?? "user_error",
+                  error.message,
+                  { cause: error },
+                );
+              }
+              throw error;
+            }
+            await openWorkspaceNow(
+              name,
+              parent !== undefined ? { parent } : {},
+            );
+            const status = await lastStatus(
+              startSaveSwampifyKickoff(ctx, deps, {
+                workspacePath: requireWorkspace(),
+                ...kickoff,
+              }),
+            );
+            copyFallback = false;
+            launchedName = undefined;
+            reevaluate();
+            selectedTask = status.taskId ?? null;
+            previousTask = null;
+            view = "flow";
+            return present(status);
+          }),
+        );
       case "start.task.save":
         return respond(
           await inWorkspace(async (path) => {
