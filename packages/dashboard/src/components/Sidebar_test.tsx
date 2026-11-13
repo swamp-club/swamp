@@ -22,6 +22,7 @@
 import { assert, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Sidebar } from "./Sidebar.tsx";
+import { NAV_ICONS } from "./nav_icons.tsx";
 import type { LogoutStep } from "./logout_confirm.ts";
 
 const OLD_LOGOUT_ARROW = "M6 2H3v12h3M10 5l3 3-3 3M13 8H6";
@@ -110,4 +111,9 @@ Deno.test("Sidebar: Swampify comes right after Agent sessions", () => {
   const swampify = html.indexOf("Swampify");
   assert(sessions !== -1 && swampify > sessions);
   assert(!html.slice(sessions, swampify).includes("Activity"));
+});
+
+Deno.test("Sidebar: Swampify uses the shared Swampify icon", () => {
+  const html = render({ swampifyVisible: true });
+  assertStringIncludes(html, NAV_ICONS.swampify);
 });

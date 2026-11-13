@@ -40,6 +40,32 @@ export function isBriefFile(path: string): boolean {
 
 export const BRIEF_HEADER = "<!-- swamp start brief v1 -->";
 
+/** the line the swampify skill reads the page's address from; pinned on both sides */
+export const SWAMPIFY_PAGE_LINE_PREFIX = "- Swampify page: ";
+
+/**
+ * The Swampify page for a workspace on the server a browser reached at
+ * `origin`. Null for anything but a bare http(s) origin, since the result
+ * lands in a file an agent reads.
+ */
+export function swampifyPageUrl(
+  origin: string,
+  workspaceName: string,
+): string | null {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.username !== "" || url.password !== "") return null;
+  if (url.origin !== origin) return null;
+  return `${url.origin}/dashboard/w/${
+    encodeURIComponent(workspaceName)
+  }/swampify`;
+}
+
 /**
  * Renders the brief the agent reads. The task goes in verbatim; no other
  * user input appears anywhere in it.
@@ -49,6 +75,8 @@ export function renderBrief(input: {
   workspacePath: string;
   harnessDisplayName: string;
   imported?: boolean;
+  /** swampify briefs only; the line is left out without it */
+  swampifyPageUrl?: string | null;
 }): string {
   if (input.task.kind === "swampify") {
     // The Swampify task carries its own steps, and is always the user's repo.
@@ -62,6 +90,9 @@ export function renderBrief(input: {
       "",
       `- Workspace: ${input.workspacePath}. This is the user's own swamp repo; leave files unrelated to the task alone.`,
       `- Agent: ${input.harnessDisplayName}`,
+      ...(input.swampifyPageUrl
+        ? [`${SWAMPIFY_PAGE_LINE_PREFIX}${input.swampifyPageUrl}`]
+        : []),
       "",
     ].join("\n");
   }

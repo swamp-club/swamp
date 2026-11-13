@@ -2158,6 +2158,7 @@ export {
   type StartLocationCheck,
   startOpenAgent,
   startOpenWorkspace,
+  type StartPageAddress,
   startPickFolder,
   startPrepare,
   type StartPrepareEvent,

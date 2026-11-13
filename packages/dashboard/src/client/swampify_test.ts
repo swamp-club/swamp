@@ -47,10 +47,13 @@ import {
   parseComparisonReply,
   parseOfferReply,
   parseSwampifyRows,
+  refetchOnReturn,
   shownCandidateSet,
   shownOffer,
+  SWAMPIFY_BUILD_POLL_MS,
   SWAMPIFY_COMPARISON_LIMIT,
   SWAMPIFY_ITEM_LIMIT,
+  swampifyPollMs,
   type SwampifyRow,
   swampifyRowKey,
 } from "./swampify.ts";
@@ -236,4 +239,47 @@ Deno.test("swampifyRowKey: a rewrite of the same item is a new key; the same ver
   assertEquals(swampifyRowKey(first), swampifyRowKey(again));
   assertEquals(swampifyRowKey(first) === swampifyRowKey(rewritten), false);
   assertEquals(swampifyRowKey(first) === swampifyRowKey(otherOwner), false);
+});
+
+class FakeTab {
+  visibilityState = "visible";
+  listeners = new Set<() => void>();
+  addEventListener(_type: "visibilitychange", listener: () => void): void {
+    this.listeners.add(listener);
+  }
+  removeEventListener(_type: "visibilitychange", listener: () => void): void {
+    this.listeners.delete(listener);
+  }
+  show(state: "visible" | "hidden"): void {
+    this.visibilityState = state;
+    for (const listener of this.listeners) listener();
+  }
+}
+
+Deno.test("refetchOnReturn: the Swampify page re-reads every list when the tab comes back", () => {
+  const tab = new FakeTab();
+  const calls: string[] = [];
+  const stop = refetchOnReturn(tab, [
+    () => calls.push("candidates"),
+    () => calls.push("offer"),
+    () => calls.push("comparisons"),
+  ]);
+  tab.show("hidden");
+  assertEquals(calls, []);
+  tab.show("visible");
+  assertEquals(calls, ["candidates", "offer", "comparisons"]);
+  stop();
+});
+
+Deno.test("swampifyPollMs: polls only while the tab is in view and the offer is picked", () => {
+  const reading = (kind: "offered" | "picked" | "built" | "declined") => ({
+    kind: "record" as const,
+    record: fixtureOffer(kind),
+  });
+  assertEquals(swampifyPollMs(reading("picked"), true), SWAMPIFY_BUILD_POLL_MS);
+  assertEquals(swampifyPollMs(reading("picked"), false), null);
+  for (const kind of ["offered", "built", "declined"] as const) {
+    assertEquals(swampifyPollMs(reading(kind), true), null, kind);
+  }
+  assertEquals(swampifyPollMs(null, true), null);
 });

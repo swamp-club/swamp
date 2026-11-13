@@ -50,6 +50,11 @@ import {
   type SwampifyOfferSummary,
   type SwampifySkipped,
 } from "../lib/agent_sessions/swampify.ts";
+import {
+  type VisibilityDocument,
+  visibleIntervalMs,
+  watchTabReturn,
+} from "./run_activity.ts";
 
 /** Candidate sets or offers one list reads: one per owning behavior. */
 export const SWAMPIFY_ITEM_LIMIT = 50;
@@ -269,4 +274,31 @@ export function parseComparisonReply(
 ): SwampifyComparisonReading {
   const read = replyContent(data);
   return "content" in read ? readSwampifyComparison(read.content) : read;
+}
+
+/** How often the page re-reads while a picked option is being built. */
+export const SWAMPIFY_BUILD_POLL_MS = 15_000;
+
+/**
+ * The page's poll: only while the tab is in view and the shown offer is
+ * picked, since the build happens in the agent's session and tells the page
+ * nothing.
+ */
+export function swampifyPollMs(
+  offer: SwampifyOfferReading | null,
+  visible: boolean,
+): number | null {
+  const picked = offer?.kind === "record" &&
+    offer.record.state.kind === "picked";
+  return visibleIntervalMs(picked ? SWAMPIFY_BUILD_POLL_MS : null, visible);
+}
+
+/** Re-reads each of the page's lists when the tab comes back into view. */
+export function refetchOnReturn(
+  doc: VisibilityDocument | undefined,
+  refetches: readonly (() => void)[],
+): () => void {
+  return watchTabReturn(doc, () => {
+    for (const refetch of refetches) refetch();
+  });
 }

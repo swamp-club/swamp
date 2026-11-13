@@ -56,6 +56,12 @@ these lines, pinned by a test on both sides:
 - `Excluded paths: none`, or `Excluded paths:` followed by a `json` code fence
   holding one JSON array of paths.
 
+Every swampify brief, the kick-off and the build, ends its `# Context` with
+`- Swampify page: <url>` when start knows the page's address, pinned on both
+sides with the lines above; the skill names the page instead when the line is
+missing or the link does not load. See
+[start](./start.md#the-swampify-page-link) for how the address is chosen.
+
 Its steps pull `@swamp/agent-sessions`, create the `swampify` behavior unless
 one of that type exists, and follow the skill from its first state. The skill
 still gives its disclosure and waits for the user to agree before anything is
@@ -244,6 +250,12 @@ the viewer can read; hiding is not access control. Its requests are in
   no terminal could open, or start's refusal. Under `swamp serve` the page is
   review-only: Copy brief and no launch. The page writes no Swampify data;
   the agent records the pick.
+- **Refreshes.** A build happens in the agent's session, so the page
+  re-reads its candidate-set, offer and comparison lists when the tab comes
+  back into view, and every 15 seconds while the tab is in view and the
+  shown offer is `picked`. A body is re-read when its row's version changes.
+  The sidebar's probe re-reads on return too, so the item appears after the
+  first assessment.
 - **Computes nothing.** It shows the ranges, counts, rates and break-even the
   writers stored, and only formats them; the thin flag comes from the summary
   tag.

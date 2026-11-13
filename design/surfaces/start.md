@@ -38,8 +38,10 @@ and prepares the ground for the **Serve** dashboard.
   [Swampify page](./swampify.md#the-page) hands over, and the kick-off that
   "Start from your past sessions" writes. A swampify task's brief keeps the
   task's own steps instead of start's, says the workspace is the user's own
-  repo, and its launch prompt names the `swampify` skill. An edit from the
-  start page keeps the kind.
+  repo, ends its context with a link to the Swampify page when the launch
+  came from a page (see [the page link](#the-swampify-page-link)), and its
+  launch prompt names the `swampify` skill. An edit from the start page keeps
+  the kind.
 - **Signals**: whether a few local folders exist, checked when status is read
   and never read inside. `kubeconfig`, `awsConfig` and `gcloudAdc` order the
   example tasks. `claudeTranscripts` (`CLAUDE_CONFIG_DIR/projects`, else
@@ -151,27 +153,54 @@ can (`--continue`, `resume --last`); one that wasn't opens a fresh session.
 
 ## Start from your past sessions
 
-When either transcript signal is on, the workspace screen offers "Start from
-your past sessions" below the create form. Opened, it says what will be read
-(transcript text on this machine, prompts and replies included, in the chosen
-window and scope; the agent asks before it reads), what the workspace stores
-(counts, token costs and up to five short redacted excerpts per chore; session
-records stay prompt-free) and that where the data goes is the user's choice.
-It asks for a window (7, 30 or 90 days, default 30), excluded folders (scope
-is every session on this machine), the agent (Claude Code or Codex, only
-those whose signal is on and found on PATH) and a workspace name, prefilled
+When either transcript signal is on, the workspace screen opens with a
+one-line card above the workspace list and the create form: the Swampify
+icon (shared with the dashboard sidebar through `components/nav_icons.tsx`),
+"Find tasks to automate from your agent session history." and a
+**Swampify!** button. The button opens the panel in place of the workspace
+list, as a step of its own: the browser's Back, its **← Your workspaces**
+button and Cancel close it. It says what will be read (transcript text on this
+machine, prompts and replies included), what the workspace stores (counts,
+token costs and up to five short redacted excerpts per chore) and that where
+the data goes is the user's choice. Then one row each, label beside control,
+for the window (7, 30 or 90 days, default 30), the scope (every session on
+this machine, until **Limit the scope** opens a box of folders to leave out),
+the agent (a small card each for Claude Code and Codex, only those whose
+signal is on, those not on PATH disabled) and a workspace name, prefilled
 `swampify`, or `swampify-2`, `-3` when taken.
 
-The page sends `start.swampify.kickoff` with those fields and no text. The
+The panel's **Swampify!** sends `start.swampify.kickoff` with those fields and
+no text, then `start.launch` with `trustConfirmed`: the click is the trust
+confirmation, as it is on the Swampify page, and the panel says so. The
 server checks sign-in, the window and paths and the agent first
 (`startCheckSwampifyKickoff`), so a refusal creates no workspace; then it opens
 or creates the workspace and saves one swampify task with its agent chosen
-(`startSaveSwampifyKickoff`), landing on the trust step. Core writes the task
+(`startSaveSwampifyKickoff`). The launch lands on the launched screen, so the
+agent is chosen once and Back never reaches the task editor with the kick-off
+text. If the launch fails, the panel keeps the error and offers **Try again**
+(launch only) or **Choose another agent**, which opens the agent screen for
+the saved task. Core writes the task
 text (`SwampifyKickoff` in `src/domain/start/swampify_kickoff.ts`); its only
 user input is the window and the excluded paths. Each path must be absolute
 or start with `~`, at most 20 of 512 characters, with no quotes, backticks,
 `$`, `<`, `>` or control characters, and appears only as one JSON array in a
 code fence. See [swampify.md](./swampify.md#the-kick-off) for the text.
+
+### The Swampify page link
+
+When a swampify task is launched from a page (start's Launch, or the
+Swampify page's **Swampify!** through the hub), the brief's `# Context` ends
+with one line, `- Swampify page: <url>`, pinned by a test here and in the
+swampify skill. The URL is `<origin>/dashboard/w/<workspace>/swampify`, where
+the origin is the one the browser reached this server at: the checked
+`Origin` of the page's WebSocket, else `http://<Host>`. `swampifyPageUrl`
+rebuilds it from a parsed URL and gives none for anything but a bare http(s)
+origin, since the brief is a file an agent reads. The line carries no token
+and is left out when there is no address. It stays valid while that server
+runs: a restart on another port leaves an old brief's link dead, and the next
+launch writes a fresh one. The link works in a new tab because the start page
+keeps its token for other tabs on the same origin, as a workspace page does
+(see [Security](#security)).
 
 The agent screen lists every harness swamp supports (the `--tool` values),
 marking which are on PATH; only a found, launchable one can be chosen. It
@@ -215,6 +244,11 @@ behavior and a first run.
 - A 32-byte one-time token travels in the URL fragment, then as the
   `bearer.<token>` WebSocket subprotocol, compared in constant time and echoed
   on upgrade.
+  The page keeps it in `sessionStorage` for a reload and in `localStorage`
+  for other tabs on the same origin (each server's port is its own origin),
+  so a link to a workspace page, such as a brief's Swampify page link, opens
+  without it. A refused token is dropped from both, the `localStorage` copy
+  only while it still holds that token.
 - Any `Host` other than `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
   the bound address, a `--trusted-hosts` name or, on a non-loopback bind, this
   machine's own name and routable addresses gets 421 (DNS rebinding): an

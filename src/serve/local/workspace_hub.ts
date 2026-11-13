@@ -45,7 +45,10 @@ import {
   type SwampifyLaunchRequest,
   swampifyLaunchRequest,
 } from "./local_actions.ts";
-import type { StartLaunchEvent } from "../../libswamp/start/start.ts";
+import type {
+  StartLaunchEvent,
+  StartPageAddress,
+} from "../../libswamp/start/start.ts";
 
 import { httpFailure } from "../http_caller_auth.ts";
 import {
@@ -92,6 +95,7 @@ export interface WorkspaceHubDeps {
   launchSwampify?: (
     repoDir: string,
     request: SwampifyLaunchRequest,
+    page: StartPageAddress | undefined,
   ) => AsyncIterable<StartLaunchEvent>;
 }
 
@@ -232,6 +236,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     id: string,
     payload: unknown,
     reply: (frame: ActionFrame) => void,
+    page: StartPageAddress | undefined,
   ) => {
     const fail = (code: string, message: string) =>
       reply({ type: "error", id, error: { code, message } });
@@ -241,7 +246,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     }
     let launched: StartLaunchEvent & { kind: "launched" } | undefined;
     try {
-      for await (const event of deps.launchSwampify!(repoDir, request)) {
+      for await (const event of deps.launchSwampify!(repoDir, request, page)) {
         if (event.kind === "error") {
           return fail(event.error.code, event.error.message);
         }
@@ -423,6 +428,7 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
     onClose: () => void,
     repoDir: string,
     protocol: string | undefined,
+    page: StartPageAddress | undefined,
   ): Response => {
     const { socket, response } = Deno.upgradeWebSocket(
       req,
@@ -476,7 +482,9 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
       const frame = parseFrame(e.data);
       if (!frame) return;
       if (frame.type === SWAMPIFY_LAUNCH && deps.launchSwampify) {
-        keep(runSwampifyLaunch(repoDir, frame.id, frame.payload, reply));
+        keep(
+          runSwampifyLaunch(repoDir, frame.id, frame.payload, reply, page),
+        );
         return;
       }
       if (isDelegatedAction(frame.type)) {
@@ -603,6 +611,12 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
           },
           repoDir,
           offered.viaProtocol ? `bearer.${deps.token}` : undefined,
+          // Origin and Host were checked above.
+          {
+            origin: req.headers.get("origin") ??
+              `http://${req.headers.get("host")}`,
+            workspaceName: name,
+          },
         );
       } catch {
         // A malformed upgrade: nothing was opened, so nothing is counted.

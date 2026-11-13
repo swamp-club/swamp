@@ -1003,6 +1003,44 @@ Deno.test("startLaunchTask: saves a swampify task, picks the agent and opens it 
   });
 });
 
+Deno.test("startLaunchTask: the build brief links to the Swampify page where the browser reached the server", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await swampifyRepo(f, dir);
+    await collect(
+      startLaunchTask(ctx, f.deps, {
+        workspacePath: ws,
+        text: SWAMPIFY_TASK,
+        kind: "swampify",
+        harness: "claude",
+        page: { origin: "http://127.0.0.1:41234", workspaceName: "my repo" },
+      }),
+    );
+    const brief = f.briefs[0].content;
+    assertStringIncludes(
+      brief,
+      "\n- Swampify page: http://127.0.0.1:41234/dashboard/w/my%20repo/swampify\n",
+    );
+    assert(!brief.includes("token"));
+  });
+});
+
+Deno.test("startLaunchTask: without an address, the build brief has no Swampify page line", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await swampifyRepo(f, dir);
+    await collect(
+      startLaunchTask(ctx, f.deps, {
+        workspacePath: ws,
+        text: SWAMPIFY_TASK,
+        kind: "swampify",
+        harness: "claude",
+      }),
+    );
+    assert(!f.briefs[0].content.includes("Swampify page"));
+  });
+});
+
 Deno.test("startLaunchTask: not signed in, it saves no task and opens nothing", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);

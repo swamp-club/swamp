@@ -1901,7 +1901,7 @@ Deno.test("startStartServer: serves a trusted Host on any port and in any case, 
   );
 });
 
-Deno.test("startStartServer: a swampify kick-off creates the workspace, saves the task and launches on the swampify brief", async () => {
+Deno.test("startStartServer: a swampify kick-off creates the workspace, saves the task and launches on a brief that links to the Swampify page", async () => {
   await withStartServer(async ({ handle, fakes, dataDir }) => {
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
@@ -1954,9 +1954,11 @@ Deno.test("startStartServer: a swampify kick-off creates the workspace, saves th
             workspaceDir(dataDir, "swampify")
           }. This is the user's own swamp repo; leave files unrelated to the task alone.`,
           "- Agent: Claude Code",
+          `- Swampify page: http://127.0.0.1:${handle.port}/dashboard/w/swampify/swampify`,
           "",
         ].join("\n"),
       );
+      assert(!content.includes("token"));
       assertEquals(fakes.opened.length, 1);
       assertEquals(
         fakes.opened[0].args.at(-1),
