@@ -568,6 +568,40 @@ Deno.test("LeaderLink.forward: two forwards in a row left unanswered within one 
   }
 });
 
+Deno.test("LeaderLink.forward: a long lock wait never becomes a frozen leader's probe, so it cannot hold the probe slot", async () => {
+  let now = 0;
+  let calls = 0;
+  const forwarder = frozenLink((_input, init) => {
+    calls++;
+    return calls <= 2
+      ? neverAnswered(init?.signal)
+      : Promise.resolve(new Response("ok"));
+  }, { now: () => now });
+  try {
+    await forwardOnce(forwarder);
+    await forwardOnce(forwarder);
+    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
+    now += FROZEN_LEADER_PROBE_MS;
+    const body = new TextEncoder().encode(
+      JSON.stringify({ lockKey: "k", waitMs: 5_000 }),
+    );
+    const lockWait = await forwarder.forward(
+      new Request(
+        "https://node-b.internal:9090/api/v1/datastore/_default/locks",
+        { method: "POST", body },
+      ),
+      { body },
+    );
+    assertEquals(lockWait.status, 503);
+    assertEquals((await lockWait.json()).inFlight, undefined);
+    assertEquals(calls, 2);
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals(calls, 3);
+  } finally {
+    forwarder.close();
+  }
+});
+
 Deno.test("LeaderLink.forward: while a probe of a frozen leader waits, other forwards are refused at once", async () => {
   let now = 0;
   let calls = 0;

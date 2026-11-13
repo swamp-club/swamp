@@ -219,11 +219,6 @@ export class LeaderLink {
       return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
     }
     const key = leaderKey(leader, address);
-    const admitted = this.#admit(key);
-    if (admitted === "refuse") {
-      return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
-    }
-    const sentAtSeq = this.#timeoutSeq;
     const url = new URL(req.url);
     const target = leaderTarget(address, url.pathname, url.search);
     const headers = forwardedHeaders(
@@ -239,7 +234,21 @@ export class LeaderLink {
     }
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     // other forwards (actions, signals, webhooks) keep their callers' deadlines
-    const responseMs = await this.#responseDeadlineMs(req, url, options.body);
+    const { responseMs, lockWaitMs } = await this.#responseDeadline(
+      req,
+      url,
+      options.body,
+    );
+    const client = this.client(address);
+    // a probe holds the only slot to a frozen leader, so never a lock wait
+    const admitted = this.#admit(
+      key,
+      responseMs !== undefined && lockWaitMs === 0,
+    );
+    if (admitted === "refuse") {
+      return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
+    }
+    const sentAtSeq = this.#timeoutSeq;
     const unanswered = new AbortController();
     const responseTimer = responseMs === undefined
       ? undefined
@@ -255,7 +264,6 @@ export class LeaderLink {
       req.signal,
       unanswered.signal,
     ]);
-    const client = this.client(address);
     let upstream: Response;
     try {
       const doFetch = this.#options.fetch ?? fetch;
@@ -310,7 +318,7 @@ export class LeaderLink {
   }
 
   /** a mark or count kept for another leader ends when the leader changes */
-  #admit(key: string): "send" | "probe" | "refuse" {
+  #admit(key: string, mayProbe: boolean): "send" | "probe" | "refuse" {
     if (this.#unanswered !== undefined && this.#unanswered.key !== key) {
       this.#unanswered = undefined;
     }
@@ -320,7 +328,9 @@ export class LeaderLink {
       this.#frozen = undefined;
       return "send";
     }
-    if (frozen.probing || this.#now() < frozen.probeAt) return "refuse";
+    if (!mayProbe || frozen.probing || this.#now() < frozen.probeAt) {
+      return "refuse";
+    }
     frozen.probing = true;
     return "probe";
   }
@@ -369,13 +379,15 @@ export class LeaderLink {
     };
   }
 
-  async #responseDeadlineMs(
+  async #responseDeadline(
     req: Request,
     url: URL,
     body: Uint8Array | undefined,
-  ): Promise<number | undefined> {
+  ): Promise<{ responseMs: number | undefined; lockWaitMs: number }> {
     const datastorePath = DATASTORE_PATH.exec(url.pathname)?.[1];
-    if (datastorePath === undefined) return undefined;
+    if (datastorePath === undefined) {
+      return { responseMs: undefined, lockWaitMs: 0 };
+    }
     const base = answersWithoutConfirm(req.method, datastorePath)
       ? this.#options.responseBaseMs ?? FORWARD_RESPONSE_BASE_MS
       : this.#options.commitResponseBaseMs ?? FORWARD_COMMIT_RESPONSE_BASE_MS;
@@ -401,7 +413,10 @@ export class LeaderLink {
         // the leader refuses a body it cannot read
       }
     }
-    return serveRequestDeadlineMs(base, bytes) + waitMs;
+    return {
+      responseMs: serveRequestDeadlineMs(base, bytes) + waitMs,
+      lockWaitMs: waitMs,
+    };
   }
 
   #dropClient(address: string): void {

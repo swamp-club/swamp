@@ -65,7 +65,7 @@ found), see [references/version-check.md](references/version-check.md).
 | Windows blocks `deno.exe`, esbuild or Litestream   | Blocked program → see below                                       |
 | `datastore_v3_run_partly_committed` (exit 1)       | Tier 2 → run the `workflow recover` it names, in that checkout    |
 | `datastore_v3_commit_partly_committed` (exit 1)    | Tier 2 → part landed; check the datastore before re-running       |
-| `datastore_v3_*_unreachable` (exit 75)             | Tier 2 → nothing changed; retry once storage is reachable         |
+| `datastore_v3_*_unreachable` (exit 75 or 1)        | Tier 2 → 75: retry when reachable; 1: an earlier change landed    |
 | `datastore_v3_partitions_refused` (exit 1)         | Tier 2 → `refusals` did not land; check the data, then re-run     |
 | `datastore_v3_commit_lease_lost` / `_lease_lapsed` | Tier 2 → exit 75: rerun; exit 1: resume or recover the run        |
 | `datastore_v3_commit_may_land` (exit 1)            | Tier 2 → may have landed; check run and data, then resume/recover |

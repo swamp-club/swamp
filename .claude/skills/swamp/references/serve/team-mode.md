@@ -129,6 +129,8 @@ the wait (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), the refusal comes at once
 - **Exit 75:** nothing of the command changed, so rerun it: a read, a lock wait,
   a bookkeeping-only command, `datastore_v3_*_unreachable`, or
   `serve_not_leader` refused before it reached the leader.
+- **Exit 1 with one of those codes:** an earlier change of the same command
+  landed, so rerunning repeats it: resume or recover the run instead.
 - **Exit 1, `datastore_v3_commit_may_land`:** the outage ended a command whose
   last effectful change may have landed, and `--json` carries `inFlight: true`
   (as does `serve_not_leader` relayed in flight). Do not rerun blindly: check
