@@ -2792,6 +2792,26 @@ Deno.test("CatalogStore.releaseDirty: a clean end forgets every name no unlanded
   }
 });
 
+Deno.test("CatalogStore.releaseDirty: a pinned name is dirty even when its commit's write changed no catalog row, until the commit is found landed (swamp-club#4723)", () => {
+  using tempDb = makeTempDb();
+  const store = new CatalogStore(tempDb.path);
+  try {
+    store.ensureDirtyTracking(1_000);
+    assertEquals(dirtyOf(store), []);
+    const pin = { ...NAME_A, partition: "p", txn_id: "t1" };
+    store.releaseDirty([pin], []);
+    assertEquals(dirtyOf(store), ["a"]);
+    // the entry is still queued at the next clean end
+    store.releaseDirty([pin], []);
+    assertEquals(dirtyOf(store), ["a"]);
+    store.releaseDirty([], [{ partition: "p", txn_id: "t1" }]);
+    assertEquals(dirtyOf(store), []);
+    assertEquals(store.dirtyPins(), []);
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("CatalogStore.forgetAllDirty: forgets every name and pin and the owed full recovery (swamp-club#4581)", () => {
   using tempDb = makeTempDb();
   const store = new CatalogStore(tempDb.path);
