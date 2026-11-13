@@ -26,7 +26,9 @@ imports the names it needs through `packages/dashboard/src/lib/agent_sessions/sw
 
 ## The journey
 
-1. **Start.** `swamp start` offers "Start from your past sessions" when it
+1. **Start.** With `SWAMP_EXPERIMENTAL_SWAMPIFY=1` set (see
+   [start](./start.md#start-from-your-past-sessions); off otherwise and
+   unadvertised), `swamp start` offers "Start from your past sessions" when it
    finds Claude Code or Codex history, says what will be read and where results
    go, and launches the user's agent on a [kick-off](#the-kick-off) task. The
    agent pulls `@swamp/agent-sessions` and creates the `swampify` behavior.

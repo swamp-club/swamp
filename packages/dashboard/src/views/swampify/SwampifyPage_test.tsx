@@ -183,6 +183,7 @@ Deno.test("SwampifyPage: with no candidate set listed it says how to get one", (
     set: loadable(null),
   });
   assertStringIncludes(html, "No assessment yet.");
+  assert(!html.includes("swamp start"));
   assert(!html.includes("<table"));
 });
 

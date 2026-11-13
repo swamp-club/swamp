@@ -123,6 +123,7 @@ interface Fakes {
   running: Set<string>;
   random: () => number;
   signals: StartSignals;
+  swampify: boolean;
 }
 
 function makeFakes(dataDir: string, os = "darwin"): Fakes {
@@ -147,12 +148,16 @@ function makeFakes(dataDir: string, os = "darwin"): Fakes {
     running: new Set(),
     random: () => 0,
     signals: SIGNALS,
+    swampify: false,
   };
   f.deps = {
     dataDir,
     os,
     checkSignedIn: () => Promise.resolve(f.signedIn),
     apiKeyFromEnv: () => f.apiKeyFromEnv,
+    get swampify() {
+      return f.swampify;
+    },
     repo: {
       isRepo: (path) => Promise.resolve(f.repos.has(path)),
       init: (path) => {
@@ -2688,6 +2693,7 @@ async function tasksDirEntries(ws: string): Promise<string[]> {
 Deno.test("startSaveSwampifyKickoff: saves a swampify task with the kick-off text and its agent", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
+    f.swampify = true;
     f.signals = { ...SIGNALS, claudeTranscripts: true };
     const ws = await kickoffWorkspace(f);
     const s = await status(
@@ -2716,6 +2722,7 @@ Deno.test("startSaveSwampifyKickoff: saves a swampify task with the kick-off tex
 Deno.test("startSaveSwampifyKickoff: launching it writes the swampify brief and names the skill", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
+    f.swampify = true;
     f.signals = { ...SIGNALS, codexSessions: true };
     f.onPath = { codex: ["/usr/local/bin/codex"] };
     const ws = await kickoffWorkspace(f);
@@ -2808,6 +2815,7 @@ Deno.test("startSaveSwampifyKickoff: refuses without writing anything", async ()
     ];
     for (const c of cases) {
       const f = makeFakes(join(dir, c.name.replaceAll(" ", "-")));
+      f.swampify = true;
       f.signals = { ...SIGNALS, ...c.signals };
       if (c.onPath) f.onPath = c.onPath;
       const ws = await kickoffWorkspace(f);
@@ -2829,6 +2837,7 @@ Deno.test("startSaveSwampifyKickoff: refuses without writing anything", async ()
 Deno.test("startSaveSwampifyKickoff: refuses when not signed in", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
+    f.swampify = true;
     f.signals = { ...SIGNALS, claudeTranscripts: true };
     f.signedIn = { kind: "not_signed_in" };
     const ws = await kickoffWorkspace(f);
@@ -2841,5 +2850,45 @@ Deno.test("startSaveSwampifyKickoff: refuses when not signed in", async () => {
     );
     assertEquals(event.kind, "error");
     assertEquals(await tasksDirEntries(ws), []);
+  });
+});
+
+Deno.test("startSaveSwampifyKickoff: refuses while Swampify is off, before any other check", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.signals = { ...SIGNALS, claudeTranscripts: true };
+    f.signedIn = { kind: "not_signed_in" };
+    const ws = await kickoffWorkspace(f);
+    const [event] = await collect(
+      startSaveSwampifyKickoff(ctx, f.deps, {
+        workspacePath: ws,
+        windowDays: 30,
+        harness: "claude",
+      }),
+    );
+    assert(event.kind === "error");
+    assertEquals(event.error.code, "swampify_off");
+    assert(!event.error.message.includes("SWAMP_EXPERIMENTAL"));
+    assertEquals(await tasksDirEntries(ws), []);
+  });
+});
+
+Deno.test("startStatus: carries swampify only while it is on", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = join(dir, "ws");
+    const unbound = { workspacePath: null };
+    const bound = { workspacePath: ws };
+    assert(!("swampify" in await status(startStatus(ctx, f.deps, unbound))));
+    assert(!("swampify" in await status(startStatus(ctx, f.deps, bound))));
+    f.swampify = true;
+    assertEquals(
+      (await status(startStatus(ctx, f.deps, unbound))).swampify,
+      true,
+    );
+    assertEquals(
+      (await status(startStatus(ctx, f.deps, bound))).swampify,
+      true,
+    );
   });
 });

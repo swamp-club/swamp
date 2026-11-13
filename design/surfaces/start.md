@@ -47,7 +47,9 @@ and prepares the ground for the **Serve** dashboard.
   example tasks. `claudeTranscripts` (`CLAUDE_CONFIG_DIR/projects`, else
   `~/.claude/projects`) and `codexSessions` (`CODEX_HOME/sessions`, else
   `~/.codex/sessions`), the roots `@swamp/agent-sessions` reads, offer
-  "Start from your past sessions". An empty override counts as unset.
+  "Start from your past sessions" when it is
+  [turned on](#start-from-your-past-sessions). An empty override counts as
+  unset.
 - **Harness**: an AI agent CLI, such as Claude Code or Codex.
 - **Launch**: enrolling the harness, writing the brief and launcher, and opening
   the agent's terminal window.
@@ -153,9 +155,19 @@ can (`--continue`, `resume --last`); one that wasn't opens a fresh session.
 
 ## Start from your past sessions
 
-When either transcript signal is on, the workspace screen opens with a
-one-line card above the workspace list and the create form: the Swampify
-icon (shared with the dashboard sidebar through `components/nav_icons.tsx`),
+This entry point is experimental and off unless `swamp start` runs with
+`SWAMP_EXPERIMENTAL_SWAMPIFY=1` in its environment (`swampify` on
+`StartDeps`, read in `src/cli/commands/start.ts`). Nothing in help, the page
+or the manual names the variable; testers are told directly. While it is off,
+the status carries no `swampify` field, the card never shows, and
+`startCheckSwampifyKickoff` refuses a kick-off with `swampify_off` before any
+other check, so a hand-made request fails too. The Swampify page and its
+build launch through the hub are not gated.
+
+When the switch is on and either transcript signal is on, the workspace
+screen opens with a one-line card above the workspace list and the create
+form: the Swampify icon (shared with the dashboard sidebar through
+`components/nav_icons.tsx`),
 "Find tasks to automate from your agent session history." and a
 **Swampify!** button. The button opens the panel in place of the workspace
 list, as a step of its own: the browser's Back, its **← Your workspaces**

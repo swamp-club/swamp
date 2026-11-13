@@ -175,6 +175,8 @@ export interface StartStatus {
   readonly canPickFolder: boolean;
   readonly apiKeyFromEnv: boolean;
   readonly signals: StartSignals;
+  /** present only when on, so the page never names the experiment otherwise */
+  readonly swampify?: true;
 }
 
 export interface StartContents {
@@ -227,6 +229,8 @@ export interface StartDeps {
   readonly os: string;
   readonly checkSignedIn: (live: boolean) => Promise<SignedInState>;
   readonly apiKeyFromEnv: () => boolean;
+  /** Start from your past sessions is experimental; off unless set */
+  readonly swampify?: boolean;
   readonly repo: StartRepoOps;
   readonly sessions: StartSessionRepository;
   readonly lookup: (name: string) => Promise<string[]>;
@@ -391,6 +395,10 @@ export function buildUnboundStatus(
   };
 }
 
+function swampifyField(deps: StartDeps): { swampify?: true } {
+  return deps.swampify === true ? { swampify: true } : {};
+}
+
 async function unboundStatus(deps: StartDeps): Promise<StartStatus> {
   return {
     ...buildUnboundStatus(
@@ -398,6 +406,7 @@ async function unboundStatus(deps: StartDeps): Promise<StartStatus> {
       deps.apiKeyFromEnv(),
       await deps.signals(),
     ),
+    ...swampifyField(deps),
     canPickFolder: await canPickFolder(deps),
   };
 }
@@ -520,6 +529,7 @@ async function statusOf(
   const lastAgent = registry?.lastAgent();
   return {
     ...status,
+    ...swampifyField(deps),
     ...(await deps.isRunning(workspacePath) ? { alsoOpenElsewhere: true } : {}),
     tasks: await listTasks(deps, workspacePath),
     trusted: registry?.isTrusted(workspacePath) ?? false,
@@ -733,6 +743,12 @@ export async function startCheckSwampifyKickoff(
   deps: StartDeps,
   input: StartSwampifyKickoffInput,
 ): Promise<CheckedSwampifyKickoff> {
+  if (deps.swampify !== true) {
+    throw new UserError(
+      "Start from your past sessions isn't available in this build of swamp start.",
+      "swampify_off",
+    );
+  }
   await requireSignedIn(deps);
   // Built here so an oversized text is refused before a workspace opens.
   const task = StartTask.create(
@@ -994,6 +1010,7 @@ export async function* startPrepare(
             deps.apiKeyFromEnv(),
             await deps.signals(),
           ),
+          ...swampifyField(deps),
           canPickFolder: await canPickFolder(deps),
         },
       };
@@ -1841,6 +1858,7 @@ export function createStartDeps(options: {
   isRunning: (workspacePath: string) => Promise<boolean>;
   /** the page is served to other machines, so nothing opens on this screen */
   remoteBrowser?: boolean;
+  swampify?: boolean;
 }): StartDeps {
   const service = new RepoService(options.version);
   const markers = new RepoMarkerRepository();
@@ -1856,6 +1874,7 @@ export function createStartDeps(options: {
     os: Deno.build.os,
     checkSignedIn: options.checkSignedIn,
     apiKeyFromEnv: () => apiKeySourceName() !== undefined,
+    swampify: options.swampify === true,
     repo: {
       isRepo: (path) => exists(join(path, ".swamp.yaml")),
       init: async (path) => {

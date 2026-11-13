@@ -79,6 +79,7 @@ interface Fakes {
   prompts: string[];
   briefs: Array<{ briefFile: string; content: string }>;
   signals: StartSignals;
+  swampify: boolean;
 }
 
 function makeFakes(dataDir: string): Fakes {
@@ -103,6 +104,7 @@ function makeFakes(dataDir: string): Fakes {
       claudeTranscripts: false,
       codexSessions: false,
     },
+    swampify: false,
   };
   const tools = new Map<string, string[]>();
   f.deps = {
@@ -110,6 +112,9 @@ function makeFakes(dataDir: string): Fakes {
     os: "darwin",
     checkSignedIn: () => Promise.resolve(f.signedIn),
     apiKeyFromEnv: () => false,
+    get swampify() {
+      return f.swampify;
+    },
     repo: {
       isRepo: async (path) => {
         try {
@@ -1903,6 +1908,7 @@ Deno.test("startStartServer: serves a trusted Host on any port and in any case, 
 
 Deno.test("startStartServer: a swampify kick-off creates the workspace, saves the task and launches on a brief that links to the Swampify page", async () => {
   await withStartServer(async ({ handle, fakes, dataDir }) => {
+    fakes.swampify = true;
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
     try {
@@ -1970,8 +1976,42 @@ Deno.test("startStartServer: a swampify kick-off creates the workspace, saves th
   });
 });
 
+Deno.test("startStartServer: with Swampify off, the status omits it and a kick-off is refused without creating a workspace", async () => {
+  await withStartServer(async ({ handle, fakes, dataDir, opened }) => {
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      assert(!("swampify" in await client.request("start.status")));
+      const refused = await client.requestError("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: 30,
+        harness: "claude",
+      });
+      assertEquals(refused.code, "swampify_off");
+      assertEquals(opened, []);
+      assertEquals(fakes.briefs, []);
+      await assertRejects(() => Deno.stat(workspaceDir(dataDir, "swampify")));
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: with Swampify on, the status says so", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    fakes.swampify = true;
+    const client = await Client.open(handle.port);
+    try {
+      assertEquals((await client.request("start.status")).swampify, true);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 Deno.test("startStartServer: a refused swampify kick-off creates no workspace", async () => {
   await withStartServer(async ({ handle, fakes, dataDir, opened }) => {
+    fakes.swampify = true;
     fakes.signals = { ...fakes.signals, claudeTranscripts: true };
     const client = await Client.open(handle.port);
     try {

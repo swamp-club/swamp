@@ -114,6 +114,8 @@ async function buildDeps(prune: boolean, remoteBrowser = false) {
     version: VERSION,
     checkSignedIn,
     serverUrl: Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL,
+    // Unadvertised while Swampify is experimental: testers are told directly.
+    swampify: Deno.env.get("SWAMP_EXPERIMENTAL_SWAMPIFY") === "1",
     identity: await loadIdentity(),
     isRunning: (workspacePath) => isStartServing(workspacePath, prune),
   });

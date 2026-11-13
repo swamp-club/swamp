@@ -1052,14 +1052,27 @@ Deno.test("planHistorySync: up adds one entry, down returns to the nearest one n
   });
 });
 
-Deno.test("showPastSessions: only when Claude Code or Codex history is here", () => {
-  assertEquals(showPastSessions(signals({})), false);
+Deno.test("showPastSessions: only when Swampify is on and Claude Code or Codex history is here", () => {
+  const on = (partial: Partial<StartSignals>) => ({
+    signals: signals(partial),
+    swampify: true as const,
+  });
+  assertEquals(showPastSessions(on({})), false);
   assertEquals(
-    showPastSessions(signals({ kubeconfig: true, awsConfig: true })),
+    showPastSessions(on({ kubeconfig: true, awsConfig: true })),
     false,
   );
-  assertEquals(showPastSessions(signals({ claudeTranscripts: true })), true);
-  assertEquals(showPastSessions(signals({ codexSessions: true })), true);
+  assertEquals(showPastSessions(on({ claudeTranscripts: true })), true);
+  assertEquals(showPastSessions(on({ codexSessions: true })), true);
+});
+
+Deno.test("showPastSessions: never while Swampify is off, even with history", () => {
+  assertEquals(
+    showPastSessions({
+      signals: signals({ claudeTranscripts: true, codexSessions: true }),
+    }),
+    false,
+  );
 });
 
 Deno.test("pastSessionsHarnesses: offers only harnesses whose history is here", () => {

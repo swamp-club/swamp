@@ -234,7 +234,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
               <div className="sw-card sw-note">
                 {state.setRow.loading
                   ? "Loading the assessment…"
-                  : "No assessment yet. Ask your agent to swampify your past sessions, or choose Swampify in swamp start."}
+                  : "No assessment yet. Ask your agent to swampify your past sessions."}
               </div>
             )}
             {state.set.loading && setReading === null && setRow !== undefined &&

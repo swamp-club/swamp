@@ -100,6 +100,8 @@ export interface StartStatus {
   };
   apiKeyFromEnv: boolean;
   signals: StartSignals;
+  /** Set only when Swampify is turned on for this swamp start. */
+  swampify?: true;
   /** True when another swamp start has this workspace open too. */
   alsoOpenElsewhere?: boolean;
   /** Every task of the workspace, newest first. */
