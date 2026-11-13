@@ -143,8 +143,8 @@ Use `swamp agent list` to see the current mode for each custom tool.
 Run `swamp doctor audit` after `init --tool <name>` and after upgrading the
 external AI tool. Exits 1 on any check fail — safe to gate in CI. For the full
 diagnostic flow (preflight checks, output shapes, common failures, escalation to
-other tiers), see the `swamp-troubleshooting` skill's
-`references/health-checks.md`.
+other tiers), see
+[troubleshooting health checks](../troubleshooting/references/health-checks.md).
 
 Claude Code reads project hooks only from the folder a session starts in (the
 git root, for `.claude/settings.local.json`). For a swamp repo nested below its
@@ -163,14 +163,15 @@ swamp repo upgrade --json
 swamp repo upgrade ./my-automation --json
 ```
 
-**Output shape:**
+**Output shape** (abridged):
 
 ```json
 {
   "path": "/home/user/my-automation",
   "previousVersion": "0.0.9",
   "newVersion": "0.1.0",
-  "updated": [".claude/skills/swamp-model/", "CLAUDE.md"]
+  "skillsUpdated": ["swamp", "swamp-getting-started"],
+  "instructionsUpdated": true
 }
 ```
 
@@ -466,7 +467,8 @@ export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
 export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 ```
 
-For custom datastore implementations, see the `swamp-extension` skill.
+For custom datastore implementations, see the
+[datastore extension API](../extension/references/datastore/api.md).
 
 ### Config Value Interpolation
 
@@ -617,17 +619,17 @@ Load order is unchanged. Sources override pulled extensions of the same type.
 This means you can pull `@swamp/aws/ec2` from the registry, then add a source
 pointing at your local development copy — your local version loads instead.
 
-## When to Use Other Skills
+## Related Guides
 
-| Need                               | Use Skill               |
-| ---------------------------------- | ----------------------- |
-| Create/run behaviors               | `swamp-model`           |
-| Create/run workflows               | `swamp-workflow`        |
-| Manage secrets                     | `swamp-vault`           |
-| Manage behavior data               | `swamp-data`            |
-| Create custom TypeScript behaviors | `swamp-extension`       |
-| Create custom datastores           | `swamp-extension`       |
-| Understand swamp internals         | `swamp-troubleshooting` |
+| Need                               | Guide                                          |
+| ---------------------------------- | ---------------------------------------------- |
+| Create/run behaviors               | [behavior](../behavior/guide.md)               |
+| Create/run workflows               | [workflow](../workflow/guide.md)               |
+| Manage secrets                     | [vault](../vault/guide.md)                     |
+| Manage behavior data               | [data](../data/guide.md)                       |
+| Create custom TypeScript behaviors | [extension](../extension/guide.md)             |
+| Create custom datastores           | [extension](../extension/guide.md)             |
+| Understand swamp internals         | [troubleshooting](../troubleshooting/guide.md) |
 
 ## References
 

@@ -490,22 +490,23 @@ with more than one vault should set `defaultVault`; `swamp doctor vaults --json`
 reports a `fallbackWarning` naming the vault the fallback picks when it does
 not.
 
-See the **swamp-extension** skill for full schema examples.
+See [Resource Specs](../extension/references/model/api.md#resource-specs) for
+full schema examples.
 
 ## Security Best Practices
 
 Use separate vaults for dev/staging/prod to enforce environment separation.
 
-## When to Use Other Skills
+## Related Guides
 
-| Need                         | Use Skill               |
-| ---------------------------- | ----------------------- |
-| Vault usage in workflows     | `swamp-workflow`        |
-| Create/run behaviors         | `swamp-model`           |
-| Create custom behavior types | `swamp-extension`       |
-| Repository structure         | `swamp-repo`            |
-| Manage behavior data         | `swamp-data`            |
-| Understand swamp internals   | `swamp-troubleshooting` |
+| Need                         | Guide                                          |
+| ---------------------------- | ---------------------------------------------- |
+| Vault usage in workflows     | [workflow](../workflow/guide.md)               |
+| Create/run behaviors         | [behavior](../behavior/guide.md)               |
+| Create custom behavior types | [extension](../extension/guide.md)             |
+| Repository structure         | [repo](../repo/guide.md)                       |
+| Manage behavior data         | [data](../data/guide.md)                       |
+| Understand swamp internals   | [troubleshooting](../troubleshooting/guide.md) |
 
 ## References
 

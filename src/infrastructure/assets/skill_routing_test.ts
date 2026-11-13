@@ -20,6 +20,12 @@
 import { assertEquals } from "@std/assert";
 import { existsSync } from "@std/fs";
 import { join } from "@std/path";
+import {
+  dirname as posixDirname,
+  join as posixJoin,
+  normalize as posixNormalize,
+} from "@std/path/posix";
+import { SUPERSEDED_SKILLS } from "../../domain/repo/superseded_skills.ts";
 import { SkillAssets } from "./skill_assets.ts";
 
 /**
@@ -199,5 +205,56 @@ Deno.test("gateway routing: guide_sufficiency_evals.json covers only and all gui
       true,
       `guide_sufficiency_evals.json references unknown guide topic: ${item.guide}`,
     );
+  }
+});
+
+// the slash and hyphen guards spare datastore paths such as /tmp/swamp-data
+const SUPERSEDED_SKILL_PATTERN = new RegExp(
+  `(?<![\\w/-])(${
+    [...SUPERSEDED_SKILLS].sort((a, b) => b.length - a.length).join("|")
+  })(?![\\w-])`,
+);
+
+Deno.test("bundled skills: no markdown file names a superseded skill", async () => {
+  const assets = new SkillAssets();
+
+  for (const skill of assets.listSkills()) {
+    if (!skill.relativePath.endsWith(".md")) continue;
+    const content = await assets.readSkill(skill.relativePath);
+    const lines = content!.split("\n");
+    for (const [index, line] of lines.entries()) {
+      const match = SUPERSEDED_SKILL_PATTERN.exec(line);
+      assertEquals(
+        match,
+        null,
+        `${skill.relativePath}:${index + 1} names the superseded skill ${
+          match?.[1]
+        }; link the matching references/<area>/guide.md instead`,
+      );
+    }
+  }
+});
+
+Deno.test("bundled skills: every relative markdown link resolves to a bundled file", async () => {
+  const assets = new SkillAssets();
+  const bundled = new Set(assets.listSkills().map((s) => s.relativePath));
+
+  for (const path of bundled) {
+    if (!path.endsWith(".md")) continue;
+    const content = await assets.readSkill(path);
+    const prose = content!.replace(/```[\s\S]*?```/g, "");
+    for (const [, target] of prose.matchAll(/\]\(\s*([^)\s]+)\s*\)/g)) {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#")) {
+        continue;
+      }
+      const resolved = posixNormalize(
+        posixJoin(posixDirname(path), target.split("#")[0]),
+      );
+      assertEquals(
+        bundled.has(resolved),
+        true,
+        `${path} links to ${target}, which is not a bundled skill file`,
+      );
+    }
   }
 });

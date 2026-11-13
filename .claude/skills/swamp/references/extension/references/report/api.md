@@ -121,7 +121,8 @@ reports:
   - compliance_report.ts
 ```
 
-Use the `swamp-extension-publish` skill for the full publishing workflow.
+Follow the [extension-publish guide](../../../extension-publish/guide.md) for
+the full publishing workflow.
 
 ## Discovery & Loading
 

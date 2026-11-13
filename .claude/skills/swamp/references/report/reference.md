@@ -17,9 +17,9 @@
 
 ## Creating Report Extensions
 
-To create a new report extension, use the `swamp-extension` skill. It covers the
-TypeScript authoring workflow, export contract, scopes, reading execution data,
-and testing.
+To create a new report extension, follow the
+[extension guide](../extension/guide.md). It covers the TypeScript authoring
+workflow, export contract, scopes, reading execution data, and testing.
 
 ## Report Control (Three Levels)
 
@@ -53,9 +53,9 @@ reports:
   - compliance_report.ts
 ```
 
-For the full publishing workflow, use the `swamp-extension-publish` skill. It
-provides a state-machine checklist that enforces all prerequisites before
-allowing a push.
+For the full publishing workflow, follow the
+[extension-publish guide](../extension-publish/guide.md). It provides a
+state-machine checklist that enforces all prerequisites before allowing a push.
 
 ## CLI Flags
 
@@ -106,7 +106,7 @@ Report results are automatically persisted as data artifacts:
 - **Lifetime**: 30 days, garbage collection keeps 5 versions
 - **Tags**: `type=report`, `reportName={name}`, `reportScope={scope}`
 
-Access stored reports via data query (see `swamp-data` skill):
+Access stored reports via data query (see the [data guide](../data/guide.md)):
 
 ```bash
 swamp data query 'tags.type == "report"'
@@ -123,17 +123,17 @@ detail for agents).
 width. `--max-col-width N` truncates individual table columns with `…`. Both
 combine. Env vars: `SWAMP_REPORT_MAX_WIDTH`, `SWAMP_REPORT_MAX_COL_WIDTH`.
 
-## When to Use Other Skills
+## Related Guides
 
-| Need                         | Use Skill               |
-| ---------------------------- | ----------------------- |
-| Work with behaviors          | `swamp-model`           |
-| Create/run workflows         | `swamp-workflow`        |
-| Create report extensions     | `swamp-extension`       |
-| Create custom behavior types | `swamp-extension`       |
-| Manage behavior data         | `swamp-data`            |
-| Repository structure         | `swamp-repo`            |
-| Understand swamp internals   | `swamp-troubleshooting` |
+| Need                         | Guide                                          |
+| ---------------------------- | ---------------------------------------------- |
+| Work with behaviors          | [behavior](../behavior/guide.md)               |
+| Create/run workflows         | [workflow](../workflow/guide.md)               |
+| Create report extensions     | [extension](../extension/guide.md)             |
+| Create custom behavior types | [extension](../extension/guide.md)             |
+| Manage behavior data         | [data](../data/guide.md)                       |
+| Repository structure         | [repo](../repo/guide.md)                       |
+| Understand swamp internals   | [troubleshooting](../troubleshooting/guide.md) |
 
 ## References
 

@@ -316,16 +316,16 @@ Data is stored in the `.swamp/data/` directory:
   latest → 2/    # Symlink to latest version
 ```
 
-## When to Use Other Skills
+## Related Guides
 
-| Need                       | Use Skill                       |
-| -------------------------- | ------------------------------- |
-| Create/run behaviors       | `swamp-model`                   |
-| View behavior outputs      | `swamp-model` (output commands) |
-| Create/run workflows       | `swamp-workflow`                |
-| Repository structure       | `swamp-repo`                    |
-| Manage secrets             | `swamp-vault`                   |
-| Understand swamp internals | `swamp-troubleshooting`         |
+| Need                       | Guide                                              |
+| -------------------------- | -------------------------------------------------- |
+| Create/run behaviors       | [behavior](../behavior/guide.md)                   |
+| View behavior outputs      | [behavior](../behavior/guide.md) (output commands) |
+| Create/run workflows       | [workflow](../workflow/guide.md)                   |
+| Repository structure       | [repo](../repo/guide.md)                           |
+| Manage secrets             | [vault](../vault/guide.md)                         |
+| Understand swamp internals | [troubleshooting](../troubleshooting/guide.md)     |
 
 ## References
 

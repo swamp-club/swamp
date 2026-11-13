@@ -492,9 +492,9 @@ reports:
 2. **Bump version** in `manifest.yaml` — use `nextVersion` from the output above
 3. **Format & lint**: `swamp extension fmt manifest.yaml`
 4. **(Optional) Quality score**: `swamp extension quality manifest.yaml --json`
-   — see the `swamp-extension` skill for the rubric. Packages and caches the
-   tarball at `.swamp/cache/packages/<hash>/`; the cache is reused by the
-   dry-run and push below if source hasn't changed.
+   — see the [quality rubric](../../extension/references/quality/rubric.md).
+   Packages and caches the tarball at `.swamp/cache/packages/<hash>/`; the cache
+   is reused by the dry-run and push below if source hasn't changed.
 5. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
 6. **Push**: `swamp extension push manifest.yaml --yes --json`
 
@@ -1131,17 +1131,17 @@ swamp extension version --manifest manifest.yaml --json
 | "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason                                                     |
 | "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                                                                     |
 
-## Related Skills
+## Related Guides
 
-| Need                               | Use Skill                 |
-| ---------------------------------- | ------------------------- |
-| Create custom behaviors            | `swamp-extension`         |
-| Create custom vaults               | `swamp-extension`         |
-| Create custom datastores           | `swamp-extension`         |
-| Repository setup and management    | `swamp-repo`              |
-| Create reports                     | `swamp-report`            |
-| Quality scorecard & best practices | `swamp-extension`         |
-| Deprecate/undeprecate extensions   | `swamp-extension-publish` |
+| Need                               | Guide                                                 |
+| ---------------------------------- | ----------------------------------------------------- |
+| Create custom behaviors            | [extension](../../extension/guide.md)                 |
+| Create custom vaults               | [extension](../../extension/guide.md)                 |
+| Create custom datastores           | [extension](../../extension/guide.md)                 |
+| Repository setup and management    | [repo](../../repo/guide.md)                           |
+| Create reports                     | [report](../../report/guide.md)                       |
+| Quality scorecard & best practices | [extension](../../extension/guide.md)                 |
+| Deprecate/undeprecate extensions   | [extension-publish](../../extension-publish/guide.md) |
 
 ## Quality Self-Check
 
@@ -1169,4 +1169,5 @@ reused by dry-run and push while the source tree and swamp version are
 unchanged.
 
 This step is optional — skipping does not block the push. See the
-`swamp-extension` skill for the full rubric and per-factor guidance.
+[quality rubric](../../extension/references/quality/rubric.md) for the full
+rubric and per-factor guidance.

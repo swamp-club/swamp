@@ -1513,7 +1513,8 @@ swamp workflow run provision-and-verify --junit --out test-results.xml --fail-on
 
 ## Working with Vaults
 
-Access secrets using vault expressions. See **swamp-vault** skill for details.
+Access secrets using vault expressions. See the [vault guide](../vault/guide.md)
+for details.
 
 ```yaml
 apiKey: ${{ vault.get(vault-name, secret-key) }}
@@ -1584,16 +1585,16 @@ End-to-end workflow creation:
 5. **Fix** any errors and re-validate
 6. **Run**: `swamp workflow run my-task`
 
-## When to Use Other Skills
+## Related Guides
 
-| Need                       | Use Skill               |
-| -------------------------- | ----------------------- |
-| Create/run behaviors       | `swamp-model`           |
-| Vault management           | `swamp-vault`           |
-| Repository structure       | `swamp-repo`            |
-| Manage behavior data       | `swamp-data`            |
-| Create custom behaviors    | `swamp-extension`       |
-| Understand swamp internals | `swamp-troubleshooting` |
+| Need                       | Guide                                          |
+| -------------------------- | ---------------------------------------------- |
+| Create/run behaviors       | [behavior](../behavior/guide.md)               |
+| Vault management           | [vault](../vault/guide.md)                     |
+| Repository structure       | [repo](../repo/guide.md)                       |
+| Manage behavior data       | [data](../data/guide.md)                       |
+| Create custom behaviors    | [extension](../extension/guide.md)             |
+| Understand swamp internals | [troubleshooting](../troubleshooting/guide.md) |
 
 ## References
 

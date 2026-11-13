@@ -276,8 +276,8 @@ prodResources: ${{ data.findByTag("env", "prod") }}
 prodFailures: ${{ data.query('modelName == "scanner" && tags.env == "prod" && attributes.status == "failed"') }}
 ```
 
-See the `swamp-data` skill's references/expressions.md for the full shortcut
-mapping table.
+See [data expressions](../../data/references/expressions.md) for the full
+shortcut mapping table.
 
 ### Self-References
 
