@@ -32,6 +32,7 @@ import {
   useDocumentVisible,
   useTabVisible,
   visibleIntervalMs,
+  watchTabReturn,
 } from "./run_activity.ts";
 
 const T0 = Date.UTC(2026, 9, 14, 16, 0, 0);
@@ -214,4 +215,43 @@ Deno.test("useDocumentVisible: in view with no document", () => {
     renderToStaticMarkup(createElement(DocumentVisibilityProbe)),
     "<span>visible</span>",
   );
+});
+
+class FakeTab {
+  visibilityState = "visible";
+  listeners = new Set<() => void>();
+  addEventListener(_type: "visibilitychange", listener: () => void): void {
+    this.listeners.add(listener);
+  }
+  removeEventListener(_type: "visibilitychange", listener: () => void): void {
+    this.listeners.delete(listener);
+  }
+  show(state: "visible" | "hidden"): void {
+    this.visibilityState = state;
+    for (const listener of this.listeners) listener();
+  }
+}
+
+Deno.test("watchTabReturn: fires once per return to view, never while it stays put", () => {
+  const tab = new FakeTab();
+  let returns = 0;
+  const stop = watchTabReturn(tab, () => returns++);
+  tab.show("visible");
+  assertEquals(returns, 0);
+  tab.show("hidden");
+  tab.show("hidden");
+  assertEquals(returns, 0);
+  tab.show("visible");
+  assertEquals(returns, 1);
+  stop();
+  tab.show("hidden");
+  tab.show("visible");
+  assertEquals(returns, 1);
+  assertEquals(tab.listeners.size, 0);
+});
+
+Deno.test("watchTabReturn: no document is a no-op", () => {
+  watchTabReturn(undefined, () => {
+    throw new Error("never called");
+  })();
 });

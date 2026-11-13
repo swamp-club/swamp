@@ -28,7 +28,11 @@ import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { isSwampBrief, renderBrief } from "../../domain/start/brief.ts";
+import {
+  isSwampBrief,
+  renderBrief,
+  swampifyPageUrl,
+} from "../../domain/start/brief.ts";
 import {
   canResume,
   effectiveTrustMode,
@@ -1394,11 +1398,20 @@ async function readBriefFile(
   }
 }
 
+/**
+ * Where the browser that asked for a launch reached this server, so a
+ * swampify brief can link to the Swampify page.
+ */
+export interface StartPageAddress {
+  readonly origin: string;
+  readonly workspaceName: string;
+}
+
 /** every step is idempotent, so launching again runs the same path */
 export async function* startLaunch(
   _ctx: LibSwampContext,
   deps: StartDeps,
-  input: { workspacePath: string; taskId: string },
+  input: { workspacePath: string; taskId: string; page?: StartPageAddress },
 ): AsyncIterable<StartLaunchEvent> {
   try {
     yield { kind: "checking" };
@@ -1434,6 +1447,9 @@ export async function* startLaunch(
         workspacePath: input.workspacePath,
         harnessDisplayName: harness.displayName,
         imported: await isImportedFolder(deps, input.workspacePath),
+        swampifyPageUrl: input.page
+          ? swampifyPageUrl(input.page.origin, input.page.workspaceName)
+          : null,
       }),
     );
     yield {
@@ -1484,6 +1500,7 @@ export async function* startLaunchTask(
     text: string;
     kind: StartTaskKind;
     harness: string;
+    page?: StartPageAddress;
   },
 ): AsyncIterable<StartLaunchEvent> {
   try {
@@ -1534,6 +1551,7 @@ export async function* startLaunchTask(
   yield* startLaunch(ctx, deps, {
     workspacePath: input.workspacePath,
     taskId: taskId!,
+    ...(input.page ? { page: input.page } : {}),
   });
 }
 

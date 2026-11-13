@@ -40,8 +40,21 @@ import { useDocumentTitle } from "../../hooks/useDocumentTitle.ts";
 import { RequestError } from "../../client/stream.ts";
 import { behaviorNoun, BEHAVIORS_LABEL } from "../../lib/behavior_labels.ts";
 import { AgentBadge } from "./AgentBadge.tsx";
+import {
+  describeChooseError,
+  ErrorBox,
+  errorMessage,
+  type ScreenProps,
+  useAction,
+  WorkspaceSections,
+} from "./parts.tsx";
+import { PastSessionsPanel } from "./PastSessions.tsx";
 import { StartClient } from "./client.ts";
-import { dashboardBaseFor } from "../../client/workspace_path.ts";
+import {
+  dashboardBaseFor,
+  forgetLocalToken,
+  keepLocalToken,
+} from "../../client/workspace_path.ts";
 import {
   agentScreenHeading,
   agentsToggleLabel,
@@ -74,13 +87,8 @@ import {
   newWorkspaceNameProblem,
   nextWorkspaceOrder,
   orderExamples,
-  parseExcludedPaths,
   parseTokenFromHash,
   parseWorkspaceOrder,
-  PAST_SESSIONS_DEFAULT_WINDOW,
-  PAST_SESSIONS_WINDOWS,
-  type PastSessionsHarness,
-  pastSessionsHarnesses,
   pathLabel,
   pickFirstTaskIdea,
   planHistorySync,
@@ -96,8 +104,6 @@ import {
   splitHarnesses,
   splitTask,
   START_TOKEN_KEY,
-  startErrorText,
-  swampifyWorkspaceName,
   taskCreatedLabel,
   taskStatusLabel,
   toLaunchEvent,
@@ -107,7 +113,6 @@ import {
   updatedLabel,
   WORKSPACE_ORDER_KEY,
   workspaceAgentTags,
-  workspaceChooseError,
   workspaceLocationHint,
   type WorkspaceOrder,
   type WorkspaceSortKey,
@@ -182,26 +187,6 @@ function readToken(): PageToken {
   return cachedToken;
 }
 
-/**
- * Drops the stored token once swamp start has gone or refused it. Each
- * `swamp start` mints a new token, so a reload must not offer the old one.
- */
-function forgetToken(): void {
-  try {
-    sessionStorage.removeItem(START_TOKEN_KEY);
-  } catch {
-    // Storage blocked: nothing was stored.
-  }
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-  const friendly = error instanceof RequestError
-    ? startErrorText(error.code)
-    : null;
-  if (friendly) return friendly;
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
 /** Renders text with `backtick` spans as inline code. */
 function withCode(text: string): ReactNode[] {
   return text.split("`").map((part, i) =>
@@ -213,14 +198,13 @@ export function Start() {
   useDocumentTitle("swamp start");
   const [{ token, fromHash }] = useState(readToken);
 
-  // Keep the token for a reload and take it out of the address bar.
+  // Keep the token for a reload and for other tabs on this server, such as
+  // the Swampify page a brief links to, and take it out of the address bar.
   useEffect(() => {
-    if (!token || !fromHash) return;
-    history.replaceState(null, "", location.pathname + location.search);
-    try {
-      sessionStorage.setItem(START_TOKEN_KEY, token);
-    } catch {
-      // Storage blocked: the token lasts for this page load only.
+    if (!token) return;
+    keepLocalToken(token);
+    if (fromHash) {
+      history.replaceState(null, "", location.pathname + location.search);
     }
   }, [token, fromHash]);
 
@@ -256,7 +240,7 @@ function StartSession({ token }: { token: string }) {
           });
       },
       onStopped: () => {
-        forgetToken();
+        forgetLocalToken(token);
         setPhase("stopped");
       },
     });
@@ -264,7 +248,7 @@ function StartSession({ token }: { token: string }) {
     c.connect()
       .catch((err) => {
         // The socket was refused (a stale token) or swamp start is gone.
-        if (active) forgetToken();
+        if (active) forgetLocalToken(token);
         throw err;
       })
       .then(() => c.request<StartStatus>("start.status"))
@@ -640,12 +624,6 @@ function useStartNav(
   return { go, confirm, pending, cancel, busy, error, setReport };
 }
 
-interface ScreenProps {
-  status: StartStatus;
-  client: StartClient;
-  onStatus: (status: StartStatus) => void;
-}
-
 function ScreenView(props: ScreenProps) {
   const key = screenComponentKey(props.status.screen);
   const root = useRef<HTMLDivElement>(null);
@@ -844,38 +822,6 @@ function useHarnesses(client: StartClient, enabled = true) {
   return { harnesses, error, refresh };
 }
 
-/**
- * Runs one status-returning request at a time and keeps its error.
- */
-function useAction(
-  onStatus: (status: StartStatus) => void,
-  describeError?: (error: unknown) => string,
-) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const run = useCallback(
-    async (action: () => Promise<StartStatus>): Promise<boolean> => {
-      setBusy(true);
-      setError(null);
-      try {
-        onStatus(await action());
-        return true;
-      } catch (err) {
-        setError(
-          describeError
-            ? describeError(err)
-            : errorMessage(err, "Something went wrong. Try again."),
-        );
-        return false;
-      } finally {
-        setBusy(false);
-      }
-    },
-    [onStatus, describeError],
-  );
-  return { busy, error, run, setError };
-}
-
 /** Stands in for `onStatus` on screens whose chips can't switch. */
 function ignoreStatus(): void {}
 
@@ -1037,18 +983,6 @@ function StatusChips(
       )}
       <ErrorBox message={switchError} />
     </>
-  );
-}
-
-function ErrorBox({ message }: { message: string | null }) {
-  if (!message) return null;
-  return <div className="login-error" role="alert">{message}</div>;
-}
-
-function describeChooseError(err: unknown): string {
-  return workspaceChooseError(
-    err instanceof RequestError ? err.code : undefined,
-    err instanceof Error ? err.message : "",
   );
 }
 
@@ -1709,348 +1643,149 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
           Looking for your workspaces…
         </div>
       )}
-      {list !== null && (
-        <form
-          ref={formRef}
-          className={`start-workspace-form${firstRun ? " start-panel" : ""}`}
-          onSubmit={submit}
-        >
-          {firstRun
-            ? (
-              <>
-                {!importingSelected && (
-                  <p className="start-panel-intro">{WORKSPACE_EXPLAINER}</p>
-                )}
-                {importingSelected
-                  ? (
-                    <>
-                      {importFields}
-                      <p className="start-hint start-switch-form">
-                        <button
-                          type="button"
-                          className="start-link"
-                          onClick={() => setSelected(NEW_WORKSPACE)}
-                        >
-                          Back
-                        </button>
-                      </p>
-                    </>
-                  )
-                  : (
-                    <>
-                      {nameFields}
-                      <p className="start-hint start-switch-form">
-                        Already have a swamp repo?{" "}
-                        <button
-                          type="button"
-                          className="start-secondary start-small start-icon-button"
-                          onClick={() => setSelected(IMPORT_WORKSPACE)}
-                        >
-                          <ActionIcon path={IMPORT_ICON} />
-                          Import
-                        </button>
-                      </p>
-                    </>
-                  )}
-              </>
-            )
-            : selected === NEW_WORKSPACE || importingSelected
-            ? (
-              <div className="start-form-panel">
-                <h3 className="start-form-title">
-                  {importingSelected
-                    ? "Import an existing swamp repo"
-                    : "Start a new workspace"}
-                </h3>
-                <p className="start-panel-intro">
-                  {importingSelected
-                    ? "Use a swamp repo you already have, where it is. Nothing is moved."
-                    : "For a different project or task. We'll suggest a name."}
-                </p>
-                {importingSelected ? importFields : nameFields}
-              </div>
-            )
-            : (
-              <>
-                <div className="start-workspace-bar">
-                  <h3 className="start-ws-heading">
-                    Your workspaces{" "}
-                    <span className="start-ws-count">{existing.length}</span>
-                  </h3>
-                  <div className="start-workspace-adds">
-                    <button
-                      type="button"
-                      className="start-secondary start-small start-icon-button"
-                      data-opens={NEW_WORKSPACE}
-                      onClick={() => openForm(NEW_WORKSPACE)}
-                    >
-                      <ActionIcon path={PLUS_ICON} />
-                      New workspace
-                    </button>
-                    <button
-                      type="button"
-                      className="start-secondary start-small start-icon-button"
-                      data-opens={IMPORT_WORKSPACE}
-                      title="Import an existing swamp repo"
-                      onClick={() => openForm(IMPORT_WORKSPACE)}
-                    >
-                      <ActionIcon path={IMPORT_ICON} />
-                      Import
-                    </button>
-                  </div>
-                </div>
-                <WorkspaceTable
-                  workspaces={shown}
-                  now={now}
-                  order={order}
-                  onSort={sortBy}
-                  opening={choosing ? selected : null}
-                  disabled={busy}
-                  onOpen={open}
-                />
-              </>
-            )}
-          {(firstRun || creating || importingSelected) && (
-            <div className="start-actions">
-              {formOverList && (
-                <button
-                  type="button"
-                  className="start-secondary"
-                  onClick={cancelForm}
-                  disabled={busy}
-                >
-                  Cancel
-                </button>
-              )}
-              <button
-                type="submit"
-                className="start-primary"
-                disabled={!canSubmit}
-              >
-                {submitLabel}
-              </button>
-            </div>
-          )}
-          {firstRun && !importingSelected && (
-            <p className="start-hint">
-              {withCode(workspaceLocationHint(defaultLocation))}
-            </p>
-          )}
-        </form>
-      )}
-      {list !== null && !importingSelected &&
-        showPastSessions(status.signals) && (
-        <PastSessionsPanel
-          status={status}
-          client={client}
-          onStatus={onStatus}
-          taken={existing.map((w) => w.name)}
-          disabled={busy}
-        />
-      )}
-      {list !== null && firstRun && <FirstRunSteps />}
-    </div>
-  );
-}
-
-const PAST_SESSIONS_HARNESS_NAMES: Record<PastSessionsHarness, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-};
-
-/**
- * "Start from your past sessions": says what will be read and stored, then
- * creates a workspace and saves a Swampify kick-off task in it. The page
- * sends only the window, the excluded paths and the agent; the server writes
- * the task text.
- */
-function PastSessionsPanel(
-  { status, client, onStatus, taken, disabled }: ScreenProps & {
-    taken: readonly string[];
-    disabled: boolean;
-  },
-) {
-  const offered = pastSessionsHarnesses(status.signals);
-  const [open, setOpen] = useState(false);
-  const [windowDays, setWindowDays] = useState(PAST_SESSIONS_DEFAULT_WINDOW);
-  const [excludeText, setExcludeText] = useState("");
-  const [picked, setPicked] = useState<PastSessionsHarness | null>(null);
-  const [name, setName] = useState("");
-  const [installed, setInstalled] = useState<Record<string, boolean> | null>(
-    null,
-  );
-  const { busy, error, run } = useAction(onStatus, describeChooseError);
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    client.request<HarnessList>("start.harness.list")
-      .then((reply) => {
-        if (!active) return;
-        const found: Record<string, boolean> = {};
-        for (const h of reply?.harnesses ?? []) found[h.id] = h.found;
-        setInstalled(found);
-      })
-      .catch(() => {
-        if (active) setInstalled({});
-      });
-    return () => {
-      active = false;
-    };
-  }, [open, client]);
-  const harness = picked !== null && offered.includes(picked)
-    ? picked
-    : offered.find((h) => installed?.[h] !== false) ?? offered[0];
-  const suggested = swampifyWorkspaceName(taken);
-  const finalName = name.trim() || suggested;
-  const nameOk = isValidWorkspaceName(finalName);
-  const harnessOk = harness !== undefined && installed?.[harness] !== false;
-  const canSubmit = !busy && !disabled && nameOk && harnessOk;
-
-  if (!open) {
-    return (
-      <div className="start-form-panel start-past-sessions">
-        <h3 className="start-form-title">Start from your past sessions</h3>
-        <p className="start-panel-intro">
-          Your agent looks through your Claude Code and Codex history for chores
-          you repeat, and offers a few worth automating.
-        </p>
-        <div className="start-actions">
-          <button
-            type="button"
-            className="start-secondary"
-            onClick={() => setOpen(true)}
-            disabled={disabled}
+      <WorkspaceSections
+        pastSessions={list !== null && !importingSelected &&
+          showPastSessions(status.signals) && (
+          <PastSessionsPanel
+            status={status}
+            client={client}
+            onStatus={onStatus}
+            taken={existing.map((w) => w.name)}
+            disabled={busy}
+          />
+        )}
+        workspaces={list !== null && (
+          <form
+            ref={formRef}
+            className={`start-workspace-form${firstRun ? " start-panel" : ""}`}
+            onSubmit={submit}
           >
-            Start from your past sessions
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canSubmit || harness === undefined) return;
-    const exclude = parseExcludedPaths(excludeText);
-    void run(() =>
-      client.request<StartStatus>("start.swampify.kickoff", {
-        name: finalName,
-        windowDays,
-        ...(exclude.length > 0 ? { exclude } : {}),
-        harness,
-      })
-    );
-  };
-
-  return (
-    <form
-      className="start-form-panel start-past-sessions"
-      onSubmit={submit}
-      aria-labelledby="start-past-sessions-title"
-    >
-      <h3 id="start-past-sessions-title" className="start-form-title">
-        Start from your past sessions
-      </h3>
-      <p className="start-panel-intro">
-        Your agent looks through your Claude Code and Codex history for chores
-        you repeat, and offers a few worth automating.
-      </p>
-      <ul className="start-disclosure">
-        <li>
-          <strong>What it reads:</strong>{" "}
-          transcript text on this machine, including your prompts and the
-          agent's replies, for the window and scope you choose below. Your agent
-          asks before it reads anything.
-        </li>
-        <li>
-          <strong>What the workspace stores:</strong>{" "}
-          counts, token costs, and up to five short, redacted excerpts for each
-          repeated chore. Session records stay prompt-free: they never hold
-          prompts or replies.
-        </li>
-        <li>
-          <strong>Where it goes:</strong>{" "}
-          this workspace's data stays on this machine unless you choose to sync
-          it to a datastore or serve it.
-        </li>
-      </ul>
-      <ErrorBox message={error} />
-      <label className="start-field-label" htmlFor="start-past-window">
-        Window
-      </label>
-      <select
-        id="start-past-window"
-        className="start-input"
-        value={windowDays}
-        onChange={(e) => setWindowDays(Number(e.target.value))}
-      >
-        {PAST_SESSIONS_WINDOWS.map((days) => (
-          <option key={days} value={days}>Last {days} days</option>
-        ))}
-      </select>
-      <label className="start-field-label" htmlFor="start-past-exclude">
-        Scope
-      </label>
-      <p className="start-hint" id="start-past-exclude-hint">
-        Every session on this machine. To leave folders out, list them one per
-        line, starting with <code>/</code> or <code>~</code>.
-      </p>
-      <textarea
-        id="start-past-exclude"
-        className="start-textarea start-input-mono"
-        value={excludeText}
-        onChange={(e) => setExcludeText(e.target.value)}
-        rows={3}
-        placeholder="~/src/client-repo"
-        spellCheck={false}
-        aria-describedby="start-past-exclude-hint"
-      />
-      <fieldset className="start-past-agents">
-        <legend className="start-field-label">Agent</legend>
-        {offered.map((id) => (
-          <label key={id} className="start-past-agent">
-            <input
-              type="radio"
-              name="start-past-agent"
-              value={id}
-              checked={harness === id}
-              onChange={() => setPicked(id)}
-              disabled={installed?.[id] === false}
-            />
-            {PAST_SESSIONS_HARNESS_NAMES[id]}
-            {installed?.[id] === false && (
-              <span className="start-hint">not on your PATH</span>
+            {firstRun
+              ? (
+                <>
+                  {!importingSelected && (
+                    <p className="start-panel-intro">{WORKSPACE_EXPLAINER}</p>
+                  )}
+                  {importingSelected
+                    ? (
+                      <>
+                        {importFields}
+                        <p className="start-hint start-switch-form">
+                          <button
+                            type="button"
+                            className="start-link"
+                            onClick={() => setSelected(NEW_WORKSPACE)}
+                          >
+                            Back
+                          </button>
+                        </p>
+                      </>
+                    )
+                    : (
+                      <>
+                        {nameFields}
+                        <p className="start-hint start-switch-form">
+                          Already have a swamp repo?{" "}
+                          <button
+                            type="button"
+                            className="start-secondary start-small start-icon-button"
+                            onClick={() => setSelected(IMPORT_WORKSPACE)}
+                          >
+                            <ActionIcon path={IMPORT_ICON} />
+                            Import
+                          </button>
+                        </p>
+                      </>
+                    )}
+                </>
+              )
+              : selected === NEW_WORKSPACE || importingSelected
+              ? (
+                <div className="start-form-panel">
+                  <h3 className="start-form-title">
+                    {importingSelected
+                      ? "Import an existing swamp repo"
+                      : "Start a new workspace"}
+                  </h3>
+                  <p className="start-panel-intro">
+                    {importingSelected
+                      ? "Use a swamp repo you already have, where it is. Nothing is moved."
+                      : "For a different project or task. We'll suggest a name."}
+                  </p>
+                  {importingSelected ? importFields : nameFields}
+                </div>
+              )
+              : (
+                <>
+                  <div className="start-workspace-bar">
+                    <h3 className="start-ws-heading">
+                      Your workspaces{" "}
+                      <span className="start-ws-count">{existing.length}</span>
+                    </h3>
+                    <div className="start-workspace-adds">
+                      <button
+                        type="button"
+                        className="start-secondary start-small start-icon-button"
+                        data-opens={NEW_WORKSPACE}
+                        onClick={() => openForm(NEW_WORKSPACE)}
+                      >
+                        <ActionIcon path={PLUS_ICON} />
+                        New workspace
+                      </button>
+                      <button
+                        type="button"
+                        className="start-secondary start-small start-icon-button"
+                        data-opens={IMPORT_WORKSPACE}
+                        title="Import an existing swamp repo"
+                        onClick={() => openForm(IMPORT_WORKSPACE)}
+                      >
+                        <ActionIcon path={IMPORT_ICON} />
+                        Import
+                      </button>
+                    </div>
+                  </div>
+                  <WorkspaceTable
+                    workspaces={shown}
+                    now={now}
+                    order={order}
+                    onSort={sortBy}
+                    opening={choosing ? selected : null}
+                    disabled={busy}
+                    onOpen={open}
+                  />
+                </>
+              )}
+            {(firstRun || creating || importingSelected) && (
+              <div className="start-actions">
+                {formOverList && (
+                  <button
+                    type="button"
+                    className="start-secondary"
+                    onClick={cancelForm}
+                    disabled={busy}
+                  >
+                    Cancel
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="start-primary"
+                  disabled={!canSubmit}
+                >
+                  {submitLabel}
+                </button>
+              </div>
             )}
-          </label>
-        ))}
-      </fieldset>
-      <label className="start-field-label" htmlFor="start-past-name">
-        Workspace name
-      </label>
-      <input
-        id="start-past-name"
-        className="start-input"
-        value={name}
-        placeholder={suggested}
-        onChange={(e) => setName(e.target.value)}
-        autoComplete="off"
-        spellCheck={false}
-        aria-invalid={!nameOk}
+            {firstRun && !importingSelected && (
+              <p className="start-hint">
+                {withCode(workspaceLocationHint(defaultLocation))}
+              </p>
+            )}
+          </form>
+        )}
+        after={list !== null && firstRun && <FirstRunSteps />}
       />
-      <div className="start-actions">
-        <button
-          type="button"
-          className="start-secondary"
-          onClick={() => setOpen(false)}
-          disabled={busy}
-        >
-          Cancel
-        </button>
-        <button type="submit" className="start-primary" disabled={!canSubmit}>
-          {busy ? "Setting up…" : "Create workspace from past sessions"}
-        </button>
-      </div>
-    </form>
+    </div>
   );
 }
 

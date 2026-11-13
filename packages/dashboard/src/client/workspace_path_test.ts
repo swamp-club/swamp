@@ -20,11 +20,15 @@
 import { assertEquals } from "@std/assert";
 import {
   dashboardBaseFor,
+  forgetLocalToken,
+  keepLocalToken,
+  LOCAL_TOKEN_KEY,
   localSocketProtocols,
   localToken,
   PAGE_WORKSPACE,
   serverPath,
   serverPathFor,
+  type TokenStores,
   withLocalToken,
   workspaceFromPath,
 } from "./workspace_path.ts";
@@ -76,4 +80,75 @@ Deno.test("local token helpers: under serve (no workspace) nothing is added", ()
   assertEquals(withLocalToken({ a: "b" }), { a: "b" });
   assertEquals(withLocalToken(), {});
   assertEquals(localSocketProtocols(), undefined);
+});
+
+class MemoryStorage implements Storage {
+  #items = new Map<string, string>();
+  get length(): number {
+    return this.#items.size;
+  }
+  clear(): void {
+    this.#items.clear();
+  }
+  getItem(key: string): string | null {
+    return this.#items.get(key) ?? null;
+  }
+  key(index: number): string | null {
+    return [...this.#items.keys()][index] ?? null;
+  }
+  removeItem(key: string): void {
+    this.#items.delete(key);
+  }
+  setItem(key: string, value: string): void {
+    this.#items.set(key, value);
+  }
+}
+
+function memoryStores(): TokenStores & {
+  sessionStore: MemoryStorage;
+  localStore: MemoryStorage;
+} {
+  const sessionStore = new MemoryStorage();
+  const localStore = new MemoryStorage();
+  return {
+    sessionStore,
+    localStore,
+    session: () => sessionStore,
+    local: () => localStore,
+  };
+}
+
+Deno.test("keepLocalToken: keeps the token for this tab and for other tabs", () => {
+  const stores = memoryStores();
+  keepLocalToken("tok-1", stores);
+  assertEquals(stores.sessionStore.getItem("swamp-start-token"), "tok-1");
+  assertEquals(stores.localStore.getItem(LOCAL_TOKEN_KEY), "tok-1");
+});
+
+Deno.test("keepLocalToken: blocked storage is not an error", () => {
+  keepLocalToken("tok-1", {
+    session: () => {
+      throw new Error("blocked");
+    },
+    local: () => {
+      throw new Error("blocked");
+    },
+  });
+});
+
+Deno.test("forgetLocalToken: drops the refused token from both stores", () => {
+  const stores = memoryStores();
+  keepLocalToken("tok-1", stores);
+  forgetLocalToken("tok-1", stores);
+  assertEquals(stores.sessionStore.getItem("swamp-start-token"), null);
+  assertEquals(stores.localStore.getItem(LOCAL_TOKEN_KEY), null);
+});
+
+Deno.test("forgetLocalToken: leaves another swamp start's token for other tabs", () => {
+  const stores = memoryStores();
+  stores.sessionStore.setItem("swamp-start-token", "tok-old");
+  stores.localStore.setItem(LOCAL_TOKEN_KEY, "tok-new");
+  forgetLocalToken("tok-old", stores);
+  assertEquals(stores.sessionStore.getItem("swamp-start-token"), null);
+  assertEquals(stores.localStore.getItem(LOCAL_TOKEN_KEY), "tok-new");
 });

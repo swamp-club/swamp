@@ -409,12 +409,13 @@ export async function runStart(
       switchable: fixed === null,
       trustedHosts,
       spawnChild: spawnDashboardChild,
-      launchSwampify: (repoDir, request) =>
+      launchSwampify: (repoDir, request, page) =>
         startLaunchTask(ctx, deps, {
           workspacePath: repoDir,
           text: request.text,
           kind: "swampify",
           harness: request.harness,
+          ...(page ? { page } : {}),
         }),
     }),
     claims: createWorkspaceClaims(() => ({

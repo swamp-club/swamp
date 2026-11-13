@@ -92,12 +92,26 @@ export function localToken(): string | null {
     stored(() => localStorage, LOCAL_TOKEN_KEY);
 }
 
+/** Where a token is kept; the browser's storage unless a test passes its own. */
+export interface TokenStores {
+  readonly session: () => Storage;
+  readonly local: () => Storage;
+}
+
+const BROWSER_STORES: TokenStores = {
+  session: () => sessionStorage,
+  local: () => localStorage,
+};
+
 /** Keeps a token the page was handed, for this tab and later ones. */
-export function keepLocalToken(token: string): void {
+export function keepLocalToken(
+  token: string,
+  stores: TokenStores = BROWSER_STORES,
+): void {
   for (
     const [storage, key] of [
-      [() => sessionStorage, START_TOKEN_KEY],
-      [() => localStorage, LOCAL_TOKEN_KEY],
+      [stores.session, START_TOKEN_KEY],
+      [stores.local, LOCAL_TOKEN_KEY],
     ] as const
   ) {
     try {
@@ -105,6 +119,29 @@ export function keepLocalToken(token: string): void {
     } catch {
       // Storage blocked: the token lasts for this page load only.
     }
+  }
+}
+
+/**
+ * Drops a refused token. The copy for other tabs goes only if it is this
+ * token: another swamp start may have written its own since.
+ */
+export function forgetLocalToken(
+  token: string | null,
+  stores: TokenStores = BROWSER_STORES,
+): void {
+  try {
+    stores.session().removeItem(START_TOKEN_KEY);
+  } catch {
+    // Storage blocked: nothing was stored.
+  }
+  try {
+    const local = stores.local();
+    if (token !== null && local.getItem(LOCAL_TOKEN_KEY) === token) {
+      local.removeItem(LOCAL_TOKEN_KEY);
+    }
+  } catch {
+    // Storage blocked: nothing was stored.
   }
 }
 

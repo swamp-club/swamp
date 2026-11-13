@@ -27,7 +27,10 @@ import {
   type WorkspaceHubDeps,
 } from "../src/serve/local/workspace_hub.ts";
 import type { SwampifyLaunchRequest } from "../src/serve/local/local_actions.ts";
-import type { StartLaunchEvent } from "../src/libswamp/start/start.ts";
+import type {
+  StartLaunchEvent,
+  StartPageAddress,
+} from "../src/libswamp/start/start.ts";
 import { TrustedHosts } from "../src/serve/local/trusted_hosts.ts";
 
 type FakeChild = HubChild & {
@@ -1091,12 +1094,17 @@ Deno.test("workspaceHub: with no trusted hosts, an https origin is refused even 
 });
 
 function fakeSwampifyLaunch(events: StartLaunchEvent[]) {
-  const calls: Array<{ repoDir: string; request: SwampifyLaunchRequest }> = [];
+  const calls: Array<{
+    repoDir: string;
+    request: SwampifyLaunchRequest;
+    page: StartPageAddress | undefined;
+  }> = [];
   const launch: WorkspaceHubDeps["launchSwampify"] = async function* (
     repoDir,
     request,
+    page,
   ) {
-    calls.push({ repoDir, request });
+    calls.push({ repoDir, request, page });
     for (const event of events) yield event;
   };
   return { launch, calls };
@@ -1133,6 +1141,7 @@ Deno.test("workspaceHub: Swampify's launch starts the task in the workspace and 
     assertEquals(calls, [{
       repoDir: "/repos/alpha",
       request: { text: "Automate it", harness: "claude" },
+      page: { origin: `http://${base}`, workspaceName: "alpha" },
     }]);
     await closeSocket(ws);
   }, { launchSwampify: launch });

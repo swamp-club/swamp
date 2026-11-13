@@ -25,7 +25,10 @@ import {
   isBriefFile,
   isSwampBrief,
   renderBrief,
+  SWAMPIFY_PAGE_LINE_PREFIX,
+  swampifyPageUrl,
 } from "./brief.ts";
+import { SwampifyKickoff } from "./swampify_kickoff.ts";
 import { StartTask } from "./start_task.ts";
 
 Deno.test("renderBrief: starts with the versioned header", () => {
@@ -178,4 +181,91 @@ Deno.test("renderBrief: a swampify task keeps its own steps and works in the use
   assert(!brief.includes("swamp-getting-started"));
   assert(!brief.includes("# How to work on this\n\n1. Before you run"));
   assertEquals(briefTaskText(brief), text);
+});
+
+const PAGE = "http://127.0.0.1:41234/dashboard/w/swampify/swampify";
+
+function swampifyBrief(text: string, url?: string | null): string {
+  return renderBrief({
+    task: StartTask.create(text, "swampify"),
+    workspacePath: "/home/u/swampify",
+    harnessDisplayName: "Claude Code",
+    swampifyPageUrl: url,
+  });
+}
+
+Deno.test("renderBrief: a kick-off brief links to the Swampify page after its context, and keeps its pinned text", () => {
+  const text = SwampifyKickoff.create({ windowDays: 30 }, "linux").render();
+  const brief = swampifyBrief(text, PAGE);
+  assert(brief.endsWith(`- Agent: Claude Code\n- Swampify page: ${PAGE}\n`));
+  assertEquals(briefTaskText(brief), text);
+  assertEquals(
+    brief.split("\n").filter((l) => l.startsWith(SWAMPIFY_PAGE_LINE_PREFIX)),
+    [`- Swampify page: ${PAGE}`],
+  );
+});
+
+Deno.test("renderBrief: a build brief links to the Swampify page too", () => {
+  const text =
+    "Automate this repeated chore as a swamp workflow: Release docs.";
+  const brief = swampifyBrief(text, PAGE);
+  assertStringIncludes(brief, `\n- Swampify page: ${PAGE}\n`);
+  assertEquals(briefTaskText(brief), text);
+});
+
+Deno.test("renderBrief: no address, no Swampify page line", () => {
+  for (const url of [undefined, null]) {
+    const brief = swampifyBrief("Automate this.", url);
+    assert(!brief.includes("Swampify page"), String(url));
+  }
+});
+
+Deno.test("renderBrief: a typed task never gets the Swampify page line", () => {
+  const brief = renderBrief({
+    task: StartTask.create("list pods"),
+    workspacePath: "/w",
+    harnessDisplayName: "Claude Code",
+    swampifyPageUrl: PAGE,
+  });
+  assert(!brief.includes("Swampify page"));
+});
+
+Deno.test("swampifyPageUrl: builds the page's address from a bare origin, with no token", () => {
+  assertEquals(
+    swampifyPageUrl("http://127.0.0.1:41234", "swampify"),
+    "http://127.0.0.1:41234/dashboard/w/swampify/swampify",
+  );
+  assertEquals(
+    swampifyPageUrl("https://swamp.example.test", "my work"),
+    "https://swamp.example.test/dashboard/w/my%20work/swampify",
+  );
+  assertEquals(
+    swampifyPageUrl("http://[::1]:8080", "w"),
+    "http://[::1]:8080/dashboard/w/w/swampify",
+  );
+  const url = swampifyPageUrl("http://127.0.0.1:41234", "w")!;
+  assert(!url.includes("#") && !url.includes("token"));
+});
+
+Deno.test("swampifyPageUrl: anything but a bare http(s) origin gives no address", () => {
+  for (
+    const origin of [
+      "",
+      "null",
+      "javascript:alert(1)",
+      "file:///etc",
+      "ftp://host",
+      "http://user:pw@host",
+      "http://host/path",
+      "http://host/",
+      "http://host?x=1",
+      "http://host#token=abc",
+      "http://host\n- Agent: evil",
+      "http://ho st",
+      "HTTP://HOST",
+      "[x](http://host)",
+    ]
+  ) {
+    assertEquals(swampifyPageUrl(origin, "w"), null, origin);
+  }
 });

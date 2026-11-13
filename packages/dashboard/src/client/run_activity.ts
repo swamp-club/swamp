@@ -51,13 +51,13 @@ const RunActivityContext = createContext<RunActivity>({
   visible: true,
 });
 
-interface VisibilityDocument {
+export interface VisibilityDocument {
   visibilityState?: string;
   addEventListener(type: "visibilitychange", listener: () => void): void;
   removeEventListener(type: "visibilitychange", listener: () => void): void;
 }
 
-function tabDocument(): VisibilityDocument | undefined {
+export function tabDocument(): VisibilityDocument | undefined {
   return (globalThis as { document?: VisibilityDocument }).document;
 }
 
@@ -117,6 +117,26 @@ export function visibleIntervalMs(
 /** Whether the tab went from hidden to in view. */
 export function cameIntoView(previous: boolean, next: boolean): boolean {
   return !previous && next;
+}
+
+/**
+ * Calls `onReturn` each time `doc` goes from hidden to in view, and returns
+ * the unsubscribe.
+ */
+export function watchTabReturn(
+  doc: VisibilityDocument | undefined,
+  onReturn: () => void,
+): () => void {
+  if (!doc) return () => {};
+  let visible = doc.visibilityState !== "hidden";
+  const onChange = () => {
+    const next = doc.visibilityState !== "hidden";
+    const returned = cameIntoView(visible, next);
+    visible = next;
+    if (returned) onReturn();
+  };
+  doc.addEventListener("visibilitychange", onChange);
+  return () => doc.removeEventListener("visibilitychange", onChange);
 }
 
 /**

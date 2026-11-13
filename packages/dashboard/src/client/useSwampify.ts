@@ -37,11 +37,14 @@ import {
   parseComparisonReply,
   parseOfferReply,
   parseSwampifyRows,
+  refetchOnReturn,
   shownCandidateSet,
   shownOffer,
+  swampifyPollMs,
   type SwampifyRow,
   swampifyRowKey,
 } from "./swampify.ts";
+import { tabDocument, useDocumentVisible } from "./run_activity.ts";
 import type {
   SwampifyCandidateSetReading,
   SwampifyComparisonReading,
@@ -54,7 +57,40 @@ import type {
  */
 export function useSwampifyVisible(): boolean {
   const probe = useRequest("data.query", candidateSetProbePayload());
+  // The first assessment lands while the user is in their agent's window.
+  useListsOnReturn([probe.refetch]);
   return parseSwampifyRows(replyData(probe.data)).rows.length > 0;
+}
+
+/** Calls the latest `refetches` each time the tab comes back into view. */
+function useListsOnReturn(refetches: readonly (() => void)[]): void {
+  const latest = useRef(refetches);
+  latest.current = refetches;
+  useEffect(
+    () =>
+      refetchOnReturn(tabDocument(), [
+        () => {
+          for (const refetch of latest.current) refetch();
+        },
+      ]),
+    [],
+  );
+}
+
+/** Calls the latest `refetches` every `intervalMs`; null stops the clock. */
+function useListsOnInterval(
+  refetches: readonly (() => void)[],
+  intervalMs: number | null,
+): void {
+  const latest = useRef(refetches);
+  latest.current = refetches;
+  useEffect(() => {
+    if (intervalMs === null) return;
+    const id = setInterval(() => {
+      for (const refetch of latest.current) refetch();
+    }, intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
 }
 
 export interface Loadable<T> {
@@ -148,6 +184,15 @@ export function useSwampify(): SwampifyState {
     [comparisonReq.data],
   );
   const byOption = useMemo(() => comparisonsByOption(parsed.rows), [parsed]);
+  // A build happens in the agent's session, so the page re-reads its lists
+  // when the tab comes back, and on a clock while a pick is being built.
+  // Bodies follow: a list row with a new version re-reads its body.
+  const lists = [set.list.refetch, offer.list.refetch, comparisonReq.refetch];
+  useListsOnReturn(lists);
+  useListsOnInterval(
+    lists,
+    swampifyPollMs(offer.body.value, useDocumentVisible()),
+  );
   return {
     setRow: set.list,
     set: set.body,

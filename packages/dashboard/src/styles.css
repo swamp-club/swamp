@@ -4806,11 +4806,39 @@ a.cron-badge:hover {
   margin-top: 16px;
 }
 
-/* swamp start: "Start from your past sessions" */
+/* swamp start: "Start from your past sessions", first on the workspace screen */
+.start-past-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--sw-accent-soft);
+  border-radius: 10px;
+  background: var(--accent-subtle);
+}
+
+.start-past-card-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.start-past-card p.start-past-card-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-1);
+  font-size: 0.95rem;
+}
+
+.start-past-card .start-primary {
+  flex-shrink: 0;
+}
+
 .start-past-sessions {
-  margin-top: 24px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
 }
 
 .start-disclosure {

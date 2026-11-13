@@ -552,6 +552,8 @@ export function startStartServer(
   // running for the same workspace (a double click, a second tab) shares its
   // result instead of opening a second window.
   const inFlight = new Map<string, Promise<StartStatus>>();
+  // Where each page reached this server, for the Swampify page link.
+  const socketOrigins = new WeakMap<WebSocket, string>();
   const deduped = (
     action: string,
     run: (path: string) => Promise<StartStatus>,
@@ -1031,10 +1033,18 @@ export function startStartServer(
           await pickFolder(request.payload?.purpose ?? "import"),
         );
       case "start.launch": {
+        const origin = socketOrigins.get(socket);
         const status = await deduped("launch", async (path) => {
           const taskId = requireTask();
+          const page = origin !== undefined && bound !== null
+            ? { origin, workspaceName: bound.name }
+            : undefined;
           const { status } = await launchStatus(
-            startLaunch(ctx, deps, { workspacePath: path, taskId }),
+            startLaunch(ctx, deps, {
+              workspacePath: path,
+              taskId,
+              ...(page ? { page } : {}),
+            }),
             forward,
             "Launch",
           );
@@ -1055,7 +1065,8 @@ export function startStartServer(
 
   const sockets = new Set<WebSocket>();
 
-  function onSocket(socket: WebSocket) {
+  function onSocket(socket: WebSocket, origin: string) {
+    socketOrigins.set(socket, origin);
     sockets.add(socket);
     socket.onopen = () => {
       opened.add(socket);
@@ -1163,6 +1174,9 @@ export function startStartServer(
         if (offered === null || !timingSafeEqual(offered, token)) {
           return new Response("Unauthorized", { status: 401 });
         }
+        // Read before the upgrade, which closes the request; checked above
+        // against this server's own and trusted hosts.
+        const pageOrigin = req.headers.get("origin") ?? `http://${host}`;
         let upgraded: { socket: WebSocket; response: Response };
         try {
           upgraded = Deno.upgradeWebSocket(req, {
@@ -1171,7 +1185,7 @@ export function startStartServer(
         } catch {
           return new Response("Malformed WebSocket upgrade", { status: 400 });
         }
-        onSocket(upgraded.socket);
+        onSocket(upgraded.socket, pageOrigin);
         return upgraded.response;
       }
       const hubAnswer = await options.hub?.handle(req, trackDashboardSocket);
