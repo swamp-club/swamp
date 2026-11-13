@@ -25,6 +25,8 @@
 
 import { UserError } from "../../domain/errors.ts";
 import { LEASE_LAPSED_CODE } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
+import { WRITER_LEASE_CLOCK_SKEW_MS } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   type DistributedLock,
   type LockInfo,
@@ -52,6 +54,7 @@ import {
   ServeUpstreamError,
 } from "./serve_upstream_errors.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
+import { serveClockOf } from "./serve_offline.ts";
 import { describeHolder, outlastsWait } from "./serve_lease_holder.ts";
 import {
   latchServeUnreachable,
@@ -108,9 +111,8 @@ export interface ServeLockOptions {
   /** where the checkout's copy stands, for serve to answer with the lease */
   readonly catchUpRequest?: () => CatchUpRequest | undefined;
   /**
-   * serve could not be reached by the lock that was the command's first
-   * contact; true when that put the checkout offline, and the hold then takes
-   * the offline path
+   * the first contact found serve unreachable, or leaderless for a live
+   * explicit lease; true when that put the checkout offline
    */
   readonly onUnreachable?: (error: ServeUnreachableError) => boolean;
   readonly root?: string;
@@ -160,6 +162,10 @@ export class ServeLock implements DistributedLock {
   /** a lapse met while releasing: it fires if the hold outlives the release */
   #lapsedWhileReleasing: string | undefined;
   #localOnly = false;
+  /** the adoption a not-in-flight serve_not_leader refused, while still live */
+  #adoptionRefused:
+    | { readonly refusal: unknown; readonly offline: ServeUnreachableError }
+    | undefined;
 
   constructor(options: ServeLockOptions) {
     this.#options = options;
@@ -198,9 +204,16 @@ export class ServeLock implements DistributedLock {
     try {
       await this.#acquireOnline(signal);
     } catch (error) {
-      const goneOffline = error instanceof ServeUnreachableError &&
+      const refused = this.#adoptionRefused;
+      this.#adoptionRefused = undefined;
+      const unreachable = error instanceof ServeUnreachableError
+        ? error
+        : refused !== undefined && refused.refusal === error
+        ? refused.offline
+        : undefined;
+      const goneOffline = unreachable !== undefined &&
         this.#lease === undefined &&
-        this.#options.onUnreachable?.(error) === true;
+        this.#options.onUnreachable?.(unreachable) === true;
       const now = goneOffline ? this.#options.offline?.() : undefined;
       if (now === undefined) throw error;
       await this.#acquireOffline(now);
@@ -331,6 +344,10 @@ export class ServeLock implements DistributedLock {
       );
     } catch (error) {
       client.close?.();
+      const offline = this.#noLeaderFor(explicit, client, error);
+      this.#adoptionRefused = offline === undefined
+        ? undefined
+        : { refusal: error, offline };
       throw error;
     }
     if (renewed === undefined) {
@@ -359,6 +376,32 @@ export class ServeLock implements DistributedLock {
     this.#armDeadline(asked);
     this.#startHeartbeat();
     return true;
+  }
+
+  /**
+   * a refusal that changed nothing, of a lease live by serve's clock less the
+   * skew, means no leader can take the write: it may go offline as if serve
+   * were unreachable
+   */
+  #noLeaderFor(
+    explicit: ExplicitLease,
+    client: ServeLockClient,
+    error: unknown,
+  ): ServeUnreachableError | undefined {
+    if (!(error instanceof ServeNotLeaderError) || error.inFlight) {
+      return undefined;
+    }
+    const offsetMs = serveClockOf(client.baseUrl)?.offsetMs ?? 0;
+    const remaining = Date.parse(explicit.expiresAt) - offsetMs -
+      WRITER_LEASE_CLOCK_SKEW_MS - this.#now();
+    if (!(remaining > 0)) return undefined;
+    return new ServeUnreachableError(
+      client.baseUrl,
+      "never",
+      new Error(`serve has no leader right now: ${error.message}`, {
+        cause: error,
+      }),
+    );
   }
 
   /**

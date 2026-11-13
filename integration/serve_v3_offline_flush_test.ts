@@ -37,6 +37,8 @@ import {
   OfflineConfigEditError,
   OfflineLeaseRequiredError,
 } from "../src/domain/datastore_v3/offline_write_policy.ts";
+import { ServeNotLeaderError } from "../src/domain/datastore_v3/serve_leader.ts";
+import { setServeReadRefusalBudgetForTesting } from "../src/infrastructure/datastore_v3/serve_datastore_client.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import {
@@ -1130,6 +1132,173 @@ Deno.test({
         );
         assertEquals(exitCodeForError(refused), 75);
         proxy.up();
+        assertEquals(await servedVersions(serve), [1]);
+      });
+    });
+  },
+});
+
+/** a follower with no leader: reads pass, a lock or commit is refused */
+function refuseWritesWithoutLeader(
+  proxy: OfflineProxy,
+  options: { readonly inFlight?: boolean } = {},
+): string[] {
+  const refused: string[] = [];
+  proxy.answer = (request) => {
+    const path = new URL(request.url).pathname;
+    if (
+      request.method === "GET" || !/\/(locks|commits)(\/|$)/.test(path)
+    ) {
+      return Promise.resolve(undefined);
+    }
+    refused.push(`${request.method} ${path}`);
+    return Promise.resolve(Response.json(
+      {
+        code: "serve_not_leader",
+        message: "This serve node does not lead the datastore; try again",
+        ...(options.inFlight === true ? { inFlight: true } : {}),
+      },
+      { status: 503, headers: { "retry-after": "5" } },
+    ));
+  };
+  return refused;
+}
+
+Deno.test({
+  name:
+    "serve offline, no leader: under an explicit lease a lock refused as not the leader takes the checkout offline at once, the command queues, and the next lands it under the lease",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        const lease = await takeLease(scratch, serve, alice, env);
+
+        const refused = refuseWritesWithoutLeader(proxy);
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        const started = performance.now();
+        try {
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "no leader", {
+              deferred: true,
+            }),
+            2,
+          );
+        } finally {
+          setServeOfflineNoticeWriter(undefined);
+        }
+        assert(performance.now() - started < 15_000);
+        assert(refused.length > 0);
+        assertEquals(await servedVersions(serve), [1]);
+        const offline = notices.find((notice) =>
+          notice.notice === "datastore_offline"
+        );
+        assert(
+          offline?.notice === "datastore_offline" &&
+            offline.message.includes("no leader"),
+        );
+        assert(
+          notices.some((notice) =>
+            notice.notice === "datastore_offline_queued"
+          ),
+        );
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
+        assertEquals(await latestBy(scratch, serve, alice, env), {
+          version: 2,
+          by: "no leader",
+        });
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, no leader: without a lease a lock refused as not the leader is not queued and fails as serve_not_leader with exit 75",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        refuseWritesWithoutLeader(proxy);
+        setServeReadRefusalBudgetForTesting(300);
+        let error: Error;
+        try {
+          error = await assertRejects(
+            () =>
+              lockedSave(scratch, serve, alice, env, "no leader", {
+                deferred: true,
+              }),
+            ServeNotLeaderError,
+          );
+        } finally {
+          setServeReadRefusalBudgetForTesting(undefined);
+        }
+        assertEquals(exitCodeForError(error), 75);
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1]);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, no leader: under an explicit lease a refusal that may have been forwarded in flight never takes the checkout offline",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        await takeLease(scratch, serve, alice, env);
+        refuseWritesWithoutLeader(proxy, { inFlight: true });
+        const error = await assertRejects(
+          () =>
+            lockedSave(scratch, serve, alice, env, "in flight", {
+              deferred: true,
+            }),
+          ServeNotLeaderError,
+        );
+        assert(error.inFlight);
+        assertEquals(exitCodeForError(error), 75);
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
         assertEquals(await servedVersions(serve), [1]);
       });
     });
