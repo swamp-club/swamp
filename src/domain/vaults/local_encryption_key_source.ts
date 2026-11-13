@@ -99,7 +99,7 @@ export function withServerDefaultKeySource(
 /**
  * every place that builds a local_encryption provider from stored config goes
  * through this, so an unset base_dir means the repository, never the working
- * directory
+ * directory; throws when a leading HOME cannot be expanded
  */
 export function withRuntimeBaseDir(
   type: string,

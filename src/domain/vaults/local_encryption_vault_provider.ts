@@ -49,6 +49,14 @@ import { SecretNotFoundError } from "./secret_not_found_error.ts";
 
 const logger = getLogger(["vaults", "local-encryption"]);
 
+export const BASE_DIR_MISSING_CODE = "local_encryption_base_dir_missing";
+
+/** matches the code, not instanceof, as isSecretNotFoundError does */
+export function isBaseDirMissingError(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    (error as { code?: unknown }).code === BASE_DIR_MISSING_CODE;
+}
+
 export interface LocalEncryptionConfig {
   ssh_key_path?: string;
   auto_generate?: boolean;
@@ -382,6 +390,7 @@ export class LocalEncryptionVaultProvider
         // names the field only, so a serve client never sees a server path
         throw new UserError(
           `Local vault '${this.name}' cannot be listed: its base_dir does not exist on this host. Check base_dir in the vault config.`,
+          BASE_DIR_MISSING_CODE,
         );
       }
       throw new Error(
