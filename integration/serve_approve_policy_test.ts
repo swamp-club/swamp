@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { WorkflowRunEvent } from "../src/libswamp/workflows/run.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
@@ -543,7 +543,8 @@ Deno.test({
         assertEquals(reply.type, "workflow.approve", JSON.stringify(reply));
         const decided = await decision(h);
         assertEquals(decided?.decidedBy, "user:release-approver");
-        assertEquals("decidedByUsername" in decided!, false);
+        assert(decided);
+        assertEquals("decidedByUsername" in decided, false);
       } finally {
         await h.loader.dispose();
       }

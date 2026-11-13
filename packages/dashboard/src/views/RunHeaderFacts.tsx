@@ -21,7 +21,7 @@
 /** @jsxImportSource react */
 import type { ReactNode } from "react";
 import { ActorWithClient } from "../components/ActorWithClient.tsx";
-import { principalLabel } from "../../../../src/domain/access/principal.ts";
+import { principalLabel } from "./actor_label.ts";
 
 export function Fact(
   { label, children }: { label: string; children: ReactNode },

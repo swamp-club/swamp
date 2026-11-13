@@ -81,7 +81,7 @@ import { type Stat, StatPills } from "../components/StatPills.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { FilterBar, useWorkflowFilter } from "../components/FilterBar.tsx";
 import { GateDetails } from "../components/GateDetails.tsx";
-import { principalLabel } from "../../../../src/domain/access/principal.ts";
+import { principalLabel } from "./actor_label.ts";
 import {
   SkeletonList,
   SkeletonPills,

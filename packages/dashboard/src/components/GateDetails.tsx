@@ -23,7 +23,7 @@ import type { ReactNode } from "react";
 import { MiniDag } from "./MiniDag.tsx";
 import { Skeleton } from "./Skeleton.tsx";
 import { gateContext, type WorkflowJobDef } from "../lib/gate_dag.ts";
-import { principalLabel } from "../../../../src/domain/access/principal.ts";
+import { principalLabel } from "../views/actor_label.ts";
 
 interface GateDetailsProps {
   workflowName: string;

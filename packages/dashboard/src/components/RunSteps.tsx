@@ -27,8 +27,7 @@ import {
   type RouteState,
 } from "../routes.ts";
 import { formatAbsoluteTime, formatDuration } from "../lib/format.ts";
-import { clientSuffix } from "../views/actor_label.ts";
-import { principalLabel } from "../../../../src/domain/access/principal.ts";
+import { clientSuffix, principalLabel } from "../views/actor_label.ts";
 import { stepArtifactLink } from "../views/artifact_links.ts";
 import type { DrawerItem } from "../views/run_item_param.ts";
 import { CodeBlock } from "./CodeBlock.tsx";

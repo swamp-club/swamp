@@ -143,17 +143,17 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         if (a.status === "approved") {
           writeOutput(
             `      ${green("Approved")} by ${
-              a.approvedBy === undefined
-                ? "unknown"
-                : principalLabel(a.approvedBy, a.approvedByUsername)
+              a.approvedBy === undefined ? "unknown" : escapeControlCharacters(
+                principalLabel(a.approvedBy, a.approvedByUsername),
+              )
             }${viaClient(a.client)} at ${formatTimestamp(a.approvedAt)}`,
           );
         } else if (a.status === "rejected") {
           writeOutput(
             `      ${red("Rejected")} by ${
-              a.rejectedBy === undefined
-                ? "unknown"
-                : principalLabel(a.rejectedBy, a.rejectedByUsername)
+              a.rejectedBy === undefined ? "unknown" : escapeControlCharacters(
+                principalLabel(a.rejectedBy, a.rejectedByUsername),
+              )
             }${viaClient(a.client)} at ${formatTimestamp(a.rejectedAt)}`,
           );
           if (a.reason) {

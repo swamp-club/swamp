@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { actorLabel, clientSuffix } from "./actor_label.ts";
+import { principalLabel as corePrincipalLabel } from "../../../../src/domain/access/principal.ts";
+import { actorLabel, clientSuffix, principalLabel } from "./actor_label.ts";
 
 const initiatedBy = "user:sub-1";
 
@@ -68,4 +69,18 @@ Deno.test("clientSuffix: adds nothing for a direct client", () => {
 Deno.test("clientSuffix: adds nothing when no client was recorded", () => {
   assertEquals(clientSuffix(undefined), "");
   assertEquals(clientSuffix(""), "");
+});
+
+Deno.test("principalLabel: matches the core rule", () => {
+  const principals = ["user:0f3a-sub", "user:stack72", "worker:w1", "alice"];
+  const usernames = [undefined, "", "alice", "stack72"];
+  for (const principal of principals) {
+    for (const username of usernames) {
+      assertEquals(
+        principalLabel(principal, username),
+        corePrincipalLabel(principal, username),
+        `${principal} ${username}`,
+      );
+    }
+  }
 });

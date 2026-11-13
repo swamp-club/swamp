@@ -273,7 +273,9 @@ a gate for a user whose username it knows (the same source as
 vault rules read only the id. `swamp workflow history get`, the dashboard's run
 detail and its pending approvals print `user:<username>` when one is recorded
 and the recorded principal otherwise, the rule `initiatedBy` follows above;
-`principalLabel` in `src/domain/access/principal.ts` holds it. So a token whose
+`principalLabel` in `src/domain/access/principal.ts` holds it, and the
+dashboard keeps a copy in `packages/dashboard/src/views/actor_label.ts` that a
+test pins to it. So a token whose
 id is already the username, a run from before this field, a local
 `swamp workflow approve` and a scheduled or webhook run print as they did. The
 `--json` view keeps `initiatedBy`, `approvedBy` and `rejectedBy` as ids and adds

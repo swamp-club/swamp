@@ -300,6 +300,22 @@ Deno.test("renderWorkflowRunDisplay: a decision names who decided by the usernam
   assertEquals(rejected.includes("0f3a-sub"), false);
 });
 
+Deno.test("renderWorkflowRunDisplay: a recorded username cannot write control sequences to the terminal", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      decided({
+        status: "rejected",
+        rejectedBy: "user:0f3a-sub",
+        rejectedByUsername: "bob\x1b[2J",
+        rejectedAt: "2026-11-05T14:03:00.000Z",
+      }),
+      "log",
+    )
+  );
+  assertEquals(output.includes("\x1b[2J"), false);
+  assertStringIncludes(output, "Rejected by user:bob");
+});
+
 Deno.test("renderWorkflowRunDisplay: a token decision whose id is the username reads as before", () => {
   const output = captureOutput(() =>
     renderWorkflowRunDisplay(
