@@ -55,8 +55,6 @@ Deno.test("SwampifyKickoff.render: accepted paths round-trip through the JSON bl
         const block = /\n```json\n(.*)\n```\n/.exec(text);
         assert(block, text);
         assertEquals(JSON.parse(block[1]), kickoff.exclude);
-        // Removing the block gives back the text with no paths: no path
-        // text appears anywhere else.
         assertEquals(
           text.replace(
             `Excluded paths:\n\n\`\`\`json\n${block[1]}\n\`\`\``,

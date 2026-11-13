@@ -126,7 +126,6 @@ export class SwampifyKickoff {
     return new SwampifyKickoff(windowDays, exclude);
   }
 
-  /** the task text; built only from this constant and the window and scope */
   render(): string {
     const excluded = this.exclude.length === 0
       ? ["Excluded paths: none"]

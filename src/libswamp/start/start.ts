@@ -724,11 +724,7 @@ export interface CheckedSwampifyKickoff {
   readonly harness: HarnessDefinition;
 }
 
-/**
- * Everything a kick-off needs, checked before anything is written: sign-in,
- * the window and scope, and a reading harness whose history is here and
- * whose binary is on PATH.
- */
+/** writes nothing, so a caller can refuse before creating a workspace */
 export async function startCheckSwampifyKickoff(
   deps: StartDeps,
   input: StartSwampifyKickoffInput,
@@ -768,10 +764,6 @@ export async function startCheckSwampifyKickoff(
   };
 }
 
-/**
- * Saves a swampify task whose text is the kick-off, with its agent chosen,
- * in one write; nothing is written when a check fails.
- */
 export function startSaveSwampifyKickoff(
   _ctx: LibSwampContext,
   deps: StartDeps,
