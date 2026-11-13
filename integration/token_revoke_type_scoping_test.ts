@@ -38,6 +38,10 @@ import {
   type ServerTokenRevokeEvent,
 } from "../src/libswamp/access/token_revoke.ts";
 import {
+  createServerTokenRotateDeps,
+  serverTokenRotate,
+} from "../src/libswamp/access/token_rotate.ts";
+import {
   createWorkerTokenCreateDeps,
   workerTokenCreate,
 } from "../src/libswamp/worker/token_create.ts";
@@ -203,5 +207,26 @@ Deno.test("access token revoke still accepts a server token's definition id", as
     assertExists(definition);
 
     assertRevokedNow(await revokeServerToken(f, definition.id));
+  });
+});
+
+Deno.test("access token rotate refuses an enrollment token's name and leaves it unrevoked", async () => {
+  await withFixture(async (f) => {
+    await mintWorkerToken(f, "wrk-only");
+
+    const events = await collect(
+      serverTokenRotate(
+        f.libCtx,
+        await createServerTokenRotateDeps(f.libCtx, f.repoDir, f.repoContext),
+        { name: "wrk-only", vaultName: VAULT },
+      ),
+    );
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "error", JSON.stringify(last));
+    if (last.kind === "error") {
+      assertEquals(last.error.code, "model_not_found");
+    }
+
+    assertRevokedNow(await revokeWorkerToken(f, "wrk-only"));
   });
 });
