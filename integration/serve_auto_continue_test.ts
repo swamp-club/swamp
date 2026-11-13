@@ -41,7 +41,10 @@ import {
   claimsFor,
   InMemoryContinuationClaimStore,
 } from "../src/domain/workflows/continuation_claim_test_helpers.ts";
-import { serveHolder } from "../src/domain/workflows/continuation_claim.ts";
+import {
+  serveHolder,
+  suspensionKeyOf,
+} from "../src/domain/workflows/continuation_claim.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
@@ -603,6 +606,42 @@ Deno.test({
       assertEquals(
         (await storedRun(serve, workflow, runId))?.status,
         "interrupted",
+      );
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a pass of the same serve that loses the race keeps the claim the winner holds",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "overlapped" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      await Deno.writeTextFile(counter, "");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      const repo = serve.ctx.repoContext.workflowRunRepo;
+      const stale = await repo.findGlobalByStatus("interrupted");
+      const interruptedKey = await suspensionKeyOf(stale[0].run);
+
+      const won = await continueInterruptedRuns(serve.ctx, "lead");
+      assertEquals(won.continued, [runId]);
+      await finished(serve, runId);
+      // the reconciliation pass read the interrupted copy before the lead won
+      repo.findGlobalByStatus = () => Promise.resolve(stale);
+      const lost = await continueInterruptedRuns(serve.ctx, "reconciliation");
+      assertEquals(lost.continued, []);
+
+      assertEquals(await ranSteps(counter), ["second"]);
+      assert(
+        claims.claims.some((c) => c.suspensionKey === interruptedKey),
+        "the claim on the interrupted record was released",
+      );
+      assertEquals(
+        serve.audit.filter((a) => a.action === "workflow.auto_continue_failed"),
+        [],
       );
     }),
 });

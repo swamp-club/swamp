@@ -4870,7 +4870,10 @@ The run records the outcome in `autoContinuation`: the continuation (time,
 interruption reason, reset steps, consecutive count) or the refusal (reason,
 steps, operator message). A refusal is written once per interruption, under
 the same claim and currency check, so it never lands over an operator's
-recover. The audit log records `workflow.auto_continue`,
+recover. It stands for that interruption: lifting its cause later (turning
+`autoContinue` back on, reverting the definition) leaves the run to the
+operator, except `nested_run_unsettled`, which later passes judge again
+because the nested run settles on its own. The audit log records `workflow.auto_continue`,
 `workflow.auto_continue_refused` and `workflow.auto_continue_failed`. The
 boot and reconciliation logs name each refused run and step, with the
 `swamp workflow recover` command to decide it. `swamp run history` shows

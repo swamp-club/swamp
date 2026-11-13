@@ -296,9 +296,9 @@ async function launch(
     requireCurrentRecord: true,
     lostRaceIsOrdinary: true,
     onTerminal: async (terminal) => {
-      // a recover refused before or after its reset leaves nothing to guard
-      if (terminal.kind === "error") await hold.release();
+      // a lost race shares its claim with the pass that won, which keeps it
       if (terminal.kind === "error" && !LOST_RACE_CODES.has(terminal.code)) {
+        await hold.release();
         emitSystemAuditEvent(
           ctx,
           "workflow.auto_continue_failed",
@@ -308,8 +308,8 @@ async function launch(
     },
   });
   if (!launched.ok) {
-    await hold.release();
     if (!LOST_RACE_CODES.has(launched.code)) {
+      await hold.release();
       emitSystemAuditEvent(
         ctx,
         "workflow.auto_continue_failed",

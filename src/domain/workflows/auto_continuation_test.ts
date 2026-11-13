@@ -194,3 +194,38 @@ Deno.test("decideAutoContinuation: continued too often in a row is refused namin
   assertEquals(verdict.refusal.reason, "continued_too_often");
   assertEquals(verdict.refusal.steps, ["step1"]);
 });
+
+Deno.test("decideAutoContinuation: a refusal stands for its interruption once the cause is lifted", async () => {
+  const optedOut = workflowOf({ guard: GUARD, autoContinue: false });
+  const run = await interrupted(optedOut);
+  const first = await decideAutoContinuation(optedOut, run, SETTLED);
+  if (first.kind !== "refuse") throw new Error(first.kind);
+  run.recordAutoContinuationRefusal(first.refusal, new Date());
+
+  const optedIn = workflowOf({ guard: GUARD });
+  assertEquals(await decideAutoContinuation(optedIn, run, SETTLED), {
+    kind: "ineligible",
+  });
+  // a later interruption is judged afresh
+  run.markContinuable(new Date(Date.now() + 60_000));
+  assertEquals(
+    (await decideAutoContinuation(optedIn, run, SETTLED)).kind,
+    "continue",
+  );
+});
+
+Deno.test("decideAutoContinuation: a run refused for an unsettled nested run continues once it settles", async () => {
+  const workflow = workflowOf({ guard: GUARD });
+  const run = await interrupted(workflow);
+  const first = await decideAutoContinuation(workflow, run, {
+    fanOutPoolAvailable: true,
+    nestedRunUnsettled: () => Promise.resolve("child still running"),
+  });
+  if (first.kind !== "refuse") throw new Error(first.kind);
+  run.recordAutoContinuationRefusal(first.refusal, new Date());
+
+  assertEquals(
+    (await decideAutoContinuation(workflow, run, SETTLED)).kind,
+    "continue",
+  );
+});
