@@ -157,21 +157,29 @@ When either transcript signal is on, the workspace screen opens with a
 one-line card above the workspace list and the create form: the Swampify
 icon (shared with the dashboard sidebar through `components/nav_icons.tsx`),
 "Find tasks to automate from your agent session history." and a
-**swampify!** button. The button opens the panel, which says what will be read
-(transcript text on this machine, prompts and replies included, in the chosen
-window and scope; the agent asks before it reads), what the workspace stores
-(counts, token costs and up to five short redacted excerpts per chore; session
-records stay prompt-free) and that where the data goes is the user's choice.
-It asks for a window (7, 30 or 90 days, default 30), excluded folders (scope
-is every session on this machine), the agent (Claude Code or Codex, only
-those whose signal is on and found on PATH) and a workspace name, prefilled
+**Swampify!** button. The button opens the panel in place of the workspace
+list, as a step of its own: the browser's Back, its **← Your workspaces**
+button and Cancel close it. It says what will be read (transcript text on this
+machine, prompts and replies included), what the workspace stores (counts,
+token costs and up to five short redacted excerpts per chore) and that where
+the data goes is the user's choice. Then one row each, label beside control,
+for the window (7, 30 or 90 days, default 30), the scope (every session on
+this machine, until **Limit the scope** opens a box of folders to leave out),
+the agent (a small card each for Claude Code and Codex, only those whose
+signal is on, those not on PATH disabled) and a workspace name, prefilled
 `swampify`, or `swampify-2`, `-3` when taken.
 
-The page sends `start.swampify.kickoff` with those fields and no text. The
+The panel's **Swampify!** sends `start.swampify.kickoff` with those fields and
+no text, then `start.launch` with `trustConfirmed`: the click is the trust
+confirmation, as it is on the Swampify page, and the panel says so. The
 server checks sign-in, the window and paths and the agent first
 (`startCheckSwampifyKickoff`), so a refusal creates no workspace; then it opens
 or creates the workspace and saves one swampify task with its agent chosen
-(`startSaveSwampifyKickoff`), landing on the trust step. Core writes the task
+(`startSaveSwampifyKickoff`). The launch lands on the launched screen, so the
+agent is chosen once and Back never reaches the task editor with the kick-off
+text. If the launch fails, the panel keeps the error and offers **Try again**
+(launch only) or **Choose another agent**, which opens the agent screen for
+the saved task. Core writes the task
 text (`SwampifyKickoff` in `src/domain/start/swampify_kickoff.ts`); its only
 user input is the window and the excluded paths. Each path must be absolute
 or start with `~`, at most 20 of 512 characters, with no quotes, backticks,

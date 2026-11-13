@@ -46,6 +46,7 @@ import {
   errorMessage,
   type ScreenProps,
   useAction,
+  useLaunch,
   WorkspaceSections,
 } from "./parts.tsx";
 import { PastSessionsPanel } from "./PastSessions.tsx";
@@ -1330,7 +1331,14 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       ? importCheck === null && folderOk
       : creating && nameOk && locationProblem === null &&
         serverNameProblem === null);
-  useNavReport(false, busy, formOverList ? cancelForm : null);
+  // An open past-sessions panel is a step of its own: Back closes it.
+  const [pastOpen, setPastOpen] = useState(false);
+  const closePast = useCallback(() => setPastOpen(false), []);
+  useNavReport(
+    false,
+    busy,
+    pastOpen ? closePast : formOverList ? cancelForm : null,
+  );
   const now = new Date();
 
   const submit = (e: React.FormEvent) => {
@@ -1652,9 +1660,11 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
             onStatus={onStatus}
             taken={existing.map((w) => w.name)}
             disabled={busy}
+            open={pastOpen}
+            onOpenChange={setPastOpen}
           />
         )}
-        workspaces={list !== null && (
+        workspaces={!pastOpen && list !== null && (
           <form
             ref={formRef}
             className={`start-workspace-form${firstRun ? " start-panel" : ""}`}
@@ -1783,7 +1793,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
             )}
           </form>
         )}
-        after={list !== null && firstRun && <FirstRunSteps />}
+        after={!pastOpen && list !== null && firstRun && <FirstRunSteps />}
       />
     </div>
   );
@@ -2837,57 +2847,6 @@ function launchStepLabel(step: LaunchStep, name: string): string {
     case "launched":
       return `${name} launched`;
   }
-}
-
-/**
- * Streams `start.launch` (or `start.resume`), tracking the furthest step and
- * any error. `launch` resolves true once the agent launched.
- */
-function useLaunch(
-  client: StartClient,
-  onStatus: (s: StartStatus) => void,
-  request: "start.launch" | "start.resume" = "start.launch",
-) {
-  const [reached, setReached] = useState<LaunchStep | null>(null);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // `trustConfirmed` carries the user's trust confirmation with a resume;
-  // `start.launch` always does, since only the trust screen sends it.
-  const launch = useCallback(async (trustConfirmed = false) => {
-    setRunning(true);
-    setReached(null);
-    setError(null);
-    let failed = false;
-    try {
-      const status = await client.stream<StartStatus>(
-        request,
-        request === "start.launch" || trustConfirmed
-          ? { trustConfirmed: true }
-          : undefined,
-        (raw) => {
-          const event = toLaunchEvent(raw);
-          if (!event) return;
-          if (event.kind === "error") {
-            failed = true;
-            setError(event.message);
-          } else {
-            setReached(event.kind);
-          }
-        },
-      );
-      onStatus(status);
-    } catch (err) {
-      failed = true;
-      setError(errorMessage(err, "Launch failed."));
-    } finally {
-      setRunning(false);
-      if (!failed) setReached(null);
-    }
-    return !failed;
-  }, [client, onStatus, request]);
-
-  return { launch, running, reached, error };
 }
 
 function LaunchChecklist(

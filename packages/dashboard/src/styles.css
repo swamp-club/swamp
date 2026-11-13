@@ -4836,9 +4836,7 @@ a.cron-badge:hover {
 }
 
 .start-past-sessions {
-  margin-bottom: 24px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
 }
 
 .start-disclosure {
@@ -4850,23 +4848,174 @@ a.cron-badge:hover {
   color: var(--text-2);
 }
 
-.start-past-agents {
+.start-past-sessions p.start-past-note {
   margin: 0;
-  padding: 0;
-  border: 0;
+  text-align: right;
+}
+
+.start-past-sessions p.start-past-back {
+  margin: 0;
+}
+
+/* The panel's fields: a label column, then each control on the same line,
+   every row 40px tall so labels and controls share one rhythm */
+.start-past-fields {
+  min-inline-size: 0;
+  margin-inline: 0;
+  padding-inline: 0;
+  border-inline: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 6px 0 4px;
+  padding: 18px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.start-past-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 16px;
+}
+
+.start-past-sessions .start-past-row > .start-field-label {
+  margin: 0;
+  line-height: 40px;
+}
+
+.start-past-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.start-past-inline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  min-height: 40px;
+}
+
+/* Scope looks like the Window select: it opens the folders to leave out */
+.start-past-scope {
+  width: 280px;
+  max-width: 100%;
+  height: 40px;
+  padding: 0 40px 0 16px;
+  border: 1px solid var(--sw-border-strong);
+  border-radius: 10px;
+  background: var(--bg)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23b9c6bf' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E")
+    no-repeat right 14px center / 12px 12px;
+  color: var(--text-1);
+  font-family: var(--sw-body);
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.start-past-scope:hover {
+  border-color: var(--accent);
+}
+
+.start-past-scope-open {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23b9c6bf' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7.5l3-3 3 3'/%3E%3C/svg%3E");
+}
+
+.start-past-sessions .start-past-control p.start-hint {
+  margin: 0;
+}
+
+.start-past-agent-cards {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 20px;
+  gap: 8px;
 }
 
-.start-past-agents legend {
-  margin-bottom: 6px;
-}
-
-.start-past-agent {
+.start-past-agent-card {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
+  height: 40px;
+  padding: 0 14px 0 10px;
+  border: 1px solid var(--sw-border-strong);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text-1);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.start-past-agent-card:hover {
+  border-color: var(--accent);
+}
+
+.start-past-agent-card input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.start-past-agent-card:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.start-past-agent-card-selected {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.start-past-agent-card-missing {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.start-past-agent-card .start-hint {
+  margin-left: 6px;
+}
+
+/* One width and height for the select and the name, so the column lines up */
+.start-page .start-past-sessions .start-select,
+.start-page .start-past-sessions input.start-past-name {
+  flex: none;
+  justify-self: start;
+  width: 280px;
+  max-width: 100%;
+  height: 40px;
+}
+
+.start-past-sessions .start-select {
+  padding-right: 40px;
+  font-family: var(--sw-body);
+  appearance: none;
+  cursor: pointer;
+  /* The start page is dark-only, so the chevron's colour is --text-2. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%23b9c6bf' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px 12px;
+}
+
+.start-past-sessions .start-past-exclude {
+  min-height: 0;
+}
+
+@media (max-width: 560px) {
+  .start-past-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .start-past-sessions .start-past-row > .start-field-label {
+    line-height: 1.4;
+    margin-bottom: 6px;
+  }
 }
 
 /* swamp start: the workspace list as compact cards under a sort header */

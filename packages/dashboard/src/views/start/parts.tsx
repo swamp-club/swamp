@@ -20,7 +20,12 @@
 import { type ReactNode, useCallback, useState } from "react";
 import { RequestError } from "../../client/stream.ts";
 import type { StartClient } from "./client.ts";
-import { startErrorText, workspaceChooseError } from "./helpers.ts";
+import {
+  type LaunchStep,
+  startErrorText,
+  toLaunchEvent,
+  workspaceChooseError,
+} from "./helpers.ts";
 import type { StartStatus } from "./types.ts";
 
 export interface ScreenProps {
@@ -96,4 +101,55 @@ export function WorkspaceSections(
       {after}
     </>
   );
+}
+
+/**
+ * Streams `start.launch` (or `start.resume`), tracking the furthest step and
+ * any error. `launch` resolves true once the agent launched.
+ */
+export function useLaunch(
+  client: StartClient,
+  onStatus: (s: StartStatus) => void,
+  request: "start.launch" | "start.resume" = "start.launch",
+) {
+  const [reached, setReached] = useState<LaunchStep | null>(null);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // `trustConfirmed` carries the user's trust confirmation with a resume;
+  // `start.launch` always does, since only the trust screen sends it.
+  const launch = useCallback(async (trustConfirmed = false) => {
+    setRunning(true);
+    setReached(null);
+    setError(null);
+    let failed = false;
+    try {
+      const status = await client.stream<StartStatus>(
+        request,
+        request === "start.launch" || trustConfirmed
+          ? { trustConfirmed: true }
+          : undefined,
+        (raw) => {
+          const event = toLaunchEvent(raw);
+          if (!event) return;
+          if (event.kind === "error") {
+            failed = true;
+            setError(event.message);
+          } else {
+            setReached(event.kind);
+          }
+        },
+      );
+      onStatus(status);
+    } catch (err) {
+      failed = true;
+      setError(errorMessage(err, "Launch failed."));
+    } finally {
+      setRunning(false);
+      if (!failed) setReached(null);
+    }
+    return !failed;
+  }, [client, onStatus, request]);
+
+  return { launch, running, reached, error };
 }

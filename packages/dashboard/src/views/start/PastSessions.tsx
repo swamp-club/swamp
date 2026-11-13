@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavIcon } from "../../components/nav_icons.tsx";
+import { AgentBadge } from "./AgentBadge.tsx";
 import {
   isValidWorkspaceName,
   parseExcludedPaths,
@@ -32,7 +33,7 @@ import {
   describeChooseError,
   ErrorBox,
   type ScreenProps,
-  useAction,
+  useLaunch,
 } from "./parts.tsx";
 import type { HarnessList, StartStatus } from "./types.ts";
 
@@ -52,25 +53,42 @@ const PAST_SESSIONS_HARNESS_NAMES: Record<PastSessionsHarness, string> = {
  * the task text.
  */
 export function PastSessionsPanel(
-  { status, client, onStatus, taken, disabled, initialOpen = false }:
+  { status, client, onStatus, taken, disabled, open, onOpenChange }:
     & ScreenProps
     & {
       taken: readonly string[];
       disabled: boolean;
-      /** Test-only: render with the panel already open. */
-      initialOpen?: boolean;
+      /** Held by the workspace screen, so the browser's Back can close it. */
+      open: boolean;
+      onOpenChange: (open: boolean) => void;
     },
 ) {
   const offered = pastSessionsHarnesses(status.signals);
-  const [open, setOpen] = useState(initialOpen);
   const [windowDays, setWindowDays] = useState(PAST_SESSIONS_DEFAULT_WINDOW);
   const [excludeText, setExcludeText] = useState("");
+  const [scopeOpen, setScopeOpen] = useState(false);
   const [picked, setPicked] = useState<PastSessionsHarness | null>(null);
   const [name, setName] = useState("");
   const [installed, setInstalled] = useState<Record<string, boolean> | null>(
     null,
   );
-  const { busy, error, run } = useAction(onStatus, describeChooseError);
+  // Swampify! saves the kick-off, then launches it at once: the click is the
+  // trust confirmation, as it is on the Swampify page.
+  const launcher = useLaunch(client, onStatus);
+  const [saved, setSaved] = useState<StartStatus | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const busy = saving || launcher.running;
+  const error = saveError ?? launcher.error;
+  // The card and the panel replace each other, so focus follows the swap.
+  const backRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (wasOpen.current === open) return;
+    wasOpen.current = open;
+    (open ? backRef : cardRef).current?.focus();
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     let active = true;
@@ -95,7 +113,8 @@ export function PastSessionsPanel(
   const finalName = name.trim() || suggested;
   const nameOk = isValidWorkspaceName(finalName);
   const harnessOk = harness !== undefined && installed?.[harness] !== false;
-  const canSubmit = !busy && !disabled && nameOk && harnessOk;
+  const canSubmit = !busy && !disabled &&
+    (saved !== null || (nameOk && harnessOk));
 
   if (!open) {
     return (
@@ -104,55 +123,79 @@ export function PastSessionsPanel(
         <p className="start-past-card-text">{PAST_SESSIONS_CARD_TEXT}</p>
         <button
           type="button"
+          ref={cardRef}
           className="start-primary start-small"
-          onClick={() => setOpen(true)}
+          onClick={() => onOpenChange(true)}
           disabled={disabled}
         >
-          swampify!
+          Swampify!
         </button>
       </div>
     );
   }
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSubmit || harness === undefined) return;
-    const exclude = parseExcludedPaths(excludeText);
-    void run(() =>
-      client.request<StartStatus>("start.swampify.kickoff", {
-        name: finalName,
-        windowDays,
-        ...(exclude.length > 0 ? { exclude } : {}),
-        harness,
-      })
-    );
+    if (!canSubmit) return;
+    // A retry after a failed launch only launches: the task is already saved.
+    if (saved === null) {
+      if (harness === undefined) return;
+      const exclude = parseExcludedPaths(excludeText);
+      setSaving(true);
+      setSaveError(null);
+      try {
+        setSaved(
+          await client.request<StartStatus>("start.swampify.kickoff", {
+            name: finalName,
+            windowDays,
+            ...(exclude.length > 0 ? { exclude } : {}),
+            harness,
+          }),
+        );
+      } catch (err) {
+        setSaveError(describeChooseError(err));
+        return;
+      } finally {
+        setSaving(false);
+      }
+    }
+    await launcher.launch();
   };
 
   return (
     <form
       className="start-form-panel start-past-sessions"
-      onSubmit={submit}
+      onSubmit={(e) => void submit(e)}
       aria-labelledby="start-past-sessions-title"
     >
+      <p className="start-past-back">
+        <button
+          ref={backRef}
+          type="button"
+          className="start-secondary start-small"
+          onClick={() => saved !== null ? onStatus(saved) : onOpenChange(false)}
+          disabled={busy}
+        >
+          ← Your workspaces
+        </button>
+      </p>
       <h3 id="start-past-sessions-title" className="start-form-title">
         Start from your past sessions
       </h3>
       <p className="start-panel-intro">
-        Your agent looks through your Claude Code and Codex history for chores
-        you repeat, and offers a few worth automating.
+        Have an agent examine your Claude Code and Codex history for chores
+        worth automating.
       </p>
       <ul className="start-disclosure">
         <li>
           <strong>What it reads:</strong>{" "}
           transcript text on this machine, including your prompts and the
-          agent's replies, for the window and scope you choose below. Your agent
-          asks before it reads anything.
+          agent's replies.
         </li>
         <li>
           <strong>What the workspace stores:</strong>{" "}
           counts, token costs, and up to five short, redacted excerpts for each
-          repeated chore. Session records stay prompt-free: they never hold
-          prompts or replies.
+          repeated chore.
         </li>
         <li>
           <strong>Where it goes:</strong>{" "}
@@ -161,79 +204,161 @@ export function PastSessionsPanel(
         </li>
       </ul>
       <ErrorBox message={error} />
-      <label className="start-field-label" htmlFor="start-past-window">
-        Window
-      </label>
-      <select
-        id="start-past-window"
-        className="start-input"
-        value={windowDays}
-        onChange={(e) => setWindowDays(Number(e.target.value))}
-      >
-        {PAST_SESSIONS_WINDOWS.map((days) => (
-          <option key={days} value={days}>Last {days} days</option>
-        ))}
-      </select>
-      <label className="start-field-label" htmlFor="start-past-exclude">
-        Scope
-      </label>
-      <p className="start-hint" id="start-past-exclude-hint">
-        Every session on this machine. To leave folders out, list them one per
-        line, starting with <code>/</code> or <code>~</code>.
-      </p>
-      <textarea
-        id="start-past-exclude"
-        className="start-textarea start-input-mono"
-        value={excludeText}
-        onChange={(e) => setExcludeText(e.target.value)}
-        rows={3}
-        placeholder="~/src/client-repo"
-        spellCheck={false}
-        aria-describedby="start-past-exclude-hint"
-      />
-      <fieldset className="start-past-agents">
-        <legend className="start-field-label">Agent</legend>
-        {offered.map((id) => (
-          <label key={id} className="start-past-agent">
-            <input
-              type="radio"
-              name="start-past-agent"
-              value={id}
-              checked={harness === id}
-              onChange={() => setPicked(id)}
-              disabled={installed?.[id] === false}
-            />
-            {PAST_SESSIONS_HARNESS_NAMES[id]}
-            {installed?.[id] === false && (
-              <span className="start-hint">not on your PATH</span>
-            )}
+      <fieldset className="start-past-fields" disabled={saved !== null}>
+        <div className="start-past-row">
+          <label className="start-field-label" htmlFor="start-past-window">
+            Window
           </label>
-        ))}
+          <select
+            id="start-past-window"
+            className="start-input start-select"
+            value={windowDays}
+            onChange={(e) => setWindowDays(Number(e.target.value))}
+          >
+            {PAST_SESSIONS_WINDOWS.map((days) => (
+              <option key={days} value={days}>Last {days} days</option>
+            ))}
+          </select>
+        </div>
+        <div className="start-past-row">
+          <div className="start-field-label" id="start-past-scope-label">
+            Scope
+          </div>
+          <div className="start-past-control">
+            <div className="start-past-inline">
+              <button
+                type="button"
+                className={`start-past-scope${
+                  scopeOpen ? " start-past-scope-open" : ""
+                }`}
+                aria-expanded={scopeOpen}
+                aria-controls="start-past-exclude"
+                onClick={() => setScopeOpen(!scopeOpen)}
+              >
+                {parseExcludedPaths(excludeText).length > 0
+                  ? "Every session except these"
+                  : "Every session on this machine"}
+              </button>
+            </div>
+            {scopeOpen && (
+              <>
+                <textarea
+                  id="start-past-exclude"
+                  className="start-textarea start-input-mono start-past-exclude"
+                  value={excludeText}
+                  onChange={(e) => setExcludeText(e.target.value)}
+                  rows={3}
+                  placeholder="~/src/client-repo"
+                  spellCheck={false}
+                  aria-labelledby="start-past-scope-label"
+                  aria-describedby="start-past-exclude-hint"
+                />
+                <p className="start-hint" id="start-past-exclude-hint">
+                  One folder per line, starting with <code>/</code> or{" "}
+                  <code>~</code>.
+                </p>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="start-past-row">
+          <div className="start-field-label" id="start-past-agent-label">
+            Agent
+          </div>
+          <div
+            className="start-past-agent-cards"
+            role="radiogroup"
+            aria-labelledby="start-past-agent-label"
+          >
+            {offered.map((id) => {
+              const missing = installed?.[id] === false;
+              return (
+                <label
+                  key={id}
+                  className={`start-past-agent-card${
+                    harness === id ? " start-past-agent-card-selected" : ""
+                  }${missing ? " start-past-agent-card-missing" : ""}`}
+                >
+                  <input
+                    type="radio"
+                    name="start-past-agent"
+                    value={id}
+                    checked={harness === id}
+                    onChange={() => setPicked(id)}
+                    disabled={missing}
+                  />
+                  <AgentBadge id={id} size="md" />
+                  <span className="start-past-agent-name">
+                    {PAST_SESSIONS_HARNESS_NAMES[id]}
+                  </span>
+                  {missing && (
+                    <span className="start-hint">not on your PATH</span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+        <div className="start-past-row">
+          <label className="start-field-label" htmlFor="start-past-name">
+            Workspace name
+          </label>
+          <input
+            id="start-past-name"
+            className="start-input start-past-name"
+            value={name}
+            placeholder={suggested}
+            onChange={(e) => setName(e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            aria-invalid={!nameOk}
+          />
+        </div>
       </fieldset>
-      <label className="start-field-label" htmlFor="start-past-name">
-        Workspace name
-      </label>
-      <input
-        id="start-past-name"
-        className="start-input"
-        value={name}
-        placeholder={suggested}
-        onChange={(e) => setName(e.target.value)}
-        autoComplete="off"
-        spellCheck={false}
-        aria-invalid={!nameOk}
-      />
+      {saved !== null && launcher.error !== null
+        ? (
+          <p className="start-hint start-past-note">
+            The workspace and its kick-off are saved. Try again, or choose
+            another agent.
+          </p>
+        )
+        : (
+          <p className="start-hint start-past-note">
+            Swampify! creates the workspace and opens{" "}
+            {harness ? PAST_SESSIONS_HARNESS_NAMES[harness] : "your agent"}{" "}
+            in it. Clicking it confirms you trust that folder.
+          </p>
+        )}
       <div className="start-actions">
-        <button
-          type="button"
-          className="start-secondary"
-          onClick={() => setOpen(false)}
-          disabled={busy}
-        >
-          Cancel
-        </button>
+        {saved !== null
+          ? (
+            <button
+              type="button"
+              className="start-secondary"
+              onClick={() => onStatus(saved)}
+              disabled={busy}
+            >
+              Choose another agent
+            </button>
+          )
+          : (
+            <button
+              type="button"
+              className="start-secondary"
+              onClick={() => onOpenChange(false)}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          )}
         <button type="submit" className="start-primary" disabled={!canSubmit}>
-          {busy ? "Setting up…" : "Create workspace from past sessions"}
+          {saving
+            ? "Setting up…"
+            : launcher.running
+            ? "Opening your agent…"
+            : saved !== null
+            ? "Try again"
+            : "Swampify!"}
         </button>
       </div>
     </form>

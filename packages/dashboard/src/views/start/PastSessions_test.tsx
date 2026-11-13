@@ -46,7 +46,7 @@ const STATUS: StartStatus = {
 // Static rendering runs no effects, so the client is never called.
 const CLIENT = {} as unknown as StartClient;
 
-function render(initialOpen?: boolean): string {
+function render(open = false): string {
   return renderToStaticMarkup(
     <PastSessionsPanel
       status={STATUS}
@@ -54,17 +54,18 @@ function render(initialOpen?: boolean): string {
       onStatus={() => {}}
       taken={[]}
       disabled={false}
-      initialOpen={initialOpen}
+      open={open}
+      onOpenChange={() => {}}
     />,
   );
 }
 
-Deno.test("PastSessionsPanel: collapsed, it is one line with the Swampify icon and a swampify! button", () => {
+Deno.test("PastSessionsPanel: collapsed, it is one line with the Swampify icon and a Swampify! button", () => {
   const html = render();
   assertStringIncludes(html, 'class="start-past-card"');
   assertStringIncludes(html, NAV_ICONS.swampify);
   assertStringIncludes(html, PAST_SESSIONS_CARD_TEXT);
-  assertStringIncludes(html, ">swampify!</button>");
+  assertStringIncludes(html, ">Swampify!</button>");
   assertEquals(html.includes("<form"), false);
   assertEquals(html.includes("What it reads"), false);
 });
@@ -79,14 +80,37 @@ Deno.test("PastSessionsPanel: open, it shows the disclosure, window, scope, agen
       "What the workspace stores:",
       "Where it goes:",
       'id="start-past-window"',
-      'id="start-past-exclude"',
+      ">Every session on this machine</button>",
+      'aria-expanded="false"',
       'name="start-past-agent"',
       'id="start-past-name"',
-      "Create workspace from past sessions",
+      ">Swampify!</button>",
     ]
   ) {
     assertStringIncludes(html, part);
   }
+});
+
+Deno.test("PastSessionsPanel: open, the scope is every session until the user limits it", () => {
+  const html = render(true);
+  assertEquals(html.includes("<textarea"), false);
+  assertStringIncludes(html, 'class="start-input start-select"');
+  assertStringIncludes(
+    html,
+    '<button type="button" class="start-past-scope" aria-expanded="false" aria-controls="start-past-exclude">Every session on this machine</button>',
+  );
+});
+
+Deno.test("PastSessionsPanel: open, each agent with history is a small card with its badge, the picked one selected", () => {
+  const html = render(true);
+  assertStringIncludes(html, 'role="radiogroup"');
+  assertStringIncludes(
+    html,
+    'class="start-past-agent-card start-past-agent-card-selected"',
+  );
+  assertStringIncludes(html, "start-agent-badge-md");
+  assertStringIncludes(html, ">Claude Code</span>");
+  assertEquals(html.includes(">Codex</span>"), false);
 });
 
 Deno.test("WorkspaceSections: the past-sessions card comes before the workspace list and create form", () => {
