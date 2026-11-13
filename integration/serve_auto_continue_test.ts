@@ -438,16 +438,16 @@ Deno.test({
       const claims = new InMemoryContinuationClaimStore();
       const a = await serveOver(repoDir, serveHolder("a"), claims);
       const b = await serveOver(repoDir, serveHolder("b"), claims);
-      // each knows the other is alive, as a rolling restart's two processes do
+      // a filesystem datastore keeps no heartbeats, so each reads the other dead
       a.ctx.repoContext.continuationClaims = claimsFor(
         claims,
         serveHolder("a"),
-        { [serveHolder("b")]: "alive" },
+        { [serveHolder("b")]: "dead" },
       );
       b.ctx.repoContext.continuationClaims = claimsFor(
         claims,
         serveHolder("b"),
-        { [serveHolder("a")]: "alive" },
+        { [serveHolder("a")]: "dead" },
       );
 
       const [ra, rb] = await Promise.all([

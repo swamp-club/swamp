@@ -58,6 +58,11 @@ const LOST_RACE_CODES = new Set([
   "already_registered",
 ]);
 
+const INTERRUPTED_RECORD_CLAIM = {
+  kind: "automatic",
+  takeover: false,
+} as const;
+
 export type InterruptedRunContinuationCause =
   | "boot"
   | "reconciliation"
@@ -198,12 +203,12 @@ async function holdInterruptedRecord(
   const claims = ctx.repoContext.continuationClaims;
   let claim: ContinuationClaim | undefined;
   if (claims !== undefined && (!claims.usable || await claims.usable())) {
-    // a claim on an interrupted record is replaced only when its holder is
-    // known dead: it died acting on this same interruption
+    // never taken over: a serve without heartbeats reads every peer dead, and
+    // a holder that died before its reset leaves the run to the operator
     const acquired = await acquireContinuation(
       claims,
       { runId: run.id, suspensionKey: await suspensionKeyOf(run) },
-      { kind: "automatic", takeover: true },
+      INTERRUPTED_RECORD_CLAIM,
       new Date(),
     );
     if (acquired.kind !== "acquired") return null;
@@ -292,7 +297,7 @@ async function launch(
     runId: run.id,
     recoverInterrupted: { holder: holderOf(ctx) },
     principalId: null,
-    continuation: { kind: "automatic", takeover: true },
+    continuation: INTERRUPTED_RECORD_CLAIM,
     requireCurrentRecord: true,
     lostRaceIsOrdinary: true,
     onTerminal: async (terminal) => {

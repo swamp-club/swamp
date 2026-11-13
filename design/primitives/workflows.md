@@ -4855,7 +4855,11 @@ continue a run. A continuation claims the interrupted record
 datastore before `recover` resets anything. Two instances, or the old and new
 process of a rolling restart, therefore never both continue one interruption.
 The claim is kept after the reset, so a peer holding the same stale copy is
-refused even where record currency cannot be checked. The resume then runs
+refused even where record currency cannot be checked. It is never taken over
+from another holder: a filesystem datastore keeps no heartbeats, so every peer
+reads as dead there. A holder that died before its reset leaves that
+interruption to the operator; one that died after it leaves the run
+`recoveredAutomatically`, which the continuation sweep finishes. The resume then runs
 under the same run id through the serve resume launcher, under the run's
 recorded principal and vault scope, with every refusal a resume already has
 (such as a run started through a delegation that has ended). A run serve
