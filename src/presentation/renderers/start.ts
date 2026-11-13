@@ -29,15 +29,25 @@ import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
+export interface PageReach {
+  /** served beyond loopback, so the page warns on every run */
+  readonly exposed: boolean;
+  /** the page by this machine's other names, besides the URL already shown */
+  readonly networkUrls: readonly string[];
+  /** served on loopback only while this terminal is an SSH session */
+  readonly sshHint: boolean;
+}
+
 export interface StartRenderer {
   prepareHandlers(): EventHandlers<StartPrepareEvent>;
   workspaceOpened(path: string, created: boolean): void;
-  /** proxyUrls: the dashboard page through each --trusted-hosts name */
+  /** proxyUrls: the page through each --trusted-hosts name */
   pageReady(
     url: string,
     opened: boolean,
     dashboard?: boolean,
     proxyUrls?: readonly string[],
+    reach?: PageReach,
   ): void;
   launchedEnd(displayName: string): void;
   paused(dashboard?: boolean): void;
@@ -87,13 +97,24 @@ class LogStartRenderer implements StartRenderer {
     opened: boolean,
     dashboard = false,
     proxyUrls: readonly string[] = [],
+    reach: PageReach = { exposed: false, networkUrls: [], sshHint: false },
   ): void {
     writeOutput("");
     this.urlLine(url, opened, dashboard);
+    if (reach.networkUrls.length > 0) {
+      writeOutput("From another machine, open:");
+      for (const networkUrl of reach.networkUrls) {
+        writeOutput(`  ${cyan(networkUrl)}`);
+      }
+    }
     if (proxyUrls.length > 0) {
       writeOutput("Through your proxy (it must serve HTTPS), open:");
       for (const proxyUrl of proxyUrls) writeOutput(`  ${cyan(proxyUrl)}`);
     }
+    if (reach.exposed) {
+      writeOutput(`${yellow("!")} ${exposedWarning(dashboard)}`);
+    }
+    if (reach.sshHint) writeOutput(dim(sshHint(dashboard)));
     writeOutput(dim(stopHint(dashboard)));
   }
 
@@ -189,6 +210,18 @@ class LogStartRenderer implements StartRenderer {
     writeOutput(pageReadyLine(opened, dashboard, bold));
     writeOutput(`  ${cyan(url)}`);
   }
+}
+
+export function exposedWarning(dashboard: boolean): string {
+  return `Anyone who can reach this address and has the link can use this page, which ${
+    dashboard ? "runs this repo's workflows" : "launches agents"
+  } on this machine. The link is sent unencrypted (HTTP).`;
+}
+
+export function sshHint(dashboard: boolean): string {
+  return `This page opens only on this machine. To open it from yours, run \`swamp ${
+    dashboard ? "dashboard" : "start"
+  } --no-browser --host 0.0.0.0\`.`;
 }
 
 /** the last line once the page can be opened */

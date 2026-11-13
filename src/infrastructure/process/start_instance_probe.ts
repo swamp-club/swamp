@@ -50,6 +50,27 @@ export type StartServerLiveness = "live" | "dead" | "unknown";
 export interface StartProbeOptions {
   readonly timeoutMs?: number;
   readonly os?: typeof Deno.build.os;
+  /** this machine's interface addresses */
+  readonly localAddresses?: () => readonly string[];
+}
+
+function machineAddresses(): string[] {
+  try {
+    return Deno.networkInterfaces().map((i) => i.address.toLowerCase());
+  } catch {
+    return [];
+  }
+}
+
+// A record names its own host, so one planted in an imported workspace could
+// aim the probe anywhere: only an address this machine has is ever pinged.
+function isOwnAddress(
+  host: string,
+  localAddresses: () => readonly string[],
+): boolean {
+  const address = host.toLowerCase();
+  return address.startsWith("127.") || address === "::1" ||
+    localAddresses().includes(address);
 }
 
 function isConnectionRefused(error: unknown): boolean {
@@ -64,6 +85,13 @@ function isConnectionRefused(error: unknown): boolean {
   return false;
 }
 
+function probeAuthority(record: StartServerRecord): string {
+  const host = record.host ?? "127.0.0.1";
+  return host.includes(":")
+    ? `[${host}]:${record.port}`
+    : `${host}:${record.port}`;
+}
+
 /**
  * the ping does not count as a page, so probing never keeps another server from
  * ending; off Windows a record whose process is gone is dead without a ping
@@ -74,9 +102,15 @@ export async function probeStartServer(
 ): Promise<StartServerLiveness> {
   const os = options.os ?? Deno.build.os;
   if (os !== "windows" && !isProcessAlive(record.pid)) return "dead";
+  if (
+    record.host !== undefined &&
+    !isOwnAddress(record.host, options.localAddresses ?? machineAddresses)
+  ) {
+    return "dead";
+  }
   let response: Response;
   try {
-    response = await fetch(`http://127.0.0.1:${record.port}/start/ping`, {
+    response = await fetch(`http://${probeAuthority(record)}/start/ping`, {
       headers: { [START_PING_TOKEN_HEADER]: record.token },
       signal: AbortSignal.timeout(
         options.timeoutMs ?? startProbeTimeoutMs(os),

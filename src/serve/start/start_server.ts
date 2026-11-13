@@ -60,6 +60,7 @@ import { validateWebSocketOrigin } from "../origin.ts";
 import { serveDashboardRoute } from "../dashboard_assets.ts";
 import type { WorkspaceHub } from "../local/workspace_hub.ts";
 import { TrustedHosts } from "../local/trusted_hosts.ts";
+import { ListenHost, urlHost } from "../local/listen_host.ts";
 import { START_PING_TOKEN_HEADER } from "../../infrastructure/process/start_instance_probe.ts";
 
 export interface StartServerTimeouts {
@@ -112,6 +113,7 @@ export interface StartServerOptions {
   readonly startPage?: boolean;
   /** 0 takes any free port */
   readonly port?: number;
+  readonly listenHost?: ListenHost;
   readonly trustedHosts?: TrustedHosts;
   /**
    * swamp dashboard turns it off: a long-running page server does not stop
@@ -313,19 +315,24 @@ interface SignInFlow {
 }
 
 function listen(
+  listenHost: ListenHost,
   port: number,
   handler: Deno.ServeHandler<Deno.NetAddr>,
 ): Deno.HttpServer<Deno.NetAddr> {
+  const address = listenHost.address;
   try {
-    return Deno.serve(
-      { hostname: "127.0.0.1", port, onListen: () => {} },
-      handler,
-    );
+    return Deno.serve({ hostname: address, port, onListen: () => {} }, handler);
   } catch (error) {
     if (port !== 0 && error instanceof Deno.errors.AddrInUse) {
       throw new UserError(
-        `Port ${port} on 127.0.0.1 is already in use. Pick another --port, or leave it out to use any free port.`,
+        `Port ${port} on ${address} is already in use. Pick another --port, or leave it out to use any free port.`,
         "port_in_use",
+      );
+    }
+    if (error instanceof Deno.errors.AddrNotAvailable) {
+      throw new UserError(
+        `${address} is not an address of this machine. Pick one it has with --host, or use --host 0.0.0.0 to listen on every address.`,
+        "address_not_available",
       );
     }
     throw error;
@@ -333,9 +340,10 @@ function listen(
 }
 
 /**
- * binds 127.0.0.1 (on an ephemeral port unless given one), rejects any Host
- * other than its own or a trusted one (DNS rebinding), checks the Origin of
- * the upgrade, and requires the one-time token as a `bearer.` subprotocol
+ * binds 127.0.0.1 or the given address, on an ephemeral port unless given
+ * one; rejects any Host other than its own or a trusted one (DNS rebinding),
+ * checks the Origin of the upgrade, and requires the one-time token as a
+ * `bearer.` subprotocol
  */
 export function startStartServer(
   options: StartServerOptions,
@@ -344,7 +352,17 @@ export function startStartServer(
   const claims = options.claims ?? NO_CLAIMS;
   const startPage = options.startPage ?? true;
   const timeouts = options.timeouts ?? DEFAULT_START_SERVER_TIMEOUTS;
-  const trustedHosts = options.trustedHosts ?? TrustedHosts.NONE;
+  const listenHost = options.listenHost ?? ListenHost.DEFAULT;
+  // One set for the Host and Origin checks, so a page they serve can always
+  // open its socket. 127.0.0.1 and ::1 keep their exact-port checks below, and
+  // a wildcard is never a Host a browser should use.
+  const ownAddress = listenHost.kind === "wildcard" ||
+      listenHost.address === "127.0.0.1" || listenHost.address === "::1"
+    ? []
+    : [urlHost(listenHost.address)];
+  const trustedHosts = (options.trustedHosts ?? TrustedHosts.NONE).including(
+    ownAddress,
+  );
   const idleStop = options.idleStop ?? true;
   // The workspace being served, and the name it was opened under (an
   // imported folder's name can differ from its registered one).
@@ -1092,12 +1110,13 @@ export function startStartServer(
 
   let port = 0;
   const server = listen(
+    listenHost,
     options.port ?? 0,
     async (req) => {
       const host = req.headers.get("host");
       if (
         host !== `127.0.0.1:${port}` && host !== `localhost:${port}` &&
-        !trustedHosts.acceptsHost(host)
+        host !== `[::1]:${port}` && !trustedHosts.acceptsHost(host)
       ) {
         return new Response("Misdirected request", { status: 421 });
       }
@@ -1135,6 +1154,7 @@ export function startStartServer(
           host,
           "127.0.0.1",
           false,
+          trustedHosts.entries,
         );
         if (!origin.allowed) {
           return new Response("Forbidden origin", { status: 403 });

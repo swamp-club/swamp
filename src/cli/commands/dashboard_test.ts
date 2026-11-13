@@ -19,7 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../../domain/errors.ts";
-import { parsePort } from "./dashboard.ts";
+import { parsePort } from "./start.ts";
 
 Deno.test("parsePort: no --port takes any free port", () => {
   assertEquals(parsePort(undefined), 0);

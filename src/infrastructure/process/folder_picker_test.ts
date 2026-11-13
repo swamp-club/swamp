@@ -29,12 +29,14 @@ function picker(options: {
   env?: Record<string, string>;
   onPath?: Record<string, string>;
   result?: PickerRun;
+  remoteBrowser?: boolean;
 }) {
   const runs: Array<{ command: string; args: readonly string[] }> = [];
   const env = options.env ?? {};
   const onPath = options.onPath ?? {};
   const p = new SystemFolderPicker({
     os: options.os,
+    remoteBrowser: options.remoteBrowser,
     env: (name) => env[name],
     resolve: (name) => Promise.resolve(onPath[name] ?? null),
     run: (command, args) => {
@@ -155,6 +157,19 @@ Deno.test("SystemFolderPicker: unavailable over SSH on every OS", async () => {
       onPath: { ...MAC, powershell: "p", zenity: "z" },
     });
     assertEquals(await p.available(), false, os);
+  }
+});
+
+Deno.test("SystemFolderPicker: unavailable on every OS when the page is served to other machines", async () => {
+  for (const os of ["darwin", "windows", "linux"] as const) {
+    const { p, runs } = picker({
+      os,
+      remoteBrowser: true,
+      env: { DISPLAY: ":0" },
+      onPath: { ...MAC, powershell: "p", zenity: "z" },
+    });
+    assertEquals(await p.available(), false, os);
+    assertEquals(runs.length, 0, os);
   }
 });
 

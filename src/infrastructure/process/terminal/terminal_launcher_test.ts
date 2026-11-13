@@ -83,6 +83,7 @@ function makeLauncher(options: {
     "success" | "failure" | "reject" | "running" | "throw"
   >;
   graceMs?: number;
+  remoteBrowser?: boolean;
 }): Harness {
   const h: Harness = {
     launcher: undefined as unknown as SystemTerminalLauncher,
@@ -94,6 +95,7 @@ function makeLauncher(options: {
   const onPath = options.onPath ?? {};
   h.launcher = new SystemTerminalLauncher({
     os: options.os,
+    remoteBrowser: options.remoteBrowser,
     env: (name) => env[name],
     resolve: (name) => Promise.resolve(onPath[name] ?? null),
     spawn: (command, args, cwd) => {
@@ -289,6 +291,22 @@ Deno.test("SystemTerminalLauncher.open: over SSH writes the script but opens not
     const h = makeLauncher({
       os,
       env: { SSH_CONNECTION: "10.0.0.1 5000 10.0.0.2 22", DISPLAY: ":0" },
+      onPath: { "wt.exe": "wt.exe", "x-terminal-emulator": "/x" },
+    });
+    const outcome = await h.launcher.open(SPEC, WS);
+    assertEquals(outcome.method, "copy_command", os);
+    assertEquals(outcome.opened, false);
+    assertEquals(h.spawned.length, 0, os);
+    assertEquals(h.scripts.length, 1, os);
+  }
+});
+
+Deno.test("SystemTerminalLauncher.open: a page served to other machines writes the script but opens nothing", async () => {
+  for (const os of ["darwin", "linux", "windows"] as const) {
+    const h = makeLauncher({
+      os,
+      remoteBrowser: true,
+      env: { DISPLAY: ":0" },
       onPath: { "wt.exe": "wt.exe", "x-terminal-emulator": "/x" },
     });
     const outcome = await h.launcher.open(SPEC, WS);

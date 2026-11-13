@@ -61,6 +61,67 @@ Deno.test("probeStartServer: a server that answers the ping with 204 is live", a
   assertEquals(seen, [TOKEN]);
 });
 
+const routableV4 = (() => {
+  try {
+    return Deno.networkInterfaces().find((i) =>
+      i.family === "IPv4" && !i.address.startsWith("127.") &&
+      !i.address.startsWith("169.254.")
+    )?.address;
+  } catch {
+    return undefined;
+  }
+})();
+
+Deno.test({
+  name: "probeStartServer: pings the address the record names, not loopback",
+  ignore: routableV4 === undefined,
+  fn: async () => {
+    const hosts: Array<string | null> = [];
+    const server = Deno.serve(
+      { hostname: routableV4!, port: 0, onListen: () => {} },
+      (req) => {
+        hosts.push(req.headers.get("host"));
+        return new Response(null, { status: 204 });
+      },
+    );
+    try {
+      const port = server.addr.port;
+      assertEquals(
+        await probeStartServer({ ...record(port), host: routableV4 }),
+        "live",
+      );
+      assertEquals(hosts, [`${routableV4}:${port}`]);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test("probeStartServer: a record naming an address this machine does not have is dead, and nothing is pinged", async () => {
+  let pinged = 0;
+  await withServer(() => {
+    pinged++;
+    return new Response(null, { status: 204 });
+  }, async (port) => {
+    for (const host of ["203.0.113.5", "169.254.169.254", "fd00::99"]) {
+      assertEquals(
+        await probeStartServer({ ...record(port), host }, {
+          localAddresses: () => ["192.168.1.40"],
+        }),
+        "dead",
+        host,
+      );
+    }
+    assertEquals(
+      await probeStartServer({ ...record(port), host: "127.0.0.1" }, {
+        localAddresses: () => [],
+      }),
+      "live",
+    );
+  });
+  assertEquals(pinged, 1);
+});
+
 Deno.test("probeStartServer: any other status means something else owns the port", async () => {
   for (const status of [401, 404, 500]) {
     await withServer(() => new Response("no", { status }), async (port) => {

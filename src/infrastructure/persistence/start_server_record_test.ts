@@ -48,6 +48,32 @@ const record = (pid: number): StartServerRecord => ({
   startedAt: "2026-10-11T10:00:00.000Z",
 });
 
+Deno.test("writeStartServerRecord: the probe address round-trips, and a record without one still reads", async () => {
+  await withTempDir(async (dir) => {
+    await writeStartServerRecord(dir, { ...record(101), host: "192.168.1.40" });
+    await writeStartServerRecord(dir, { ...record(202), host: "::1" });
+    await writeStartServerRecord(dir, record(303));
+    const read = (await readStartServerRecords(dir)).sort((a, b) =>
+      a.pid - b.pid
+    );
+    assertEquals(read.map((r) => r.host), ["192.168.1.40", "::1", undefined]);
+  });
+});
+
+Deno.test("readStartServerRecords: a record whose host is a name, not an IP address, is not trusted", async () => {
+  await withTempDir(async (dir) => {
+    await writeStartServerRecord(dir, record(101));
+    const servers = join(startDir(dir), "servers");
+    for (const [pid, host] of [[202, "evil.example"], [303, "127.0.0.1/x"]]) {
+      await Deno.writeTextFile(
+        join(servers, `${pid}.json`),
+        JSON.stringify({ ...record(pid as number), host }),
+      );
+    }
+    assertEquals((await readStartServerRecords(dir)).map((r) => r.pid), [101]);
+  });
+});
+
 Deno.test("readStartServerRecords: none when no swamp start has the workspace open", async () => {
   await withTempDir(async (dir) => {
     assertEquals(await readStartServerRecords(dir), []);

@@ -30,6 +30,8 @@ export interface FolderPickerDeps {
   readonly os: typeof Deno.build.os;
   readonly env: (name: string) => string | undefined;
   readonly resolve: (name: string) => Promise<string | null>;
+  /** the page is open on another machine, so a dialog here would go unseen */
+  readonly remoteBrowser?: boolean;
   readonly run: (
     command: string,
     args: readonly string[],
@@ -79,7 +81,7 @@ export class SystemFolderPicker implements FolderPicker {
 
   async command(prompt: string): Promise<PickerCommand | null> {
     const { os, env } = this.deps;
-    if (env("SSH_CONNECTION")) return null;
+    if (this.deps.remoteBrowser || env("SSH_CONNECTION")) return null;
     if (os === "darwin") {
       const osascript = await this.deps.resolve("osascript");
       if (!osascript) return null;
@@ -149,10 +151,13 @@ function trimTrailingSeparator(path: string): string {
   return path.replace(/[\\/]+$/, "");
 }
 
-export function createSystemFolderPicker(): SystemFolderPicker {
+export function createSystemFolderPicker(
+  options: { remoteBrowser?: boolean } = {},
+): SystemFolderPicker {
   const resolver = defaultCommandResolver();
   return new SystemFolderPicker({
     os: Deno.build.os,
+    remoteBrowser: options.remoteBrowser ?? false,
     env: (name) => Deno.env.get(name),
     resolve: (name) => resolver.resolve(name),
     run: async (command, args) => {
