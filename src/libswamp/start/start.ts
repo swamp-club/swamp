@@ -720,7 +720,7 @@ export interface StartSwampifyKickoffInput {
 }
 
 export interface CheckedSwampifyKickoff {
-  readonly kickoff: SwampifyKickoff;
+  readonly task: StartTask;
   readonly harness: HarnessDefinition;
 }
 
@@ -734,9 +734,13 @@ export async function startCheckSwampifyKickoff(
   input: StartSwampifyKickoffInput,
 ): Promise<CheckedSwampifyKickoff> {
   await requireSignedIn(deps);
-  const kickoff = SwampifyKickoff.create(
-    { windowDays: input.windowDays, exclude: input.exclude ?? [] },
-    deps.os,
+  // Built here so an oversized text is refused before a workspace opens.
+  const task = StartTask.create(
+    SwampifyKickoff.create(
+      { windowDays: input.windowDays, exclude: input.exclude ?? [] },
+      deps.os,
+    ).render(),
+    "swampify",
   );
   if (
     !(SWAMPIFY_KICKOFF_HARNESSES as readonly string[]).includes(input.harness)
@@ -759,7 +763,7 @@ export async function startCheckSwampifyKickoff(
     );
   }
   return {
-    kickoff,
+    task,
     harness: await requireLaunchableHarness(deps, input.harness),
   };
 }
@@ -775,8 +779,7 @@ export function startSaveSwampifyKickoff(
 ): AsyncIterable<StartStatusEvent> {
   return (async function* () {
     try {
-      const { kickoff, harness } = await startCheckSwampifyKickoff(deps, input);
-      const task = StartTask.create(kickoff.render(), "swampify");
+      const { task, harness } = await startCheckSwampifyKickoff(deps, input);
       const session = StartSession.create(
         deps.randomUUID(),
         input.workspacePath,
@@ -791,8 +794,9 @@ export function startSaveSwampifyKickoff(
           task.title(),
         ),
       );
-      await deps.sessions.save(session);
+      // Before the save, so a failed registry write leaves no task behind.
       await rememberAgent(deps, harness.id);
+      await deps.sessions.save(session);
       yield {
         kind: "completed",
         data: await statusOf(deps, input.workspacePath, session),

@@ -2749,6 +2749,19 @@ Deno.test("startSaveSwampifyKickoff: refuses without writing anything", async ()
         message: "Excluded paths",
       },
       {
+        name: "text over the task limit",
+        signals: { claudeTranscripts: true },
+        input: {
+          windowDays: 30,
+          exclude: Array.from(
+            { length: 20 },
+            (_, i) => `/${i}${"🦆".repeat(500)}`,
+          ),
+          harness: "claude",
+        },
+        message: "longer than",
+      },
+      {
         name: "bad window",
         signals: { claudeTranscripts: true },
         input: { windowDays: 0, harness: "claude" },

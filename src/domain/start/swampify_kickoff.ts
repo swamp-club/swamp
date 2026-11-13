@@ -98,9 +98,12 @@ export class SwampifyKickoff {
         );
       }
       if (hasUnsafeChar(path)) {
-        throw new UserError(
-          "Excluded paths can't contain quotes, backticks, $, < or >, or control characters.",
-          "invalid_exclude",
+        throw markErrorPaths(
+          new UserError(
+            `Excluded paths can't contain quotes, backticks, $, < or >, or control characters: ${path}`,
+            "invalid_exclude",
+          ),
+          [path],
         );
       }
       if (!isAcceptedPath(path, os)) {
