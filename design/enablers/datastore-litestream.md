@@ -37,7 +37,13 @@ and the `_control/` records this layout sits beside.
    command was the starting point, and Phase 4A replaced it (see
    [Phase 4A](#phase-4a-replication-cost-on-a-bucket-model-swamp-club3357)).
    In team mode the serve leader keeps one running for as long as it holds the
-   lease.
+   lease. A sidecar serve starts is owned by it: it exits within a tick of
+   serve's death by any signal, while a stopped (frozen) owner is not dead. The
+   kill skips the final sync, because frames not yet uploaded were never
+   acknowledged. A graceful stop's closing sync is the durability point, so the
+   owned sidecar SIGKILLed after it loses nothing. Serve never reuses a sidecar
+   it does not own: it stops one a CLI command started, gracefully, and starts
+   its own; a CLI command reuses whatever runs.
 4. **`commits.db` never forces a checkpoint.** Do not copy
    `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` pattern. A copy a sidecar
    replicates turns auto-checkpoint off, so only Litestream checkpoints it

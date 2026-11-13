@@ -800,6 +800,7 @@ import { withSharedSyncGate, withSyncGate } from "../../serve/sync_gate.ts";
 import { GcMutex } from "../../serve/gc_mutex.ts";
 import { takeRetentionCandidate } from "../retention_candidate.ts";
 import {
+  ownV3SidecarsFromThisProcess,
   setV3ClosingDeadline,
 } from "../../infrastructure/datastore_v3/litestream/v3_replication.ts";
 import { followerHttpForward } from "../../serve/follower_requests.ts";
@@ -4078,6 +4079,8 @@ export const serveCommand = new Command()
     }
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
+
+    await ownV3SidecarsFromThisProcess();
 
     const {
       repoDir: resolvedRepoDir,

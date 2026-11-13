@@ -34,7 +34,12 @@ import {
   type ReplicationHandle,
   type ReplicatorDeps,
 } from "./litestream_replicator.ts";
-import { defaultPrivateRoot } from "./replication_files.ts";
+import {
+  defaultPrivateRoot,
+  type SupervisorOwner,
+} from "./replication_files.ts";
+
+import { localProcess } from "../process_identity.ts";
 import { v3ReplicaFor } from "../v3_datastore_binding.ts";
 import { stopAutoCheckpointAt } from "../sqlite_commit_store.ts";
 import { withSpan } from "../../tracing/tracer.ts";
@@ -57,6 +62,7 @@ export interface V3ClosingDeadline {
 let syncDeadlineMs: number | undefined;
 let requestSyncDeadlineMs: number | undefined;
 let closingDeadline: V3ClosingDeadline | undefined;
+let sidecarOwner: SupervisorOwner | undefined;
 
 export function v3SyncDeadlineMs(): number {
   if (closingDeadline !== undefined) {
@@ -84,6 +90,19 @@ export function setV3ClosingDeadline(
   closingDeadline = deadline;
 }
 
+/**
+ * serve sets itself: a sidecar it starts stops once serve is gone, while one a
+ * CLI command starts outlives it for the commands after
+ */
+export async function ownV3SidecarsFromThisProcess(): Promise<void> {
+  const self = await localProcess();
+  setV3SidecarOwner({ pid: self.pid, process: self.identity });
+}
+
+export function setV3SidecarOwner(owner: SupervisorOwner | undefined): void {
+  sidecarOwner = owner;
+}
+
 export function setV3ReplicationForTesting(
   deps: Partial<ReplicatorDeps> | undefined,
   options: {
@@ -96,6 +115,7 @@ export function setV3ReplicationForTesting(
   syncDeadlineMs = options.syncDeadlineMs;
   requestSyncDeadlineMs = options.requestSyncDeadlineMs;
   closingDeadline = undefined;
+  sidecarOwner = undefined;
 }
 
 export function v3Replicator(): LitestreamReplicator {
@@ -156,5 +176,6 @@ export async function acquireV3Replication(
     fence,
     // A writer that lost its lease reports nothing as replicated.
     assertLeaseCurrent: () => checkV3WriterLease(datastorePath),
+    ...(sidecarOwner !== undefined ? { owner: sidecarOwner } : {}),
   });
 }

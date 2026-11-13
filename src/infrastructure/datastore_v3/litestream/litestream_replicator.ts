@@ -64,6 +64,8 @@ import {
   renderLitestreamConfig,
   type ReplicationPaths,
   replicationPathsFor,
+  sameSupervisorOwner,
+  type SupervisorOwner,
   verifyTempFiles,
   verifyTempPath,
   writeLineage,
@@ -145,6 +147,8 @@ export interface ReplicationRequest {
   readonly replica: V3ReplicaSetting;
   readonly fence: number;
   assertLeaseCurrent(): Promise<void>;
+  /** a sidecar this request starts takes it; one found running keeps its own */
+  readonly owner?: SupervisorOwner;
 }
 
 export interface SyncOptions {
@@ -308,6 +312,7 @@ export class LitestreamReplicator {
         lineage.lineageFence,
         replicaPath,
         use,
+        request.owner,
       );
       return new SharedHandle(
         paths,
@@ -375,13 +380,19 @@ export class LitestreamReplicator {
     lineageFence: number,
     replicaPath: string,
     use: Deno.FsFile,
+    owner: SupervisorOwner | undefined,
   ): Promise<number> {
     const timings = this.deps.timings;
     let waitingSince = this.deps.now();
     let launched = false;
     while (true) {
       const waited = this.deps.now() - waitingSince >= timings.startWaitMs;
-      const step = await this.#observeAndDecide(paths, lineageFence, waited);
+      const step = await this.#observeAndDecide(
+        paths,
+        lineageFence,
+        waited,
+        owner,
+      );
       const action = step.action;
       switch (action.kind) {
         case "reuse":
@@ -410,7 +421,13 @@ export class LitestreamReplicator {
             if (action.orphanPid !== undefined) {
               this.deps.processes.signal(action.orphanPid, "SIGKILL");
             }
-            await this.#launch(paths, replica, lineageFence, replicaPath);
+            await this.#launch(
+              paths,
+              replica,
+              lineageFence,
+              replicaPath,
+              owner,
+            );
           } finally {
             // The probe lock goes once the supervisor is launched (it retries
             // the lock for long enough to get it), and on a failed launch
@@ -440,6 +457,7 @@ export class LitestreamReplicator {
     paths: ReplicationPaths,
     lineageFence: number,
     waitedPastDeadline: boolean,
+    owner: SupervisorOwner | undefined,
   ): Promise<{
     action: SidecarAction;
     supervisorPid?: number;
@@ -507,6 +525,9 @@ export class LitestreamReplicator {
         lineageFence,
         marked,
         waitedPastDeadline,
+        // a request with no owner reuses whatever runs, an owned sidecar too
+        ownerDiffers: owner !== undefined && read.kind === "found" &&
+          !sameSupervisorOwner(read.record.owner, owner),
       });
       return {
         action,
@@ -541,6 +562,7 @@ export class LitestreamReplicator {
     replica: V3ReplicaSetting,
     lineageFence: number,
     replicaPath: string,
+    owner: SupervisorOwner | undefined,
   ): Promise<void> {
     // Fails here, in the command, when the binary cannot be had.
     await this.deps.resolveBinary();
@@ -568,6 +590,7 @@ export class LitestreamReplicator {
           ...(timings.verifyIntervalMs !== undefined
             ? { verifyIntervalMs: timings.verifyIntervalMs }
             : {}),
+          ...(owner !== undefined ? { owner } : {}),
         }),
       ],
       // Outside any repo, so nothing in one is loaded.
@@ -607,6 +630,13 @@ export class LitestreamReplicator {
       }
       // Verified as this database's supervisor, which leads its own group,
       // its Litestream included.
+      if (
+        action.reason === "owner" &&
+        await this.#stopGracefully(paths, action.supervisorPid)
+      ) {
+        await Deno.remove(paths.socket).catch(() => {});
+        return;
+      }
       processes.signalGroup(action.supervisorPid, "SIGKILL");
       if (action.litestreamPid !== undefined) {
         processes.signal(action.litestreamPid, "SIGKILL");
@@ -631,6 +661,24 @@ export class LitestreamReplicator {
         "another command took the sidecar while this one replaced it",
       );
     }
+  }
+
+  /**
+   * the supervisor's stop path: SIGTERM reaches Litestream too, which makes
+   * its final upload before the supervisor exits
+   */
+  async #stopGracefully(
+    paths: ReplicationPaths,
+    supervisorPid: number,
+  ): Promise<boolean> {
+    this.deps.processes.signalGroup(supervisorPid, "SIGTERM");
+    const timings = this.deps.timings;
+    const until = this.deps.now() + timings.tickMs + 2 * timings.stopWaitMs;
+    while (!await this.#supervisorLockFree(paths)) {
+      if (this.deps.now() >= until) return false;
+      await this.deps.sleep(timings.pollMs);
+    }
+    return true;
   }
 
   /**

@@ -38,15 +38,21 @@ import {
   clearVerifyLeftovers,
   ensurePrivateDir,
   ensureSharedDir,
+  parseSupervisorOwner,
   readCopyState,
   readReplicaVerification,
   removeOwnPresence,
   type ReplicationPaths,
   replicationPathsFor,
+  type SupervisorOwner,
   writePresence,
 } from "./replication_files.ts";
 import { SUPERVISOR_MARKER } from "./litestream_processes.ts";
-import { localProcess } from "../process_identity.ts";
+import { judgeRecorded, localProcess } from "../process_identity.ts";
+import type {
+  ProcessVerdict,
+  RecordedProcess,
+} from "../../../domain/datastore_v3/process_liveness.ts";
 import {
   type LitestreamReplicaType,
   parseLitestreamReplicaType,
@@ -66,6 +72,8 @@ export interface SupervisorOptions {
   readonly stopWaitMs: number;
   readonly tickMs: number;
   readonly verifyIntervalMs?: number;
+  /** a sidecar with an owner stops once that process is gone, not at idle */
+  readonly owner?: SupervisorOwner;
 }
 
 export interface LitestreamChild {
@@ -92,6 +100,7 @@ export interface SupervisorDeps {
   readSnapshotTxid?(
     request: SupervisorSnapshotRequest,
   ): Promise<string | undefined>;
+  judgeProcess?(recorded: RecordedProcess): Promise<ProcessVerdict>;
 }
 
 export interface SupervisorSnapshotRequest {
@@ -112,6 +121,7 @@ export type SupervisorExit =
   | "another-supervisor"
   | "idle"
   | "litestream-exited"
+  | "owner-gone"
   | "stop-requested";
 
 /**
@@ -145,6 +155,9 @@ export function supervisorArgs(options: SupervisorOptions): string[] {
     ...(options.verifyIntervalMs !== undefined
       ? ["--verify-interval-ms", String(options.verifyIntervalMs)]
       : []),
+    ...(options.owner !== undefined
+      ? ["--owner", JSON.stringify(options.owner)]
+      : []),
   ];
 }
 
@@ -168,6 +181,10 @@ export function parseSupervisorArgs(
   const stopWaitMs = count("--stop-wait-ms");
   const tickMs = count("--tick-ms");
   const verifyIntervalMs = count("--verify-interval-ms");
+  const ownerText = text("--owner");
+  const owner = ownerText !== undefined ? parseOwner(ownerText) : undefined;
+  // a sidecar that cannot tell its owner is gone must not run unowned
+  if (ownerText !== undefined && owner === undefined) return undefined;
   if (
     commitsDb === undefined || privateRoot === undefined ||
     replicaPath === undefined || lineageFence === undefined ||
@@ -185,7 +202,18 @@ export function parseSupervisorArgs(
     stopWaitMs,
     tickMs,
     ...(verifyIntervalMs !== undefined ? { verifyIntervalMs } : {}),
+    ...(owner !== undefined ? { owner } : {}),
   };
+}
+
+function parseOwner(text: string): SupervisorOwner | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return parseSupervisorOwner(value);
 }
 
 export async function runReplicationSupervisor(
@@ -242,6 +270,7 @@ async function superviseHeld(
     process: (await localProcess()).identity,
     lineageFence: options.lineageFence,
     replicaPath: options.replicaPath,
+    ...(options.owner !== undefined ? { owner: options.owner } : {}),
   };
   await writePresence(paths, presence);
   let child: LitestreamChild;
@@ -282,6 +311,14 @@ async function superviseHeld(
       if (stopRequested) {
         await stopSignalledChild(child, options.stopWaitMs, deps);
         return "stop-requested";
+      }
+      // SIGKILL with no final sync: frames not yet uploaded were never
+      // acknowledged, and the lineage may already be another node's
+      if (await ownerGone(options, deps)) {
+        child.kill("SIGKILL");
+        await child.exited.catch(() => {});
+        await cleanUp(paths);
+        return "owner-gone";
       }
       const idle = shouldIdleExit(
         await lastUsedAt(paths),
@@ -481,6 +518,17 @@ async function stopChild(
     child.kill("SIGKILL");
     await child.exited.catch(() => {});
   }
+}
+
+/** a stopped (frozen) owner is alive; only a verdict of gone counts */
+async function ownerGone(
+  options: SupervisorOptions,
+  deps: SupervisorDeps,
+): Promise<boolean> {
+  const owner = options.owner;
+  if (owner === undefined) return false;
+  const judge = deps.judgeProcess ?? judgeRecorded;
+  return await judge(owner) === "gone";
 }
 
 async function cleanUp(paths: ReplicationPaths): Promise<void> {
