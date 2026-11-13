@@ -10314,7 +10314,9 @@ export const serveCommand = new Command()
       cause: InterruptedRunContinuationCause,
       targets?: readonly InterruptedRunTarget[],
     ): Promise<void> => {
+      // removed before the pass, so a run handed back during it stays
       const judged = targets ?? [...pendingInterrupted.values()];
+      for (const target of judged) pendingInterrupted.delete(target.runId);
       try {
         const { continued, deferred } = await continueInterruptedRuns(
           connectionCtx,
@@ -10344,8 +10346,6 @@ export const serveCommand = new Command()
             },
           },
         );
-        // only what this pass judged: a run handed back meanwhile stays
-        for (const target of judged) pendingInterrupted.delete(target.runId);
         for (const target of deferred) {
           if (pendingInterrupted.size >= PENDING_INTERRUPTED_MAX) break;
           pendingInterrupted.set(target.runId, target);

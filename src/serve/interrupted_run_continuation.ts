@@ -399,6 +399,12 @@ async function launch(
     lostRaceIsOrdinary: true,
     onTerminal: async (terminal) => {
       // a lost race shares its claim with the pass that won, which keeps it
+      // a copy still syncing is no peer's win: judged again once it settles
+      if (
+        terminal.kind === "error" && terminal.code === RUN_RECORD_STALE_CODE
+      ) {
+        options.onDeferredLater?.({ workflowId, runId: run.id });
+      }
       if (terminal.kind === "error" && !LOST_RACE_CODES.has(terminal.code)) {
         await hold.release();
         // judged again, so a refusal such as an edited definition is recorded

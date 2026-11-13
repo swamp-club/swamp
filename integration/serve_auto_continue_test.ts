@@ -996,3 +996,34 @@ Deno.test({
       assertEquals(await ranSteps(counter), ["second"]);
     }),
 });
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a copy that reads stale only at the recover is handed back to be judged again",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "stale-at-recover" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      let reads = 0;
+      serve.ctx.repoContext.runRecordCurrency = () =>
+        Promise.resolve(++reads === 1);
+
+      const handedBack: { workflowId: string; runId: string }[] = [];
+      await continueInterruptedRuns(serve.ctx, "boot", {
+        onDeferredLater: (target) => handedBack.push(target),
+      });
+      await finished(serve, runId);
+      await waitFor(
+        () => handedBack.length === 1,
+        "the stale copy handed back",
+      );
+      assertEquals(handedBack, [{ workflowId: workflow.id, runId }]);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "interrupted",
+      );
+    }),
+});
