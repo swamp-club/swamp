@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { waitFor } from "@swamp-club/swamp-testing";
 import { assert, assertEquals } from "@std/assert";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
 import {
@@ -568,35 +569,75 @@ Deno.test("LeaderLink.forward: two forwards in a row left unanswered within one 
   }
 });
 
-Deno.test("LeaderLink.forward: a long lock wait never becomes a frozen leader's probe, so it cannot hold the probe slot", async () => {
+Deno.test("LeaderLink.forward: a lock wait to a frozen leader goes out without the probe slot, so a short probe still gets through", async () => {
   let now = 0;
   let calls = 0;
-  const forwarder = frozenLink((_input, init) => {
+  let answers = false;
+  const forwarder = frozenLink((input, init) => {
     calls++;
-    return calls <= 2
-      ? neverAnswered(init?.signal)
-      : Promise.resolve(new Response("ok"));
+    if (String(input).includes("/locks")) return neverAnswered(init?.signal);
+    return answers
+      ? Promise.resolve(new Response("ok"))
+      : neverAnswered(init?.signal);
   }, { now: () => now });
+  const waiting = new AbortController();
   try {
     await forwardOnce(forwarder);
     await forwardOnce(forwarder);
     assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
     now += FROZEN_LEADER_PROBE_MS;
+    answers = true;
     const body = new TextEncoder().encode(
       JSON.stringify({ lockKey: "k", waitMs: 5_000 }),
     );
-    const lockWait = await forwarder.forward(
+    const lockWait = forwarder.forward(
       new Request(
         "https://node-b.internal:9090/api/v1/datastore/_default/locks",
-        { method: "POST", body },
+        { method: "POST", body, signal: waiting.signal },
       ),
       { body },
     );
-    assertEquals(lockWait.status, 503);
-    assertEquals((await lockWait.json()).inFlight, undefined);
-    assertEquals(calls, 2);
+    await waitFor(() => calls === 3, "the lock wait to go out");
     assertEquals((await forwardOnce(forwarder)).status, 200);
-    assertEquals(calls, 3);
+    assertEquals(calls, 4);
+    waiting.abort();
+    await (await lockWait).body?.cancel();
+  } finally {
+    waiting.abort();
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.forward: a webhook or action forward to a frozen leader past its probe time goes out, and its answer clears the mark", async () => {
+  let now = 0;
+  let calls = 0;
+  let answers = false;
+  const forwarder = frozenLink((_input, init) => {
+    calls++;
+    return answers
+      ? Promise.resolve(new Response("ok"))
+      : neverAnswered(init?.signal);
+  }, { now: () => now });
+  try {
+    await forwardOnce(forwarder);
+    await forwardOnce(forwarder);
+    const webhook = () =>
+      forwarder.forward(
+        new Request("https://node-b.internal:9090/api/v1/webhooks/deploy", {
+          method: "POST",
+        }),
+      );
+    const refused = await webhook();
+    assertEquals(refused.status, 503);
+    await refused.body?.cancel();
+    assertEquals(calls, 2);
+    now += FROZEN_LEADER_PROBE_MS;
+    answers = true;
+    const sent = await webhook();
+    assertEquals(sent.status, 200);
+    await sent.body?.cancel();
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals(calls, 4);
   } finally {
     forwarder.close();
   }

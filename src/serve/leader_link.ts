@@ -240,7 +240,7 @@ export class LeaderLink {
       options.body,
     );
     const client = this.client(address);
-    // a probe holds the only slot to a frozen leader, so never a lock wait
+    // the probe holds the only slot to a frozen leader, so never a long wait
     const admitted = this.#admit(
       key,
       responseMs !== undefined && lockWaitMs === 0,
@@ -328,9 +328,10 @@ export class LeaderLink {
       this.#frozen = undefined;
       return "send";
     }
-    if (!mayProbe || frozen.probing || this.#now() < frozen.probeAt) {
-      return "refuse";
-    }
+    if (frozen.probing || this.#now() < frozen.probeAt) return "refuse";
+    // one that may wait long goes out without the probe slot; its answer
+    // still clears the mark
+    if (!mayProbe) return "send";
     frozen.probing = true;
     return "probe";
   }
