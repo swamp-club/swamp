@@ -27,6 +27,7 @@ import {
   type ServerTokenRevokeEvent,
 } from "./token_revoke.ts";
 
+const DEFINITION_ID = "3f1c2a4e-8b9d-4c6e-9a7f-1b2c3d4e5f60";
 const REVOKED_AT = "2026-06-20T12:00:00.000Z";
 
 function completedEvent(
@@ -54,7 +55,8 @@ function completedEvent(
 
 Deno.test("serverTokenRevoke: yields revoking then completed with state", async () => {
   const deps: ServerTokenRevokeDeps = {
-    runRevoke: async function* (name) {
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
+    runRevoke: async function* ({ name }) {
       yield await Promise.resolve(
         completedEvent(name, [
           {
@@ -84,7 +86,8 @@ Deno.test("serverTokenRevoke: yields revoking then completed with state", async 
 
 Deno.test("serverTokenRevoke: reports already-revoked tokens as a no-op", async () => {
   const deps: ServerTokenRevokeDeps = {
-    runRevoke: async function* (name) {
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
+    runRevoke: async function* ({ name }) {
       yield await Promise.resolve(completedEvent(name, []));
     },
   };
@@ -101,6 +104,7 @@ Deno.test("serverTokenRevoke: reports already-revoked tokens as a no-op", async 
 
 Deno.test("serverTokenRevoke: rewrites model_not_found as token-specific error", async () => {
   const deps: ServerTokenRevokeDeps = {
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
     runRevoke: async function* () {
       yield await Promise.resolve(
         {
@@ -128,6 +132,7 @@ Deno.test("serverTokenRevoke: rewrites model_not_found as token-specific error",
 
 Deno.test("serverTokenRevoke: forwards non-model_not_found errors unchanged", async () => {
   const deps: ServerTokenRevokeDeps = {
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
     runRevoke: async function* () {
       yield await Promise.resolve(
         {
@@ -153,6 +158,7 @@ Deno.test("serverTokenRevoke: forwards non-model_not_found errors unchanged", as
 
 Deno.test("serverTokenRevoke: errors when the stream ends without completing", async () => {
   const deps: ServerTokenRevokeDeps = {
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
     // deno-lint-ignore require-yield
     runRevoke: async function* () {
       await Promise.resolve();
@@ -167,4 +173,50 @@ Deno.test("serverTokenRevoke: errors when the stream ends without completing", a
   >;
   assertEquals(error.kind, "error");
   assertStringIncludes(error.error.message, "without completing");
+});
+
+Deno.test("serverTokenRevoke: refuses a name with no token of its type and runs nothing", async () => {
+  let ran = false;
+  const deps: ServerTokenRevokeDeps = {
+    findTokenDefinition: () => Promise.resolve(null),
+    // deno-lint-ignore require-yield
+    runRevoke: async function* () {
+      ran = true;
+      await Promise.resolve();
+    },
+  };
+  const events = await collect<ServerTokenRevokeEvent>(
+    serverTokenRevoke(createLibSwampContext(), deps, { name: "srv" }),
+  );
+
+  assertEquals(ran, false);
+  assertEquals(events[1], {
+    kind: "error",
+    error: {
+      code: "model_not_found",
+      message: "Server token 'srv' not found. " +
+        "Use 'swamp access token list' to see existing tokens.",
+    },
+  });
+});
+
+Deno.test("serverTokenRevoke: runs revoke on the resolved definition", async () => {
+  const lookedUp: string[] = [];
+  const ranWith: string[] = [];
+  const deps: ServerTokenRevokeDeps = {
+    findTokenDefinition: (name) => {
+      lookedUp.push(name);
+      return Promise.resolve({ id: DEFINITION_ID, name: "resolved-name" });
+    },
+    runRevoke: async function* (token) {
+      ranWith.push(`${token.id}/${token.name}`);
+      yield await Promise.resolve(completedEvent("ci", []));
+    },
+  };
+  await collect<ServerTokenRevokeEvent>(
+    serverTokenRevoke(createLibSwampContext(), deps, { name: "ci" }),
+  );
+
+  assertEquals(lookedUp, ["ci"]);
+  assertEquals(ranWith, [`${DEFINITION_ID}/resolved-name`]);
 });

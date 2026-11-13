@@ -895,17 +895,19 @@ function lockCtx(
 }
 
 function definitionsNamed(byId: Record<string, string>) {
-  const entry = (id: string) => ({
-    definition: { id, name: byId[id] },
-    type: SERVER_TOKEN_MODEL_TYPE,
-  });
+  const isServerToken = (type: { normalized: string }) =>
+    type.normalized === SERVER_TOKEN_MODEL_TYPE.normalized;
   return {
-    findByNameGlobal: (name: string) => {
+    findByName: (type: { normalized: string }, name: string) => {
       const id = Object.keys(byId).find((key) => byId[key] === name);
-      return Promise.resolve(id ? entry(id) : null);
+      return Promise.resolve(
+        isServerToken(type) && id ? { id, name } : null,
+      );
     },
-    findByIdCached: (id: string) =>
-      Promise.resolve(id in byId ? entry(id) : undefined),
+    findById: (type: { normalized: string }, id: string) =>
+      Promise.resolve(
+        isServerToken(type) && id in byId ? { id, name: byId[id] } : null,
+      ),
   };
 }
 

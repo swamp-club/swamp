@@ -36,7 +36,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../../domain/models/worker/enrollment_token_model.ts";
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
   createWorkerTokenRevokeDeps,
@@ -125,18 +125,18 @@ seconds.`,
     { vaultsDir },
   );
 
-  const preResult = await findDefinitionByIdOrName(
-    repoContext.definitionRepo,
+  const tokenDefinition = await repoContext.definitionRepo.findByName(
+    ENROLLMENT_TOKEN_MODEL_TYPE,
     name,
   );
   let modelLocks: ModelLockResult | undefined;
-  if (preResult) {
+  if (tokenDefinition) {
     const lockResult = await acquireModelLocks(
       datastoreConfig,
       [
         {
-          modelType: preResult.type.normalized,
-          modelId: preResult.definition.id,
+          modelType: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
+          modelId: tokenDefinition.id,
         },
       ],
       repoDir,

@@ -25,6 +25,8 @@ import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { createServerTokenRunDeps } from "./run_deps.ts";
+import { findDefinitionOfTypeByIdOrName } from "../../domain/models/model_lookup.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 
 export interface ServerTokenRotateData {
   name: string;
@@ -46,8 +48,16 @@ export interface ServerTokenRotateInput {
 
 export interface ServerTokenRotateDeps {
   listVaultNames: () => Promise<string[]>;
+  /** by type as well as name or id, so another behavior with the name is never rotated */
+  findTokenDefinition: (
+    idOrName: string,
+  ) => Promise<{ id: string; name: string } | null>;
   runRotate: (
-    input: { name: string; durationMs?: number; vaultName?: string },
+    input: {
+      token: { id: string; name: string };
+      durationMs?: number;
+      vaultName?: string;
+    },
   ) => AsyncIterable<ModelMethodRunEvent>;
 }
 
@@ -59,18 +69,30 @@ export async function createServerTokenRotateDeps(
 ): Promise<ServerTokenRotateDeps> {
   const runDeps = await createServerTokenRunDeps(repoDir, repoContext, {
     vaultsDir: options?.vaultsDir,
+    definitionType: SERVER_TOKEN_MODEL_TYPE,
   });
   const vaultService = await VaultService.fromRepository(repoDir, {
     vaultsDir: options?.vaultsDir,
   });
   return {
     listVaultNames: () => Promise.resolve(vaultService.getVaultNames()),
+    findTokenDefinition: async (idOrName) => {
+      const definition = await findDefinitionOfTypeByIdOrName(
+        repoContext.definitionRepo,
+        SERVER_TOKEN_MODEL_TYPE,
+        idOrName,
+      );
+      return definition ? { id: definition.id, name: definition.name } : null;
+    },
+    // by name through the typed lookup, refused if it no longer resolves to
+    // the definition found above; a bare id would be matched as a name first
     runRotate: (input) => {
       const inputs: Record<string, unknown> = {};
       if (input.durationMs !== undefined) inputs.durationMs = input.durationMs;
       if (input.vaultName !== undefined) inputs.vaultName = input.vaultName;
       return modelMethodRun(ctx, runDeps, {
-        modelIdOrName: input.name,
+        modelIdOrName: input.token.name,
+        lockedDefinitionId: input.token.id,
         methodName: "rotate",
         inputs,
         lastEvaluated: false,
@@ -80,6 +102,14 @@ export async function createServerTokenRotateDeps(
 }
 
 const TOKEN_DATA_NAME = "token-main";
+
+function notFoundError(name: string): SwampError {
+  return {
+    code: "model_not_found",
+    message: `Server token '${name}' not found. ` +
+      "Use 'swamp access token list' to see existing tokens.",
+  };
+}
 
 export async function* serverTokenRotate(
   ctx: LibSwampContext,
@@ -109,21 +139,23 @@ export async function* serverTokenRotate(
 
         yield { kind: "rotating" as const, name: input.name };
 
+        const token = await deps.findTokenDefinition(input.name);
+        if (token === null) {
+          yield { kind: "error" as const, error: notFoundError(input.name) };
+          return;
+        }
+
         let tokenRecord: Record<string, unknown> | undefined;
         for await (
           const event of deps.runRotate({
-            name: input.name,
+            token,
             durationMs: input.durationMs,
             vaultName: input.vaultName,
           })
         ) {
           if (event.kind === "error") {
             const error = event.error.code === "model_not_found"
-              ? {
-                code: event.error.code,
-                message: `Server token '${input.name}' not found. ` +
-                  "Use 'swamp access token list' to see existing tokens.",
-              }
+              ? notFoundError(input.name)
               : event.error;
             yield { kind: "error" as const, error };
             return;

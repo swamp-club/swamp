@@ -169,6 +169,16 @@ export async function findDefinitionByIdOrName(
   return findDefinitionByIdGlobal(definitionRepo, idOrName);
 }
 
+export async function findDefinitionOfTypeByIdOrName(
+  definitionRepo: DefinitionRepository,
+  type: ModelType,
+  idOrName: string,
+): Promise<Definition | null> {
+  const byName = await definitionRepo.findByName(type, idOrName);
+  if (byName || !isUuid(idOrName)) return byName;
+  return definitionRepo.findById(type, createDefinitionId(idOrName));
+}
+
 function findByNameFromIndex(
   definitionRepo: DefinitionRepository,
   name: string,

@@ -24,6 +24,8 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { createServerTokenRunDeps } from "./run_deps.ts";
+import { findDefinitionOfTypeByIdOrName } from "../../domain/models/model_lookup.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 
 export interface ServerTokenRevokeData {
   name: string;
@@ -42,7 +44,13 @@ export interface ServerTokenRevokeInput {
 }
 
 export interface ServerTokenRevokeDeps {
-  runRevoke: (name: string) => AsyncIterable<ModelMethodRunEvent>;
+  /** by type as well as name or id, so another behavior with the name is never revoked */
+  findTokenDefinition: (
+    idOrName: string,
+  ) => Promise<{ id: string; name: string } | null>;
+  runRevoke: (
+    token: { id: string; name: string },
+  ) => AsyncIterable<ModelMethodRunEvent>;
 }
 
 export async function createServerTokenRevokeDeps(
@@ -50,11 +58,24 @@ export async function createServerTokenRevokeDeps(
   repoDir: string,
   repoContext: RepositoryContext,
 ): Promise<ServerTokenRevokeDeps> {
-  const runDeps = await createServerTokenRunDeps(repoDir, repoContext);
+  const runDeps = await createServerTokenRunDeps(repoDir, repoContext, {
+    definitionType: SERVER_TOKEN_MODEL_TYPE,
+  });
   return {
-    runRevoke: (name) =>
+    findTokenDefinition: async (idOrName) => {
+      const definition = await findDefinitionOfTypeByIdOrName(
+        repoContext.definitionRepo,
+        SERVER_TOKEN_MODEL_TYPE,
+        idOrName,
+      );
+      return definition ? { id: definition.id, name: definition.name } : null;
+    },
+    // by name through the typed lookup, refused if it no longer resolves to
+    // the definition found above; a bare id would be matched as a name first
+    runRevoke: (token) =>
       modelMethodRun(ctx, runDeps, {
-        modelIdOrName: name,
+        modelIdOrName: token.name,
+        lockedDefinitionId: token.id,
         methodName: "revoke",
         inputs: {},
         lastEvaluated: false,
@@ -63,6 +84,14 @@ export async function createServerTokenRevokeDeps(
 }
 
 const TOKEN_DATA_NAME = "token-main";
+
+function notFoundError(name: string): SwampError {
+  return {
+    code: "model_not_found",
+    message: `Server token '${name}' not found. ` +
+      "Use 'swamp access token list' to see existing tokens.",
+  };
+}
 
 export async function* serverTokenRevoke(
   ctx: LibSwampContext,
@@ -76,16 +105,21 @@ export async function* serverTokenRevoke(
       (async function* () {
         yield { kind: "revoking" as const, name: input.name };
 
+        const token = await deps.findTokenDefinition(input.name);
+        if (token === null) {
+          yield {
+            kind: "error" as const,
+            error: notFoundError(input.name),
+          };
+          return;
+        }
+
         let tokenRecord: Record<string, unknown> | undefined;
         let completed = false;
-        for await (const event of deps.runRevoke(input.name)) {
+        for await (const event of deps.runRevoke(token)) {
           if (event.kind === "error") {
             const error = event.error.code === "model_not_found"
-              ? {
-                code: event.error.code,
-                message: `Server token '${input.name}' not found. ` +
-                  "Use 'swamp access token list' to see existing tokens.",
-              }
+              ? notFoundError(input.name)
               : event.error;
             yield { kind: "error" as const, error };
             return;

@@ -35,7 +35,7 @@ import {
 } from "../../infrastructure/persistence/server_token_lock.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { findDefinitionOfTypeByIdOrName } from "../../domain/models/model_lookup.ts";
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
   createServerTokenRotateDeps,
@@ -212,11 +212,12 @@ export const accessTokenRotateCommand = withRemoteOptions(
   // may be a definition id, so lock the name it resolves to.
   const lockName = await serverTokenLockName(repoContext.definitionRepo, name);
   await withServerTokenLock(datastoreConfig, lockName, async () => {
-    const preResult = await findDefinitionByIdOrName(
+    const tokenDefinition = await findDefinitionOfTypeByIdOrName(
       repoContext.definitionRepo,
+      SERVER_TOKEN_MODEL_TYPE,
       name,
     );
-    if (!preResult) {
+    if (!tokenDefinition) {
       throw new UserError(
         `Server token '${name}' not found. ` +
           "Use 'swamp access token list' to see existing tokens.",
@@ -227,8 +228,8 @@ export const accessTokenRotateCommand = withRemoteOptions(
       datastoreConfig,
       [
         {
-          modelType: preResult.type.normalized,
-          modelId: preResult.definition.id,
+          modelType: SERVER_TOKEN_MODEL_TYPE.normalized,
+          modelId: tokenDefinition.id,
         },
       ],
       repoDir,

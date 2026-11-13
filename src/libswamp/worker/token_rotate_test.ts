@@ -71,12 +71,12 @@ const ROTATED = {
 };
 
 Deno.test("workerTokenRotate: reads the successor secret and reports a local rotation as undelivered", async () => {
-  const runs: Array<{ definitionId: string; durationMs?: number }> = [];
+  const runs: Array<{ id: string; name: string; durationMs?: number }> = [];
   const reads: string[] = [];
   const deps: WorkerTokenRotateDeps = {
-    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
-    runRotate: async function* (definitionId, durationMs) {
-      runs.push({ definitionId, durationMs });
+    findTokenDefinition: (name) => Promise.resolve({ id: `def-${name}`, name }),
+    runRotate: async function* (token, durationMs) {
+      runs.push({ ...token, durationMs });
       yield await Promise.resolve(completedEvent("web-01", ROTATED));
     },
     readSecret: (vaultName, secretKey) => {
@@ -92,7 +92,9 @@ Deno.test("workerTokenRotate: reads the successor secret and reports a local rot
   );
 
   assertEquals(events[0], { kind: "rotating", name: "web-01" });
-  assertEquals(runs, [{ definitionId: "def-web-01", durationMs: 60_000 }]);
+  assertEquals(runs, [
+    { id: "def-web-01", name: "web-01", durationMs: 60_000 },
+  ]);
   assertEquals(reads, ["local/worker-rotated-token-web-01-1769904000000"]);
   assertEquals(events[1], {
     kind: "completed",
@@ -113,8 +115,8 @@ Deno.test("workerTokenRotate: reads the successor secret and reports a local rot
 Deno.test("workerTokenRotate: a name with no enrollment token runs nothing and names the list command", async () => {
   let runs = 0;
   const deps: WorkerTokenRotateDeps = {
-    findTokenDefinitionId: () => Promise.resolve(null),
-    runRotate: async function* (name) {
+    findTokenDefinition: () => Promise.resolve(null),
+    runRotate: async function* ({ name }) {
       runs++;
       yield await Promise.resolve(completedEvent(name, ROTATED));
     },
@@ -131,7 +133,8 @@ Deno.test("workerTokenRotate: a name with no enrollment token runs nothing and n
 
 Deno.test("workerTokenRotate: a failed run passes its error through", async () => {
   const deps: WorkerTokenRotateDeps = {
-    findTokenDefinitionId: () => Promise.resolve("def-web-01"),
+    findTokenDefinition: () =>
+      Promise.resolve({ id: "def-web-01", name: "web-01" }),
     runRotate: async function* () {
       yield await Promise.resolve<ModelMethodRunEvent>({
         kind: "error",
@@ -149,7 +152,8 @@ Deno.test("workerTokenRotate: a failed run passes its error through", async () =
 
 Deno.test("workerTokenRotate: a run that produced no record is an error, never a credential", async () => {
   const deps: WorkerTokenRotateDeps = {
-    findTokenDefinitionId: () => Promise.resolve("def-web-01"),
+    findTokenDefinition: () =>
+      Promise.resolve({ id: "def-web-01", name: "web-01" }),
     runRotate: async function* () {
       yield await Promise.resolve(completedEvent("web-01", undefined));
     },

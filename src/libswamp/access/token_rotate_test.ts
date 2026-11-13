@@ -71,8 +71,9 @@ function makeDeps(
 ): ServerTokenRotateDeps {
   return {
     listVaultNames: () => Promise.resolve(["main-vault", "backup-vault"]),
+    findTokenDefinition: (name) => Promise.resolve({ id: `def-${name}`, name }),
     runRotate: async function* (input) {
-      for (const event of rotateEvents(input.name)) {
+      for (const event of rotateEvents(input.token.name)) {
         yield await Promise.resolve(event);
       }
     },
@@ -109,7 +110,7 @@ Deno.test("serverTokenRotate: passes durationMs to the model method", async () =
   const deps = makeDeps({
     runRotate: async function* (input) {
       receivedDuration = input.durationMs;
-      for (const event of rotateEvents(input.name)) {
+      for (const event of rotateEvents(input.token.name)) {
         yield await Promise.resolve(event);
       }
     },
@@ -179,8 +180,8 @@ Deno.test("serverTokenRotate: errors when token record is missing from result", 
         {
           kind: "completed",
           run: {
-            modelId: input.name,
-            modelName: input.name,
+            modelId: input.token.name,
+            modelName: input.token.name,
             modelType: "swamp/server-token",
             methodName: "rotate",
             status: "succeeded",
@@ -208,15 +209,15 @@ Deno.test("serverTokenRotate: passes vaultName override to the model method", as
     runRotate: async function* (input) {
       receivedVault = input.vaultName;
       for (
-        const event of rotateEvents(input.name, {
-          name: input.name,
+        const event of rotateEvents(input.token.name, {
+          name: input.token.name,
           state: "active",
           principalId: "user:sarah",
           principalEmail: "sarah@example.com",
           createdAt: "2026-06-19T00:00:00.000Z",
           expiresAt: EXPIRES_AT,
           vaultName: "backup-vault",
-          secretKey: `server-token-${input.name}`,
+          secretKey: `server-token-${input.token.name}`,
         })
       ) {
         yield await Promise.resolve(event);
@@ -242,7 +243,7 @@ Deno.test("serverTokenRotate: uses existing vault when no override provided", as
   const deps = makeDeps({
     runRotate: async function* (input) {
       receivedVault = input.vaultName;
-      for (const event of rotateEvents(input.name)) {
+      for (const event of rotateEvents(input.token.name)) {
         yield await Promise.resolve(event);
       }
     },
@@ -276,4 +277,49 @@ Deno.test("serverTokenRotate: errors when requested vault does not exist", async
   assertStringIncludes(error.error.message, "Vault 'nonexistent-vault'");
   assertStringIncludes(error.error.message, "not configured");
   assertStringIncludes(error.error.message, "main-vault");
+});
+
+Deno.test("serverTokenRotate: refuses a name with no server token and runs nothing", async () => {
+  let ran = false;
+  const deps = makeDeps({
+    findTokenDefinition: () => Promise.resolve(null),
+    // deno-lint-ignore require-yield
+    runRotate: async function* () {
+      ran = true;
+      await Promise.resolve();
+    },
+  });
+  const events = await collect<ServerTokenRotateEvent>(
+    serverTokenRotate(createLibSwampContext(), deps, { name: "wrk-only" }),
+  );
+
+  assertEquals(ran, false);
+  assertEquals(events[events.length - 1], {
+    kind: "error",
+    error: {
+      code: "model_not_found",
+      message: "Server token 'wrk-only' not found. " +
+        "Use 'swamp access token list' to see existing tokens.",
+    },
+  });
+});
+
+Deno.test("serverTokenRotate: runs rotate on the resolved definition", async () => {
+  const definitionId = "3f1c2a4e-8b9d-4c6e-9a7f-1b2c3d4e5f60";
+  const ranWith: string[] = [];
+  const deps = makeDeps({
+    findTokenDefinition: () =>
+      Promise.resolve({ id: definitionId, name: "resolved-name" }),
+    runRotate: async function* (input) {
+      ranWith.push(`${input.token.id}/${input.token.name}`);
+      for (const event of rotateEvents("adam-token")) {
+        yield await Promise.resolve(event);
+      }
+    },
+  });
+  await collect<ServerTokenRotateEvent>(
+    serverTokenRotate(createLibSwampContext(), deps, { name: "adam-token" }),
+  );
+
+  assertEquals(ranWith, [`${definitionId}/resolved-name`]);
 });

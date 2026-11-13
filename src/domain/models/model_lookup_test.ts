@@ -24,6 +24,7 @@ import { z } from "zod";
 import {
   findDefinitionByIdGlobal,
   findDefinitionByIdOrName,
+  findDefinitionOfTypeByIdOrName,
   findDefinitionsByIdGlobal,
   isPartialId,
   isUuid,
@@ -767,5 +768,37 @@ Deno.test("findDefinitionByIdGlobal: with a definition index, a miss is final, w
     );
     assertEquals(calls, []);
     assertEquals(walks, 0);
+  });
+});
+
+Deno.test("findDefinitionOfTypeByIdOrName: finds only definitions of the given type", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const shell = ModelType.create("command/shell");
+    const serverToken = ModelType.create("swamp/server-token");
+    const definition = Definition.create({
+      name: "srv",
+      version: 1,
+      tags: {},
+      globalArguments: { message: "hello" },
+    });
+    await repo.save(shell, definition);
+
+    assertEquals(
+      (await findDefinitionOfTypeByIdOrName(repo, shell, "srv"))?.id,
+      definition.id,
+    );
+    assertEquals(
+      (await findDefinitionOfTypeByIdOrName(repo, shell, definition.id))?.id,
+      definition.id,
+    );
+    assertEquals(
+      await findDefinitionOfTypeByIdOrName(repo, serverToken, "srv"),
+      null,
+    );
+    assertEquals(
+      await findDefinitionOfTypeByIdOrName(repo, serverToken, definition.id),
+      null,
+    );
   });
 });

@@ -27,7 +27,7 @@ import {
   LockTimeoutError,
 } from "../../domain/datastore/distributed_lock.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { findDefinitionOfTypeByIdOrName } from "../../domain/models/model_lookup.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import { resolveCustomProvider } from "./datastore_global_lock.ts";
 import { lockingConfigOf } from "./datastore_lock_target.ts";
@@ -125,12 +125,10 @@ export async function serverTokenLockName(
   definitionRepo: DefinitionRepository,
   idOrName: string,
 ): Promise<string> {
-  const found = await findDefinitionByIdOrName(definitionRepo, idOrName);
-  if (
-    found === null ||
-    found.type.normalized !== SERVER_TOKEN_MODEL_TYPE.normalized
-  ) {
-    return idOrName;
-  }
-  return found.definition.name;
+  const found = await findDefinitionOfTypeByIdOrName(
+    definitionRepo,
+    SERVER_TOKEN_MODEL_TYPE,
+    idOrName,
+  );
+  return found?.name ?? idOrName;
 }
