@@ -10321,7 +10321,7 @@ export const serveCommand = new Command()
         }
       } catch (err: unknown) {
         logger.warn(
-          "Continuing interrupted runs failed: {error}",
+          "Continuing interrupted runs failed: {error}. Recover them with 'swamp workflow recover <workflow>'",
           { error: err instanceof Error ? err.message : String(err) },
         );
       }

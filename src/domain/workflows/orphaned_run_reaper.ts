@@ -34,7 +34,7 @@ import {
   type WorkflowRunId,
 } from "./workflow_id.ts";
 import type { UnreadableRun } from "./unreadable_run_record.ts";
-import { isServeDrivenRun, WorkflowRun } from "./workflow_run.ts";
+import { WorkflowRun } from "./workflow_run.ts";
 
 const logger = getSwampLogger(["workflows", "orphaned-runs"]);
 
@@ -45,9 +45,9 @@ export interface ReapResult {
   readonly skipped: number;
 }
 
-/** only serve reaps, so a run serve drove is one it may judge for continuation */
+/** only serve reaps, so the run is one it may judge for continuation */
 function markServeInterruption(run: WorkflowRun): void {
-  if (isServeDrivenRun(run)) run.markContinuable(new Date());
+  run.markContinuable(new Date());
 }
 
 /**

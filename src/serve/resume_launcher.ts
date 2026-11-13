@@ -492,7 +492,7 @@ export async function startDetachedResume(
               ? runGeneratorWithVaultAccess(
                 vaultScope?.access,
                 () =>
-                  service.recover(workflowName, {
+                  service.recover(workflowId, {
                     runId: resolvedRun.id,
                     signal: runController.signal,
                     instanceId: ctx.instanceId,

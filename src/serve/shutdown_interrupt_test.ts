@@ -98,7 +98,8 @@ function harness(runs: WorkflowRun[], workflowId: WorkflowId) {
 
 Deno.test("interruptShutdownRuns: saves a running run interrupted, then pushes it (swamp-club#3252)", async () => {
   const wf = workflow();
-  const run = runningRun(wf);
+  const run = WorkflowRun.create(wf);
+  run.start(1, "serve-a");
   const { events, repoContext } = harness([run], wf.id);
 
   const result = await interruptShutdownRuns([active(run)], {

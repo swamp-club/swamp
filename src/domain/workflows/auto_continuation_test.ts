@@ -128,7 +128,12 @@ Deno.test("decideAutoContinuation: each refusal names its reason", async () => {
     ["workflow_missing", async () => [null, await interrupted(guarded)]],
     [
       "not_serve_driven",
-      async () => [guarded, await interrupted(guarded, { serve: false })],
+      async () => {
+        // only a record written elsewhere carries a stamp without an owner
+        const { instanceId: _owner, ...data } = (await interrupted(guarded))
+          .toData();
+        return [guarded, WorkflowRun.fromData(data)];
+      },
     ],
     [
       "opted_out",

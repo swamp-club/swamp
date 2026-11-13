@@ -229,6 +229,7 @@ async function recordRefusal(
   workflowId: WorkflowId,
   verdict: Extract<AutoContinuationVerdict, { kind: "refuse" }>,
 ): Promise<boolean> {
+  if (run.carriesAutoContinuationRefusal(verdict.refusal.reason)) return false;
   const hold = await holdInterruptedRecord(ctx, run, workflowId);
   if (hold === null) return false;
   try {
@@ -294,7 +295,9 @@ async function launch(
     continuation: { kind: "automatic", takeover: true },
     requireCurrentRecord: true,
     lostRaceIsOrdinary: true,
-    onTerminal: (terminal) => {
+    onTerminal: async (terminal) => {
+      // a recover refused before or after its reset leaves nothing to guard
+      if (terminal.kind === "error") await hold.release();
       if (terminal.kind === "error" && !LOST_RACE_CODES.has(terminal.code)) {
         emitSystemAuditEvent(
           ctx,

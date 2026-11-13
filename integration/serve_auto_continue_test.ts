@@ -558,3 +558,48 @@ Deno.test({
       assertEquals(serve.audit, []);
     }),
 });
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a continuation recover refuses before its own claim leaves no claim behind",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "edited-mid-launch" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      // the definition changes after the verdict and the launch resolved it
+      const edited = Workflow.fromData({
+        ...workflow.toData(),
+        jobs: [{
+          ...workflow.toData().jobs[0],
+          steps: [
+            ...workflow.toData().jobs[0].steps,
+            shellStep("third", counter).toData(),
+          ],
+        }],
+      });
+      const repo = serve.ctx.repoContext.workflowRepo;
+      const findById = repo.findById.bind(repo);
+      let lookups = 0;
+      repo.findById = (id) =>
+        ++lookups <= 2 ? findById(id) : Promise.resolve(edited);
+      const findByName = repo.findByName.bind(repo);
+      repo.findByName = (name) =>
+        lookups >= 2 ? Promise.resolve(null) : findByName(name);
+
+      const result = await continueInterruptedRuns(serve.ctx, "boot");
+      assertEquals(result.continued, [runId]);
+      await finished(serve, runId);
+      await waitFor(
+        () =>
+          serve.audit.some((a) => a.action === "workflow.auto_continue_failed"),
+        "the failed continuation audited",
+      );
+
+      assertEquals(claims.claims, []);
+      assertEquals((await storedRun(serve, workflow, runId))?.status, "interrupted");
+    }),
+});

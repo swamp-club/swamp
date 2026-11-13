@@ -170,7 +170,9 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
   }
 
   if (data.interruptReason !== undefined) {
-    writeOutput(yellow(`Interrupted: ${data.interruptReason}`));
+    writeOutput(
+      yellow(`Interrupted: ${escapeControlCharacters(data.interruptReason)}`),
+    );
   }
   const continuation = data.autoContinuation;
   if (continuation?.refused !== undefined && data.status === "interrupted") {
@@ -183,9 +185,9 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
     );
   } else if (continuation?.continuedAt !== undefined) {
     const steps = continuation.resetSteps?.length
-      ? `; its guards judged ${
+      ? `; re-checked guards on: ${
         escapeControlCharacters(continuation.resetSteps.join(", "))
-      } again`
+      }`
       : "";
     writeOutput(
       `Continued automatically after ${

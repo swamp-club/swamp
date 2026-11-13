@@ -582,6 +582,7 @@ export class ScheduledExecutionService {
     );
 
     this.running.clear();
+    this.continued.clear();
     this.workflowNames.clear();
     this.eventHandler = null;
 

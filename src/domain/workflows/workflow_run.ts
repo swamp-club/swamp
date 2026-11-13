@@ -309,6 +309,9 @@ export const TriggeringPrincipalSchema = z.object({
 const AutoContinuationSchema = z.object({
   // continuations since a step last finished
   count: z.number().int().nonnegative(),
+  // finished steps when last continued: counted, not timed, as steps finish on
+  // other machines' clocks
+  finishedSteps: z.number().int().nonnegative().optional(),
   continuedAt: z.string().datetime().optional(),
   interruptReason: z.string().optional(),
   holder: z.string().optional(),
@@ -2164,6 +2167,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
         interruptReason: this._tags["interrupt_reason"],
         holder: automatic.holder,
         resetSteps,
+        finishedSteps: this.finishedStepCount(),
       };
     } else {
       this._autoContinuation = undefined;
@@ -2200,9 +2204,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
       this._recoveredAutomatically;
   }
 
-  /** stamped only by serve: an interruption it can judge for continuation */
+  /** stamped only by serve, and only on a run it drove */
   markContinuable(at: Date): void {
-    if (this._status !== "interrupted") return;
+    if (this._status !== "interrupted" || !isServeDrivenRun(this)) return;
     this._continuableSince = at;
   }
 
@@ -2220,14 +2224,27 @@ export class WorkflowRun implements TriggerEvaluationContext {
   consecutiveAutoContinuations(): number {
     const record = this._autoContinuation;
     if (record?.continuedAt === undefined) return 0;
-    const since = new Date(record.continuedAt).getTime();
-    const moved = this._jobs.some((job) =>
-      job.steps.some((step) =>
-        (step.status === "succeeded" || step.status === "skipped") &&
-        (step.completedAt?.getTime() ?? Number.NEGATIVE_INFINITY) > since
-      )
-    );
+    const moved = record.finishedSteps === undefined ||
+      this.finishedStepCount() > record.finishedSteps;
     return moved ? 0 : record.count;
+  }
+
+  private finishedStepCount(): number {
+    let finished = 0;
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "succeeded" || step.status === "skipped") {
+          finished++;
+        }
+      }
+    }
+    return finished;
+  }
+
+  carriesAutoContinuationRefusal(reason: string): boolean {
+    const refused = this._autoContinuation?.refused;
+    return refused !== undefined && refused.reason === reason &&
+      refused.interruptedAt === this._continuableSince?.toISOString();
   }
 
   /** false when this interruption already carries the same refusal */

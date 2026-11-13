@@ -85,7 +85,7 @@ export function writeModelRunsLog(runs: ActiveRun[]): void {
       : "";
     const continued = run.autoContinuedFrom !== null ? " [CONTINUED]" : "";
     return [
-      stale ? `${run.status} [STALE]` : `${run.status}${reason}${continued}`,
+      `${run.status}${reason}${continued}${stale ? " [STALE]" : ""}`,
       kind,
       name,
       run.id.slice(0, 8),

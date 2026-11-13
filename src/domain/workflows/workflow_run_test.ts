@@ -1878,7 +1878,7 @@ Deno.test("WorkflowRun.resetUnknownStepsForRecovery: marks the run recovered unt
 
 function interruptedMidStep(): WorkflowRun {
   const run = WorkflowRun.create(createTestWorkflow());
-  run.start();
+  run.start(1, "serve-a");
   run.jobs[0].start();
   run.jobs[0].steps[0].start();
   run.interrupt("server_crash");
@@ -1900,6 +1900,7 @@ Deno.test("WorkflowRun.resetUnknownStepsForRecovery: an automatic recovery is fi
     interruptReason: "server_crash",
     holder: "serve:a",
     resetSteps: [run.jobs[0].steps[0].stepName],
+    finishedSteps: 0,
   });
   const data = run.toData();
   assertEquals(data.recovered, true);
@@ -1944,6 +1945,26 @@ Deno.test("WorkflowRun.consecutiveAutoContinuations: counts continuations until 
   assertEquals(run.consecutiveAutoContinuations(), 0);
 });
 
+Deno.test("WorkflowRun.consecutiveAutoContinuations: a step finished before the continuation does not reset the count, whatever its clock", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(1, "serve-a");
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+  run.interrupt("server_crash");
+  // serve's clock runs behind the clock the step finished on
+  run.resetUnknownStepsForRecovery({
+    holder: "serve:a",
+    at: new Date("2020-01-01T00:00:00.000Z"),
+  });
+  run.resumeFromSuspended({ pid: 1, instanceId: "serve-a" });
+  run.jobs[0].start();
+  run.jobs[0].steps[1].start();
+  run.interrupt("server_crash");
+  assertEquals(run.consecutiveAutoContinuations(), 1);
+});
+
 Deno.test("WorkflowRun.resetUnknownStepsForRecovery: a manual recovery clears the automatic record", () => {
   const run = interruptedMidStep();
   run.resetUnknownStepsForRecovery({
@@ -1963,11 +1984,17 @@ Deno.test("WorkflowRun.resetUnknownStepsForRecovery: a manual recovery clears th
   assertEquals(run.consecutiveAutoContinuations(), 0);
 });
 
-Deno.test("WorkflowRun.markContinuable: only an interrupted run is stamped, and the stamp round-trips", () => {
+Deno.test("WorkflowRun.markContinuable: only an interrupted run serve drove is stamped, and the stamp round-trips", () => {
   const running = WorkflowRun.create(createTestWorkflow());
-  running.start();
+  running.start(1, "serve-a");
   running.markContinuable(new Date());
   assertEquals(running.continuableSince, undefined);
+
+  const local = WorkflowRun.create(createTestWorkflow());
+  local.start();
+  local.interrupt("owner_process_dead");
+  local.markContinuable(new Date());
+  assertEquals(local.continuableSince, undefined);
 
   const run = interruptedMidStep();
   const at = new Date("2026-11-12T10:00:00.000Z");
