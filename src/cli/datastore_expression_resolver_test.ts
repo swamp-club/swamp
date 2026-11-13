@@ -626,3 +626,38 @@ Deno.test("resolveDatastoreExpressions: a failing definition never displaces a s
     await removeTempRepo(repoDir);
   }
 });
+
+Deno.test("resolveDatastoreExpressions: a local_encryption vault whose HOME base_dir cannot expand leaves other vaults resolvable", async () => {
+  const repoDir = await makeTempRepo();
+  const type = uniqueExtensionVaultType();
+  try {
+    registerMockVaultType(type);
+    await writeVaultDef(repoDir, "dsauth", type, { DIR: "secret-dir" });
+    await writeVaultDef(repoDir, "homeless", "local_encryption", {
+      auto_generate: true,
+      base_dir: "~/vault",
+    });
+    await withMockedEnv(
+      { HOME: undefined, USERPROFILE: undefined },
+      async () => {
+        const result = await resolveDatastoreExpressions(
+          { dir: "${{ vault.get(dsauth, DIR) }}" },
+          { repoDir },
+        );
+        assertEquals(result, { dir: "secret-dir" });
+        await assertRejects(
+          () =>
+            resolveDatastoreExpressions(
+              { dir: "${{ vault.get(homeless, KEY) }}" },
+              { repoDir },
+            ),
+          UserError,
+          "base_dir",
+        );
+      },
+    );
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+    await removeTempRepo(repoDir);
+  }
+});

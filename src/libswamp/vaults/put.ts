@@ -30,6 +30,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 import { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
+import { isBaseDirMissingError } from "../../domain/vaults/local_encryption_vault_provider.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export interface VaultPutConfigInfo {
@@ -126,8 +127,13 @@ export function createVaultPutDeps(
     },
     secretExists: async (vaultName, key) => {
       const svc = await getVaultService();
-      const keys = await svc.list(vaultName);
-      return keys.includes(key);
+      try {
+        return (await svc.list(vaultName)).includes(key);
+      } catch (error) {
+        // the first put creates base_dir, so its absence means no secret yet
+        if (isBaseDirMissingError(error)) return false;
+        throw error;
+      }
     },
     putSecret: async (vaultName, key, value, tags, callerContext) => {
       const svc = await getVaultService();

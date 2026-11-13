@@ -35,6 +35,8 @@ import {
   SecretNotFoundError,
 } from "./secret_not_found_error.ts";
 import { VaultAnnotation } from "./vault_annotation.ts";
+import { UserError } from "../errors.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 async function grantEveryoneReadAcl(path: string): Promise<number> {
   const cmd = new Deno.Command("icacls", {
@@ -1763,4 +1765,69 @@ Deno.test("countLocalEncryptionSecrets: counts secrets and does not follow a sym
     await Deno.symlink(directory, link, { type: "dir" });
     assertEquals(await countLocalEncryptionSecrets(link), 0);
   });
+});
+
+Deno.test("LocalEncryptionVaultProvider - expands a leading HOME in key paths", async (t) => {
+  await t.step("key_file", async () => {
+    await withTempDir(async (dir) => {
+      await withMockedEnv({ HOME: dir }, async () => {
+        const vault = new LocalEncryptionVaultProvider("home-key-vault", {
+          auto_generate: true,
+          base_dir: dir,
+          key_file: "$HOME/vault.key",
+        });
+        await vault.put("k", "v");
+        assertEquals(await vault.get("k"), "v");
+        const key = await Deno.readTextFile(join(dir, "vault.key"));
+        assertEquals(key.length > 0, true);
+      });
+    });
+  });
+
+  await t.step("ssh_key_path", async () => {
+    await withTempDir(async (dir) => {
+      await Deno.writeTextFile(join(dir, "id_test"), MOCK_SSH_PRIVATE_KEY, {
+        mode: 0o600,
+      });
+      await withMockedEnv({ HOME: dir }, async () => {
+        const vault = new LocalEncryptionVaultProvider("home-ssh-vault", {
+          ssh_key_path: "${HOME}/id_test",
+          base_dir: dir,
+        });
+        await vault.put("k", "v");
+        assertEquals(await vault.get("k"), "v");
+      });
+    });
+  });
+});
+
+Deno.test("LocalEncryptionVaultProvider - list reports a missing base_dir", async (t) => {
+  await t.step("errors when base_dir does not exist", async () => {
+    await withTempDir(async (dir) => {
+      const missing = join(dir, "not-on-this-host");
+      const vault = new LocalEncryptionVaultProvider("moved-vault", {
+        auto_generate: true,
+        base_dir: missing,
+      });
+      const error = await assertRejects(
+        () => vault.list(),
+        UserError,
+        "base_dir does not exist",
+      );
+      assertEquals(error.message.includes(missing), false);
+    });
+  });
+
+  await t.step(
+    "lists nothing when base_dir exists but the vault has no secrets yet",
+    async () => {
+      await withTempDir(async (dir) => {
+        const vault = new LocalEncryptionVaultProvider("fresh-vault", {
+          auto_generate: true,
+          base_dir: dir,
+        });
+        assertEquals(await vault.list(), []);
+      });
+    },
+  );
 });

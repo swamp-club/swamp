@@ -43,10 +43,19 @@ import {
   checkFileNotBroadlyReadable,
   type SecurityCheckResult,
 } from "../../infrastructure/security/file_security_check.ts";
-import { errorPaths, markErrorPaths } from "../errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../errors.ts";
+import { expandLeadingHome } from "./local_encryption_key_source.ts";
 import { SecretNotFoundError } from "./secret_not_found_error.ts";
 
 const logger = getLogger(["vaults", "local-encryption"]);
+
+export const BASE_DIR_MISSING_CODE = "local_encryption_base_dir_missing";
+
+/** matches the code, not instanceof, as isSecretNotFoundError does */
+export function isBaseDirMissingError(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    (error as { code?: unknown }).code === BASE_DIR_MISSING_CODE;
+}
 
 export interface LocalEncryptionConfig {
   ssh_key_path?: string;
@@ -247,6 +256,7 @@ export class LocalEncryptionVaultProvider
     VaultExistenceProvider {
   private readonly name: string;
   private readonly config: LocalEncryptionConfig;
+  private readonly baseDir: string;
   private readonly vaultDir: string;
   private readonly secretsBoundary: string;
   /**
@@ -259,6 +269,7 @@ export class LocalEncryptionVaultProvider
     this.name = name;
     this.config = config;
     const baseDir = config.base_dir ?? Deno.cwd();
+    this.baseDir = baseDir;
     this.secretsBoundary = swampPath(baseDir);
     this.vaultDir = localEncryptionSecretsDir(baseDir, name);
   }
@@ -375,7 +386,12 @@ export class LocalEncryptionVaultProvider
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        return [];
+        if (await this.baseDirExists()) return [];
+        // names the field only, so a serve client never sees a server path
+        throw new UserError(
+          `Local vault '${this.name}' cannot be listed: its base_dir does not exist on this host. Check base_dir in the vault config.`,
+          BASE_DIR_MISSING_CODE,
+        );
       }
       throw new Error(
         `Failed to list secrets in local vault '${this.name}': ${
@@ -385,6 +401,16 @@ export class LocalEncryptionVaultProvider
     }
 
     return secretKeys.sort();
+  }
+
+  private async baseDirExists(): Promise<boolean> {
+    try {
+      await Deno.stat(this.baseDir);
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
   }
 
   async delete(secretKey: string): Promise<void> {
@@ -695,7 +721,9 @@ export class LocalEncryptionVaultProvider
     }
 
     if (this.config.auto_generate) {
-      const keyFile = this.config.key_file || join(this.vaultDir, ".key");
+      const keyFile = this.config.key_file
+        ? expandLeadingHome(this.config.key_file, "key_file")
+        : join(this.vaultDir, ".key");
 
       try {
         // Try to read existing key. The file may exist but be empty if
@@ -803,9 +831,7 @@ export class LocalEncryptionVaultProvider
   private async readAndValidateSshKey(
     sshKeyPath: string,
   ): Promise<CryptoKey> {
-    const expandedPath = sshKeyPath.startsWith("~/")
-      ? sshKeyPath.replace("~/", `${Deno.env.get("HOME")}/`)
-      : sshKeyPath;
+    const expandedPath = expandLeadingHome(sshKeyPath, "ssh_key_path");
 
     await this.validateSshKeyPermissions(expandedPath);
     const content = await Deno.readTextFile(expandedPath);

@@ -56,6 +56,20 @@ data plane, so an unset `base_dir` is the serve repo
 written before swamp-club#3259 may hold an absolute `base_dir`; it is used as
 stored and never rewritten.
 
+`withRuntimeBaseDir` also expands a leading `~` or `$HOME` in a set
+`base_dir`, then resolves a relative one against the repository, as
+`datastore.path` does; the provider expands a leading `~` or `$HOME` in
+`key_file` and `ssh_key_path` too, but does not resolve them against the
+repository. Expansion happens when the vault loads and never in stored config, so
+a committed `$HOME/...` works on every machine. No other variable is expanded:
+vault configs are committed, and an expanded path outside the repository can be
+shown to a user or a serve client, so a general expander would let a committed
+config print environment values. The key-source check over `--server` compares
+the stored text, before any expansion. When `base_dir` does not exist,
+`list` refuses with an error naming the field rather than reporting an empty
+vault; `vault put` treats that refusal as "no secret yet", since its write
+creates the directory.
+
 ### Key source over `--server`
 
 `base_dir`, `key_file`, `ssh_key_path` and `auto_generate` decide where a
