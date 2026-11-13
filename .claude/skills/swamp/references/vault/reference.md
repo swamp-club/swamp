@@ -42,9 +42,9 @@ Non-local vault types need a logged-in swamp-club account, and a collective
 token must carry the `vault:*` scope.
 
 The legacy names `aws-sm`, `aws`, `azure-kv`, `azure` and `1password` are
-deprecated. `vault create` and `vault migrate` refuse them with an error naming
-the scoped type; a stored vault config that still uses one is remapped with a
-warning when it loads.
+deprecated. `vault migrate`, and `vault create` once you are logged in, refuse
+them with an error naming the scoped type; a stored vault config that still uses
+one is remapped with a warning when it loads.
 
 See [references/providers.md](references/providers.md) for each type's
 configuration, and `swamp extension info @swamp/<name>` for the extension's own
@@ -432,7 +432,7 @@ with a warning, even when the text matches an expression the author wrote.
 ## Using Vaults in Workflows
 
 For detailed workflow integration, see the
-[workflow guide](../workflow/guide.md).
+[workflow reference](../workflow/reference.md#working-with-vaults).
 
 **Quick syntax reference:**
 
