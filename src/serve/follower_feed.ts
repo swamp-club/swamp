@@ -22,8 +22,15 @@ import {
   STEP_STARTS_FEATURE,
 } from "../infrastructure/datastore_v3/serve_datastore_client.ts";
 import { isNetworkFailure } from "../infrastructure/datastore_v3/network_failure.ts";
+import {
+  isDatastoreOutage,
+  MAX_OUTAGE_CAUSE_DEPTH,
+} from "../infrastructure/datastore_v3/datastore_outage.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
+import {
+  type ServeLeader,
+  ServeNotLeaderError,
+} from "../domain/datastore_v3/serve_leader.ts";
 import type { LeaderLink } from "./leader_link.ts";
 import type { FollowerCopyFeed } from "./serve_leadership.ts";
 
@@ -82,9 +89,13 @@ export function followerUnreadyReason(state: {
 function isLocalApplyFailure(error: unknown): boolean {
   if (isNetworkFailure(error)) return false;
   let current = error;
-  for (let depth = 0; depth < 8; depth++) {
+  for (let depth = 0; depth < MAX_OUTAGE_CAUSE_DEPTH; depth++) {
     if (!(current instanceof Error)) return true;
     if (current.name === "FeedDivergedError") return false;
+    // the storage or the leader, which every follower shares
+    if (isDatastoreOutage(current) || current instanceof ServeNotLeaderError) {
+      return false;
+    }
     current = current.cause;
   }
   return true;

@@ -10035,10 +10035,9 @@ export const serveCommand = new Command()
           "awaited",
         );
       }
-      // No promotion during teardown: the lease is released below. Team
-      // mode stays on until the datastores close, so a follower still
-      // commits nothing. stop() ends a promotion in flight between its steps,
-      // and aborts a follower refresh before its restore is installed.
+      // No promotion during teardown: the lease is released below. stop() ends
+      // a promotion in flight between its steps and aborts a follower refresh
+      // before its restore is installed.
       if (serveLeadership) {
         const leadership = serveLeadership;
         await stages.run("leadership", () => leadership.stop(), "awaited");

@@ -257,7 +257,9 @@ export class ServeLeadership {
     const expiresAt = await this.#deps.lease.expiresAt().catch(
       () => undefined,
     );
-    if (expiresAt === undefined) return this.#tickMs;
+    if (expiresAt === undefined || !Number.isFinite(expiresAt)) {
+      return this.#tickMs;
+    }
     const untilExpiry = expiresAt - this.#now();
     if (untilExpiry <= 0) return this.#tickMs;
     return Math.min(this.#tickMs, untilExpiry + LEASE_EXPIRY_MARGIN_MS);
@@ -364,7 +366,7 @@ export class ServeLeadership {
         () => undefined,
       );
       if (cancelled) return;
-      const wait = expiresAt === undefined
+      const wait = expiresAt === undefined || !Number.isFinite(expiresAt)
         ? this.#tickMs
         : expiresAt + LEASE_EXPIRY_MARGIN_MS - this.#now();
       if (wait <= 0) {

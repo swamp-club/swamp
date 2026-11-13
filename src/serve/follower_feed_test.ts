@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { V3StorageUnreachableError } from "../domain/datastore_v3/writer_lease.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServeLeader } from "../domain/datastore_v3/serve_leader.ts";
@@ -361,7 +362,13 @@ Deno.test("FollowerFeed.localApplyFailures: a dead leader, a dropped socket, a d
   const unreachable = new Error("fetching a chunk failed", {
     cause: new Deno.errors.ConnectionReset("reset by peer"),
   });
-  for (const failure of [diverged, unreachable]) {
+  const throttled = new Error("applying the leader's commits failed", {
+    cause: new V3StorageUnreachableError(
+      "gs://bucket",
+      new Error("503 SlowDown"),
+    ),
+  });
+  for (const failure of [diverged, unreachable, throttled]) {
     t.state.failure = failure;
     for (let i = 0; i <= FOLLOWER_UNREADY_APPLY_FAILURES; i++) {
       await t.deliverOnNewSocket([i + 1]);
