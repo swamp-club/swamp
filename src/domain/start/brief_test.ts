@@ -160,3 +160,22 @@ Deno.test("briefTaskText: reads back the task a brief was written for", () => {
   assertEquals(briefTaskText(brief), text);
   assertEquals(briefTaskText("# my own notes"), null);
 });
+
+Deno.test("renderBrief: a swampify task keeps its own steps and works in the user's repo", () => {
+  const text =
+    "Automate this repeated chore as a swamp workflow: Release docs.\n\n## How to work on this\n\n1. Record the pick.";
+  const brief = renderBrief({
+    task: StartTask.create(text, "swampify"),
+    workspacePath: "/home/u/my-repo",
+    harnessDisplayName: "Codex",
+  });
+  assert(isSwampBrief(brief));
+  assertStringIncludes(
+    brief,
+    "- Workspace: /home/u/my-repo. This is the user's own swamp repo;",
+  );
+  assertStringIncludes(brief, "- Agent: Codex");
+  assert(!brief.includes("swamp-getting-started"));
+  assert(!brief.includes("# How to work on this\n\n1. Before you run"));
+  assertEquals(briefTaskText(brief), text);
+});

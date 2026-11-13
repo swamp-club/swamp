@@ -33,6 +33,11 @@ and prepares the ground for the **Serve** dashboard.
   (`BRIEF_HEADER`) that tells it apart from anyone's own file, which is never
   overwritten. Task records, the per-process server records and the launcher
   stay in `.swamp/start/`.
+- **Task kind**: a plain task (the default) or `swampify`, a build brief the
+  [Swampify page](./swampify.md#the-page) hands over (`taskKind` on the
+  record). A swampify task's brief keeps the task's own steps instead of
+  start's, says the workspace is the user's own repo, and its launch prompt
+  names the `swampify` skill. An edit from the start page keeps the kind.
 - **Harness**: an AI agent CLI, such as Claude Code or Codex.
 - **Launch**: enrolling the harness, writing the brief and launcher, and opening
   the agent's terminal window.
@@ -193,6 +198,11 @@ behavior and a first run.
   `^tasks/[a-z0-9][a-z0-9-]*\.md$` before it reaches a file path or a
   launch prompt, so nothing read from disk can leave `tasks/` or carry
   quoting characters.
+- Under `swamp dashboard` the token reaches no `start.*` message. The one
+  start action it can take is the hub's `swampify.launch` (`startLaunchTask`):
+  it saves a swampify task in the repo that dashboard serves and launches it,
+  through the same sign-in, PATH, brief and trust checks as Launch, and needs
+  `trustConfirmed`.
 - `GET /start/ping` reports liveness only; it carries no workspace or
   account data.
 - Swamp passes folder trust to a harness only through a documented mechanism
@@ -202,7 +212,8 @@ behavior and a first run.
 ## Harnesses
 
 The launch prompt names the task's brief:
-`Read tasks/<date>-<slug>.md and use the swamp-getting-started skill.`
+`Read tasks/<date>-<slug>.md and use the swamp-getting-started skill.` A
+swampify task names the `swampify` skill instead.
 
 | Harness     | Binary         | Trust   | Launchable |
 | ----------- | -------------- | ------- | ---------- |

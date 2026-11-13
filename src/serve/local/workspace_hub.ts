@@ -41,7 +41,11 @@ import {
   FORWARDED_READS,
   isDelegatedAction,
   notAvailableLocally,
+  SWAMPIFY_LAUNCH,
+  type SwampifyLaunchRequest,
+  swampifyLaunchRequest,
 } from "./local_actions.ts";
+import type { StartLaunchEvent } from "../../libswamp/start/start.ts";
 
 import { httpFailure } from "../http_caller_auth.ts";
 import {
@@ -84,6 +88,11 @@ export interface WorkspaceHubDeps {
   trustedHosts?: TrustedHosts;
   idleMs?: number;
   actions?: ActionRunner;
+  /** without it the Swampify page's launch is refused like any write */
+  launchSwampify?: (
+    repoDir: string,
+    request: SwampifyLaunchRequest,
+  ) => AsyncIterable<StartLaunchEvent>;
 }
 
 export interface ActionRunner {
@@ -217,6 +226,45 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
   };
 
   const actions = deps.actions ?? SWAMP_CLI_ACTIONS;
+
+  const runSwampifyLaunch = async (
+    repoDir: string,
+    id: string,
+    payload: unknown,
+    reply: (frame: ActionFrame) => void,
+  ) => {
+    const fail = (code: string, message: string) =>
+      reply({ type: "error", id, error: { code, message } });
+    const request = swampifyLaunchRequest(payload);
+    if ("error" in request) {
+      return fail("swampify_launch_failed", request.error);
+    }
+    let launched: StartLaunchEvent & { kind: "launched" } | undefined;
+    try {
+      for await (const event of deps.launchSwampify!(repoDir, request)) {
+        if (event.kind === "error") {
+          return fail(event.error.code, event.error.message);
+        }
+        if (event.kind === "launched") launched = event;
+      }
+    } catch (error) {
+      logger.warn`Swampify launch in ${repoDir} failed: ${error}`;
+      return fail(
+        "swampify_launch_failed",
+        "The agent could not be launched. Copy the brief instead.",
+      );
+    }
+    if (!launched) {
+      return fail("swampify_launch_failed", "The agent was not launched.");
+    }
+    reply({
+      type: SWAMPIFY_LAUNCH,
+      id,
+      payload: {
+        data: { opened: launched.opened, command: launched.command },
+      },
+    });
+  };
 
   const runAction = async (
     repoDir: string,
@@ -427,6 +475,10 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
       if (typeof e.data !== "string") return;
       const frame = parseFrame(e.data);
       if (!frame) return;
+      if (frame.type === SWAMPIFY_LAUNCH && deps.launchSwampify) {
+        keep(runSwampifyLaunch(repoDir, frame.id, frame.payload, reply));
+        return;
+      }
       if (isDelegatedAction(frame.type)) {
         keep(runAction(repoDir, frame.type, frame.id, frame.payload, reply));
         return;

@@ -81,6 +81,8 @@ import { copyText } from "./components/clipboard.ts";
 import { buildPath, isStartPath } from "./routes.ts";
 import { AgentSessions } from "./views/AgentSessions.tsx";
 import { useAgentSessionsVisible } from "./client/useAgentSessions.ts";
+import { Swampify } from "./views/Swampify.tsx";
+import { useSwampifyVisible } from "./client/useSwampify.ts";
 import "./styles/shell.css";
 
 // Views whose content is runs over time, which the dashboard-wide time
@@ -189,6 +191,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   const approvals = useApprovals();
   const agentSessionsVisible = useAgentSessionsVisible();
+  const swampifyVisible = useSwampifyVisible();
   // Only gates that can still be decided: expired ones are not pending.
   const approvalCount = pendingApprovals(approvals.data).length;
 
@@ -257,6 +260,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         health={health}
         approvalCount={approvalCount}
         agentSessionsVisible={agentSessionsVisible}
+        swampifyVisible={swampifyVisible}
         auditEnabled={auditEnabled(auditStream.status)}
         local={local}
         onLogout={onLogout}
@@ -383,6 +387,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
               )}
               {view === "activity" && <Activity auditStream={auditStream} />}
+              {view === "swampify" && (
+                <Swampify
+                  optionId={detail?.kind === "swampifyOption"
+                    ? detail.optionId
+                    : null}
+                />
+              )}
               {view === "agent-sessions" && <AgentSessions />}
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}

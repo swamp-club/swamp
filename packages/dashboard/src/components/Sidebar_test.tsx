@@ -32,6 +32,7 @@ function render(
     local?: boolean;
     logoutStep?: LogoutStep;
     agentSessionsVisible?: boolean;
+    swampifyVisible?: boolean;
   } = {},
 ): string {
   return renderToStaticMarkup(
@@ -41,6 +42,7 @@ function render(
       health={null}
       approvalCount={0}
       agentSessionsVisible={options.agentSessionsVisible}
+      swampifyVisible={options.swampifyVisible}
       local={options.local}
       onLogout={() => {}}
       collapsed
@@ -96,4 +98,16 @@ Deno.test("Sidebar: Agent sessions is hidden, not Off, until the viewer can read
   // Shown items are never marked Off.
   const at = shown.indexOf("Agent sessions");
   assert(!shown.slice(at, at + 200).includes("Needs swamp serve"));
+});
+
+Deno.test("Sidebar: Swampify comes right after Agent sessions", () => {
+  const html = render({
+    local: true,
+    agentSessionsVisible: true,
+    swampifyVisible: true,
+  });
+  const sessions = html.indexOf("Agent sessions");
+  const swampify = html.indexOf("Swampify");
+  assert(sessions !== -1 && swampify > sessions);
+  assert(!html.slice(sessions, swampify).includes("Activity"));
 });

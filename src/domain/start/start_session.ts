@@ -20,7 +20,7 @@
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DetectableAiTool } from "../telemetry/agent_harness_detection.ts";
 import { isBriefFile } from "./brief.ts";
-import { StartTask } from "./start_task.ts";
+import { StartTask, type StartTaskKind } from "./start_task.ts";
 
 export type TrustMode = "dialog" | "passed" | "unknown";
 
@@ -45,6 +45,8 @@ export interface StartSessionData {
   readonly createdAt: string;
   readonly step: StartStep;
   readonly task?: string;
+  /** absent for a plain task */
+  readonly taskKind?: Exclude<StartTaskKind, "task">;
   readonly harness?: DetectableAiTool;
   readonly tools?: readonly DetectableAiTool[];
   readonly trustConfirmedAt?: string;
@@ -121,7 +123,7 @@ export class StartSession {
   get task(): StartTask | undefined {
     return this.data.task === undefined
       ? undefined
-      : StartTask.create(this.data.task);
+      : StartTask.create(this.data.task, this.data.taskKind ?? "task");
   }
 
   get harness(): DetectableAiTool | undefined {
@@ -166,9 +168,11 @@ export class StartSession {
 
   saveTask(task: StartTask): void {
     this.require("save the task", ["task", "agent", "trust"]);
+    const { taskKind: _, ...rest } = this.withoutTrust();
     this.data = {
-      ...this.withoutTrust(),
+      ...rest,
       task: task.text,
+      ...(task.kind === "task" ? {} : { taskKind: task.kind }),
       step: "agent",
     };
   }

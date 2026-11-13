@@ -99,7 +99,8 @@ export interface StartServerOptions {
   readonly hub?: WorkspaceHub;
   /**
    * swamp dashboard turns it off so its token reaches only the hub and can
-   * never add, create or open a swamp start workspace
+   * never add, create or open a swamp start workspace (the hub's Swampify
+   * launch adds a task only in the repo it serves)
    */
   readonly startPage?: boolean;
   /** 0 takes any free port */

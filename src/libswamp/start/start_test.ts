@@ -54,6 +54,7 @@ import {
   startInspect,
   startLaunch,
   type StartLaunchEvent,
+  startLaunchTask,
   startListHarnesses,
   startListTasks,
   startListWorkspaces,
@@ -940,6 +941,120 @@ Deno.test("startLaunch: refuses when the harness binary is gone", async () => {
     assert(last.kind === "error");
     assertStringIncludes(last.error.message, "no longer on your PATH");
     assertEquals(f.opened, []);
+  });
+});
+
+async function swampifyRepo(f: Fakes, dir: string): Promise<string> {
+  const ws = join(dir, "my-repo");
+  await Deno.mkdir(ws, { recursive: true });
+  f.repos.add(ws);
+  f.tools.set(ws, []);
+  return ws;
+}
+
+const SWAMPIFY_TASK =
+  "Automate this repeated chore as a swamp workflow: Release docs.\n\n## How to work on this\n\n1. Record the pick.";
+
+Deno.test("startLaunchTask: saves a swampify task, picks the agent and opens it on the swampify brief", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await swampifyRepo(f, dir);
+    const events = await collect(
+      startLaunchTask(ctx, f.deps, {
+        workspacePath: ws,
+        text: SWAMPIFY_TASK,
+        kind: "swampify",
+        harness: "claude",
+      }),
+    );
+    const launched = events.find((e) => e.kind === "launched");
+    assertEquals(launched, {
+      kind: "launched",
+      method: "macos_terminal",
+      opened: true,
+      command: f.outcome.command,
+    });
+    assertEquals(f.opened.length, 1);
+    assertEquals(f.opened[0].workspacePath, ws);
+    assertStringIncludes(
+      f.opened[0].spec.args.join(" "),
+      "and use the swampify skill.",
+    );
+    const brief = f.briefs[0].content;
+    assertStringIncludes(brief, SWAMPIFY_TASK);
+    assertStringIncludes(brief, "the user's own swamp repo");
+    assert(!brief.includes("swamp-getting-started"));
+    const [task] = await f.deps.sessions.list(ws);
+    assertEquals(task.step, "launched");
+    assertEquals(task.task?.kind, "swampify");
+    assertEquals(task.harness, "claude");
+    assert(task.toData().trustConfirmedAt);
+  });
+});
+
+Deno.test("startLaunchTask: not signed in, it saves no task and opens nothing", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await swampifyRepo(f, dir);
+    f.signedIn = { kind: "not_signed_in" };
+    const last = lastOf(
+      await collect(
+        startLaunchTask(ctx, f.deps, {
+          workspacePath: ws,
+          text: SWAMPIFY_TASK,
+          kind: "swampify",
+          harness: "claude",
+        }),
+      ),
+    );
+    assert(last.kind === "error");
+    assertStringIncludes(last.error.message, "Sign in");
+    assertEquals(await f.deps.sessions.list(ws), []);
+    assertEquals(f.opened, []);
+  });
+});
+
+Deno.test("startLaunchTask: an agent not on PATH saves no task and opens nothing", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await swampifyRepo(f, dir);
+    const last = lastOf(
+      await collect(
+        startLaunchTask(ctx, f.deps, {
+          workspacePath: ws,
+          text: SWAMPIFY_TASK,
+          kind: "swampify",
+          harness: "codex",
+        }),
+      ),
+    );
+    assert(last.kind === "error");
+    assertStringIncludes(last.error.message, "isn't on your PATH");
+    assertEquals(await f.deps.sessions.list(ws), []);
+    assertEquals(f.opened, []);
+  });
+});
+
+Deno.test("startSaveTask: an edit from the start page keeps a swampify task's kind", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await swampifyRepo(f, dir);
+    const saved = await status(
+      startSaveTask(ctx, f.deps, {
+        workspacePath: ws,
+        text: SWAMPIFY_TASK,
+        kind: "swampify",
+      }),
+    );
+    await status(
+      startSaveTask(ctx, f.deps, {
+        workspacePath: ws,
+        taskId: saved.taskId!,
+        text: `${SWAMPIFY_TASK}\n2. Then build it.`,
+      }),
+    );
+    const task = await f.deps.sessions.load(ws, saved.taskId!);
+    assertEquals(task?.task?.kind, "swampify");
   });
 });
 

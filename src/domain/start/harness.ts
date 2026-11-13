@@ -21,19 +21,24 @@ import type { DetectableAiTool } from "../telemetry/agent_harness_detection.ts";
 import { markErrorPaths } from "../errors.ts";
 import { isBriefFile } from "./brief.ts";
 import type { TrustMode } from "./start_session.ts";
+import type { StartTaskKind } from "./start_task.ts";
 
 /**
  * only a well-formed brief path is accepted, so no text the user typed reaches
  * a command line
  */
-export function launchPrompt(briefFile: string): string {
+export function launchPrompt(
+  briefFile: string,
+  kind: StartTaskKind = "task",
+): string {
   if (!isBriefFile(briefFile)) {
     throw markErrorPaths(
       new Error(`Invalid task brief path ${JSON.stringify(briefFile)}`),
       [briefFile],
     );
   }
-  return `Read ${briefFile} and use the swamp-getting-started skill.`;
+  const skill = kind === "swampify" ? "swampify" : "swamp-getting-started";
+  return `Read ${briefFile} and use the ${skill} skill.`;
 }
 
 export interface HarnessDefinition {
@@ -226,10 +231,11 @@ export function planHarnessLaunch(
   os: string,
   mode: LaunchMode = "task",
   briefFile?: string,
+  taskKind: StartTaskKind = "task",
 ): HarnessLaunchSpec {
   const trustMode = effectiveTrustMode(harness, os);
   const args = mode === "task"
-    ? harness.args(workspacePath, os, launchPrompt(briefFile ?? ""))
+    ? harness.args(workspacePath, os, launchPrompt(briefFile ?? "", taskKind))
     : mode === "resume"
     ? (harness.resumeArgs ?? harness.openArgs)(workspacePath, os)
     : harness.openArgs(workspacePath, os);

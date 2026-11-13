@@ -32,12 +32,16 @@ import {
   readSwampifyComparisonSummary,
   readSwampifyOffer,
   readSwampifyOfferSummary,
+  SWAMPIFY_BRIEF_HEADER,
   SWAMPIFY_COMPARISON_QUERY_PREDICATE,
   SWAMPIFY_GENERATED_AT_TAG,
   SWAMPIFY_LIMITS,
   SWAMPIFY_LIST_SELECT,
   SWAMPIFY_SUMMARY_TAG,
   SWAMPIFY_UPDATED_AT_TAG,
+  swampifyBuildBrief,
+  swampifyBuildTask,
+  type SwampifyCandidate,
   swampifyCandidateId,
   type SwampifyCandidateSet,
   swampifyCandidateSetSummary,
@@ -47,11 +51,13 @@ import {
   swampifyComparisonPredicate,
   swampifyComparisonTags,
   type SwampifyOffer,
+  type SwampifyOfferOption,
   swampifyOfferSummary,
   swampifyOfferTags,
   swampifyOptionId,
   swampifyWeightedTokens,
 } from "./swampify.ts";
+import { BRIEF_HEADER, isSwampBrief } from "../start/brief.ts";
 
 // synthetic fixtures only: no text from a real transcript
 const ID_A = "0123456789abcdef0123456789abcdef";
@@ -889,4 +895,77 @@ Deno.test("swampifyWeightedTokens: input + output + cache writes + a tenth of ca
 
 Deno.test("SWAMPIFY_LIST_SELECT: names the owner, as the agent session list does", () => {
   assertStringIncludes(SWAMPIFY_LIST_SELECT, `"modelName": modelName`);
+});
+
+Deno.test("swampifyBuildBrief: starts with start's brief header", () => {
+  assertEquals(SWAMPIFY_BRIEF_HEADER, BRIEF_HEADER);
+  const brief = swampifyBuildBrief({
+    behavior: "swampify",
+    option: option() as SwampifyOfferOption,
+    candidates: [candidate() as SwampifyCandidate],
+  });
+  assert(brief !== null && isSwampBrief(brief));
+});
+
+Deno.test("swampifyBuildBrief: carries the option, its counts and the pick command, never labels or excerpts", () => {
+  const brief = swampifyBuildBrief({
+    behavior: "swampify",
+    option: option({ registryType: "@acme/notes" }) as SwampifyOfferOption,
+    candidates: [candidate() as SwampifyCandidate],
+  }) ?? "";
+  assertStringIncludes(
+    brief,
+    "Automate this repeated chore as a swamp workflow: Release notes. You ask for this every release",
+  );
+  assertStringIncludes(
+    brief,
+    `swamp behavior run swampify pick --input optionId=${OPT_A}`,
+  );
+  assertStringIncludes(
+    brief,
+    "Seen 4 times in 3 sessions, 2026-10-01 to 2026-10-20",
+  );
+  assertStringIncludes(brief, "about 4 weighted tokens and 2 tool calls");
+  assertStringIncludes(brief, "  1. collect merged PRs");
+  assertStringIncludes(brief, "A registry type that may fit: @acme/notes.");
+  assertEquals(brief.includes("Ship the release notes"), false);
+  assertEquals(brief.includes("ship the release notes for demo"), false);
+  assertEquals(brief.includes(ID_A), false);
+});
+
+Deno.test("swampifyBuildBrief: refuses a behavior name that could leave its command", () => {
+  for (const behavior of ["", "a b", "x`y", "-flag", "a;b", "a\nb"]) {
+    assertEquals(
+      swampifyBuildBrief({
+        behavior,
+        option: option() as SwampifyOfferOption,
+        candidates: [],
+      }),
+      null,
+      behavior,
+    );
+  }
+});
+
+Deno.test("swampifyBuildTask: is the brief's task, context and steps, a level down and without start's header", () => {
+  const input = {
+    behavior: "swampify",
+    option: option({ registryType: "@acme/notes" }) as SwampifyOfferOption,
+    candidates: [candidate() as SwampifyCandidate],
+  };
+  const task = swampifyBuildTask(input) ?? "";
+  const brief = swampifyBuildBrief(input) ?? "";
+  assert(task.startsWith("Automate this repeated chore as a swamp workflow"));
+  assert(!isSwampBrief(task));
+  assert(!/^# /m.test(task));
+  assertStringIncludes(task, "\n## Context\n");
+  assertStringIncludes(task, "\n## How to work on this\n");
+  for (const line of brief.split("\n").slice(1)) {
+    if (line.startsWith("# ") || line === "") continue;
+    assertStringIncludes(task, line);
+  }
+  assertEquals(
+    swampifyBuildTask({ ...input, behavior: "a b" }),
+    null,
+  );
 });

@@ -2135,6 +2135,7 @@ export {
   type StartInspection,
   startLaunch,
   type StartLaunchEvent,
+  startLaunchTask,
   startListHarnesses,
   startListTasks,
   startListWorkspaces,

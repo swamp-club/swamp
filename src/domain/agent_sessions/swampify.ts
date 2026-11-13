@@ -1294,3 +1294,113 @@ export const SWAMPIFY_JSON_SCHEMA_FILES: ReadonlyArray<
     swampifyComparisonSummaryJsonSchema,
   ],
 ];
+
+/** start's BRIEF_HEADER, copied because this module may import only zod */
+export const SWAMPIFY_BRIEF_HEADER = "<!-- swamp start brief v1 -->";
+
+const BEHAVIOR_REF = /^[A-Za-z0-9@][A-Za-z0-9@/._-]*$/;
+
+function briefDay(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function briefCount(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+interface SwampifyBuildInput {
+  readonly behavior: string;
+  readonly option: SwampifyOfferOption;
+  readonly candidates: readonly SwampifyCandidate[];
+}
+
+function buildParts(input: SwampifyBuildInput): {
+  task: string;
+  context: string[];
+  steps: string[];
+} | null {
+  const { behavior, option } = input;
+  if (!BEHAVIOR_REF.test(behavior)) return null;
+  const name = option.name.replace(/\s+/g, " ").trim();
+  const seen = input.candidates.map((c) =>
+    `- Seen ${briefCount(c.occurrences)} times in ${
+      briefCount(c.sessions)
+    } sessions, ${briefDay(c.firstSeen)} to ${
+      briefDay(c.lastSeen)
+    }; each time about ${
+      briefCount(c.perOccurrence.weightedTokens.median)
+    } weighted tokens and ${
+      briefCount(c.perOccurrence.toolCalls.median)
+    } tool calls (medians).`
+  );
+  const outline = option.outline
+    ? [
+      "- Steps it takes:",
+      ...option.outline.map((step, i) => `  ${i + 1}. ${step}`),
+    ]
+    : [];
+  return {
+    task:
+      `Automate this repeated chore as a swamp ${option.becomes}: ${name}. ${option.why}`,
+    context: [
+      `- Picked on the Swampify page from the offer on behavior \`${behavior}\`, option \`${option.id}\`.`,
+      ...seen,
+      ...outline,
+      `- A registry type that may fit: ${option.registryType ?? "none found"}.`,
+    ],
+    steps: [
+      `1. Record the pick: \`swamp behavior run ${behavior} pick --input optionId=${option.id}\`.`,
+      `2. Build the ${option.becomes} the way the swampify skill's handoff says for a ${option.becomes}, from this brief.`,
+      "3. Before you run anything that touches a real system, confirm the target with",
+      "   the user: which account, cluster, project or repository.",
+      "4. Run it once and show the user the result in this conversation.",
+      `5. Record what was built: \`swamp behavior run ${behavior} built --input kind=${option.becomes} --input name=<its name>\`,`,
+      "   then continue with the swampify skill's graduated state.",
+    ],
+  };
+}
+
+/**
+ * carries counts, never labels or excerpts, so no transcript text reaches the
+ * file; null when the behavior name could leave its command line
+ */
+export function swampifyBuildBrief(input: SwampifyBuildInput): string | null {
+  const parts = buildParts(input);
+  if (parts === null) return null;
+  return [
+    SWAMPIFY_BRIEF_HEADER,
+    "",
+    "# Task",
+    "",
+    parts.task,
+    "",
+    "# Context",
+    "",
+    ...parts.context,
+    "",
+    "# How to work on this",
+    "",
+    ...parts.steps,
+    "",
+  ].join("\n");
+}
+
+/**
+ * The same brief as the text of a swampify start task: swamp start supplies
+ * the header and the workspace, so the brief's sections sit one level down.
+ */
+export function swampifyBuildTask(input: SwampifyBuildInput): string | null {
+  const parts = buildParts(input);
+  if (parts === null) return null;
+  return [
+    parts.task,
+    "",
+    "## Context",
+    "",
+    ...parts.context,
+    "",
+    "## How to work on this",
+    "",
+    ...parts.steps,
+  ].join("\n");
+}

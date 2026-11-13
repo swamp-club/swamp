@@ -26,6 +26,7 @@ export type View =
   | "webhooks"
   | "approvals"
   | "activity"
+  | "swampify"
   | "agent-sessions"
   | "data"
   | "vaults"

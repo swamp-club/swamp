@@ -282,3 +282,13 @@ Deno.test("StartSession.assignBriefFile: refuses a path outside tasks/", () => {
     );
   }
 });
+
+Deno.test("StartSession.saveTask: keeps a swampify task's kind, and a plain task drops it", () => {
+  const session = sessionAt("task");
+  session.saveTask(StartTask.create("build it", "swampify"));
+  assertEquals(session.toData().taskKind, "swampify");
+  assertEquals(session.task?.kind, "swampify");
+  session.saveTask(StartTask.create("list my pods"));
+  assertEquals("taskKind" in session.toData(), false);
+  assertEquals(session.task?.kind, "task");
+});

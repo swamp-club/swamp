@@ -180,7 +180,7 @@ export function actionCommand(
 
 export type ActionFrame =
   | {
-    readonly type: DelegatedAction;
+    readonly type: DelegatedAction | typeof SWAMPIFY_LAUNCH;
     readonly id: string;
     readonly payload: { readonly data: unknown };
   }
@@ -242,4 +242,33 @@ function lastLine(text: string): string | null {
     .map((l) => l.trim())
     .filter((l) => l !== "");
   return lines.at(-1) ?? null;
+}
+
+/**
+ * the Swampify page hands its build brief to `swamp start`'s launch: the hub
+ * saves it as a start task in its own repo and opens the agent on it
+ */
+export const SWAMPIFY_LAUNCH = "swampify.launch";
+
+export interface SwampifyLaunchRequest {
+  readonly text: string;
+  readonly harness: string;
+}
+
+export function swampifyLaunchRequest(
+  payload: unknown,
+): SwampifyLaunchRequest | { readonly error: string } {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  // The click is the trust confirmation, as on start's Launch.
+  if (p.trustConfirmed !== true) {
+    return {
+      error: "Confirm you trust this folder before an agent opens in it.",
+    };
+  }
+  if (typeof p.text !== "string" || p.text.trim() === "") {
+    return { error: "The request has no brief." };
+  }
+  const harness = argument(p.harness, "agent");
+  if (typeof harness !== "string") return harness;
+  return { text: p.text, harness };
 }

@@ -40,7 +40,10 @@ export {
   SWAMPIFY_OFFER_QUERY_PREDICATE,
   SWAMPIFY_OPTION_ID_TAG,
   SWAMPIFY_SUMMARY_TAG,
+  SWAMPIFY_THIN_BELOW,
   SWAMPIFY_UPDATED_AT_TAG,
+  swampifyBuildBrief,
+  swampifyBuildTask,
   swampifyComparisonDataName,
   swampifyComparisonPredicate,
 } from "../../../../../src/domain/agent_sessions/swampify.ts";
@@ -52,6 +55,7 @@ export type {
   SwampifyComparison,
   SwampifyComparisonReading,
   SwampifyComparisonSummary,
+  SwampifyCostRange,
   SwampifyListRow,
   SwampifyOffer,
   SwampifyOfferOption,
