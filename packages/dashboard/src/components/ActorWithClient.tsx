@@ -23,15 +23,20 @@
 import { clientSuffix } from "../views/actor_label.ts";
 
 export function ActorWithClient(
-  { actor, client, className }: {
+  { actor, principal, client, className }: {
     actor: string;
+    /** the recorded id behind a display name, kept in the tooltip */
+    principal?: string;
     client?: string;
     className?: string;
   },
 ) {
   const suffix = clientSuffix(client);
+  const who = principal && principal !== actor
+    ? `${actor} (${principal})`
+    : actor;
   return (
-    <span className={className} title={actor + suffix}>
+    <span className={className} title={who + suffix}>
       {actor}
       {suffix && <span className="client-via">{suffix}</span>}
     </span>

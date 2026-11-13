@@ -93,3 +93,15 @@ export function parsePrincipalOfKinds(
 export function principalToString(principal: Principal): string {
   return `${principal.kind}:${principal.id}`;
 }
+
+/**
+ * user:<username> when serve recorded a name for a user principal, the
+ * recorded principal otherwise; the rule serve's audit events use for initiatedBy
+ */
+export function principalLabel(
+  principal: string,
+  username: string | undefined,
+): string {
+  if (!username || !principal.startsWith("user:")) return principal;
+  return `user:${username}`;
+}

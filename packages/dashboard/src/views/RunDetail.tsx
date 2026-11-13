@@ -123,6 +123,7 @@ interface WorkflowRun {
   completedAt?: string;
   duration?: number;
   initiatedBy?: string;
+  initiatedByUsername?: string;
   client?: string;
   jobs: JobRun[];
   workflowDataArtifacts?: ArtifactRef[];
@@ -746,7 +747,11 @@ function RunHeader(
             : <Skeleton width={84} height={14} />}
         </Fact>
         {run?.initiatedBy && (
-          <RunByFact initiatedBy={run.initiatedBy} client={run.client} />
+          <RunByFact
+            initiatedBy={run.initiatedBy}
+            initiatedByUsername={run.initiatedByUsername}
+            client={run.client}
+          />
         )}
       </dl>
 

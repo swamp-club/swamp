@@ -21,6 +21,7 @@
 /** @jsxImportSource react */
 import type { ReactNode } from "react";
 import { ActorWithClient } from "../components/ActorWithClient.tsx";
+import { principalLabel } from "./actor_label.ts";
 
 export function Fact(
   { label, children }: { label: string; children: ReactNode },
@@ -34,12 +35,17 @@ export function Fact(
 }
 
 export function RunByFact(
-  { initiatedBy, client }: { initiatedBy: string; client?: string },
+  { initiatedBy, initiatedByUsername, client }: {
+    initiatedBy: string;
+    initiatedByUsername?: string;
+    client?: string;
+  },
 ) {
   return (
     <Fact label="By">
       <ActorWithClient
-        actor={initiatedBy}
+        actor={principalLabel(initiatedBy, initiatedByUsername)}
+        principal={initiatedBy}
         client={client}
         className="rd-by"
       />

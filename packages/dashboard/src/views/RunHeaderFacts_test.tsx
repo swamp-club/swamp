@@ -47,3 +47,16 @@ Deno.test("RunByFact: a run with no recorded client reads as before", () => {
     '<div class="rd-fact"><dt>By</dt><dd><span class="rd-by" title="user:alice">user:alice</span></dd></div>',
   );
 });
+
+Deno.test("RunByFact: names who started the run by the username serve recorded", () => {
+  assertEquals(
+    renderToStaticMarkup(
+      <RunByFact
+        initiatedBy="user:0f3a-sub"
+        initiatedByUsername="alice"
+        client="direct:cli"
+      />,
+    ),
+    '<div class="rd-fact"><dt>By</dt><dd><span class="rd-by" title="user:alice (user:0f3a-sub)">user:alice</span></dd></div>',
+  );
+});

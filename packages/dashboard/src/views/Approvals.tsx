@@ -81,6 +81,7 @@ import { type Stat, StatPills } from "../components/StatPills.tsx";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { FilterBar, useWorkflowFilter } from "../components/FilterBar.tsx";
 import { GateDetails } from "../components/GateDetails.tsx";
+import { principalLabel } from "./actor_label.ts";
 import {
   SkeletonList,
   SkeletonPills,
@@ -811,6 +812,7 @@ interface GateRowProps {
     stepName: string;
     prompt?: string;
     initiatedBy?: string;
+    initiatedByUsername?: string;
     inputs?: Readonly<Record<string, unknown>>;
   };
   waitingSince?: string;
@@ -886,7 +888,7 @@ function GateRow(
             <RunLink workflowName={gate.workflowName} runId={gate.runId} />
             {gate.initiatedBy && (
               <span className="approval-by mono" title="Started the run">
-                by {gate.initiatedBy}
+                by {principalLabel(gate.initiatedBy, gate.initiatedByUsername)}
               </span>
             )}
             {waitingSince && (
@@ -916,6 +918,7 @@ function GateRow(
             stepName={gate.stepName}
             prompt={gate.prompt}
             initiatedBy={gate.initiatedBy}
+            initiatedByUsername={gate.initiatedByUsername}
             inputs={gate.inputs}
           />
         )}
@@ -926,12 +929,21 @@ function GateRow(
 
 /** Reads the gated workflow's jobs only once a row is expanded. */
 function GateContextLoader(
-  { workflowName, runId, stepName, prompt, initiatedBy, inputs }: {
+  {
+    workflowName,
+    runId,
+    stepName,
+    prompt,
+    initiatedBy,
+    initiatedByUsername,
+    inputs,
+  }: {
     workflowName: string;
     runId: string;
     stepName: string;
     prompt?: string;
     initiatedBy?: string;
+    initiatedByUsername?: string;
     inputs?: Readonly<Record<string, unknown>>;
   },
 ) {
@@ -945,6 +957,7 @@ function GateContextLoader(
       stepName={stepName}
       prompt={prompt}
       initiatedBy={initiatedBy}
+      initiatedByUsername={initiatedByUsername}
       inputs={inputs}
       runLink={<RunLink workflowName={workflowName} runId={runId} />}
       jobs={workflow ? workflow.jobs ?? [] : null}

@@ -263,6 +263,34 @@ appends `via <client>` for a client that is not `direct:*`; the expanded event
 shows any client. Run detail does the same for who started the run and for each
 approval or rejection.
 
+### Usernames on runs
+
+An audit event's username lives only in the audit log, so a run record, which
+outlives serve's memory, keeps its own copy. When serve starts a run or decides
+a gate for a user whose username it knows (the same source as
+`principalUsername`, read only from the map's own keys), it records `initiatedByUsername` on the run or
+`decidedByUsername` on the decision, beside the id. Authorization, resume and
+vault rules read only the id. `swamp workflow history get` names who approved
+or rejected each gate, and the dashboard's run detail and pending approvals also
+name who started the run (the log-mode `history get` prints no initiator; its
+`--json` view carries one). Each prints `user:<username>` when one is recorded
+and the recorded principal otherwise, the rule `initiatedBy` follows above;
+`principalLabel` in `src/domain/access/principal.ts` holds it, and the
+dashboard keeps a copy in `packages/dashboard/src/views/actor_label.ts` that a
+test pins to it. So a token whose
+id is already the username, a run from before this field, a local
+`swamp workflow approve` and a scheduled or webhook run print as they did. The
+`--json` view keeps `initiatedBy`, `approvedBy` and `rejectedBy` as ids and adds
+`initiatedByUsername`, `approvedByUsername` and `rejectedByUsername` when
+recorded. The name is the one serve knew at the start or decision; a later
+rename does not change it. No email is recorded.
+
+Unlike `principalUsername`, which needs `admin` on `access:audit`, these names
+are readable by anyone who can read the run, and a team-mode member's checkout
+holds them for the runs it syncs. A run a member drives never carries one: a
+forwarded record cannot add or change either field (see "Run records" in
+`design/enablers/datastores.md`).
+
 ## Query API
 
 Every `audit.*` request needs `admin` on `access:audit`, except

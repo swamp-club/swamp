@@ -376,3 +376,40 @@ for (const registry of [false, true]) {
       }, { registry }),
   });
 }
+
+for (const registry of [false, true]) {
+  const branch = registry ? "detached" : "attached";
+  Deno.test({
+    name:
+      `handleWorkflowRun: the ${branch} start records the username serve knows for the caller`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: () =>
+      withHarness(async ({ ctx, definitionName }) => {
+        ctx.resolvedUserNames = { bot: "bot-operator" };
+        const workflow = probeWorkflow(`username-${branch}`, definitionName);
+        const runId = await runAs(ctx, workflow, BOT);
+        const run = await loadRun(ctx, workflow, runId);
+        assertEquals(run?.initiatedBy, "user:bot");
+        assertEquals(run?.initiatedByUsername, "bot-operator");
+      }, { registry }),
+  });
+
+  Deno.test({
+    name:
+      `handleWorkflowRun: the ${branch} start records no username when serve knows none`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: () =>
+      withHarness(async ({ ctx, definitionName }) => {
+        const workflow = probeWorkflow(
+          `no-username-${branch}`,
+          definitionName,
+        );
+        const runId = await runAs(ctx, workflow, BOT);
+        const run = await loadRun(ctx, workflow, runId);
+        assertEquals(run?.initiatedBy, "user:bot");
+        assertEquals("initiatedByUsername" in run!.toData(), false);
+      }, { registry }),
+  });
+}

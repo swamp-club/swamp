@@ -278,6 +278,7 @@ import {
   captureDecisionSubject,
   clientErrorDetails,
   confirmRunReplicated,
+  connectionActorIdentity,
   type ConnectionContext,
   exceptionTypeForClient,
   filterByResources,
@@ -526,6 +527,8 @@ export async function handleWorkflowRun(
   const resourceId = target.status === "found" ? target.id : undefined;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
+  const initiatedByUsername = connectionActorIdentity(socket, principal, ctx)
+    ?.username;
   // captured now, while the socket's memberships are at hand: the run's vault
   // operations are decided for this principal
   const vaultAccess = requestRunVaultScope(ctx, socket, principal);
@@ -595,6 +598,7 @@ export async function handleWorkflowRun(
           tracestate: payload.tracestate,
           noSupersede: payload.noSupersede,
           initiatedBy,
+          initiatedByUsername,
           client: getConnectionClient(socket),
           instanceId: ctx.instanceId,
         },
@@ -753,6 +757,7 @@ export async function handleWorkflowRun(
           tracestate: payload.tracestate,
           noSupersede: payload.noSupersede,
           initiatedBy,
+          initiatedByUsername,
           client: getConnectionClient(socket),
           instanceId: ctx.instanceId,
         },
@@ -2035,6 +2040,8 @@ export async function handleWorkflowApprove(
             decidedBy: principal
               ? principalToString(principal)
               : payload.decidedBy,
+            decidedByUsername: connectionActorIdentity(socket, principal, ctx)
+              ?.username,
             client: getConnectionClient(socket),
           }),
           {
@@ -2491,6 +2498,8 @@ export async function handleWorkflowReject(
             decidedBy: principal
               ? principalToString(principal)
               : payload.decidedBy,
+            decidedByUsername: connectionActorIdentity(socket, principal, ctx)
+              ?.username,
             client: getConnectionClient(socket),
           }),
           {

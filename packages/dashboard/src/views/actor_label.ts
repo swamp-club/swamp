@@ -44,3 +44,15 @@ export function clientSuffix(client: string | undefined): string {
   if (!client || client.startsWith("direct:")) return "";
   return ` via ${client}`;
 }
+
+/**
+ * user:<username> when serve recorded a name for a user principal, the
+ * recorded principal otherwise; a copy of the core rule, pinned by a test
+ */
+export function principalLabel(
+  principal: string,
+  username: string | undefined,
+): string {
+  if (!username || !principal.startsWith("user:")) return principal;
+  return `user:${username}`;
+}

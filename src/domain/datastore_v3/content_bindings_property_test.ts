@@ -410,3 +410,108 @@ Deno.test("judgeRunRecord (property): every forged fan-out snapshot is refused, 
     { numRuns: 2000 },
   );
 });
+
+const NAMED_STARTED = "2026-11-13T00:00:00.000Z";
+const optionalName = fc.option(name, { nil: undefined });
+
+function namedRun(
+  initiatedByUsername: string | undefined,
+  gate?: { status: string; decision: Record<string, unknown> },
+): WorkflowRunData {
+  return {
+    id: FAN_RUN,
+    workflowId: FAN_WORKFLOW,
+    workflowName: "gated",
+    status: "running",
+    tags: {},
+    initiatedBy: "user:0f3a-sub",
+    ...(initiatedByUsername === undefined ? {} : { initiatedByUsername }),
+    jobs: gate === undefined ? [] : [{
+      jobName: "main",
+      status: "running",
+      startedAt: NAMED_STARTED,
+      steps: [{
+        stepName: "gate",
+        status: gate.status,
+        startedAt: NAMED_STARTED,
+        approvalDecision: gate.decision,
+      }],
+    }],
+  } as unknown as WorkflowRunData;
+}
+
+Deno.test("judgeRunRecord (property): a forwarded record may keep or drop the initiator's username, never add or change it", () => {
+  fc.assert(
+    fc.property(optionalName, optionalName, (stored, forwarded) => {
+      const judged = (before: WorkflowRunData | undefined) =>
+        judgeRunRecord({
+          workflowId: FAN_WORKFLOW,
+          runId: FAN_RUN,
+          before,
+          after: namedRun(forwarded),
+        }).refusal;
+      assertEquals(judged(undefined) === undefined, forwarded === undefined);
+      assertEquals(
+        judged(namedRun(stored)) === undefined,
+        forwarded === undefined || forwarded === stored,
+      );
+    }),
+    { numRuns: 500 },
+  );
+});
+
+type FieldEdit = "keep" | "drop" | "change";
+const fieldEdit = fc.constantFrom<FieldEdit>("keep", "drop", "change");
+
+function edited(
+  value: string | undefined,
+  edit: FieldEdit,
+): string | undefined {
+  if (edit === "drop") return undefined;
+  if (edit === "change") return `${value ?? ""}-other`;
+  return value;
+}
+
+Deno.test("judgeRunRecord (property): a forwarded decision may drop its client or username, never add or change either", () => {
+  fc.assert(
+    fc.property(
+      optionalName,
+      optionalName,
+      fieldEdit,
+      fieldEdit,
+      (heldClient, heldName, clientEdit, nameEdit) => {
+        const decision = (
+          client: string | undefined,
+          username: string | undefined,
+        ) => ({
+          approved: true,
+          decidedBy: "user:0f3a-sub",
+          ...(client === undefined ? {} : { client }),
+          ...(username === undefined ? {} : { decidedByUsername: username }),
+          decidedAt: NAMED_STARTED,
+        });
+        const refusal = judgeRunRecord({
+          workflowId: FAN_WORKFLOW,
+          runId: FAN_RUN,
+          before: namedRun(undefined, {
+            status: "waiting_approval",
+            decision: decision(heldClient, heldName),
+          }),
+          after: namedRun(undefined, {
+            status: "succeeded",
+            decision: decision(
+              edited(heldClient, clientEdit),
+              edited(heldName, nameEdit),
+            ),
+          }),
+        }).refusal;
+        assertEquals(
+          refusal === undefined,
+          clientEdit !== "change" && nameEdit !== "change",
+          refusal,
+        );
+      },
+    ),
+    { numRuns: 500 },
+  );
+});

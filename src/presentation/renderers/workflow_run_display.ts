@@ -22,6 +22,7 @@ import type { OutputMode } from "../output/output.ts";
 import { prettyJson } from "../output/json_stream.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import { principalLabel } from "../../domain/access/principal.ts";
 import type {
   StepSkipReasonView,
   WorkflowRunView,
@@ -141,15 +142,19 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
         const a = step.approval;
         if (a.status === "approved") {
           writeOutput(
-            `      ${green("Approved")} by ${a.approvedBy ?? "unknown"}${
-              viaClient(a.client)
-            } at ${formatTimestamp(a.approvedAt)}`,
+            `      ${green("Approved")} by ${
+              a.approvedBy === undefined ? "unknown" : escapeControlCharacters(
+                principalLabel(a.approvedBy, a.approvedByUsername),
+              )
+            }${viaClient(a.client)} at ${formatTimestamp(a.approvedAt)}`,
           );
         } else if (a.status === "rejected") {
           writeOutput(
-            `      ${red("Rejected")} by ${a.rejectedBy ?? "unknown"}${
-              viaClient(a.client)
-            } at ${formatTimestamp(a.rejectedAt)}`,
+            `      ${red("Rejected")} by ${
+              a.rejectedBy === undefined ? "unknown" : escapeControlCharacters(
+                principalLabel(a.rejectedBy, a.rejectedByUsername),
+              )
+            }${viaClient(a.client)} at ${formatTimestamp(a.rejectedAt)}`,
           );
           if (a.reason) {
             writeOutput(`      Reason: ${a.reason}`);

@@ -21,8 +21,28 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   parsePrincipal,
   parsePrincipalOfKinds,
+  principalLabel,
   principalToString,
 } from "./principal.ts";
+
+Deno.test("principalLabel: names a user by the recorded username", () => {
+  assertEquals(principalLabel("user:0f3a-sub", "alice"), "user:alice");
+});
+
+Deno.test("principalLabel: falls back to the recorded principal without a username", () => {
+  assertEquals(principalLabel("user:0f3a-sub", undefined), "user:0f3a-sub");
+  assertEquals(principalLabel("user:0f3a-sub", ""), "user:0f3a-sub");
+});
+
+Deno.test("principalLabel: a token principal whose id is the username reads the same", () => {
+  assertEquals(principalLabel("user:stack72", "stack72"), "user:stack72");
+  assertEquals(principalLabel("user:stack72", undefined), "user:stack72");
+});
+
+Deno.test("principalLabel: ignores a username on a principal that is not a user", () => {
+  assertEquals(principalLabel("worker:w1", "alice"), "worker:w1");
+  assertEquals(principalLabel("alice-laptop", "alice"), "alice-laptop");
+});
 
 Deno.test("parsePrincipal: parses user principal", () => {
   const p = parsePrincipal("user:adam");

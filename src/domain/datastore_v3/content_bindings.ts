@@ -255,6 +255,11 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
     if (after.client !== undefined) {
       return refuse("it records a client, which only serve records");
     }
+    if (after.initiatedByUsername !== undefined) {
+      return refuse(
+        "it records an initiator username, which only serve records",
+      );
+    }
     if (
       after.allowedVaults !== undefined &&
       !after.allowedVaults.every((vault) =>
@@ -283,6 +288,14 @@ export function judgeRunRecord(context: RunRecordContext): RunRecordJudgement {
     ];
     for (const [field, was, is] of frozen) {
       if (!same(was, is)) return refuse(`it changes the run's ${field}`);
+    }
+    // an older CLI strips the name when it rewrites a record; dropping it only
+    // makes history fall back to the principal, so only a new value is refused
+    if (
+      after.initiatedByUsername !== undefined &&
+      after.initiatedByUsername !== before.initiatedByUsername
+    ) {
+      return refuse("it changes the run's initiator username");
     }
   }
 
@@ -397,17 +410,22 @@ function judgeStep(
 }
 
 /**
- * an older CLI strips a client it does not know when it rewrites a record, so a
- * missing client still matches; the audit event keeps the value
+ * an older CLI strips a client or decider username it does not know when it
+ * rewrites a record, so a missing one still matches; the audit event keeps both
  */
 function sameDecision(
   held: ApprovalDecisionData | undefined,
   forwarded: ApprovalDecisionData | undefined,
 ): boolean {
-  if (same(held, forwarded)) return true;
-  if (held === undefined) return false;
-  const { client: _client, ...withoutClient } = held;
-  return same(withoutClient, forwarded);
+  if (held === undefined || forwarded === undefined) {
+    return same(held, forwarded);
+  }
+  const expected: ApprovalDecisionData = { ...held };
+  if (forwarded.client === undefined) delete expected.client;
+  if (forwarded.decidedByUsername === undefined) {
+    delete expected.decidedByUsername;
+  }
+  return same(expected, forwarded);
 }
 
 function decisionRefusal(

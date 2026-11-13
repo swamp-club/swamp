@@ -62,6 +62,8 @@ export interface PendingApproval {
   prompt: string | undefined;
   inputs: Readonly<Record<string, unknown>>;
   initiatedBy?: string;
+  /** set when serve knew the initiator's username; initiatedBy keeps the id */
+  initiatedByUsername?: string;
   /** only serve can mark a run this way, so a member's report cannot claim it */
   serveDriven?: boolean;
   /** set by serve for the caller; absent on a local listing */
@@ -324,6 +326,9 @@ export async function* workflowApprovals(
             ...(fanOutGate !== undefined ? { fanOutGate } : {}),
             ...(run.initiatedBy !== undefined
               ? { initiatedBy: run.initiatedBy }
+              : {}),
+            ...(run.initiatedByUsername !== undefined
+              ? { initiatedByUsername: run.initiatedByUsername }
               : {}),
             ...(isServeDrivenRun(run) ? { serveDriven: true } : {}),
             ...(parentRun ? { parentRun, parentWaiting } : {}),

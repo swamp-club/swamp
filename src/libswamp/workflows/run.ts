@@ -440,6 +440,8 @@ export interface WorkflowRunInput {
   assertFailOnSeverity?: AssertSeverity;
   initiatedBy?: string;
   client?: string;
+  /** serve-internal: the name serve knows for initiatedBy; never set from a client */
+  initiatedByUsername?: string;
   startKey?: RunStartKeyData;
   /** serve-internal: the id a webhook delivery was told; never set from a client */
   runId?: string;
@@ -493,6 +495,9 @@ function mapApprovalDecision(
     const view: ApprovalView = {
       status: "approved",
       approvedBy: decision.decidedBy,
+      ...(decision.decidedByUsername !== undefined
+        ? { approvedByUsername: decision.decidedByUsername }
+        : {}),
       approvedAt: decision.decidedAt,
       ...(decision.client !== undefined ? { client: decision.client } : {}),
     };
@@ -505,6 +510,9 @@ function mapApprovalDecision(
   return {
     status: "rejected",
     rejectedBy: decision.decidedBy,
+    ...(decision.decidedByUsername !== undefined
+      ? { rejectedByUsername: decision.decidedByUsername }
+      : {}),
     rejectedAt: decision.decidedAt,
     reason: decision.reason,
     ...(decision.client !== undefined ? { client: decision.client } : {}),
@@ -912,6 +920,9 @@ export function toRunData(
       }))
       : undefined,
     initiatedBy: run.initiatedBy,
+    ...(run.initiatedByUsername !== undefined
+      ? { initiatedByUsername: run.initiatedByUsername }
+      : {}),
     ...(run.client !== undefined ? { client: run.client } : {}),
     references: run.references,
     ...(run.parentRun?.kind === "valid"
@@ -1235,6 +1246,7 @@ export async function* workflowRun(
                   assertFailOnSeverity: resolvedInput.assertFailOnSeverity,
                   initiatedBy: resolvedInput.initiatedBy,
                   client: resolvedInput.client,
+                  initiatedByUsername: resolvedInput.initiatedByUsername,
                   startKey: resolvedInput.startKey,
                   runId: resolvedInput.runId,
                   instanceId: resolvedInput.instanceId,

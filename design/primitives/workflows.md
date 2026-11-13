@@ -208,7 +208,11 @@ steps:
    `"unknown"` (`src/libswamp/workflows/approve.ts`), and no client. Through
    serve, the decision also records the `client` of the caller's token, as the
    run records the client that started it (see "Clients" in
-   `design/enablers/access-control.md`). Only the `--server` path authorizes: the `workflow.approve` handler checks the `approve` action, not
+   `design/enablers/access-control.md`). When serve knows the caller's
+   username, the decision records it as `decidedByUsername` beside
+   `decidedBy`, as a run serve starts records `initiatedByUsername` beside
+   `initiatedBy` (see "Usernames on runs" in
+   `design/enablers/serve-audit.md`). Only the `--server` path authorizes: the `workflow.approve` handler checks the `approve` action, not
    `run`. A `run` grant implies `approve`, so existing grants keep working, and
    an `approve`-only grant can decide gates without being able to execute the
    workflow. With `--approve-requires-explicit-grant`, serve stops counting
@@ -649,9 +653,9 @@ follows cancels it).
 
 Supersede skips runs that have a `parentRun`. Run cleanup keeps a finished child while its
 parent exists and has not finished (an interrupted parent still counts).
-A child inherits its parent's serve instance id and `initiatedBy`, so its
-cancel is routed as its parent's is, and its `run.initiatedBy` names the
-parent's initiator.
+A child inherits its parent's serve instance id, `initiatedBy` and
+`initiatedByUsername`, so its cancel is routed as its parent's is, and its
+`run.initiatedBy` names the parent's initiator.
 
 Older binaries drop `nestedRun` and `parentRun` when they save a run, and see
 a nested wait as a gate: approving it there would succeed the step without the

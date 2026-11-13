@@ -109,9 +109,11 @@ grants and stamped with who wrote it.
 
 A run's `initiatedBy` is the principal of the member's token (for example
 `user:m1`), as serve stamps it on the run's commits, never a display name. A
-child run keeps its parent's initiator, including one a resume starts. A
-behavior's output provenance and the `initiatedBy` data tag are the member's own
-report and are not checked.
+member's run carries no `initiatedByUsername`; only runs serve starts record
+one, and serve refuses a member's record that adds or changes it. A child run
+keeps its parent's initiator, including one a resume starts. A behavior's output
+provenance and the `initiatedBy` data tag are the member's own report and are
+not checked.
 
 ## Leases
 
