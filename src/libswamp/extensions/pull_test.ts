@@ -41,6 +41,7 @@ import {
   parseExtensionRef,
   type PreparedInstall,
   prepareInstall,
+  SkillPathOutsideRepoError,
   type UnoptedPrereleaseNotice,
   validateExtensionName,
 } from "./pull.ts";
@@ -644,7 +645,7 @@ async function buildSkillArchive(spec: SkillArchiveSpec): Promise<Uint8Array> {
     }
     for (const [skill, files] of Object.entries(spec.skills)) {
       for (const [file, content] of Object.entries(files)) {
-        await ensureDir(join(extDir, "skills", skill));
+        await ensureDir(dirname(join(extDir, "skills", skill, file)));
         await Deno.writeTextFile(join(extDir, "skills", skill, file), content);
       }
     }
@@ -3816,5 +3817,259 @@ Deno.test(
         assertEquals(lockfile.getEntry(child), null);
       });
     }
+  },
+);
+
+async function withOutsideDir(fn: (outside: string) => Promise<void>) {
+  const outside = await Deno.makeTempDir({ prefix: "swamp_pull_outside_" });
+  try {
+    await fn(outside);
+  } finally {
+    await Deno.remove(outside, { recursive: true }).catch(() => {});
+  }
+}
+
+async function outsideSkillLink(
+  repoDir: string,
+  outside: string,
+): Promise<string> {
+  await Deno.writeTextFile(join(outside, "SKILL.md"), "mine");
+  await ensureDir(join(repoDir, ".claude", "skills"));
+  const link = join(repoDir, ".claude", "skills", "foo");
+  await Deno.symlink(outside, link, { type: "dir" });
+  return link;
+}
+
+const ESCAPING_SKILL = {
+  foo: { "SKILL.md": "from ext", "scripts/x.sh": "echo ext" },
+};
+
+for (const force of [true, false]) {
+  Deno.test(
+    `installExtension: ${
+      force ? "a forced" : "an unforced"
+    } install refuses a skill dir that links outside the repo`,
+    async () => {
+      await withSkillRepo(async (repoDir, lockfile) => {
+        await withOutsideDir(async (outside) => {
+          const name = uniqueExtName();
+          const link = await outsideSkillLink(repoDir, outside);
+          const archive = await buildSkillArchive({
+            name,
+            skills: ESCAPING_SKILL,
+          });
+          const error = await assertRejects(
+            () =>
+              installExtension(
+                { name, version: null },
+                skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+                  force,
+                }),
+              ),
+            SkillPathOutsideRepoError,
+          );
+          assertEquals(error.link, lockPath(repoDir, link));
+          assertEquals(error.target, await Deno.realPath(outside));
+          assertEquals(
+            await Deno.readTextFile(join(outside, "SKILL.md")),
+            "mine",
+          );
+          assertEquals(await exists(join(outside, "scripts")), false);
+          assertEquals(lockfile.getEntry(name), null);
+        });
+      });
+    },
+  );
+}
+
+Deno.test(
+  "installExtension: a skills root that links outside the repo is refused even for a new skill",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withOutsideDir(async (outside) => {
+        const name = uniqueExtName();
+        await ensureDir(join(repoDir, ".claude"));
+        const link = join(repoDir, ".claude", "skills");
+        await Deno.symlink(outside, link, { type: "dir" });
+        const archive = await buildSkillArchive({
+          name,
+          skills: { fresh: { "SKILL.md": "from ext" } },
+        });
+        const error = await assertRejects(
+          () =>
+            installExtension(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+                force: true,
+              }),
+            ),
+          SkillPathOutsideRepoError,
+        );
+        assertEquals(error.link, lockPath(repoDir, link));
+        assertEquals([...Deno.readDirSync(outside)], []);
+        assertEquals(lockfile.getEntry(name), null);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a forced install refuses a SKILL.md link that leaves the repo",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withOutsideDir(async (outside) => {
+        const name = uniqueExtName();
+        const target = join(outside, "SKILL.md");
+        await Deno.writeTextFile(target, "mine");
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        const link = join(skillDir, "SKILL.md");
+        await Deno.symlink(target, link, { type: "file" });
+        const archive = await buildSkillArchive({
+          name,
+          skills: { foo: { "SKILL.md": "from ext" } },
+        });
+        const error = await assertRejects(
+          () =>
+            installExtension(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+                force: true,
+              }),
+            ),
+          SkillPathOutsideRepoError,
+        );
+        assertEquals(error.link, lockPath(repoDir, link));
+        assertEquals(await Deno.readTextFile(target), "mine");
+      });
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a forced install refuses a subdir link inside a real skill dir",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withOutsideDir(async (outside) => {
+        const name = uniqueExtName();
+        const skillDir = join(repoDir, ".claude", "skills", "foo");
+        await ensureDir(skillDir);
+        const link = join(skillDir, "scripts");
+        await Deno.symlink(outside, link, { type: "dir" });
+        const archive = await buildSkillArchive({
+          name,
+          skills: ESCAPING_SKILL,
+        });
+        const error = await assertRejects(
+          () =>
+            installExtension(
+              { name, version: null },
+              skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+                force: true,
+              }),
+            ),
+          SkillPathOutsideRepoError,
+        );
+        assertEquals(error.link, lockPath(repoDir, link));
+        assertEquals([...Deno.readDirSync(outside)], []);
+        assertEquals(await exists(join(skillDir, "SKILL.md")), false);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a dependency's skill dir that links outside the repo is refused without force",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withOutsideDir(async (outside) => {
+        const { parent, dep, archives } = await buildParentWithDependency();
+        await Deno.writeTextFile(join(outside, "SKILL.md"), "mine");
+        await ensureDir(join(repoDir, ".claude", "skills"));
+        const link = join(repoDir, ".claude", "skills", "dep");
+        await Deno.symlink(outside, link, { type: "dir" });
+        const error = await assertRejects(
+          () =>
+            installExtension(
+              { name: parent, version: null },
+              skillInstallContext(repoDir, lockfile, archives),
+            ),
+          SkillPathOutsideRepoError,
+        );
+        assertEquals(error.link, lockPath(repoDir, link));
+        assertEquals(
+          await Deno.readTextFile(join(outside, "SKILL.md")),
+          "mine",
+        );
+        assertEquals(lockfile.getEntry(dep), null);
+        // the parent's entry lands before its dependencies install, so it rolls forward
+        assertEquals(lockfile.getEntry(parent)?.version, SKILL_VERSION);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a skill dir linking elsewhere inside the repo still installs",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const target = join(repoDir, "shared-skills", "foo");
+      await ensureDir(target);
+      await ensureDir(join(repoDir, ".claude", "skills"));
+      await Deno.symlink(target, join(repoDir, ".claude", "skills", "foo"), {
+        type: "dir",
+      });
+      const archive = await buildSkillArchive({ name, skills: ESCAPING_SKILL });
+      await installExtension(
+        { name, version: null },
+        skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+          force: true,
+        }),
+      );
+      assertEquals(
+        await Deno.readTextFile(join(target, "scripts", "x.sh")),
+        "echo ext",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: orphan prune leaves a dropped skill file under a link that leaves the repo",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      await withOutsideDir(async (outside) => {
+        const name = uniqueExtName();
+        const link = await outsideSkillLink(repoDir, outside);
+        await Deno.writeTextFile(join(outside, "old.md"), "old");
+        await lockfile.writeEntry(name, "2025.01.01.1", [
+          relative(repoDir, join(link, "SKILL.md")),
+          relative(repoDir, join(link, "old.md")),
+        ]);
+        const archive = await buildSkillArchive({
+          name,
+          skills: { bar: { "SKILL.md": "bar" } },
+        });
+        const { logger, warnings } = warningRecorder();
+        const result = await installExtension(
+          { name, version: null },
+          skillInstallContext(repoDir, lockfile, { [name]: archive }, {
+            logger,
+          }),
+        );
+        assertEquals(result?.pruned, []);
+        assertEquals(await Deno.readTextFile(join(outside, "old.md")), "old");
+        assertEquals(
+          await Deno.readTextFile(join(outside, "SKILL.md")),
+          "mine",
+        );
+        assertEquals(await exists(link), true);
+        assertEquals(
+          warnings.filter((w) => w.includes("outside the repository")).length,
+          2,
+        );
+      });
+    });
   },
 );

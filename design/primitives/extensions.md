@@ -3131,7 +3131,20 @@ root or as files under it) is a ConflictError for the top-level extension.
 output (`skillDirs`) list them apart from overwritten files, since the install
 writes into them rather than replacing them. With
 `--force`, and for dependencies, the install merges into the dir and logs a
-warning naming it. `extension update`, from the CLI and through serve, installs
+warning naming it.
+
+A skill write never follows a link out of the repository. Before the conflict
+check and before anything is written, the install resolves every path the skill
+copy would create or write (the tool skills root, each skill dir, every
+directory and file under it) and refuses with `SkillPathOutsideRepoError` if
+any resolves outside the repository's real location, naming the repo-relative
+link and its target. This holds at every dependency depth and under force: the
+error is not a `ConflictError`, so `--yes`, `--force`, a confirmed prompt and
+the auto-resolver's forced retry cannot override it. A symlinked tool skills
+root, such as `.claude/skills` linked into a dotfiles repo, is refused the same
+way. A link that resolves inside the repository is followed as before. Each
+link is followed explicitly, so a dangling link whose target would be created
+outside the repository is refused too. `extension update`, from the CLI and through serve, installs
 with force for the extension's own files but still refuses a skill dir
 conflict for the upgraded extension: `UpgradeExtensionService` sets
 `refuseSkillConflicts`, and the update reports that extension as not updated,
@@ -3201,7 +3214,10 @@ The prune reads the claims at commit: a dropped skill dir that a dependency
 installed in the same call merged files into is walked, and only the files no
 entry claims (in either direction: an entry listing the file, or a dir above
 it) are removed. The walk descends plain dirs only, never a symlink, and
-removes a link itself, never its target.
+removes a link itself, never its target. A candidate whose parent resolves
+outside the repository (a link on its path) is left in place with a warning
+naming the link; rollback's removal of created skill paths and the legacy-path
+sweep after a migration skip such paths the same way.
 
 **Staging.** Each root's new and old copies live in a staging dir next to it,
 so every rename stays on one filesystem:
@@ -3454,7 +3470,12 @@ form.
 ones the lockfile describes. It then checks that every file tracked in `upstream_extensions.json`
 resolves inside the repository. If any path does not, for example in a lockfile
 written before `.swamp/` existed with `SWAMP_MODELS_DIR` outside the repo, rm
-fails with nothing changed and names the paths to remove from the entry.
+fails with nothing changed and names the paths to remove from the entry. The
+check is by real location as well as by path text: a tracked path whose parent
+resolves outside the repository through a link (a skill dir symlinked into a
+dotfiles repo, say) also fails the rm with nothing changed, naming the link and
+saying to replace it with a real directory or remove those paths from the
+entry.
 
 It then tombstones the extension's catalog rows, freeing its `(kind, type)`
 slots atomically in one SQLite transaction. After that it removes the lockfile
@@ -3467,6 +3488,8 @@ lists, or lists files under, or a file inside a skill dir that extension lists)
 is kept and reported in `retainedFiles`, as orphan prune keeps it. A file merged
 into another extension's skill dir therefore stays with that dir. Tracked
 paths are checked with `lstat`, so a symlink is unlinked rather than followed.
+The prune of empty parent directories stops at a symlink, so it never removes a
+user's link because its target looked empty.
 
 If other installed extensions depend on the target (found by scanning their
 `manifest.yaml` files on disk), a warning is shown first.

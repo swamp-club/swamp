@@ -18,16 +18,28 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join } from "@std/path";
-import { assertContainedPath } from "./safe_path.ts";
+import {
+  assertContainedPath,
+  type EscapingLink,
+  findEscapingLink,
+} from "./safe_path.ts";
 
 export async function pruneOrphanFiles(
   orphanPaths: string[],
   repoDir: string,
+  onEscaping?: (file: string, escape: EscapingLink) => void,
 ): Promise<string[]> {
   const removed: string[] = [];
   for (const file of orphanPaths) {
+    // a lexical escape is a corrupt list and throws; a link is filesystem
+    // state, skipped so a prune after commit never half-fails
     assertContainedPath(file, repoDir);
     const absolutePath = join(repoDir, file);
+    const escape = await findEscapingLink(dirname(absolutePath), repoDir);
+    if (escape) {
+      onEscaping?.(file, escape);
+      continue;
+    }
     try {
       await Deno.remove(absolutePath, { recursive: true });
       removed.push(file);

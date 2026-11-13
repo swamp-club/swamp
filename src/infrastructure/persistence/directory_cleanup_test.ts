@@ -259,3 +259,27 @@ Deno.test("pruneOrphanFiles removes valid orphan paths", async () => {
     assertEquals(await exists(orphanFile), false);
   });
 });
+
+Deno.test("pruneOrphanFiles skips a path under a link that leaves the repo and reports it", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoDir = join(tempDir, "repo");
+    const outside = join(tempDir, "outside");
+    await ensureDir(join(repoDir, ".claude", "skills"));
+    await ensureDir(outside);
+    await Deno.writeTextFile(join(outside, "old.md"), "mine");
+    const link = join(repoDir, ".claude", "skills", "foo");
+    await Deno.symlink(outside, link, { type: "dir" });
+
+    const reported: string[] = [];
+    const removed = await pruneOrphanFiles(
+      [".claude/skills/foo/old.md"],
+      repoDir,
+      (file, escape) => reported.push(`${file} ${escape.link}`),
+    );
+
+    assertEquals(removed, []);
+    assertEquals(reported, [`.claude/skills/foo/old.md ${link}`]);
+    assertEquals(await Deno.readTextFile(join(outside, "old.md")), "mine");
+    assertEquals(await exists(link), true);
+  });
+});

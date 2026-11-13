@@ -101,6 +101,7 @@ import {
 import { firstSymlinkUnder } from "./first_symlink_under.ts";
 import {
   assertContainedPath,
+  findEscapingLink,
   PathTraversalError,
 } from "../../infrastructure/persistence/safe_path.ts";
 import {
@@ -286,6 +287,91 @@ export class ConflictError extends UserError {
     this.skillDirs = skillDirs;
     this.replacement = replacement;
   }
+}
+
+/** not a ConflictError: force never overrides the repository boundary */
+export class SkillPathOutsideRepoError extends UserError {
+  readonly skill: string;
+  readonly link: string;
+  readonly target: string;
+  constructor(skill: string, link: string, target: string) {
+    super(
+      `Cannot install skill ${skill}: ${link} resolves to ${target}, outside ` +
+        `the repository. swamp does not write through a link that leaves the ` +
+        `repository, even with --yes or --force. Replace ${link} with a real ` +
+        `directory, then retry.`,
+    );
+    this.skill = skill;
+    this.link = link;
+    this.target = target;
+    markErrorPaths(this, [link, target]);
+  }
+}
+
+/**
+ * every path applyInstall's skill copy creates or writes, so nothing is
+ * written when one of them would follow a link out of the repository
+ */
+async function assertSkillWritesStayInRepo(
+  extractDir: string,
+  skillsDirs: ReadonlyArray<string>,
+  repoDir: string,
+): Promise<void> {
+  const skillsSrc = join(extractDir, "skills");
+  let skillEntries: Deno.DirEntry[];
+  try {
+    skillEntries = await readDirSorted(skillsSrc);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  if (skillEntries.length === 0) return;
+
+  const relativeDests = new Map<string, string[]>();
+  for (const entry of skillEntries) {
+    if (!entry.isDirectory) continue;
+    const under = await listCopyDestinations(join(skillsSrc, entry.name));
+    relativeDests.set(entry.name, ["", ...under]);
+  }
+
+  for (const skillsDir of skillsDirs) {
+    const absoluteSkillsDir = resolve(repoDir, skillsDir);
+    const destinations: Array<[string, string]> = [["", absoluteSkillsDir]];
+    for (const [skill, rels] of relativeDests) {
+      for (const rel of rels) {
+        destinations.push([skill, join(absoluteSkillsDir, skill, rel)]);
+      }
+    }
+    for (const [skill, dest] of destinations) {
+      const escape = await findEscapingLink(dest, repoDir);
+      if (escape) {
+        throw new SkillPathOutsideRepoError(
+          skill || [...relativeDests.keys()].join(", "),
+          lockfileRelative(repoDir, escape.link),
+          escape.target,
+        );
+      }
+    }
+  }
+}
+
+/** mirrors copyDir: dirs and regular files, resource forks skipped */
+async function listCopyDestinations(srcDir: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const entry of await readDirSorted(srcDir)) {
+    if (isMacOsResourceFork(entry.name)) continue;
+    if (entry.isDirectory) {
+      out.push(entry.name);
+      for (
+        const inner of await listCopyDestinations(join(srcDir, entry.name))
+      ) {
+        out.push(join(entry.name, inner));
+      }
+    } else if (entry.isFile) {
+      out.push(entry.name);
+    }
+  }
+  return out;
 }
 
 export type ExtensionPullEvent =
@@ -1684,6 +1770,14 @@ async function deleteCreatedPaths(
 ): Promise<void> {
   for (const file of paths) {
     const absolutePath = join(ctx.repoDir, file);
+    const escape = await findEscapingLink(dirname(absolutePath), ctx.repoDir);
+    if (escape) {
+      if (ctx.logger) {
+        ctx.logger
+          .warn`Left ${file} in place: ${escape.link} resolves to ${escape.target}, outside the repository`;
+      }
+      continue;
+    }
     try {
       const stat = await Deno.lstat(absolutePath);
       await Deno.remove(absolutePath, { recursive: stat.isDirectory });
@@ -1743,7 +1837,12 @@ async function pruneSkillOrphans(
       for (const path of await unclaimedUnder(candidate)) toPrune.push(path);
     }
   }
-  return await pruneOrphanFiles(toPrune, ctx.repoDir);
+  return await pruneOrphanFiles(toPrune, ctx.repoDir, (file, escape) => {
+    if (ctx.logger) {
+      ctx.logger
+        .warn`Left ${file} in place: ${escape.link} resolves to ${escape.target}, outside the repository`;
+    }
+  });
 }
 
 function installedIdentity(
@@ -1879,6 +1978,9 @@ export async function applyInstall(
     )
     : [];
   conflicts.push(...skillConflicts);
+  // before the conflict prompt, and at every depth: a dependency merges into
+  // an existing skill dir without asking.
+  await assertSkillWritesStayInRepo(extractDir, ctx.skillsDirs, repoDir);
 
   const followedChannel = ctx.channel ?? "stable";
   // Conflicts alone (a user's skill dir, stray files) do not make this a
