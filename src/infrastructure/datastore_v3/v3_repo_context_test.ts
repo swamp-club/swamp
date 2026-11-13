@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { setV3ClosingDeadline } from "./litestream/v3_replication.ts";
 import {
   assert,
   assertEquals,
@@ -51,6 +52,7 @@ import {
   holdV3Writer,
   SERVE_CHUNK_VERIFY_BYTES,
   SERVE_COMPACTION_TIMEOUT_MS,
+  trackV3LineageCollectionForTesting,
   V3_RESERVED_NAMESPACE_CODE,
   v3CommandCommits,
   v3DatastoreFor,
@@ -1900,5 +1902,25 @@ Deno.test("collectChunksQuietly: a failure unrelated to the stop still warns dur
     );
   } finally {
     await reset();
+  }
+});
+
+Deno.test("closeV3Datastores: a lineage collection still running never holds the close past serve's deadline, or at all once the storage is unreachable", async () => {
+  let finish = () => {};
+  const hanging = new Promise<void>((done) => {
+    finish = done;
+  });
+  trackV3LineageCollectionForTesting(hanging);
+  try {
+    await closeV3Datastores({ storageUnreachable: true });
+    setV3ClosingDeadline({ remaining: () => 20 });
+    try {
+      await closeV3Datastores();
+    } finally {
+      setV3ClosingDeadline(undefined);
+    }
+  } finally {
+    finish();
+    await hanging;
   }
 });

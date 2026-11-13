@@ -384,9 +384,7 @@ export function refuseV3FollowerWrite(datastorePath: string): void {
 
 /**
  * restored from the published lineage when behind, then its read model caught
- * up; does nothing while this process leads. An abort before the restore is
- * installed leaves the copy as it was and not current; after, only the
- * catch-up is skipped, which the next refresh or a take resumes.
+ * up; does nothing while this process leads
  */
 export async function refreshV3FollowerCopy(
   repoDir: string,
@@ -2070,8 +2068,14 @@ export async function closeV3Datastores(
       ]),
   );
   setV3ClosingDeadline(undefined);
-  // after the closing sync, which may start one, and before the lease goes
-  await Promise.all([...lineageCollections]);
+  // after the closing sync, which may start one, and before the lease goes;
+  // fenced and repeatable, so an outage or serve's deadline leaves the rest
+  // to the next writer's first sync
+  if (!unreachable) {
+    await boundedLineageCollections(
+      shutdownDeadline?.remaining(SHUTDOWN_RELEASE_BOUND_MS),
+    );
+  }
   // After the closing sync, which serve's drain deadline is for, and before
   // the stores close.
   await withSpan("swamp.datastore.v3.close.dropped_work", {}, async () => {
@@ -2411,6 +2415,34 @@ async function syncAndPublishNow(
 
 /** the collections still running; each logs its own failure */
 const lineageCollections = new Set<Promise<void>>();
+
+export function trackV3LineageCollectionForTesting(
+  collection: Promise<void>,
+): void {
+  lineageCollections.add(collection);
+  void collection.finally(() => lineageCollections.delete(collection));
+}
+
+async function boundedLineageCollections(
+  boundMs: number | undefined,
+): Promise<void> {
+  const running = Promise.all([...lineageCollections]);
+  if (boundMs === undefined) {
+    await running;
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      running,
+      new Promise<void>((done) => {
+        timer = setTimeout(done, boundMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * called once the action has returned, so a later closing-sync failure covers
