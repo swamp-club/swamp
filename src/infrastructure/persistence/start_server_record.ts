@@ -28,6 +28,8 @@ export interface StartServerRecord {
   readonly port: number;
   readonly token: string;
   readonly startedAt: string;
+  /** the IP address the probe reaches the page on; absent means 127.0.0.1 */
+  readonly host?: string;
 }
 
 const RecordSchema = z.object({
@@ -35,6 +37,9 @@ const RecordSchema = z.object({
   port: z.number().int(),
   token: z.string().min(1),
   startedAt: z.string(),
+  // An IP literal only, so a record planted in an imported workspace can never
+  // send the probe through a DNS lookup.
+  host: z.string().regex(/^(?:[0-9.]+|[0-9a-f.]*:[0-9a-f:.]*)$/i).optional(),
 });
 
 function recordsDir(workspacePath: string): string {

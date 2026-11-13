@@ -54,6 +54,18 @@ export class TrustedHosts {
     return new TrustedHosts(entries.map((entry) => entry.toLowerCase()));
   }
 
+  /** this machine's own names join the entries; one that is not a valid host is skipped */
+  including(names: readonly string[]): TrustedHosts {
+    const entries = [...this.entries];
+    for (const name of names) {
+      const entry = name.toLowerCase();
+      if (parseTrustedHost(entry) !== null && !entries.includes(entry)) {
+        entries.push(entry);
+      }
+    }
+    return new TrustedHosts(entries);
+  }
+
   acceptsHost(hostHeader: string | null): boolean {
     return hostIsTrusted(hostHeader, this.entries);
   }

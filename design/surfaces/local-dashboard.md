@@ -18,8 +18,9 @@ reached two ways:
   `workspaces.json`. A registered folder keeps its workspace name in the URL,
   anything else uses its folder name. It prints no sign-in line: the auth gate
   has passed before it runs and its page has no login. `--port` fixes the
-  hub's port and `--trusted-hosts` lets a reverse proxy on this machine reach
-  it (see Security); `swamp start` has neither.
+  hub's port, `--trusted-hosts` lets a reverse proxy on this machine reach it
+  and `--host` serves it on another address (see Security); `swamp start`
+  takes the same three.
 - **`--json` is a deliberate exception** to "every command supports log and
   json": `swamp dashboard --json` is refused (`UserError`, exit 1) because the
   command's only result is a page in a browser. `swamp start --json` keeps its
@@ -229,8 +230,11 @@ re-read once.
 ## Security
 
 - The hub binds `127.0.0.1`, on an ephemeral port unless `--port` names one,
-  and answers any other `Host` with 421 (DNS rebinding). It never binds another
-  address, so only something on this machine can reach it.
+  and answers any other `Host` with 421 (DNS rebinding). `--host` binds another
+  IP address of this machine instead, as for [start](./start.md#security): a
+  non-loopback one serves the page to other machines over plain HTTP, adds this
+  machine's own name and addresses to the trusted Hosts, and is warned about on
+  every run. The per-repo children always bind loopback behind the hub.
 - `swamp dashboard --trusted-hosts a,b:8443` (comma-separated, as `swamp serve`
   takes it) also serves those Host names, for a reverse proxy on this machine
   that forwards the client's Host (tailscale serve, caddy); nginx sends its

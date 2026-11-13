@@ -1821,6 +1821,8 @@ export function createStartDeps(options: {
   lookup?: (name: string) => Promise<string[]>;
   homeDir?: string;
   isRunning: (workspacePath: string) => Promise<boolean>;
+  /** the page is served to other machines, so nothing opens on this screen */
+  remoteBrowser?: boolean;
 }): StartDeps {
   const service = new RepoService(options.version);
   const markers = new RepoMarkerRepository();
@@ -1854,8 +1856,12 @@ export function createStartDeps(options: {
     },
     sessions: new StartSessionFileRepository(),
     lookup: options.lookup ?? lookupExecutable,
-    terminalLauncher: createSystemTerminalLauncher(),
-    folderPicker: memoizedAvailability(createSystemFolderPicker()),
+    terminalLauncher: createSystemTerminalLauncher({
+      remoteBrowser: options.remoteBrowser,
+    }),
+    folderPicker: memoizedAvailability(
+      createSystemFolderPicker({ remoteBrowser: options.remoteBrowser }),
+    ),
     // Written to a temporary file and renamed into place, so a symlink
     // planted at the brief's path is replaced, never followed; a symlinked
     // `tasks/` folder is refused.

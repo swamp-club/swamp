@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -38,6 +39,7 @@ import type {
 import type { HarnessLaunchSpec } from "../src/domain/start/harness.ts";
 import type { WorkspaceHub } from "../src/serve/local/workspace_hub.ts";
 import { TrustedHosts } from "../src/serve/local/trusted_hosts.ts";
+import { ListenHost } from "../src/serve/local/listen_host.ts";
 import { UserError } from "../src/domain/errors.ts";
 import { StartSessionFileRepository } from "../src/infrastructure/persistence/start_session_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../src/infrastructure/persistence/workspace_registry_file_repository.ts";
@@ -215,7 +217,10 @@ async function withStartServer(
   timeouts: StartServerTimeouts = LONG,
   hub?: WorkspaceHub,
   startPage?: boolean,
-  serving: Pick<StartServerOptions, "port" | "trustedHosts" | "idleStop"> = {},
+  serving: Pick<
+    StartServerOptions,
+    "port" | "listenHost" | "trustedHosts" | "idleStop"
+  > = {},
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-start-server-" });
   try {
@@ -261,8 +266,12 @@ async function withStartServer(
   }
 }
 
-async function rawStatus(port: number, headers: string[]): Promise<number> {
-  const conn = await Deno.connect({ hostname: "127.0.0.1", port });
+async function rawStatus(
+  port: number,
+  headers: string[],
+  hostname = "127.0.0.1",
+): Promise<number> {
+  const conn = await Deno.connect({ hostname, port });
   try {
     const hasConnection = headers.some((h) => /^connection:/i.test(h));
     const request = [
@@ -1955,4 +1964,169 @@ Deno.test("startStartServer: a refused swampify kick-off creates no workspace", 
       await client.close();
     }
   });
+});
+
+const routableV4 = (() => {
+  try {
+    return Deno.networkInterfaces().find((i) =>
+      i.family === "IPv4" && !i.address.startsWith("127.") &&
+      !i.address.startsWith("169.254.")
+    )?.address;
+  } catch {
+    return undefined;
+  }
+})();
+
+Deno.test("startStartServer: on 0.0.0.0, serves this machine's own names and opens the socket from them, and still refuses every other Host and Origin", async () => {
+  const machine = routableV4 ?? "192.0.2.10";
+  await withStartServer(
+    async ({ handle }) => {
+      const port = handle.port;
+      const status = (host: string) =>
+        rawStatus(port, ["GET /dashboard/start HTTP/1.1", `Host: ${host}`]);
+      assertEquals(await status(`${machine}:${port}`), 200);
+      assertEquals(await status("devbox"), 200);
+      assertEquals(await status(`127.0.0.1:${port}`), 200);
+      assertEquals(await status(`[::1]:${port}`), 200);
+      assertEquals(await status("evil.example"), 421);
+      assertEquals(await status("devbox.evil.example"), 421);
+      assertEquals(
+        await rawStatus(
+          port,
+          upgradeHeaders(port, {
+            host: `${machine}:${port}`,
+            origin: `http://${machine}:${port}`,
+            protocol: "bearer." + TOKEN,
+          }),
+        ),
+        101,
+      );
+      assertEquals(
+        await rawStatus(
+          port,
+          upgradeHeaders(port, {
+            host: `${machine}:${port}`,
+            origin: "http://evil.example",
+            protocol: "bearer." + TOKEN,
+          }),
+        ),
+        403,
+      );
+      assertEquals(
+        await rawStatus(
+          port,
+          upgradeHeaders(port, {
+            host: `${machine}:${port}`,
+            origin: `http://${machine}:${port}`,
+          }),
+        ),
+        401,
+      );
+      assertEquals(await status(`0.0.0.0:${port}`), 421);
+      if (routableV4 !== undefined) {
+        assertEquals(
+          await rawStatus(
+            port,
+            ["GET /dashboard/start HTTP/1.1", `Host: ${routableV4}:${port}`],
+            routableV4,
+          ),
+          200,
+        );
+      }
+    },
+    LONG,
+    undefined,
+    true,
+    {
+      listenHost: ListenHost.parse("0.0.0.0"),
+      trustedHosts: TrustedHosts.NONE.including(["devbox", machine]),
+    },
+  );
+});
+
+Deno.test({
+  name:
+    "startStartServer: on one interface address, serves that address and opens the socket from it with no other trusted names",
+  ignore: routableV4 === undefined,
+  fn: async () => {
+    await withStartServer(
+      async ({ handle }) => {
+        const port = handle.port;
+        const authority = `${routableV4}:${port}`;
+        assertEquals(
+          await rawStatus(
+            port,
+            ["GET /dashboard/start HTTP/1.1", `Host: ${authority}`],
+            routableV4,
+          ),
+          200,
+        );
+        assertEquals(
+          await rawStatus(
+            port,
+            upgradeHeaders(port, {
+              host: authority,
+              origin: `http://${authority}`,
+              protocol: "bearer." + TOKEN,
+            }),
+            routableV4,
+          ),
+          101,
+        );
+        await assertRejects(() =>
+          rawStatus(port, [
+            "GET /dashboard/start HTTP/1.1",
+            `Host: 127.0.0.1:${port}`,
+          ])
+        );
+      },
+      LONG,
+      undefined,
+      true,
+      { listenHost: ListenHost.parse(routableV4) },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "startStartServer: by default listens on loopback only, so the machine's own address is not served",
+  ignore: routableV4 === undefined,
+  fn: async () => {
+    await withStartServer(async ({ handle }) => {
+      await assertRejects(() =>
+        rawStatus(
+          handle.port,
+          [
+            "GET /dashboard/start HTTP/1.1",
+            `Host: ${routableV4}:${handle.port}`,
+          ],
+          routableV4,
+        )
+      );
+      assertEquals(
+        await rawStatus(handle.port, [
+          "GET /dashboard/start HTTP/1.1",
+          `Host: ${routableV4}:${handle.port}`,
+        ]),
+        421,
+      );
+    });
+  },
+});
+
+Deno.test("startStartServer: an address this machine does not have is a UserError naming it", () => {
+  const error = assertThrows(
+    () =>
+      startStartServer({
+        ctx: createLibSwampContext(),
+        deps: makeFakes(Deno.cwd()).deps,
+        token: TOKEN,
+        distDir: Deno.cwd(),
+        listenHost: ListenHost.parse("192.0.2.123"),
+      }),
+    UserError,
+  );
+  assertStringIncludes(error.message, "192.0.2.123");
+  assertStringIncludes(error.message, "--host");
 });

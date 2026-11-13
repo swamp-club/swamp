@@ -30,7 +30,10 @@ import {
   startListWorkspaces,
   startPrepare,
 } from "../../libswamp/start/start.ts";
-import { createStartRenderer } from "../../presentation/renderers/start.ts";
+import {
+  createStartRenderer,
+  type PageReach,
+} from "../../presentation/renderers/start.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { VERSION } from "../../infrastructure/runtime/build_info.ts";
 import { loadIdentity } from "../load_identity.ts";
@@ -61,6 +64,12 @@ import {
 } from "../../serve/local/workspace_hub.ts";
 import { resolveFixedRepo } from "../../serve/local/fixed_repo.ts";
 import { TrustedHosts } from "../../serve/local/trusted_hosts.ts";
+import {
+  ListenHost,
+  type MachineAddress,
+  networkHosts,
+  urlHost,
+} from "../../serve/local/listen_host.ts";
 import {
   dashboardBundleExists,
   getDashboardDistDir,
@@ -99,8 +108,9 @@ async function checkSignedIn(live: boolean): Promise<SignedInState> {
   return { kind: "signed_in", source, ...(username ? { username } : {}) };
 }
 
-async function buildDeps(prune: boolean) {
+async function buildDeps(prune: boolean, remoteBrowser = false) {
   return createStartDeps({
+    remoteBrowser,
     version: VERSION,
     checkSignedIn,
     serverUrl: Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL,
@@ -120,8 +130,8 @@ function newToken(): string {
   );
 }
 
-function pageUrl(port: number, token: string): string {
-  return `http://127.0.0.1:${port}/dashboard/start#token=${token}`;
+function pageUrl(origin: string, token: string): string {
+  return `${origin}/dashboard/start#token=${token}`;
 }
 
 /**
@@ -152,11 +162,66 @@ export function hubStopSignals(
   return [["SIGTERM", 143], ["SIGHUP", ignoreHangup ? null : 129]];
 }
 
-/** How `swamp dashboard` serves its page; `swamp start` takes the defaults. */
+/** How `swamp start` and `swamp dashboard` serve their page. */
 export interface DashboardServing {
   /** 0 takes any free port */
   readonly port: number;
+  readonly listenHost: ListenHost;
   readonly trustedHosts: TrustedHosts;
+}
+
+export function parsePort(port: number | undefined): number {
+  if (port === undefined) return 0;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new UserError(
+      `--port must be a whole number from 1 to 65535, got ${port}.`,
+    );
+  }
+  return port;
+}
+
+export function servingFromOptions(options: AnyOptions): DashboardServing {
+  return {
+    port: parsePort(options.port),
+    listenHost: ListenHost.parse(options.host),
+    trustedHosts: TrustedHosts.parse(options.trustedHosts),
+  };
+}
+
+/** the warning follows the bind itself; the URL already shown is not repeated */
+export function pageReach(input: {
+  listenHost: ListenHost;
+  networkNames: readonly string[];
+  port: number;
+  url: string;
+  urlFor: (origin: string) => string;
+  sshSession: boolean;
+}): PageReach {
+  const { listenHost, port, url, urlFor } = input;
+  return {
+    exposed: listenHost.exposed,
+    networkUrls: input.networkNames
+      .map((host) => urlFor(`http://${host}:${port}`))
+      .filter((networkUrl) => networkUrl !== url),
+    sshHint: !listenHost.exposed && input.sshSession,
+  };
+}
+
+function machineNetworkHosts(listenHost: ListenHost): string[] {
+  if (!listenHost.exposed) return [];
+  let machineName: string | null = null;
+  let addresses: MachineAddress[] = [];
+  try {
+    machineName = Deno.hostname();
+  } catch {
+    // The addresses still reach it.
+  }
+  try {
+    addresses = Deno.networkInterfaces();
+  } catch {
+    // The machine name still reaches it.
+  }
+  return networkHosts(listenHost, machineName, addresses);
 }
 
 async function tryOpenBrowser(url: string, enabled: boolean): Promise<boolean> {
@@ -176,7 +241,7 @@ async function tryOpenBrowser(url: string, enabled: boolean): Promise<boolean> {
  * in `.swamp/start/servers/<pid>.json`, which the picker reads to say so.
  */
 function createWorkspaceClaims(
-  record: () => { port: number; token: string },
+  record: () => { port: number; token: string; host?: string },
 ): StartWorkspaceClaims {
   return {
     claim: async (name, workspacePath, open) => {
@@ -220,6 +285,17 @@ const WORKSPACE_OPTION_DESCRIPTION =
   "the folder set with `swamp config set workspaces.dir`, else under the " +
   "swamp data dir. With --json nothing is created";
 
+export const HOST_OPTION_DESCRIPTION =
+  "IP address to serve the page on (default: 127.0.0.1, this machine only). " +
+  "0.0.0.0 serves it to other machines too, e.g. when you are signed in over " +
+  "SSH; anyone who can reach it and has the link can use the page";
+
+export const PORT_OPTION_DESCRIPTION =
+  "Port for the page, e.g. for a firewall rule or a reverse proxy to forward to (default: any free port)";
+
+export const TRUSTED_HOSTS_OPTION_DESCRIPTION =
+  "Comma-separated host names, or host:port, that a reverse proxy on this machine sends as Host; requests for them are served instead of refused. The page token is still required";
+
 const PATH_OPTION_DESCRIPTION =
   "Create a new --workspace in <dir>/<name>; <dir> must already exist";
 
@@ -244,6 +320,16 @@ export async function runStart(
       "With --json, swamp start only reports and creates nothing, so it can't use --path. Leave out --json to create the workspace.",
     );
   }
+  if (
+    cliCtx.outputMode === "json" &&
+    [options.host, options.port, options.trustedHosts].some((value) =>
+      value !== undefined
+    )
+  ) {
+    throw new UserError(
+      "With --json, swamp start only reports and serves no page, so it can't use --host, --port or --trusted-hosts. Leave out --json to serve the page.",
+    );
+  }
   if (cliCtx.outputMode === "json") {
     // JSON mode is read-only: no workspace, no server, no browser.
     await inspectAction(options, ["start"]);
@@ -255,7 +341,11 @@ export async function runStart(
     : parseWorkspaceName(options.workspace);
   const renderer = createStartRenderer(cliCtx.outputMode);
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await buildDeps(true);
+  const served = serving ?? servingFromOptions(options);
+  const { listenHost, trustedHosts: proxyHosts } = served;
+  const networkNames = machineNetworkHosts(listenHost);
+  const trustedHosts = proxyHosts.including(networkNames);
+  const deps = await buildDeps(true, listenHost.exposed);
   const openBrowserEnabled = options.browser !== false;
 
   if (!await dashboardBundleExists(getDashboardDistDir())) {
@@ -295,8 +385,9 @@ export async function runStart(
     // repo it serves.
     startPage: fixed === null,
     idleStop: fixed === null,
-    port: serving?.port ?? 0,
-    trustedHosts: serving?.trustedHosts ?? TrustedHosts.NONE,
+    port: served.port,
+    listenHost,
+    trustedHosts,
     hub: createWorkspaceHub({
       token,
       resolveWorkspace: async (name) => {
@@ -316,7 +407,7 @@ export async function runStart(
         }))
           .workspaces.map(({ name, path }) => ({ name, path })),
       switchable: fixed === null,
-      trustedHosts: serving?.trustedHosts ?? TrustedHosts.NONE,
+      trustedHosts,
       spawnChild: spawnDashboardChild,
       launchSwampify: (repoDir, request) =>
         startLaunchTask(ctx, deps, {
@@ -326,7 +417,13 @@ export async function runStart(
           harness: request.harness,
         }),
     }),
-    claims: createWorkspaceClaims(() => ({ port, token })),
+    claims: createWorkspaceClaims(() => ({
+      port,
+      token,
+      ...(listenHost.probeAddress === "127.0.0.1"
+        ? {}
+        : { host: listenHost.probeAddress }),
+    })),
     onWorkspaceOpened: (path, created) =>
       renderer.workspaceOpened(path, created),
   });
@@ -382,16 +479,27 @@ export async function runStart(
     try {
       // Listening before the URL shows: a terminal closed the moment it
       // appears must not reach a dashboard with no SIGHUP listener yet.
-      const url = fixed === null
-        ? pageUrl(server.port, token)
-        : dashboardUrl(`http://127.0.0.1:${server.port}`, token, fixed.name);
+      const urlFor = (origin: string) =>
+        fixed === null
+          ? pageUrl(origin, token)
+          : dashboardUrl(origin, token, fixed.name);
+      const localOrigin = `http://${
+        urlHost(listenHost.probeAddress)
+      }:${server.port}`;
+      const url = urlFor(localOrigin);
       renderer.pageReady(
         url,
         await tryOpenBrowser(url, openBrowserEnabled),
         fixed !== null,
-        fixed === null ? [] : (serving?.trustedHosts.entries ?? []).map(
-          (host) => dashboardUrl(`https://${host}`, token, fixed.name),
-        ),
+        proxyHosts.entries.map((host) => urlFor(`https://${host}`)),
+        pageReach({
+          listenHost,
+          networkNames,
+          port: server.port,
+          url,
+          urlFor,
+          sshSession: !!Deno.env.get("SSH_CONNECTION"),
+        }),
       );
       const end = await Promise.race([server.ended, interruptedPromise]);
       try {
@@ -443,7 +551,18 @@ export const startCommand = new Command()
     "Print the page URL instead of opening a browser",
     "swamp start --no-browser",
   )
+  .example(
+    "Open the page from another machine, e.g. over SSH",
+    "swamp start --no-browser --host 0.0.0.0",
+  )
+  .example(
+    "Keep the same address between runs",
+    "swamp start --host 0.0.0.0 --port 8765",
+  )
   .option("--no-browser", "Print the URL instead of opening a browser")
+  .option("--host <address:string>", HOST_OPTION_DESCRIPTION)
+  .option("--port <port:number>", PORT_OPTION_DESCRIPTION)
+  .option("--trusted-hosts <hosts:string>", TRUSTED_HOSTS_OPTION_DESCRIPTION)
   .option("--workspace <name:string>", WORKSPACE_OPTION_DESCRIPTION)
   .option("--path <dir:string>", PATH_OPTION_DESCRIPTION, {
     depends: ["workspace"],

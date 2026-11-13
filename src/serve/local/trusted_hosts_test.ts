@@ -101,3 +101,26 @@ Deno.test("TrustedHosts.acceptsOrigin: only the exact origin of a trusted Host, 
   );
   assertEquals(trusted.acceptsOrigin("https://proxy.example", null), false);
 });
+
+Deno.test("TrustedHosts.including: adds this machine's names after the entries, lowercased, once, skipping invalid ones", () => {
+  const trusted = TrustedHosts.parse("proxy.example").including([
+    "DevBox",
+    "192.168.1.40",
+    "[fd00::1]",
+    "proxy.example",
+    "not a host",
+  ]);
+  assertEquals(trusted.entries, [
+    "proxy.example",
+    "devbox",
+    "192.168.1.40",
+    "[fd00::1]",
+  ]);
+  assertEquals(trusted.acceptsHost("192.168.1.40:8765"), true);
+  assertEquals(trusted.acceptsHost("[fd00::1]:8765"), true);
+  assertEquals(
+    trusted.acceptsOrigin("http://devbox:8765", "devbox:8765"),
+    true,
+  );
+  assertEquals(TrustedHosts.NONE.entries, []);
+});

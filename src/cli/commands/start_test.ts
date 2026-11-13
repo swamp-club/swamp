@@ -17,8 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { dashboardUrl, hubStopSignals } from "./start.ts";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
+import { ListenHost } from "../../serve/local/listen_host.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import {
+  dashboardUrl,
+  hubStopSignals,
+  pageReach,
+  runStart,
+  servingFromOptions,
+} from "./start.ts";
+
+await initializeLogging({});
 
 Deno.test("hubStopSignals: swamp start stops on SIGTERM and SIGHUP with their exit codes", () => {
   assertEquals(hubStopSignals("linux", false), [
@@ -45,5 +56,101 @@ Deno.test("dashboardUrl: the repo's page on the given origin, with the token in 
   assertEquals(
     dashboardUrl("https://box.tail1.ts.net", "tok", "my repo"),
     "https://box.tail1.ts.net/dashboard/w/my%20repo#token=tok",
+  );
+});
+
+Deno.test("servingFromOptions: no flags serve on 127.0.0.1, any free port, no extra hosts", () => {
+  const serving = servingFromOptions({});
+  assertEquals(serving.port, 0);
+  assertEquals(serving.listenHost.address, "127.0.0.1");
+  assertEquals(serving.listenHost.exposed, false);
+  assertEquals(serving.trustedHosts.entries, []);
+});
+
+Deno.test("servingFromOptions: reads --host, --port and --trusted-hosts", () => {
+  const serving = servingFromOptions({
+    host: "0.0.0.0",
+    port: 8765,
+    trustedHosts: "box.tail1.ts.net",
+  });
+  assertEquals(serving.port, 8765);
+  assertEquals(serving.listenHost.address, "0.0.0.0");
+  assert(serving.listenHost.exposed);
+  assertEquals(serving.trustedHosts.entries, ["box.tail1.ts.net"]);
+});
+
+Deno.test("servingFromOptions: a --host that is not an IP address is a UserError", () => {
+  assertThrows(
+    () => servingFromOptions({ host: "devbox" }),
+    UserError,
+    "--host",
+  );
+});
+
+Deno.test("runStart: with --json, --host, --port and --trusted-hosts are refused before anything starts", async () => {
+  for (
+    const flag of [{ host: "0.0.0.0" }, { port: 8765 }, {
+      trustedHosts: "proxy.example",
+    }]
+  ) {
+    await assertRejects(
+      () => runStart({ json: true, ...flag }, ["start"]),
+      UserError,
+      "--host, --port or --trusted-hosts",
+    );
+  }
+});
+
+const urlFor = (origin: string) => `${origin}/dashboard/start#token=t`;
+
+Deno.test("pageReach: one network address is exposed and warned about, though its URL is the one already shown", () => {
+  const listenHost = ListenHost.parse("192.168.1.40");
+  assertEquals(
+    pageReach({
+      listenHost,
+      networkNames: ["192.168.1.40"],
+      port: 8765,
+      url: urlFor("http://192.168.1.40:8765"),
+      urlFor,
+      sshSession: true,
+    }),
+    { exposed: true, networkUrls: [], sshHint: false },
+  );
+});
+
+Deno.test("pageReach: 0.0.0.0 lists every other name; loopback over SSH hints instead", () => {
+  assertEquals(
+    pageReach({
+      listenHost: ListenHost.parse("0.0.0.0"),
+      networkNames: ["devbox", "10.0.0.7"],
+      port: 1,
+      url: urlFor("http://127.0.0.1:1"),
+      urlFor,
+      sshSession: false,
+    }),
+    {
+      exposed: true,
+      networkUrls: [urlFor("http://devbox:1"), urlFor("http://10.0.0.7:1")],
+      sshHint: false,
+    },
+  );
+  assertEquals(
+    pageReach({
+      listenHost: ListenHost.DEFAULT,
+      networkNames: [],
+      port: 1,
+      url: urlFor("http://127.0.0.1:1"),
+      urlFor,
+      sshSession: true,
+    }),
+    { exposed: false, networkUrls: [], sshHint: true },
+  );
+});
+
+Deno.test("runStart: with --json, a --host that is not an IP address still gets the --json refusal", async () => {
+  await assertRejects(
+    () => runStart({ json: true, host: "devbox" }, ["start"]),
+    UserError,
+    "--host, --port or --trusted-hosts",
   );
 });

@@ -53,9 +53,9 @@ and prepares the ground for the **Serve** dashboard.
 ## Flow
 
 ```
-terminal:   swamp start [--workspace <name>]
+terminal:   swamp start [--workspace <name>] [--host <ip>] [--port <n>]
               ├─ sign-in check (the auth gate's own check; ungated command)
-              ├─ start the loopback server, with no workspace yet
+              ├─ start the server (loopback unless --host), no workspace yet
               ├─ with --workspace: open it now (claim, create if missing)
               └─ open http://127.0.0.1:<port>/dashboard/start#token=<t>
 browser:    [sign in, if needed] ─▶ workspace ─▶ task ─▶ agent ─▶ trust
@@ -202,13 +202,31 @@ behavior and a first run.
 
 ## Security
 
-- The server binds `127.0.0.1` on an ephemeral port; the address is never
-  configurable.
+- The server binds `127.0.0.1` on an ephemeral port unless `--host` names
+  another IP address of this machine or `--port` a port. `ListenHost`
+  (`src/serve/local/listen_host.ts`) takes an IP literal or `localhost`, never
+  a name, so the bind, the probe and the printed URL agree.
+- A non-loopback `--host` (e.g. `0.0.0.0` for a session over SSH) serves the
+  page to other machines over plain HTTP: the token crosses the network in the
+  clear, and anyone who can reach the address and has the link can use the
+  page. Loopback stays the default, and the output warns on every run. Over SSH
+  on loopback, the output names `--host 0.0.0.0`. A host firewall (the macOS
+  application firewall, say) may still need to allow swamp.
 - A 32-byte one-time token travels in the URL fragment, then as the
   `bearer.<token>` WebSocket subprotocol, compared in constant time and echoed
   on upgrade.
-- Any `Host` other than `127.0.0.1:<port>` or `localhost:<port>` gets 421 (DNS
-  rebinding). WebSocket upgrades pass the serve Origin allowlist.
+- Any `Host` other than `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`,
+  the bound address, a `--trusted-hosts` name or, on a non-loopback bind, this
+  machine's own name and routable addresses gets 421 (DNS rebinding): an
+  attacker's domain can never be one of those. WebSocket upgrades pass the serve
+  Origin allowlist with the same trusted names.
+  A single-label machine name is resolved through the client's search domain,
+  so on a network whose DNS someone else controls, open the page by address.
+- Each server record (`.swamp/start/servers/<pid>.json`) names the address the
+  page listens on. Another `swamp start` pings it only if it is loopback or one
+  of this machine's interface addresses; any other record is treated as gone,
+  since one planted in an imported workspace could otherwise aim the probe
+  anywhere.
 - Only the `start.*` messages exist. The API key never leaves the CLI process:
   sign-in events are projected to a whitelist before they reach the browser.
 - Nothing the user typed as a task reaches a shell. The launcher holds only
@@ -261,8 +279,10 @@ swampify task names the `swampify` skill instead.
 
 Windows opens with Windows Terminal (`wt.exe`) or `cmd start`; Linux with the
 first terminal found when a display is set. macOS opens the launcher with the
-default application for `.command` files, normally Terminal.app. Over SSH, or
-when nothing opens, the page shows a command to copy.
+default application for `.command` files, normally Terminal.app. Over SSH, on
+a non-loopback `--host` (the browser is on another machine, so a window here
+would go unseen), or when nothing opens, the page shows a command to copy;
+**Browse…** is hidden in the same cases.
 
 ## Not in phase 1
 

@@ -21,8 +21,10 @@ import { assertEquals } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import {
   createStartRenderer,
+  exposedWarning,
   formatCreated,
   pageReadyLine,
+  sshHint,
   stopHint,
   taskDetail,
 } from "./start.ts";
@@ -120,6 +122,95 @@ Deno.test("pageReady: proxy URLs come before the stop hint, which stays the last
     ),
     [],
   );
+});
+
+Deno.test("pageReady: on loopback only, the output is unchanged unless this is an SSH session", () => {
+  const renderer = createStartRenderer("log");
+  const url = "http://127.0.0.1:1/dashboard/start#token=t";
+  assertEquals(captureStdout(() => renderer.pageReady(url, false)), [
+    "",
+    pageReadyLine(false, false),
+    `  ${url}`,
+    stopHint(false),
+  ]);
+  assertEquals(
+    captureStdout(() =>
+      renderer.pageReady(url, false, false, [], {
+        exposed: false,
+        networkUrls: [],
+        sshHint: true,
+      })
+    ),
+    [
+      "",
+      pageReadyLine(false, false),
+      `  ${url}`,
+      sshHint(false),
+      stopHint(false),
+    ],
+  );
+});
+
+Deno.test("pageReady: served to other machines, lists their URLs and warns before the stop hint", () => {
+  const renderer = createStartRenderer("log");
+  const url = "http://127.0.0.1:8765/dashboard/start#token=t";
+  assertEquals(
+    captureStdout(() =>
+      renderer.pageReady(url, false, false, [], {
+        exposed: true,
+        networkUrls: [
+          "http://devbox:8765/dashboard/start#token=t",
+          "http://192.168.1.40:8765/dashboard/start#token=t",
+        ],
+        sshHint: false,
+      })
+    ),
+    [
+      "",
+      pageReadyLine(false, false),
+      `  ${url}`,
+      "From another machine, open:",
+      "  http://devbox:8765/dashboard/start#token=t",
+      "  http://192.168.1.40:8765/dashboard/start#token=t",
+      `! ${exposedWarning(false)}`,
+      stopHint(false),
+    ],
+  );
+});
+
+Deno.test("pageReady: served on one network address, warns even with no other URL to list", () => {
+  const renderer = createStartRenderer("log");
+  const url = "http://192.168.1.40:8765/dashboard/start#token=t";
+  assertEquals(
+    captureStdout(() =>
+      renderer.pageReady(url, false, false, [], {
+        exposed: true,
+        networkUrls: [],
+        sshHint: false,
+      })
+    ),
+    [
+      "",
+      pageReadyLine(false, false),
+      `  ${url}`,
+      `! ${exposedWarning(false)}`,
+      stopHint(false),
+    ],
+  );
+});
+
+Deno.test("sshHint and exposedWarning: name the command that serves the page", () => {
+  assertEquals(
+    sshHint(false),
+    "This page opens only on this machine. To open it from yours, run `swamp start --no-browser --host 0.0.0.0`.",
+  );
+  assertEquals(
+    sshHint(true).includes("`swamp dashboard --no-browser --host 0.0.0.0`"),
+    true,
+  );
+  assertEquals(exposedWarning(false).includes("launches agents"), true);
+  assertEquals(exposedWarning(true).includes("workflows"), true);
+  assertEquals(exposedWarning(true).includes("unencrypted (HTTP)"), true);
 });
 
 Deno.test("stopHint: swamp start says its terminal keeps the page; swamp dashboard says closing it leaves it running", () => {

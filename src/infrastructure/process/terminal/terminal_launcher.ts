@@ -64,6 +64,8 @@ export interface TerminalProcess {
 
 export interface TerminalLauncherDeps {
   readonly os: typeof Deno.build.os;
+  /** the page is open on another machine, so a window here would go unseen */
+  readonly remoteBrowser?: boolean;
   readonly env: (name: string) => string | undefined;
   readonly resolve: (name: string) => Promise<string | null>;
   readonly spawn: (
@@ -110,7 +112,7 @@ export class SystemTerminalLauncher implements TerminalLauncher {
         : renderPosixLauncher(spec, launcherEnv),
     );
 
-    if (env("SSH_CONNECTION")) return fallback;
+    if (this.deps.remoteBrowser || env("SSH_CONNECTION")) return fallback;
 
     for (const candidate of await this.candidates(scriptPath)) {
       if (await this.tryOpen(candidate, workspacePath)) {
@@ -226,10 +228,13 @@ export class SystemTerminalLauncher implements TerminalLauncher {
   }
 }
 
-export function createSystemTerminalLauncher(): SystemTerminalLauncher {
+export function createSystemTerminalLauncher(
+  options: { remoteBrowser?: boolean } = {},
+): SystemTerminalLauncher {
   const resolver = defaultCommandResolver();
   return new SystemTerminalLauncher({
     os: Deno.build.os,
+    remoteBrowser: options.remoteBrowser ?? false,
     env: (name) => Deno.env.get(name),
     resolve: (name) => resolver.resolve(name),
     spawn: (command, args, cwd) =>
