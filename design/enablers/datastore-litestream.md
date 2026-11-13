@@ -38,9 +38,12 @@ and the `_control/` records this layout sits beside.
    [Phase 4A](#phase-4a-replication-cost-on-a-bucket-model-swamp-club3357)).
    In team mode the serve leader keeps one running for as long as it holds the
    lease.
-4. **`commits.db` keeps SQLite's default checkpointing and never forces a
-   checkpoint.** Do not copy `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)`
-   pattern.
+4. **`commits.db` never forces a checkpoint.** Do not copy
+   `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` pattern. A copy a sidecar
+   replicates turns auto-checkpoint off, so only Litestream checkpoints it
+   (see [Verifying the replica](#verifying-the-replica-swamp-club3935)); any
+   other copy, a serve follower's included until its own sidecar starts,
+   keeps SQLite's default.
 5. **One replica path per writer lineage.** `<prefix>/_litestream/<fence>/`,
    named by the fence at which the lineage's replication began: in solo mode
    one checkout's run of commands, not each command's own fence (see
@@ -1320,6 +1323,25 @@ continue the copy's lineage only under the same rule, and never claim one,
 so a hold on a stale copy can never continue a lineage another writer
 superseded. The next writer restarts.
 
+**A serve follower's takeover** (swamp-club#4679). A follower's tick is a
+`setTimeout` chain: the next tick comes at the tick interval (10 s), or just
+after the holder's lease expires by this node's clock when that is sooner
+(`LeadershipLease.expiresAt()`, plus 1 s, since `take()` judges expiry
+strictly). It never waits longer than the interval, since the same timer
+drives refreshes. A tick no longer waits out its copy refresh when the
+holder's lease has expired: a timer apart from the tick, at the expiry plus
+1 s, aborts the refresh, and the tick then calls `take()`, which restores
+under the lease as before. The timer reads the expiry again when it comes
+due, so a holder that renewed meanwhile keeps the refresh going; after a
+`take()` that loses, the refresh runs again, this time to its end. A restore
+is abortable only before it is installed: `refreshV3FollowerCopy`,
+`ensureV3CopyCurrent` and `makeV3CopyCurrent` check the signal at the
+restore-lock wait, around quiesce, during the Litestream restore and before
+the integrity check, truncation and install. After install the refresh runs
+to its end, and only the read-model catch-up after it is skipped. Serve's
+`stop()` aborts a follower refresh the same way and still waits for a
+`take()` in flight.
+
 **Serve** publishes a head whenever its last commit moved (one sync and
 publish at a time per datastore, so an earlier head is never published over
 a later one), on its 30-second
@@ -1357,6 +1379,15 @@ removes paths below the current lineage that no lineage key names, such as a
 fenced writer's late upload. A provider without it keeps the paths, and
 their records stay with them. Collection is best effort and never fails a
 command.
+
+Collection does not hold up the first sync (swamp-club#4679). It runs in the
+background once the first sync has published its marks and pruned the heads
+(`publishedMarks.set`, `pruneV3Heads`), and a failure is logged.
+`closeV3Datastores` awaits it after the closing sync and before the lease is
+released, for serve and solo CLI writers alike. Measured on ministack S3 with
+40 ms each way, `removePath` of 2,398, 3,008 and 4,793 objects took 6.95, 8.91
+and 13.75 s, about 2.9 ms per object, so its 60 s timeout would trip near
+20,000 objects.
 
 **Chunk garbage collection** (swamp-club#3491) deletes chunks no commit in
 the copy names. A restore's truncation, and a fenced writer's late head on an
@@ -1413,6 +1444,26 @@ check and one full restore before its first command; afterwards a command
 whose copy is current pays only the check. Since 4E the restore logs a line
 naming the lineage before it starts and one with its time after, so the cost
 is visible; the restore deadline is 30 minutes (about 4.5 s per GB).
+
+**A long lineage's restore** (swamp-club#4679). In the team-mode dogfood on
+GCS (swamp-club#4374, run 7, failover round c05-default-r3), a follower's
+restore of a lineage about 3.6 h old (3,067 TXIDs) took 248 s, about 75 ms per
+TXID. Rebuilt locally: a 3,007-TXID lineage written over 6.3 minutes with the
+sidecar compacting, on ministack S3 with 40 ms each way, pinned 0.5.17, median
+of 3, restored at the head's exact TXID and at the latest state:
+
+| Litestream config | Plan files | Exact TXID | Latest |
+| --- | --- | --- | --- |
+| default (swamp's) | 6 | 0.94 s | 2.14 s |
+| short levels (5 s, 30 s, 2 m) | 8 | 1.04 s | 2.23 s |
+| short levels and a 2 m snapshot | 4 | 0.87 s | 2.11 s |
+| never compacted (L0 only) | 3,007 | 136 s | 139 s |
+
+0.5.17's `CalcRestorePlan` builds the same plan for the head's exact TXID and
+for the latest state, so `-txid` is not what made that restore slow. Its per-TXID
+cost is near the uncompacted plan's (about 45 ms per file here), which points
+to a plan of uncompacted L0 files. That is inferred, not reproduced on GCS, and
+no config was changed: the next dogfood failover rounds measure it again.
 
 **Tests.** The `integration/datastore_v3_litestream_restore*_test.ts` files,
 sharing `datastore_v3_litestream_restore_helpers.ts`, run real Litestream with
@@ -1939,8 +1990,20 @@ nothing about the restore fails.
 Litestream handles its own WAL restarts. This is the "auto-checkpoint off"
 regime measured in [Checkpoint regimes (Q2)](#checkpoint-regimes-q2): the
 same replica size and restore time. A database that does not replicate keeps
-SQLite's default. The v3 fitness rule that refuses checkpoint pragmas pins
-this one site.
+SQLite's default.
+
+So does a serve follower's copy (swamp-club#4679). The datastore has a
+replica, but a follower runs no sidecar: with auto-checkpoint off nothing
+checkpointed the WAL the leader's feed wrote, and in the run 7 dogfood it grew
+to 15.9 GB and filled the disk. A follower opens its copy with the default,
+and `acquireV3Replication` (`litestream/v3_replication.ts`) calls
+`stopAutoCheckpointAt` before any sidecar starts on the file, whichever path
+starts it (`take()`, the boot lead, a sidecar replacement): it turns
+auto-checkpoint off on every connection open stores hold to that
+`commits.db`, and on stores opened there later. It forces no checkpoint.
+`readCommitLogFacts`, a read-only probe opened per call, is left out. The v3
+fitness rule that refuses checkpoint pragmas
+(`integration/datastore_v3_rules_test.ts`) pins these two sites.
 
 **The writer checks its own replica.** A reader finds a replica it cannot
 restore only when it clones or refreshes, and by then nobody but the writer
@@ -2242,7 +2305,8 @@ macOS.
   - teardown order: sync, close the stores, then stop or release the sidecar
     (Phase 4A);
   - SHA-256 check on download and on every start (built: swamp-club#3358);
-  - `commits.db` keeps SQLite's default checkpointing and never forces one;
+  - `commits.db` never forces a checkpoint, and turns auto-checkpoint off
+    only on a copy a sidecar replicates (rule 4);
   - the confirmation rule above;
   - `litestream sync` as the client on Windows, and Windows gated on Litestream
     0.5.18 or later. Never pin a build from main. If 0.5.18 isn't released when

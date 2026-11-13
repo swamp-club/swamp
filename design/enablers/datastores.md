@@ -3150,11 +3150,13 @@ that.
   5-second `busy_timeout`, and no foreign keys (the schema has none).
 - Never a forced checkpoint: Litestream replicates the WAL, and
   `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` made the replica 11 times
-  larger (`datastore-litestream.md`). A replicated copy turns auto-checkpoint
-  off, so only Litestream checkpoints it (swamp-club#3935, "Verifying the
-  replica" in `datastore-litestream.md`); any other `commits.db` keeps
-  SQLite's default. A fitness rule refuses `wal_checkpoint` and
-  `wal_autocheckpoint` in v3 code but for that one pinned site.
+  larger (`datastore-litestream.md`). A copy a sidecar replicates turns
+  auto-checkpoint off before the sidecar starts, so only Litestream
+  checkpoints it (swamp-club#3935, "Verifying the replica" in
+  `datastore-litestream.md`); any other `commits.db` keeps SQLite's default,
+  a serve follower's copy included until its own sidecar starts
+  (swamp-club#4679). A fitness rule refuses `wal_checkpoint` and
+  `wal_autocheckpoint` in v3 code but for those two pinned sites.
 - Solo mode keeps one idle Litestream sidecar across write commands. A
   sidecar per command never compacts, so a day's replica of 252 objects took
   18–121 s to restore against 1.1–5.7 s compacted. A writer closes
@@ -5264,6 +5266,12 @@ A point or a partition that changed between the two steps means another
 process is writing the store, and the batch says so rather than report
 damage.
 
+Each batch takes its own turn on the store's queue: it reads the target and
+the point at the start of its turn, then reads, rebuilds and commits together,
+checking the point and the fence again. An append waits at most one batch, not
+the whole compaction (up to its 60 s budget). The retention pass and the
+closing compaction go through `compactHistory`, so both batch this way.
+
 A failure or a crash leaves a batch whole or absent.
 `integration/datastore_v3_compaction_test.ts` stops one with an injected
 failure, and with a Worker terminated inside the transaction, and compares
@@ -6384,7 +6392,18 @@ leader election and followers").
   expire by its TTL. It holds for that one teardown. A cut of only the replica's
   traffic on S3 still waits the closing sync's 60 s: Litestream retries inside
   the sync whatever its AWS SDK retry settings, and the storage probe still
-  answers.
+  answers. A workflow or method run whose failure has a datastore or serve
+  outage in its cause chain keeps that cause and reports its
+  `datastore_v3_*` or `serve_*` code (`datastoreOutageOf`,
+  `src/libswamp/errors.ts`), so its teardown is told the same and leaves the
+  recovery to the next command rather than running it on the exit path
+  (swamp-club#4679).
+- An outage that ends a command whose effectful commit may have landed is
+  reported as `datastore_v3_commit_may_land` (exit 1), and `--json` keeps
+  `inFlight` (swamp-club#4679): the command's last change may or may not have
+  been committed. A command that only read, waited for a lock or wrote
+  bookkeeping (data versions, lease ops) keeps exit 75. A lease-lost refusal
+  keeps its own code.
 - `--format 3` through `--server` is refused.
 
 **Retention and sweeps.** The end-of-command retention pass confirms the
@@ -8704,12 +8723,16 @@ following, its copy made current for reads (`followV3Datastore`). Nothing is
 recovered, marked or replicated by a follower.
 
 - `ServeLeadership` (`src/serve/serve_leadership.ts`) tracks the role. On
-  every tick (10 s) a follower tries the lease once and, when it is busy,
-  restores its copy from the published lineage when it is behind
-  (`refreshV3FollowerCopy`) and reads the leader record. A follower that
-  wins takes the writer's full hold path: restore the latest replicated
-  state, raise the fence, check the claim, recover the outbox and start a
-  lineage at its fence.
+  every tick (10 s, or just after the holder's lease expires when that is
+  sooner) a follower tries the lease once and, when it is busy, restores its
+  copy from the published lineage when it is behind
+  (`refreshV3FollowerCopy`) and reads the leader record. A refresh still
+  running when the holder's lease expires is aborted before its restore is
+  installed, and the follower tries the lease at once (swamp-club#4679,
+  "Phase 4D2" in `datastore-litestream.md`). A follower that wins takes the
+  writer's full hold path: restore the latest replicated state, raise the
+  fence, check the claim, recover the outbox and start a lineage at its
+  fence.
 - A leader whose lease another node took over (a higher fence) does not
   follow: it stops (`onLostLead`). Its role changes first, so its gates
   refuse, and serve shuts down as on SIGTERM: it takes no more work, its
