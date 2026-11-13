@@ -8690,7 +8690,9 @@ export class WorkflowExecutionService {
         signal: options?.signal,
         instanceId: options?.instanceId,
         continuation: automatic?.continuation,
-        requireCurrentRecord: automatic !== undefined,
+        // compared under the claim before the reset; this copy now holds the
+        // reset unpushed, so a byte comparison would read it stale
+        requireCurrentRecord: false,
       })
     ) {
       if (!marked) {

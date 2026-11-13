@@ -960,3 +960,39 @@ Deno.test({
       );
     }),
 });
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: on a synced datastore the resume after serve's own unpushed reset still runs",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "synced" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      await Deno.writeTextFile(counter, "");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      // as runRecordCurrencyOver: a copy changed here and not yet pushed reads
+      // as different from the remote
+      const unpushed = new Set<string>();
+      const repo = serve.ctx.repoContext.workflowRunRepo;
+      const save = repo.save.bind(repo);
+      repo.save = (workflowId, run) => {
+        unpushed.add(run.id);
+        return save(workflowId, run);
+      };
+      serve.ctx.repoContext.runRecordCurrency = ({ runId: id }) =>
+        Promise.resolve(!unpushed.has(id));
+
+      assertEquals(
+        (await continueInterruptedRuns(serve.ctx, "boot")).continued,
+        [runId],
+      );
+      await finished(serve, runId);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "succeeded",
+      );
+      assertEquals(await ranSteps(counter), ["second"]);
+    }),
+});
