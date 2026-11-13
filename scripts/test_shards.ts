@@ -24,6 +24,10 @@ export const WEIGHTS_FILE = "scripts/test_shard_weights.json";
 export const DEFAULT_WEIGHT_SECONDS = 0.05;
 export const RECORD_THRESHOLD_SECONDS = 3;
 const MAX_SHARDS = 4;
+// each listed file's Workers' module loads can wedge a deno test process shared with other Worker-heavy files
+export const OWN_PROCESS_FILES: readonly string[] = [
+  "integration/command_routes_rules_test.ts",
+];
 const CORES_PER_SHARD = 8;
 
 const TEST_FILE = /(^|[_.])test\.(js|mjs|ts|mts|jsx|tsx)$/;
@@ -113,6 +117,37 @@ export function partition(
     loads[best] += weight;
   }
   return out;
+}
+
+export interface ShardGroup {
+  /** undefined runs what the config includes */
+  files: string[] | undefined;
+  flags: string[];
+}
+
+/**
+ * one shard runs from the config, since a file list overruns Windows' command
+ * line; an own-process file always gets a group of its own, never an empty one
+ */
+export function shardGroups(
+  files: readonly string[],
+  weights: Readonly<Record<string, number>>,
+  shards: number,
+  ownProcess: readonly string[],
+  exclude: readonly string[],
+): ShardGroup[] {
+  const alone = files.filter((file) => ownProcess.includes(file));
+  const shared = files.filter((file) => !ownProcess.includes(file));
+  // --ignore replaces the config's test.exclude, so it repeats every exclude
+  const ignore = alone.length === 0
+    ? []
+    : [`--ignore=${[...exclude.filter((e) => e !== ""), ...alone].join(",")}`];
+  const groups: ShardGroup[] = shards === 1
+    ? (shared.length === 0 ? [] : [{ files: undefined, flags: ignore }])
+    : partition(shared, weights, shards)
+      .filter((group) => group.length > 0)
+      .map((group) => ({ files: group, flags: [] }));
+  return [...groups, ...alone.map((file) => ({ files: [file], flags: [] }))];
 }
 
 export interface ShardPlan {
@@ -427,11 +462,16 @@ async function main(args: string[]): Promise<number> {
     isWindows ? 1 : options.shards,
     Deno.env.get("DENO_JOBS"),
   );
-  let groups: (string[] | undefined)[] = [undefined];
-  if (plan.shards > 1) {
-    const files = await discoverTestFiles(root, testConfigFrom(denoJson));
-    groups = partition(files, readWeights(root), plan.shards);
-  }
+  const config = testConfigFrom(denoJson);
+  const files = await discoverTestFiles(root, config);
+  const groups = shardGroups(
+    files,
+    readWeights(root),
+    plan.shards,
+    OWN_PROCESS_FILES,
+    config.exclude,
+  );
+  if (groups.length === 0) throw new Error("test-shards found no test files");
 
   const tmpBase = Deno.env.get("TMPDIR") ?? Deno.env.get("TMP") ??
     Deno.env.get("TEMP") ?? "/tmp";
@@ -457,13 +497,13 @@ async function main(args: string[]): Promise<number> {
       `test-shards: ${groups.length} shard(s) x ${plan.jobs} jobs`,
     );
     const runs = await Promise.all(
-      groups.map((files, index) =>
+      groups.map((group, index) =>
         runShard(
           index,
-          files,
+          group.files,
           root,
           task,
-          options.passThrough,
+          [...options.passThrough, ...group.flags],
           plan.jobs,
           shardDirs[index],
           children,

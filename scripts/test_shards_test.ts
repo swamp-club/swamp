@@ -29,7 +29,9 @@ import {
   parseCliArgs,
   parseResultLine,
   parseTestTask,
+  OWN_PROCESS_FILES,
   partition,
+  shardGroups,
   shardPlan,
   testConfigFrom,
   WEIGHTS_FILE,
@@ -108,6 +110,67 @@ Deno.test("partition: unlisted files share the default weight", () => {
   const shards = partition(["a_test.ts", "b_test.ts", "c_test.ts"], {}, 3);
   assertEquals(shards, [["a_test.ts"], ["b_test.ts"], ["c_test.ts"]]);
   assertEquals(DEFAULT_WEIGHT_SECONDS > 0, true);
+});
+
+Deno.test("shardGroups: with several shards, an own-process file runs in a group of its own and every other file in exactly one shard", () => {
+  const files = Array.from({ length: 40 }, (_, i) => `f${i}_test.ts`);
+  files.push("alone_test.ts");
+  const groups = shardGroups(files, {}, 4, ["alone_test.ts"], ["skip"]);
+  assertEquals(groups.length, 5);
+  assertEquals(groups[4], { files: ["alone_test.ts"], flags: [] });
+  for (const group of groups.slice(0, -1)) {
+    assertEquals(group.flags, []);
+    assertEquals(group.files!.includes("alone_test.ts"), false);
+  }
+  assertEquals(groups.flatMap((g) => g.files!).sort(), [...files].sort());
+});
+
+Deno.test("shardGroups: one shard runs from the config with no file list, ignoring the own-process file and every configured exclude", () => {
+  const files = Array.from({ length: 3000 }, (_, i) => `dir/f${i}_test.ts`);
+  files.push("alone_test.ts");
+  assertEquals(
+    shardGroups(files, {}, 1, ["alone_test.ts"], ["design", "", "x/y_test.ts"]),
+    [
+      { files: undefined, flags: ["--ignore=design,x/y_test.ts,alone_test.ts"] },
+      { files: ["alone_test.ts"], flags: [] },
+    ],
+  );
+  // nothing to set apart: the plain run, exactly as without own-process files
+  assertEquals(shardGroups(files, {}, 1, ["gone_test.ts"], ["design"]), [
+    { files: undefined, flags: [] },
+  ]);
+});
+
+Deno.test("shardGroups: never hands a shard an empty file list, which would run every test", () => {
+  assertEquals(
+    shardGroups(["a_test.ts", "alone_test.ts"], {}, 4, ["alone_test.ts"], []),
+    [{ files: ["a_test.ts"], flags: [] }, {
+      files: ["alone_test.ts"],
+      flags: [],
+    }],
+  );
+  assertEquals(shardGroups(["alone_test.ts"], {}, 1, ["alone_test.ts"], []), [
+    { files: ["alone_test.ts"], flags: [] },
+  ]);
+  assertEquals(shardGroups([], {}, 4, ["alone_test.ts"], []), []);
+  assertEquals(shardGroups([], {}, 1, ["alone_test.ts"], []), []);
+});
+
+Deno.test("shardGroups: an own-process file that was not discovered adds no group", () => {
+  assertEquals(
+    shardGroups(["a_test.ts", "b_test.ts"], {}, 2, ["gone_test.ts"], []),
+    [{ files: ["a_test.ts"], flags: [] }, { files: ["b_test.ts"], flags: [] }],
+  );
+});
+
+Deno.test("OWN_PROCESS_FILES: names only test files that exist", async () => {
+  assertEquals(OWN_PROCESS_FILES.length > 0, true);
+  const files = await discoverTestFiles(ROOT, testConfigFrom(
+    JSON.parse(await Deno.readTextFile(join(ROOT, "deno.json"))),
+  ));
+  for (const file of OWN_PROCESS_FILES) {
+    assertEquals(files.includes(file), true, file);
+  }
 });
 
 Deno.test("shardPlan: one shard per 8 cores up to 4, with the cores split between them", () => {
