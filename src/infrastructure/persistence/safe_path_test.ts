@@ -431,3 +431,22 @@ Deno.test("findEscapingLink: follows a chain of in-boundary links to an outside 
     });
   });
 });
+
+Deno.test("findEscapingLink: resolves a relative dangling link against its real parent, not the path it was reached by", async () => {
+  await withEscapeFixture(async (repo) => {
+    await Deno.remove(join(repo, ".claude", "skills"));
+    await Deno.mkdir(join(repo, "s", "foo"), { recursive: true });
+    await Deno.symlink(join("..", "s"), join(repo, ".claude", "skills"), {
+      type: "dir",
+    });
+    const realLink = join(repo, "s", "foo", "SKILL.md");
+    await Deno.symlink(join("..", "..", "..", "escape", "new.md"), realLink, {
+      type: "file",
+    });
+    const reached = join(repo, ".claude", "skills", "foo", "SKILL.md");
+    assertEquals(await findEscapingLink(reached, repo), {
+      link: reached,
+      target: join(dirname(repo), "escape", "new.md"),
+    });
+  });
+});

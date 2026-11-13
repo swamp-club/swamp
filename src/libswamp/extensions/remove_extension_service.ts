@@ -39,7 +39,7 @@ import {
   assertNoBlockingJournal,
   recoverPulledExtensionStagingLocked,
 } from "./recover_staging.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { inManagedLockfileTransaction } from "./managed_lockfile_transaction.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
@@ -183,13 +183,16 @@ export class RemoveExtensionService {
     if (linked.length > 0) {
       const [first] = linked;
       const link = lockfileRelative(this.repoDir, first.escape.link);
-      throw new UserError(
-        `Extension ${name} lists ${linked.length} path(s) under a link that ` +
-          `leaves the repository (first: ${first.path}; ${link} resolves to ` +
-          `${first.escape.target}). Nothing was removed. Replace ${link} ` +
-          `with a real directory, or delete those paths from the ` +
-          `extension's "files" list in upstream_extensions.json, then retry ` +
-          `\`swamp extension rm ${name}\`.`,
+      throw markErrorPaths(
+        new UserError(
+          `Extension ${name} lists ${linked.length} path(s) under a link that ` +
+            `leaves the repository (first: ${first.path}; ${link} resolves to ` +
+            `${first.escape.target}). Nothing was removed. Replace ${link} ` +
+            `with a real directory, or delete those paths from the ` +
+            `extension's "files" list in upstream_extensions.json, then retry ` +
+            `\`swamp extension rm ${name}\`.`,
+        ),
+        [first.path, link, first.escape.target],
       );
     }
 

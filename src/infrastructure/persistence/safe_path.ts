@@ -155,7 +155,11 @@ async function linkTarget(link: string): Promise<string> {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
     if (!isLink) return await resolveRealPath(current);
-    current = resolve(dirname(current), await Deno.readLink(current));
+    // the kernel resolves a relative target against the link's real parent
+    current = resolve(
+      await Deno.realPath(dirname(current)),
+      await Deno.readLink(current),
+    );
   }
   throw new Deno.errors.FilesystemLoop(`Too many levels of links: ${link}`);
 }
