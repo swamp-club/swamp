@@ -52,6 +52,7 @@ import type { AuditEmitter } from "../src/domain/serve_audit/audit_emitter.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 
 await initializeLogging({});
 
@@ -283,9 +284,7 @@ Deno.test({
         await Deno.writeTextFile(counter, "");
         const serve = await serveOver(repoDir, serveHolder("a"));
 
-        const result = await continueInterruptedRuns(serve.ctx, "boot", {
-          runIds: new Set([runId]),
-        });
+        const result = await continueInterruptedRuns(serve.ctx, "boot");
         assertEquals(result.continued, [runId]);
         await finished(serve, runId);
 
@@ -642,6 +641,53 @@ Deno.test({
       assertEquals(
         serve.audit.filter((a) => a.action === "workflow.auto_continue_failed"),
         [],
+      );
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a claim a gone serve left before its reset leaves the run interrupted and says so once",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "orphaned-claim" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      const gone = serveHolder("gone");
+      serve.ctx.repoContext.continuationClaims = claimsFor(
+        claims,
+        serveHolder("a"),
+        { [gone]: "dead" },
+      );
+      await claimsFor(claims, gone).store.create({
+        runId,
+        suspensionKey: await suspensionKeyOf(
+          (await storedRun(serve, workflow, runId))!,
+        ),
+        generation: 1,
+        holder: gone,
+        claimedAt: new Date().toISOString(),
+      });
+
+      const logs = await captureLogs(async () => {
+        assertEquals(await continueInterruptedRuns(serve.ctx, "boot"), {
+          continued: [],
+          refused: [],
+        });
+        await continueInterruptedRuns(serve.ctx, "reconciliation");
+      });
+
+      const warned = logs.filter((l) =>
+        l.text.includes("holds its continuation") && l.text.includes(runId)
+      );
+      assertEquals(warned.length, 1);
+      assertStringIncludes(warned[0].text, "swamp workflow recover");
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "interrupted",
       );
     }),
 });

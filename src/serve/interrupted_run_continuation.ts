@@ -69,8 +69,6 @@ export type InterruptedRunContinuationCause =
   | "lead";
 
 export interface InterruptedRunContinuationOptions {
-  /** limits the pass to these runs; every interrupted run when absent */
-  readonly runIds?: ReadonlySet<string>;
   /** a continued scheduled run, so the next fire of its workflow overlaps */
   readonly onScheduledRunContinued?: (
     workflowId: string,
@@ -112,7 +110,6 @@ export async function continueInterruptedRuns(
     "interrupted",
   );
   for (const { run, workflowId } of candidates) {
-    if (options.runIds !== undefined && !options.runIds.has(run.id)) continue;
     if (run.continuableSince === undefined) continue;
     if (registry.draining) break;
     if (registry.get(run.id)) continue;
@@ -187,6 +184,21 @@ async function verdictFor(
   );
 }
 
+const warnedClaims = new Set<string>();
+const WARNED_CLAIMS_MAX = 10_000;
+
+/** once per claim: a holder gone before its reset leaves the run to an operator */
+function warnHeldClaim(run: WorkflowRun, claim: ContinuationClaim): void {
+  const key = `${claim.runId}:${claim.suspensionKey}:${claim.generation}`;
+  if (warnedClaims.has(key)) return;
+  if (warnedClaims.size >= WARNED_CLAIMS_MAX) warnedClaims.clear();
+  warnedClaims.add(key);
+  logger.warn(
+    "Run {runId} of workflow {workflow} stays interrupted while {holder} holds its continuation; if that serve is no longer running, recover it with 'swamp workflow recover {workflow} --run {runId}'",
+    { runId: run.id, workflow: run.workflowName, holder: claim.holder },
+  );
+}
+
 interface InterruptedRecordHold {
   release(): Promise<void>;
 }
@@ -211,7 +223,10 @@ async function holdInterruptedRecord(
       INTERRUPTED_RECORD_CLAIM,
       new Date(),
     );
-    if (acquired.kind !== "acquired") return null;
+    if (acquired.kind !== "acquired") {
+      if (acquired.liveness !== "alive") warnHeldClaim(run, acquired.claim);
+      return null;
+    }
     claim = acquired.claim;
   }
   const hold: InterruptedRecordHold = {

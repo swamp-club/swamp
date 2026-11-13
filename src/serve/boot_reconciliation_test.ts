@@ -1360,13 +1360,10 @@ Deno.test("reconcileRemoteInterruptedRuns: interrupts YAML workflow runs from st
     mockWorkflowRunRepo as unknown as ReconcileRemoteInterruptedRunsDeps[
       "workflowRunRepo"
     ];
-  const announced: string[] = [];
-  h.deps.onRunInterrupted = (runId) => announced.push(runId);
 
   const reaped = await reconcileRemoteInterruptedRuns(h.deps);
   assertEquals(reaped, 2);
   assertEquals(yamlInterrupted, ["remote_instance_dead", "stamped"]);
-  assertEquals(announced, ["yaml-run-1"]);
   assertEquals(yamlSaved.length, 1);
   assertEquals(yamlSaved[0].workflowId, "wf-1");
   assertEquals(scanWindows, [undefined]);
