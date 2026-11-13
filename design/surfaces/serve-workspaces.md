@@ -154,8 +154,10 @@ WebSocket is relayed frame by frame between the caller's socket and one the
 router opens to the child, with the query, subprotocols, `Origin` and cookies
 carried over. The router passes `Authorization`, `Host` and cookies through
 untouched: each serve authenticates its own callers and the router adds no
-credential. It sets the forwarding header to the caller's address. A workspace
-that is not running answers 503 with its state. An unknown name answers 404.
+credential. It overwrites the forwarding header with the caller's address, so a
+caller cannot supply its own. A host that is itself behind a proxy is told so
+in `host.yaml` and passes on the address that proxy reports. A workspace that
+is not running answers 503 with its state. An unknown name answers 404.
 
 The worker data plane is HTTP/2 only under TLS and HTTP/1.1 over plain TCP,
 with the same handlers. The hop from the router to a child is plain loopback
@@ -279,13 +281,15 @@ own tokens, so every access record stays in the workspace.
    (`workspace.sign-in`). The root gives any authenticated principal a
    single-use code that names the workspace and expires within a minute.
 2. The client gives the code to the workspace (`POST /auth/exchange`).
-3. The workspace redeems the code at the root. The root answers once with who
-   the code was issued to: the principal, the username and the collectives.
+3. The workspace redeems the code at the root and sends its own name with it.
+   The root refuses a code that names another workspace. Otherwise it answers
+   once with who the code was issued to: the principal, the username and the
+   collectives.
 4. The workspace applies its own admission lists and mints its own server
    token for that principal.
 
 The root token never reaches a workspace, where extension code could read it. A
-code is of no use anywhere but the workspace it names.
+code taken to any workspace but the one it names is refused there.
 
 The CLI does this by itself. Given a server address `<address>/w/<name>` and no
 stored token for it, it exchanges when it holds a token for `<address>` and the
@@ -430,8 +434,9 @@ After 7 an operator who sets each workspace up has a multi-workspace host.
     codes. A workspace offers `/auth/exchange`, says so in `/auth/info` and
     mints a token from a redeemed code. The host passes each workspace the
     root's address. A token-mode root stops refusing `create`. Done when the
-    holder of a root token gets a working workspace token and the root token
-    is sent only to the root. After 11.
+    holder of a root token gets a working workspace token, the root token is
+    sent only to the root, and a code for one workspace is refused at another.
+    After 11.
 15. **The CLI signs in to a workspace through the root.** Credential lookup
     exchanges when it has no token for a workspace's address and holds one for
     the host's. Done when `--server <host address>/w/<name>` works after one
