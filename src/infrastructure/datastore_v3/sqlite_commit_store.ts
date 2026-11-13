@@ -596,13 +596,9 @@ export interface SqliteCommitStoreOptions {
    */
   readonly afterAppendWrites?: (commit: Commit) => void;
   /**
-   * Litestream replicates this `commits.db`, so SQLite's auto-checkpoint is
-   * turned off and only Litestream checkpoints it (swamp-club#3935).
-   * Litestream 0.5.17 can lose its read lock after a sync request, and an
-   * auto-checkpoint then restarts the WAL before Litestream has read its
-   * newest frames: those writes never reach the replica, and every restore
-   * from that point fails SQLite's integrity check. A store opened without
-   * it is switched by {@link stopAutoCheckpointAt} before a sidecar starts.
+   * auto-checkpoint off, so only Litestream checkpoints: 0.5.17 can lose its
+   * read lock and miss frames an auto-checkpoint's WAL restart drops; a store
+   * opened without it is switched by {@link stopAutoCheckpointAt}
    */
   readonly replicated?: boolean;
   /**
@@ -732,7 +728,6 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   readonly #afterAppendWrites: ((commit: Commit) => void) | undefined;
   /** {@link SqliteCommitStoreOptions.follower}. */
   readonly #follower: boolean;
-  /** Its key in {@link storeConnections}. */
   #connectionKey: string | undefined;
   /** Append transactions committed; see {@link appendTransactions}. */
   #appendTransactions = 0;
@@ -3140,7 +3135,7 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   }
 }
 
-/** The connection of each open store, by its `commits.db` path. */
+/** keyed by the resolved `commits.db` path */
 const storeConnections = new Map<string, Set<DatabaseSync>>();
 
 /** Paths {@link stopAutoCheckpointAt} named: stores open there with it off. */
@@ -3348,7 +3343,6 @@ function requirePositive(value: number, label: string): void {
   }
 }
 
-/** What a compaction's batches did so far, summed across their turns. */
 interface CompactionTotals {
   compacted: number;
   batches: number;

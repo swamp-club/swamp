@@ -1032,7 +1032,7 @@ class HeldRenewalServe extends FakeServe {
     return this.#answer !== undefined;
   }
 
-  /** serve no longer holds the lease */
+  /** serve does not hold the lease */
   answerExpired(): void {
     const answer = this.#answer;
     this.#answer = undefined;

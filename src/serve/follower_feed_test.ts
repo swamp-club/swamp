@@ -306,7 +306,6 @@ function failingSetup() {
     },
     onFresh: () => {},
   });
-  // a failure closes the socket, and the leadership tick follows again
   const followAgain = async () => {
     const opened = sockets.length;
     feed.follow(leader("a", 1));

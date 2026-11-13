@@ -346,8 +346,6 @@ async function runCutOff(
             const root = registerCompletionTypes(new Command())
               .globalOption("--json", "JSON output")
               .command("cmd", workflowRunCommand);
-            // as mod.ts does for a v3 checkout: it runs locally, serve its
-            // upstream
             setImplicitServeRouting(false);
             try {
               await root.parse([
@@ -379,7 +377,6 @@ async function runCutOff(
         intervalMs: 20,
       });
       if (options.checkpointInFlight !== true) {
-        // as in the field: s1's running checkpoint landed, nothing in flight
         await waitFor(
           () => proxy.answeredRunCommits > 0 && proxy.inFlight === 0,
           "s1's checkpoint to land",

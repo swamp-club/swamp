@@ -827,7 +827,6 @@ Deno.test("ServeLeadership: a follower whose refresh is still running when the h
     await ticking;
     assertEquals(leadership.role, "leader");
     assertEquals([refresh.state.calls, refresh.state.aborted], [1, 1]);
-    // the tick's first try, then the one after the lapse
     assertEquals(lease.takes, 2);
     // the feed stopped before the refresh, so the lead finds it stopped
     assertEquals(events, ["lead:1"]);
@@ -966,7 +965,7 @@ Deno.test("ServeLeadership.stop: still waits for a take() in flight (swamp-club#
   const stopping = leadership.stop().then(() => {
     stopped = true;
   });
-  // a turn for stop() to run as far as it can on its own
+  // lets stop() reach the take it must wait for
   await Promise.resolve();
   assert(!stopped, "stop waits for the take");
   gate.resolve("follower");
