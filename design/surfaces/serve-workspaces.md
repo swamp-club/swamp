@@ -132,7 +132,9 @@ repos it finds there on its first read.
 The host holds the listener and its TLS certificate. A request whose path
 starts with `/w/<name>/` goes to that workspace's serve with the prefix
 removed. Every other path goes to the root workspace's serve unchanged, or
-answers 404 when the host has no root.
+answers 404 when the host has no root. The `/w/` prefix belongs to the host, so
+a route the root's repo defines under `/w/`, such as a webhook route, is never
+reached.
 
 ```
                  https://serve.acme.internal
@@ -289,7 +291,11 @@ own tokens, so every access record stays in the workspace.
    token for that principal.
 
 The root token never reaches a workspace, where extension code could read it. A
-code taken to any workspace but the one it names is refused there.
+code taken to any workspace but the one it names is refused there. That holds
+for an honest workspace: the root does not authenticate the redeemer, so
+hostile code in one workspace could redeem a code issued for another by
+claiming its name. It would gain a token only inside its own workspace, and
+[Limits](#limits) already rules out tenants that do not trust each other.
 
 The CLI does this by itself. Given a server address `<address>/w/<name>` and no
 stored token for it, it exchanges when it holds a token for `<address>` and the
