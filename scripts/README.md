@@ -89,7 +89,13 @@ uses it. Test files that run in one process contend on process-wide locks, so
 smaller processes finish sooner and use less CPU. It runs one shard per 8 cores,
 up to 4, and gives each shard its own temp directory. A run fails when any shard
 fails or leaves temp entries behind. With one shard, and on Windows, it runs
-plain `deno test`.
+plain `deno test` over what the config includes.
+
+A file in `OWN_PROCESS_FILES` always runs in a `deno test` process of its own,
+beside the shards: its Workers' module loads can wedge a process shared with
+other Worker-heavy test files. The single-shard run leaves it out with
+`--ignore`, which repeats every configured exclude, because Deno's `--ignore`
+replaces the config's `test.exclude`.
 
 Shards are balanced by `scripts/test_shard_weights.json`, the recorded test
 seconds of each file over 3 s. A file it does not list counts as fast. Stale
