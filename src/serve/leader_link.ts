@@ -167,6 +167,7 @@ export class LeaderLink {
   readonly #options: LeaderLinkOptions;
   readonly #clients = new Map<string, Deno.HttpClient | undefined>();
   readonly #closed = new AbortController();
+  #superseded = new AbortController();
   #frozen: { key: string; probeAt: number; probing: boolean } | undefined;
   #unanswered: { key: string; count: number; seq: number } | undefined;
   // a clock tick can hold a timeout and the next send alike; a sequence cannot
@@ -240,15 +241,12 @@ export class LeaderLink {
       options.body,
     );
     const client = this.client(address);
-    // the probe holds the only slot to a frozen leader, so never a long wait
-    const admitted = this.#admit(
-      key,
-      responseMs !== undefined && lockWaitMs === 0,
-    );
+    const admitted = this.#admit(key, responseMs, lockWaitMs);
     if (admitted === "refuse") {
       return notLeaderResponse(new ServeNotLeaderError(leader), nameLeader);
     }
     const sentAtSeq = this.#timeoutSeq;
+    const superseded = this.#superseded.signal;
     const unanswered = new AbortController();
     const responseTimer = responseMs === undefined
       ? undefined
@@ -263,6 +261,7 @@ export class LeaderLink {
       this.#closed.signal,
       req.signal,
       unanswered.signal,
+      superseded,
     ]);
     let upstream: Response;
     try {
@@ -285,7 +284,8 @@ export class LeaderLink {
       this.#failed(key, admitted === "probe", sentAtSeq, {
         neverSent: !inFlight,
         timedOut,
-        abandoned: req.signal.aborted || this.#closed.signal.aborted,
+        abandoned: req.signal.aborted || this.#closed.signal.aborted ||
+          superseded.aborted,
       });
       logger
         .info`Forwarding ${req.method} ${url.pathname} to the leader at ${address} failed${
@@ -317,8 +317,24 @@ export class LeaderLink {
     return (this.#options.now ?? Date.now)();
   }
 
+  /**
+   * Ends every forward still waiting on a leader's reply as in flight, as when
+   * this node takes the lead: the old leader's fence keeps it from landing them.
+   */
+  abortForwards(): void {
+    const superseded = this.#superseded;
+    this.#superseded = new AbortController();
+    superseded.abort(
+      new DOMException("This node took the lead", "AbortError"),
+    );
+  }
+
   /** a mark or count kept for another leader ends when the leader changes */
-  #admit(key: string, mayProbe: boolean): "send" | "probe" | "refuse" {
+  #admit(
+    key: string,
+    responseMs: number | undefined,
+    lockWaitMs: number,
+  ): "send" | "probe" | "refuse" {
     if (this.#unanswered !== undefined && this.#unanswered.key !== key) {
       this.#unanswered = undefined;
     }
@@ -328,10 +344,12 @@ export class LeaderLink {
       this.#frozen = undefined;
       return "send";
     }
+    // a lock wait would hold its caller past a takeover; the caller retries
+    if (lockWaitMs > 0) return "refuse";
     if (frozen.probing || this.#now() < frozen.probeAt) return "refuse";
-    // one that may wait long goes out without the probe slot; its answer
-    // still clears the mark
-    if (!mayProbe) return "send";
+    // one with no deadline of its own goes out without the probe slot; its
+    // answer still clears the mark
+    if (responseMs === undefined) return "send";
     frozen.probing = true;
     return "probe";
   }

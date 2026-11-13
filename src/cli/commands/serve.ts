@@ -10610,6 +10610,9 @@ export const serveCommand = new Command()
         instanceId,
         ...(leaderAddress !== undefined ? { address: leaderAddress } : {}),
         ...(followerFeed !== undefined ? { feed: followerFeed } : {}),
+        ...(leaderLink !== undefined
+          ? { abortForwards: () => leaderLink.abortForwards() }
+          : {}),
         ...(teamPeerKey !== undefined
           ? {
             prove: (leader: ServeLeader) => teamPeerKey.prove(leader),

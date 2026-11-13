@@ -47,7 +47,7 @@ import {
 async function withFollower(
   server: Server,
   leader: () => ServeLeader | undefined,
-  fn: (url: string) => Promise<void>,
+  fn: (url: string, link: LeaderLink) => Promise<void>,
   linkOptions: Partial<LeaderLinkOptions> = {},
 ): Promise<void> {
   const leaderLink = new LeaderLink({ ...linkOptions, leader });
@@ -92,6 +92,7 @@ async function withFollower(
   try {
     await fn(
       server.url.replace(/:\d+\//, `:${http.addr.port}/`),
+      leaderLink,
     );
   } finally {
     leaderLink.close();
@@ -306,6 +307,54 @@ Deno.test({
           const landed = await send();
           assertEquals(landed.status, 200, JSON.stringify(landed.json));
         }, { commitResponseBaseMs: 200 });
+      } finally {
+        listener.close();
+        for (const conn of held) conn.close();
+        await frozenNode.catch(() => {});
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "team forwarding: a forward in flight to a frozen leader is answered as in flight once this node takes the lead, not at its deadline",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withServer(writer(), async (server) => {
+      const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+      let accepted = 0;
+      const held: Deno.Conn[] = [];
+      const frozenNode = (async () => {
+        for await (const conn of listener) {
+          accepted++;
+          held.push(conn);
+        }
+      })();
+      const frozen: ServeLeader = {
+        ...leaderAt(server),
+        instanceId: "frozen-1",
+        fence: 3,
+        address: `http://127.0.0.1:${(listener.addr as Deno.NetAddr).port}`,
+      };
+      try {
+        await withFollower(server, () => frozen, async (followerUrl, link) => {
+          const pending = post(
+            followerPath(server, followerUrl),
+            "alice-token",
+            await saveBody(server),
+          );
+          await waitFor(
+            () => accepted === 1,
+            "the forward to reach the leader",
+          );
+          link.abortForwards();
+          const lost = await pending;
+          assertEquals(lost.status, 503);
+          assertEquals(lost.json.code, "serve_not_leader");
+          assertEquals(lost.json.inFlight, true);
+        }, { commitResponseBaseMs: 600_000 });
       } finally {
         listener.close();
         for (const conn of held) conn.close();

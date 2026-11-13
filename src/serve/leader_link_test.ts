@@ -569,41 +569,97 @@ Deno.test("LeaderLink.forward: two forwards in a row left unanswered within one 
   }
 });
 
-Deno.test("LeaderLink.forward: a lock wait to a frozen leader goes out without the probe slot, so a short probe still gets through", async () => {
+Deno.test("LeaderLink.forward: a lock wait to a frozen leader is refused at once, before and past its probe time, and leaves the probe slot free", async () => {
   let now = 0;
   let calls = 0;
   let answers = false;
-  const forwarder = frozenLink((input, init) => {
+  const forwarder = frozenLink((_input, init) => {
     calls++;
-    if (String(input).includes("/locks")) return neverAnswered(init?.signal);
     return answers
       ? Promise.resolve(new Response("ok"))
       : neverAnswered(init?.signal);
   }, { now: () => now });
-  const waiting = new AbortController();
-  try {
-    await forwardOnce(forwarder);
-    await forwardOnce(forwarder);
-    assertEquals(await forwardOnce(forwarder), FAST_REFUSAL);
-    now += FROZEN_LEADER_PROBE_MS;
-    answers = true;
+  const lockWait = async () => {
     const body = new TextEncoder().encode(
       JSON.stringify({ lockKey: "k", waitMs: 5_000 }),
     );
-    const lockWait = forwarder.forward(
+    const reply = await forwarder.forward(
       new Request(
         "https://node-b.internal:9090/api/v1/datastore/_default/locks",
-        { method: "POST", body, signal: waiting.signal },
+        { method: "POST", body },
       ),
       { body },
     );
-    await waitFor(() => calls === 3, "the lock wait to go out");
+    const json = await reply.json();
+    return { status: reply.status, inFlight: json.inFlight, code: json.code };
+  };
+  try {
+    await forwardOnce(forwarder);
+    await forwardOnce(forwarder);
+    assertEquals(calls, 2);
+    assertEquals(await lockWait(), FAST_REFUSAL);
+    now += FROZEN_LEADER_PROBE_MS;
+    answers = true;
+    assertEquals(await lockWait(), FAST_REFUSAL);
+    assertEquals(calls, 2);
     assertEquals((await forwardOnce(forwarder)).status, 200);
-    assertEquals(calls, 4);
-    waiting.abort();
-    await (await lockWait).body?.cancel();
+    assertEquals(calls, 3);
   } finally {
-    waiting.abort();
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.abortForwards: ends a forward in flight as in flight, without waiting for its deadline", async () => {
+  let calls = 0;
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => undefined,
+    responseBaseMs: 60_000,
+    fetch: (_input, init) => {
+      calls++;
+      return neverAnswered(init?.signal);
+    },
+  });
+  try {
+    const pending = forwardOnce(forwarder);
+    await waitFor(() => calls === 1, "the forward to go out");
+    forwarder.abortForwards();
+    assertEquals(await pending, {
+      status: 503,
+      inFlight: true,
+      code: "serve_not_leader",
+    });
+  } finally {
+    forwarder.close();
+  }
+});
+
+Deno.test("LeaderLink.abortForwards: forwards it ends never mark the leader frozen, and later forwards still go out", async () => {
+  let calls = 0;
+  let answers = false;
+  const forwarder = new LeaderLink({
+    leader: () => LEADER,
+    createClient: () => undefined,
+    responseBaseMs: 60_000,
+    now: () => 0,
+    fetch: (_input, init) => {
+      calls++;
+      return answers
+        ? Promise.resolve(new Response("ok"))
+        : neverAnswered(init?.signal);
+    },
+  });
+  try {
+    const pending = [forwardOnce(forwarder), forwardOnce(forwarder)];
+    await waitFor(() => calls === 2, "both forwards to go out");
+    forwarder.abortForwards();
+    for (const reply of await Promise.all(pending)) {
+      assertEquals(reply.inFlight, true);
+    }
+    answers = true;
+    assertEquals((await forwardOnce(forwarder)).status, 200);
+    assertEquals(calls, 3);
+  } finally {
     forwarder.close();
   }
 });

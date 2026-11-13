@@ -226,6 +226,51 @@ Deno.test("ServeLeadership: a node takes the follower's gates down only once its
   }
 });
 
+Deno.test("ServeLeadership: a follower that takes the lease aborts its forwards to the old leader before its leader work, and again before its role changes", async () => {
+  const lease = new FakeLease();
+  const feed = new FakeFeed();
+  const events: string[] = [];
+  const leadership: ServeLeadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    feed: {
+      current: () => true,
+      follow: feed.follow,
+      stop: () => {
+        events.push(`feed-stop:${leadership.role}`);
+        return Promise.resolve();
+      },
+    },
+    refreshCopy: () => Promise.resolve(),
+    abortForwards: () => {
+      events.push(`abort:${leadership.role}`);
+    },
+    onLead: () => {
+      events.push(`lead:${leadership.role}`);
+      return Promise.resolve();
+    },
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  await leadership.start("follower");
+  try {
+    await leadership.tick();
+    assertEquals(events, []);
+    lease.free = 2;
+    await leadership.tick();
+    assertEquals(events, [
+      "abort:follower",
+      "feed-stop:follower",
+      "lead:follower",
+      "abort:follower",
+    ]);
+    assertEquals(leadership.role, "leader");
+  } finally {
+    await leadership.stop();
+  }
+});
+
 Deno.test("ServeLeadership: onLed runs once the promoted node's role is leader", async () => {
   const lease = new FakeLease();
   const roles: string[] = [];

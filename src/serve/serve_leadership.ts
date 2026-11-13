@@ -102,6 +102,12 @@ export interface ServeLeadershipDeps {
    * Absent, every record is taken as written.
    */
   trust?(leader: ServeLeader): Promise<boolean>;
+  /**
+   * Called when a follower takes the lease, and again as its role becomes
+   * leader: forwards still in flight to the old leader end, as it can no
+   * longer land them.
+   */
+  abortForwards?(): void;
   /** stopped turns true once stop() is called: a promotion then ends early */
   onLead(stopped: () => boolean): Promise<void>;
   /**
@@ -291,6 +297,7 @@ export class ServeLeadership {
       : await lease.take();
     if (this.#stopped) return;
     if (taken === "writer") {
+      this.#deps.abortForwards?.();
       await this.#deps.feed?.stop();
       await this.#lead();
       return;
@@ -350,6 +357,8 @@ export class ServeLeadership {
     if (this.#stopped) return;
     await this.#deps.onLead(() => this.#stopped);
     if (this.#stopped) return;
+    // what was forwarded while the leader work ran went to the old leader too
+    this.#deps.abortForwards?.();
     this.#role = "leader";
     logger.info`This serve node leads the datastore`;
     try {
