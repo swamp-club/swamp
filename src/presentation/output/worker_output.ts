@@ -30,6 +30,8 @@ import type {
 import type { WorkerQueueListData } from "../../libswamp/worker/queue_list.ts";
 import type { WorkerTokenCreateData } from "../../libswamp/worker/token_create.ts";
 import type { WorkerTokenRevokeData } from "../../libswamp/worker/token_revoke.ts";
+import type { WorkerTokenRotateData } from "../../libswamp/worker/token_rotate.ts";
+import type { WorkerTokenRevealData } from "../../libswamp/worker/token_reveal.ts";
 import type { WorkerStatusEvent } from "../../worker/connect.ts";
 import type { WorkerVerifyData } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
@@ -211,6 +213,108 @@ export function renderWorkerTokenRevoke(
     lines.push(dim("No connected workers were enrolled on this token."));
   }
   writeOutput(lines.join("\n"));
+}
+
+export function renderWorkerTokenRotate(
+  data: WorkerTokenRotateData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  const oldUntil = data.predecessorExpiresAt ?? data.expiresAt;
+  const lines = [
+    `${green(checkmark)} Token ${bold(data.name)} rotated.`,
+    `${bold(cyan("Expires:"))} ${data.expiresAt}`,
+  ];
+  if (data.predecessorExpiresAt !== null) {
+    lines.push(
+      `${bold(cyan("Old token valid until:"))} ${data.predecessorExpiresAt}`,
+    );
+  }
+  if (!data.delivered) {
+    // never suggest rotating again: a second rotation retires the old token
+    lines.push(
+      yellow(
+        `No connected worker was sent the new token (a rotation without --server reaches no worker). Workers keep the old token until ${oldUntil}; restart them with the new token before then.`,
+      ),
+    );
+  }
+  if (data.rotated.length > 0 || data.notRotated.length > 0) {
+    lines.push(`${bold(cyan("Workers:"))}`);
+  } else if (data.delivered) {
+    lines.push(dim("No connected workers were enrolled on this token."));
+  }
+  for (const worker of data.rotated) {
+    lines.push(
+      worker.persisted
+        ? `  ${green(checkmark)} ${bold(worker.worker)} rotated`
+        : `  ${yellow("!")} ${bold(worker.worker)} rotated in memory only ${
+          dim(
+            "(no token file was written; after a restart it does not have the new token)",
+          )
+        }`,
+    );
+  }
+  for (const worker of data.notRotated) {
+    lines.push(
+      `  ${red("✗")} ${bold(worker.worker)} not rotated ${
+        dim(`(${worker.reason})`)
+      }`,
+    );
+  }
+  if (data.unconnectedBindings !== null && data.unconnectedBindings > 0) {
+    lines.push(
+      dim(
+        `${data.unconnectedBindings} enrolled machine(s) not connected — they can enroll with the old token until ${oldUntil}.`,
+      ),
+    );
+  }
+  if (data.retiredBindings !== null && data.retiredBindings > 0) {
+    lines.push(
+      yellow(
+        `${data.retiredBindings} enrolled machine(s) not connected still hold a token an earlier rotation retired — they need the new token to enroll.`,
+      ),
+    );
+  }
+  const leftBehind = !data.delivered || data.notRotated.length > 0 ||
+    data.rotated.some((worker) => !worker.persisted) ||
+    (data.unconnectedBindings ?? 0) > 0 || (data.retiredBindings ?? 0) > 0;
+  lines.push(
+    "",
+    `  ${bold(data.token)}`,
+    "",
+    yellow("The new token is shown once — store it now."),
+  );
+  if (leftBehind) {
+    lines.push(
+      dim(
+        "Give it to hosts that were not rotated: swamp worker connect <url> --token-file <file>",
+      ),
+    );
+  }
+  writeOutput(lines.join("\n"));
+}
+
+export function renderWorkerTokenReveal(
+  data: WorkerTokenRevealData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    // the secret goes straight to stdout, never through the logger
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  writeOutput(`${bold(cyan("Token:"))} ${bold(data.name)}`);
+  writeOutput(`${bold(cyan("Expires:"))} ${data.expiresAt}`);
+  if (data.expired) {
+    writeOutput(yellow("Warning: this token has expired."));
+  }
+  console.log(`\n  ${bold(data.token)}\n`);
+  writeOutput(
+    yellow("Store this token securely — do not share it in logs or messages."),
+  );
 }
 
 function formatLabels(labels: Record<string, string>): string {

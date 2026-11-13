@@ -141,6 +141,32 @@ Deno.test("leftPoolTokenHolds: revoked, re-minted, deleted and expired tokens do
   );
 });
 
+Deno.test("leftPoolTokenHolds: a rotated token holds a worker on its predecessor until the predecessor lapses", () => {
+  const onPredecessor = record({ name: "a", tokenCreatedAt: MINT });
+  const rotated = (predecessorExpiresAt: string) =>
+    token({
+      name: "a",
+      createdAt: "2026-11-02T11:00:00.000Z",
+      predecessor: {
+        createdAt: MINT,
+        expiresAt: predecessorExpiresAt,
+        secretKey: "worker-token-a",
+      },
+    });
+  assertEquals(
+    leftPoolTokenHolds(onPredecessor, rotated("2026-11-02T12:30:00.000Z"), NOW),
+    true,
+  );
+  assertEquals(
+    leftPoolTokenHolds(
+      onPredecessor,
+      rotated(new Date(NOW).toISOString()),
+      NOW,
+    ),
+    false,
+  );
+});
+
 Deno.test("leftPoolTokenHolds: a token minted the instant the worker enrolled is the same mint", () => {
   assertEquals(
     leftPoolTokenHolds(

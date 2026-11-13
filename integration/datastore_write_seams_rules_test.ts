@@ -694,6 +694,7 @@ const PINNED_TRANSACTIONAL_USE_CASES: readonly string[] = [
   "src/libswamp/worker/prune.ts: workerPrune",
   "src/libswamp/worker/token_create.ts: workerTokenCreate",
   "src/libswamp/worker/token_revoke.ts: workerTokenRevoke",
+  "src/libswamp/worker/token_rotate.ts: workerTokenRotate",
   "src/libswamp/workflows/approve.ts: workflowApprove",
   "src/libswamp/workflows/cancel_suspended.ts: workflowCancelSuspended",
   "src/libswamp/workflows/create.ts: workflowCreate",
@@ -756,6 +757,7 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/worker_prune.ts: workerPruneCommand",
   "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
   "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
+  "src/cli/commands/worker_token_rotate.ts: workerTokenRotateCommand",
   "src/cli/commands/workflow_create.ts: workflowCreateCommand",
   "src/cli/commands/workflow_delete.ts: workflowDeleteCommand",
   "src/cli/commands/workflow_edit.ts: workflowEditCommand",
@@ -817,6 +819,7 @@ const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
   "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
   "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
+  "src/cli/commands/worker_token_rotate.ts: workerTokenRotateCommand",
   // the managed extension lockfile publish, CLI and serve: stages the lockfile
   // into the transaction's root and pushes at that root's checkpoint, under the
   // global lock

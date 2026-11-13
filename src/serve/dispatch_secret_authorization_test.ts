@@ -27,6 +27,7 @@ import {
   SENSITIVE_FIELDS_VERSION_TAG,
 } from "../domain/models/data_writer.ts";
 import { ModelType } from "../domain/models/model_type.ts";
+import { rotatedTokenSecretKey } from "../domain/models/worker/enrollment_token_model.ts";
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { ActiveDispatch } from "./dispatch_registry.ts";
 import {
@@ -146,6 +147,17 @@ Deno.test("assertSecretKeyNotDenied: refuses infrastructure keys in any case", (
     assertThrows(() => assertSecretKeyNotDenied(key, "test"), Error);
   }
   assertSecretKeyNotDenied("db-password", "test");
+});
+
+Deno.test("assertSecretKeyNotDenied: refuses a rotated enrollment token's key", () => {
+  assertThrows(
+    () =>
+      assertSecretKeyNotDenied(
+        rotatedTokenSecretKey("web-01", 1_767_225_600_000),
+        "test",
+      ),
+    Error,
+  );
 });
 
 Deno.test("ResourceClaimVerifier: a tagged field is admitted, an untagged field of the same record is not", async () => {

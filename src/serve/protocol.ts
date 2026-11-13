@@ -911,6 +911,15 @@ export interface WorkerTokenRevokePayload {
   name: string;
 }
 
+export interface WorkerTokenRotatePayload {
+  name: string;
+  durationMs?: number;
+}
+
+export interface WorkerTokenRevealPayload {
+  name: string;
+}
+
 export interface DataGcPayload {
   dryRun?: boolean;
 }
@@ -1282,6 +1291,16 @@ export type ServerRequest =
     type: "worker.token.revoke";
     id: string;
     payload: WorkerTokenRevokePayload;
+  }
+  | {
+    type: "worker.token.rotate";
+    id: string;
+    payload: WorkerTokenRotatePayload;
+  }
+  | {
+    type: "worker.token.reveal";
+    id: string;
+    payload: WorkerTokenRevealPayload;
   }
   | { type: "data.gc"; id: string; payload?: DataGcPayload }
   | { type: "data.prune"; id: string; payload?: DataPrunePayload }
@@ -2150,6 +2169,14 @@ export interface WorkerTokenRevokeResponse {
   data: Record<string, unknown>;
 }
 
+export interface WorkerTokenRotateResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkerTokenRevealResponse {
+  data: Record<string, unknown>;
+}
+
 export interface DataGcResponse {
   data: Record<string, unknown>;
 }
@@ -2563,6 +2590,16 @@ export type ServerMessage =
     type: "worker.token.revoke";
     id: string;
     payload: WorkerTokenRevokeResponse;
+  }
+  | {
+    type: "worker.token.rotate";
+    id: string;
+    payload: WorkerTokenRotateResponse;
+  }
+  | {
+    type: "worker.token.reveal";
+    id: string;
+    payload: WorkerTokenRevealResponse;
   }
   | { type: "data.gc"; id: string; payload: DataGcResponse }
   | { type: "data.prune"; id: string; payload: DataPruneResponse }

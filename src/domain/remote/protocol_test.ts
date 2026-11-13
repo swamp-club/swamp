@@ -38,7 +38,9 @@ import {
   plaintextFieldsOf,
   REMOTE_PROTOCOL_VERSION,
   ResolveSecretParamsSchema,
+  RotateTokenParamsSchema,
   shipsReferencesOnly,
+  WorkerCapability,
 } from "./protocol.ts";
 import { SENTINEL_SOURCE } from "../vaults/secret_bag_registry.ts";
 
@@ -450,6 +452,57 @@ Deno.test("isSupportedRemoteProtocolVersion: serve enrolls versions 5, 6 and 7 u
     true,
   );
   assertEquals(shipsReferencesOnly(REMOTE_PROTOCOL_VERSION), true);
+});
+
+Deno.test("EnrollParamsSchema: capabilities are optional, so an older worker that sends none still enrolls", () => {
+  const base = {
+    token: "w.s",
+    instanceUuid: "u",
+    machineId: "m",
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
+    swampVersion: "1",
+    platform: "linux",
+    arch: "x86_64",
+  };
+  assertEquals(EnrollParamsSchema.parse(base).capabilities, undefined);
+  assertEquals(
+    EnrollParamsSchema.parse({
+      ...base,
+      capabilities: [WorkerCapability.tokenRotate],
+    }).capabilities,
+    ["token.rotate"],
+  );
+  assertEquals(
+    EnrollParamsSchema.safeParse({
+      ...base,
+      capabilities: Array.from({ length: 33 }, (_, i) => `c${i}`),
+    }).success,
+    false,
+  );
+});
+
+Deno.test("RotateTokenParamsSchema: refuses an empty, oversized or whitespace-bearing token, and needs the mint", () => {
+  const ok = { token: "web-01.abc", expiresAtMs: 1, mintMs: 1 };
+  assertEquals(RotateTokenParamsSchema.safeParse(ok).success, true);
+  for (
+    const token of [
+      "",
+      "web-01.a b",
+      "web-01.a\nb",
+      `web-01.${"x".repeat(4096)}`,
+    ]
+  ) {
+    assertEquals(
+      RotateTokenParamsSchema.safeParse({ ...ok, token }).success,
+      false,
+      token.slice(0, 20),
+    );
+  }
+  assertEquals(
+    RotateTokenParamsSchema.safeParse({ token: "web-01.abc", expiresAtMs: 1 })
+      .success,
+    false,
+  );
 });
 
 Deno.test("DispatchParamsSchema: a version 6 reference bag carries the reference, encoding and origin, never a value", () => {

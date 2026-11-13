@@ -227,7 +227,9 @@ import {
   handleWorkerQueueList,
   handleWorkerTokenCreate,
   handleWorkerTokenList,
+  handleWorkerTokenReveal,
   handleWorkerTokenRevoke,
+  handleWorkerTokenRotate,
   handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
@@ -1544,6 +1546,23 @@ const WorkerTokenRevokeRequestSchema = z.object({
   }),
 });
 
+const WorkerTokenRevealRequestSchema = z.object({
+  type: z.literal("worker.token.reveal"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+  }),
+});
+
+const WorkerTokenRotateRequestSchema = z.object({
+  type: z.literal("worker.token.rotate"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    name: z.string().min(1),
+    durationMs: z.number().int().positive().optional(),
+  }),
+});
+
 const DataGcRequestSchema = z.object({
   type: z.literal("data.gc"),
   id: z.string().min(1).max(256),
@@ -1729,6 +1748,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkerTokenCreateRequestSchema,
   WorkerTokenListRequestSchema,
   WorkerTokenRevokeRequestSchema,
+  WorkerTokenRotateRequestSchema,
+  WorkerTokenRevealRequestSchema,
   DataGcRequestSchema,
   DataPruneRequestSchema,
   RunGcRequestSchema,
@@ -4435,6 +4456,35 @@ export function handleMessage(
             ))
         ),
         auditOpts("admin", "worker", "*"),
+      );
+      break;
+    case "worker.token.reveal":
+      task = audited(
+        handleWorkerTokenReveal(
+          socket,
+          ctx,
+          request.id,
+          request.payload,
+          controller,
+          principal,
+        ),
+        auditOpts("secrets", "worker", request.payload.name),
+      );
+      break;
+    case "worker.token.rotate":
+      task = audited(
+        confirmed(() =>
+          withSyncGate(ctx.syncGate, () =>
+            handleWorkerTokenRotate(
+              socket,
+              ctx,
+              request.id,
+              request.payload,
+              controller,
+              principal,
+            ))
+        ),
+        auditOpts("admin", "worker", request.payload.name),
       );
       break;
     case "data.gc":

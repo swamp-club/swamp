@@ -265,3 +265,20 @@ Deno.test("secretAccessReport: includes token reveals with vault secret reads", 
   assertStringIncludes(result.markdown, "member-token");
   assertStringIncludes(result.markdown, "**Total accesses:** 2");
 });
+
+Deno.test("secretAccessReport: includes worker token reveals", async () => {
+  const events = [
+    makeChainedEvent({
+      category: "secrets",
+      action: "worker.token.reveal",
+      principalId: "admin-dave",
+      resourceName: "web-01",
+    }),
+  ];
+  const service = new AuditQueryService(makeStore(events));
+  const result = await secretAccessReport.execute(service, makeParams());
+
+  assertStringIncludes(result.markdown, "admin-dave");
+  assertStringIncludes(result.markdown, "web-01");
+  assertStringIncludes(result.markdown, "**Total accesses:** 1");
+});

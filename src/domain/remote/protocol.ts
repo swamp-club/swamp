@@ -197,7 +197,31 @@ export const RemoteMethod = {
 
 export const WorkerMethod = {
   dispatch: "worker.dispatch",
+  rotateToken: "worker.token.rotate",
 } as const;
+
+/**
+ * optional verbs a worker answers, declared at enrollment so a new verb needs
+ * no version bump: an older serve ignores the list, an older worker sends none
+ */
+export const WorkerCapability = {
+  tokenRotate: "token.rotate",
+} as const;
+
+export const RotateTokenParamsSchema = z.object({
+  // written verbatim into the operator's token file
+  token: z.string().min(1).max(4096).regex(/^\S+$/),
+  expiresAtMs: z.number().int(),
+  /** the successor's createdAt, so a worker never applies an older one late */
+  mintMs: z.number().int(),
+});
+
+export type RotateTokenParams = z.infer<typeof RotateTokenParamsSchema>;
+
+export interface RotateTokenResult {
+  /** false when the worker holds the token in memory only (no token file) */
+  persisted: boolean;
+}
 
 export const EnrollParamsSchema = z.object({
   /** Enrollment token (named, time-boxed, bound to one machine on first use). */
@@ -221,6 +245,7 @@ export const EnrollParamsSchema = z.object({
    * redeeming the token, so no enrollment is spent
    */
   needsGatePass: z.boolean().optional(),
+  capabilities: z.array(z.string().min(1).max(64)).max(32).optional(),
 });
 
 export type EnrollParams = z.infer<typeof EnrollParamsSchema>;

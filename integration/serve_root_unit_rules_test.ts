@@ -222,6 +222,7 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/handlers/admin_handlers.ts: handleWorkerPrune",
   "src/serve/handlers/admin_handlers.ts: handleWorkerTokenCreate",
   "src/serve/handlers/admin_handlers.ts: handleWorkerTokenRevoke",
+  "src/serve/handlers/admin_handlers.ts: handleWorkerTokenRotate",
   "src/serve/handlers/data_handlers.ts: handleDataDelete",
   "src/serve/handlers/data_handlers.ts: handleDataGc",
   "src/serve/handlers/data_handlers.ts: handleDataPrune",

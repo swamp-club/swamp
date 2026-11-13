@@ -152,10 +152,10 @@ apart:
 frame set carried by `RpcChannel` (`src/domain/remote/rpc_channel.ts`), with a
 **handler registry on each side**:
 
-| Direction             | Methods the receiver handles                                                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| orchestrator → worker | `WorkerMethod.dispatch` (`worker.dispatch`); cancellation is the `rpc.cancel` frame                                                         |
-| worker → orchestrator | `RemoteMethod`: `worker.enroll`, `worker.session.refresh`, `worker.drain`, and the nine `capability.*` verbs; run events ride `rpc.stream` |
+| Direction             | Methods the receiver handles                                                                                                                                            |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| orchestrator → worker | `WorkerMethod.dispatch` (`worker.dispatch`), with cancellation as the `rpc.cancel` frame; `worker.token.rotate` to a worker that declared the `token.rotate` capability |
+| worker → orchestrator | `RemoteMethod`: `worker.enroll`, `worker.session.refresh`, `worker.drain`, and the nine `capability.*` verbs; run events ride `rpc.stream`                              |
 
 Both sides share the framing, error envelope and `serializeEvent()`. Bulk bytes
 do not use this socket; they go over the HTTP/2 data plane (see
@@ -491,17 +491,22 @@ and refuses any other with `protocol_mismatch`. Version 7 moves `queryData` and
 the `readOutput` list reads to the data plane (`POST /data/query`,
 `POST /data/outputs`); serve accepts 5, 6 and 7 and keeps both verbs on the
 control socket for 5 and 6. A version 7 worker cannot enroll with a version 6
-serve, so serve is upgraded before its workers. The gateway keeps each worker's
-enrolled version on its pool entry and snapshot, and serve builds every
-dispatch for the version of the worker it goes to (see secret delivery below).
-A version 5 enrollment logs a warning naming the worker and the 5.3 sunset. The
-version is what the worker declares: during the window a holder of a valid
-token can enroll at version 5 and so receive plaintext dispatches, the
-documented exception typed-secrets 5.3 removes. The
-`sessionCredential` is the short-lived bearer token for the worker's
-data-plane HTTP/2 requests. The pool addresses a worker by its token name (the
-positional `<name>` given to `swamp worker token create`) and its
-`instanceUuid`, and a step may target either (see
+serve, so serve is upgraded before its workers. A verb serve calls on the
+worker is added without a version bump: the worker declares it in the optional
+`capabilities` list of `worker.enroll` (`WorkerCapability`), the gateway keeps
+the list on the pool entry and calls the verb only on a worker that declared
+it, an older serve drops the list, and an older worker sends none. So a newer
+worker still enrolls with an older serve, and rolling serve back keeps its
+workers. The gateway keeps each worker's enrolled version on its pool entry and
+snapshot, and serve builds every dispatch for the version of the worker it goes
+to (see secret delivery below). A version 5 enrollment logs a warning naming
+the worker and the 5.3 sunset. The version is what the worker declares: during
+the window a holder of a valid token can enroll at version 5 and so receive
+plaintext dispatches, the documented exception typed-secrets 5.3 removes. The
+`sessionCredential` is the short-lived bearer token for the worker's data-plane
+HTTP/2 requests. The pool addresses a worker by its token name (the positional
+`<name>` given to `swamp worker token create`) and its `instanceUuid`, and a
+step may target either (see
 [Scheduling](#scheduling-fan-out-and-provisioning)).
 
 Enrollments are recorded one at a time on the gateway's transition tail, so a
@@ -547,7 +552,8 @@ provisioning_. Each token is:
   pool (`ci-runner-3`).
 - **Time-boxed**: `--duration` is a hard deadline for enrollment and
   reconnection. When it passes, the orchestrator disconnects a connected
-  worker. Continuing needs a new token.
+  worker. Continuing past it needs the token rotated before it lapses (see
+  "Rotating a token" below) or a new token.
 - **Controlled enrollment**: `maxEnrollments` (default `1`) caps how many
   distinct machines a token can bind. A single-enrollment token binds the first
   `machineId` and rejects any other machine. A fleet token
@@ -616,6 +622,8 @@ its own. The CLI:
 swamp worker token create <name> --duration <dur>   # mint; prints the credential once
 swamp worker token list                             # NAME, STATE, EXPIRES, ENROLLMENTS
 swamp worker token revoke <name>                    # invalidate before expiry
+swamp worker token rotate <name> [--duration <dur>] # new secret, same name
+swamp worker token reveal <name>                    # show the current credential
 ```
 
 **Cutting off a token's workers.** A token's authority ends for workers that
@@ -638,7 +646,9 @@ cut off in three ways:
   `revokeToken` after the revoke is saved, even when the request was cancelled
   or the token was already revoked, and returns the removed names as
   `disconnectedWorkers`. It runs on the gateway's transition tail, so an
-  enrollment already in progress lands first and is cut off too.
+  enrollment already in progress lands first and is cut off too. The revoke's
+  own record write runs on that tail as well (`serializeTokenWrite`), so a
+  redeem or rotate that read the record first cannot write over it.
 - **On revalidation.** `WorkerTokenRevalidationService`
   (`src/serve/worker_token_revalidation_service.ts`) reads the token records
   once every 30 s and applies `enrollmentTokenBindingVerdict` to each bound
@@ -651,7 +661,64 @@ cut off in three ways:
   `--server` and on HA peers, whose record arrives through the runtime data
   poller, so a peer cuts workers off within the poll interval plus 30 s.
 - **On expiry.** The per-worker expiry timer, armed from `expiresAt` at
-  enrollment, records `expired` and removes the worker the same way.
+  enrollment, records `expired` and removes the worker the same way. The
+  timer names the mint it was armed for, so a timer on a rotation's
+  predecessor clears the predecessor instead of expiring the token.
+
+A rotation's predecessor is not a re-mint: `enrollmentTokenBindingVerdict`
+keeps a worker bound to the predecessor's `createdAt` until the predecessor's
+`expiresAt`, and cuts it off as `expired` after that, so revalidation and HA
+peers enforce a shortened rotation's clamp too. A worker on a mint older than
+the predecessor is cut off as `retired`, since a second rotation dropped the
+secret it holds.
+
+**Rotating a token.** `rotate` replaces the secret and lifetime in place and
+keeps the name, the bindings and the allowance, so each worker keeps its pool
+name and with it its placement targets, fleet label, lane pins and history. The
+successor is written under a fresh vault key
+(`worker-rotated-token-<name>-<epoch-ms>`, a reserved prefix of its own with no
+dot, which Azure Key Vault and GCP Secret Manager refuse) and the record points
+at it, so the live secret is never overwritten before the record moves; a
+failed record write leaves the old key and record as they were. The record
+keeps the old mint as `predecessor` (`createdAt`, `expiresAt` clamped to the
+successor's, `secretKey`). `redeem` accepts either secret until the
+predecessor's deadline and records in the machine's binding which mint it
+redeemed (`mint`), so the gateway binds a reconnect to that mint and arms its
+deadline. A second rotation drops the oldest mint and deletes its key; a
+re-mint after revoke or expiry deletes the rotated keys the old record named.
+Only a missing predecessor key reads as a mismatch; any other vault failure
+reaches the worker as a retryable `redeem_failed` with a generic message, since
+an unrecognised redeem failure can name serve's own paths. Retryable is bounded
+by the worker's pre-enrollment retry budget, so a vault outage longer than that
+still stops a worker.
+
+Through `--server`, `WorkerGateway.rotateToken` runs in three phases so
+enrollments never wait behind a slow worker: the `rotate` method on the
+transition tail; then, off the tail and with a timeout per worker,
+`worker.token.rotate` to every connected pool member that declared the
+`token.rotate` capability; then, on the tail, each worker that acknowledged and
+still has the same `instanceUuid` moves forward to the new mint and deadline
+(never back, when a later rotation already moved it), and every worker left on
+the predecessor has its deadline pulled in to the predecessor's clamped
+`expiresAt`. A worker started with `--token-file` writes the successor back to
+that file atomically, keeping the file's mode and writing through a symlink to
+its target; when the file cannot be written (a read-only Kubernetes Secret
+mount) or the token came inline, it holds the successor in memory only and
+reports it unpersisted. A worker refuses a successor under another name.
+Workers without the capability, that refuse, time out or are offline stay on
+the predecessor until it lapses; the command reports them and prints the new
+credential once for them. A worker still on a mint older than the predecessor
+held a secret this rotation retired: the command says it will be disconnected,
+and counts unconnected machines in the same position apart from those that can
+still enroll on the predecessor. A rotation without `--server` reaches no
+worker. If the rotation's reply is lost, rotating again would retire the
+original secret, so `swamp worker token reveal` reads the current credential
+back, locally or through `--server`; the rotate command names it when its reply
+does not arrive, and serve's own failure to read the new secret names it too.
+Serve sends the reply even when the request was cancelled, since the rotation
+has already landed. Rolling serve back to a release without rotation strands
+every worker still on the old token: that serve knows no predecessor, refuses
+the old secret as a mismatch, and the worker stops for good.
 
 The printed credential is **`<name>.<secret>`**. The name half finds the token
 aggregate at enrollment without scanning the pool. The secret half is compared
@@ -665,7 +732,8 @@ a worker keeps its original token across restarts and reboots while the token
 lives. The default fresh temp cache directory gives a new machine identity per
 process. When the lifetime ends, the token is dead for everyone: the
 orchestrator disconnects the worker and rejects re-enrollment. A replacement
-machine, or a worker that outlives its token, needs a new token. Trust is bound
+machine needs a new token; a worker meant to outlive its token is rotated
+before it lapses. Trust is bound
 to the machine, not the process.
 
 ## Worker state is swamp data

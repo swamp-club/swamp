@@ -52,6 +52,7 @@ export function leftPoolTokenHolds(
     !enrollmentTokenBindingVerdict(
       token,
       record.tokenCreatedAt ?? record.enrolledAt,
+      nowMs,
     ).keep
   ) {
     return false;

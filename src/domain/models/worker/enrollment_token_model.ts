@@ -33,6 +33,7 @@ import {
 } from "../model.ts";
 import { generateOpaqueToken } from "../../remote/session_credential.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
+import { isSecretNotFoundError } from "../../vaults/secret_not_found_error.ts";
 
 export const ENROLLMENT_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/enrollment-token",
@@ -57,9 +58,20 @@ export type MaxEnrollments = z.infer<typeof MaxEnrollmentsSchema>;
 const BindingSchema = z.object({
   machineId: z.string(),
   enrolledAt: z.string().datetime(),
+  /** createdAt of the mint this machine last redeemed; absent means the current one */
+  mint: z.string().datetime().optional(),
 });
 
 export type Binding = z.infer<typeof BindingSchema>;
+
+/** the mint a rotation replaced, redeemable until its own expiresAt */
+const PredecessorSchema = z.object({
+  createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime(),
+  secretKey: z.string(),
+});
+
+export type TokenPredecessor = z.infer<typeof PredecessorSchema>;
 
 export const EnrollmentTokenSchema = z.object({
   name: z.string().describe("Token name; the worker's pool-addressable handle"),
@@ -72,6 +84,7 @@ export const EnrollmentTokenSchema = z.object({
   secretKey: z.string(),
   maxEnrollments: MaxEnrollmentsSchema.default(1),
   bindings: z.array(BindingSchema).default([]),
+  predecessor: PredecessorSchema.optional(),
   /** @deprecated Legacy field — kept so Zod parses old records. */
   boundMachineId: z.string().optional(),
   enrolledAt: z.string().datetime().optional(),
@@ -100,6 +113,19 @@ export function tokenSecretKey(tokenName: string): string {
   return `${WORKER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
 }
 
+export const WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX = "worker-rotated-token-";
+
+/**
+ * a fresh key per rotation, so the live secret is never overwritten before the
+ * record points elsewhere; its own prefix and no dot, which cloud vaults refuse
+ */
+export function rotatedTokenSecretKey(
+  tokenName: string,
+  createdAtMs: number,
+): string {
+  return `${WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX}${tokenName}-${createdAtMs}`;
+}
+
 async function readToken(context: MethodContext): Promise<EnrollmentToken> {
   const raw = await context.readResource!(TOKEN_DATA_NAME);
   if (raw === null) {
@@ -114,7 +140,74 @@ function isExpired(token: EnrollmentToken, nowMs: number): boolean {
   return Date.parse(token.expiresAt) <= nowMs;
 }
 
-export type EnrollmentBindingCutoffCause = "revoked" | "reminted" | "deleted";
+function sameInstant(a: string, b: string): boolean {
+  return Date.parse(a) === Date.parse(b);
+}
+
+function livePredecessor(
+  token: EnrollmentToken,
+  nowMs: number,
+): TokenPredecessor | undefined {
+  const predecessor = token.predecessor;
+  if (predecessor === undefined) return undefined;
+  return Date.parse(predecessor.expiresAt) > nowMs ? predecessor : undefined;
+}
+
+export interface EnrollmentMint {
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}
+
+/** the mint a bound machine last redeemed, and the deadline that mint carries */
+export function enrollmentMintFor(
+  token: EnrollmentToken,
+  machineId: string,
+): EnrollmentMint {
+  const binding = token.bindings.find((b) => b.machineId === machineId);
+  const predecessor = token.predecessor;
+  if (
+    binding?.mint !== undefined && predecessor !== undefined &&
+    sameInstant(binding.mint, predecessor.createdAt)
+  ) {
+    return {
+      createdAt: predecessor.createdAt,
+      expiresAt: predecessor.expiresAt,
+    };
+  }
+  return { createdAt: token.createdAt, expiresAt: token.expiresAt };
+}
+
+async function deleteSecretBestEffort(
+  context: MethodContext,
+  vaultName: string,
+  secretKey: string,
+): Promise<void> {
+  const vaultService = context.vaultService;
+  try {
+    if (vaultService?.supportsDelete(vaultName)) {
+      await vaultService.delete(
+        vaultName,
+        secretKey,
+        "model:enrollment-token-retire",
+      );
+    }
+  } catch (error) {
+    context.logger.warn(
+      "Could not delete retired enrollment token secret {secretKey}: {error}",
+      {
+        secretKey,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
+}
+
+export type EnrollmentBindingCutoffCause =
+  | "revoked"
+  | "reminted"
+  | "deleted"
+  | "expired"
+  | "retired";
 
 export type EnrollmentBindingVerdict =
   | { readonly keep: true }
@@ -122,12 +215,13 @@ export type EnrollmentBindingVerdict =
 
 /**
  * whether a worker enrolled on this mint may stay connected. Minting after a
- * revoke reuses the name, so a newer createdAt is a different credential.
- * Expiry is not a cause; the gateway arms its own timer.
+ * revoke reuses the name, so a newer createdAt is a different credential. Only
+ * a rotation's predecessor expires here; the gateway times the current mint.
  */
 export function enrollmentTokenBindingVerdict(
   token: EnrollmentToken | null,
   boundCreatedAt: string,
+  nowMs: number = Date.now(),
 ): EnrollmentBindingVerdict {
   if (token === null) {
     return { keep: false, cause: "deleted" };
@@ -135,10 +229,21 @@ export function enrollmentTokenBindingVerdict(
   if (token.state === "revoked") {
     return { keep: false, cause: "revoked" };
   }
+  if (
+    token.predecessor !== undefined &&
+    sameInstant(token.predecessor.createdAt, boundCreatedAt)
+  ) {
+    return Date.parse(token.predecessor.expiresAt) > nowMs
+      ? { keep: true }
+      : { keep: false, cause: "expired" };
+  }
   // Only a newer mint is a re-mint; an older record is a stale read of the
   // mint the worker holds, never a reason to cut it off.
   if (Date.parse(token.createdAt) > Date.parse(boundCreatedAt)) {
-    return { keep: false, cause: "reminted" };
+    // a revoke and re-mint before the rotation also reads as retired here
+    const retired = token.predecessor !== undefined &&
+      Date.parse(token.predecessor.createdAt) > Date.parse(boundCreatedAt);
+    return { keep: false, cause: retired ? "retired" : "reminted" };
   }
   return { keep: true };
 }
@@ -161,11 +266,12 @@ async function mint(
     throw new Error("Minting an enrollment token requires a vault service");
   }
   const existing = await context.readResource!(TOKEN_DATA_NAME);
+  let previous: EnrollmentToken | undefined;
   if (existing !== null) {
-    const parsed = EnrollmentTokenSchema.parse(existing);
+    previous = EnrollmentTokenSchema.parse(existing);
     if (
-      parsed.state !== "revoked" && parsed.state !== "expired" &&
-      !isExpired(parsed, Date.now())
+      previous.state !== "revoked" && previous.state !== "expired" &&
+      !isExpired(previous, Date.now())
     ) {
       throw new Error(
         `Enrollment token '${context.definition.name}' already exists — revoke it or wait for expiry before re-minting`,
@@ -190,6 +296,16 @@ async function mint(
     bindings: [] as Binding[],
   };
   const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);
+  // a rotated token's keys are per mint, so a re-mint leaves them behind
+  if (previous !== undefined) {
+    for (
+      const retired of [previous.secretKey, previous.predecessor?.secretKey]
+    ) {
+      if (retired !== undefined && retired !== secretKey) {
+        await deleteSecretBestEffort(context, previous.vaultName, retired);
+      }
+    }
+  }
   return { dataHandles: [handle] };
 }
 
@@ -199,9 +315,9 @@ const RedeemArgsSchema = z.object({
 });
 
 /**
- * redeems at enrollment or re-authenticates a bound machine; a known machineId
- * re-auths without writing, and past expiresAt every machine is rejected (hard
- * deadline). Every failure throws.
+ * redeems at enrollment or re-authenticates a bound machine; a re-auth writes
+ * only when the machine moves between a rotation's mints, and past expiresAt
+ * every machine is rejected (hard deadline). Every failure throws.
  */
 async function redeem(
   args: z.infer<typeof RedeemArgsSchema>,
@@ -225,15 +341,47 @@ async function redeem(
     token.secretKey,
     "model:enrollment-token-verify",
   );
-  if (!timingSafeEqual(secret, args.presentedToken)) {
+  const matchesCurrent = timingSafeEqual(secret, args.presentedToken);
+  const predecessor = livePredecessor(token, Date.now());
+  let matchesPredecessor = false;
+  if (!matchesCurrent && predecessor !== undefined) {
+    // only a key a concurrent rotation deleted is no match: no match is a
+    // permanent refusal, so any other vault failure must stay retryable
+    const previous = await context.vaultService.get(
+      token.vaultName,
+      predecessor.secretKey,
+      "model:enrollment-token-verify",
+    ).catch((error: unknown) => {
+      if (isSecretNotFoundError(error)) return null;
+      throw error;
+    });
+    matchesPredecessor = previous !== null &&
+      timingSafeEqual(previous, args.presentedToken);
+  }
+  if (!matchesCurrent && !matchesPredecessor) {
     throw new Error(`Enrollment token '${name}' does not match`);
   }
+  const mint = matchesCurrent ? token.createdAt : predecessor!.createdAt;
 
   const existingBinding = token.bindings.find(
     (b) => b.machineId === args.machineId,
   );
   if (existingBinding) {
-    return { dataHandles: [] };
+    if (sameInstant(existingBinding.mint ?? token.createdAt, mint)) {
+      return { dataHandles: [] };
+    }
+    const rebound = {
+      ...token,
+      bindings: token.bindings.map((b) =>
+        b.machineId === args.machineId ? { ...b, mint } : b
+      ),
+    };
+    const handle = await context.writeResource!(
+      "token",
+      TOKEN_DATA_NAME,
+      rebound,
+    );
+    return { dataHandles: [handle] };
   }
 
   if (
@@ -250,7 +398,11 @@ async function redeem(
     state: "enrolled" as const,
     bindings: [
       ...token.bindings,
-      { machineId: args.machineId, enrolledAt: new Date().toISOString() },
+      {
+        machineId: args.machineId,
+        enrolledAt: new Date().toISOString(),
+        ...(matchesCurrent ? {} : { mint }),
+      },
     ],
   };
   const handle = await context.writeResource!(
@@ -293,6 +445,90 @@ async function pruneBindings(
 
 const EmptyArgsSchema = z.object({});
 
+const RotateArgsSchema = z.object({
+  durationMs: z.number().int().positive().optional().describe(
+    "Successor lifetime in milliseconds; defaults to the current mint's",
+  ),
+});
+
+/**
+ * replaces the secret in place: the name, bindings and allowance stay, so the
+ * worker keeps its identity; the old mint stays redeemable until its own
+ * deadline, clamped to the successor's
+ */
+async function rotate(
+  args: z.infer<typeof RotateArgsSchema>,
+  context: MethodContext,
+): Promise<MethodResult> {
+  if (!context.vaultService) {
+    throw new Error("Rotating an enrollment token requires a vault service");
+  }
+  const token = await readToken(context);
+  const name = context.definition.name;
+  const now = Date.now();
+  if (
+    token.state === "revoked" || token.state === "expired" ||
+    isExpired(token, now)
+  ) {
+    throw new Error(
+      `Enrollment token '${name}' has ${
+        token.state === "revoked" ? "been revoked" : "expired"
+      } and cannot be rotated — mint a new one with: swamp worker token create ${name} --duration <duration>`,
+    );
+  }
+
+  const previousCreatedAtMs = Date.parse(token.createdAt);
+  // the cut-off verdict orders mints by createdAt, so the successor must be
+  // strictly newer even when two rotations land in one millisecond
+  const createdAtMs = Math.max(now, previousCreatedAtMs + 1);
+  const durationMs = args.durationMs ??
+    Date.parse(token.expiresAt) - previousCreatedAtMs;
+  const expiresAtMs = createdAtMs + durationMs;
+
+  const secretKey = rotatedTokenSecretKey(name, createdAtMs);
+  await context.vaultService.put(
+    token.vaultName,
+    secretKey,
+    generateOpaqueToken(),
+  );
+
+  const dropped = token.predecessor;
+  const rotated: EnrollmentToken = {
+    ...token,
+    createdAt: new Date(createdAtMs).toISOString(),
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    secretKey,
+    bindings: token.bindings.map((b) => ({
+      ...b,
+      mint: b.mint ?? token.createdAt,
+    })),
+    predecessor: {
+      createdAt: token.createdAt,
+      expiresAt: new Date(
+        Math.min(Date.parse(token.expiresAt), expiresAtMs),
+      ).toISOString(),
+      secretKey: token.secretKey,
+    },
+  };
+  let handle;
+  try {
+    handle = await context.writeResource!("token", TOKEN_DATA_NAME, rotated);
+  } catch (error) {
+    await deleteSecretBestEffort(context, token.vaultName, secretKey);
+    throw error;
+  }
+  if (dropped !== undefined && dropped.secretKey !== secretKey) {
+    await deleteSecretBestEffort(context, token.vaultName, dropped.secretKey);
+  }
+  return { dataHandles: [handle] };
+}
+
+const ExpireArgsSchema = z.object({
+  mint: z.string().datetime().optional().describe(
+    "createdAt of the mint that lapsed; omit for the current mint",
+  ),
+});
+
 async function revoke(
   _args: z.infer<typeof EmptyArgsSchema>,
   context: MethodContext,
@@ -315,10 +551,31 @@ async function revoke(
 }
 
 async function expire(
-  _args: z.infer<typeof EmptyArgsSchema>,
+  args: z.infer<typeof ExpireArgsSchema>,
   context: MethodContext,
 ): Promise<MethodResult> {
   const token = await readToken(context);
+  if (args.mint !== undefined && !sameInstant(args.mint, token.createdAt)) {
+    const predecessor = token.predecessor;
+    if (
+      predecessor === undefined ||
+      !sameInstant(args.mint, predecessor.createdAt)
+    ) {
+      return { dataHandles: [] };
+    }
+    const { predecessor: _lapsed, ...current } = token;
+    const handle = await context.writeResource!(
+      "token",
+      TOKEN_DATA_NAME,
+      current,
+    );
+    await deleteSecretBestEffort(
+      context,
+      token.vaultName,
+      predecessor.secretKey,
+    );
+    return { dataHandles: [handle] };
+  }
   if (token.state === "expired" || token.state === "revoked") {
     return { dataHandles: [] };
   }
@@ -333,7 +590,13 @@ async function expire(
 
 export const enrollmentTokenModel: ModelDefinition = defineModel({
   type: ENROLLMENT_TOKEN_MODEL_TYPE,
-  version: "2026.07.04.1",
+  version: "2026.11.12.1",
+  upgrades: [{
+    toVersion: "2026.11.12.1",
+    description:
+      "Adds token rotation; a token definition has no global arguments to migrate",
+    upgradeAttributes: (attributes) => attributes,
+  }],
   resources: {
     "token": {
       description:
@@ -364,10 +627,18 @@ export const enrollmentTokenModel: ModelDefinition = defineModel({
       arguments: EmptyArgsSchema,
       execute: revoke,
     },
-    expire: {
-      description: "Record that the token lifetime has elapsed",
+    rotate: {
+      description:
+        "Replace the token's secret and lifetime in place, keeping the old secret redeemable until its own expiry",
       kind: "action",
-      arguments: EmptyArgsSchema,
+      arguments: RotateArgsSchema,
+      execute: rotate,
+    },
+    expire: {
+      description:
+        "Record that a mint's lifetime has elapsed (the predecessor's clears it)",
+      kind: "action",
+      arguments: ExpireArgsSchema,
       execute: expire,
     },
     prune_bindings: {

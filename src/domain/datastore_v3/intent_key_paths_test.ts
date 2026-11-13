@@ -265,4 +265,5 @@ Deno.test("opKindAllowed: removals never ride a put and saves never a tombstone"
   assert(!opKindAllowed(sampleIntent("data.save"), "tombstone"));
   assert(!opKindAllowed(sampleIntent("run.create"), "tombstone"));
   assert(opKindAllowed(sampleIntent("grant.revoke"), "put"));
+  assert(opKindAllowed(sampleIntent("worker-token.rotate"), "put"));
 });

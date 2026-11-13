@@ -114,6 +114,28 @@ Deno.test("WorkerTokenRevalidationService: cuts off only the old mint after a re
   assertEquals(calls, [{ name: "ci-runner-3", cause: "reminted", mint: MINT }]);
 });
 
+Deno.test("WorkerTokenRevalidationService: a rotation keeps workers on the predecessor and the successor", async () => {
+  const rotatedMint = "2026-01-01T00:05:00.000Z";
+  const { service, calls } = createService({
+    bound: [
+      { tokenName: "ci-runner-3", tokenCreatedAt: MINT },
+      { tokenName: "ci-runner-3", tokenCreatedAt: rotatedMint },
+    ],
+    readTokens: () =>
+      Promise.resolve(tokens(tokenRecord({
+        createdAt: rotatedMint,
+        secretKey: "worker-rotated-token-ci-runner-3-1767225900000",
+        predecessor: {
+          createdAt: MINT,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          secretKey: "worker-token-ci-runner-3",
+        },
+      }))),
+  });
+  assertEquals(await service.runOnce(), []);
+  assertEquals(calls, []);
+});
+
 Deno.test("WorkerTokenRevalidationService: cuts off workers only when their token is missing on two passes in a row", async () => {
   const { service, calls } = createService({
     bound: [{ tokenName: "ci-runner-3", tokenCreatedAt: MINT }],

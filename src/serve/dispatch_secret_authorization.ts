@@ -26,7 +26,10 @@ import {
   sensitiveVaultReferences,
 } from "../domain/models/data_writer.ts";
 import { SERVER_TOKEN_SECRET_KEY_PREFIX } from "../domain/models/access/server_token_model.ts";
-import { WORKER_TOKEN_SECRET_KEY_PREFIX } from "../domain/models/worker/enrollment_token_model.ts";
+import {
+  WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
+  WORKER_TOKEN_SECRET_KEY_PREFIX,
+} from "../domain/models/worker/enrollment_token_model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { ActiveDispatch } from "./dispatch_registry.ts";
 
@@ -37,6 +40,7 @@ const DENIED_VAULT_NAMES: ReadonlySet<string> = new Set([
 const DENIED_SECRET_KEY_PREFIXES: readonly string[] = [
   SERVER_TOKEN_SECRET_KEY_PREFIX,
   WORKER_TOKEN_SECRET_KEY_PREFIX,
+  WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
   "oauth-client-secret",
   "oauth-access-token-",
   "oauth-bootstrap-access-token",

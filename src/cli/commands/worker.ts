@@ -23,6 +23,8 @@ import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { workerTokenCreateCommand } from "./worker_token_create.ts";
 import { workerTokenListCommand } from "./worker_token_list.ts";
 import { workerTokenRevokeCommand } from "./worker_token_revoke.ts";
+import { workerTokenRotateCommand } from "./worker_token_rotate.ts";
+import { workerTokenRevealCommand } from "./worker_token_reveal.ts";
 import { workerListCommand } from "./worker_list.ts";
 import { workerConnectCommand } from "./worker_connect.ts";
 import { workerQueueCommand } from "./worker_queue.ts";
@@ -38,7 +40,9 @@ export const workerTokenCommand = new Command()
   .action(groupCommandAction)
   .command("create", workerTokenCreateCommand)
   .command("list", workerTokenListCommand)
-  .command("revoke", workerTokenRevokeCommand);
+  .command("revoke", workerTokenRevokeCommand)
+  .command("rotate", workerTokenRotateCommand)
+  .command("reveal", workerTokenRevealCommand);
 
 export const workerCommand = new Command()
   .name("worker")

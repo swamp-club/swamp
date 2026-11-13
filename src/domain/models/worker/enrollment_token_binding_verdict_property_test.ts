@@ -36,30 +36,52 @@ const arbToken: fc.Arbitrary<EnrollmentToken | null> = fc.option(
     state: fc.constantFrom("unused", "enrolled", "expired", "revoked"),
     createdAt: arbInstant,
     expiresAt: arbInstant,
-  }).map((fields) => ({
+    predecessorCreatedAt: fc.option(arbInstant, { nil: undefined }),
+  }).map(({ predecessorCreatedAt, ...fields }) => ({
     name: "ci-runner-3",
     vaultName: "local",
     secretKey: "worker-token-ci-runner-3",
     maxEnrollments: 1,
     bindings: [],
     ...fields,
+    ...(predecessorCreatedAt === undefined ? {} : {
+      predecessor: {
+        createdAt: predecessorCreatedAt,
+        expiresAt: fields.expiresAt,
+        secretKey: "worker-rotated-token-ci-runner-3-1",
+      },
+    }),
   } as EnrollmentToken)),
   { nil: null },
 );
 
-Deno.test("enrollmentTokenBindingVerdict: keeps a worker exactly when its record exists, is not revoked, and is not a newer mint", () => {
+Deno.test("enrollmentTokenBindingVerdict: keeps a worker exactly when its record exists, is not revoked, and is its mint, its live predecessor, or not a newer mint", () => {
   fc.assert(
     fc.property(
       arbToken,
-      fc.boolean(),
+      fc.constantFrom("current", "predecessor", "other"),
       arbInstant,
-      (token, sameMint, otherMint) => {
-        const boundCreatedAt = sameMint && token ? token.createdAt : otherMint;
-        const verdict = enrollmentTokenBindingVerdict(token, boundCreatedAt);
+      arbInstant.map((at) => Date.parse(at)),
+      (token, bound, otherMint, nowMs) => {
+        const boundCreatedAt = bound === "current" && token
+          ? token.createdAt
+          : bound === "predecessor" && token?.predecessor
+          ? token.predecessor.createdAt
+          : otherMint;
+        const verdict = enrollmentTokenBindingVerdict(
+          token,
+          boundCreatedAt,
+          nowMs,
+        );
 
+        const onPredecessor = token?.predecessor !== undefined &&
+          Date.parse(token.predecessor.createdAt) ===
+            Date.parse(boundCreatedAt);
         const shouldKeep = token !== null &&
           token.state !== "revoked" &&
-          Date.parse(token.createdAt) <= Date.parse(boundCreatedAt);
+          (onPredecessor
+            ? Date.parse(token.predecessor!.expiresAt) > nowMs
+            : Date.parse(token.createdAt) <= Date.parse(boundCreatedAt));
         assertEquals(verdict.keep, shouldKeep);
       },
     ),

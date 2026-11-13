@@ -26,14 +26,19 @@ import {
 import {
   type Binding,
   ENROLLMENT_TOKEN_MODEL_TYPE,
+  enrollmentMintFor,
   type EnrollmentToken,
   enrollmentTokenBindingVerdict,
   enrollmentTokenModel,
+  EnrollmentTokenSchema,
   type MaxEnrollments,
+  rotatedTokenSecretKey,
   tokenSecretKey,
+  WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX,
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
+import { resolveStaleness } from "../../definitions/definition_staleness.ts";
 
 const mintArgs = {
   durationMs: 60_000,
@@ -554,6 +559,313 @@ Deno.test("enrollmentTokenModel: prune_bindings frees enrollment slots on capped
   assertEquals(tokenBindings(store).length, 2);
 });
 
+async function rotateToken(
+  harness: Awaited<ReturnType<typeof mintToken>>,
+  args: { durationMs?: number } = {},
+) {
+  await enrollmentTokenModel.methods.rotate.execute(args, harness.context);
+  const token = harness.store.get("token-main")!;
+  const successor = harness.vault.get(`local/${token.secretKey as string}`)!;
+  return { token, successor };
+}
+
+Deno.test("enrollmentTokenModel: rotate keeps the name and bindings and writes a fresh key", async () => {
+  const harness = await mintToken();
+  const before = harness.store.get("token-main")!;
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: harness.plaintext, machineId: "machine-1" },
+    harness.context,
+  );
+  const { token, successor } = await rotateToken(harness);
+
+  assertEquals(token.name, "ci-runner-3");
+  assertEquals(token.state, "enrolled");
+  assertEquals(
+    token.secretKey,
+    rotatedTokenSecretKey("ci-runner-3", Date.parse(token.createdAt as string)),
+  );
+  assertNotEquals(successor, harness.plaintext);
+  assertEquals(
+    harness.vault.get(`local/${tokenSecretKey("ci-runner-3")}`),
+    harness.plaintext,
+  );
+  assertEquals(
+    Date.parse(token.createdAt as string) >
+      Date.parse(before.createdAt as string),
+    true,
+  );
+  const predecessor = token.predecessor as Record<string, string>;
+  assertEquals(predecessor.createdAt, before.createdAt);
+  assertEquals(predecessor.expiresAt, before.expiresAt);
+  assertEquals(predecessor.secretKey, tokenSecretKey("ci-runner-3"));
+  const bindings = tokenBindings(harness.store);
+  assertEquals(bindings.length, 1);
+  assertEquals(bindings[0].mint, before.createdAt);
+  assertEquals(JSON.stringify(token).includes(successor), false);
+});
+
+Deno.test("enrollmentTokenModel: rotate defaults to the current mint's lifetime", async () => {
+  const harness = await mintToken();
+  const { token } = await rotateToken(harness);
+  assertEquals(
+    Date.parse(token.expiresAt as string) -
+      Date.parse(token.createdAt as string),
+    mintArgs.durationMs,
+  );
+});
+
+Deno.test("enrollmentTokenModel: a shorter rotation clamps the predecessor's deadline", async () => {
+  const harness = await mintToken();
+  const { token } = await rotateToken(harness, { durationMs: 1_000 });
+  const predecessor = token.predecessor as Record<string, string>;
+  assertEquals(predecessor.expiresAt, token.expiresAt);
+});
+
+Deno.test("enrollmentTokenModel: both secrets redeem during the overlap and the binding records which", async () => {
+  const harness = await mintToken();
+  const { token, successor } = await rotateToken(harness);
+
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: harness.plaintext, machineId: "machine-1" },
+    harness.context,
+  );
+  const predecessor = token.predecessor as Record<string, string>;
+  assertEquals(
+    enrollmentMintFor(
+      EnrollmentTokenSchema.parse(harness.store.get("token-main")),
+      "machine-1",
+    ),
+    { createdAt: predecessor.createdAt, expiresAt: predecessor.expiresAt },
+  );
+
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: successor, machineId: "machine-1" },
+    harness.context,
+  );
+  assertEquals(
+    enrollmentMintFor(
+      EnrollmentTokenSchema.parse(harness.store.get("token-main")),
+      "machine-1",
+    ),
+    {
+      createdAt: token.createdAt as string,
+      expiresAt: token.expiresAt as string,
+    },
+  );
+  assertEquals(tokenBindings(harness.store).length, 1);
+});
+
+Deno.test("enrollmentTokenModel: re-auth on the same mint after rotation writes nothing", async () => {
+  const harness = await mintToken();
+  const { successor } = await rotateToken(harness);
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: successor, machineId: "machine-1" },
+    harness.context,
+  );
+  const versionsAfter = harness.versions.get("token-main");
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: successor, machineId: "machine-1" },
+    harness.context,
+  );
+  assertEquals(harness.versions.get("token-main"), versionsAfter);
+});
+
+Deno.test("enrollmentTokenModel: the predecessor secret stops redeeming past its deadline", async () => {
+  const harness = await mintToken();
+  await rotateToken(harness);
+  const record = harness.store.get("token-main")!;
+  (record.predecessor as Record<string, string>).expiresAt = new Date(
+    Date.now() - 1_000,
+  ).toISOString();
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: harness.plaintext, machineId: "machine-1" },
+        harness.context,
+      ),
+    Error,
+    "does not match",
+  );
+});
+
+Deno.test("enrollmentTokenModel: a second rotation retires the oldest secret and deletes its key", async () => {
+  const harness = await mintToken();
+  const first = await rotateToken(harness);
+  const second = await rotateToken(harness);
+
+  assertEquals(
+    harness.vault.has(`local/${tokenSecretKey("ci-runner-3")}`),
+    false,
+  );
+  assertEquals(
+    (second.token.predecessor as Record<string, string>).secretKey,
+    first.token.secretKey,
+  );
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: harness.plaintext, machineId: "machine-1" },
+        harness.context,
+      ),
+    Error,
+    "does not match",
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: first.successor, machineId: "machine-1" },
+    harness.context,
+  );
+});
+
+Deno.test("enrollmentTokenModel: a failed record write leaves the old secret and record usable", async () => {
+  const harness = await mintToken();
+  const before = structuredClone(harness.store.get("token-main"));
+  const failing = {
+    ...harness.context,
+    writeResource: () => Promise.reject(new Error("datastore unavailable")),
+  };
+  await assertRejects(
+    () => enrollmentTokenModel.methods.rotate.execute({}, failing),
+    Error,
+    "datastore unavailable",
+  );
+  assertEquals(harness.store.get("token-main"), before);
+  assertEquals(
+    [...harness.vault.keys()].filter((k) =>
+      k.includes(WORKER_ROTATED_TOKEN_SECRET_KEY_PREFIX)
+    ),
+    [],
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: harness.plaintext, machineId: "machine-1" },
+    harness.context,
+  );
+});
+
+Deno.test("enrollmentTokenModel: the current secret still redeems when the predecessor's key is gone", async () => {
+  const harness = await mintToken();
+  const { successor } = await rotateToken(harness);
+  harness.vault.delete(`local/${tokenSecretKey("ci-runner-3")}`);
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: successor, machineId: "machine-1" },
+    harness.context,
+  );
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: "wrong", machineId: "machine-2" },
+        harness.context,
+      ),
+    Error,
+    "does not match",
+  );
+});
+
+Deno.test("enrollmentTokenModel: a vault failure reading the old secret stays retryable, never a mismatch", async () => {
+  const harness = await mintToken();
+  await rotateToken(harness);
+  const failing = {
+    ...harness.context,
+    vaultService: {
+      ...harness.context.vaultService!,
+      get: (vaultName: string, secretKey: string) =>
+        secretKey === tokenSecretKey("ci-runner-3")
+          ? Promise.reject(new Error("vault timed out"))
+          : harness.context.vaultService!.get(vaultName, secretKey),
+    },
+  } as typeof harness.context;
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: harness.plaintext, machineId: "machine-1" },
+        failing,
+      ),
+    Error,
+    "vault timed out",
+  );
+});
+
+Deno.test("enrollmentTokenModel: re-minting a rotated token deletes its per-mint keys", async () => {
+  const harness = await mintToken();
+  const first = await rotateToken(harness);
+  const second = await rotateToken(harness);
+  await enrollmentTokenModel.methods.revoke.execute({}, harness.context);
+  await enrollmentTokenModel.methods.mint.execute(mintArgs, harness.context);
+
+  assertEquals(
+    harness.vault.has(`local/${first.token.secretKey as string}`),
+    false,
+  );
+  assertEquals(
+    harness.vault.has(`local/${second.token.secretKey as string}`),
+    false,
+  );
+  assertEquals(
+    harness.vault.has(`local/${tokenSecretKey("ci-runner-3")}`),
+    true,
+  );
+});
+
+Deno.test("enrollmentTokenModel: rotate refuses a revoked token", async () => {
+  const harness = await mintToken();
+  await enrollmentTokenModel.methods.revoke.execute({}, harness.context);
+  const error = await assertRejects(
+    () => enrollmentTokenModel.methods.rotate.execute({}, harness.context),
+    Error,
+    "revoked",
+  );
+  assertStringIncludes(error.message, "swamp worker token create");
+});
+
+Deno.test("enrollmentTokenModel: rotate refuses an expired token", async () => {
+  const harness = await mintToken();
+  harness.store.get("token-main")!.expiresAt = new Date(Date.now() - 1_000)
+    .toISOString();
+  await assertRejects(
+    () => enrollmentTokenModel.methods.rotate.execute({}, harness.context),
+    Error,
+    "expired",
+  );
+});
+
+Deno.test("enrollmentTokenModel: expiring the predecessor's mint clears it and keeps the token live", async () => {
+  const harness = await mintToken();
+  const before = harness.store.get("token-main")!;
+  const { token } = await rotateToken(harness);
+  await enrollmentTokenModel.methods.expire.execute(
+    { mint: before.createdAt as string },
+    harness.context,
+  );
+  const after = harness.store.get("token-main")!;
+  assertEquals(after.predecessor, undefined);
+  assertEquals(after.state, token.state);
+  assertEquals(after.createdAt, token.createdAt);
+  assertEquals(
+    harness.vault.has(`local/${tokenSecretKey("ci-runner-3")}`),
+    false,
+  );
+});
+
+Deno.test("enrollmentTokenModel: expiring an unknown mint is a no-op", async () => {
+  const harness = await mintToken();
+  const versionsBefore = harness.versions.get("token-main");
+  await enrollmentTokenModel.methods.expire.execute(
+    { mint: "2020-01-01T00:00:00.000Z" },
+    harness.context,
+  );
+  assertEquals(harness.versions.get("token-main"), versionsBefore);
+  assertEquals(harness.store.get("token-main")!.state, "unused");
+});
+
+Deno.test("enrollmentTokenModel: expiring the current mint by name still expires the token", async () => {
+  const harness = await mintToken();
+  const { token } = await rotateToken(harness);
+  await enrollmentTokenModel.methods.expire.execute(
+    { mint: token.createdAt as string },
+    harness.context,
+  );
+  assertEquals(harness.store.get("token-main")!.state, "expired");
+});
+
 function tokenRecord(overrides: Partial<EnrollmentToken>): EnrollmentToken {
   return {
     name: "ci-runner-3",
@@ -603,6 +915,42 @@ Deno.test("enrollmentTokenBindingVerdict: an older record is a stale read, not a
   );
 });
 
+Deno.test("enrollmentTokenBindingVerdict: a rotation keeps workers on the predecessor until its deadline", () => {
+  const token = tokenRecord({
+    createdAt: "2026-01-01T00:05:00.000Z",
+    predecessor: {
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T01:00:00.000Z",
+      secretKey: tokenSecretKey("ci-runner-3"),
+    },
+  });
+  const beforeDeadline = Date.parse("2026-01-01T00:30:00.000Z");
+  assertEquals(
+    enrollmentTokenBindingVerdict(
+      token,
+      "2026-01-01T00:00:00.000Z",
+      beforeDeadline,
+    ),
+    { keep: true },
+  );
+  assertEquals(
+    enrollmentTokenBindingVerdict(
+      token,
+      "2026-01-01T00:00:00.000Z",
+      Date.parse("2026-01-01T01:00:00.000Z"),
+    ),
+    { keep: false, cause: "expired" },
+  );
+  assertEquals(
+    enrollmentTokenBindingVerdict(
+      token,
+      "2025-12-31T23:00:00.000Z",
+      beforeDeadline,
+    ),
+    { keep: false, cause: "retired" },
+  );
+});
+
 Deno.test("enrollmentTokenBindingVerdict: a missing record cuts the worker off", () => {
   assertEquals(
     enrollmentTokenBindingVerdict(null, "2026-01-01T00:00:00.000Z"),
@@ -616,4 +964,24 @@ Deno.test("timingSafeEqual: equal and unequal strings", () => {
   assertEquals(timingSafeEqual("abc", "abcd"), false);
   assertEquals(timingSafeEqual("", ""), true);
   assertEquals(timingSafeEqual("", "x"), false);
+});
+
+Deno.test("enrollmentTokenModel: a definition minted before rotation existed is upgradable, not stranded", () => {
+  const upgrades = enrollmentTokenModel.upgrades ?? [];
+  assertEquals(
+    resolveStaleness(
+      "2026.07.04.1",
+      enrollmentTokenModel.version,
+      upgrades.map((u) => u.toVersion),
+    ).state,
+    "upgradable",
+  );
+  assertEquals(upgrades.at(-1)?.upgradeAttributes({}), {});
+});
+
+Deno.test("rotatedTokenSecretKey: carries no dot and never collides with a token's own key", () => {
+  const key = rotatedTokenSecretKey("web-01", 1_767_225_600_000);
+  assertEquals(key, "worker-rotated-token-web-01-1767225600000");
+  assertEquals(key.includes("."), false);
+  assertEquals(key.startsWith(tokenSecretKey("")), false);
 });

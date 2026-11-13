@@ -117,6 +117,19 @@ import {
   workerTokenRevoke,
 } from "../../libswamp/worker/token_revoke.ts";
 import {
+  createWorkerTokenRotateDeps,
+  workerTokenRotate,
+  type WorkerTokenRotateData,
+} from "../../libswamp/worker/token_rotate.ts";
+import {
+  createWorkerTokenRevealDeps,
+  workerTokenReveal,
+  type WorkerTokenRevealData,
+} from "../../libswamp/worker/token_reveal.ts";
+import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
+import { runFileSink } from "../../infrastructure/logging/run_file_sink.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
+import {
   createNamespaceListDeps,
   datastoreNamespaceList,
 } from "../../libswamp/datastores/namespace_list.ts";
@@ -193,7 +206,9 @@ import type {
   WorkerProbeResult,
   WorkerPrunePayload,
   WorkerTokenCreatePayload,
+  WorkerTokenRevealPayload,
   WorkerTokenRevokePayload,
+  WorkerTokenRotatePayload,
   WorkerVerifyPayload,
 } from "../protocol.ts";
 import { dispatchFleetProbe } from "../fleet_probe_dispatch.ts";
@@ -2793,17 +2808,21 @@ export async function handleWorkerTokenRevoke(
         );
 
         let result: Record<string, unknown> | undefined;
-        await consumeStream(
-          workerTokenRevoke(libCtx, deps, { name: payload.name }),
-          withDefaults({
-            completed: (e) => {
-              result = e.data as unknown as Record<string, unknown>;
-            },
-            error: (e) => {
-              throw new Error(e.error.message);
-            },
-          }),
-        );
+        const revoke = () =>
+          consumeStream(
+            workerTokenRevoke(libCtx, deps, { name: payload.name }),
+            withDefaults({
+              completed: (e) => {
+                result = e.data as unknown as Record<string, unknown>;
+              },
+              error: (e) => {
+                throw new Error(e.error.message);
+              },
+            }),
+          );
+        // on the gateway's tail, or a rotate or redeem that read the record
+        // first would write over the revoke
+        await (ctx.workerGateway?.serializeTokenWrite(revoke) ?? revoke());
 
         // the revoke is persisted even if the request was cancelled, and an
         // already-revoked token may still hold workers this instance missed, so
@@ -2833,6 +2852,188 @@ export async function handleWorkerTokenRevoke(
       }
     },
   );
+}
+
+/**
+ * serve owns the connected workers, so a rotation here also delivers the
+ * successor to them; without a gateway it rotates like the local CLI
+ */
+export async function handleWorkerTokenRotate(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerTokenRotatePayload,
+  _controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  await runInRootUnitOfWork(
+    ctx.repoContext,
+    { flush: () => pushChangedToRemote(ctx) },
+    async () => {
+      let redactorHandle: string | undefined;
+      try {
+        let data: WorkerTokenRotateData | undefined;
+        const gateway = ctx.workerGateway;
+        if (gateway !== undefined) {
+          // delivery holds the sync gate at most one per-worker timeout, since
+          // workers are contacted in parallel
+          const report = await gateway.rotateToken(
+            payload.name,
+            payload.durationMs !== undefined
+              ? { durationMs: payload.durationMs }
+              : undefined,
+          );
+          data = {
+            name: report.tokenName,
+            token: report.token,
+            expiresAt: report.expiresAt,
+            predecessorExpiresAt: report.predecessorExpiresAt,
+            delivered: true,
+            rotated: report.rotated,
+            notRotated: report.notRotated,
+            unconnectedBindings: report.unconnectedBindings,
+            retiredBindings: report.retiredBindings,
+          };
+        } else {
+          const libCtx = handlerLibSwampContext(ctx);
+          const deps = await createWorkerTokenRotateDeps(
+            libCtx,
+            ctx.repoDir,
+            ctx.repoContext,
+            { vaultsDir: ctx.vaultsDir },
+          );
+          await consumeStream(
+            workerTokenRotate(libCtx, deps, {
+              name: payload.name,
+              durationMs: payload.durationMs,
+            }),
+            withDefaults({
+              completed: (e) => {
+                data = e.data;
+              },
+              error: (e) => {
+                throw new Error(e.error.message);
+              },
+            }),
+          );
+        }
+
+        if (data === undefined) {
+          throw new Error(
+            `Rotating token '${payload.name}' ended without completing`,
+          );
+        }
+        const redactor = new SecretRedactor();
+        redactor.addSecret(data.token);
+        redactor.addSecret(data.token.slice(data.name.length + 1));
+        redactorHandle = runFileSink.registerRedactor(redactor);
+        // answered even when cancelled: the rotation has landed either way
+        send(socket, {
+          type: "worker.token.rotate",
+          id: requestId,
+          payload: { data: data as unknown as Record<string, unknown> },
+        });
+      } catch (error) {
+        const message = sanitizeErrorForClient(error);
+        sendError(socket, requestId, "worker_token_rotate_failed", message);
+      } finally {
+        runFileSink.unregisterRedactor(redactorHandle);
+      }
+    },
+  );
+}
+
+export async function handleWorkerTokenReveal(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerTokenRevealPayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx).allowed
+  ) return;
+
+  // registered until nothing more is logged here, so a failed send that
+  // echoes the reply is masked too
+  let redactorHandle: string | undefined;
+  try {
+    const libCtx = handlerLibSwampContext(ctx);
+    const deps = createWorkerTokenRevealDeps(
+      ctx.repoContext.dataQueryService,
+      await VaultService.fromRepository(ctx.repoDir, {
+        vaultsDir: ctx.vaultsDir,
+      }),
+    );
+    let revealed: WorkerTokenRevealData | undefined;
+    let refusal: { code: string; message: string } | undefined;
+    await consumeStream(
+      workerTokenReveal(libCtx, deps, payload.name),
+      withDefaults({
+        completed: (e) => {
+          revealed = e.data;
+        },
+        error: (e) => {
+          refusal = e.error;
+        },
+      }),
+    );
+    if (revealed !== undefined) {
+      const redactor = new SecretRedactor();
+      redactor.addSecret(revealed.token);
+      redactor.addSecret(revealed.token.slice(revealed.name.length + 1));
+      redactorHandle = runFileSink.registerRedactor(redactor);
+    }
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    if (refusal !== undefined) {
+      sendError(
+        socket,
+        requestId,
+        refusal.code,
+        sanitizeErrorForClient(new Error(refusal.message)),
+      );
+      return;
+    }
+    if (revealed === undefined) {
+      sendError(
+        socket,
+        requestId,
+        "worker_token_reveal_failed",
+        `Revealing token '${payload.name}' ended without completing`,
+      );
+      return;
+    }
+    send(socket, {
+      type: "worker.token.reveal",
+      id: requestId,
+      payload: { data: revealed as unknown as Record<string, unknown> },
+    });
+  } catch (error) {
+    sendError(
+      socket,
+      requestId,
+      "worker_token_reveal_failed",
+      sanitizeErrorForClient(error),
+    );
+  } finally {
+    runFileSink.unregisterRedactor(redactorHandle);
+  }
 }
 
 export async function handleWorkerPrune(
