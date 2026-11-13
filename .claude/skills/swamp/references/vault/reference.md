@@ -17,6 +17,11 @@ Encrypted secrets (local_encryption vaults only) live in `.swamp/`:
   {secret-key}  # Encrypted secret data
 ```
 
+Back up `.key` together with the secrets. If it is lost while secrets remain,
+every read and write refuses, saying the key file is missing; swamp never
+generates a replacement key for a vault that holds secrets. Restore the key to
+recover.
+
 ## Vault Types
 
 ### Built-in Types

@@ -41,6 +41,12 @@ vaults/
       {secret-key}.enc               # Encrypted secret files
 ```
 
+With `auto_generate`, a `local_encryption` vault creates its key only while its
+directory holds no encrypted data (`*.enc` at the top level, in `.annotations/`
+or in `.refresh/`). If that data exists and the key file is missing or empty,
+every read and write refuses with `vault_key_missing` rather than minting a key
+that could never decrypt it.
+
 The secrets path is computed at runtime by the datastore path resolver
 ([datastores](../enablers/datastores.md)). A `local_encryption` vault config
 does not store `base_dir` unless the user set one: an unset or empty

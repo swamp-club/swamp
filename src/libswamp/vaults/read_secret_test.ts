@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
+import { SecretNotFoundError } from "../../domain/vaults/secret_not_found_error.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   vaultReadSecret,
@@ -178,9 +179,10 @@ Deno.test("vaultReadSecret: yields error when secret key is empty", async () => 
   assertEquals(error.error.code, "validation_failed");
 });
 
-Deno.test("vaultReadSecret: yields error when secret key not found in vault", async () => {
+Deno.test("vaultReadSecret: yields not_found when the store reports the secret absent", async () => {
   const deps = makeDeps({
-    readSecret: () => Promise.reject(new Error("Secret not found")),
+    readSecret: () =>
+      Promise.reject(new SecretNotFoundError("my-vault", "missing-key")),
   });
   const events = await collect<VaultReadSecretEvent>(
     vaultReadSecret(createLibSwampContext(), deps, {
@@ -192,6 +194,28 @@ Deno.test("vaultReadSecret: yields error when secret key not found in vault", as
   assertEquals(events[1].kind, "error");
   const error = events[1] as Extract<VaultReadSecretEvent, { kind: "error" }>;
   assertEquals(error.error.code, "not_found");
+});
+
+Deno.test("vaultReadSecret: yields vault_read_failed with the store's message for any other failure", async () => {
+  const failure = new Error(
+    "Failed to retrieve secret 'TOKEN': key file is missing",
+  );
+  const deps = makeDeps({
+    readSecret: () => Promise.reject(failure),
+  });
+  const events = await collect<VaultReadSecretEvent>(
+    vaultReadSecret(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      secretKey: "TOKEN",
+    }),
+  );
+
+  assertEquals(events[1].kind, "error");
+  const error = events[1] as Extract<VaultReadSecretEvent, { kind: "error" }>;
+  assertEquals(error.error.code, "vault_read_failed");
+  assertStringIncludes(error.error.message, "'TOKEN' from vault 'my-vault'");
+  assertStringIncludes(error.error.message, "key file is missing");
+  assertEquals(error.error.cause, failure);
 });
 
 Deno.test("vaultReadSecret: readSecret dep receives refreshed value when hook triggers", async () => {
