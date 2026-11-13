@@ -2328,12 +2328,9 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
   }
 
   /**
-   * Folds the next batch, or returns false when none is left. Its rows are
-   * read and parsed, and the snapshots it needs rebuilt, before its
-   * transaction starts; inside it the point is checked again, the commits
-   * are folded in feed order, base references are added before the
-   * commits' are dropped (so a present chunk's count never reaches zero),
-   * and the rows are deleted.
+   * false when no batch is left; the point is rechecked inside the
+   * transaction, and base references are added before the commits' are
+   * dropped, so a present chunk's count never reaches zero
    */
   async #compactBatch(
     through: number,
@@ -3150,12 +3147,9 @@ const storeConnections = new Map<string, Set<DatabaseSync>>();
 const autoCheckpointOffAt = new Set<string>();
 
 /**
- * Turns auto-checkpoint off on every connection open stores hold to the
- * `commits.db` at `path`, and on every store this process opens there
- * later. Called before a Litestream sidecar starts on the file
- * ({@link SqliteCommitStoreOptions.replicated}): a serve follower's copy,
- * which no sidecar of its own replicates, keeps SQLite's default until then.
- * Synchronous, so no commit lands between two connections' switches.
+ * before a sidecar starts on `path`: auto-checkpoint off on every open store
+ * connection there and on later opens; synchronous, so no commit lands between
+ * two connections' switches
  */
 export function stopAutoCheckpointAt(path: string): void {
   const key = resolve(path);

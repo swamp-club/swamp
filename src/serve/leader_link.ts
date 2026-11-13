@@ -56,9 +56,8 @@ export const FORWARD_COMMIT_RESPONSE_BASE_MS = SERVE_REQUEST_SYNC_DEADLINE_MS +
   3_000;
 
 /**
- * forwards a leader left unanswered in a row before it is taken as frozen; each
- * counts only if sent after the last went unanswered, so forwards that waited
- * on one slow commit together count once
+ * unanswered forwards in a row that mark a leader frozen; one counts only if
+ * sent after the last went unanswered, so one slow commit's waiters count once
  */
 export const FROZEN_AFTER_TIMEOUTS = 2;
 

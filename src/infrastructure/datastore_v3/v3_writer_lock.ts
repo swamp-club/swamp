@@ -472,11 +472,7 @@ export async function v3WriterLeaseHolder(
   };
 }
 
-/**
- * when a take would find the lease lapsed unless its holder renews, by this
- * process's clock: 0 when nothing holds it, undefined when the holder's record
- * cannot be read; the take's own judgement still decides
- */
+/** the lease's lapse by this clock: 0 when unheld, undefined when unreadable */
 export async function v3WriterLeaseExpiresAt(
   datastorePath: string,
 ): Promise<number | undefined> {

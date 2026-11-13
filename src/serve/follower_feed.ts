@@ -62,11 +62,7 @@ export const FOLLOWER_UNREADY_APPLY_FAILURES = 3;
  */
 export const FOLLOWER_UNREADY_WAL_BYTES = 1024 ** 3;
 
-/**
- * why /ready reports this follower broken, or undefined: only failures of its
- * own, never a slow or leaderless copy, since the load balancer drops a node
- * whose /ready fails
- */
+/** only its own failures: the load balancer drops a node whose /ready fails */
 export function followerUnreadyReason(state: {
   readonly localApplyFailures: number;
   readonly walBytes: number | undefined;

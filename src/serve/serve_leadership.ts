@@ -65,11 +65,7 @@ export interface LeadershipLease {
    * forwards to a leader record's address only at this fence
    */
   currentFence?(): Promise<number | undefined>;
-  /**
-   * when take() would find the current holder's lease lapsed unless it renews,
-   * by this node's clock; at or before now when nothing holds it, undefined
-   * when that cannot be told. Only timing reads it: take() alone decides.
-   */
+  /** when the holder's lease lapses by this clock; timing only, take() decides */
   expiresAt(): Promise<number | undefined>;
 }
 
@@ -231,10 +227,8 @@ export class ServeLeadership {
   }
 
   /**
-   * Stops ticking and waits for a tick in flight. A follower refresh in flight
-   * is aborted, honoured before its restore is installed; a take() in flight
-   * is awaited, so the lease release never races a promotion. The leader
-   * record is left: the lease decides, and the next leader overwrites it.
+   * aborts a follower refresh before its install but awaits a take() in
+   * flight, so the lease release never races a promotion
    */
   async stop(): Promise<void> {
     this.#stopped = true;
@@ -257,12 +251,7 @@ export class ServeLeadership {
     }, delay);
   }
 
-  /**
-   * A follower tries the lease just after the holder's computed expiry when
-   * that comes before the next tick; the delay never exceeds the tick, since
-   * the same timer detects a lost lead and drives refreshes, and an expiry
-   * already past waits a whole tick, as each failed take reads the bucket.
-   */
+  /** capped at the tick, which also detects a lost lead and drives refreshes */
   async #nextDelay(): Promise<number> {
     if (this.#stopped || this.#role === "leader") return this.#tickMs;
     const expiresAt = await this.#deps.lease.expiresAt().catch(
