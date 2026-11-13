@@ -16,8 +16,8 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
 
+import { ServeUnreachableError } from "../../infrastructure/datastore_v3/serve_upstream_errors.ts";
 import { SecretRefusedError } from "../../domain/expressions/errors.ts";
 import { SENSITIVE_FORMAT_VERSION } from "../../domain/secrets/persisted_sensitive_form.ts";
 import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";

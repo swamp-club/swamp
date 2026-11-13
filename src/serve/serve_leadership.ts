@@ -343,7 +343,7 @@ export class ServeLeadership {
       await this.#deps.refreshCopy(refresh.signal);
       return true;
     } catch (error) {
-      if (refresh.signal.aborted) return false;
+      if (error === refresh.signal.reason) return false;
       throw error;
     } finally {
       this.#refreshing = undefined;

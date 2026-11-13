@@ -418,11 +418,14 @@ function startRefusal(
 }
 
 function startMayHaveRun(err: ServerResponseError): UserError {
-  return new UserError(
+  const error = new UserError(
     `${err.serverMessage} The run was not sent again; check for it with: ` +
       "swamp run history",
     COMMIT_MAY_LAND_CODE,
   );
+  // the refusal's inFlight reaches --json through the cause
+  error.cause = err;
+  return error;
 }
 
 /** why serve refused without acting, when the refusal proves it did not act */

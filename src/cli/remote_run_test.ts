@@ -493,6 +493,7 @@ Deno.test({
       }, UserError);
       const json = buildErrorJson(error);
       assertEquals(json.code, COMMIT_MAY_LAND_CODE);
+      assertEquals(json.inFlight, true);
       assertStringIncludes(String(json.error), "may already have run");
     } finally {
       await server.shutdown();
