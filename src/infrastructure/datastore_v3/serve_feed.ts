@@ -44,10 +44,7 @@ export function v3FollowerCopyCursor(
   return v3DatastoreFor(repoDir, config).commitStore.highWaterMark().cursor;
 }
 
-/**
- * undefined when it cannot be read, as before the copy's first restore: an
- * unknown size never takes the node out of rotation
- */
+/** undefined when unreadable: an unknown size never takes the node out of rotation */
 export async function v3FollowerWalBytes(
   repoDir: string,
   config: V3DatastoreConfig,

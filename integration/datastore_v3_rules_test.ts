@@ -366,8 +366,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // names them, and a follower names them.
   "src/serve/handlers/commit_feed_handlers.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
   "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/serve_datastore_client.ts",
-  // swamp-club#4679: a feed apply failing on the network never makes /ready
-  // report the follower broken.
+  // a feed apply failing on the network never makes /ready report the
+  // follower broken.
   "src/serve/follower_feed.ts -> src/infrastructure/datastore_v3/network_failure.ts",
   "src/serve/handlers/shared.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
   "src/serve/serve_commit_effects.ts -> src/domain/datastore_v3/commit_effects.ts",
@@ -492,8 +492,8 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#4253: another command setting up a serve-mode checkout's copy
   // is a stable, retryable code the CLI maps to exit 75.
   "src/presentation/output/error_output.ts -> src/domain/datastore_v3/copy_setup_raced_error.ts",
-  // swamp-club#4679: a workflow or method failure keeps a datastore or serve
-  // outage in its cause and reports its code, so teardown and the exit see it.
+  // a workflow or method failure keeps a datastore or serve outage in its
+  // cause and reports its code, so teardown and the exit see it.
   "src/libswamp/errors.ts -> src/domain/datastore_v3/writer_lease.ts",
   "src/libswamp/errors.ts -> src/infrastructure/datastore_v3/datastore_outage.ts",
   // an admin force-releases a lease by id without opening the checkout's
@@ -561,10 +561,10 @@ const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
 /** v3 files that mention a checkpoint pragma, as `file:line`. */
 const PINNED_V3_CHECKPOINTS: readonly string[] = [
   // Off on every open connection before this node's sidecar starts on a copy
-  // a serve follower opened with the default (swamp-club#4679).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3164",
+  // a serve follower opened with the default.
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3158",
   // Auto-checkpoint off on a copy Litestream replicates (swamp-club#3935).
-  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3191",
+  "src/infrastructure/datastore_v3/sqlite_commit_store.ts:3185",
 ];
 
 Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {

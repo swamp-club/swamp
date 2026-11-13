@@ -56,10 +56,7 @@ export interface FollowerCatchUpState {
 /** local apply failures in a row after which /ready reports the follower broken */
 export const FOLLOWER_UNREADY_APPLY_FAILURES = 3;
 
-/**
- * a follower's WAL past this is not being checkpointed: SQLite's default keeps
- * it near 4 MiB
- */
+/** a follower's WAL past this is not being checkpointed */
 export const FOLLOWER_UNREADY_WAL_BYTES = 1024 ** 3;
 
 /** only its own failures: the load balancer drops a node whose /ready fails */

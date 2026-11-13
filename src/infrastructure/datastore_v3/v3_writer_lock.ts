@@ -472,7 +472,10 @@ export async function v3WriterLeaseHolder(
   };
 }
 
-/** the lease's lapse by this clock: 0 when unheld, undefined when unreadable */
+/**
+ * the lease's lapse by this clock: 0 when unheld, undefined without a renewal
+ * time; throws when the lease cannot be read
+ */
 export async function v3WriterLeaseExpiresAt(
   datastorePath: string,
 ): Promise<number | undefined> {
