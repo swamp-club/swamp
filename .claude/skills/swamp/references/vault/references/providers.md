@@ -41,6 +41,13 @@ config:
 createdAt: 2025-02-01T...
 ```
 
+`base_dir`, `key_file` and `ssh_key_path` expand a leading `~` or `$HOME` when
+the vault is used, and the stored file keeps the unexpanded text. To keep
+secrets beside a datastore outside the checkout, write
+`base_dir: $HOME/.state/vault` rather than an absolute path, which only exists
+on one machine. No other variable is expanded: `$OTHER/vault` is a folder named
+`$OTHER`. A relative `base_dir` resolves against the repository root.
+
 ### Key Priority Order
 
 1. SSH key at `ssh_key_path` if specified

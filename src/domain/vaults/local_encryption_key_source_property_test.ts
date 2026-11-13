@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { isAbsolute, resolve } from "@std/path";
 import fc from "fast-check";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   findChangedKeySourceFields,
   findNonDefaultKeySourceFields,
@@ -42,6 +44,11 @@ const arbConfig = fc.record(
     note: fc.string({ maxLength: 8 }),
   },
   { requiredKeys: [] },
+);
+
+// the repo dir is always absolute when a vault loads
+const arbRepoDir = fc.stringMatching(/^[a-z0-9]{1,8}$/).map((name) =>
+  resolve("/", name)
 );
 
 Deno.test("findChangedKeySourceFields: a config never differs from a copy of itself", () => {
@@ -88,21 +95,42 @@ Deno.test("withServerDefaultKeySource: its result never stores a base_dir", () =
   );
 });
 
-Deno.test("withRuntimeBaseDir: a local_encryption config always gets a base_dir, and a set one is kept", () => {
+Deno.test("withRuntimeBaseDir: a local_encryption config always gets a base_dir, absolute when it is a string, and applying it twice changes nothing", () => {
+  withMockedEnv({ HOME: resolve("/home/tester") }, () => {
+    fc.assert(
+      fc.property(arbConfig, arbRepoDir, (config, repoDir) => {
+        const result = withRuntimeBaseDir("local_encryption", config, repoDir);
+        if (!config.base_dir) {
+          assertEquals(result.base_dir, repoDir);
+        } else if (typeof config.base_dir === "string") {
+          assert(isAbsolute(result.base_dir as string));
+        } else {
+          assertEquals(result.base_dir, config.base_dir);
+        }
+        assertEquals(
+          withRuntimeBaseDir("local_encryption", result, repoDir),
+          result,
+        );
+      }),
+    );
+  });
+});
+
+Deno.test("withRuntimeBaseDir: text after a variable other than HOME is kept literally", () => {
   fc.assert(
-    fc.property(arbConfig, fc.string({ minLength: 1, maxLength: 12 }), (
-      config,
-      repoDir,
-    ) => {
-      const result = withRuntimeBaseDir("local_encryption", config, repoDir);
-      assertEquals(
-        result.base_dir,
-        config.base_dir ? config.base_dir : repoDir,
-      );
-      assertEquals(
-        withRuntimeBaseDir("local_encryption", result, repoDir),
-        result,
-      );
-    }),
+    fc.property(
+      fc.stringMatching(/^[A-Z_][A-Z0-9_]{0,8}$/),
+      fc.stringMatching(/^[a-z0-9]{1,8}$/),
+      (name, rest) => {
+        fc.pre(name !== "HOME");
+        const repoDir = resolve("/repo");
+        const result = withRuntimeBaseDir(
+          "local_encryption",
+          { base_dir: `$${name}/${rest}` },
+          repoDir,
+        );
+        assertEquals(result.base_dir, resolve(repoDir, `$${name}/${rest}`));
+      },
+    ),
   );
 });

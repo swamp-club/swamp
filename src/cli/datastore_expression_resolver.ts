@@ -137,11 +137,11 @@ async function createEarlyVaults(repoDir: string): Promise<EarlyVaults> {
     const configuration: VaultConfiguration = {
       name: vaultConfig.name,
       type: vaultType,
-      config: withRuntimeBaseDir(vaultType, vaultConfig.config, repoDir),
+      config: vaultConfig.config,
       auditReads: vaultConfig.auditReads,
     };
     try {
-      vaultService.registerVault(configuration);
+      vaultService.registerVault(runtimeConfiguration(configuration, repoDir));
       registered.add(vaultConfig.name);
       skipped.delete(vaultConfig.name);
     } catch (error) {
@@ -156,6 +156,22 @@ async function createEarlyVaults(repoDir: string): Promise<EarlyVaults> {
   }
 
   return { service: vaultService, skipped };
+}
+
+// resolving can throw (an unset HOME), so it runs inside each registration's
+// try and a skipped vault keeps its stored config
+function runtimeConfiguration(
+  configuration: VaultConfiguration,
+  repoDir: string,
+): VaultConfiguration {
+  return {
+    ...configuration,
+    config: withRuntimeBaseDir(
+      configuration.type,
+      configuration.config,
+      repoDir,
+    ),
+  };
 }
 
 function skippedVaultMessage(vault: SkippedVault): string {
@@ -226,7 +242,9 @@ export async function resolveDatastoreExpressions(
     if (!vaults.skipped.has(name)) return;
     if (vaultTypeRegistry.has(type)) {
       try {
-        vaults.service.registerVault(vault.configuration);
+        vaults.service.registerVault(
+          runtimeConfiguration(vault.configuration, context.repoDir),
+        );
         vaults.skipped.delete(name);
         return;
       } catch (error) {

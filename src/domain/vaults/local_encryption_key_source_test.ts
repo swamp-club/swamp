@@ -17,9 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
+import { join, resolve } from "@std/path";
+import { UserError } from "../errors.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   defaultLocalEncryptionConfig,
+  expandLeadingHome,
   findChangedKeySourceFields,
   findNonDefaultKeySourceFields,
   isLocalEncryptionType,
@@ -158,4 +165,124 @@ Deno.test("withRuntimeBaseDir: keeps a stored base_dir and other types' config",
     withRuntimeBaseDir("@swamp/aws-sm", { region: "eu-west-1" }, "/repo"),
     { region: "eu-west-1" },
   );
+});
+
+const HOME = resolve("/home/tester");
+
+Deno.test("expandLeadingHome: expands a leading tilde or HOME before a separator or the end", () => {
+  withMockedEnv({ HOME }, () => {
+    assertPathEquals(expandLeadingHome("~", "base_dir"), HOME);
+    assertPathEquals(
+      expandLeadingHome("~/state/vault", "base_dir"),
+      `${HOME}/state/vault`,
+    );
+    assertPathEquals(
+      expandLeadingHome("$HOME/state", "key_file"),
+      `${HOME}/state`,
+    );
+    assertPathEquals(
+      expandLeadingHome("${HOME}/state", "ssh_key_path"),
+      `${HOME}/state`,
+    );
+    assertPathEquals(expandLeadingHome("$HOME", "base_dir"), HOME);
+    assertPathEquals(
+      expandLeadingHome("~\\state", "base_dir"),
+      `${HOME}\\state`,
+    );
+  });
+});
+
+Deno.test("expandLeadingHome: leaves other variables and non-leading HOME as literal text", () => {
+  withMockedEnv({ HOME, VTEST: "/some/dir" }, () => {
+    for (
+      const literal of [
+        "$VTEST/vault",
+        "${VTEST}/vault",
+        "/srv/$HOME/vault",
+        "state/~/vault",
+        "~user/vault",
+        "$HOMEDIR/vault",
+        "/abs/vault",
+      ]
+    ) {
+      assertEquals(expandLeadingHome(literal, "base_dir"), literal);
+    }
+  });
+});
+
+Deno.test("expandLeadingHome: falls back to USERPROFILE when HOME is unset", () => {
+  withMockedEnv({ HOME: undefined, USERPROFILE: HOME }, () => {
+    assertPathEquals(expandLeadingHome("~/v", "base_dir"), `${HOME}/v`);
+  });
+});
+
+Deno.test("expandLeadingHome: names the field, not the path, when no home is set", () => {
+  withMockedEnv({ HOME: undefined, USERPROFILE: undefined }, () => {
+    const error = assertThrows(
+      () => expandLeadingHome("~/secret-place", "key_file"),
+      UserError,
+      "key_file",
+    );
+    assertEquals(error.message.includes("secret-place"), false);
+  });
+});
+
+Deno.test("withRuntimeBaseDir: expands a leading HOME in a stored base_dir", () => {
+  withMockedEnv({ HOME }, () => {
+    const result = withRuntimeBaseDir(
+      "local_encryption",
+      { base_dir: "$HOME/.state/vault", auto_generate: true },
+      "/repo",
+    );
+    assertPathEquals(
+      result.base_dir as string,
+      join(HOME, ".state", "vault"),
+    );
+    assertEquals(result.auto_generate, true);
+  });
+});
+
+Deno.test("withRuntimeBaseDir: resolves a relative base_dir against the repo, not the working directory", () => {
+  const repoDir = resolve("/repo");
+  assertPathEquals(
+    withRuntimeBaseDir("local_encryption", { base_dir: "../vault" }, repoDir)
+      .base_dir as string,
+    resolve(repoDir, "../vault"),
+  );
+});
+
+Deno.test("withRuntimeBaseDir: does not rewrite the config it was given", () => {
+  withMockedEnv({ HOME }, () => {
+    const stored = { base_dir: "~/vault" };
+    withRuntimeBaseDir("local_encryption", stored, "/repo");
+    assertEquals(stored, { base_dir: "~/vault" });
+  });
+});
+
+Deno.test("withRuntimeBaseDir: passes a non-string base_dir through untouched", () => {
+  const config = { base_dir: true };
+  assertEquals(withRuntimeBaseDir("local_encryption", config, "/repo"), config);
+});
+
+Deno.test("withRuntimeBaseDir: refuses a HOME base_dir when no home is set", () => {
+  withMockedEnv({ HOME: undefined, USERPROFILE: undefined }, () => {
+    assertThrows(
+      () => withRuntimeBaseDir("local_encryption", { base_dir: "~/v" }, "/r"),
+      UserError,
+      "base_dir",
+    );
+  });
+});
+
+Deno.test("findNonDefaultKeySourceFields: refuses a HOME base_dir even when it expands to the repo", () => {
+  withMockedEnv({ HOME: "/repo" }, () => {
+    assertEquals(
+      findNonDefaultKeySourceFields({ base_dir: "$HOME" }, "/repo"),
+      ["base_dir"],
+    );
+    assertEquals(
+      findNonDefaultKeySourceFields({ base_dir: "~" }, "/repo"),
+      ["base_dir"],
+    );
+  });
 });

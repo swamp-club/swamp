@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { isAbsolute, resolve } from "@std/path";
+import { UserError } from "../errors.ts";
+
 /**
  * these decide where key material comes from and secrets are stored; a remote
  * caller must not choose them, since they name files on the server's machine
@@ -103,8 +106,33 @@ export function withRuntimeBaseDir(
   config: Record<string, unknown>,
   repoDir: string,
 ): Record<string, unknown> {
-  if (!isLocalEncryptionType(type) || config.base_dir) return config;
-  return { ...config, base_dir: repoDir };
+  if (!isLocalEncryptionType(type)) return config;
+  const baseDir = config.base_dir;
+  if (!baseDir) return { ...config, base_dir: repoDir };
+  if (typeof baseDir !== "string") return config;
+  const expanded = expandLeadingHome(baseDir, "base_dir");
+  return {
+    ...config,
+    base_dir: isAbsolute(expanded) ? expanded : resolve(repoDir, expanded),
+  };
+}
+
+// HOME only, never other variables: the config is committed and an expanded
+// path can be displayed, so a general expander would leak env values
+const LEADING_HOME = /^(?:~|\$HOME|\$\{HOME\})(?=[\\/]|$)/;
+
+export function expandLeadingHome(
+  path: string,
+  field: LocalEncryptionKeySourceField,
+): string {
+  if (!LEADING_HOME.test(path)) return path;
+  const home = Deno.env.get("HOME") || Deno.env.get("USERPROFILE");
+  if (!home) {
+    throw new UserError(
+      `Cannot expand the home directory in local_encryption ${field}: neither HOME nor USERPROFILE is set`,
+    );
+  }
+  return path.replace(LEADING_HOME, () => home);
 }
 
 function ownValue(record: Record<string, unknown>, key: string): unknown {

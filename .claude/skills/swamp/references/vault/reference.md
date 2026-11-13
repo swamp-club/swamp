@@ -237,8 +237,8 @@ swamp vault remove trip-planner --yes --json
 - Refuses a vault that definitions, workflows or the datastore config reference;
   remove the references, or pass `--force`. Unlike `vault delete --force`, this
   `--force` does not skip the prompt.
-- Keeps secrets stored outside this repository (an absolute `base_dir` from
-  another checkout).
+- Keeps secrets stored outside this repository (an absolute or `$HOME`
+  `base_dir`).
 - `--json` never prompts, so confirm with the user before running it.
 
 ## Annotate Secrets
