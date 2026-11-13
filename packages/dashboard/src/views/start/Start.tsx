@@ -1653,7 +1653,7 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       )}
       <WorkspaceSections
         pastSessions={list !== null && !importingSelected &&
-          showPastSessions(status.signals) && (
+          showPastSessions(status) && (
           <PastSessionsPanel
             status={status}
             client={client}
