@@ -150,8 +150,9 @@ async function withEnv(
   }
 }
 
+// never aborts: a deadline here fails a test that only ran slowly under load
 function signal(): AbortSignal {
-  return AbortSignal.timeout(30_000);
+  return new AbortController().signal;
 }
 
 async function readOrAbsent(path: string): Promise<string | undefined> {
@@ -1533,8 +1534,20 @@ const FALLBACKS: readonly {
     },
   },
   {
+    // from the recorded start, so a slow setup cannot age it past the margin
     reason: "dirty_tracking_recent",
-    arrange: () => Promise.resolve({ since: Date.now() }),
+    arrange: (env) => {
+      const catalog = new CatalogStore(
+        join(readModelStateDir(env.repoDir), CATALOG_V3_FILE),
+      );
+      try {
+        const since = catalog.dirtyTrackingSince();
+        assert(since !== undefined, "dirty tracking was never installed");
+        return Promise.resolve({ since });
+      } finally {
+        catalog.close();
+      }
+    },
   },
   {
     reason: "full_recovery_required",

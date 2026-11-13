@@ -24,6 +24,10 @@ export const WEIGHTS_FILE = "scripts/test_shard_weights.json";
 export const DEFAULT_WEIGHT_SECONDS = 0.05;
 export const RECORD_THRESHOLD_SECONDS = 3;
 const MAX_SHARDS = 4;
+// their Workers' module loads can wedge a deno test process shared with other Worker-heavy files
+export const OWN_PROCESS_FILES: readonly string[] = [
+  "integration/command_routes_rules_test.ts",
+];
 const CORES_PER_SHARD = 8;
 
 const TEST_FILE = /(^|[_.])test\.(js|mjs|ts|mts|jsx|tsx)$/;
@@ -113,6 +117,21 @@ export function partition(
     loads[best] += weight;
   }
   return out;
+}
+
+/** partition() over the other files, then a group per discovered own-process file; never an empty group */
+export function shardGroups(
+  files: readonly string[],
+  weights: Readonly<Record<string, number>>,
+  shards: number,
+  ownProcess: readonly string[],
+): string[][] {
+  const alone = files.filter((file) => ownProcess.includes(file));
+  const shared = files.filter((file) => !ownProcess.includes(file));
+  return [
+    ...partition(shared, weights, shards).filter((group) => group.length > 0),
+    ...alone.map((file) => [file]),
+  ];
 }
 
 export interface ShardPlan {
@@ -427,11 +446,13 @@ async function main(args: string[]): Promise<number> {
     isWindows ? 1 : options.shards,
     Deno.env.get("DENO_JOBS"),
   );
-  let groups: (string[] | undefined)[] = [undefined];
-  if (plan.shards > 1) {
-    const files = await discoverTestFiles(root, testConfigFrom(denoJson));
-    groups = partition(files, readWeights(root), plan.shards);
-  }
+  const files = await discoverTestFiles(root, testConfigFrom(denoJson));
+  const groups = shardGroups(
+    files,
+    readWeights(root),
+    plan.shards,
+    OWN_PROCESS_FILES,
+  );
 
   const tmpBase = Deno.env.get("TMPDIR") ?? Deno.env.get("TMP") ??
     Deno.env.get("TEMP") ?? "/tmp";
