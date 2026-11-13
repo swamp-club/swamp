@@ -28,11 +28,10 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "shutdown"]);
 
-/** a webhook or cron run a trigger source aborted when it stopped */
-
 /** the reason every shutdown abort carries, which a user cancel never does */
 export const SHUTDOWN_ABORT_MESSAGE = "server shutdown";
 
+/** a webhook or cron run a trigger source aborted when it stopped */
 export interface StoppedTriggerRun {
   readonly runId: string;
   readonly workflowId?: string;

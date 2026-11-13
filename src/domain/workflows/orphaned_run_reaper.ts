@@ -110,7 +110,8 @@ export async function reapOrphanedWorkflowRuns(
         },
       );
       run.interruptOrphaned("server_crash", await startsOf(workflowId, run));
-      markServeInterruption(run);
+      // a row a cancel settled says the owner was told to stop, not cut off
+      if (tracked.status === "interrupted") markServeInterruption(run);
       await save(workflowId, run);
       reaped++;
       continue;

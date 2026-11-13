@@ -96,10 +96,6 @@ export interface ShutdownInterruptResult {
   readonly unpushed?: readonly string[];
 }
 
-/**
- * a failed load, save, push or marker write is logged and never thrown, so the
- * rest of shutdown still runs
- */
 /** a run a user cancelled before the shutdown is never continued for them */
 function cutOffByShutdown(
   run: WorkflowRun,
@@ -113,6 +109,10 @@ function cutOffByShutdown(
     run.tags["cancel_reason"] === SHUTDOWN_ABORT_MESSAGE;
 }
 
+/**
+ * a failed load, save, push or marker write is logged and never thrown, so the
+ * rest of shutdown still runs
+ */
 export async function interruptShutdownRuns(
   remaining: ReadonlyArray<
     & Pick<ActiveRun, "runId" | "kind" | "startedAt">

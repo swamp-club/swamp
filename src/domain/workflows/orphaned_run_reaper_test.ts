@@ -150,13 +150,33 @@ Deno.test("reapOrphanedWorkflowRuns: stamps a run serve drove as continuable, ne
     }],
     () => Promise.resolve(),
     noStepStarts,
-    trackerReaped,
+    () => ({ status: "interrupted" }),
     unexpectedPidCheck,
   );
   assertEquals(served.status, "interrupted");
   assertEquals(local.status, "interrupted");
   assertEquals(served.continuableSince !== undefined, true);
   assertEquals(local.continuableSince, undefined);
+});
+
+Deno.test("reapOrphanedWorkflowRuns: never stamps a run whose tracker row a cancel settled", async () => {
+  const cancelled = makeRun({ pid: 99999, instanceId: "serve-gone" });
+  const crashed = makeRun({ pid: 99998, instanceId: "serve-gone" });
+  await reapOrphanedWorkflowRuns(
+    [{ run: cancelled, workflowId: WORKFLOW_ID }, {
+      run: crashed,
+      workflowId: WORKFLOW_ID,
+    }],
+    () => Promise.resolve(),
+    noStepStarts,
+    (runId) => ({
+      status: runId === cancelled.id ? "cancelled" : "interrupted",
+    }),
+    unexpectedPidCheck,
+  );
+  assertEquals(cancelled.status, "interrupted");
+  assertEquals(cancelled.continuableSince, undefined);
+  assertEquals(crashed.continuableSince !== undefined, true);
 });
 
 Deno.test("reapOrphanedWorkflowRuns: a step whose start was never saved becomes unknown", async () => {
