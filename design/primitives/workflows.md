@@ -4825,7 +4825,9 @@ acknowledgement. Only a run serve interrupted is a candidate: the boot reaper,
 reconciliation of a dead peer and the shutdown interrupt stamp the run with
 `continuableSince`, and only on a run serve drove (a recorded triggering
 principal or serve instance id). A run left interrupted by an older swamp, or
-by a local CLI process, carries no stamp and is never continued.
+one only a local CLI ever drove, carries no stamp and is never continued. A
+serve-started run a local CLI resumed keeps its triggering principal, so it is
+stamped and judged like any other.
 `decideAutoContinuation` (`src/domain/workflows/auto_continuation.ts`) judges
 each candidate and continues it, or refuses with one of these reasons:
 

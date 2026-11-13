@@ -191,7 +191,9 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
       : "";
     writeOutput(
       `Continued automatically after ${
-        continuation.interruptReason ?? "an interruption"
+        escapeControlCharacters(
+          continuation.interruptReason ?? "an interruption",
+        )
       } at ${formatTimestamp(continuation.continuedAt)}${steps}`,
     );
   }

@@ -8681,19 +8681,24 @@ export class WorkflowExecutionService {
       await this.releaseSuspension(claim);
       throw error;
     }
-    if (automatic !== undefined) {
-      this.runTracker?.markAutoContinued?.(
-        run.id,
-        run.autoContinuation?.interruptReason ?? "unknown",
-      );
+    // marked once the resume has handed the tracker row over, since a dead
+    // peer's run has no row here until then
+    let marked = automatic === undefined;
+    const interruptReason = run.autoContinuation?.interruptReason ?? "unknown";
+    for await (
+      const event of this.resume(workflowIdOrName, run.id, {
+        signal: options?.signal,
+        instanceId: options?.instanceId,
+        continuation: automatic?.continuation,
+        requireCurrentRecord: automatic !== undefined,
+      })
+    ) {
+      if (!marked) {
+        marked = true;
+        this.runTracker?.markAutoContinued?.(run.id, interruptReason);
+      }
+      yield event;
     }
-
-    yield* this.resume(workflowIdOrName, run.id, {
-      signal: options?.signal,
-      instanceId: options?.instanceId,
-      continuation: automatic?.continuation,
-      requireCurrentRecord: automatic !== undefined,
-    });
   }
 
   #expectStart(

@@ -122,9 +122,13 @@ export async function decideAutoContinuation(
     const names = assessment.unguardedSteps;
     return refuse(
       "unguarded_step",
-      `Step${names.length === 1 ? "" : "s"} ${
-        names.join(", ")
-      } was cut off and has no guard, so it may have done its work already.`,
+      names.length === 1
+        ? `Step ${
+          names[0]
+        } was cut off and has no guard, so it may have done its work already.`
+        : `Steps ${
+          names.join(", ")
+        } were cut off and have no guard, so they may have done their work already.`,
       names,
     );
   }

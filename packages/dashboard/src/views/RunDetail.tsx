@@ -1318,9 +1318,9 @@ function RestartFact({ run }: { run: WorkflowRun }) {
   if (run.status === "interrupted" && run.interruptReason) {
     return (
       <Fact label="Interrupted">
-        <span title={continuation?.refused?.message}>
+        <span>
           {continuation?.refused
-            ? `${run.interruptReason} · not continued (${continuation.refused.reason})`
+            ? `${run.interruptReason} · not continued: ${continuation.refused.message}`
             : run.interruptReason}
         </span>
       </Fact>

@@ -107,6 +107,7 @@ import {
 } from "./continuation_claim_test_helpers.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -15883,6 +15884,44 @@ Deno.test("recover: an automatic recovery of a stale copy changes nothing and le
     assertEquals(stored?.autoContinuation, undefined);
     assertEquals(claimStore.claims, []);
     assertEquals(executor.count("main/deploy"), 0);
+  });
+});
+
+Deno.test("recover: an automatic recovery marks the tracker row the resume hands over, even one not here before", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "recover-tracked-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [modelStep("deploy", { guard: "${{ true }}" })],
+        }),
+      ],
+    });
+    const tracker = new RunTrackerStore(join(tempDir, "tracker.db"));
+    try {
+      const { runRepo, service } = await setupRetry(tempDir, workflow, tracker);
+      const run = await storeInterruptedAt(runRepo, workflow, "main", {
+        stepName: "deploy",
+      });
+      assertEquals(tracker.findById(run.id), null);
+      const holder = serveHolder("a");
+      service.continuationClaims = claimsFor(
+        new InMemoryContinuationClaimStore(),
+        holder,
+      );
+
+      await finishedRun(
+        service.recover(workflow.name, {
+          runId: run.id,
+          automatic: { holder, continuation: AUTOMATIC },
+        }),
+      );
+
+      assertEquals(tracker.findById(run.id)?.autoContinuedFrom, "server_crash");
+    } finally {
+      tracker.close();
+    }
   });
 });
 

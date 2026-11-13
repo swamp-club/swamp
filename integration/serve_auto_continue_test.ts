@@ -600,6 +600,9 @@ Deno.test({
       );
 
       assertEquals(claims.claims, []);
-      assertEquals((await storedRun(serve, workflow, runId))?.status, "interrupted");
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "interrupted",
+      );
     }),
 });
