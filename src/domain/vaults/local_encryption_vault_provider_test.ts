@@ -17,12 +17,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import {
   countLocalEncryptionSecrets,
   findLocalEncryptionLeftovers,
+  LOCAL_ENCRYPTION_KEY_MISSING_CODE,
   type LocalEncryptionConfig,
   localEncryptionSecretsDir,
   localEncryptionSecretsWithin,
@@ -31,11 +37,12 @@ import {
   removeLocalEncryptionSecrets,
 } from "./local_encryption_vault_provider.ts";
 import {
+  isSecretNotFoundError,
   SECRET_NOT_FOUND_CODE,
   SecretNotFoundError,
 } from "./secret_not_found_error.ts";
+import { errorPaths, UserError } from "../errors.ts";
 import { VaultAnnotation } from "./vault_annotation.ts";
-import { UserError } from "../errors.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 async function grantEveryoneReadAcl(path: string): Promise<number> {
@@ -356,6 +363,203 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
 
         const keyFile = await Deno.stat(join(vaultSecretsDir, ".key"));
         assertEquals(keyFile.isFile, true);
+      });
+    },
+  );
+});
+
+Deno.test("LocalEncryptionVaultProvider - missing key with stored secrets", async (t) => {
+  async function vaultWithLostKey(
+    dir: string,
+    config: Partial<LocalEncryptionConfig> = {},
+  ): Promise<{
+    vault: LocalEncryptionVaultProvider;
+    keyFile: string;
+    savedKey: string;
+    encFile: string;
+    encBytes: string;
+  }> {
+    const fullConfig: LocalEncryptionConfig = {
+      auto_generate: true,
+      base_dir: dir,
+      ...config,
+    };
+    const keyFile = fullConfig.key_file ??
+      join(secretsDir(dir, "lost-key-vault"), ".key");
+    await new LocalEncryptionVaultProvider("lost-key-vault", fullConfig).put(
+      "PASS",
+      "hunter2",
+    );
+    const savedKey = await Deno.readTextFile(keyFile);
+    await Deno.remove(keyFile);
+    const encFile = join(secretsDir(dir, "lost-key-vault"), "PASS.enc");
+    return {
+      vault: new LocalEncryptionVaultProvider("lost-key-vault", fullConfig),
+      keyFile,
+      savedKey,
+      encFile,
+      encBytes: await Deno.readTextFile(encFile),
+    };
+  }
+
+  async function exists(path: string): Promise<boolean> {
+    try {
+      await Deno.lstat(path);
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+  }
+
+  await t.step("put refuses and writes nothing", async () => {
+    await withTempDir(async (dir) => {
+      const { vault, keyFile, encFile, encBytes } = await vaultWithLostKey(
+        dir,
+      );
+
+      const error = await assertRejects(
+        () => vault.put("OTHER", "new"),
+        UserError,
+        "is missing or empty",
+      );
+      assertEquals(error.code, LOCAL_ENCRYPTION_KEY_MISSING_CODE);
+      assertEquals(isSecretNotFoundError(error), false);
+      assertEquals(await exists(keyFile), false);
+      assertEquals(await Deno.readTextFile(encFile), encBytes);
+      assertEquals(
+        await exists(join(secretsDir(dir, "lost-key-vault"), "OTHER.enc")),
+        false,
+      );
+    });
+  });
+
+  await t.step(
+    "get refuses without writing a key, and the secret reads once the key is restored",
+    async () => {
+      await withTempDir(async (dir) => {
+        const { vault, keyFile, savedKey } = await vaultWithLostKey(dir);
+
+        const error = await assertRejects(
+          () => vault.get("PASS"),
+          Error,
+          "no new key was generated",
+        );
+        assertEquals(isSecretNotFoundError(error), false);
+        assertEquals(await exists(keyFile), false);
+
+        await Deno.writeTextFile(keyFile, savedKey);
+        const restored = new LocalEncryptionVaultProvider("lost-key-vault", {
+          auto_generate: true,
+          base_dir: dir,
+        });
+        assertEquals(await restored.get("PASS"), "hunter2");
+      });
+    },
+  );
+
+  await t.step("has refuses without writing a key", async () => {
+    await withTempDir(async (dir) => {
+      const { vault, keyFile } = await vaultWithLostKey(dir);
+
+      await assertRejects(() => vault.has("PASS"), Error, "is missing");
+      assertEquals(await exists(keyFile), false);
+    });
+  });
+
+  await t.step(
+    "names the key file relative to base_dir and marks its full path",
+    async () => {
+      await withTempDir(async (dir) => {
+        const { vault, keyFile } = await vaultWithLostKey(dir);
+
+        const putError = await assertRejects(() => vault.put("OTHER", "x"));
+        const getError = await assertRejects(() => vault.get("PASS"));
+        const relativeKey = join(
+          ".swamp",
+          "secrets",
+          "local_encryption",
+          "lost-key-vault",
+          ".key",
+        );
+        for (const error of [putError, getError]) {
+          assertInstanceOf(error, Error);
+          assertStringIncludes(error.message, `'${relativeKey}'`);
+          assertEquals(error.message.includes(dir), false);
+          assertEquals(errorPaths(error).includes(keyFile), true);
+        }
+      });
+    },
+  );
+
+  await t.step("refuses when the key file is empty", async () => {
+    await withTempDir(async (dir) => {
+      const { vault, keyFile } = await vaultWithLostKey(dir);
+      await Deno.writeTextFile(keyFile, "");
+
+      await assertRejects(
+        () => vault.put("OTHER", "x"),
+        UserError,
+        "is missing or empty",
+      );
+      assertEquals(await Deno.readTextFile(keyFile), "");
+    });
+  });
+
+  await t.step(
+    "refuses for a custom key_file outside the vault directory",
+    async () => {
+      await withTempDir(async (dir) => {
+        const { vault, keyFile } = await vaultWithLostKey(dir, {
+          key_file: join(dir, "custom.key"),
+        });
+
+        await assertRejects(
+          () => vault.put("OTHER", "x"),
+          UserError,
+          "'custom.key'",
+        );
+        assertEquals(await exists(keyFile), false);
+      });
+    },
+  );
+
+  for (const sub of [".annotations", ".refresh"]) {
+    await t.step(`refuses when only ${sub} holds encrypted data`, async () => {
+      await withTempDir(async (dir) => {
+        const vaultDir = secretsDir(dir, "lost-key-vault");
+        await Deno.mkdir(join(vaultDir, sub), { recursive: true });
+        await Deno.writeTextFile(join(vaultDir, sub, "PASS.enc"), "{}");
+        const vault = new LocalEncryptionVaultProvider("lost-key-vault", {
+          auto_generate: true,
+          base_dir: dir,
+        });
+
+        await assertRejects(
+          () => vault.put("OTHER", "x"),
+          UserError,
+          "is missing or empty",
+        );
+        assertEquals(await exists(join(vaultDir, ".key")), false);
+      });
+    });
+  }
+
+  await t.step(
+    "still generates a key when the directory holds no encrypted data",
+    async () => {
+      await withTempDir(async (dir) => {
+        const vaultDir = secretsDir(dir, "lost-key-vault");
+        await Deno.mkdir(vaultDir, { recursive: true });
+        await Deno.writeTextFile(join(vaultDir, "notes.txt"), "stale");
+        const vault = new LocalEncryptionVaultProvider("lost-key-vault", {
+          auto_generate: true,
+          base_dir: dir,
+        });
+
+        await vault.put("PASS", "hunter2");
+        assertEquals(await vault.get("PASS"), "hunter2");
+        assertEquals(await exists(join(vaultDir, ".key")), true);
       });
     },
   );

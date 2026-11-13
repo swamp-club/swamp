@@ -57,6 +57,8 @@ export function isBaseDirMissingError(error: unknown): boolean {
     (error as { code?: unknown }).code === BASE_DIR_MISSING_CODE;
 }
 
+export const LOCAL_ENCRYPTION_KEY_MISSING_CODE = "vault_key_missing";
+
 export interface LocalEncryptionConfig {
   ssh_key_path?: string;
   auto_generate?: boolean;
@@ -334,10 +336,13 @@ export class LocalEncryptionVaultProvider
   }
 
   private retrieveError(secretKey: string, error: unknown): Error {
-    return new Error(
-      `Failed to retrieve secret '${secretKey}': ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+    return markErrorPaths(
+      new Error(
+        `Failed to retrieve secret '${secretKey}': ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+      errorPaths(error),
     );
   }
 
@@ -746,6 +751,19 @@ export class LocalEncryptionVaultProvider
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
         }
+        if (await this.holdsEncryptedData()) {
+          // A racing writer writes its key before any .enc, so a key that
+          // appeared since the first read is that writer's and is used.
+          const recoveredKey = await this.readKeyFileIfPresent(keyFile);
+          if (recoveredKey.length === 0) throw this.missingKeyError(keyFile);
+          return await crypto.subtle.importKey(
+            "raw",
+            new TextEncoder().encode(recoveredKey),
+            { name: "PBKDF2" },
+            false,
+            ["deriveKey"],
+          );
+        }
         await this.ensureVaultDirectory();
         const generatedKey = crypto.randomUUID() + crypto.randomUUID();
 
@@ -806,6 +824,48 @@ export class LocalEncryptionVaultProvider
     throw new Error(
       `No SSH key or auto-generated key configured for local vault '${this.name}'. ` +
         `Set 'ssh_key_path' to point to an SSH private key file or enable 'auto_generate' in vault configuration.`,
+    );
+  }
+
+  /**
+   * a missing directory is no data; any other read error propagates so a vault
+   * that cannot be inspected never gets a new key
+   */
+  private async holdsEncryptedData(): Promise<boolean> {
+    for (const dir of [this.vaultDir, this.annotationsDir, this.refreshDir]) {
+      try {
+        for await (const entry of Deno.readDir(dir)) {
+          if (entry.isFile && entry.name.endsWith(".enc")) return true;
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    return false;
+  }
+
+  /** NotFound must not escape: get() would relabel it as an absent secret */
+  private async readKeyFileIfPresent(keyFile: string): Promise<string> {
+    try {
+      return await Deno.readTextFile(keyFile);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return "";
+      throw error;
+    }
+  }
+
+  private missingKeyError(keyFile: string): UserError {
+    return markErrorPaths(
+      new UserError(
+        `Local vault '${this.name}' has stored secrets, but its key file '${
+          secretsDirForDisplay(keyFile, this.baseDir)
+        }' is missing or empty. Those secrets were encrypted with that key ` +
+          `and cannot be decrypted without it, so no new key was generated. ` +
+          `Restore the key file, for example from the backup the secrets ` +
+          `came from, and retry.`,
+        LOCAL_ENCRYPTION_KEY_MISSING_CODE,
+      ),
+      [keyFile],
     );
   }
 

@@ -154,18 +154,18 @@ Deno.test({
   },
 });
 
-Deno.test("LocalEncryptionVaultProvider.has: with auto_generate and no key file, loads key material as get would, which writes a new .key", async () => {
+Deno.test("LocalEncryptionVaultProvider.has: with auto_generate, stored secrets and no key file, rejects as get does and writes no key", async () => {
   await withTempDir(async (dir) => {
     await autoProvider(dir).put("k", "v");
     const keyFile = join(localEncryptionSecretsDir(dir, VAULT), ".key");
     await Deno.remove(keyFile);
 
     const fresh = autoProvider(dir);
-    assertEquals(await fresh.has("k"), true);
-    await Deno.stat(keyFile);
-    // The old file no longer decrypts under the new key: the integrity
-    // fault has() cannot see without reading, which get reports at load.
-    await assertRejects(() => fresh.get("k"), Error);
+    const fromHas = await assertRejects(() => fresh.has("k"), Error);
+    const fromGet = await assertRejects(() => fresh.get("k"), Error);
+    assertStringIncludes(fromHas.message, "no new key was generated");
+    assertStringIncludes(fromGet.message, "no new key was generated");
+    await assertRejects(() => Deno.stat(keyFile), Deno.errors.NotFound);
   });
 });
 

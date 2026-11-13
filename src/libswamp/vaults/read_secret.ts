@@ -29,6 +29,7 @@ import type { EventBus } from "../../domain/events/event_bus.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import { isSecretNotFoundError } from "../../domain/vaults/secret_not_found_error.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
@@ -190,16 +191,23 @@ export async function* vaultReadSecret(
       try {
         value = await deps.readSecret(input.vaultName, input.secretKey);
       } catch (err) {
+        const original = err instanceof Error ? err.message : String(err);
         yield {
           kind: "error",
-          error: notFound(
-            "Secret",
-            `'${input.secretKey}' in vault '${input.vaultName}'. ` +
-              `Use 'swamp vault list-keys ${input.vaultName}' to see available keys.\n` +
-              `Original error: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-          ),
+          error: isSecretNotFoundError(err)
+            ? notFound(
+              "Secret",
+              `'${input.secretKey}' in vault '${input.vaultName}'. ` +
+                `Use 'swamp vault list-keys ${input.vaultName}' to see available keys.\n` +
+                `Original error: ${original}`,
+            )
+            : {
+              code: "vault_read_failed",
+              message:
+                `Could not read secret '${input.secretKey}' from vault '${input.vaultName}'.\n` +
+                `Original error: ${original}`,
+              cause: err instanceof Error ? err : undefined,
+            },
         };
         return;
       }
