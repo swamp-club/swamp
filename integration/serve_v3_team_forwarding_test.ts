@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import type { ServeLeader } from "../src/domain/datastore_v3/serve_leader.ts";
 import { handleDatastoreRequest } from "../src/serve/datastore_api.ts";
 import { matchDatastoreRoute } from "../src/serve/datastore_routes.ts";
@@ -298,7 +299,8 @@ Deno.test({
           assertEquals(refused.json.code, "serve_not_leader");
           assertEquals(refused.json.inFlight, undefined);
           assert(String(refused.json.message).includes("Nothing was changed"));
-          assertEquals(accepted, 2);
+          // the accept loop counts on the event loop, which may lag the kernel
+          await waitFor(() => accepted === 2, "both lost forwards accepted");
 
           current = leaderAt(server);
           const landed = await send();
