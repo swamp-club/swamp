@@ -59,9 +59,11 @@ export interface WorkerTokenRotateInput {
 
 export interface WorkerTokenRotateDeps {
   /** by type as well as name, so another behavior with the name is never rotated */
-  findTokenDefinitionId: (name: string) => Promise<string | null>;
+  findTokenDefinition: (
+    name: string,
+  ) => Promise<{ id: string; name: string } | null>;
   runRotate: (
-    definitionId: string,
+    token: { id: string; name: string },
     durationMs?: number,
   ) => AsyncIterable<ModelMethodRunEvent>;
   readSecret: (vaultName: string, secretKey: string) => Promise<string>;
@@ -75,19 +77,25 @@ export async function createWorkerTokenRotateDeps(
 ): Promise<WorkerTokenRotateDeps> {
   const runDeps = await createWorkerModelRunDeps(repoDir, repoContext, {
     vaultsDir: options?.vaultsDir,
+    definitionType: ENROLLMENT_TOKEN_MODEL_TYPE,
   });
   const vaultService = await VaultService.fromRepository(repoDir, {
     vaultsDir: options?.vaultsDir,
   });
   return {
-    findTokenDefinitionId: async (name) =>
-      (await repoContext.definitionRepo.findByName(
+    findTokenDefinition: async (name) => {
+      const definition = await repoContext.definitionRepo.findByName(
         ENROLLMENT_TOKEN_MODEL_TYPE,
         name,
-      ))?.id ?? null,
-    runRotate: (definitionId, durationMs) =>
+      );
+      return definition ? { id: definition.id, name: definition.name } : null;
+    },
+    // by name through the typed lookup, refused if it no longer resolves to
+    // the definition found above; a bare id would be matched as a name first
+    runRotate: (token, durationMs) =>
       modelMethodRun(ctx, runDeps, {
-        modelIdOrName: definitionId,
+        modelIdOrName: token.name,
+        lockedDefinitionId: token.id,
         methodName: "rotate",
         inputs: durationMs !== undefined ? { durationMs } : {},
         lastEvaluated: false,
@@ -111,8 +119,8 @@ export async function* workerTokenRotate(
       (async function* () {
         yield { kind: "rotating" as const, name: input.name };
 
-        const definitionId = await deps.findTokenDefinitionId(input.name);
-        if (definitionId === null) {
+        const definition = await deps.findTokenDefinition(input.name);
+        if (definition === null) {
           yield {
             kind: "error" as const,
             error: {
@@ -126,7 +134,7 @@ export async function* workerTokenRotate(
 
         let tokenRecord: Record<string, unknown> | undefined;
         for await (
-          const event of deps.runRotate(definitionId, input.durationMs)
+          const event of deps.runRotate(definition, input.durationMs)
         ) {
           if (event.kind === "error") {
             yield { kind: "error" as const, error: event.error };

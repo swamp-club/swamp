@@ -71,9 +71,9 @@ function makeDeps(
 ): ServerTokenRotateDeps {
   return {
     listVaultNames: () => Promise.resolve(["main-vault", "backup-vault"]),
-    findTokenDefinitionId: (name) => Promise.resolve(name),
+    findTokenDefinition: (name) => Promise.resolve({ id: `def-${name}`, name }),
     runRotate: async function* (input) {
-      for (const event of rotateEvents(input.definitionId)) {
+      for (const event of rotateEvents(input.token.name)) {
         yield await Promise.resolve(event);
       }
     },
@@ -110,7 +110,7 @@ Deno.test("serverTokenRotate: passes durationMs to the model method", async () =
   const deps = makeDeps({
     runRotate: async function* (input) {
       receivedDuration = input.durationMs;
-      for (const event of rotateEvents(input.definitionId)) {
+      for (const event of rotateEvents(input.token.name)) {
         yield await Promise.resolve(event);
       }
     },
@@ -180,8 +180,8 @@ Deno.test("serverTokenRotate: errors when token record is missing from result", 
         {
           kind: "completed",
           run: {
-            modelId: input.definitionId,
-            modelName: input.definitionId,
+            modelId: input.token.name,
+            modelName: input.token.name,
             modelType: "swamp/server-token",
             methodName: "rotate",
             status: "succeeded",
@@ -209,15 +209,15 @@ Deno.test("serverTokenRotate: passes vaultName override to the model method", as
     runRotate: async function* (input) {
       receivedVault = input.vaultName;
       for (
-        const event of rotateEvents(input.definitionId, {
-          name: input.definitionId,
+        const event of rotateEvents(input.token.name, {
+          name: input.token.name,
           state: "active",
           principalId: "user:sarah",
           principalEmail: "sarah@example.com",
           createdAt: "2026-06-19T00:00:00.000Z",
           expiresAt: EXPIRES_AT,
           vaultName: "backup-vault",
-          secretKey: `server-token-${input.definitionId}`,
+          secretKey: `server-token-${input.token.name}`,
         })
       ) {
         yield await Promise.resolve(event);
@@ -243,7 +243,7 @@ Deno.test("serverTokenRotate: uses existing vault when no override provided", as
   const deps = makeDeps({
     runRotate: async function* (input) {
       receivedVault = input.vaultName;
-      for (const event of rotateEvents(input.definitionId)) {
+      for (const event of rotateEvents(input.token.name)) {
         yield await Promise.resolve(event);
       }
     },
@@ -282,7 +282,7 @@ Deno.test("serverTokenRotate: errors when requested vault does not exist", async
 Deno.test("serverTokenRotate: refuses a name with no server token and runs nothing", async () => {
   let ran = false;
   const deps = makeDeps({
-    findTokenDefinitionId: () => Promise.resolve(null),
+    findTokenDefinition: () => Promise.resolve(null),
     // deno-lint-ignore require-yield
     runRotate: async function* () {
       ran = true;
@@ -304,13 +304,14 @@ Deno.test("serverTokenRotate: refuses a name with no server token and runs nothi
   });
 });
 
-Deno.test("serverTokenRotate: runs rotate by the resolved definition id, not the name", async () => {
+Deno.test("serverTokenRotate: runs rotate on the resolved definition", async () => {
   const definitionId = "3f1c2a4e-8b9d-4c6e-9a7f-1b2c3d4e5f60";
   const ranWith: string[] = [];
   const deps = makeDeps({
-    findTokenDefinitionId: () => Promise.resolve(definitionId),
+    findTokenDefinition: () =>
+      Promise.resolve({ id: definitionId, name: "resolved-name" }),
     runRotate: async function* (input) {
-      ranWith.push(input.definitionId);
+      ranWith.push(`${input.token.id}/${input.token.name}`);
       for (const event of rotateEvents("adam-token")) {
         yield await Promise.resolve(event);
       }
@@ -320,5 +321,5 @@ Deno.test("serverTokenRotate: runs rotate by the resolved definition id, not the
     serverTokenRotate(createLibSwampContext(), deps, { name: "adam-token" }),
   );
 
-  assertEquals(ranWith, [definitionId]);
+  assertEquals(ranWith, [`${definitionId}/resolved-name`]);
 });

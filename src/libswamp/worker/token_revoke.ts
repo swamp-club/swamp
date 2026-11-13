@@ -50,8 +50,12 @@ export interface WorkerTokenRevokeInput {
 
 export interface WorkerTokenRevokeDeps {
   /** by type as well as name, so another behavior with the name is never revoked */
-  findTokenDefinitionId: (name: string) => Promise<string | null>;
-  runRevoke: (definitionId: string) => AsyncIterable<ModelMethodRunEvent>;
+  findTokenDefinition: (
+    name: string,
+  ) => Promise<{ id: string; name: string } | null>;
+  runRevoke: (
+    token: { id: string; name: string },
+  ) => AsyncIterable<ModelMethodRunEvent>;
 }
 
 export async function createWorkerTokenRevokeDeps(
@@ -62,16 +66,22 @@ export async function createWorkerTokenRevokeDeps(
 ): Promise<WorkerTokenRevokeDeps> {
   const runDeps = await createWorkerModelRunDeps(repoDir, repoContext, {
     vaultsDir: options?.vaultsDir,
+    definitionType: ENROLLMENT_TOKEN_MODEL_TYPE,
   });
   return {
-    findTokenDefinitionId: async (name) =>
-      (await repoContext.definitionRepo.findByName(
+    findTokenDefinition: async (name) => {
+      const definition = await repoContext.definitionRepo.findByName(
         ENROLLMENT_TOKEN_MODEL_TYPE,
         name,
-      ))?.id ?? null,
-    runRevoke: (definitionId) =>
+      );
+      return definition ? { id: definition.id, name: definition.name } : null;
+    },
+    // by name through the typed lookup, refused if it no longer resolves to
+    // the definition found above; a bare id would be matched as a name first
+    runRevoke: (token) =>
       modelMethodRun(ctx, runDeps, {
-        modelIdOrName: definitionId,
+        modelIdOrName: token.name,
+        lockedDefinitionId: token.id,
         methodName: "revoke",
         inputs: {},
         lastEvaluated: false,
@@ -101,8 +111,8 @@ export async function* workerTokenRevoke(
       (async function* () {
         yield { kind: "revoking" as const, name: input.name };
 
-        const definitionId = await deps.findTokenDefinitionId(input.name);
-        if (definitionId === null) {
+        const token = await deps.findTokenDefinition(input.name);
+        if (token === null) {
           yield {
             kind: "error" as const,
             error: notFoundError(input.name),
@@ -112,7 +122,7 @@ export async function* workerTokenRevoke(
 
         let tokenRecord: Record<string, unknown> | undefined;
         let completed = false;
-        for await (const event of deps.runRevoke(definitionId)) {
+        for await (const event of deps.runRevoke(token)) {
           if (event.kind === "error") {
             const error = event.error.code === "model_not_found"
               ? notFoundError(input.name)

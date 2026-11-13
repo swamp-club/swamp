@@ -55,8 +55,8 @@ function completedEvent(
 
 Deno.test("workerTokenRevoke: yields revoking then completed with state", async () => {
   const deps: WorkerTokenRevokeDeps = {
-    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
-    runRevoke: async function* (name) {
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
+    runRevoke: async function* ({ name }) {
       yield await Promise.resolve(
         completedEvent(name, [
           {
@@ -86,8 +86,8 @@ Deno.test("workerTokenRevoke: yields revoking then completed with state", async 
 
 Deno.test("workerTokenRevoke: reports already-revoked tokens as a no-op", async () => {
   const deps: WorkerTokenRevokeDeps = {
-    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
-    runRevoke: async function* (name) {
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
+    runRevoke: async function* ({ name }) {
       yield await Promise.resolve(completedEvent(name, []));
     },
   };
@@ -104,7 +104,7 @@ Deno.test("workerTokenRevoke: reports already-revoked tokens as a no-op", async 
 
 Deno.test("workerTokenRevoke: forwards run errors", async () => {
   const deps: WorkerTokenRevokeDeps = {
-    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
     runRevoke: async function* () {
       yield await Promise.resolve(
         {
@@ -130,7 +130,7 @@ Deno.test("workerTokenRevoke: forwards run errors", async () => {
 
 Deno.test("workerTokenRevoke: errors when the stream ends without completing", async () => {
   const deps: WorkerTokenRevokeDeps = {
-    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
+    findTokenDefinition: (name) => Promise.resolve({ id: DEFINITION_ID, name }),
     // deno-lint-ignore require-yield
     runRevoke: async function* () {
       await Promise.resolve();
@@ -150,7 +150,7 @@ Deno.test("workerTokenRevoke: errors when the stream ends without completing", a
 Deno.test("workerTokenRevoke: refuses a name with no token of its type and runs nothing", async () => {
   let ran = false;
   const deps: WorkerTokenRevokeDeps = {
-    findTokenDefinitionId: () => Promise.resolve(null),
+    findTokenDefinition: () => Promise.resolve(null),
     // deno-lint-ignore require-yield
     runRevoke: async function* () {
       ran = true;
@@ -172,16 +172,16 @@ Deno.test("workerTokenRevoke: refuses a name with no token of its type and runs 
   });
 });
 
-Deno.test("workerTokenRevoke: runs revoke by the resolved definition id, not the name", async () => {
+Deno.test("workerTokenRevoke: runs revoke on the resolved definition", async () => {
   const lookedUp: string[] = [];
   const ranWith: string[] = [];
   const deps: WorkerTokenRevokeDeps = {
-    findTokenDefinitionId: (name) => {
+    findTokenDefinition: (name) => {
       lookedUp.push(name);
-      return Promise.resolve(DEFINITION_ID);
+      return Promise.resolve({ id: DEFINITION_ID, name: "resolved-name" });
     },
-    runRevoke: async function* (definitionId) {
-      ranWith.push(definitionId);
+    runRevoke: async function* (token) {
+      ranWith.push(`${token.id}/${token.name}`);
       yield await Promise.resolve(completedEvent("ci", []));
     },
   };
@@ -190,5 +190,5 @@ Deno.test("workerTokenRevoke: runs revoke by the resolved definition id, not the
   );
 
   assertEquals(lookedUp, ["ci"]);
-  assertEquals(ranWith, [DEFINITION_ID]);
+  assertEquals(ranWith, [`${DEFINITION_ID}/resolved-name`]);
 });

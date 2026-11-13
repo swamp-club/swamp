@@ -771,7 +771,7 @@ Deno.test("findDefinitionByIdGlobal: with a definition index, a miss is final, w
   });
 });
 
-Deno.test("findDefinitionOfTypeByIdOrName finds only definitions of the given type", async () => {
+Deno.test("findDefinitionOfTypeByIdOrName: finds only definitions of the given type", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlDefinitionRepository(dir);
     const shell = ModelType.create("command/shell");

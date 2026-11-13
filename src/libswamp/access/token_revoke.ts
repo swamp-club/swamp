@@ -45,8 +45,12 @@ export interface ServerTokenRevokeInput {
 
 export interface ServerTokenRevokeDeps {
   /** by type as well as name or id, so another behavior with the name is never revoked */
-  findTokenDefinitionId: (idOrName: string) => Promise<string | null>;
-  runRevoke: (definitionId: string) => AsyncIterable<ModelMethodRunEvent>;
+  findTokenDefinition: (
+    idOrName: string,
+  ) => Promise<{ id: string; name: string } | null>;
+  runRevoke: (
+    token: { id: string; name: string },
+  ) => AsyncIterable<ModelMethodRunEvent>;
 }
 
 export async function createServerTokenRevokeDeps(
@@ -54,17 +58,24 @@ export async function createServerTokenRevokeDeps(
   repoDir: string,
   repoContext: RepositoryContext,
 ): Promise<ServerTokenRevokeDeps> {
-  const runDeps = await createServerTokenRunDeps(repoDir, repoContext);
+  const runDeps = await createServerTokenRunDeps(repoDir, repoContext, {
+    definitionType: SERVER_TOKEN_MODEL_TYPE,
+  });
   return {
-    findTokenDefinitionId: async (idOrName) =>
-      (await findDefinitionOfTypeByIdOrName(
+    findTokenDefinition: async (idOrName) => {
+      const definition = await findDefinitionOfTypeByIdOrName(
         repoContext.definitionRepo,
         SERVER_TOKEN_MODEL_TYPE,
         idOrName,
-      ))?.id ?? null,
-    runRevoke: (definitionId) =>
+      );
+      return definition ? { id: definition.id, name: definition.name } : null;
+    },
+    // by name through the typed lookup, refused if it no longer resolves to
+    // the definition found above; a bare id would be matched as a name first
+    runRevoke: (token) =>
       modelMethodRun(ctx, runDeps, {
-        modelIdOrName: definitionId,
+        modelIdOrName: token.name,
+        lockedDefinitionId: token.id,
         methodName: "revoke",
         inputs: {},
         lastEvaluated: false,
@@ -94,8 +105,8 @@ export async function* serverTokenRevoke(
       (async function* () {
         yield { kind: "revoking" as const, name: input.name };
 
-        const definitionId = await deps.findTokenDefinitionId(input.name);
-        if (definitionId === null) {
+        const token = await deps.findTokenDefinition(input.name);
+        if (token === null) {
           yield {
             kind: "error" as const,
             error: notFoundError(input.name),
@@ -105,7 +116,7 @@ export async function* serverTokenRevoke(
 
         let tokenRecord: Record<string, unknown> | undefined;
         let completed = false;
-        for await (const event of deps.runRevoke(definitionId)) {
+        for await (const event of deps.runRevoke(token)) {
           if (event.kind === "error") {
             const error = event.error.code === "model_not_found"
               ? notFoundError(input.name)

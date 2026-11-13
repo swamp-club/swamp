@@ -21,6 +21,7 @@ import { join } from "@std/path";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { ModelMethodRunDeps } from "../models/run.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import type { ModelType } from "../../domain/models/model_type.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
@@ -41,7 +42,7 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 export async function createServerTokenRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
-  options?: { vaultsDir?: string },
+  options?: { vaultsDir?: string; definitionType?: ModelType },
 ): Promise<ModelMethodRunDeps> {
   await Promise.all([
     modelRegistry.ensureLoaded(),
@@ -51,8 +52,20 @@ export async function createServerTokenRunDeps(
 
   return {
     repoDir,
-    lookupDefinition: (idOrName) =>
-      findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
+    lookupDefinition: async (idOrName) => {
+      const type = options?.definitionType;
+      if (type === undefined) {
+        return await findDefinitionByIdOrName(
+          repoContext.definitionRepo,
+          idOrName,
+        );
+      }
+      const definition = await repoContext.definitionRepo.findByName(
+        type,
+        idOrName,
+      );
+      return definition ? { definition, type } : null;
+    },
     getModelDef: (type) => resolveModelType(type, getAutoResolver()),
     createEvaluationService: () => {
       const dqs = new DataQueryService(

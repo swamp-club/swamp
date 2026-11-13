@@ -55,6 +55,8 @@ import {
   type RepositoryContext,
 } from "../src/infrastructure/persistence/repository_factory.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../src/domain/models/access/server_token_model.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../src/domain/models/worker/enrollment_token_model.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -169,6 +171,14 @@ function assertRevokedNow(
   assertEquals(event.data.state, "revoked");
 }
 
+function assertAlreadyRevoked(
+  event: WorkerTokenRevokeEvent | ServerTokenRevokeEvent,
+): void {
+  assertEquals(event.kind, "completed", JSON.stringify(event));
+  if (event.kind !== "completed") return;
+  assertEquals(event.data.alreadyRevoked, true);
+}
+
 function assertNotFound(
   event: WorkerTokenRevokeEvent | ServerTokenRevokeEvent,
 ): void {
@@ -228,5 +238,61 @@ Deno.test("access token rotate refuses an enrollment token's name and leaves it 
     }
 
     assertRevokedNow(await revokeWorkerToken(f, "wrk-only"));
+  });
+});
+
+// swamp refuses to mint a token named with another token's id, so the
+// colliding definition is written straight to the repository
+async function saveBareDefinition(
+  f: Fixture,
+  type: typeof SERVER_TOKEN_MODEL_TYPE,
+  name: string,
+): Promise<void> {
+  await f.repoContext.definitionRepo.save(
+    type,
+    Definition.create({ name, version: 1, tags: {}, globalArguments: {} }),
+  );
+}
+
+Deno.test("access token revoke acts on the named token even when another definition is named with its id", async () => {
+  await withFixture(async (f) => {
+    await mintServerToken(f, "prod");
+    const prod = await f.repoContext.definitionRepo.findByName(
+      SERVER_TOKEN_MODEL_TYPE,
+      "prod",
+    );
+    assertExists(prod);
+    await saveBareDefinition(f, SERVER_TOKEN_MODEL_TYPE, prod.id);
+
+    assertRevokedNow(await revokeServerToken(f, "prod"));
+    assertAlreadyRevoked(await revokeServerToken(f, "prod"));
+  });
+});
+
+Deno.test("worker token revoke acts on the named token even when another definition is named with its id", async () => {
+  await withFixture(async (f) => {
+    await mintWorkerToken(f, "ci-runner");
+    const runner = await f.repoContext.definitionRepo.findByName(
+      ENROLLMENT_TOKEN_MODEL_TYPE,
+      "ci-runner",
+    );
+    assertExists(runner);
+    await saveBareDefinition(f, ENROLLMENT_TOKEN_MODEL_TYPE, runner.id);
+
+    assertRevokedNow(await revokeWorkerToken(f, "ci-runner"));
+    assertAlreadyRevoked(await revokeWorkerToken(f, "ci-runner"));
+  });
+});
+
+Deno.test("worker token revoke takes a name, not a definition id", async () => {
+  await withFixture(async (f) => {
+    await mintWorkerToken(f, "by-name");
+    const definition = await f.repoContext.definitionRepo.findByName(
+      ENROLLMENT_TOKEN_MODEL_TYPE,
+      "by-name",
+    );
+    assertExists(definition);
+
+    assertNotFound(await revokeWorkerToken(f, definition.id));
   });
 });

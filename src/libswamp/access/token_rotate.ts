@@ -49,9 +49,15 @@ export interface ServerTokenRotateInput {
 export interface ServerTokenRotateDeps {
   listVaultNames: () => Promise<string[]>;
   /** by type as well as name or id, so another behavior with the name is never rotated */
-  findTokenDefinitionId: (idOrName: string) => Promise<string | null>;
+  findTokenDefinition: (
+    idOrName: string,
+  ) => Promise<{ id: string; name: string } | null>;
   runRotate: (
-    input: { definitionId: string; durationMs?: number; vaultName?: string },
+    input: {
+      token: { id: string; name: string };
+      durationMs?: number;
+      vaultName?: string;
+    },
   ) => AsyncIterable<ModelMethodRunEvent>;
 }
 
@@ -63,24 +69,30 @@ export async function createServerTokenRotateDeps(
 ): Promise<ServerTokenRotateDeps> {
   const runDeps = await createServerTokenRunDeps(repoDir, repoContext, {
     vaultsDir: options?.vaultsDir,
+    definitionType: SERVER_TOKEN_MODEL_TYPE,
   });
   const vaultService = await VaultService.fromRepository(repoDir, {
     vaultsDir: options?.vaultsDir,
   });
   return {
     listVaultNames: () => Promise.resolve(vaultService.getVaultNames()),
-    findTokenDefinitionId: async (idOrName) =>
-      (await findDefinitionOfTypeByIdOrName(
+    findTokenDefinition: async (idOrName) => {
+      const definition = await findDefinitionOfTypeByIdOrName(
         repoContext.definitionRepo,
         SERVER_TOKEN_MODEL_TYPE,
         idOrName,
-      ))?.id ?? null,
+      );
+      return definition ? { id: definition.id, name: definition.name } : null;
+    },
+    // by name through the typed lookup, refused if it no longer resolves to
+    // the definition found above; a bare id would be matched as a name first
     runRotate: (input) => {
       const inputs: Record<string, unknown> = {};
       if (input.durationMs !== undefined) inputs.durationMs = input.durationMs;
       if (input.vaultName !== undefined) inputs.vaultName = input.vaultName;
       return modelMethodRun(ctx, runDeps, {
-        modelIdOrName: input.definitionId,
+        modelIdOrName: input.token.name,
+        lockedDefinitionId: input.token.id,
         methodName: "rotate",
         inputs,
         lastEvaluated: false,
@@ -127,8 +139,8 @@ export async function* serverTokenRotate(
 
         yield { kind: "rotating" as const, name: input.name };
 
-        const definitionId = await deps.findTokenDefinitionId(input.name);
-        if (definitionId === null) {
+        const token = await deps.findTokenDefinition(input.name);
+        if (token === null) {
           yield { kind: "error" as const, error: notFoundError(input.name) };
           return;
         }
@@ -136,7 +148,7 @@ export async function* serverTokenRotate(
         let tokenRecord: Record<string, unknown> | undefined;
         for await (
           const event of deps.runRotate({
-            definitionId,
+            token,
             durationMs: input.durationMs,
             vaultName: input.vaultName,
           })
