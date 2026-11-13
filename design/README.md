@@ -110,6 +110,7 @@ Write in plain English:
 | [start](./surfaces/start.md)                     | Get started: workspaces, tasks, launching agents  |
 | [local-dashboard](./surfaces/local-dashboard.md) | The dashboard on local repos, no serve running    |
 | [workspace](./surfaces/workspace.md)             | The workspace registry and `swamp workspace`      |
+| [serve-workspaces](./surfaces/serve-workspaces.md) | Plan: one host, a serve per workspace           |
 
 ## Reading order for a new engineer
 
