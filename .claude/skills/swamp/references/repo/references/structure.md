@@ -79,19 +79,16 @@ my-swamp-repo/
 │   └── datastores/              # TypeScript datastore implementations
 │
 ├── .claude/                     # Claude Code configuration
-│   ├── skills/                  # Skill definitions
-│   │   ├── swamp-model/
-│   │   ├── swamp-workflow/
-│   │   ├── swamp-vault/
-│   │   ├── swamp-data/
-│   │   ├── swamp-repo/
-│   │   └── swamp-extension/
+│   ├── skills/                  # Skills from pulled extensions
 │   └── settings.local.json      # Claude permissions
 │
 ├── .swamp.yaml                  # Repository metadata
 ├── .gitignore                   # Git ignore (auto-generated)
 └── CLAUDE.md                    # Agent instructions
 ```
+
+The bundled `swamp` and `swamp-getting-started` skills install to the user-level
+skills directory (`~/.claude/skills` for Claude Code), not into the repository.
 
 ## Key Files
 

@@ -1009,7 +1009,7 @@ jobs:
   detect drift
 - Enumerate instances with
   `swamp data query 'modelName == "<name>" && dataType == "resource"'` to
-  discover what needs syncing (see `swamp-data` skill)
+  discover what needs syncing (see the [data guide](../../../data/guide.md))
 
 ## Error Handling Behavior
 

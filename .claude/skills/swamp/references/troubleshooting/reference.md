@@ -82,16 +82,16 @@ For a typical investigation:
 4. Once the root cause is identified, state it clearly, suggest a fix or
    workaround, and (if it's a bug) summarize for an issue report.
 
-## When to use other skills
+## Related Guides
 
-| Need                                  | Use Skill                                                         |
+| Need                                  | Guide                                                             |
 | ------------------------------------- | ----------------------------------------------------------------- |
-| Run/create behaviors                  | `swamp-model`                                                     |
-| Run/create workflows                  | `swamp-workflow`                                                  |
-| Manage secrets                        | `swamp-vault`                                                     |
-| Manage repository / install / upgrade | `swamp-repo`                                                      |
-| Author custom extensions              | `swamp-extension`                                                 |
-| Debug method preflight checks         | this skill, Tier 2 + [references/checks.md](references/checks.md) |
+| Run/create behaviors                  | [behavior](../behavior/guide.md)                                  |
+| Run/create workflows                  | [workflow](../workflow/guide.md)                                  |
+| Manage secrets                        | [vault](../vault/guide.md)                                        |
+| Manage repository / install / upgrade | [repo](../repo/guide.md)                                          |
+| Author custom extensions              | [extension](../extension/guide.md)                                |
+| Debug method preflight checks         | this guide, Tier 2 + [references/checks.md](references/checks.md) |
 
 ## References
 

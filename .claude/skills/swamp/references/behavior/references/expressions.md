@@ -19,7 +19,9 @@ Behavior inputs support CEL expressions using `${{ <expression> }}` syntax.
 > `instanceName` equals `specName`. For example, a behavior `my-shell` with
 > resource spec `result` is accessed as
 > `model.my-shell.resource.result.result.attributes.exitCode`. Factory behaviors
-> use distinct instance names — see the `swamp-extension` skill for details.
+> use distinct instance names — see the
+> [writeResource API](../../extension/references/model/api.md#writeresource-api)
+> for details.
 
 ## CEL Operations
 

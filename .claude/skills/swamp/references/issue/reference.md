@@ -213,11 +213,11 @@ Map the failure to the right fix rather than retrying blindly:
 See [references/formatting.md](references/formatting.md) for bug report and
 feature request formatting guidelines with examples.
 
-## Related Skills
+## Related Guides
 
-| Need                                  | Use Skill               |
-| ------------------------------------- | ----------------------- |
-| Debug swamp issues                    | swamp-troubleshooting   |
-| View swamp source code                | swamp-troubleshooting   |
-| Pull an extension before reporting    | swamp-repo              |
-| Publish an extension with a repo link | swamp-extension-publish |
+| Need                                  | Guide                                              |
+| ------------------------------------- | -------------------------------------------------- |
+| Debug swamp issues                    | [troubleshooting](../troubleshooting/guide.md)     |
+| View swamp source code                | [troubleshooting](../troubleshooting/guide.md)     |
+| Pull an extension before reporting    | [repo](../repo/guide.md)                           |
+| Publish an extension with a repo link | [extension-publish](../extension-publish/guide.md) |

@@ -188,9 +188,10 @@ public. To make an already-private extension public, use
 [changing visibility](references/publishing.md#changing-visibility-after-publication)).
 
 **On Failure:** If the dry-run reports a missing or incomplete adversarial
-review report, the review gate is unsatisfied. Complete the **Adversarial Review
-Gate** in the `swamp-extension` skill (write the content-hash-bound review
-report at the path the dry-run prints), then re-run. For other failures see
+review report, the review gate is unsatisfied. Complete the
+[Adversarial Review Gate](../extension/reference.md#adversarial-review-gate)
+(write the content-hash-bound review report at the path the dry-run prints),
+then re-run. For other failures see
 [references/publishing.md](references/publishing.md#safety-rules).
 
 ## State 8: pushed

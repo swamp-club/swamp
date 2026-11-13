@@ -2,7 +2,7 @@
 
 Create TypeScript extensions that swamp loads at startup. Five extension types
 share the same workflow: implement an interface, register in a manifest, publish
-via `swamp-extension-publish`.
+via the [extension-publish guide](../extension-publish/guide.md).
 
 ## Determine Extension Type
 
