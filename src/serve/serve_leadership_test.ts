@@ -887,6 +887,41 @@ Deno.test("ServeLeadership: a follower tries the lease just after the holder's c
   }
 });
 
+Deno.test("ServeLeadership: a lease that lapsed while a refresh ran is tried within the margin once it ends, not a whole tick later", async () => {
+  const lease = new FakeLease();
+  const refresh = hangingRefresh();
+  const leadership = new ServeLeadership({
+    instanceId: "me",
+    lease,
+    store: memoryStore(),
+    refreshCopy: refresh.refreshCopy,
+    onLead: () => Promise.resolve(),
+    onLostLead: () => Promise.resolve(),
+    tickMs: 3_600_000,
+  });
+  const expiry = Date.now() + 400;
+  lease.expiry = expiry;
+  lease.freeFrom = { at: expiry, fence: 3 };
+  await leadership.start("follower");
+  // a tick before the lapse: its take loses and its refresh outlasts the lapse
+  const ticking = leadership.tick();
+  try {
+    await waitFor(() => refresh.state.calls === 1, "the refresh to start");
+    assertEquals(lease.takes, 1);
+    // past the tick scheduled at the expiry, which joins the one in flight
+    await waitFor(() => Date.now() > expiry + 2_000, "the lease to lapse");
+    refresh.end();
+    await ticking;
+    await waitFor(() => leadership.role === "leader", "the lease taken", {
+      timeoutMs: 5_000,
+    });
+    assertEquals(lease.takes, 2);
+  } finally {
+    refresh.end();
+    await leadership.stop();
+  }
+});
+
 Deno.test("ServeLeadership: a follower ticks no slower than its tick when the holder's expiry is far off (swamp-club#4679)", async () => {
   const lease = new FakeLease();
   lease.expiry = Date.now() + 3_600_000;

@@ -146,6 +146,7 @@ export class ServeLeadership {
    * next tick retries the record, not the lease.
    */
   #leadPending = false;
+  #lastTakeAt: number | undefined;
   #lostLead: Promise<void> | undefined;
   #stopped = false;
 
@@ -264,7 +265,13 @@ export class ServeLeadership {
       return this.#tickMs;
     }
     const untilExpiry = expiresAt - this.#now();
-    if (untilExpiry <= 0) return this.#tickMs;
+    if (untilExpiry <= 0) {
+      // a lapse no take has tried yet, as when a refresh outlasted it, is
+      // tried at once; once a take after it has lost, the tick paces retries
+      const tried = this.#lastTakeAt !== undefined &&
+        this.#lastTakeAt >= expiresAt;
+      return tried ? this.#tickMs : LEASE_EXPIRY_MARGIN_MS;
+    }
     return Math.min(this.#tickMs, untilExpiry + LEASE_EXPIRY_MARGIN_MS);
   }
 
@@ -292,6 +299,7 @@ export class ServeLeadership {
     }
     // A lease already taken, whose record write failed, is not taken again:
     // only the record is retried.
+    this.#lastTakeAt = this.#now();
     const taken = this.#leadPending && lease.holdsCurrent()
       ? "writer"
       : await lease.take();
