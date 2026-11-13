@@ -911,6 +911,8 @@ export interface ReconcileRemoteInterruptedRunsDeps {
     runId: WorkflowRunId,
   ) => Promise<void>;
   pushReaped?: () => Promise<void>;
+  /** each run record the pass interrupted, for its automatic continuation */
+  onRunInterrupted?: (runId: string) => void;
 }
 
 /**
@@ -1254,6 +1256,7 @@ export async function reconcileRemoteInterruptedRuns(
             );
             run.markContinuable(new Date());
             await workflowRunRepo.save(workflowId, run);
+            deps.onRunInterrupted?.(run.id);
             reaped++;
             yamlReaped++;
             logger.warn(

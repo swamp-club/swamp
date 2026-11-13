@@ -4846,12 +4846,14 @@ each candidate and continues it, or refuses with one of these reasons:
 - `fan_out_changed`: the fan-out plan or worker selector no longer matches, or
   no worker pool is available.
 - `nested_run_unsettled`: a nested run the run waits on is still open.
+- `launch_refused`: serve's own resume refused the launch.
 
 Serve judges candidates at boot (after the pending-run replay and before the
-schedule catch-up), on every reconciliation tick (a remote control plane
-only; each tick judges every stamped run, so one an earlier pass could not act
-on is tried again), and when a team leader takes over (after its own replay).
-Followers never continue a run. A continuation claims the interrupted record
+schedule catch-up), after a reconciliation tick interrupts a dead peer's runs,
+and when a team leader takes over (after its own replay). Followers never
+continue a run. A launch the resume refuses for a definite reason (a run
+started through a delegation that has ended) is recorded as `launch_refused`
+and stands like any other refusal. A continuation claims the interrupted record
 (`suspensionKeyOf` of the interrupted run) and compares the copy with the
 datastore before `recover` resets anything. Two instances, or the old and new
 process of a rolling restart, therefore never both continue one interruption.

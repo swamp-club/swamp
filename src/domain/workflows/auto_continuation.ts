@@ -38,7 +38,9 @@ export type AutoContinuationRefusalReason =
   | "definition_changed"
   | "unguarded_step"
   | "fan_out_changed"
-  | "nested_run_unsettled";
+  | "nested_run_unsettled"
+  // serve's own resume refused the launch, e.g. an ended delegation
+  | "launch_refused";
 
 export interface AutoContinuationRefusalOf extends AutoContinuationRefusal {
   readonly reason: AutoContinuationRefusalReason;

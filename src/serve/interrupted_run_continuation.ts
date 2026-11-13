@@ -69,6 +69,8 @@ export type InterruptedRunContinuationCause =
   | "lead";
 
 export interface InterruptedRunContinuationOptions {
+  /** limits the pass to these runs; every interrupted run when absent */
+  readonly runIds?: ReadonlySet<string>;
   /** a continued scheduled run, so the next fire of its workflow overlaps */
   readonly onScheduledRunContinued?: (
     workflowId: string,
@@ -110,6 +112,7 @@ export async function continueInterruptedRuns(
     "interrupted",
   );
   for (const { run, workflowId } of candidates) {
+    if (options.runIds !== undefined && !options.runIds.has(run.id)) continue;
     if (run.continuableSince === undefined) continue;
     if (registry.draining) break;
     if (registry.get(run.id)) continue;
@@ -328,22 +331,43 @@ async function launch(
     },
   });
   if (!launched.ok) {
-    if (!LOST_RACE_CODES.has(launched.code)) {
+    // a lost race shares its claim with the pass that won, which keeps it
+    if (LOST_RACE_CODES.has(launched.code)) return false;
+    if (launched.refusal === "refused") {
+      // a definite answer stands for this interruption, like a verdict's
       await hold.release();
-      emitSystemAuditEvent(
-        ctx,
-        "workflow.auto_continue_failed",
-        `${detail} code=${launched.code}`,
-      );
-      logger.warn(
-        "Run {runId} of workflow {workflow} could not be continued: {message}",
-        {
-          runId: run.id,
-          workflow: run.workflowName,
-          message: launched.message,
+      const recorded = await recordRefusal(ctx, run, workflowId, {
+        kind: "refuse",
+        refusal: {
+          reason: "launch_refused",
+          steps: [],
+          message:
+            `${launched.message}. Decide with 'swamp workflow recover ${run.workflowName} --run ${run.id}'.`,
         },
-      );
+      });
+      if (recorded) {
+        emitSystemAuditEvent(
+          ctx,
+          "workflow.auto_continue_refused",
+          `${detail} reason=launch_refused`,
+        );
+      }
+      return false;
     }
+    await hold.release();
+    emitSystemAuditEvent(
+      ctx,
+      "workflow.auto_continue_failed",
+      `${detail} code=${launched.code}`,
+    );
+    logger.warn(
+      "Run {runId} of workflow {workflow} could not be continued: {message}",
+      {
+        runId: run.id,
+        workflow: run.workflowName,
+        message: launched.message,
+      },
+    );
     return false;
   }
   emitSystemAuditEvent(ctx, "workflow.auto_continue", detail);

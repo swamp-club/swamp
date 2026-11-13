@@ -169,7 +169,11 @@ async function interruptedRun(
   repoDir: string,
   workflow: Workflow,
   cut: Cut,
-  options: { stamp?: boolean; triggerSource?: string } = {},
+  options: {
+    stamp?: boolean;
+    triggerSource?: string;
+    delegation?: string;
+  } = {},
 ): Promise<string> {
   await new YamlWorkflowRepository(repoDir).save(workflow);
   const { repoDir: resolved, repoContext, datastoreConfig, syncService } =
@@ -197,6 +201,18 @@ async function interruptedRun(
   data.completedAt = undefined;
   data.instanceId = "serve-gone";
   if (options.triggerSource) data.triggerSource = options.triggerSource;
+  if (options.delegation) {
+    data.triggeringPrincipal = {
+      kind: "user",
+      id: "pat",
+      tokenBinding: {
+        name: `delegation:${options.delegation}`,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        principalId: "user:pat",
+      },
+      membership: { localGroups: [], idpGroups: [], collectives: [] },
+    };
+  }
   const job = data.jobs[0];
   job.status = "running";
   job.completedAt = undefined;
@@ -689,5 +705,38 @@ Deno.test({
         (await storedRun(serve, workflow, runId))?.status,
         "interrupted",
       );
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a launch the resume refuses for good is recorded once and not retried",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "ended-link" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary", {
+        delegation: "0b9f6f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+      });
+      await Deno.writeTextFile(counter, "");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      (serve.ctx as { delegationDirectory?: unknown }).delegationDirectory = {
+        standingOf: () => ({ kind: "ended" }),
+      };
+
+      assertEquals(
+        (await continueInterruptedRuns(serve.ctx, "boot")).continued,
+        [],
+      );
+      await continueInterruptedRuns(serve.ctx, "lead");
+
+      const run = await storedRun(serve, workflow, runId);
+      assertEquals(run?.status, "interrupted");
+      assertEquals(run?.autoContinuation?.refused?.reason, "launch_refused");
+      assertEquals(serve.audit.map((a) => a.action), [
+        "workflow.auto_continue_refused",
+      ]);
+      assertEquals(await ranSteps(counter), []);
     }),
 });

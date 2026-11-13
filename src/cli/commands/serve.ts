@@ -10288,12 +10288,14 @@ export const serveCommand = new Command()
     };
     const continueInterruptedAtLead = async (
       cause: InterruptedRunContinuationCause,
+      runIds?: ReadonlySet<string>,
     ): Promise<void> => {
       try {
         const { continued, refused } = await continueInterruptedRuns(
           connectionCtx,
           cause,
           {
+            runIds,
             onScheduledRunContinued: (workflowId, runId, completion) =>
               scheduler.current()?.adoptContinuedRun(
                 workflowId,
@@ -10367,29 +10369,33 @@ export const serveCommand = new Command()
           // A follower settles nothing, nor does a leader whose lease was taken
           // over and has not ticked since: it would misjudge the new leader
           // gone.
-          const leads = !isFollowing() &&
-            (v3Location === undefined ||
-              holdsCurrentV3WriterLease(v3Location.path));
-          const reaped = !leads ? 0 : await reconcileRemoteInterruptedRuns({
-            controlPlaneStore,
-            instanceId,
-            runTracker,
-            staleTtlMs,
-            ...(isPeerGone !== undefined && { isPeerGone }),
-            workflowRunRepo: repoContext.workflowRunRepo,
-            markDirty: repoContext.markDirty,
-            outputRepo: repoContext.outputRepo,
-            ...(refreshRunRecord !== undefined && { refreshRunRecord }),
-            ...(pushSettledRuns !== undefined &&
-              { pushReaped: pushSettledRuns }),
-            resolveWorkflowId,
-          });
+          const interruptedNow = new Set<string>();
+          const reaped = isFollowing() ||
+              (v3Location !== undefined &&
+                !holdsCurrentV3WriterLease(v3Location.path))
+            ? 0
+            : await reconcileRemoteInterruptedRuns({
+              onRunInterrupted: (runId) => interruptedNow.add(runId),
+              controlPlaneStore,
+              instanceId,
+              runTracker,
+              staleTtlMs,
+              ...(isPeerGone !== undefined && { isPeerGone }),
+              workflowRunRepo: repoContext.workflowRunRepo,
+              markDirty: repoContext.markDirty,
+              outputRepo: repoContext.outputRepo,
+              ...(refreshRunRecord !== undefined && { refreshRunRecord }),
+              ...(pushSettledRuns !== undefined &&
+                { pushReaped: pushSettledRuns }),
+              resolveWorkflowId,
+            });
           if (reaped > 0) {
             logger
               .info`Continuous reconciliation reaped ${reaped} run(s)`;
           }
-          // every stamped run, so one a pass could not act on is tried again
-          if (leads) await continueInterruptedAtLead("reconciliation");
+          if (interruptedNow.size > 0) {
+            await continueInterruptedAtLead("reconciliation", interruptedNow);
+          }
         } catch (err: unknown) {
           logger.warn(
             "Continuous reconciliation failed: {error}",
