@@ -84,10 +84,7 @@ export interface ServeLeadershipDeps {
   readonly address?: string;
   readonly lease: LeadershipLease;
   readonly store: ControlPlaneStore;
-  /**
-   * signal aborts when the lease the refresh waits behind lapses, or serve
-   * stops; honoured only until a restore is installed
-   */
+  /** signal aborts only when serve stops; honoured until a restore is installed */
   refreshCopy(signal: AbortSignal): Promise<void>;
   /**
    * a follower applies it instead of restoring every tick, and restores only
