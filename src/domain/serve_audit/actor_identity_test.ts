@@ -65,3 +65,19 @@ Deno.test("resolveActorIdentity: only users have an identity", () => {
     );
   }
 });
+
+Deno.test("resolveActorIdentity: an id naming an Object.prototype property is not a configured name", () => {
+  for (const id of ["__proto__", "toString", "constructor", "hasOwnProperty"]) {
+    assertEquals(
+      resolveActorIdentity({ kind: "user", id }, {}, undefined),
+      undefined,
+      id,
+    );
+  }
+  assertEquals(
+    resolveActorIdentity({ kind: "user", id: "constructor" }, {
+      constructor: "a-real-user",
+    }, undefined),
+    { username: "a-real-user" },
+  );
+});

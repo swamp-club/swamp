@@ -30,7 +30,12 @@ export function resolveActorIdentity(
   loginIdentity: ActorIdentity | undefined,
 ): ActorIdentity | undefined {
   if (principal?.kind !== "user") return undefined;
-  const username = loginIdentity?.username ?? resolvedUserNames?.[principal.id];
+  // own keys only: an id such as __proto__ would otherwise yield a prototype
+  const configured = resolvedUserNames !== undefined &&
+      Object.hasOwn(resolvedUserNames, principal.id)
+    ? resolvedUserNames[principal.id]
+    : undefined;
+  const username = loginIdentity?.username ?? configured;
   const email = loginIdentity?.email;
   if (username === undefined && email === undefined) return undefined;
   return {

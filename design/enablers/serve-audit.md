@@ -268,10 +268,12 @@ approval or rejection.
 An audit event's username lives only in the audit log, so a run record, which
 outlives serve's memory, keeps its own copy. When serve starts a run or decides
 a gate for a user whose username it knows (the same source as
-`principalUsername`), it records `initiatedByUsername` on the run or
+`principalUsername`, read only from the map's own keys), it records `initiatedByUsername` on the run or
 `decidedByUsername` on the decision, beside the id. Authorization, resume and
-vault rules read only the id. `swamp workflow history get`, the dashboard's run
-detail and its pending approvals print `user:<username>` when one is recorded
+vault rules read only the id. `swamp workflow history get` names who approved
+or rejected each gate, and the dashboard's run detail and pending approvals also
+name who started the run (the log-mode `history get` prints no initiator; its
+`--json` view carries one). Each prints `user:<username>` when one is recorded
 and the recorded principal otherwise, the rule `initiatedBy` follows above;
 `principalLabel` in `src/domain/access/principal.ts` holds it, and the
 dashboard keeps a copy in `packages/dashboard/src/views/actor_label.ts` that a

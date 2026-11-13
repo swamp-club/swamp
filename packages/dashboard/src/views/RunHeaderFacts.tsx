@@ -45,6 +45,7 @@ export function RunByFact(
     <Fact label="By">
       <ActorWithClient
         actor={principalLabel(initiatedBy, initiatedByUsername)}
+        principal={initiatedBy}
         client={client}
         className="rd-by"
       />

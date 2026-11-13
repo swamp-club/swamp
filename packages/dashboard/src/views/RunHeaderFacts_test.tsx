@@ -57,6 +57,6 @@ Deno.test("RunByFact: names who started the run by the username serve recorded",
         client="direct:cli"
       />,
     ),
-    '<div class="rd-fact"><dt>By</dt><dd><span class="rd-by" title="user:alice">user:alice</span></dd></div>',
+    '<div class="rd-fact"><dt>By</dt><dd><span class="rd-by" title="user:alice (user:0f3a-sub)">user:alice</span></dd></div>',
   );
 });
