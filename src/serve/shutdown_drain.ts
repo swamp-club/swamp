@@ -29,6 +29,10 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 const logger = getSwampLogger(["serve", "shutdown"]);
 
 /** a webhook or cron run a trigger source aborted when it stopped */
+
+/** the reason every shutdown abort carries, which a user cancel never does */
+export const SHUTDOWN_ABORT_MESSAGE = "server shutdown";
+
 export interface StoppedTriggerRun {
   readonly runId: string;
   readonly workflowId?: string;
@@ -126,7 +130,7 @@ export async function runShutdownDrain(
     deps.onAborting?.(remaining.length);
     logger.info`Aborting ${remaining.length} undrained run(s)...`;
     for (const run of remaining) {
-      run.controller.abort(new Error("server shutdown"));
+      run.controller.abort(new Error(SHUTDOWN_ABORT_MESSAGE));
     }
     await activeRunRegistry!.drainAll(deps.abortGraceMs);
   }

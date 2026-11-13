@@ -2314,3 +2314,24 @@ Deno.test("startDetachedResume: serve's own continuation refuses a run no longer
   if (!result.ok) assertEquals(result.code, RUN_NOT_SUSPENDED_CODE);
   assertEquals(registry.registered.length, 0);
 });
+
+Deno.test("startDetachedResume: serve's own continuation refuses a workflow renamed since the verdict", async () => {
+  const workflow = makeWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start(1, "serve-gone");
+  run.interrupt("server_crash");
+  const { ctx, registry } = makeHarness(workflow, run);
+  (ctx.repoContext.workflowRepo as { findById: unknown }).findById = () =>
+    Promise.resolve(workflow);
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: workflow.id,
+    byId: true,
+    expectedName: "renamed",
+    runId: run.id,
+    recoverInterrupted: { holder: serveHolder("a") },
+    principalId: null,
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.refusal, "not_found");
+  assertEquals(registry.registered.length, 0);
+});

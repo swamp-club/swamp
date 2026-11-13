@@ -38,6 +38,8 @@ import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 import { recordUnpushedInterrupts } from "./unpushed_interrupts.ts";
 import type { ServeRunWriteFence } from "./run_write_fence.ts";
 import { keepActiveRunRecords } from "./active_run_tracker.ts";
+import { SHUTDOWN_ABORT_MESSAGE } from "./shutdown_drain.ts";
+import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
   type InstanceHeartbeatService,
@@ -98,10 +100,23 @@ export interface ShutdownInterruptResult {
  * a failed load, save, push or marker write is logged and never thrown, so the
  * rest of shutdown still runs
  */
+/** a run a user cancelled before the shutdown is never continued for them */
+function cutOffByShutdown(
+  run: WorkflowRun,
+  controller: AbortController | undefined,
+): boolean {
+  const reason = controller?.signal.reason;
+  if (reason instanceof Error && reason.message !== SHUTDOWN_ABORT_MESSAGE) {
+    return false;
+  }
+  return run.status === "running" ||
+    run.tags["cancel_reason"] === SHUTDOWN_ABORT_MESSAGE;
+}
+
 export async function interruptShutdownRuns(
   remaining: ReadonlyArray<
     & Pick<ActiveRun, "runId" | "kind" | "startedAt">
-    & Partial<Pick<ActiveRun, "resourceId">>
+    & Partial<Pick<ActiveRun, "resourceId" | "controller">>
   >,
   deps: ShutdownInterruptDeps,
 ): Promise<ShutdownInterruptResult> {
@@ -219,8 +234,10 @@ export async function interruptShutdownRuns(
             (match.run.status === "running" ||
               match.run.status === "cancelled")
           ) {
+            // judged before the interrupt overwrites the record's status
+            const cutOff = cutOffByShutdown(match.run, run.controller);
             match.run.interrupt("server_shutdown");
-            match.run.markContinuable(new Date());
+            if (cutOff) match.run.markContinuable(new Date());
             await repoContext.workflowRunRepo.save(
               match.workflowId,
               match.run,

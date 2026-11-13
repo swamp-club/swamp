@@ -220,7 +220,11 @@ async function resolveInterruptedRun(
       workflow.id,
       createWorkflowRunId(request.runId),
     );
-  if (workflow === null || run === null) {
+  if (
+    workflow === null || run === null ||
+    (request.expectedName !== undefined &&
+      workflow.name !== request.expectedName)
+  ) {
     throw new SuspendedRunNotFoundError(
       `Run ${request.runId} of workflow ${request.workflowIdOrName} not found`,
     );
