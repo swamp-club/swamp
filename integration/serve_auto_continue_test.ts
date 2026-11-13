@@ -877,3 +877,86 @@ Deno.test({
       ]);
     }),
 });
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a refusal is never written from a copy read before an operator's recover",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "operator-recovered" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "mid-step");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      const repo = serve.ctx.repoContext.workflowRunRepo;
+      // the pass read the interrupted copy, then the operator recovered the run
+      const stale = await repo.findGlobalByStatus("interrupted");
+      const recovered = (await storedRun(serve, workflow, runId))!;
+      recovered.resetUnknownStepsForRecovery();
+      await repo.save(createWorkflowId(workflow.id), recovered);
+      repo.findGlobalByStatus = () => Promise.resolve(stale);
+
+      const result = await continueInterruptedRuns(serve.ctx, "boot");
+      assertEquals(result.refused, []);
+      const after = await storedRun(serve, workflow, runId);
+      assertEquals(after?.status, "suspended");
+      assertEquals(after?.autoContinuation, undefined);
+      assertEquals(serve.audit, []);
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a recover refused after its launch is handed back to be judged again, which records the refusal",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow(
+        { name: "edited-after-launch" },
+        counter,
+      );
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      const edited = Workflow.fromData({
+        ...workflow.toData(),
+        jobs: [{
+          ...workflow.toData().jobs[0],
+          steps: [
+            ...workflow.toData().jobs[0].steps,
+            shellStep("third", counter).toData(),
+          ],
+        }],
+      });
+      const repo = serve.ctx.repoContext.workflowRepo;
+      const findById = repo.findById.bind(repo);
+      const findByName = repo.findByName.bind(repo);
+      let editedNow = false;
+      let lookups = 0;
+      repo.findById = (id) =>
+        editedNow || ++lookups > 2 ? Promise.resolve(edited) : findById(id);
+      repo.findByName = (name) =>
+        lookups >= 2 ? Promise.resolve(null) : findByName(name);
+
+      const handedBack: { workflowId: string; runId: string }[] = [];
+      const first = await continueInterruptedRuns(serve.ctx, "boot", {
+        onDeferredLater: (target) => handedBack.push(target),
+      });
+      assertEquals(first.continued, [runId]);
+      await finished(serve, runId);
+      await waitFor(() => handedBack.length === 1, "the failure handed back");
+      assertEquals(handedBack, [{ workflowId: workflow.id, runId }]);
+
+      editedNow = true;
+      repo.findByName = () => Promise.resolve(null);
+      const later = await continueInterruptedRuns(serve.ctx, "sweep", {
+        targets: handedBack,
+      });
+      assertEquals(later.refused.map((r) => r.reason), ["definition_changed"]);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.autoContinuation?.refused
+          ?.reason,
+        "definition_changed",
+      );
+    }),
+});

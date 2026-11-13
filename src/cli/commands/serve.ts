@@ -10320,6 +10320,11 @@ export const serveCommand = new Command()
           cause,
           {
             targets,
+            onDeferredLater: (target) => {
+              if (pendingInterrupted.size < PENDING_INTERRUPTED_MAX) {
+                pendingInterrupted.set(target.runId, target);
+              }
+            },
             onScheduledRunContinued: (run, completion) => {
               continuingScheduled.set(run.runId, run);
               const release = () => {

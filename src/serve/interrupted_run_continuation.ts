@@ -86,6 +86,8 @@ export interface ContinuedScheduledRun extends InterruptedRunTarget {
 export interface InterruptedRunContinuationOptions {
   /** read by id; every interrupted run is scanned when absent */
   readonly targets?: readonly InterruptedRunTarget[];
+  /** a continuation that failed after its launch, to judge again later */
+  readonly onDeferredLater?: (target: InterruptedRunTarget) => void;
   /** a continued scheduled run, so the next fire of its workflow overlaps */
   readonly onScheduledRunContinued?: (
     run: ContinuedScheduledRun,
@@ -319,9 +321,20 @@ async function recordRefusal(
   if (attempt.kind === "orphaned") return "skipped";
   const hold = attempt.hold;
   try {
-    if (!run.recordAutoContinuationRefusal(verdict.refusal, new Date())) {
+    // read again under the claim: an operator's recover takes no claim, so a
+    // copy read before it would write the interruption back over that run
+    const fresh = await ctx.repoContext.workflowRunRepo.findById(
+      workflowId,
+      createWorkflowRunId(run.id),
+    );
+    if (
+      fresh?.status !== "interrupted" ||
+      fresh.continuableSince?.getTime() !== run.continuableSince?.getTime() ||
+      !fresh.recordAutoContinuationRefusal(verdict.refusal, new Date())
+    ) {
       return "skipped";
     }
+    run = fresh;
     await runInRootUnitOfWork(
       ctx.repoContext,
       {
@@ -388,6 +401,8 @@ async function launch(
       // a lost race shares its claim with the pass that won, which keeps it
       if (terminal.kind === "error" && !LOST_RACE_CODES.has(terminal.code)) {
         await hold.release();
+        // judged again, so a refusal such as an edited definition is recorded
+        options.onDeferredLater?.({ workflowId, runId: run.id });
         if (firstFailureOf(run)) {
           emitSystemAuditEvent(
             ctx,
