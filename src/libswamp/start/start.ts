@@ -33,10 +33,15 @@ import {
   canResume,
   effectiveTrustMode,
   findHarness,
+  type HarnessDefinition,
   HARNESSES,
   pickBinaryPath,
   planHarnessLaunch,
 } from "../../domain/start/harness.ts";
+import {
+  SWAMPIFY_KICKOFF_HARNESSES,
+  SwampifyKickoff,
+} from "../../domain/start/swampify_kickoff.ts";
 import {
   type LaunchMethod,
   StartSession,
@@ -121,6 +126,8 @@ export interface StartSignals {
   readonly kubeconfig: boolean;
   readonly awsConfig: boolean;
   readonly gcloudAdc: boolean;
+  readonly claudeTranscripts: boolean;
+  readonly codexSessions: boolean;
 }
 
 /** Everything the start page renders from. Never carries a secret. */
@@ -666,31 +673,134 @@ export function startChooseHarness(
 ): AsyncIterable<StartStatusEvent> {
   return taskCommand(deps, input.workspacePath, input.taskId, async (s) => {
     await requireSignedIn(deps);
-    const harness = findHarness(input.harness);
-    if (!harness) throw new UserError(`Unknown agent "${input.harness}".`);
-    if (!harness.launchable) {
-      throw new UserError(
-        `${harness.displayName} can't be started with a task yet. Pick another agent.`,
-      );
-    }
-    if (!await resolveHarnessBinary(deps, harness.binary)) {
-      throw new UserError(
-        `${harness.displayName} (\`${harness.binary}\`) isn't on your PATH. Install it, or pick another agent.`,
-      );
-    }
+    const harness = await requireLaunchableHarness(deps, input.harness);
     const extras = (input.tools ?? []).map((id) => {
       const tool = findHarness(id);
       if (!tool) throw new UserError(`Unknown agent "${id}".`);
       return tool.id;
     });
     s.chooseHarness(harness.id, extras);
-    // Adopt first: the first write of the registry must not skip the
-    // workspaces already under the data dir.
-    await loadWorkspaceRegistry(deps);
-    await deps.registry.update((registry) =>
-      registry.rememberAgent(harness.id)
-    );
+    await rememberAgent(deps, harness.id);
   });
+}
+
+async function requireLaunchableHarness(
+  deps: StartDeps,
+  id: string,
+): Promise<HarnessDefinition> {
+  const harness = findHarness(id);
+  if (!harness) throw new UserError(`Unknown agent "${id}".`);
+  if (!harness.launchable) {
+    throw new UserError(
+      `${harness.displayName} can't be started with a task yet. Pick another agent.`,
+    );
+  }
+  if (!await resolveHarnessBinary(deps, harness.binary)) {
+    throw new UserError(
+      `${harness.displayName} (\`${harness.binary}\`) isn't on your PATH. Install it, or pick another agent.`,
+    );
+  }
+  return harness;
+}
+
+async function rememberAgent(
+  deps: StartDeps,
+  harness: HarnessDefinition["id"],
+): Promise<void> {
+  // Adopt first: the first write of the registry must not skip the
+  // workspaces already under the data dir.
+  await loadWorkspaceRegistry(deps);
+  await deps.registry.update((registry) => registry.rememberAgent(harness));
+}
+
+export interface StartSwampifyKickoffInput {
+  readonly windowDays: number;
+  readonly exclude?: readonly string[];
+  readonly harness: string;
+}
+
+export interface CheckedSwampifyKickoff {
+  readonly kickoff: SwampifyKickoff;
+  readonly harness: HarnessDefinition;
+}
+
+/**
+ * Everything a kick-off needs, checked before anything is written: sign-in,
+ * the window and scope, and a reading harness whose history is here and
+ * whose binary is on PATH.
+ */
+export async function startCheckSwampifyKickoff(
+  deps: StartDeps,
+  input: StartSwampifyKickoffInput,
+): Promise<CheckedSwampifyKickoff> {
+  await requireSignedIn(deps);
+  const kickoff = SwampifyKickoff.create(
+    { windowDays: input.windowDays, exclude: input.exclude ?? [] },
+    deps.os,
+  );
+  if (
+    !(SWAMPIFY_KICKOFF_HARNESSES as readonly string[]).includes(input.harness)
+  ) {
+    throw new UserError(
+      "Start from your past sessions works with Claude Code or Codex.",
+      "invalid_harness",
+    );
+  }
+  const signals = await deps.signals();
+  const hasHistory = input.harness === "claude"
+    ? signals.claudeTranscripts
+    : signals.codexSessions;
+  if (!hasHistory) {
+    throw new UserError(
+      `No ${
+        findHarness(input.harness)?.displayName ?? input.harness
+      } history was found on this machine.`,
+      "no_history",
+    );
+  }
+  return {
+    kickoff,
+    harness: await requireLaunchableHarness(deps, input.harness),
+  };
+}
+
+/**
+ * Saves a swampify task whose text is the kick-off, with its agent chosen,
+ * in one write; nothing is written when a check fails.
+ */
+export function startSaveSwampifyKickoff(
+  _ctx: LibSwampContext,
+  deps: StartDeps,
+  input: StartSwampifyKickoffInput & { readonly workspacePath: string },
+): AsyncIterable<StartStatusEvent> {
+  return (async function* () {
+    try {
+      const { kickoff, harness } = await startCheckSwampifyKickoff(deps, input);
+      const task = StartTask.create(kickoff.render(), "swampify");
+      const session = StartSession.create(
+        deps.randomUUID(),
+        input.workspacePath,
+        deps.now(),
+      );
+      session.saveTask(task);
+      session.chooseHarness(harness.id);
+      session.assignBriefFile(
+        await deps.sessions.reserveBriefFile(
+          input.workspacePath,
+          session.createdAt,
+          task.title(),
+        ),
+      );
+      await deps.sessions.save(session);
+      await rememberAgent(deps, harness.id);
+      yield {
+        kind: "completed",
+        data: await statusOf(deps, input.workspacePath, session),
+      };
+    } catch (error) {
+      yield errorEvent(error);
+    }
+  })();
 }
 
 export async function startListTasks(
@@ -1658,7 +1768,45 @@ const NO_SIGNALS: StartSignals = {
   kubeconfig: false,
   awsConfig: false,
   gcloudAdc: false,
+  claudeTranscripts: false,
+  codexSessions: false,
 };
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether Claude Code transcripts and Codex sessions are on this machine, at
+ * the roots `@swamp/agent-sessions` reads; nothing inside is read.
+ */
+export async function transcriptSignals(
+  home: string,
+  env: (name: string) => string | undefined,
+): Promise<Pick<StartSignals, "claudeTranscripts" | "codexSessions">> {
+  // An empty override means unset, as the extension reads it.
+  const claudeConfig = env("CLAUDE_CONFIG_DIR") || undefined;
+  const codexHome = env("CODEX_HOME") || undefined;
+  const claudeRoot = claudeConfig !== undefined
+    ? join(claudeConfig, "projects")
+    : home !== ""
+    ? join(home, ".claude", "projects")
+    : undefined;
+  const codexRoot = codexHome !== undefined
+    ? join(codexHome, "sessions")
+    : home !== ""
+    ? join(home, ".codex", "sessions")
+    : undefined;
+  return {
+    claudeTranscripts: claudeRoot !== undefined &&
+      await isDirectory(claudeRoot),
+    codexSessions: codexRoot !== undefined && await isDirectory(codexRoot),
+  };
+}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -1726,8 +1874,8 @@ export function createStartDeps(options: {
     },
     // With no home folder there is nothing to look for; a relative path
     // would read the current directory instead.
-    signals: async () =>
-      home === "" ? NO_SIGNALS : ({
+    signals: async () => ({
+      ...(home === "" ? NO_SIGNALS : {
         kubeconfig: await exists(join(home, ".kube", "config")),
         awsConfig: await exists(join(home, ".aws", "config")) ||
           await exists(join(home, ".aws", "credentials")),
@@ -1740,6 +1888,8 @@ export function createStartDeps(options: {
           ),
         ),
       }),
+      ...await transcriptSignals(home, (name) => Deno.env.get(name)),
+    }),
     signIn: (ctx) =>
       authLogin(ctx, loginDeps, {
         serverUrl: options.serverUrl,

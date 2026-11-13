@@ -64,16 +64,25 @@ import {
   startPrepare,
   type StartPrepareEvent,
   startResume,
+  startSaveSwampifyKickoff,
   startSaveTask,
+  type StartSignals,
   startSignIn,
   type StartSignInEvent,
   type StartStatus,
   startStatus,
   type StartStatusEvent,
   startWorkspacePath,
+  transcriptSignals,
 } from "./start.ts";
 
-const SIGNALS = { kubeconfig: true, awsConfig: false, gcloudAdc: false };
+const SIGNALS = {
+  kubeconfig: true,
+  awsConfig: false,
+  gcloudAdc: false,
+  claudeTranscripts: false,
+  codexSessions: false,
+};
 const SIGNED_IN: SignedInState = {
   kind: "signed_in",
   username: "ada",
@@ -113,6 +122,7 @@ interface Fakes {
   signInEvents: AuthLoginEvent[];
   running: Set<string>;
   random: () => number;
+  signals: StartSignals;
 }
 
 function makeFakes(dataDir: string, os = "darwin"): Fakes {
@@ -136,6 +146,7 @@ function makeFakes(dataDir: string, os = "darwin"): Fakes {
     signInEvents: [],
     running: new Set(),
     random: () => 0,
+    signals: SIGNALS,
   };
   f.deps = {
     dataDir,
@@ -169,7 +180,7 @@ function makeFakes(dataDir: string, os = "darwin"): Fakes {
       f.briefs.push({ workspacePath, briefFile, content });
       return Promise.resolve();
     },
-    signals: () => Promise.resolve(SIGNALS),
+    signals: () => Promise.resolve(f.signals),
     signIn: async function* () {
       for (const event of f.signInEvents) yield event;
     },
@@ -2527,4 +2538,257 @@ Deno.test({
       assertStringIncludes(f.briefs[0].content, "it holds only Swamp's files.");
     });
   },
+});
+
+function envOf(
+  values: Record<string, string>,
+): (name: string) => string | undefined {
+  return (name) => values[name];
+}
+
+Deno.test("transcriptSignals: both off when neither folder exists", async () => {
+  await withTempDir(async (home) => {
+    assertEquals(await transcriptSignals(home, envOf({})), {
+      claudeTranscripts: false,
+      codexSessions: false,
+    });
+  });
+});
+
+Deno.test("transcriptSignals: each folder under home turns on its own signal", async () => {
+  await withTempDir(async (home) => {
+    await Deno.mkdir(join(home, ".claude", "projects"), { recursive: true });
+    assertEquals(await transcriptSignals(home, envOf({})), {
+      claudeTranscripts: true,
+      codexSessions: false,
+    });
+    await Deno.mkdir(join(home, ".codex", "sessions"), { recursive: true });
+    assertEquals(await transcriptSignals(home, envOf({})), {
+      claudeTranscripts: true,
+      codexSessions: true,
+    });
+  });
+});
+
+Deno.test("transcriptSignals: a file where the folder should be is not a signal", async () => {
+  await withTempDir(async (home) => {
+    await Deno.mkdir(join(home, ".claude"), { recursive: true });
+    await Deno.writeTextFile(join(home, ".claude", "projects"), "");
+    assertEquals(
+      (await transcriptSignals(home, envOf({}))).claudeTranscripts,
+      false,
+    );
+  });
+});
+
+Deno.test("transcriptSignals: CLAUDE_CONFIG_DIR and CODEX_HOME replace the home folders", async () => {
+  await withTempDir(async (dir) => {
+    const home = join(dir, "home");
+    await Deno.mkdir(join(home, ".claude", "projects"), { recursive: true });
+    await Deno.mkdir(join(home, ".codex", "sessions"), { recursive: true });
+    const env = envOf({
+      CLAUDE_CONFIG_DIR: join(dir, "claude"),
+      CODEX_HOME: join(dir, "codex"),
+    });
+    assertEquals(await transcriptSignals(home, env), {
+      claudeTranscripts: false,
+      codexSessions: false,
+    });
+    await Deno.mkdir(join(dir, "claude", "projects"), { recursive: true });
+    await Deno.mkdir(join(dir, "codex", "sessions"), { recursive: true });
+    assertEquals(await transcriptSignals(home, env), {
+      claudeTranscripts: true,
+      codexSessions: true,
+    });
+  });
+});
+
+Deno.test("transcriptSignals: an empty override counts as unset", async () => {
+  await withTempDir(async (home) => {
+    await Deno.mkdir(join(home, ".claude", "projects"), { recursive: true });
+    await Deno.mkdir(join(home, ".codex", "sessions"), { recursive: true });
+    assertEquals(
+      await transcriptSignals(
+        home,
+        envOf({ CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" }),
+      ),
+      { claudeTranscripts: true, codexSessions: true },
+    );
+  });
+});
+
+Deno.test("transcriptSignals: with no home only the overrides are looked at", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(dir, "codex", "sessions"), { recursive: true });
+    assertEquals(
+      await transcriptSignals("", envOf({ CODEX_HOME: join(dir, "codex") })),
+      { claudeTranscripts: false, codexSessions: true },
+    );
+  });
+});
+
+async function kickoffWorkspace(f: Fakes): Promise<string> {
+  const ws = startWorkspacePath(f.deps.dataDir, "swampify");
+  await Deno.mkdir(ws, { recursive: true });
+  f.repos.add(ws);
+  f.tools.set(ws, []);
+  return ws;
+}
+
+async function tasksDirEntries(ws: string): Promise<string[]> {
+  const names: string[] = [];
+  try {
+    for await (const e of Deno.readDir(join(ws, ".swamp", "start", "tasks"))) {
+      names.push(e.name);
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return names;
+}
+
+Deno.test("startSaveSwampifyKickoff: saves a swampify task with the kick-off text and its agent", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.signals = { ...SIGNALS, claudeTranscripts: true };
+    const ws = await kickoffWorkspace(f);
+    const s = await status(
+      startSaveSwampifyKickoff(ctx, f.deps, {
+        workspacePath: ws,
+        windowDays: 14,
+        exclude: ["~/src/client"],
+        harness: "claude",
+      }),
+    );
+    assertEquals(s.screen, "trust");
+    assertEquals(s.harness?.id, "claude");
+    assertEquals(
+      s.task?.title,
+      "Swampify kick-off: start from your past sessions",
+    );
+    assertStringIncludes(s.task!.text, "\nWindow: last 14 days\n");
+    assertStringIncludes(s.task!.text, '["~/src/client"]');
+    const saved = await f.deps.sessions.load(ws, s.taskId!);
+    assertEquals(saved?.task?.kind, "swampify");
+    assertEquals(saved?.harness, "claude");
+    assertEquals((await f.deps.registry.load())?.lastAgent(), "claude");
+  });
+});
+
+Deno.test("startSaveSwampifyKickoff: launching it writes the swampify brief and names the skill", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.signals = { ...SIGNALS, codexSessions: true };
+    f.onPath = { codex: ["/usr/local/bin/codex"] };
+    const ws = await kickoffWorkspace(f);
+    await f.deps.registry.update((r) =>
+      r.register({
+        name: "swampify",
+        path: ws,
+        createdAt: "2026-10-11T00:00:00.000Z",
+      })
+    );
+    const s = await status(
+      startSaveSwampifyKickoff(ctx, f.deps, {
+        workspacePath: ws,
+        windowDays: 30,
+        harness: "codex",
+      }),
+    );
+    await collect(
+      startLaunch(ctx, f.deps, {
+        workspacePath: ws,
+        taskId: s.taskId!,
+      }),
+    );
+    assertEquals(f.briefs.length, 1);
+    const brief = f.briefs[0].content;
+    assert(brief.startsWith(BRIEF_HEADER));
+    assertStringIncludes(brief, "<!-- swampify kick-off v1 -->");
+    assertStringIncludes(brief, "Excluded paths: none");
+    assert(!brief.includes("swamp-getting-started"));
+    const args = f.opened[0].spec.args.join(" ");
+    assertStringIncludes(args, `Read ${f.briefs[0].briefFile}`);
+    assertStringIncludes(args, "use the swampify skill");
+  });
+});
+
+Deno.test("startSaveSwampifyKickoff: refuses without writing anything", async () => {
+  await withTempDir(async (dir) => {
+    const cases: Array<{
+      name: string;
+      signals: Partial<StartSignals>;
+      onPath?: Record<string, string[]>;
+      input: { windowDays: number; exclude?: string[]; harness: string };
+      message: string;
+    }> = [
+      {
+        name: "harness with no history",
+        signals: { codexSessions: true },
+        input: { windowDays: 30, harness: "claude" },
+        message: "No Claude Code history",
+      },
+      {
+        name: "harness not offered",
+        signals: { claudeTranscripts: true },
+        onPath: { cursor: ["/usr/local/bin/cursor-agent"] },
+        input: { windowDays: 30, harness: "cursor" },
+        message: "Claude Code or Codex",
+      },
+      {
+        name: "harness not on PATH",
+        signals: { claudeTranscripts: true },
+        onPath: {},
+        input: { windowDays: 30, harness: "claude" },
+        message: "isn't on your PATH",
+      },
+      {
+        name: "unsafe path",
+        signals: { claudeTranscripts: true },
+        input: { windowDays: 30, exclude: ["/a'b"], harness: "claude" },
+        message: "Excluded paths",
+      },
+      {
+        name: "bad window",
+        signals: { claudeTranscripts: true },
+        input: { windowDays: 0, harness: "claude" },
+        message: "window",
+      },
+    ];
+    for (const c of cases) {
+      const f = makeFakes(join(dir, c.name.replaceAll(" ", "-")));
+      f.signals = { ...SIGNALS, ...c.signals };
+      if (c.onPath) f.onPath = c.onPath;
+      const ws = await kickoffWorkspace(f);
+      const [event] = await collect(
+        startSaveSwampifyKickoff(ctx, f.deps, {
+          workspacePath: ws,
+          ...c.input,
+        }),
+      );
+      assertEquals(event.kind, "error", c.name);
+      if (event.kind === "error") {
+        assertStringIncludes(event.error.message, c.message, c.name);
+      }
+      assertEquals(await tasksDirEntries(ws), [], c.name);
+    }
+  });
+});
+
+Deno.test("startSaveSwampifyKickoff: refuses when not signed in", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.signals = { ...SIGNALS, claudeTranscripts: true };
+    f.signedIn = { kind: "not_signed_in" };
+    const ws = await kickoffWorkspace(f);
+    const [event] = await collect(
+      startSaveSwampifyKickoff(ctx, f.deps, {
+        workspacePath: ws,
+        windowDays: 30,
+        harness: "claude",
+      }),
+    );
+    assertEquals(event.kind, "error");
+    assertEquals(await tasksDirEntries(ws), []);
+  });
 });

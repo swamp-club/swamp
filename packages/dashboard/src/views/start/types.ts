@@ -39,11 +39,16 @@ export type StartScreen =
   /** The workspace's home: every task, and the open one's summary. */
   | "home";
 
-/** Local credential files that only order the example prompts. */
+/**
+ * Local files whose presence orders the example prompts, and agent history
+ * that offers "Start from your past sessions".
+ */
 export interface StartSignals {
   kubeconfig: boolean;
   awsConfig: boolean;
   gcloudAdc: boolean;
+  claudeTranscripts: boolean;
+  codexSessions: boolean;
 }
 
 /** The status object every `start.*` request (bar a few) replies with. */

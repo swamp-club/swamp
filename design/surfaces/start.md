@@ -33,11 +33,19 @@ and prepares the ground for the **Serve** dashboard.
   (`BRIEF_HEADER`) that tells it apart from anyone's own file, which is never
   overwritten. Task records, the per-process server records and the launcher
   stay in `.swamp/start/`.
-- **Task kind**: a plain task (the default) or `swampify`, a build brief the
-  [Swampify page](./swampify.md#the-page) hands over (`taskKind` on the
-  record). A swampify task's brief keeps the task's own steps instead of
-  start's, says the workspace is the user's own repo, and its launch prompt
-  names the `swampify` skill. An edit from the start page keeps the kind.
+- **Task kind**: a plain task (the default) or `swampify` (`taskKind` on the
+  record). One kind serves two texts: the build brief the
+  [Swampify page](./swampify.md#the-page) hands over, and the kick-off that
+  "Start from your past sessions" writes. A swampify task's brief keeps the
+  task's own steps instead of start's, says the workspace is the user's own
+  repo, and its launch prompt names the `swampify` skill. An edit from the
+  start page keeps the kind.
+- **Signals**: whether a few local folders exist, checked when status is read
+  and never read inside. `kubeconfig`, `awsConfig` and `gcloudAdc` order the
+  example tasks. `claudeTranscripts` (`CLAUDE_CONFIG_DIR/projects`, else
+  `~/.claude/projects`) and `codexSessions` (`CODEX_HOME/sessions`, else
+  `~/.codex/sessions`), the roots `@swamp/agent-sessions` reads, offer
+  "Start from your past sessions". An empty override counts as unset.
 - **Harness**: an AI agent CLI, such as Claude Code or Codex.
 - **Launch**: enrolling the harness, writing the brief and launcher, and opening
   the agent's terminal window.
@@ -140,6 +148,30 @@ workspace can be set up for more agents without starting one: the "Configured
 agents" panel on the resume, launched and tasks screens. An agent that
 was launched in the workspace before continues its own conversation where it
 can (`--continue`, `resume --last`); one that wasn't opens a fresh session.
+
+## Start from your past sessions
+
+When either transcript signal is on, the workspace screen offers "Start from
+your past sessions" below the create form. Opened, it says what will be read
+(transcript text on this machine, prompts and replies included, in the chosen
+window and scope; the agent asks before it reads), what the workspace stores
+(counts, token costs and up to five short redacted excerpts per chore; session
+records stay prompt-free) and that where the data goes is the user's choice.
+It asks for a window (7, 30 or 90 days, default 30), excluded folders (scope
+is every session on this machine), the agent (Claude Code or Codex, only
+those whose signal is on and found on PATH) and a workspace name, prefilled
+`swampify`, or `swampify-2`, `-3` when taken.
+
+The page sends `start.swampify.kickoff` with those fields and no text. The
+server checks sign-in, the window and paths and the agent first
+(`startCheckSwampifyKickoff`), so a refusal creates no workspace; then it opens
+or creates the workspace and saves one swampify task with its agent chosen
+(`startSaveSwampifyKickoff`), landing on the trust step. Core writes the task
+text (`SwampifyKickoff` in `src/domain/start/swampify_kickoff.ts`); its only
+user input is the window and the excluded paths. Each path must be absolute
+or start with `~`, at most 20 of 512 characters, with no quotes, backticks,
+`$`, `<`, `>` or control characters, and appears only as one JSON array in a
+code fence. See [swampify.md](./swampify.md#the-kick-off) for the text.
 
 The agent screen lists every harness swamp supports (the `--tool` values),
 marking which are on PATH; only a found, launchable one can be chosen. It

@@ -31,6 +31,7 @@ import type {
   SignedInState,
   StartDeps,
   StartHarnessInfo,
+  StartSignals,
   StartStatus,
   StartWorkspaceSummary,
 } from "../src/libswamp/start/start.ts";
@@ -74,6 +75,8 @@ interface Fakes {
   pickGate: Promise<void> | null;
   picks: number;
   prompts: string[];
+  briefs: Array<{ briefFile: string; content: string }>;
+  signals: StartSignals;
 }
 
 function makeFakes(dataDir: string): Fakes {
@@ -90,6 +93,14 @@ function makeFakes(dataDir: string): Fakes {
     pickGate: null,
     picks: 0,
     prompts: [],
+    briefs: [],
+    signals: {
+      kubeconfig: false,
+      awsConfig: false,
+      gcloudAdc: false,
+      claudeTranscripts: false,
+      codexSessions: false,
+    },
   };
   const tools = new Map<string, string[]>();
   f.deps = {
@@ -127,13 +138,11 @@ function makeFakes(dataDir: string): Fakes {
         };
       },
     },
-    writeBrief: () => Promise.resolve(),
-    signals: () =>
-      Promise.resolve({
-        kubeconfig: false,
-        awsConfig: false,
-        gcloudAdc: false,
-      }),
+    writeBrief: (_ws, briefFile, content) => {
+      f.briefs.push({ briefFile, content });
+      return Promise.resolve();
+    },
+    signals: () => Promise.resolve(f.signals),
     signIn: async function* () {
       let first = true;
       for (const event of f.signInEvents) {
@@ -1847,4 +1856,103 @@ Deno.test("startStartServer: serves a trusted Host on any port and in any case, 
       trustedHosts: TrustedHosts.parse("proxy.example"),
     },
   );
+});
+
+Deno.test("startStartServer: a swampify kick-off creates the workspace, saves the task and launches on the swampify brief", async () => {
+  await withStartServer(async ({ handle, fakes, dataDir }) => {
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      const saved = await client.request("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: 30,
+        exclude: ["~/src/client-repo"],
+        harness: "claude",
+      });
+      assertEquals(saved.workspaceName, "swampify");
+      assertPathEquals(
+        saved.workspacePath!,
+        workspaceDir(dataDir, "swampify"),
+      );
+      assertEquals(saved.screen, "trust");
+      assertEquals(saved.harness?.id, "claude");
+      const launched = await client.request("start.launch", {
+        trustConfirmed: true,
+      });
+      assertEquals(launched.screen, "launched");
+      assertEquals(fakes.briefs.length, 1);
+      const { briefFile, content } = fakes.briefs[0];
+      assertEquals(
+        content,
+        [
+          "<!-- swamp start brief v1 -->",
+          "# Task",
+          "",
+          "Swampify kick-off: start from your past sessions",
+          "<!-- swampify kick-off v1 -->",
+          "",
+          "Window: last 30 days",
+          "Scope: every session on this machine",
+          "Excluded paths:",
+          "",
+          "```json",
+          '["~/src/client-repo"]',
+          "```",
+          "",
+          "1. Run `swamp extension pull @swamp/agent-sessions`. It writes into `.claude/skills` and `.agents/skills`; if a sandbox refuses that, ask the user to let the command run outside it.",
+          "2. Run `swamp behavior create @swamp/agent-sessions swampify`, unless a behavior of that type already exists; then use that one.",
+          "3. Follow the swampify skill from its first state, with the window and scope above. If the skill isn't available in this session yet, read its SKILL.md where the pull installed it: `.claude/skills/swampify/SKILL.md` for Claude Code, `.agents/skills/swampify/SKILL.md` for Codex.",
+          "",
+          "The user read what will be read and stored on the swamp start page. Still give the skill's disclosure and wait for the user to agree before anything is read; skip only its window and scope questions.",
+          "",
+          "# Context",
+          "",
+          `- Workspace: ${
+            workspaceDir(dataDir, "swampify")
+          }. This is the user's own swamp repo; leave files unrelated to the task alone.`,
+          "- Agent: Claude Code",
+          "",
+        ].join("\n"),
+      );
+      assertEquals(fakes.opened.length, 1);
+      assertEquals(
+        fakes.opened[0].args.at(-1),
+        `Read ${briefFile} and use the swampify skill.`,
+      );
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a refused swampify kick-off creates no workspace", async () => {
+  await withStartServer(async ({ handle, fakes, dataDir, opened }) => {
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      const noHistory = await client.requestError("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: 30,
+        harness: "codex",
+      });
+      assertEquals(noHistory.code, "no_history");
+      const unsafe = await client.requestError("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: 30,
+        exclude: ["/a\nb"],
+        harness: "claude",
+      });
+      assertEquals(unsafe.code, "invalid_exclude");
+      const tooLong = await client.requestError("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: 400,
+        harness: "claude",
+      });
+      assertEquals(tooLong.code, "invalid_request");
+      assertEquals(opened, []);
+      await assertRejects(() => Deno.stat(workspaceDir(dataDir, "swampify")));
+    } finally {
+      await client.close();
+    }
+  });
 });
