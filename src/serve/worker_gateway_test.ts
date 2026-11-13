@@ -3063,6 +3063,104 @@ Deno.test("WorkerGateway: rotateToken delivers the successor and re-stamps the w
   );
 });
 
+Deno.test("WorkerGateway: rotateToken moves the binding of a worker that saved the successor", async () => {
+  const h = rotationHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  workerChannel.register(
+    WorkerMethod.rotateToken,
+    () => Promise.resolve({ persisted: true }),
+  );
+  await enroll(workerChannel, rotatableParams);
+
+  await h.rotate();
+
+  const rebinds = h.transitions.filter((t) => t.methodName === "rebind");
+  assertEquals(rebinds.length, 1);
+  assertEquals(rebinds[0].inputs, {
+    machineIds: ["machine-1"],
+    mint: ROTATED_MINT,
+  });
+  assertEquals(rebinds[0].expectedDefinitionId, "def-ci-runner-3");
+});
+
+Deno.test("WorkerGateway: rotateToken leaves the binding of a worker that took the successor in memory only", async () => {
+  const h = rotationHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  workerChannel.register(
+    WorkerMethod.rotateToken,
+    () => Promise.resolve({ persisted: false }),
+  );
+  await enroll(workerChannel, rotatableParams);
+
+  const report = await h.rotate();
+
+  assertEquals(report.rotated, [{ worker: "ci-runner-3", persisted: false }]);
+  assertEquals(h.transitions.some((t) => t.methodName === "rebind"), false);
+});
+
+Deno.test("WorkerGateway: rotateToken moves the binding of a worker that saved the successor and left before the re-stamp", async () => {
+  const h = rotationHarness();
+  let fed = 0;
+  const workerChannel: RpcChannel = new RpcChannel({
+    send: (data) =>
+      void Promise.resolve().then(() => {
+        attached.feed(data);
+        fed++;
+      }),
+  });
+  const attached = h.gateway.attachTransport({
+    send: (data) =>
+      void Promise.resolve().then(() => workerChannel.handleRaw(data)),
+  }, () => attached.closed());
+  const tail = Promise.withResolvers<void>();
+  let held: Promise<void> | undefined;
+  let fedAtAck: number | undefined;
+  workerChannel.register(WorkerMethod.rotateToken, () => {
+    // holds the tail so the re-stamp runs only after the worker has left
+    held = h.gateway.serializeWorkerWrites(() => tail.promise);
+    fedAtAck = fed;
+    return Promise.resolve({ persisted: true });
+  });
+  await enroll(workerChannel, rotatableParams);
+
+  const rotating = h.rotate();
+  await waitFor(
+    () => fedAtAck !== undefined && fed > fedAtAck,
+    "the acknowledgement reached serve",
+  );
+  attached.closed();
+  await waitFor(() => h.graceExpired.length === 1, "the worker left the pool");
+  tail.resolve();
+  await held;
+  const report = await rotating;
+
+  assertEquals(report.notRotated, [{
+    worker: "ci-runner-3",
+    reason: "reconnected during rotation",
+  }]);
+  const rebind = h.transitions.find((t) => t.methodName === "rebind");
+  assertEquals(rebind?.inputs, {
+    machineIds: ["machine-1"],
+    mint: ROTATED_MINT,
+  });
+});
+
+Deno.test("WorkerGateway: rotateToken still reports when the binding cannot be moved", async () => {
+  const h = rotationHarness();
+  h.failOn.add("rebind");
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  workerChannel.register(
+    WorkerMethod.rotateToken,
+    () => Promise.resolve({ persisted: true }),
+  );
+  await enroll(workerChannel, rotatableParams);
+
+  const report = await h.rotate();
+
+  assertEquals(report.rotated, [{ worker: "ci-runner-3", persisted: true }]);
+  assertEquals(h.gateway.boundTokens()[0].tokenCreatedAt, ROTATED_MINT);
+});
+
 Deno.test("WorkerGateway: rotateToken passes a requested duration to the rotate method", async () => {
   const h = rotationHarness();
   await h.rotate(3_600_000);
@@ -3386,7 +3484,7 @@ Deno.test("WorkerGateway: a secret that cannot be read after the rotation lands 
 Deno.test("WorkerGateway: a worker that took both rotations is not counted as holding a retired token", async () => {
   const mintA = "2026-02-01T00:00:00.000Z";
   const mintB = "2026-03-01T00:00:00.000Z";
-  // a binding's mint moves only on redeem, so it stays on the first mint
+  // neither machine saved a rotation, so both bindings stay on the first mint
   const bindings = [
     { machineId: "machine-1", enrolledAt: BASE_MINT, mint: BASE_MINT },
     { machineId: "machine-2", enrolledAt: BASE_MINT, mint: BASE_MINT },

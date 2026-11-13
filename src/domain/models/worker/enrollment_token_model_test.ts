@@ -52,6 +52,8 @@ function tokenBindings(
   return store.get("token-main")!.bindings as Binding[];
 }
 
+const BASE_ENROLLED_AT = "2026-01-01T00:00:00.000Z";
+
 function tokenMaxEnrollments(
   store: Map<string, Record<string, unknown>>,
 ): MaxEnrollments {
@@ -825,6 +827,112 @@ Deno.test("enrollmentTokenModel: rotate refuses an expired token", async () => {
     Error,
     "expired",
   );
+});
+
+async function rotatedWithBindings(bindings: Binding[]) {
+  const harness = await mintToken();
+  const first = harness.store.get("token-main")!.createdAt as string;
+  harness.store.get("token-main")!.bindings = bindings;
+  const { token } = await rotateToken(harness);
+  return { harness, first, current: token.createdAt as string };
+}
+
+function rebindTo(
+  harness: Awaited<ReturnType<typeof mintToken>>,
+  machineIds: string[],
+  mint: string,
+) {
+  return enrollmentTokenModel.methods.rebind.execute(
+    { machineIds, mint },
+    harness.context,
+  );
+}
+
+Deno.test("enrollmentTokenModel: rebind moves bound machines to the mint they saved in one write", async () => {
+  const { harness, first, current } = await rotatedWithBindings([
+    { machineId: "machine-1", enrolledAt: BASE_ENROLLED_AT },
+    { machineId: "machine-2", enrolledAt: BASE_ENROLLED_AT },
+    { machineId: "machine-3", enrolledAt: BASE_ENROLLED_AT },
+  ]);
+
+  const result = await rebindTo(harness, ["machine-1", "machine-2"], current);
+
+  assertEquals(result.dataHandles?.length, 1);
+  assertEquals(
+    tokenBindings(harness.store).map((b) => [b.machineId, b.mint]),
+    [["machine-1", current], ["machine-2", current], ["machine-3", first]],
+  );
+});
+
+Deno.test("enrollmentTokenModel: rebind skips a machine with no binding", async () => {
+  const { harness, current } = await rotatedWithBindings([
+    { machineId: "machine-1", enrolledAt: BASE_ENROLLED_AT },
+  ]);
+
+  const result = await rebindTo(harness, ["machine-gone"], current);
+
+  assertEquals(result.dataHandles, []);
+});
+
+Deno.test("enrollmentTokenModel: rebind ignores a mint that is neither current nor the predecessor", async () => {
+  const { harness, first } = await rotatedWithBindings([
+    { machineId: "machine-1", enrolledAt: BASE_ENROLLED_AT },
+  ]);
+  const retired = new Date(Date.parse(first) - 1_000).toISOString();
+  harness.store.get("token-main")!.bindings = [
+    { machineId: "machine-1", enrolledAt: BASE_ENROLLED_AT, mint: retired },
+  ];
+  const unknown = new Date(Date.parse(first) - 500).toISOString();
+
+  const result = await rebindTo(harness, ["machine-1"], unknown);
+
+  assertEquals(result.dataHandles, []);
+  assertEquals(tokenBindings(harness.store)[0].mint, retired);
+});
+
+Deno.test("enrollmentTokenModel: rebind never moves a binding back to an older mint", async () => {
+  const { harness, first, current } = await rotatedWithBindings([
+    { machineId: "machine-1", enrolledAt: BASE_ENROLLED_AT },
+  ]);
+  await rebindTo(harness, ["machine-1"], current);
+
+  const result = await rebindTo(harness, ["machine-1"], first);
+
+  assertEquals(result.dataHandles, []);
+  assertEquals(tokenBindings(harness.store)[0].mint, current);
+});
+
+Deno.test("enrollmentTokenModel: rebind writes nothing for a binding already on the current mint", async () => {
+  const harness = await mintToken();
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: harness.plaintext, machineId: "machine-1" },
+    harness.context,
+  );
+  const current = harness.store.get("token-main")!.createdAt as string;
+
+  const result = await rebindTo(harness, ["machine-1"], current);
+
+  assertEquals(result.dataHandles, []);
+  assertEquals(tokenBindings(harness.store)[0].mint, undefined);
+});
+
+Deno.test("enrollmentTokenModel: rebind leaves a revoked or expired token alone", async () => {
+  for (const end of ["revoked", "expired"] as const) {
+    const { harness, first, current } = await rotatedWithBindings([
+      { machineId: "machine-1", enrolledAt: BASE_ENROLLED_AT },
+    ]);
+    if (end === "revoked") {
+      await enrollmentTokenModel.methods.revoke.execute({}, harness.context);
+    } else {
+      harness.store.get("token-main")!.expiresAt = new Date(Date.now() - 1_000)
+        .toISOString();
+    }
+
+    const result = await rebindTo(harness, ["machine-1"], current);
+
+    assertEquals(result.dataHandles, [], end);
+    assertEquals(tokenBindings(harness.store)[0].mint, first, end);
+  }
 });
 
 Deno.test("enrollmentTokenModel: expiring the predecessor's mint clears it and keeps the token live", async () => {
