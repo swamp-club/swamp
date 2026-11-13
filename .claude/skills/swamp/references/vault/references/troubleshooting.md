@@ -231,12 +231,9 @@ on `access:*` plus `write` on the name.
    swamp vault list-keys dev-secrets --json
    ```
 
-3. Test retrieval manually (won't display value, but confirms access):
+3. Confirm the secret is readable without revealing its value:
    ```bash
-   # Use the swamp/lets-get-sensitive behavior to test
-   swamp behavior create swamp/lets-get-sensitive test-get --json
-   # Edit to set operation: get, vaultName, secretKey
-   swamp behavior run test-get get
+   swamp vault inspect dev-secrets API_KEY --json
    ```
 
 ## Vault Name Validation

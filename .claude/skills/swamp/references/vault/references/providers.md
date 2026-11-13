@@ -20,7 +20,7 @@
 ### Configuration Options
 
 ```yaml
-# .swamp/vault/local_encryption/{id}.yaml
+# vaults/local_encryption/{id}.yaml
 id: 8f4e2d1c-9a3b-4c5d-ae7f-0a1b2c3d4e5f
 name: dev-vault
 type: local_encryption
@@ -68,135 +68,101 @@ On Unix, an SSH key readable beyond its owner (wider than `0600`) is refused. A
 }
 ```
 
-## AWS Secrets Manager Provider (`aws-sm`)
+## Extension Providers
 
-### Configuration Options
-
-```yaml
-# .swamp/vault/aws-sm/{id}.yaml
-id: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
-name: prod-vault
-type: aws-sm
-config:
-  region: us-east-1 # Resolved at creation time from --region or AWS_REGION
-createdAt: 2025-02-01T...
-```
-
-### Creation
+AWS Secrets Manager, Azure Key Vault and 1Password are extension vault types
+from the trusted `@swamp` collective; they install on first use. Each type's
+README is the authoritative reference:
 
 ```bash
-# Explicit region
-swamp vault create aws-sm prod-vault --region us-east-1 --json
+swamp extension info @swamp/aws-sm --json
+```
 
-# From environment variable (logs a message confirming env var usage)
-export AWS_REGION=us-east-1
-swamp vault create aws-sm prod-vault --json
+Create them with `--config` JSON. The config is stored in plain text in
+`vaults/<type>/{id}.yaml`, so it never holds credentials.
+
+## AWS Secrets Manager (`@swamp/aws-sm`)
+
+### Configuration
+
+| Key       | Required | Description                                                       |
+| --------- | -------- | ----------------------------------------------------------------- |
+| `region`  | Yes      | AWS region holding the secrets, e.g. `us-east-1`                  |
+| `profile` | No       | Named profile from `~/.aws/config`; overrides env-var credentials |
+
+```bash
+swamp vault create @swamp/aws-sm prod-vault \
+  --config '{"region": "us-east-1"}' --json
 ```
 
 ### Authentication
 
-AWS credentials are obtained from the default credential chain:
+Without `profile`, the default AWS credential chain:
 
 1. Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 2. Shared credentials file: `~/.aws/credentials`
-3. IAM roles (EC2, ECS, Lambda)
-4. Web identity tokens (EKS)
+3. IAM role attached to the instance or task
 
 ### Secret Naming
 
-Secrets in AWS Secrets Manager are named:
+Secret keys map directly to Secrets Manager secret names, including path-style
+names such as `myapp/production/db-password`.
 
-- Without prefix: `{secret-key}`
-- With prefix: `{secret_prefix}{secret-key}`
+## Azure Key Vault (`@swamp/azure-kv`)
 
-### Auto-Registration
+### Configuration
 
-If AWS credentials and region are detected in the environment
-(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`), swamp
-automatically registers a default `aws-sm` vault.
-
-## Azure Key Vault Provider (`azure-kv`)
-
-### Configuration Options
-
-```yaml
-# .swamp/vault/azure-kv/{id}.yaml
-id: 4d5e6f7a-8b9c-4d0e-1f2a-3b4c5d6e7f8a
-name: azure-secrets
-type: azure-kv
-config:
-  vault_url: https://myvault.vault.azure.net/ # Resolved at creation time
-  secret_prefix: swamp/ # Optional: prefix for all secret names
-createdAt: 2025-02-01T...
-```
-
-### Creation
+| Key             | Required | Description                                                   |
+| --------------- | -------- | ------------------------------------------------------------- |
+| `vault_url`     | Yes      | Full vault URL, e.g. `https://my-vault.vault.azure.net`       |
+| `secret_prefix` | No       | Prefix for every secret name, to share one vault across repos |
 
 ```bash
-# Explicit vault URL
-swamp vault create azure-kv azure-secrets --vault-url https://myvault.vault.azure.net/ --json
-
-# From environment variable (logs a message confirming env var usage)
-export AZURE_KEYVAULT_URL=https://myvault.vault.azure.net/
-swamp vault create azure-kv azure-secrets --json
+swamp vault create @swamp/azure-kv azure-secrets \
+  --config '{"vault_url": "https://my-vault.vault.azure.net"}' --json
 ```
 
 ### Authentication
 
-Uses `DefaultAzureCredential` from the Azure SDK, which tries (in order):
+Uses `DefaultAzureCredential`:
 
-1. Environment variables: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+1. Environment variables: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
    `AZURE_CLIENT_SECRET`
-2. Workload Identity (Azure-hosted workloads)
-3. Managed Identity (Azure VMs, App Service, etc.)
-4. Azure CLI credentials (`az login`)
-5. Azure PowerShell credentials
-6. Azure Developer CLI credentials
+2. Azure CLI credentials (`az login`)
+3. Managed Identity attached to the VM or container
 
 ### Secret Naming
 
 Azure Key Vault secret names only allow alphanumeric characters and hyphens.
-Forward slashes and underscores in swamp secret names are automatically
-converted to hyphens when stored.
+Forward slashes and underscores in swamp secret names are converted to hyphens
+when stored.
 
 - Without prefix: `{secret-key}` (with `/` and `_` replaced by `-`)
 - With prefix: `{secret_prefix}{secret-key}` (same replacement applied)
 
-## 1Password Provider (`1password`)
+## 1Password (`@swamp/1password`)
 
-### Configuration Options
+### Configuration
 
-```yaml
-# .swamp/vault/1password/{id}.yaml
-id: 6f7a8b9c-0d1e-4f2a-3b4c-5d6e7f8a9b0c
-name: op-secrets
-type: 1password
-config:
-  op_vault: my-vault # 1Password vault name (required)
-  op_account: my-team # Account shorthand for multi-account setups (optional)
-createdAt: 2025-02-01T...
-```
-
-### Creation
+| Key                             | Required | Description                                              |
+| ------------------------------- | -------- | -------------------------------------------------------- |
+| `op_vault`                      | Yes      | 1Password vault name                                     |
+| `op_account`                    | No       | Account shorthand or UUID, for multi-account setups      |
+| `op_service_account_token_file` | No       | Absolute path to a file holding a service account token  |
+| `read_retry_attempts`           | No       | Read attempts when a just-created item is not yet listed |
+| `read_retry_seconds`            | No       | Window for those read retries                            |
 
 ```bash
-# Explicit vault name
-swamp vault create 1password op-secrets --op-vault "my-vault" --json
-
-# With account shorthand
-swamp vault create 1password op-secrets --op-vault "my-vault" --op-account "my-team" --json
-
-# From environment variables
-export OP_VAULT=my-vault
-export OP_ACCOUNT=my-team
-swamp vault create 1password op-secrets --json
+swamp vault create @swamp/1password op-secrets \
+  --config '{"op_vault": "my-vault", "op_account": "my-team"}' --json
 ```
 
 ### Authentication
 
-Requires the 1Password CLI (`op`). Authenticates via (in order):
+Requires the 1Password CLI (`op`) in `PATH`, authenticated by one of:
 
-1. Service account token: `OP_SERVICE_ACCOUNT_TOKEN`
+1. Service account token: `OP_SERVICE_ACCOUNT_TOKEN`, or
+   `op_service_account_token_file` in the config
 2. Desktop app biometric unlock (enable CLI integration in 1Password settings)
 3. 1Password Connect Server: `OP_CONNECT_HOST` and `OP_CONNECT_TOKEN`
 
