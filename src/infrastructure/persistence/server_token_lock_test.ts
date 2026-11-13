@@ -211,17 +211,17 @@ function definitions(
     definition: { id: e.id, name: e.name },
     type: { normalized: e.type },
   });
+  const ofType = (type: { normalized: string }) =>
+    entries.filter((e) => e.type === type.normalized);
   return {
-    findByNameGlobal: (name: string) => {
-      const found = entries.find((e) => e.name === name);
-      return Promise.resolve(found ? result(found) : null);
+    findByName: (type: { normalized: string }, name: string) => {
+      const found = ofType(type).find((e) => e.name === name);
+      return Promise.resolve(found ? result(found).definition : null);
     },
-    findByIdCached: (id: string) => {
-      const found = entries.find((e) => e.id === id);
-      return Promise.resolve(found ? result(found) : undefined);
+    findById: (type: { normalized: string }, id: string) => {
+      const found = ofType(type).find((e) => e.id === id);
+      return Promise.resolve(found ? result(found).definition : null);
     },
-    findById: () => Promise.resolve(null),
-    findByIdGlobal: () => Promise.resolve(null),
   } as unknown as DefinitionRepository;
 }
 
@@ -243,4 +243,13 @@ Deno.test("serverTokenLockName: an identifier that names no server token is retu
   assertEquals(await serverTokenLockName(repo, otherId), otherId);
   const unknownId = crypto.randomUUID();
   assertEquals(await serverTokenLockName(repo, unknownId), unknownId);
+});
+
+Deno.test("serverTokenLockName: a server token's id resolves to its name even when another type's definition is named with that id", async () => {
+  const id = crypto.randomUUID();
+  const repo = definitions([
+    { id, name: "prod", type: SERVER_TOKEN_MODEL_TYPE.normalized },
+    { id: crypto.randomUUID(), name: id, type: "swamp/enrollment-token" },
+  ]);
+  assertEquals(await serverTokenLockName(repo, id), "prod");
 });
