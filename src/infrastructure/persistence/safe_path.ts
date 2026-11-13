@@ -91,6 +91,83 @@ export async function assertSafePath(
   }
 }
 
+export interface EscapingLink {
+  /** absolute; the path itself when no component reports as a link */
+  link: string;
+  target: string;
+}
+
+/**
+ * each link below the boundary is followed explicitly, because resolveRealPath
+ * reads a dangling link as a missing path and copyFile would create its target;
+ * a Windows junction may not report as a link, so assertSafePath backs it up
+ */
+export async function findEscapingLink(
+  path: string,
+  boundary: string,
+): Promise<EscapingLink | undefined> {
+  const lexicalPath = resolve(path);
+  const lexicalBoundary = resolve(boundary);
+  const realBoundary = await resolveRealPath(boundary);
+  if (lexicalPath.startsWith(lexicalBoundary + SEPARATOR)) {
+    const components: string[] = [];
+    for (let p = lexicalPath; p !== lexicalBoundary; p = dirname(p)) {
+      components.push(p);
+    }
+    for (const component of components.reverse()) {
+      let isLink: boolean;
+      try {
+        isLink = (await Deno.lstat(component)).isSymlink;
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) break;
+        throw error;
+      }
+      if (!isLink) continue;
+      const target = await linkTarget(component);
+      if (!isSameOrUnder(target, realBoundary)) {
+        return { link: component, target };
+      }
+    }
+  }
+  try {
+    await assertSafePath(path, boundary);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof PathTraversalError)) throw error;
+    return { link: lexicalPath, target: error.resolvedTarget };
+  }
+}
+
+const MAX_LINK_HOPS = 40;
+
+async function linkTarget(link: string): Promise<string> {
+  let current = link;
+  for (let hop = 0; hop < MAX_LINK_HOPS; hop++) {
+    try {
+      return await Deno.realPath(current);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = (await Deno.lstat(current)).isSymlink;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    if (!isLink) return await resolveRealPath(current);
+    // the kernel resolves a relative target against the link's real parent
+    current = resolve(
+      await Deno.realPath(dirname(current)),
+      await Deno.readLink(current),
+    );
+  }
+  throw new Deno.errors.FilesystemLoop(`Too many levels of links: ${link}`);
+}
+
+function isSameOrUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(root + SEPARATOR);
+}
+
 /**
  * lexical check that rejects absolute paths, null bytes and .. before any
  * filesystem I/O; use it on untrusted paths from committed lockfiles

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { stubInstallExtension } from "./install_test_helpers.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join, relative } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { RemoveExtensionService } from "./remove_extension_service.ts";
@@ -1682,6 +1682,127 @@ Deno.test(
         } finally {
           await Deno.remove(outside);
         }
+      },
+    );
+  },
+);
+
+async function withOutsideDir(fn: (outside: string) => Promise<void>) {
+  const outside = await Deno.makeTempDir({ prefix: "swamp_resvc_outside_" });
+  try {
+    await fn(outside);
+  } finally {
+    await Deno.remove(outside, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test(
+  "RemoveExtensionService.execute: refuses tracked files under a skill dir that links outside the repo, changing nothing",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        await withOutsideDir(async (outside) => {
+          const extName = `@test/escape-${crypto.randomUUID()}`;
+          await ensureDir(join(outside, "scripts"));
+          await Deno.writeTextFile(join(outside, "SKILL.md"), "mine");
+          await Deno.writeTextFile(join(outside, "scripts", "x.sh"), "mine");
+          await ensureDir(join(repoDir, ".claude", "skills"));
+          const link = join(repoDir, ".claude", "skills", "ext");
+          await Deno.symlink(outside, link, { type: "dir" });
+          await lockfileRepository.writeEntry(extName, "1.0.0", [
+            relative(repoDir, join(link, "SKILL.md")),
+            relative(repoDir, join(link, "scripts", "x.sh")),
+          ]);
+
+          const error = await assertRejects(
+            () =>
+              new RemoveExtensionService({
+                repository,
+                lockfileRepository,
+                repoDir,
+              }).execute(extName),
+            UserError,
+          );
+
+          assertStringIncludes(error.message, ".claude/skills/ext resolves");
+          assertStringIncludes(error.message, "Nothing was removed");
+          assertEquals(
+            await Deno.readTextFile(join(outside, "SKILL.md")),
+            "mine",
+          );
+          assertEquals(
+            await Deno.readTextFile(join(outside, "scripts", "x.sh")),
+            "mine",
+          );
+          assertEquals((await Deno.lstat(link)).isSymlink, true);
+          assertEquals(lockfileRepository.getEntry(extName)?.version, "1.0.0");
+        });
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: refuses tracked files under a skills root that links outside the repo",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        await withOutsideDir(async (outside) => {
+          const extName = `@test/escape-${crypto.randomUUID()}`;
+          await ensureDir(join(outside, "ext"));
+          await Deno.writeTextFile(join(outside, "ext", "SKILL.md"), "mine");
+          await ensureDir(join(repoDir, ".claude"));
+          const link = join(repoDir, ".claude", "skills");
+          await Deno.symlink(outside, link, { type: "dir" });
+          await lockfileRepository.writeEntry(extName, "1.0.0", [
+            relative(repoDir, join(link, "ext")),
+          ]);
+
+          await assertRejects(
+            () =>
+              new RemoveExtensionService({
+                repository,
+                lockfileRepository,
+                repoDir,
+              }).execute(extName),
+            UserError,
+            ".claude/skills resolves",
+          );
+          assertEquals(
+            await Deno.readTextFile(join(outside, "ext", "SKILL.md")),
+            "mine",
+          );
+          assertEquals(lockfileRepository.getEntry(extName)?.version, "1.0.0");
+        });
+      },
+    );
+  },
+);
+
+Deno.test(
+  "RemoveExtensionService.execute: prune leaves an in-repo symlinked skill dir whose target it emptied",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const extName = `@test/inrepo-${crypto.randomUUID()}`;
+        const target = join(repoDir, "shared", "foo");
+        await ensureDir(target);
+        await Deno.writeTextFile(join(target, "SKILL.md"), "ext");
+        await ensureDir(join(repoDir, ".claude", "skills"));
+        const link = join(repoDir, ".claude", "skills", "foo");
+        await Deno.symlink(target, link, { type: "dir" });
+        await lockfileRepository.writeEntry(extName, "1.0.0", [
+          relative(repoDir, join(link, "SKILL.md")),
+        ]);
+
+        await new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute(extName);
+
+        assertEquals(await exists(join(target, "SKILL.md")), false);
+        assertEquals((await Deno.lstat(link)).isSymlink, true);
       },
     );
   },

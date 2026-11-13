@@ -2555,3 +2555,36 @@ Deno.test("extensionInstall: leaves a managed lockfile written on Windows as it 
     assertEquals(await Deno.readTextFile(lockfilePath), written);
   });
 });
+
+Deno.test(
+  "sweepLegacyPaths: leaves a legacy path under a link that leaves the repo and reports it",
+  async () => {
+    const rootDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const repoDir = join(rootDir, "repo");
+      const outside = join(rootDir, "outside");
+      await ensureDir(join(repoDir, "extensions"));
+      await ensureDir(outside);
+      await Deno.writeTextFile(join(outside, "gen1.ts"), "// mine");
+      const link = join(repoDir, "extensions", "models");
+      await Deno.symlink(outside, link, { type: "dir" });
+
+      const reported: string[] = [];
+      await sweepLegacyPaths(
+        ["extensions/models/gen1.ts"],
+        repoDir,
+        undefined,
+        (file, escape) => reported.push(`${file} ${escape.link}`),
+      );
+
+      assertEquals(
+        await Deno.readTextFile(join(outside, "gen1.ts")),
+        "// mine",
+      );
+      assertEquals((await Deno.lstat(link)).isSymlink, true);
+      assertEquals(reported, [`extensions/models/gen1.ts ${link}`]);
+    } finally {
+      await Deno.remove(rootDir, { recursive: true });
+    }
+  },
+);

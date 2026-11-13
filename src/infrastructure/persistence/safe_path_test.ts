@@ -23,6 +23,7 @@ import { errorPaths } from "../../domain/errors.ts";
 import {
   assertContainedPath,
   assertSafePath,
+  findEscapingLink,
   isSinglePathSegment,
   PathTraversalError,
 } from "./safe_path.ts";
@@ -314,4 +315,138 @@ Deno.test("PathTraversalError: marks its path, target and boundary (swamp-club#2
     "/etc/final report",
     "/repo",
   ]);
+});
+
+async function withEscapeFixture(
+  fn: (repo: string, outside: string) => Promise<void>,
+): Promise<void> {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp-escape-" });
+  try {
+    const repo = join(tmpDir, "repo");
+    const outside = join(tmpDir, "outside");
+    await Deno.mkdir(join(repo, ".claude", "skills"), { recursive: true });
+    await Deno.mkdir(outside, { recursive: true });
+    await fn(await Deno.realPath(repo), await Deno.realPath(outside));
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
+}
+
+Deno.test("findEscapingLink: names a symlinked parent that leaves the boundary", async () => {
+  await withEscapeFixture(async (repo, outside) => {
+    const link = join(repo, ".claude", "skills", "ext");
+    await Deno.symlink(outside, link, { type: "dir" });
+    assertEquals(
+      await findEscapingLink(join(link, "scripts", "x.sh"), repo),
+      { link, target: outside },
+    );
+  });
+});
+
+Deno.test("findEscapingLink: names a symlinked leaf that leaves the boundary", async () => {
+  await withEscapeFixture(async (repo, outside) => {
+    const target = join(outside, "SKILL.md");
+    await Deno.writeTextFile(target, "mine");
+    const dir = join(repo, ".claude", "skills", "ext");
+    await Deno.mkdir(dir);
+    const link = join(dir, "SKILL.md");
+    await Deno.symlink(target, link, { type: "file" });
+    assertEquals(await findEscapingLink(link, repo), { link, target });
+  });
+});
+
+Deno.test("findEscapingLink: names a dangling link whose target would be outside", async () => {
+  await withEscapeFixture(async (repo, outside) => {
+    const link = join(repo, ".claude", "skills", "ext");
+    await Deno.symlink(join(outside, "missing"), link, { type: "dir" });
+    assertEquals(
+      (await findEscapingLink(join(link, "SKILL.md"), repo))?.link,
+      link,
+    );
+  });
+});
+
+Deno.test("findEscapingLink: allows a link that resolves inside the boundary", async () => {
+  await withEscapeFixture(async (repo) => {
+    const shared = join(repo, "shared");
+    await Deno.mkdir(shared);
+    const link = join(repo, ".claude", "skills", "ext");
+    await Deno.symlink(shared, link, { type: "dir" });
+    assertEquals(
+      await findEscapingLink(join(link, "SKILL.md"), repo),
+      undefined,
+    );
+  });
+});
+
+Deno.test("findEscapingLink: allows a path whose tail does not exist yet", async () => {
+  await withEscapeFixture(async (repo) => {
+    assertEquals(
+      await findEscapingLink(
+        join(repo, ".claude", "skills", "new", "scripts", "x.sh"),
+        repo,
+      ),
+      undefined,
+    );
+  });
+});
+
+Deno.test("findEscapingLink: a boundary reached through a symlinked spelling still contains its paths", async () => {
+  await withEscapeFixture(async (repo) => {
+    const alias = join(dirname(repo), "alias");
+    await Deno.symlink(repo, alias, { type: "dir" });
+    assertEquals(
+      await findEscapingLink(join(alias, ".claude", "skills", "x"), alias),
+      undefined,
+    );
+    assertEquals(
+      await findEscapingLink(join(repo, ".claude", "skills", "x"), alias),
+      undefined,
+    );
+  });
+});
+
+Deno.test("findEscapingLink: names a dangling leaf link whose target would be created outside", async () => {
+  await withEscapeFixture(async (repo, outside) => {
+    const dir = join(repo, ".claude", "skills", "ext");
+    await Deno.mkdir(dir);
+    const link = join(dir, "SKILL.md");
+    await Deno.symlink(join(outside, "new.md"), link, { type: "file" });
+    assertEquals(await findEscapingLink(link, repo), {
+      link,
+      target: join(outside, "new.md"),
+    });
+  });
+});
+
+Deno.test("findEscapingLink: follows a chain of in-boundary links to an outside target", async () => {
+  await withEscapeFixture(async (repo, outside) => {
+    const hop = join(repo, "hop");
+    await Deno.symlink(join(outside, "missing"), hop, { type: "dir" });
+    const link = join(repo, ".claude", "skills", "ext");
+    await Deno.symlink(hop, link, { type: "dir" });
+    assertEquals(await findEscapingLink(join(link, "SKILL.md"), repo), {
+      link,
+      target: join(outside, "missing"),
+    });
+  });
+});
+
+Deno.test("findEscapingLink: resolves a relative dangling link against its real parent, not the path it was reached by", async () => {
+  await withEscapeFixture(async (repo) => {
+    await Deno.remove(join(repo, ".claude", "skills"));
+    await Deno.mkdir(join(repo, "s", "foo"), { recursive: true });
+    await Deno.symlink(join("..", "s"), join(repo, ".claude", "skills"), {
+      type: "dir",
+    });
+    const realLink = join(repo, "s", "foo", "SKILL.md");
+    await Deno.symlink(join("..", "..", "..", "escape", "new.md"), realLink, {
+      type: "file",
+    });
+    const reached = join(repo, ".claude", "skills", "foo", "SKILL.md");
+    assertEquals(await findEscapingLink(reached, repo), {
+      link: reached,
+      target: join(dirname(repo), "escape", "new.md"),
+    });
+  });
 });

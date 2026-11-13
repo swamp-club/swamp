@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -27,7 +27,11 @@ import {
   readManifestDependenciesAt,
   readManifestIdentityAt,
 } from "../../infrastructure/persistence/local_manifest_reader.ts";
-import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
+import {
+  assertContainedPath,
+  type EscapingLink,
+  findEscapingLink,
+} from "../../infrastructure/persistence/safe_path.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -248,6 +252,12 @@ export async function* extensionInstall(
               originalFiles,
               deps.repoDir,
               deps.skillsDirsRelative,
+              (file, escape) => {
+                if (installCtx.logger) {
+                  installCtx.logger
+                    .warn`Left ${file} in place: ${escape.link} resolves to ${escape.target}, outside the repository`;
+                }
+              },
             );
             entries.push({ name, version, status: "migrated" });
             migrated++;
@@ -361,6 +371,7 @@ export async function sweepLegacyPaths(
   originalFiles: string[],
   repoDir: string,
   skillsDirsRelative?: string[],
+  onEscaping?: (file: string, escape: EscapingLink) => void,
 ): Promise<void> {
   for (const file of originalFiles) {
     assertContainedPath(file, repoDir);
@@ -371,6 +382,11 @@ export async function sweepLegacyPaths(
       continue;
     }
     const absolutePath = join(repoDir, file);
+    const escape = await findEscapingLink(dirname(absolutePath), repoDir);
+    if (escape) {
+      onEscaping?.(file, escape);
+      continue;
+    }
     try {
       await Deno.remove(absolutePath, { recursive: true });
     } catch (error) {

@@ -36,6 +36,7 @@ import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_c
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { PathTraversalError } from "../infrastructure/persistence/safe_path.ts";
+import { SkillPathOutsideRepoError } from "../libswamp/extensions/pull.ts";
 import { canonicalizePath } from "../infrastructure/persistence/canonicalize_path.ts";
 import {
   SWAMP_SUBDIRS,
@@ -2040,5 +2041,46 @@ Deno.test("auto_resolver_adapters: install reads and fills the archive cache", a
     assertEquals(puts, [checksum]);
   } finally {
     await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("auto_resolver_adapters: a skill dir linking outside the repo is refused, never retried with force", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const outside = await Deno.makeTempDir({ prefix: "swamp_test_outside_" });
+  try {
+    const id = crypto.randomUUID().slice(0, 8);
+    const name = `@t/escape-${id}`;
+    const skill = `skill-${id}`;
+    const version = "2026.01.01.1";
+    const lockfilePath = await seedLockfile(repoDir, {});
+    const archive = await packExtension(name, version, [], skill);
+    await Deno.writeTextFile(join(outside, "SKILL.md"), "mine");
+    const skillsRoot = swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills);
+    await ensureDir(skillsRoot);
+    await Deno.symlink(outside, join(skillsRoot, skill), { type: "dir" });
+
+    let downloads = 0;
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: (n) =>
+        Promise.resolve({ name: n, description: "", latestVersion: version }),
+      downloadArchive: () => {
+        downloads++;
+        return Promise.resolve(archive);
+      },
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir,
+      denoRuntime: stubDenoRuntime,
+    });
+    await assertRejects(
+      () => adapter.install(name, registryRecord(name, version)),
+      SkillPathOutsideRepoError,
+    );
+
+    assertEquals(downloads, 1);
+    assertEquals(await Deno.readTextFile(join(outside, "SKILL.md")), "mine");
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    await Deno.remove(outside, { recursive: true }).catch(() => {});
   }
 });

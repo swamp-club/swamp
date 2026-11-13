@@ -20,6 +20,8 @@
 import { dirname, join, resolve } from "@std/path";
 import {
   assertContainedPath,
+  type EscapingLink,
+  findEscapingLink,
   PathTraversalError,
 } from "../../infrastructure/persistence/safe_path.ts";
 import { tombstoneAll } from "../../domain/extensions/extension.ts";
@@ -37,7 +39,7 @@ import {
   assertNoBlockingJournal,
   recoverPulledExtensionStagingLocked,
 } from "./recover_staging.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { inManagedLockfileTransaction } from "./managed_lockfile_transaction.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
@@ -153,13 +155,21 @@ export class RemoveExtensionService {
     // repo would otherwise fail mid-delete, after the catalog and lockfile had
     // forgotten the extension.
     const uncontained: string[] = [];
+    const linked: Array<{ path: string; escape: EscapingLink }> = [];
     for (const filePath of trackedFiles) {
       try {
         assertContainedPath(filePath, this.repoDir);
       } catch (error) {
         if (!(error instanceof PathTraversalError)) throw error;
         uncontained.push(filePath);
+        continue;
       }
+      // the parent only: a tracked path that is itself a link is unlinked below
+      const escape = await findEscapingLink(
+        dirname(join(this.repoDir, filePath)),
+        this.repoDir,
+      );
+      if (escape) linked.push({ path: filePath, escape });
     }
     if (uncontained.length > 0) {
       throw new UserError(
@@ -168,6 +178,21 @@ export class RemoveExtensionService {
           `${uncontained[0]}). Nothing was removed. Delete those paths ` +
           `from the extension's "files" list, then retry ` +
           `\`swamp extension rm ${name}\`.`,
+      );
+    }
+    if (linked.length > 0) {
+      const [first] = linked;
+      const link = lockfileRelative(this.repoDir, first.escape.link);
+      throw markErrorPaths(
+        new UserError(
+          `Extension ${name} lists ${linked.length} path(s) under a link that ` +
+            `leaves the repository (first: ${first.path}; ${link} resolves to ` +
+            `${first.escape.target}). Nothing was removed. Replace ${link} ` +
+            `with a real directory, or delete those paths from the ` +
+            `extension's "files" list in upstream_extensions.json, then retry ` +
+            `\`swamp extension rm ${name}\`.`,
+        ),
+        [first.path, link, first.escape.target],
       );
     }
 
@@ -299,6 +324,8 @@ async function pruneEmptyDirs(
     let current = resolve(dir);
     while (current.length > resolvedStop.length && current !== resolvedStop) {
       try {
+        // readDir follows a link, so an empty target would unlink the user's link
+        if ((await Deno.lstat(current)).isSymlink) break;
         const entries: Deno.DirEntry[] = [];
         for await (const entry of Deno.readDir(current)) {
           entries.push(entry);
