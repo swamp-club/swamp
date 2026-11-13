@@ -85,7 +85,10 @@ interface Fixture {
   ctx: ConnectionContext;
 }
 
-async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
+async function withFixture(
+  fn: (f: Fixture) => Promise<void>,
+  options: { graceWindowMs?: number } = {},
+): Promise<void> {
   const repoDir = await Deno.makeTempDir({
     prefix: "swamp-worker-token-rotate-",
   });
@@ -115,7 +118,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
     repoDir,
     repoContext,
     capabilityService: { registerHandlers: () => {} },
-    graceWindowMs: 60_000,
+    graceWindowMs: options.graceWindowMs ?? 60_000,
     readTokenSecret: async (vaultName, secretKey) =>
       await (await VaultService.fromRepository(repoDir)).get(
         vaultName,
@@ -201,6 +204,13 @@ function connectWorker(
   gateway: WorkerGateway,
   rotation?: { credential: WorkerCredential; tokenFile?: string },
 ): RpcChannel {
+  return connectDroppableWorker(gateway, rotation).channel;
+}
+
+function connectDroppableWorker(
+  gateway: WorkerGateway,
+  rotation?: { credential: WorkerCredential; tokenFile?: string },
+): { channel: RpcChannel; drop: () => void } {
   const workerChannel: RpcChannel = new RpcChannel({
     send: (data) => void Promise.resolve().then(() => attached.feed(data)),
   });
@@ -214,7 +224,13 @@ function connectWorker(
   if (rotation !== undefined) {
     registerTokenRotationHandler({ channel: workerChannel, ...rotation });
   }
-  return workerChannel;
+  return {
+    channel: workerChannel,
+    drop: () => {
+      attached.closed();
+      workerChannel.close("control socket closed");
+    },
+  };
 }
 
 function enroll(
@@ -272,6 +288,61 @@ Deno.test("worker token rotate through serve hands the worker its successor, whi
     assertEquals(f.gateway.boundTokens(), [after]);
     assertEquals(f.gateway.worker("w-rot")?.connected, true);
   });
+});
+
+Deno.test("worker token rotate counts a machine that saved an earlier rotation and left as able to enroll, not retired", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-left", { maxEnrollments: 2 });
+    const tokenFile = join(f.repoDir, "worker-token");
+    await Deno.writeTextFile(tokenFile, `${original}\n`);
+    const credential: WorkerCredential = { token: original };
+    const worker = connectDroppableWorker(f.gateway, { credential, tokenFile });
+    await enroll(worker.channel, original);
+
+    const first = await rotateThroughServe(f, "w-left");
+    assertEquals(first.rotated.map((r) => r.persisted), [true]);
+    const afterFirst = (await f.gateway.readTokenRecords()).get("w-left");
+    assertEquals(afterFirst?.bindings.map((b) => b.mint), [
+      afterFirst?.createdAt,
+    ]);
+
+    worker.drop();
+    await waitFor(
+      () => f.gateway.workers().length === 0,
+      "the stopped worker left the pool",
+    );
+    const second = await rotateThroughServe(f, "w-left");
+
+    assertEquals(second.unconnectedBindings, 1);
+    assertEquals(second.retiredBindings, 0);
+    await enroll(
+      connectWorker(f.gateway),
+      (await Deno.readTextFile(tokenFile)).trim(),
+    );
+    assertEquals(f.gateway.workers().length, 1);
+  }, { graceWindowMs: 20 });
+});
+
+Deno.test("worker token rotate counts a machine that took an earlier rotation in memory only and left as retired", async () => {
+  await withFixture(async (f) => {
+    const original = await mintToken(f, "w-mem", { maxEnrollments: 2 });
+    const credential: WorkerCredential = { token: original };
+    const worker = connectDroppableWorker(f.gateway, { credential });
+    await enroll(worker.channel, original);
+
+    const first = await rotateThroughServe(f, "w-mem");
+    assertEquals(first.rotated.map((r) => r.persisted), [false]);
+
+    worker.drop();
+    await waitFor(
+      () => f.gateway.workers().length === 0,
+      "the stopped worker left the pool",
+    );
+    const second = await rotateThroughServe(f, "w-mem");
+
+    assertEquals(second.unconnectedBindings, 0);
+    assertEquals(second.retiredBindings, 1);
+  }, { graceWindowMs: 20 });
 });
 
 Deno.test("worker token rotate leaves an unrotated fleet member on the old token until it lapses, without expiring the token", async () => {

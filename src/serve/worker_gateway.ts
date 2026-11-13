@@ -571,7 +571,7 @@ export class WorkerGateway {
     if (readTokenSecret === undefined) {
       throw new Error("This orchestrator cannot read enrollment token secrets");
     }
-    const { record, targets } = await this.#recordTransition(
+    const { definitionId, record, targets } = await this.#recordTransition(
       "rotate_token",
       async () => {
         const definitionId = await this.#requireTokenDefinition(tokenName);
@@ -602,7 +602,7 @@ export class WorkerGateway {
             ),
             channel: entry.channel,
           }));
-        return { record, targets };
+        return { definitionId, record, targets };
       },
     );
 
@@ -629,6 +629,7 @@ export class WorkerGateway {
     const acknowledged: {
       name: string;
       instanceUuid: string;
+      machineId: string | undefined;
       persisted: boolean;
     }[] = [];
     await Promise.all(targets.map(async (target) => {
@@ -653,6 +654,7 @@ export class WorkerGateway {
         acknowledged.push({
           name: target.name,
           instanceUuid: target.instanceUuid,
+          machineId: target.machineId,
           persisted: result?.persisted === true,
         });
       } catch (error) {
@@ -734,6 +736,35 @@ export class WorkerGateway {
             }
           }
         }
+        // the binding follows the machine's token file, which a persisted
+        // acknowledgement wrote whatever became of its pool entry since
+        const saved = new Set(
+          acknowledged.flatMap((ack) =>
+            ack.persisted && ack.machineId !== undefined ? [ack.machineId] : []
+          ),
+        );
+        if (saved.size > 0) {
+          try {
+            await this.#runModelMethod({
+              typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
+              definitionName: tokenName,
+              methodName: "rebind",
+              inputs: {
+                machineIds: [...saved],
+                mint: record.createdAt,
+              },
+              expectedDefinitionId: definitionId,
+            });
+          } catch (error) {
+            logger.warn(
+              "Failed to record the rotated mint on the bindings of {token}: {error}",
+              {
+                token: tokenName,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+          }
+        }
         return restamped;
       },
     );
@@ -758,8 +789,7 @@ export class WorkerGateway {
         }
         : entry
     );
-    // a binding's mint moves only on redeem, so a member that took the
-    // successor still carries the old one; only machines with no member count
+    // a member is classified from its pool entry; only machines with no member count
     const members = new Set(targets.map((t) => t.machineId));
     const unattended = record.bindings.filter((b) => !members.has(b.machineId));
     return {

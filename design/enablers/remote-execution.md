@@ -684,8 +684,9 @@ keeps the old mint as `predecessor` (`createdAt`, `expiresAt` clamped to the
 successor's, `secretKey`). `redeem` accepts either secret until the
 predecessor's deadline and records in the machine's binding which mint it
 redeemed (`mint`), so the gateway binds a reconnect to that mint and arms its
-deadline. A second rotation drops the oldest mint and deletes its key; a
-re-mint after revoke or expiry deletes the rotated keys the old record named.
+deadline; a rotation the machine saved over its own connection moves it too.
+A second rotation drops the oldest mint and deletes its key; a re-mint after
+revoke or expiry deletes the rotated keys the old record named.
 Only a missing predecessor key reads as a mismatch; any other vault failure
 reaches the worker as a retryable `redeem_failed` with a generic message, since
 an unrecognised redeem failure can name serve's own paths. Retryable is bounded
@@ -700,11 +701,15 @@ transition tail; then, off the tail and with a timeout per worker,
 still has the same `instanceUuid` moves forward to the new mint and deadline
 (never back, when a later rotation already moved it), and every worker left on
 the predecessor has its deadline pulled in to the predecessor's clamped
-`expiresAt`. A worker started with `--token-file` writes the successor back to
-that file atomically, keeping the file's mode and writing through a symlink to
-its target; when the file cannot be written (a read-only Kubernetes Secret
-mount) or the token came inline, it holds the successor in memory only and
-reports it unpersisted. A worker refuses a successor under another name.
+`expiresAt`. In the same phase the `rebind` method moves the binding of every
+machine that wrote the successor to its token file, even one that left or
+reconnected since, because the binding names the mint the machine holds on
+disk; a binding never moves back. A worker started with `--token-file` writes
+the successor back to that file atomically, keeping the file's mode and
+writing through a symlink to its target; when the file cannot be written (a
+read-only Kubernetes Secret mount) or the token came inline, it holds the
+successor in memory only and reports it unpersisted. A worker refuses a
+successor under another name.
 Workers without the capability, that refuse, time out or are offline stay on
 the predecessor until it lapses; the command reports them and prints the new
 credential once for them. A worker still on a mint older than the predecessor

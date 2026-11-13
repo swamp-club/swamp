@@ -58,7 +58,7 @@ export type MaxEnrollments = z.infer<typeof MaxEnrollmentsSchema>;
 const BindingSchema = z.object({
   machineId: z.string(),
   enrolledAt: z.string().datetime(),
-  /** createdAt of the mint this machine last redeemed; absent means the current one */
+  /** createdAt of the mint this machine last redeemed or saved from a rotation; absent means the current one */
   mint: z.string().datetime().optional(),
 });
 
@@ -443,6 +443,56 @@ async function pruneBindings(
   return { dataHandles: [handle] };
 }
 
+const RebindArgsSchema = z.object({
+  machineIds: z.array(z.string().min(1)).min(1).describe(
+    "Machine IDs that saved this mint from a rotation",
+  ),
+  mint: z.string().datetime().describe(
+    "createdAt of the mint the machines now hold",
+  ),
+});
+
+/**
+ * moves bindings forward to a mint the machines saved from a rotation over
+ * their own connection; a mint no longer current or predecessor is a no-op
+ */
+async function rebind(
+  args: z.infer<typeof RebindArgsSchema>,
+  context: MethodContext,
+): Promise<MethodResult> {
+  const token = await readToken(context);
+  if (
+    token.state === "revoked" || token.state === "expired" ||
+    isExpired(token, Date.now())
+  ) {
+    return { dataHandles: [] };
+  }
+  const isLive = sameInstant(args.mint, token.createdAt) ||
+    (token.predecessor !== undefined &&
+      sameInstant(args.mint, token.predecessor.createdAt));
+  if (!isLive) return { dataHandles: [] };
+  const mintMs = Date.parse(args.mint);
+  const idSet = new Set(args.machineIds);
+  let moved = false;
+  const bindings = token.bindings.map((b) => {
+    if (
+      !idSet.has(b.machineId) ||
+      Date.parse(b.mint ?? token.createdAt) >= mintMs
+    ) {
+      return b;
+    }
+    moved = true;
+    return { ...b, mint: args.mint };
+  });
+  if (!moved) return { dataHandles: [] };
+  const handle = await context.writeResource!(
+    "token",
+    TOKEN_DATA_NAME,
+    { ...token, bindings },
+  );
+  return { dataHandles: [handle] };
+}
+
 const EmptyArgsSchema = z.object({});
 
 const RotateArgsSchema = z.object({
@@ -640,6 +690,13 @@ export const enrollmentTokenModel: ModelDefinition = defineModel({
       kind: "action",
       arguments: ExpireArgsSchema,
       execute: expire,
+    },
+    rebind: {
+      description:
+        "Move bindings forward to a mint the machines saved from a rotation",
+      kind: "action",
+      arguments: RebindArgsSchema,
+      execute: rebind,
     },
     prune_bindings: {
       description:
