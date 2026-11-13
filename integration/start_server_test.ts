@@ -266,6 +266,40 @@ async function withStartServer(
   }
 }
 
+async function withStartServerBeside(
+  heldHost: string,
+  serving: Pick<StartServerOptions, "listenHost">,
+  fn: (env: Env) => Promise<void>,
+  startPage?: boolean,
+): Promise<void> {
+  const attempts = 5;
+  for (let attempt = 1;; attempt++) {
+    // Holding the unserved address on the server's port keeps parallel tests
+    // off it, and a server that binds it or 0.0.0.0 cannot start.
+    using held = Deno.listen({ hostname: heldHost, port: 0 });
+    const port = (held.addr as Deno.NetAddr).port;
+    let started = false;
+    try {
+      await withStartServer(
+        async (env) => {
+          started = true;
+          assertEquals(env.handle.port, port);
+          await fn(env);
+        },
+        LONG,
+        undefined,
+        startPage,
+        { ...serving, port },
+      );
+      return;
+    } catch (error) {
+      const lostRace = !started && error instanceof UserError &&
+        error.message.includes(`Port ${port} `);
+      if (!lostRace || attempt === attempts) throw error;
+    }
+  }
+}
+
 async function rawStatus(
   port: number,
   headers: string[],
@@ -2049,7 +2083,9 @@ Deno.test({
     "startStartServer: on one interface address, serves that address and opens the socket from it with no other trusted names",
   ignore: routableV4 === undefined,
   fn: async () => {
-    await withStartServer(
+    await withStartServerBeside(
+      "127.0.0.1",
+      { listenHost: ListenHost.parse(routableV4) },
       async ({ handle }) => {
         const port = handle.port;
         const authority = `${routableV4}:${port}`;
@@ -2073,17 +2109,8 @@ Deno.test({
           ),
           101,
         );
-        await assertRejects(() =>
-          rawStatus(port, [
-            "GET /dashboard/start HTTP/1.1",
-            `Host: 127.0.0.1:${port}`,
-          ])
-        );
       },
-      LONG,
-      undefined,
       true,
-      { listenHost: ListenHost.parse(routableV4) },
     );
   },
 });
@@ -2093,17 +2120,7 @@ Deno.test({
     "startStartServer: by default listens on loopback only, so the machine's own address is not served",
   ignore: routableV4 === undefined,
   fn: async () => {
-    await withStartServer(async ({ handle }) => {
-      await assertRejects(() =>
-        rawStatus(
-          handle.port,
-          [
-            "GET /dashboard/start HTTP/1.1",
-            `Host: ${routableV4}:${handle.port}`,
-          ],
-          routableV4,
-        )
-      );
+    await withStartServerBeside(routableV4!, {}, async ({ handle }) => {
       assertEquals(
         await rawStatus(handle.port, [
           "GET /dashboard/start HTTP/1.1",
