@@ -492,6 +492,8 @@ interface RequestSpec {
   readonly serverWaitMs?: number;
   /** a read refused as not the leader or behind is thrown at once */
   readonly noRefusalRetry?: boolean;
+  /** this request's own response base, in place of the client's */
+  readonly responseBaseMs?: number;
 }
 
 function isTimeout(error: unknown): boolean {
@@ -1027,13 +1029,19 @@ export class ServeDatastoreClient {
     leaseId: string,
     ttlMs: number,
     signal: AbortSignal,
-    options: { readonly holdMs?: number } = {},
+    options: {
+      readonly holdMs?: number;
+      readonly responseBaseMs?: number;
+    } = {},
   ): Promise<LockLease | undefined> {
     return await this.#exchange(
       {
         method: "PUT",
         path: `locks/${encodeURIComponent(leaseId)}`,
         headers: { "content-type": "application/json" },
+        ...(options.responseBaseMs === undefined
+          ? {}
+          : { responseBaseMs: options.responseBaseMs }),
         // `holdMs` makes the lease explicit, or changes its hold
         body: JSON.stringify(
           options.holdMs === undefined
@@ -1443,9 +1451,10 @@ export class ServeDatastoreClient {
         ]);
         const bodyBytes = bodyBytesOf(spec.body);
         const responseMs = serveResponseDeadlineMs(
-          answersWithoutConfirm(spec.method, spec.path)
-            ? this.#responseBaseMs
-            : this.#commitResponseBaseMs,
+          spec.responseBaseMs ??
+            (answersWithoutConfirm(spec.method, spec.path)
+              ? this.#responseBaseMs
+              : this.#commitResponseBaseMs),
           this.#timeoutMs,
           bodyBytes,
           spec.serverWaitMs ?? 0,

@@ -59,6 +59,14 @@ import {
   settleServeLeaseUnreleased,
 } from "./serve_lease_registry.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
+import { WRITER_LEASE_CLOCK_SKEW_MS } from "../../domain/datastore_v3/writer_lease.ts";
+import {
+  EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+  type ExplicitLease,
+  noteUnrenewedLeases,
+  resetUnrenewedLeasesForTesting,
+} from "./explicit_model_leases.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 
 await initializeLogging({});
@@ -107,12 +115,16 @@ class FakeServe implements ServeLockClient {
     return Promise.resolve({ acquired: true, lease: this.#lease(ttlMs) });
   }
 
+  readonly renewDeadlines: (number | undefined)[] = [];
+
   renewLock(
     leaseId: string,
     ttlMs: number,
     signal?: AbortSignal,
+    options: { readonly responseBaseMs?: number } = {},
   ): Promise<LockLease | undefined> {
     this.calls.push(`renew ${leaseId}`);
+    this.renewDeadlines.push(options.responseBaseMs);
     if (this.hangingRenewals > 0) {
       this.hangingRenewals--;
       return new Promise((_, reject) => {
@@ -635,6 +647,163 @@ Deno.test("ServeLock: offline, the work under an adopted lease is cancelled when
   assertInstanceOf(lost, ServeLeaseLapsedError);
   assertEquals(heldServeLeaseOf(ROOT, PARTITION), undefined);
   await subject.release();
+});
+
+const NOW = Date.parse("2026-10-30T10:00:00.000Z");
+
+function recordedLease(expiresInMs: number): ExplicitLease {
+  return {
+    leaseId: crypto.randomUUID(),
+    lockKey: KEY,
+    fence: 21,
+    holdMs: 3_600_000,
+    expiresAt: new Date(NOW + expiresInMs).toISOString(),
+    floor: [],
+  };
+}
+
+/** a lock on a recorded lease whose first contact may take it offline */
+function offlineCapableLock(serve: FakeServe, explicit: ExplicitLease) {
+  const wentOffline: ServeUnreachableError[] = [];
+  const subject = lock(serve, {
+    root: ROOT,
+    now: () => NOW,
+    adopt: () => Promise.resolve(explicit),
+    localLock: () => localLock([]),
+    onUnreachable: (error) => {
+      wentOffline.push(error);
+      return true;
+    },
+    offline: () =>
+      wentOffline.length === 0
+        ? undefined
+        : { skewMs: WRITER_LEASE_CLOCK_SKEW_MS },
+  });
+  return { subject, wentOffline };
+}
+
+Deno.test("ServeLock: a re-adoption refused as not the leader in flight goes offline while the recorded lease is live", async () => {
+  resetServeLeasesForTesting();
+  resetUnrenewedLeasesForTesting();
+  const serve = new FakeServe();
+  serve.renewal = new ServeNotLeaderError(undefined, false, true);
+  const explicit = recordedLease(3_600_000);
+  const { subject, wentOffline } = offlineCapableLock(serve, explicit);
+  await subject.acquire();
+  try {
+    assertEquals(serve.calls, [`renew ${explicit.leaseId}`]);
+    assertEquals(wentOffline.length, 1);
+    assertEquals(subject.lease?.leaseId, explicit.leaseId);
+    assertEquals(heldServeLeaseOf(ROOT, PARTITION)?.fence, 21);
+  } finally {
+    await subject.release();
+  }
+});
+
+Deno.test("ServeLock: a re-adoption refused as not the leader in flight is thrown once the recorded lease is within the skew of its end", async () => {
+  resetServeLeasesForTesting();
+  resetUnrenewedLeasesForTesting();
+  const serve = new FakeServe();
+  serve.renewal = new ServeNotLeaderError(undefined, false, true);
+  const { subject, wentOffline } = offlineCapableLock(
+    serve,
+    recordedLease(WRITER_LEASE_CLOCK_SKEW_MS - 1_000),
+  );
+  const error = await assertRejects(
+    () => subject.acquire(),
+    ServeNotLeaderError,
+  );
+  assert(error.inFlight);
+  assertEquals(wentOffline, []);
+  assertEquals(subject.lease, undefined);
+});
+
+for (
+  const [label, failure] of [
+    [
+      "unreachable",
+      new ServeUnreachableError(
+        "https://serve.test",
+        "never",
+        new Error("refused"),
+      ),
+    ],
+    ["not the leader", new ServeNotLeaderError(undefined)],
+    [
+      "not the leader in flight",
+      new ServeNotLeaderError(undefined, false, true),
+    ],
+    [
+      "timed out",
+      new DOMException("signal timed out", "TimeoutError"),
+    ],
+  ] as const
+) {
+  Deno.test(`ServeLock: a live recorded lease the bind could not renew (${label}) goes offline without asking serve again`, async () => {
+    resetServeLeasesForTesting();
+    resetUnrenewedLeasesForTesting();
+    const serve = new FakeServe();
+    const explicit = recordedLease(3_600_000);
+    noteUnrenewedLeases(ROOT, serve.baseUrl, [{
+      lease: explicit,
+      error: failure,
+    }]);
+    const { subject, wentOffline } = offlineCapableLock(serve, explicit);
+    await subject.acquire();
+    try {
+      assertEquals(serve.calls, []);
+      assertEquals(wentOffline.length, 1);
+      assertEquals(subject.lease?.leaseId, explicit.leaseId);
+    } finally {
+      await subject.release();
+    }
+  });
+}
+
+Deno.test("ServeLock: a recorded lease the bind could not renew that is within the skew of its end asks serve as before", async () => {
+  resetServeLeasesForTesting();
+  resetUnrenewedLeasesForTesting();
+  const serve = new FakeServe();
+  const explicit = recordedLease(WRITER_LEASE_CLOCK_SKEW_MS - 1_000);
+  noteUnrenewedLeases(ROOT, serve.baseUrl, [{
+    lease: explicit,
+    error: new ServeUnreachableError(serve.baseUrl, "never", new Error("x")),
+  }]);
+  const { subject, wentOffline } = offlineCapableLock(serve, explicit);
+  await subject.acquire();
+  try {
+    assertEquals(serve.calls, [`renew ${explicit.leaseId}`]);
+    assertEquals(wentOffline, []);
+  } finally {
+    await subject.release();
+  }
+});
+
+Deno.test("ServeLock: a recorded lease is re-adopted with the short renewal deadline; a command's own lease renews with the client's", async () => {
+  resetServeLeasesForTesting();
+  resetUnrenewedLeasesForTesting();
+  const adopting = new FakeServe();
+  const explicit = recordedLease(3_600_000);
+  const adopted = lock(adopting, {
+    root: ROOT,
+    now: () => NOW,
+    adopt: () => Promise.resolve(explicit),
+    localLock: () => localLock([]),
+  });
+  await adopted.acquire();
+  await adopted.release();
+  assertEquals(adopting.renewDeadlines, [EXPLICIT_LEASE_RENEWAL_RESPONSE_MS]);
+  assertEquals(EXPLICIT_LEASE_RENEWAL_RESPONSE_MS, 3_000);
+
+  const own = new FakeServe();
+  const subject = lock(own, { ttlMs: 30 });
+  await subject.acquire();
+  try {
+    await waitFor(() => own.renewDeadlines.length >= 1, "a renewal");
+    assertEquals(own.renewDeadlines[0], undefined);
+  } finally {
+    await subject.release();
+  }
 });
 
 Deno.test("ServeLock.acquire: an abort between asks stops the wait with its reason and holds no lease", async () => {

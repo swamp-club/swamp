@@ -1825,6 +1825,49 @@ Deno.test("ServeDatastoreClient: a reply serve never starts ends at the response
   }
 });
 
+Deno.test("ServeDatastoreClient.renewLock: a renewal's own response base replaces the client's for it alone; a commit keeps the commit base", async () => {
+  const { client } = clientWith(neverAnswered, {
+    responseBaseMs: 400,
+    commitResponseBaseMs: 200,
+    timeoutSignal: neverTimesOut,
+  });
+  // the deadline also allows for the upload, a few ms for these bodies
+  const deadlineOf = (error: ServeUnreachableError) =>
+    Math.floor(
+      Number(String(error.cause).match(/within (\d+) ms/)?.[1]) / 100,
+    ) * 100;
+  const leaseId = crypto.randomUUID();
+  try {
+    const short = await assertRejects(
+      () =>
+        client.renewLock(leaseId, 60_000, signal(), {
+          holdMs: 60_000,
+          responseBaseMs: 20,
+        }),
+      ServeUnreachableError,
+    );
+    assertEquals(deadlineOf(short), 0);
+    const plain = await assertRejects(
+      () => client.renewLock(leaseId, 60_000, signal()),
+      ServeUnreachableError,
+    );
+    assertEquals(deadlineOf(plain), 400);
+    const commit = await assertRejects(
+      () =>
+        client.postCommit(
+          modelPartition(),
+          { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+          [],
+          signal(),
+        ),
+      ServeUnreachableError,
+    );
+    assertEquals(deadlineOf(commit), 200);
+  } finally {
+    client.close();
+  }
+});
+
 Deno.test("ServeDatastoreClient: a read serve never answers is sent once more on a fresh connection", async () => {
   let made = 0;
   const used: unknown[] = [];

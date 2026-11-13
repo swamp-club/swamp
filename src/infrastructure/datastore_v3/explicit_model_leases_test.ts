@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   acquireExplicitLease,
+  EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
   EXPLICIT_LEASES_FILE,
   type ExplicitLease,
   ExplicitLeaseHeldError,
@@ -103,12 +104,15 @@ class FakeServe {
     return Promise.resolve({ acquired: true, lease });
   }
 
+  readonly renewDeadlines: (number | undefined)[] = [];
+
   renewLock(
     leaseId: string,
     ttlMs: number,
     _signal?: AbortSignal,
-    options: { holdMs?: number } = {},
+    options: { holdMs?: number; responseBaseMs?: number } = {},
   ): Promise<LockLease | undefined> {
+    this.renewDeadlines.push(options.responseBaseMs);
     this.calls.push(
       `renew ${leaseId} ttl=${ttlMs}` +
         (options.holdMs === undefined ? "" : ` hold=${options.holdMs}`),
@@ -266,13 +270,30 @@ Deno.test("renewExplicitLeases: renews each lease for its hold, forgets one serv
 
     serve.renewal = new Error("serve unreachable");
     result = await renewExplicitLeases(root, serve, SIGNAL);
-    assertEquals(result, { renewed: [], ended: [] });
+    assertEquals(result.renewed, []);
+    assertEquals(result.ended, []);
+    assertEquals(result.unrenewed.map((left) => left.lease.leaseId), [
+      kept.leaseId,
+    ]);
     assertEquals((await readExplicitLeases(root)).length, 1);
 
     serve.renewal = "ended";
     result = await renewExplicitLeases(root, serve, SIGNAL);
     assertEquals(result.ended.map((lease) => lease.leaseId), [kept.leaseId]);
     assertEquals(await readExplicitLeases(root), []);
+  });
+});
+
+Deno.test("renewExplicitLeases: renews with the short renewal deadline, while taking or extending a lease keeps the client's", async () => {
+  await withRoot(async (root) => {
+    const serve = new FakeServe();
+    await acquireExplicitLease(root, serve, KEY, 60_000, 5_000, SIGNAL);
+    assertEquals(serve.renewDeadlines, [undefined]);
+    await renewExplicitLeases(root, serve, SIGNAL);
+    assertEquals(serve.renewDeadlines, [
+      undefined,
+      EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+    ]);
   });
 });
 
@@ -306,7 +327,12 @@ Deno.test("renewExplicitLeases: with serve unreachable, tries once and keeps eve
       new Error("fetch failed"),
     );
     const result = await renewExplicitLeases(root, serve, SIGNAL);
-    assertEquals(result, { renewed: [], ended: [] });
+    assertEquals(result.renewed, []);
+    assertEquals(result.ended, []);
+    // every lease left unrenewed carries the failure, for its lock to go
+    // offline on without asking serve again
+    assertEquals(result.unrenewed.length, 2);
+    assert(result.unrenewed.every((left) => left.error === serve.renewal));
     assertEquals(
       serve.calls.filter((call) => call.startsWith("renew")).length,
       1,

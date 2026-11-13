@@ -107,6 +107,7 @@ Deno.test("registerCheckoutLeases: a renewed lease is confirmed, one not renewed
     registerCheckoutLeases(root, leases, {
       renewed: [renewed],
       ended: [ended],
+      unrenewed: [{ lease: failed, error: new Error("refused") }],
     });
     assertEquals(heldServeLeaseOf(root, partitions[0]), {
       leaseId: "lease-0",

@@ -23,6 +23,7 @@ import {
   resetCommandLandedForTesting,
 } from "../src/infrastructure/datastore_v3/command_landed.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { walk } from "@std/fs";
 import { join, SEPARATOR } from "@std/path";
 import {
@@ -1198,7 +1199,8 @@ Deno.test({
           setServeOfflineNoticeWriter(undefined);
         }
         assert(performance.now() - started < 15_000);
-        assert(refused.length > 0);
+        // the bind's renewal only: the lock goes offline on its refusal
+        assertEquals(leaseRenewals(refused), 1);
         assertEquals(await servedVersions(serve), [1]);
         const offline = notices.find((notice) =>
           notice.notice === "datastore_offline"
@@ -1269,9 +1271,15 @@ Deno.test({
   },
 });
 
+/** counts the lease renewals (PUT locks/{id}) the proxy saw */
+function leaseRenewals(refused: readonly string[]): number {
+  return refused.filter((call) => /^PUT .*\/locks\/[^/]+$/.test(call))
+    .length;
+}
+
 Deno.test({
   name:
-    "serve offline, no leader: under an explicit lease a refusal that may have been forwarded in flight never takes the checkout offline",
+    "serve offline, no leader: under an explicit lease a renewal refused as forwarded in flight takes the checkout offline after one renewal, and the command queues",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1286,20 +1294,152 @@ Deno.test({
           env,
           (ctx) => saveOut(ctx, serve, "online"),
         );
-        await takeLease(scratch, serve, alice, env);
-        refuseWritesWithoutLeader(proxy, { inFlight: true });
-        const error = await assertRejects(
-          () =>
-            lockedSave(scratch, serve, alice, env, "in flight", {
+        const lease = await takeLease(scratch, serve, alice, env);
+        const refused = refuseWritesWithoutLeader(proxy, { inFlight: true });
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        try {
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "in flight", {
               deferred: true,
             }),
-          ServeNotLeaderError,
+            2,
+          );
+        } finally {
+          setServeOfflineNoticeWriter(undefined);
+        }
+        // the bind's renewal only: the lock goes offline on its refusal
+        assertEquals(leaseRenewals(refused), 1);
+        assert(
+          notices.some((notice) =>
+            notice.notice === "datastore_offline_queued"
+          ),
         );
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, no leader: without a lease a lock refused as forwarded in flight is not queued and fails with exit 75",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        refuseWritesWithoutLeader(proxy, { inFlight: true });
+        setServeReadRefusalBudgetForTesting(300);
+        let error: ServeNotLeaderError;
+        try {
+          error = await assertRejects(
+            () =>
+              lockedSave(scratch, serve, alice, env, "in flight", {
+                deferred: true,
+              }),
+            ServeNotLeaderError,
+          );
+        } finally {
+          setServeReadRefusalBudgetForTesting(undefined);
+        }
         assert(error.inFlight);
         assertEquals(exitCodeForError(error), 75);
         proxy.answer = undefined;
         await command(scratch, alice, env, () => Promise.resolve());
         assertEquals(await servedVersions(serve), [1]);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve offline, frozen leader: under an explicit lease a renewal serve never answers takes the checkout offline within 15 s after one renewal, and the command queues",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withScratch(async (scratch) => {
+      const serve = await scratch.serve({ grants: TEAM });
+      const alice = await scratch.client("a");
+      await withProxy(serve, async (proxy) => {
+        const env = serveEnv(proxy, "alice-token");
+        await command(
+          scratch,
+          alice,
+          env,
+          (ctx) => saveOut(ctx, serve, "online"),
+        );
+        const lease = await takeLease(scratch, serve, alice, env);
+        // a leader stopped mid-reply: the renewal is accepted, never answered
+        const hung: string[] = [];
+        const unhang: Array<() => void> = [];
+        proxy.answer = (request) => {
+          const path = new URL(request.url).pathname;
+          if (request.method !== "PUT" || !/\/locks\/[^/]+$/.test(path)) {
+            return Promise.resolve(undefined);
+          }
+          hung.push(`${request.method} ${path}`);
+          return new Promise((resolve) =>
+            unhang.push(() => resolve(new Response(null, { status: 503 })))
+          );
+        };
+        const notices: ServeOfflineNotice[] = [];
+        setServeOfflineNoticeWriter((notice) => notices.push(notice));
+        let outcome:
+          | { readonly version: number }
+          | { readonly error: unknown }
+          | undefined;
+        const saving = lockedSave(scratch, serve, alice, env, "frozen", {
+          deferred: true,
+        }).then(
+          (version) => outcome = { version },
+          (error) => outcome = { error },
+        );
+        try {
+          await waitFor(
+            () => outcome !== undefined,
+            "the leased write to go offline and queue",
+            { timeoutMs: 15_000 },
+          );
+        } finally {
+          for (const release of unhang) release();
+          await saving;
+          setServeOfflineNoticeWriter(undefined);
+        }
+        assertEquals(outcome, { version: 2 });
+        assertEquals(leaseRenewals(hung), 1);
+        assert(
+          notices.some((notice) =>
+            notice.notice === "datastore_offline_queued"
+          ),
+        );
+        assertEquals(await servedVersions(serve), [1]);
+
+        proxy.answer = undefined;
+        await command(scratch, alice, env, () => Promise.resolve());
+        assertEquals(await servedVersions(serve), [1, 2]);
+        const fenced = (await serve.log()).filter((entry) =>
+          entry.keys.some((key) => /\/out\/2\//.test(key))
+        );
+        assert(fenced.every((entry) => entry.leaseFence === lease.fence));
       });
     });
   },

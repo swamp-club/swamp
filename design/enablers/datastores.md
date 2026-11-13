@@ -8371,6 +8371,20 @@ connection; nothing else is, and fails as `ServeUnreachableError` with
 command works offline under the lease and queues. Offline mode still begins
 only at a command's start.
 
+A reachable serve with no leader counts as unreachable for a command holding a
+live explicit lease (swamp-club#4679): a renewal of that lease at bind time or
+at the lock that serve refuses as not the leader, in flight or not, or that
+outlasts its 3 s reply deadline (`EXPLICIT_LEASE_RENEWAL_RESPONSE_MS`), puts
+the checkout offline once, with no second request, while the lease is live by
+serve's clock less the skew. A renewal that may have landed is harmless, unlike
+a commit, whose deadline is unchanged: a commit already in flight at a leader's
+loss ends within that deadline (about 16 s), and an offline-allowed write that
+starts after it queues within 15 s, the two-part bar the dogfood gate measures.
+A write queued offline is acknowledged locally (exit 0) and becomes visible
+through serve, to this checkout and every other, when the next writing command
+in this checkout flushes the outbox; until then only this checkout sees it, and
+with no later writing command it stays queued.
+
 A read that cannot reach serve uses the copy as it is and warns that it may be
 out of date; in json mode it says so as a `datastore_offline` notice on
 stderr, as a writing command does. A write never falls back to storage. An entry that may have

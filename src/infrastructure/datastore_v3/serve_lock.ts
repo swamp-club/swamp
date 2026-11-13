@@ -40,7 +40,11 @@ import type {
   LockLease,
   ServeDatastoreClient,
 } from "./serve_datastore_client.ts";
-import type { ExplicitLease } from "./explicit_model_leases.ts";
+import {
+  EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+  type ExplicitLease,
+  takeUnrenewedLease,
+} from "./explicit_model_leases.ts";
 import {
   dropServeLease,
   holdServeLease,
@@ -162,7 +166,7 @@ export class ServeLock implements DistributedLock {
   /** a lapse met while releasing: it fires if the hold outlives the release */
   #lapsedWhileReleasing: string | undefined;
   #localOnly = false;
-  /** the adoption a not-in-flight serve_not_leader refused, while still live */
+  /** the adoption a serve_not_leader refused, while still live */
   #adoptionRefused:
     | { readonly refusal: unknown; readonly offline: ServeUnreachableError }
     | undefined;
@@ -201,6 +205,7 @@ export class ServeLock implements DistributedLock {
       await this.#acquireOffline(offline);
       return;
     }
+    if (await this.#offlineUnrenewed()) return;
     try {
       await this.#acquireOnline(signal);
     } catch (error) {
@@ -218,6 +223,37 @@ export class ServeLock implements DistributedLock {
       if (now === undefined) throw error;
       await this.#acquireOffline(now);
     }
+  }
+
+  /**
+   * a live recorded lease the bind could not renew goes offline here, without
+   * asking serve a second time; true when it did
+   */
+  async #offlineUnrenewed(): Promise<boolean> {
+    const root = this.#options.root;
+    if (root === undefined || this.#options.adopt === undefined) return false;
+    const explicit = await this.#options.adopt();
+    if (explicit === undefined) return false;
+    const failed = takeUnrenewedLease(root, explicit.leaseId);
+    if (failed === undefined) return false;
+    const { baseUrl, error } = failed;
+    const unreachable = !this.#liveFor(explicit, baseUrl)
+      ? undefined
+      : error instanceof ServeUnreachableError
+      ? error
+      : error instanceof Error && error.name === "TimeoutError"
+      ? new ServeUnreachableError(baseUrl, "maybe", error)
+      : this.#noLeaderFor(explicit, baseUrl, error);
+    if (
+      unreachable === undefined ||
+      this.#options.onUnreachable?.(unreachable) !== true
+    ) {
+      return false;
+    }
+    const offline = this.#options.offline?.();
+    if (offline === undefined) return false;
+    await this.#acquireOffline(offline);
+    return true;
   }
 
   async #acquireOnline(signal: AbortSignal | undefined): Promise<void> {
@@ -340,11 +376,14 @@ export class ServeLock implements DistributedLock {
         explicit.leaseId,
         explicit.holdMs,
         hold.signal,
-        { holdMs: explicit.holdMs },
+        {
+          holdMs: explicit.holdMs,
+          responseBaseMs: EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+        },
       );
     } catch (error) {
       client.close?.();
-      const offline = this.#noLeaderFor(explicit, client, error);
+      const offline = this.#noLeaderFor(explicit, client.baseUrl, error);
       this.#adoptionRefused = offline === undefined
         ? undefined
         : { refusal: error, offline };
@@ -379,29 +418,34 @@ export class ServeLock implements DistributedLock {
   }
 
   /**
-   * a refusal that changed nothing, of a lease live by serve's clock less the
-   * skew, means no leader can take the write: it may go offline as if serve
-   * were unreachable
+   * a renewal refused as not the leader, of a lease live by serve's clock less
+   * the skew, may go offline as if serve were unreachable: one that may have
+   * run only extended the lease the offline write lands under
    */
   #noLeaderFor(
     explicit: ExplicitLease,
-    client: ServeLockClient,
+    baseUrl: string,
     error: unknown,
   ): ServeUnreachableError | undefined {
-    if (!(error instanceof ServeNotLeaderError) || error.inFlight) {
+    if (
+      !(error instanceof ServeNotLeaderError) ||
+      !this.#liveFor(explicit, baseUrl)
+    ) {
       return undefined;
     }
-    const offsetMs = serveClockOf(client.baseUrl)?.offsetMs ?? 0;
-    const remaining = Date.parse(explicit.expiresAt) - offsetMs -
-      WRITER_LEASE_CLOCK_SKEW_MS - this.#now();
-    if (!(remaining > 0)) return undefined;
     return new ServeUnreachableError(
-      client.baseUrl,
-      "never",
+      baseUrl,
+      error.inFlight ? "maybe" : "never",
       new Error(`serve has no leader right now: ${error.message}`, {
         cause: error,
       }),
     );
+  }
+
+  #liveFor(explicit: ExplicitLease, baseUrl: string): boolean {
+    const offsetMs = serveClockOf(baseUrl)?.offsetMs ?? 0;
+    return Date.parse(explicit.expiresAt) - offsetMs -
+        WRITER_LEASE_CLOCK_SKEW_MS - this.#now() > 0;
   }
 
   /**

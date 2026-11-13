@@ -69,7 +69,7 @@ found), see [references/version-check.md](references/version-check.md).
 | `datastore_v3_partitions_refused` (exit 1)         | Tier 2 → `refusals` did not land; check the data, then re-run     |
 | `datastore_v3_commit_lease_lost` / `_lease_lapsed` | Tier 2 → exit 75: rerun; exit 1: resume or recover the run        |
 | `datastore_v3_commit_may_land` (exit 1)            | Tier 2 → may have landed; check run and data, then resume/recover |
-| `serve_not_leader` (exit 75, or `inFlight: true`)  | Tier 2 → 75: rerun; in flight: may have run, check before re-run  |
+| `serve_not_leader` (exit 75 or 1, or `inFlight`)   | Tier 2 → 75: rerun; 1 or in flight: may have run, check first     |
 | `datastore_v3_offline_lease_required` (exit 75)    | Serve offline → take `behavior lease acquire --for` online first  |
 | `datastore_v3_offline_config_edit` (exit 75)       | Serve offline → edit again once serve is reachable                |
 | Offline work "saved in this checkout" (exit 0)     | Serve offline → next writing command reaching serve sends it      |

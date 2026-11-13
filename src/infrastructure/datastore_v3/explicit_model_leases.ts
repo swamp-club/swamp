@@ -42,6 +42,12 @@ const logger = getSwampLogger(["datastore", "v3", "lease"]);
 
 export const EXPLICIT_LEASES_FILE = "model_leases.json";
 
+/**
+ * how long a renewal of a recorded lease waits for serve to start its reply:
+ * a renewal that fails only sends the write offline, under the lease
+ */
+export const EXPLICIT_LEASE_RENEWAL_RESPONSE_MS = 3_000;
+
 export interface ExplicitLease {
   readonly leaseId: string;
   readonly lockKey: string;
@@ -235,9 +241,46 @@ export function explicitLeaseFrom(
   };
 }
 
+export interface UnrenewedLease {
+  readonly lease: ExplicitLease;
+  readonly error: unknown;
+}
+
 export interface ExplicitLeaseRenewal {
   readonly renewed: readonly ExplicitLease[];
   readonly ended: readonly ExplicitLease[];
+  readonly unrenewed: readonly UnrenewedLease[];
+}
+
+/** renewals the bind could not make, until a lock on the lease takes one */
+const unrenewedAtBind = new Map<
+  string,
+  { readonly baseUrl: string; readonly error: unknown }
+>();
+
+export function noteUnrenewedLeases(
+  root: string,
+  baseUrl: string,
+  unrenewed: readonly UnrenewedLease[],
+): void {
+  for (const { lease, error } of unrenewed) {
+    unrenewedAtBind.set(`${root}\0${lease.leaseId}`, { baseUrl, error });
+  }
+}
+
+/** the failed bind-time renewal of the lease, once */
+export function takeUnrenewedLease(
+  root: string,
+  leaseId: string,
+): { readonly baseUrl: string; readonly error: unknown } | undefined {
+  const key = `${root}\0${leaseId}`;
+  const failed = unrenewedAtBind.get(key);
+  unrenewedAtBind.delete(key);
+  return failed;
+}
+
+export function resetUnrenewedLeasesForTesting(): void {
+  unrenewedAtBind.clear();
 }
 
 /**
@@ -250,16 +293,20 @@ export async function renewExplicitLeases(
   signal: AbortSignal,
 ): Promise<ExplicitLeaseRenewal> {
   const leases = await readExplicitLeases(root);
-  if (leases.length === 0) return { renewed: [], ended: [] };
+  if (leases.length === 0) return { renewed: [], ended: [], unrenewed: [] };
   const renewed: ExplicitLease[] = [];
   const ended: ExplicitLease[] = [];
-  for (const lease of leases) {
+  const unrenewed: UnrenewedLease[] = [];
+  for (const [index, lease] of leases.entries()) {
     try {
       const reply = await client.renewLock(
         lease.leaseId,
         lease.holdMs,
         signal,
-        { holdMs: lease.holdMs },
+        {
+          holdMs: lease.holdMs,
+          responseBaseMs: EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
+        },
       );
       if (reply === undefined) {
         ended.push(lease);
@@ -273,8 +320,12 @@ export async function renewExplicitLeases(
       if (error instanceof ServeUnreachableError) {
         logger
           .info`Serve is unreachable, so this checkout's model leases were not renewed; each holds until its recorded end`;
+        for (const left of leases.slice(index)) {
+          unrenewed.push({ lease: left, error });
+        }
         break;
       }
+      unrenewed.push({ lease, error });
       logger
         .warn`Could not renew the model lease on ${lease.lockKey} at serve: ${error}`;
     }
@@ -303,7 +354,7 @@ export async function renewExplicitLeases(
     logger
       .warn`The model lease on ${lease.lockKey} has ended at serve; forgetting it`;
   }
-  return { renewed, ended };
+  return { renewed, ended, unrenewed };
 }
 
 export class ExplicitLeaseHeldError extends Error {

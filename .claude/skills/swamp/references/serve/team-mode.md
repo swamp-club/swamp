@@ -77,12 +77,13 @@ its commit feed carries the refresh (the previous token works until it expires).
   `serverAddress: <serve URL>`.
 - Log in once: `swamp auth server-login --server <serve URL>`. The checkout
   needs no storage credentials.
-- When serve is unreachable, the checkout works offline from its copy. The saved
-  work is sent by the next command that writes to the datastore once serve is
-  reachable; a command that only reads does not send it. A method that changes
-  things runs offline only under a lease taken while online: see the "Team Mode:
-  Leases at Serve" section of
-  [concurrency.md](../behavior/references/concurrency.md).
+- When serve is unreachable, or reachable but without a leader during a
+  takeover, the checkout works offline from its copy. The saved work is sent by
+  the next command that writes to the datastore once serve is reachable; a
+  command that only reads does not send it, and other checkouts do not see the
+  saved work until it is sent. A method that changes things runs offline only
+  under a lease taken while online: see the "Team Mode: Leases at Serve" section
+  of [concurrency.md](../behavior/references/concurrency.md).
 
 ## Tokens
 
