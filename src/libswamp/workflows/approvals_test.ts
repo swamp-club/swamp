@@ -91,6 +91,7 @@ function makeRun(overrides?: {
   approvalTimeout?: number;
   forEachTemplate?: string;
   initiatedBy?: string;
+  initiatedByUsername?: string;
 }): WorkflowRun {
   const stepStatus = overrides?.stepStatus ?? "waiting_approval";
   const startedAt = overrides?.startedAt ?? new Date();
@@ -103,6 +104,7 @@ function makeRun(overrides?: {
     inputs,
     instanceId: overrides?.instanceId,
     initiatedBy: overrides?.initiatedBy,
+    initiatedByUsername: overrides?.initiatedByUsername,
     parentRun: overrides?.parentRun
       ? { kind: "valid", ref: overrides.parentRun }
       : undefined,
@@ -251,6 +253,25 @@ Deno.test("workflowApprovals: names who started the run when the run recorded it
   const byRun = new Map(data.approvals.map((a) => [a.runId, a]));
   assertEquals(byRun.get("run-started")?.initiatedBy, "user:alice");
   assertEquals("initiatedBy" in byRun.get("run-unrecorded")!, false);
+});
+
+Deno.test("workflowApprovals: carries the initiator's username beside the id, only when recorded", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const named = makeRun({
+    id: "run-named",
+    initiatedBy: "user:0f3a-sub",
+    initiatedByUsername: "alice",
+  });
+  const unnamed = makeRun({ id: "run-unnamed", initiatedBy: "user:0f3a-sub" });
+  const deps = makeDeps(
+    [wf],
+    new Map([[WF_ID as string, [named, unnamed]]]),
+  );
+  const data = await completedData(deps);
+  const byRun = new Map(data.approvals.map((a) => [a.runId, a]));
+  assertEquals(byRun.get("run-named")?.initiatedBy, "user:0f3a-sub");
+  assertEquals(byRun.get("run-named")?.initiatedByUsername, "alice");
+  assertEquals("initiatedByUsername" in byRun.get("run-unnamed")!, false);
 });
 
 Deno.test("workflowApprovals: returns empty inputs when run has no inputs", async () => {

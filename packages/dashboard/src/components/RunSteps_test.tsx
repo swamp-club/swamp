@@ -98,3 +98,26 @@ Deno.test("StepList: a decision with no recorded client reads as before", () => 
   assertStringIncludes(note(approved()), "Approved by user:alice at ");
   assertStringIncludes(note(rejected()), "Rejected by user:alice at ");
 });
+
+Deno.test("StepList: a decision names who decided by the username serve recorded", () => {
+  const approvedText = note({
+    status: "approved",
+    approvedBy: "user:0f3a-sub",
+    approvedByUsername: "alice",
+    approvedAt: DECIDED_AT,
+    client: "integration:slackwater",
+  });
+  assertStringIncludes(
+    approvedText,
+    "Approved by user:alice via integration:slackwater at ",
+  );
+  assert(!approvedText.includes("0f3a-sub"));
+  const rejectedText = note({
+    status: "rejected",
+    rejectedBy: "user:0f3a-sub",
+    rejectedByUsername: "alice",
+    rejectedAt: DECIDED_AT,
+  });
+  assertStringIncludes(rejectedText, "Rejected by user:alice at ");
+  assert(!rejectedText.includes("0f3a-sub"));
+});

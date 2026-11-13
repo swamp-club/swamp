@@ -27,6 +27,8 @@ export interface ApprovalInfo {
   inputs?: Readonly<Record<string, unknown>>;
   /** Who started the run, as the run recorded it. */
   initiatedBy?: string;
+  /** The username serve knew for initiatedBy, when it knew one. */
+  initiatedByUsername?: string;
   /**
    * Whether this viewer holds `approve` on the gate's workflow. Absent from
    * a serve that does not say; serve decides on the request either way.

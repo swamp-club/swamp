@@ -914,3 +914,27 @@ Deno.test("workflowApprove: a caller naming no job decides the first waiting gat
     "approver",
   );
 });
+
+Deno.test("workflowApprove: records the decider's username serve gave, next to the id", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  await collect<WorkflowApproveEvent>(
+    workflowApprove(createLibSwampContext(), makeDeps(workflow, run), {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      decidedBy: "user:0f3a-sub",
+      decidedByUsername: "approver",
+    }),
+  );
+  const decision = run.getJob("main")!.getStep("gate")!.approvalDecision;
+  assertEquals(decision?.decidedBy, "user:0f3a-sub");
+  assertEquals(decision?.decidedByUsername, "approver");
+});
+
+Deno.test("workflowApprove: a decision without a username records no username key", async () => {
+  const workflow = makeWorkflow(["gate"]);
+  const run = suspendAtGates(workflow, ["gate"]);
+  await approve(makeDeps(workflow, run), "gate");
+  const decision = run.getJob("main")!.getStep("gate")!.approvalDecision!;
+  assertEquals("decidedByUsername" in decision, false);
+});

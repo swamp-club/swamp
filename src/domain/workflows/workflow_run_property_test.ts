@@ -686,6 +686,63 @@ Deno.test("StepRun gate timeout: it is the timeout of the latest wait, survives 
   );
 });
 
+Deno.test("WorkflowRun: the initiator and decider usernames survive repeated round-trips, and an absent one writes no key (property)", () => {
+  const optionalName = fc.option(fc.string({ minLength: 1 }), {
+    nil: undefined,
+  });
+  fc.assert(
+    fc.property(
+      optionalName,
+      optionalName,
+      fc.boolean(),
+      (initiatedByUsername, decidedByUsername, approved) => {
+        const run = WorkflowRun.fromData({
+          id: "33333333-4444-4555-8666-777777777778",
+          workflowId: "22222222-3333-4444-8555-666666666667",
+          workflowName: "gated",
+          status: "running",
+          tags: {},
+          initiatedBy: "user:0f3a-sub",
+          ...(initiatedByUsername === undefined ? {} : { initiatedByUsername }),
+          jobs: [{
+            jobName: "main",
+            status: "running",
+            steps: [{
+              stepName: "gate",
+              status: approved ? "succeeded" : "failed",
+              approvalDecision: {
+                approved,
+                decidedBy: "user:0f3a-sub",
+                ...(decidedByUsername === undefined
+                  ? {}
+                  : { decidedByUsername }),
+                decidedAt: "2026-11-13T00:00:00.000Z",
+              },
+            }],
+          }],
+        });
+        const once = run.toData();
+        const twice = WorkflowRun.fromData(once).toData();
+        for (const data of [once, twice]) {
+          assertEquals(data.initiatedByUsername, initiatedByUsername);
+          assertEquals(
+            "initiatedByUsername" in data,
+            initiatedByUsername !== undefined,
+          );
+          const decision = data.jobs[0].steps[0].approvalDecision!;
+          assertEquals(decision.decidedByUsername, decidedByUsername);
+          assertEquals(
+            "decidedByUsername" in decision,
+            decidedByUsername !== undefined,
+          );
+          assertEquals(data.initiatedBy, "user:0f3a-sub");
+          assertEquals(decision.decidedBy, "user:0f3a-sub");
+        }
+      },
+    ),
+  );
+});
+
 const LANE_STEPS = ["apply", "verify"];
 const LANE_WORKERS = ["w-a", "w-b", "w-c"];
 const LANE_NAMES = LANE_WORKERS.flatMap((worker) =>

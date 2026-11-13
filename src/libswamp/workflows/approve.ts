@@ -93,6 +93,8 @@ export interface WorkflowApproveInput extends GateTarget {
   reason?: string;
   runId?: string;
   decidedBy?: string;
+  /** serve-internal: the name serve knows for decidedBy; never set from a client */
+  decidedByUsername?: string;
   client?: string;
 }
 
@@ -202,6 +204,9 @@ async function approveClaimedRun(
     approved: true,
     reason: input.reason,
     decidedBy,
+    ...(input.decidedByUsername !== undefined
+      ? { decidedByUsername: input.decidedByUsername }
+      : {}),
     ...(input.client !== undefined ? { client: input.client } : {}),
     decidedAt: new Date().toISOString(),
   });

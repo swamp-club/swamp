@@ -492,3 +492,32 @@ Deno.test("workflowReject: a name in two jobs is refused when the gate must be u
   if (last?.kind === "error") assertEquals(last.error.code, "ambiguous_gate");
   assertEquals(run.status, "suspended");
 });
+
+Deno.test("workflowReject: records the decider's username serve gave, next to the id", async () => {
+  const { deps, targetRun } = makeCollidingDeps();
+  await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      decidedBy: "user:0f3a-sub",
+      decidedByUsername: "rejecter",
+    }),
+  );
+  const decision = targetRun.getJob("main")!.getStep("gate")!.approvalDecision;
+  assertEquals(decision?.approved, false);
+  assertEquals(decision?.decidedBy, "user:0f3a-sub");
+  assertEquals(decision?.decidedByUsername, "rejecter");
+});
+
+Deno.test("workflowReject: a decision without a username records no username key", async () => {
+  const { deps, targetRun } = makeCollidingDeps();
+  await collect<WorkflowRejectEvent>(
+    workflowReject(createLibSwampContext(), deps, {
+      workflowIdOrName: "gated",
+      stepName: "gate",
+      decidedBy: "user:0f3a-sub",
+    }),
+  );
+  const decision = targetRun.getJob("main")!.getStep("gate")!.approvalDecision!;
+  assertEquals("decidedByUsername" in decision, false);
+});

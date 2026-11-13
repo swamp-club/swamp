@@ -28,6 +28,7 @@ import {
 } from "../routes.ts";
 import { formatAbsoluteTime, formatDuration } from "../lib/format.ts";
 import { clientSuffix } from "../views/actor_label.ts";
+import { principalLabel } from "../../../../src/domain/access/principal.ts";
 import { stepArtifactLink } from "../views/artifact_links.ts";
 import type { DrawerItem } from "../views/run_item_param.ts";
 import { CodeBlock } from "./CodeBlock.tsx";
@@ -47,8 +48,10 @@ import {
 export interface ApprovalInfo {
   status: "approved" | "rejected" | "timed_out";
   approvedBy?: string;
+  approvedByUsername?: string;
   approvedAt?: string;
   rejectedBy?: string;
+  rejectedByUsername?: string;
   rejectedAt?: string;
   timeoutAt?: string;
   reason?: string;
@@ -344,6 +347,15 @@ export function StepRow({ step, ctx }: { step: StepRun; ctx: StepContext }) {
   );
 }
 
+function decider(
+  principal: string | undefined,
+  username: string | undefined,
+): string {
+  return principal === undefined
+    ? "unknown"
+    : principalLabel(principal, username);
+}
+
 function ApprovalNote({ approval }: { approval: ApprovalInfo }) {
   const tone = approval.status === "approved"
     ? "success"
@@ -354,13 +366,13 @@ function ApprovalNote({ approval }: { approval: ApprovalInfo }) {
   return (
     <div className={`rs-note rs-note-${tone}`}>
       {approval.status === "approved" &&
-        `Approved by ${approval.approvedBy ?? "unknown"}${
-          clientSuffix(approval.client)
-        }${at(approval.approvedAt)}`}
+        `Approved by ${
+          decider(approval.approvedBy, approval.approvedByUsername)
+        }${clientSuffix(approval.client)}${at(approval.approvedAt)}`}
       {approval.status === "rejected" &&
-        `Rejected by ${approval.rejectedBy ?? "unknown"}${
-          clientSuffix(approval.client)
-        }${at(approval.rejectedAt)}${
+        `Rejected by ${
+          decider(approval.rejectedBy, approval.rejectedByUsername)
+        }${clientSuffix(approval.client)}${at(approval.rejectedAt)}${
           approval.reason ? `: ${approval.reason}` : ""
         }`}
       {approval.status === "timed_out" &&

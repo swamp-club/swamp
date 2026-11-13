@@ -3258,6 +3258,7 @@ interface StepOptions {
   assertFailOnSeverity?: AssertSeverity;
   initiatedBy?: string;
   client?: string;
+  initiatedByUsername?: string;
   /**
    * `root.key` binding paths (e.g. `inputs.token`, `self.item`) whose values
    * came from resume-time inputs. Those are audited by key only and must
@@ -3544,6 +3545,7 @@ export class WorkflowExecutionService {
       assertFailOnSeverity?: AssertSeverity;
       initiatedBy?: string;
       client?: string;
+      initiatedByUsername?: string;
       startKey?: RunStartKeyData;
       /** an id the caller handed out before the run existed */
       runId?: string;
@@ -3887,6 +3889,7 @@ export class WorkflowExecutionService {
           options?.triggerSource,
           options?.client,
           await this.assignableRunId(workflow.id, options?.runId),
+          { initiatedByUsername: options?.initiatedByUsername },
         );
         if (options?.startKey) run.recordStartKey(options.startKey);
         this.startedRunIds.add(run.id);
@@ -4043,6 +4046,7 @@ export class WorkflowExecutionService {
         runtimeTags: options?.runtimeTags,
         initiatedBy: options?.initiatedBy,
         client: options?.client,
+        initiatedByUsername: options?.initiatedByUsername,
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
@@ -4997,6 +5001,7 @@ export class WorkflowExecutionService {
         runtimeTags: options?.runtimeTags,
         initiatedBy: existingRun.initiatedBy,
         client: existingRun.client,
+        initiatedByUsername: existingRun.initiatedByUsername,
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
@@ -8064,6 +8069,7 @@ export class WorkflowExecutionService {
       instanceId: options.instanceId,
       initiatedBy: options.initiatedBy,
       client: options.client,
+      initiatedByUsername: options.initiatedByUsername,
       signal: options.signal,
       secretRedactor: options.secretRedactor,
       sensitiveValues: options.sensitiveValues,

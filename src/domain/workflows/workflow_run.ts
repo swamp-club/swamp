@@ -83,6 +83,8 @@ export const ApprovalDecisionSchema = z.object({
   approved: z.boolean(),
   reason: z.string().optional(),
   decidedBy: z.string().optional(),
+  // display only: authorization reads decidedBy; only serve records it
+  decidedByUsername: z.string().optional(),
   client: z.string().optional(),
   decidedAt: z.string().datetime(),
 });
@@ -345,6 +347,8 @@ export const WorkflowRunSchema = z.object({
   // workflow on disk
   replayedEvaluatedCache: z.literal(true).optional(),
   initiatedBy: z.string().optional(),
+  // display only: authorization reads initiatedBy; only serve records it
+  initiatedByUsername: z.string().optional(),
   client: z.string().optional(),
   startKey: RunStartKeyDataSchema.optional(),
   instanceId: z.string().optional(),
@@ -1460,6 +1464,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   private _replayedEvaluatedCache = false;
   private _resumedAt: Date | undefined;
   private _startKey: RunStartKeyData | undefined;
+  private _initiatedByUsername: string | undefined;
 
   private constructor(
     readonly id: WorkflowRunId,
@@ -1613,6 +1618,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     triggerSource?: string,
     client?: string,
     id: string = crypto.randomUUID(),
+    options: { readonly initiatedByUsername?: string } = {},
   ): WorkflowRun {
     const jobs = workflow.jobs.map((job) =>
       JobRun.pending(
@@ -1621,7 +1627,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       )
     );
 
-    return new WorkflowRun(
+    const run = new WorkflowRun(
       createWorkflowRunId(id),
       workflow.id,
       workflow.name,
@@ -1651,6 +1657,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
       false,
       client,
     );
+    run._initiatedByUsername = options.initiatedByUsername;
+    return run;
   }
 
   static fromData(data: WorkflowRunInput): WorkflowRun {
@@ -1690,6 +1698,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     run._replayedEvaluatedCache = validated.replayedEvaluatedCache === true;
     if (validated.resumedAt) run._resumedAt = new Date(validated.resumedAt);
     run._startKey = validated.startKey;
+    run._initiatedByUsername = validated.initiatedByUsername;
     run._displayMaskedInputPaths = validated.displayMaskedInputPaths ?? [];
     if (validated.inputsProvenance) {
       run._inputsProvenance = ProvenanceMap.fromData(
@@ -1721,6 +1730,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get client(): string | undefined {
     return this._client;
+  }
+
+  get initiatedByUsername(): string | undefined {
+    return this._initiatedByUsername;
   }
 
   get triggeringPrincipal(): RunTriggeringPrincipal | undefined {
@@ -2482,6 +2495,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._initiatedBy !== undefined) {
       data.initiatedBy = this._initiatedBy;
+    }
+    if (this._initiatedByUsername !== undefined) {
+      data.initiatedByUsername = this._initiatedByUsername;
     }
     if (this._client !== undefined) {
       data.client = this._client;

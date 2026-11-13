@@ -267,6 +267,67 @@ Deno.test("renderWorkflowRunDisplay: a decision with no client reads as before",
   assertEquals(output.includes(" via "), false);
 });
 
+Deno.test("renderWorkflowRunDisplay: a decision names who decided by the username serve recorded", () => {
+  const approved = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      decided({
+        status: "approved",
+        approvedBy: "user:0f3a-sub",
+        approvedByUsername: "bob",
+        approvedAt: "2026-11-05T14:03:00.000Z",
+        client: "direct:dashboard",
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(
+    approved,
+    "Approved by user:bob via direct:dashboard at",
+  );
+  assertEquals(approved.includes("0f3a-sub"), false);
+  const rejected = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      decided({
+        status: "rejected",
+        rejectedBy: "user:0f3a-sub",
+        rejectedByUsername: "bob",
+        rejectedAt: "2026-11-05T14:03:00.000Z",
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(rejected, "Rejected by user:bob at");
+  assertEquals(rejected.includes("0f3a-sub"), false);
+});
+
+Deno.test("renderWorkflowRunDisplay: a token decision whose id is the username reads as before", () => {
+  const output = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      decided({
+        status: "approved",
+        approvedBy: "user:stack72",
+        approvedAt: "2026-11-05T14:03:00.000Z",
+        client: "direct:token",
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(output, "Approved by user:stack72 via direct:token at");
+});
+
+Deno.test("renderWorkflowRunDisplay: json mode keeps the id and adds the username beside it", () => {
+  const view = decided({
+    status: "approved",
+    approvedBy: "user:0f3a-sub",
+    approvedByUsername: "bob",
+    approvedAt: "2026-11-05T14:03:00.000Z",
+  });
+  const output = captureOutput(() => renderWorkflowRunDisplay(view, "json"));
+  const approval = JSON.parse(output).jobs[0].steps[0].approval;
+  assertEquals(approval.approvedBy, "user:0f3a-sub");
+  assertEquals(approval.approvedByUsername, "bob");
+});
+
 Deno.test("renderWorkflowRunDisplay: json mode prints a run whose attributes nest past JSON.stringify's stack limit", () => {
   const view: WorkflowRunView = {
     id: "run-1",

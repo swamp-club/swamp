@@ -7104,13 +7104,17 @@ to the same write. The checks the handlers share are one implementation
      on a step the stored workflow calls a child from, one in the stored record of
      the child it links to when that child links back. A record never creates or changes one. Only a retry
      clears one, back to `pending`, and a step holding one stays in the record.
+     A decision missing the `client` or `decidedByUsername` serve holds still
+     equals it, since an older binary strips fields it does not know.
      A run a member drives cannot wait for a signal, so a record names no new
      signal wait and carries no signal's outcome.
   3. Nothing a forwarded record says reaches serve's wait records. A first record
      cannot reuse a run id another workflow holds.
   4. Frozen: identity, log file; the triggering principal (only serve records
      one), parent, allowed vaults (a first record's stay within the workflow's
-     list), initiator, plan and inherited expressions; what a waiting gate shows
+     list), initiator, plan and inherited expressions; the initiator's username
+     (only serve records one; a record may drop it, which an older binary does,
+     but never add or change it); what a waiting gate shows
      its approver, and its child link. The gate's freeze holds within one
      wait, not across a retry: a retry clears the decision and opens a new
      wait, which shows what the member's record says then.

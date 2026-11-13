@@ -4127,6 +4127,45 @@ Deno.test("WorkflowRun: a gate decision round-trips the client behind it", () =>
   );
 });
 
+Deno.test("WorkflowRun: records the username serve gave for the initiator and round-trips it", () => {
+  const run = WorkflowRun.create(
+    createGatedWorkflow(),
+    {},
+    "user:0f3a-sub",
+    "api",
+    "direct:cli",
+    undefined,
+    { initiatedByUsername: "alice" },
+  );
+  assertEquals(run.initiatedByUsername, "alice");
+  const data = run.toData();
+  assertEquals(data.initiatedBy, "user:0f3a-sub");
+  assertEquals(data.initiatedByUsername, "alice");
+  assertEquals(WorkflowRun.fromData(data).initiatedByUsername, "alice");
+});
+
+Deno.test("WorkflowRun: a run with no initiator username writes no key, and an older record loads", () => {
+  const data = WorkflowRun.create(createGatedWorkflow(), {}, "user:bob")
+    .toData();
+  assertEquals("initiatedByUsername" in data, false);
+  assertEquals(WorkflowRun.fromData(data).initiatedByUsername, undefined);
+});
+
+Deno.test("WorkflowRun: a gate decision round-trips the username of who decided it", () => {
+  const run = WorkflowRun.create(createGatedWorkflow());
+  const step = run.getJob("main")!.getStep("gate-a")!;
+  step.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:0f3a-sub",
+    decidedByUsername: "bob",
+    decidedAt: new Date().toISOString(),
+  });
+  const loaded = WorkflowRun.fromData(run.toData());
+  const decision = loaded.getJob("main")!.getStep("gate-a")!.approvalDecision;
+  assertEquals(decision?.decidedBy, "user:0f3a-sub");
+  assertEquals(decision?.decidedByUsername, "bob");
+});
+
 Deno.test("WorkflowRun: an unfamiliar client value still loads, so a record never fails on it", () => {
   const data = {
     ...WorkflowRun.create(createGatedWorkflow()).toData(),

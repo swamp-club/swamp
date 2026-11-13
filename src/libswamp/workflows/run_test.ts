@@ -702,6 +702,70 @@ Deno.test("toRunData: carries the client of the run and of a decision, only when
   assertEquals("client" in plain, false);
 });
 
+Deno.test("toRunData: carries the usernames of who started and decided, beside the ids, only when recorded", () => {
+  const workflow = Workflow.create({
+    name: "username-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "approve-gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+          Step.create({
+            name: "reject-gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(
+    workflow,
+    {},
+    "user:0f3a-sub",
+    "api",
+    undefined,
+    undefined,
+    { initiatedByUsername: "alice" },
+  );
+  const job = run.getJob("main")!;
+  job.getStep("approve-gate")!.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:9c1e-sub",
+    decidedByUsername: "bob",
+    decidedAt: "2026-09-10T02:18:20.696Z",
+  });
+  job.getStep("reject-gate")!.recordApprovalDecision({
+    approved: false,
+    decidedBy: "user:9c1e-sub",
+    decidedByUsername: "bob",
+    decidedAt: "2026-09-10T02:18:20.696Z",
+  });
+  const data = toRunData(run);
+  assertEquals(data.initiatedBy, "user:0f3a-sub");
+  assertEquals(data.initiatedByUsername, "alice");
+  const [approved, rejected] = data.jobs[0].steps.map((s) => s.approval);
+  assertEquals(approved?.approvedBy, "user:9c1e-sub");
+  assertEquals(approved?.approvedByUsername, "bob");
+  assertEquals(rejected?.rejectedBy, "user:9c1e-sub");
+  assertEquals(rejected?.rejectedByUsername, "bob");
+
+  const plain = WorkflowRun.create(workflow, {}, "user:0f3a-sub");
+  plain.getJob("main")!.getStep("approve-gate")!.recordApprovalDecision({
+    approved: true,
+    decidedBy: "user:9c1e-sub",
+    decidedAt: "2026-09-10T02:18:20.696Z",
+  });
+  const plainData = toRunData(plain);
+  assertEquals("initiatedByUsername" in plainData, false);
+  assertEquals(
+    "approvedByUsername" in plainData.jobs[0].steps[0].approval!,
+    false,
+  );
+});
+
 Deno.test("toRunData: maps rejected approval decision", () => {
   const workflow = Workflow.create({
     name: "reject-wf",

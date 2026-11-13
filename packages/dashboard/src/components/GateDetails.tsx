@@ -23,6 +23,7 @@ import type { ReactNode } from "react";
 import { MiniDag } from "./MiniDag.tsx";
 import { Skeleton } from "./Skeleton.tsx";
 import { gateContext, type WorkflowJobDef } from "../lib/gate_dag.ts";
+import { principalLabel } from "../../../../src/domain/access/principal.ts";
 
 interface GateDetailsProps {
   workflowName: string;
@@ -35,6 +36,8 @@ interface GateDetailsProps {
   prompt?: string;
   /** Who started the run, as the run recorded it. */
   initiatedBy?: string;
+  /** The username serve knew for initiatedBy, when it knew one. */
+  initiatedByUsername?: string;
   /** The run's inputs, shown as text. */
   inputs?: Readonly<Record<string, unknown>>;
   /** The workflow's jobs; null while they load or when they failed to. */
@@ -65,6 +68,7 @@ export function GateDetails(
     runLink,
     prompt,
     initiatedBy,
+    initiatedByUsername,
     inputs,
     jobs,
     error,
@@ -82,7 +86,9 @@ export function GateDetails(
         {initiatedBy && (
           <div>
             <dt>Started by</dt>
-            <dd className="mono">{initiatedBy}</dd>
+            <dd className="mono">
+              {principalLabel(initiatedBy, initiatedByUsername)}
+            </dd>
           </div>
         )}
         <div>

@@ -48,8 +48,11 @@ export interface AssertResultView {
 export interface ApprovalView {
   status: "approved" | "rejected" | "timed_out";
   approvedBy?: string;
+  /** set when serve knew the decider's username; approvedBy keeps the id */
+  approvedByUsername?: string;
   approvedAt?: string;
   rejectedBy?: string;
+  rejectedByUsername?: string;
   rejectedAt?: string;
   timeoutAt?: string;
   reason?: string;
@@ -168,6 +171,8 @@ export interface WorkflowRunView {
   reports?: ReportResultView[];
   workflowDataArtifacts?: DataArtifactRefData[];
   initiatedBy?: string;
+  /** set when serve knew the initiator's username; initiatedBy keeps the id */
+  initiatedByUsername?: string;
   client?: string;
   references?: Record<string, string>;
   parentRun?: {

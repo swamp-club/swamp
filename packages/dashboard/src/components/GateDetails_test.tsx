@@ -95,3 +95,16 @@ Deno.test("GateDetails: leaves out the initiator and inputs when the run has non
   assertEquals(html.includes("Started by"), false);
   assertEquals(html.includes("gate-inputs"), false);
 });
+
+Deno.test("GateDetails: names who started the run by the username serve recorded", () => {
+  const html = renderToStaticMarkup(
+    <GateDetails
+      {...base}
+      jobs={jobs}
+      initiatedBy="user:0f3a-sub"
+      initiatedByUsername="alice"
+    />,
+  );
+  assertStringIncludes(html, "user:alice");
+  assertEquals(html.includes("0f3a-sub"), false);
+});

@@ -36,6 +36,7 @@ import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import {
   handleWorkflowApprove,
+  handleWorkflowHistoryGet,
   handleWorkflowReject,
 } from "../src/serve/handlers/workflow_handlers.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
@@ -446,6 +447,103 @@ Deno.test({
         assertEquals(job.getStep("apply[w-1]")?.status, "skipped");
         assertEquals(job.getStep("apply[w-1]")?.settledByAbort, true);
         assertEquals((await gate(h)).approved, false);
+      } finally {
+        await h.loader.dispose();
+      }
+    });
+  },
+});
+
+async function decision(h: Harness) {
+  const run = await h.ctx.repoContext.workflowRunRepo.findById(
+    createWorkflowId(h.workflow.id),
+    createWorkflowRunId(h.runId),
+  );
+  return run?.getJob(h.jobName)?.getStep(h.stepName)?.approvalDecision;
+}
+
+// an OAuth login is how serve learns a name for an opaque sub
+const KNOWN_NAMES = { "release-approver": "release-bob" };
+
+Deno.test({
+  name:
+    "approve policy: serve records the username it knows for the approver beside the id, and history get shows it",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const h = await suspendAtGate(repoDir, false);
+      try {
+        h.ctx.resolvedUserNames = KNOWN_NAMES;
+        const reply = await approve(h, APPROVER);
+        assertEquals(reply.type, "workflow.approve", JSON.stringify(reply));
+        const decided = await decision(h);
+        assertEquals(decided?.decidedBy, "user:release-approver");
+        assertEquals(decided?.decidedByUsername, "release-bob");
+
+        const { socket, replies } = mockSocket();
+        await handleWorkflowHistoryGet(
+          socket,
+          h.ctx,
+          "history-1",
+          { workflowIdOrName: h.runId, exactRun: true },
+          new AbortController(),
+          RESUMER,
+        );
+        const view = (replies()[0] as unknown as {
+          payload: {
+            data: {
+              jobs: { steps: { approval?: Record<string, unknown> }[] }[];
+            };
+          };
+        }).payload.data;
+        const approval = view.jobs[0].steps[0].approval;
+        assertEquals(approval?.approvedBy, "user:release-approver");
+        assertEquals(approval?.approvedByUsername, "release-bob");
+      } finally {
+        await h.loader.dispose();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "approve policy: serve records the username it knows for the rejecter beside the id",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const h = await suspendAtGate(repoDir, false);
+      try {
+        h.ctx.resolvedUserNames = KNOWN_NAMES;
+        const reply = await reject(h, APPROVER);
+        assertEquals(reply.type, "workflow.reject", JSON.stringify(reply));
+        const decided = await decision(h);
+        assertEquals(decided?.approved, false);
+        assertEquals(decided?.decidedBy, "user:release-approver");
+        assertEquals(decided?.decidedByUsername, "release-bob");
+      } finally {
+        await h.loader.dispose();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "approve policy: a manually minted token, for which serve knows no username, records none",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const h = await suspendAtGate(repoDir, false);
+      try {
+        const reply = await approve(h, APPROVER);
+        assertEquals(reply.type, "workflow.approve", JSON.stringify(reply));
+        const decided = await decision(h);
+        assertEquals(decided?.decidedBy, "user:release-approver");
+        assertEquals("decidedByUsername" in decided!, false);
       } finally {
         await h.loader.dispose();
       }

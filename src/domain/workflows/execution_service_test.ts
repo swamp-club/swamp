@@ -19533,6 +19533,92 @@ Deno.test("run(): a nested run is owned and initiated as its parent (swamp-club#
   });
 });
 
+Deno.test("run(): a run and its nested run record the initiator's username", async () => {
+  await withTempDir(async (tempDir) => {
+    const { parent, child } = nestedGateWorkflows();
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(
+      service.run(parent.name, {
+        initiatedBy: "user:0f3a-sub",
+        initiatedByUsername: "operator",
+      }),
+    );
+    const [parentRun] = await runRepo.findAllByWorkflowId(parent.id);
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(parentRun.initiatedByUsername, "operator");
+    assertEquals(childRun.initiatedBy, "user:0f3a-sub");
+    assertEquals(childRun.initiatedByUsername, "operator");
+  });
+});
+
+Deno.test("resume(): a nested run started after a resume records the initiator's username", async () => {
+  await withTempDir(async (tempDir) => {
+    const child = Workflow.create({
+      name: "plain-child",
+      jobs: [
+        Job.create({
+          name: "child-job",
+          steps: [
+            Step.create({
+              name: "work",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const parent = Workflow.create({
+      name: "gate-then-call",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "gate",
+              task: StepTask.manualApproval("Approve the call"),
+            }),
+            Step.create({
+              name: "call-child",
+              task: StepTask.workflow("plain-child"),
+              dependsOn: [
+                { step: "gate", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service, runRepo } = await setupNestedGate(tempDir, [
+      parent,
+      child,
+    ]);
+    await drain(
+      service.run(parent.name, {
+        initiatedBy: "user:0f3a-sub",
+        initiatedByUsername: "operator",
+      }),
+    );
+    const [suspended] = await runRepo.findAllByWorkflowId(parent.id);
+    const gate = suspended.getJob("main")!.getStep("gate")!;
+    gate.recordApprovalDecision({
+      approved: true,
+      decidedBy: "tester",
+      decidedAt: new Date().toISOString(),
+    });
+    gate.succeed();
+    await runRepo.save(parent.id, suspended);
+    assertEquals((await runRepo.findAllByWorkflowId(child.id)).length, 0);
+
+    await drain(service.resume(parent.name, suspended.id));
+    const [childRun] = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRun.initiatedBy, "user:0f3a-sub");
+    assertEquals(childRun.initiatedByUsername, "operator");
+  });
+});
+
 Deno.test("run(): a nested workflow without a gate leaves no link on its parent step (swamp-club#2736)", async () => {
   await withTempDir(async (tempDir) => {
     const child = Workflow.create({

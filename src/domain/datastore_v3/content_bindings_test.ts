@@ -824,6 +824,109 @@ Deno.test("judgeRunRecord: a nested step may hold its child's decision without t
   assert(judged({ ...DENIED, reason: "changed" }).refusal !== undefined);
 });
 
+Deno.test("judgeRunRecord: a forwarded first record cannot name its initiator's username", () => {
+  assert(
+    judge(undefined, run([], { initiatedByUsername: "ana" })).refusal !==
+      undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a forwarded record cannot add or change the initiator's username", () => {
+  assert(
+    judge(run([]), run([], { initiatedByUsername: "ana" })).refusal !==
+      undefined,
+  );
+  assert(
+    judge(
+      run([], { initiatedByUsername: "ana" }),
+      run([], { initiatedByUsername: "mallory" }),
+    ).refusal !== undefined,
+  );
+  assertEquals(
+    judge(
+      run([], { initiatedByUsername: "ana" }),
+      run([], { initiatedByUsername: "ana" }),
+    ).refusal,
+    undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: an older CLI that strips the initiator's username can still write the run", () => {
+  assertEquals(
+    judge(run([], { initiatedByUsername: "ana" }), run([])).refusal,
+    undefined,
+  );
+});
+
+const DECIDED_NAMED = { ...DECIDED_VIA, decidedByUsername: "ana" };
+
+Deno.test("judgeRunRecord: an older CLI that strips a decision's username, client or both can still resume", () => {
+  for (
+    const forwarded of [
+      DECIDED_NAMED,
+      DECIDED_VIA,
+      { ...DECIDED, decidedByUsername: "ana" },
+      DECIDED,
+    ]
+  ) {
+    assertEquals(
+      judge(
+        gateOf({ status: "waiting_approval", approvalDecision: DECIDED_NAMED }),
+        gateOf({ status: "succeeded", approvalDecision: forwarded }),
+      ).refusal,
+      undefined,
+      JSON.stringify(forwarded),
+    );
+  }
+});
+
+Deno.test("judgeRunRecord: a decision's username cannot be added or changed", () => {
+  assert(
+    judge(
+      gateOf({ status: "waiting_approval", approvalDecision: DECIDED_NAMED }),
+      gateOf({
+        status: "succeeded",
+        approvalDecision: { ...DECIDED_NAMED, decidedByUsername: "mallory" },
+      }),
+    ).refusal !== undefined,
+  );
+  assert(
+    judge(
+      gateOf({ status: "waiting_approval", approvalDecision: DECIDED_VIA }),
+      gateOf({ status: "succeeded", approvalDecision: DECIDED_NAMED }),
+    ).refusal !== undefined,
+  );
+});
+
+Deno.test("judgeRunRecord: a nested step may hold its child's decision without the username an older CLI stripped", () => {
+  const nestedRun = { workflowId: OTHER, workflowName: "child", runId: ID };
+  const judged = (forwarded: StepRunData["approvalDecision"]) =>
+    judge(
+      run([step("call", { status: "waiting_approval", nestedRun })]),
+      run([
+        step("call", {
+          status: "failed",
+          nestedRun,
+          approvalDecision: forwarded,
+        }),
+      ]),
+      {
+        storedStepIsNested: () => true,
+        heldChild: () => ({
+          decisions: [{ ...DENIED, decidedByUsername: "ana" }],
+        }),
+      },
+    );
+  assertEquals(judged(DENIED).refusal, undefined);
+  assertEquals(
+    judged({ ...DENIED, decidedByUsername: "ana" }).refusal,
+    undefined,
+  );
+  assert(
+    judged({ ...DENIED, decidedByUsername: "mallory" }).refusal !== undefined,
+  );
+});
+
 const FAN_OUT_PLAN = {
   members: [{
     worker: "w-a",
