@@ -299,6 +299,11 @@ export interface ScheduledExecutionDeps {
    * keys (its id or name), so a run of it waits rather than overlapping
    */
   busyElsewhere?: (identity: readonly string[]) => boolean;
+  /**
+   * true while serve drives a continued run of one of a workflow's keys; kept
+   * by serve, so a rebuilt scheduler still sees a run continued before it
+   */
+  continuing?: (identity: readonly string[]) => boolean;
   /** after each run settles, so a sibling waiting on its workflow can start */
   onRunSettled?: () => void;
   now?: () => number;
@@ -391,9 +396,6 @@ export class ScheduledExecutionService {
   private readonly scheduler: WorkflowScheduler;
   private readonly watcher: WorkflowWatcher;
   private readonly running = new Map<WorkflowId, RunningScheduledRun>();
-  // runs serve continued after a restart: serve's registry drives and stops
-  // them, the scheduler only refuses to start another run beside one
-  private readonly continued = new Map<WorkflowId, string>();
   /** aborted by stop(), not by a cancel, so shutdown interrupts rather than cancels them */
   private readonly abortedAtStop = new Map<WorkflowId, RunningScheduledRun>();
   private readonly workflowNames = new Map<WorkflowId, string>();
@@ -582,7 +584,6 @@ export class ScheduledExecutionService {
     );
 
     this.running.clear();
-    this.continued.clear();
     this.workflowNames.clear();
     this.eventHandler = null;
 
@@ -647,19 +648,6 @@ export class ScheduledExecutionService {
       workflowName: this.workflowNames.get(entry.workflowId) ??
         entry.workflowId,
     }));
-  }
-
-  adoptContinuedRun(
-    workflowId: string,
-    runId: string,
-    completion: Promise<void>,
-  ): void {
-    const id = workflowId as WorkflowId;
-    this.continued.set(id, runId);
-    const release = () => {
-      if (this.continued.get(id) === runId) this.continued.delete(id);
-    };
-    completion.then(release, release);
   }
 
   isRunning(workflowId: WorkflowId): boolean {
@@ -1401,7 +1389,7 @@ export class ScheduledExecutionService {
     if (
       this.running.has(workflowId) ||
       this.running.has(workflowName as WorkflowId) ||
-      this.continued.has(workflowId)
+      this.deps.continuing?.([workflowId, workflowName])
     ) {
       this.emit({
         kind: "schedule_skipped",
@@ -1790,7 +1778,8 @@ export class ScheduledExecutionService {
       const index = this.runQueue.findIndex((entry) => {
         const identity = this.identityOf(entry);
         return !identity.some((key) => this.claimed.has(key)) &&
-          !this.deps.busyElsewhere?.(identity);
+          !this.deps.busyElsewhere?.(identity) &&
+          !this.deps.continuing?.(identity);
       });
       if (index === -1) return;
       const [entry] = this.runQueue.splice(index, 1);

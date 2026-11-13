@@ -50,6 +50,11 @@ export interface AutoContinuationRefusalOf extends AutoContinuationRefusal {
 // cause decides with recover, except a nested run that settles on its own
 const RETRIED_REFUSALS: ReadonlySet<string> = new Set(["nested_run_unsettled"]);
 
+/** a refusal whose cause can lift without anyone acting, so it is judged again */
+export function refusalIsRetried(reason: string): boolean {
+  return RETRIED_REFUSALS.has(reason);
+}
+
 export type AutoContinuationVerdict =
   /** serve never stamped it, or refused it already, so nothing is recorded */
   | { readonly kind: "ineligible" }
@@ -76,7 +81,7 @@ export async function decideAutoContinuation(
   }
   const refused = run.autoContinuation?.refused;
   if (
-    refused !== undefined && !RETRIED_REFUSALS.has(refused.reason) &&
+    refused !== undefined && !refusalIsRetried(refused.reason) &&
     refused.interruptedAt === run.continuableSince.toISOString()
   ) {
     return { kind: "ineligible" };

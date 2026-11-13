@@ -4848,10 +4848,16 @@ each candidate and continues it, or refuses with one of these reasons:
 - `nested_run_unsettled`: a nested run the run waits on is still open.
 - `launch_refused`: serve's own resume refused the launch.
 
-Serve judges candidates at boot (after the pending-run replay and before the
-schedule catch-up), after a reconciliation tick interrupts a dead peer's runs,
-and when a team leader takes over (after its own replay). Followers never
-continue a run. A launch the resume refuses for a definite reason (a run
+Serve judges every candidate at boot (after the pending-run replay and before
+the schedule catch-up) and when a team leader takes over (after its own
+replay), and the runs a reconciliation tick interrupts as it interrupts them.
+A pass defers a run it cannot settle yet: its copy is behind the datastore, a
+live peer holds its claim, its nested run is still open, or the launch failed
+for a fault such as a full registry. Serve keeps the deferred runs (at most
+10,000) and the continuation sweep judges just those again on each pass, read
+by id rather than by scanning history; a full pass at boot or lead replaces the
+set. A launch fault is reported once per interruption, however often it is
+retried. Followers never continue a run. A launch the resume refuses for a definite reason (a run
 started through a delegation that has ended) is recorded as `launch_refused`
 and stands like any other refusal. A continuation claims the interrupted record
 (`suspensionKeyOf` of the interrupted run) and compares the copy with the
@@ -4870,7 +4876,11 @@ recorded principal and vault scope, with every refusal a resume already has
 recovered but did not resume before it stopped is `recoveredAutomatically`,
 and the continuation sweep finishes it under `autoContinue`. A run reset by
 `swamp workflow recover` still waits for its operator. A continued scheduled
-run holds off its workflow's next fire until it ends. A continued webhook run
+run holds off its workflow's next fire, and a replayed run of it waits, until
+it ends. Serve keeps the continued scheduled runs itself and hands every
+scheduler it builds a check over them (`continuing` in the scheduler's deps),
+so a reload, turning scheduling off and on, or a scheduler started after the
+continuation still sees the run. A continued webhook run
 does not count against its route's `maxConcurrentRuns`, because its delivery
 was admitted before the restart.
 
@@ -4880,10 +4890,11 @@ steps, operator message). A refusal is written once per interruption, under
 the same claim and currency check, so it never lands over an operator's
 recover. It stands for that interruption: lifting its cause later (turning
 `autoContinue` back on, reverting the definition) leaves the run to the
-operator, except `nested_run_unsettled`, which later passes judge again
-because the nested run settles on its own. The audit log records `workflow.auto_continue`,
+operator, except `nested_run_unsettled`: the run is deferred, and the
+continuation sweep judges it again until the nested run settles on its own
+(`refusalIsRetried`). The audit log records `workflow.auto_continue`,
 `workflow.auto_continue_refused` and `workflow.auto_continue_failed`. The
-boot and reconciliation logs name each refused run and step, with the
+serve log names each refused run and step, with the
 `swamp workflow recover` command to decide it. `swamp run history` shows
 the interruption reason and `[CONTINUED]`, and `workflow history get` and the
 dashboard run view show both.

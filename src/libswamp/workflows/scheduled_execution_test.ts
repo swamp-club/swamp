@@ -2232,26 +2232,67 @@ Deno.test("ScheduledExecutionService: a pause read that never settles is bounded
   await cold.service.stop();
 });
 
-Deno.test("ScheduledExecutionService: a run serve continued holds off its workflow's fires until it ends", async () => {
+Deno.test("ScheduledExecutionService: a run serve continued holds off its workflow's fires, across a rebuilt scheduler, until it ends", async () => {
   const wf = createTestWorkflow("continued-wf", "* * * * * *");
-  const executor = createPerRunExecutor();
+  // kept by serve, outside any one scheduler
+  let continuing = true;
+  const build = (executor: ReturnType<typeof createPerRunExecutor>) =>
+    new ScheduledExecutionService({
+      workflowRepo: createMockWorkflowRepo([wf]),
+      repoDir: "/tmp/nonexistent-test-repo",
+      executeWorkflow: executor.executeWorkflow,
+      continuing: (identity) => continuing && identity.includes(wf.id),
+    });
+  const before = createPerRunExecutor();
+  const first = build(before);
   const events: ScheduledExecutionEvent[] = [];
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: executor.executeWorkflow,
-  });
-  const continued = Promise.withResolvers<void>();
-  service.adoptContinuedRun(wf.id, "continued-run", continued.promise);
-  await service.start((e) => events.push(e));
+  await first.start((e) => events.push(e));
   try {
     await waitFor(
       () => events.some((e) => e.kind === "schedule_skipped"),
       "a fire skipped as overlap",
     );
-    assertEquals(executor.runs.length, 0);
-    continued.resolve();
-    await waitFor(() => executor.runs.length > 0, "a fire after the run ended");
+    assertEquals(before.runs.length, 0);
+  } finally {
+    await first.stop();
+  }
+
+  const after = createPerRunExecutor();
+  const rebuilt = build(after);
+  const later: ScheduledExecutionEvent[] = [];
+  await rebuilt.start((e) => later.push(e));
+  try {
+    await waitFor(
+      () => later.some((e) => e.kind === "schedule_skipped"),
+      "the rebuilt scheduler skips the fire too",
+    );
+    assertEquals(after.runs.length, 0);
+    continuing = false;
+    await waitFor(() => after.runs.length > 0, "a fire after the run ended");
+  } finally {
+    await rebuilt.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a replayed run waits while serve drives a continued run of its workflow", async () => {
+  const executor = createPerRunExecutor();
+  let continuing = true;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    maxConcurrentRuns: 2,
+    continuing: (identity) => continuing && identity.includes("wf-held"),
+  });
+  await service.start();
+  try {
+    replay(service, "wf-held", "wf-free");
+    await waitFor(() => executor.runs.length === 1, "the free workflow runs");
+    assertEquals(executor.runs[0].workflow, "wf-free");
+    continuing = false;
+    service.admitQueued();
+    await waitFor(() => executor.runs.length === 2, "the held workflow runs");
+    assertEquals(executor.runs[1].workflow, "wf-held");
   } finally {
     await service.stop();
   }

@@ -22,6 +22,7 @@ import {
   type AutoContinuationChecks,
   decideAutoContinuation,
   MAX_CONSECUTIVE_AUTO_CONTINUATIONS,
+  refusalIsRetried,
 } from "./auto_continuation.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -228,4 +229,19 @@ Deno.test("decideAutoContinuation: a run refused for an unsettled nested run con
     (await decideAutoContinuation(workflow, run, SETTLED)).kind,
     "continue",
   );
+});
+
+Deno.test("refusalIsRetried: only a nested run that settles on its own is judged again", () => {
+  assertEquals(refusalIsRetried("nested_run_unsettled"), true);
+  for (
+    const reason of [
+      "opted_out",
+      "unguarded_step",
+      "definition_changed",
+      "launch_refused",
+      "continued_too_often",
+    ]
+  ) {
+    assertEquals(refusalIsRetried(reason), false, reason);
+  }
 });

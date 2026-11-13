@@ -831,7 +831,9 @@ runs signalled by a local command. Things to know:
   `interrupted`: the boot log and `workflow.auto_continue_refused` name the
   reason and step, and `swamp workflow recover` decides it. A continued webhook
   run does not count against its route's `maxConcurrentRuns`; a continued cron
-  run makes the next fire of its workflow skip as an overlap.
+  run makes the next fire of its workflow skip as an overlap, also after a
+  `serve reload`. A run waiting on an open nested run, or whose record was still
+  syncing, is judged again on each `--continuation-sweep-interval`.
 - A run that cannot be resumed stays suspended; the audit log has one
   `workflow.auto_resume_skipped` or `workflow.auto_resume_failed` event with the
   reason (`global_cap`, ...). A run whose auto-resume policy is off is left

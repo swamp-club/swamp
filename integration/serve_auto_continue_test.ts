@@ -401,7 +401,7 @@ Deno.test({
       const serve = await serveOver(repoDir, serveHolder("a"));
 
       const result = await continueInterruptedRuns(serve.ctx, "boot");
-      assertEquals(result, { continued: [], refused: [] });
+      assertEquals(result, { continued: [], refused: [], deferred: [] });
       assertEquals(
         (await storedRun(serve, workflow, runId))?.status,
         "interrupted",
@@ -426,8 +426,8 @@ Deno.test({
       let completion: Promise<void> | undefined;
 
       await continueInterruptedRuns(serve.ctx, "boot", {
-        onScheduledRunContinued: (workflowId, id, done) => {
-          adopted.push([workflowId, id]);
+        onScheduledRunContinued: (run, done) => {
+          adopted.push([run.workflowId, run.runId]);
           completion = done;
         },
       });
@@ -570,7 +570,12 @@ Deno.test({
       serve.ctx.repoContext.runRecordCurrency = () => Promise.resolve(false);
 
       const result = await continueInterruptedRuns(serve.ctx, "boot");
-      assertEquals(result, { continued: [], refused: [] });
+      // judged again once the copy catches up
+      assertEquals(result, {
+        continued: [],
+        refused: [],
+        deferred: [{ workflowId: workflow.id, runId }],
+      });
       const run = await storedRun(serve, workflow, runId);
       assertEquals(run?.autoContinuation, undefined);
       assertEquals(serve.audit, []);
@@ -689,9 +694,11 @@ Deno.test({
       });
 
       const logs = await captureLogs(async () => {
+        // left to the operator, so not judged again
         assertEquals(await continueInterruptedRuns(serve.ctx, "boot"), {
           continued: [],
           refused: [],
+          deferred: [],
         });
         await continueInterruptedRuns(serve.ctx, "reconciliation");
       });
@@ -738,5 +745,94 @@ Deno.test({
         "workflow.auto_continue_refused",
       ]);
       assertEquals(await ranSteps(counter), []);
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a run a pass could not act on is deferred, and a later pass of just that run continues it",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "deferred" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      await Deno.writeTextFile(counter, "");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      // the reaped record is still being pushed, so this copy reads behind
+      let current = false;
+      serve.ctx.repoContext.runRecordCurrency = () => Promise.resolve(current);
+
+      const first = await continueInterruptedRuns(serve.ctx, "reconciliation");
+      assertEquals(first.continued, []);
+      assertEquals(first.deferred, [{ workflowId: workflow.id, runId }]);
+      assertEquals(serve.audit, []);
+
+      current = true;
+      const later = await continueInterruptedRuns(serve.ctx, "sweep", {
+        targets: first.deferred,
+      });
+      assertEquals(later.continued, [runId]);
+      assertEquals(later.deferred, []);
+      await finished(serve, runId);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "succeeded",
+      );
+      assertEquals(await ranSteps(counter), ["second"]);
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a launch that fails for a fault is deferred and reported once, then continued once the fault clears",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "full-registry" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      await Deno.writeTextFile(counter, "");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      const registry = new ActiveRunRegistry({ maxConcurrent: 1 });
+      (serve.ctx as { activeRunRegistry?: unknown }).activeRunRegistry =
+        registry;
+      serve.registry = registry;
+      const occupant = Promise.withResolvers<void>();
+      registry.register(
+        {
+          runId: crypto.randomUUID(),
+          kind: "workflow-run",
+          resourceName: "other",
+          controller: new AbortController(),
+          startedAt: new Date(),
+          completion: occupant.promise,
+          principalId: null,
+        } as Parameters<typeof registry.register>[0],
+      );
+
+      const first = await continueInterruptedRuns(serve.ctx, "boot");
+      const again = await continueInterruptedRuns(serve.ctx, "sweep", {
+        targets: first.deferred,
+      });
+      assertEquals(first.deferred, [{ workflowId: workflow.id, runId }]);
+      assertEquals(again.deferred, [{ workflowId: workflow.id, runId }]);
+      assertEquals(
+        serve.audit.filter((a) => a.action === "workflow.auto_continue_failed")
+          .length,
+        1,
+      );
+
+      for (const run of registry.list()) registry.deregister(run.runId);
+      occupant.resolve();
+      const cleared = await continueInterruptedRuns(serve.ctx, "sweep", {
+        targets: again.deferred,
+      });
+      assertEquals(cleared.continued, [runId]);
+      await finished(serve, runId);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "succeeded",
+      );
     }),
 });

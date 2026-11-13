@@ -21,6 +21,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   type AutoContinuationVerdict,
   decideAutoContinuation,
+  refusalIsRetried,
 } from "../domain/workflows/auto_continuation.ts";
 import {
   acquireContinuation,
@@ -31,7 +32,11 @@ import {
 import { assertNestedWaitsSettled } from "../domain/workflows/nested_run_link.ts";
 import { getWorkerPoolReader } from "../domain/remote/worker_pool.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
-import type { WorkflowId } from "../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+  type WorkflowId,
+} from "../domain/workflows/workflow_id.ts";
 import { UserError } from "../domain/errors.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { withSharedSyncGate } from "./sync_gate.ts";
@@ -66,15 +71,24 @@ const INTERRUPTED_RECORD_CLAIM = {
 export type InterruptedRunContinuationCause =
   | "boot"
   | "reconciliation"
-  | "lead";
+  | "lead"
+  | "sweep";
+
+export interface InterruptedRunTarget {
+  readonly workflowId: string;
+  readonly runId: string;
+}
+
+export interface ContinuedScheduledRun extends InterruptedRunTarget {
+  readonly workflowName: string;
+}
 
 export interface InterruptedRunContinuationOptions {
-  /** limits the pass to these runs; every interrupted run when absent */
-  readonly runIds?: ReadonlySet<string>;
+  /** read by id; every interrupted run is scanned when absent */
+  readonly targets?: readonly InterruptedRunTarget[];
   /** a continued scheduled run, so the next fire of its workflow overlaps */
   readonly onScheduledRunContinued?: (
-    workflowId: string,
-    runId: string,
+    run: ContinuedScheduledRun,
     completion: Promise<void>,
   ) => void;
 }
@@ -87,7 +101,11 @@ export interface InterruptedRunContinuationResult {
     readonly reason: string;
     readonly message: string;
   }[];
+  /** judged again later: a peer or a nested run may still settle them */
+  readonly deferred: readonly InterruptedRunTarget[];
 }
+
+type LaunchOutcome = "continued" | "deferred" | "settled";
 
 function holderOf(ctx: ConnectionContext): string {
   return ctx.repoContext.continuationClaims?.holder ??
@@ -105,24 +123,26 @@ export async function continueInterruptedRuns(
 ): Promise<InterruptedRunContinuationResult> {
   const continued: string[] = [];
   const refused: InterruptedRunContinuationResult["refused"][number][] = [];
+  const deferred: InterruptedRunTarget[] = [];
   const registry = ctx.activeRunRegistry;
-  if (!registry || registry.draining) return { continued, refused };
+  if (!registry || registry.draining) return { continued, refused, deferred };
 
-  const candidates = await ctx.repoContext.workflowRunRepo.findGlobalByStatus(
-    "interrupted",
-  );
+  const candidates = await candidatesOf(ctx, options.targets);
   for (const { run, workflowId } of candidates) {
-    if (options.runIds !== undefined && !options.runIds.has(run.id)) continue;
     if (run.continuableSince === undefined) continue;
     if (registry.draining) break;
     if (registry.get(run.id)) continue;
     if (!serveMayActOnRun(ctx, run)) continue;
+    const target = { workflowId, runId: run.id };
     try {
       const verdict = await verdictFor(ctx, run, workflowId);
       if (verdict.kind === "ineligible") continue;
       if (verdict.kind === "refuse") {
         const recorded = await recordRefusal(ctx, run, workflowId, verdict);
-        if (recorded) {
+        if (recorded === "busy" || refusalIsRetried(verdict.refusal.reason)) {
+          deferred.push(target);
+        }
+        if (recorded === "recorded") {
           refused.push({
             runId: run.id,
             workflowName: run.workflowName,
@@ -141,10 +161,11 @@ export async function continueInterruptedRuns(
         }
         continue;
       }
-      if (await launch(ctx, run, workflowId, cause, options)) {
-        continued.push(run.id);
-      }
+      const outcome = await launch(ctx, run, workflowId, cause, options);
+      if (outcome === "continued") continued.push(run.id);
+      if (outcome === "deferred") deferred.push(target);
     } catch (error) {
+      deferred.push(target);
       logger.warn(
         "Run {runId} of workflow {workflow} could not be judged for automatic continuation: {error}",
         {
@@ -155,7 +176,27 @@ export async function continueInterruptedRuns(
       );
     }
   }
-  return { continued, refused };
+  return { continued, refused, deferred };
+}
+
+async function candidatesOf(
+  ctx: ConnectionContext,
+  targets: readonly InterruptedRunTarget[] | undefined,
+): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+  const repo = ctx.repoContext.workflowRunRepo;
+  if (targets === undefined) {
+    return await repo.findGlobalByStatus("interrupted");
+  }
+  const found: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+  for (const target of targets) {
+    const workflowId = createWorkflowId(target.workflowId);
+    const run = await repo.findById(
+      workflowId,
+      createWorkflowRunId(target.runId),
+    );
+    if (run?.status === "interrupted") found.push({ run, workflowId });
+  }
+  return found;
 }
 
 async function verdictFor(
@@ -206,15 +247,22 @@ interface InterruptedRecordHold {
   release(): Promise<void>;
 }
 
+type HoldAttempt =
+  | { readonly kind: "held"; readonly hold: InterruptedRecordHold }
+  /** a live peer holds it or the copy is behind: judged again later */
+  | { readonly kind: "busy" }
+  /** a holder not known alive: left to the operator, who is told once */
+  | { readonly kind: "orphaned" };
+
 /**
  * the claim the automatic recover takes, held on a current copy, so only one
- * process acts on an interruption; null when a peer holds it or got there first
+ * process acts on an interruption
  */
 async function holdInterruptedRecord(
   ctx: ConnectionContext,
   run: WorkflowRun,
   workflowId: WorkflowId,
-): Promise<InterruptedRecordHold | null> {
+): Promise<HoldAttempt> {
   const claims = ctx.repoContext.continuationClaims;
   let claim: ContinuationClaim | undefined;
   if (claims !== undefined && (!claims.usable || await claims.usable())) {
@@ -227,8 +275,9 @@ async function holdInterruptedRecord(
       new Date(),
     );
     if (acquired.kind !== "acquired") {
-      if (acquired.liveness !== "alive") warnHeldClaim(run, acquired.claim);
-      return null;
+      if (acquired.liveness === "alive") return { kind: "busy" };
+      warnHeldClaim(run, acquired.claim);
+      return { kind: "orphaned" };
     }
     claim = acquired.claim;
   }
@@ -240,9 +289,9 @@ async function holdInterruptedRecord(
   const currency = ctx.repoContext.runRecordCurrency;
   if (currency && !(await currency({ workflowId, runId: run.id }))) {
     await hold.release();
-    return null;
+    return { kind: "busy" };
   }
-  return hold;
+  return { kind: "held", hold };
 }
 
 /** never lands over an operator's recover of the same run */
@@ -251,13 +300,17 @@ async function recordRefusal(
   run: WorkflowRun,
   workflowId: WorkflowId,
   verdict: Extract<AutoContinuationVerdict, { kind: "refuse" }>,
-): Promise<boolean> {
-  if (run.carriesAutoContinuationRefusal(verdict.refusal.reason)) return false;
-  const hold = await holdInterruptedRecord(ctx, run, workflowId);
-  if (hold === null) return false;
+): Promise<"recorded" | "skipped" | "busy"> {
+  if (run.carriesAutoContinuationRefusal(verdict.refusal.reason)) {
+    return "skipped";
+  }
+  const attempt = await holdInterruptedRecord(ctx, run, workflowId);
+  if (attempt.kind === "busy") return "busy";
+  if (attempt.kind === "orphaned") return "skipped";
+  const hold = attempt.hold;
   try {
     if (!run.recordAutoContinuationRefusal(verdict.refusal, new Date())) {
-      return false;
+      return "skipped";
     }
     await runInRootUnitOfWork(
       ctx.repoContext,
@@ -278,14 +331,15 @@ async function recordRefusal(
       () => ctx.repoContext.workflowRunRepo.save(workflowId, run),
     );
     logger.warn(
-      "Run {runId} of workflow {workflow} stays interrupted: {message}",
+      "Run {runId} of workflow {workflow} stays interrupted ({reason}): {message}",
       {
         runId: run.id,
         workflow: run.workflowName,
+        reason: verdict.refusal.reason,
         message: verdict.refusal.message,
       },
     );
-    return true;
+    return "recorded";
   } finally {
     // the refusal changes no step, so the key stays and a kept claim would
     // hold off a peer judging the same interruption later
@@ -299,11 +353,13 @@ async function launch(
   workflowId: WorkflowId,
   cause: InterruptedRunContinuationCause,
   options: InterruptedRunContinuationOptions,
-): Promise<boolean> {
+): Promise<LaunchOutcome> {
   const registry = ctx.activeRunRegistry!;
   // kept for the recover, which takes it again as its own holder and keeps it
-  const hold = await holdInterruptedRecord(ctx, run, workflowId);
-  if (hold === null) return false;
+  const attempt = await holdInterruptedRecord(ctx, run, workflowId);
+  if (attempt.kind === "busy") return "deferred";
+  if (attempt.kind === "orphaned") return "settled";
+  const hold = attempt.hold;
   const detail =
     `workflow=${run.workflowName} run=${run.id} cause=${cause} interrupted=${
       run.tags["interrupt_reason"] ?? "unknown"
@@ -322,17 +378,19 @@ async function launch(
       // a lost race shares its claim with the pass that won, which keeps it
       if (terminal.kind === "error" && !LOST_RACE_CODES.has(terminal.code)) {
         await hold.release();
-        emitSystemAuditEvent(
-          ctx,
-          "workflow.auto_continue_failed",
-          `${detail} code=${terminal.code}`,
-        );
+        if (firstFailureOf(run)) {
+          emitSystemAuditEvent(
+            ctx,
+            "workflow.auto_continue_failed",
+            `${detail} code=${terminal.code}`,
+          );
+        }
       }
     },
   });
   if (!launched.ok) {
     // a lost race shares its claim with the pass that won, which keeps it
-    if (LOST_RACE_CODES.has(launched.code)) return false;
+    if (LOST_RACE_CODES.has(launched.code)) return "settled";
     if (launched.refusal === "refused") {
       // a definite answer stands for this interruption, like a verdict's
       await hold.release();
@@ -352,23 +410,26 @@ async function launch(
           `${detail} reason=launch_refused`,
         );
       }
-      return false;
+      return "settled";
     }
+    // a fault, such as a full registry: tried again later, reported once
     await hold.release();
-    emitSystemAuditEvent(
-      ctx,
-      "workflow.auto_continue_failed",
-      `${detail} code=${launched.code}`,
-    );
-    logger.warn(
-      "Run {runId} of workflow {workflow} could not be continued: {message}",
-      {
-        runId: run.id,
-        workflow: run.workflowName,
-        message: launched.message,
-      },
-    );
-    return false;
+    if (firstFailureOf(run)) {
+      emitSystemAuditEvent(
+        ctx,
+        "workflow.auto_continue_failed",
+        `${detail} code=${launched.code}`,
+      );
+      logger.warn(
+        "Run {runId} of workflow {workflow} could not be continued yet: {message}",
+        {
+          runId: run.id,
+          workflow: run.workflowName,
+          message: launched.message,
+        },
+      );
+    }
+    return "deferred";
   }
   emitSystemAuditEvent(ctx, "workflow.auto_continue", detail);
   logger.info(
@@ -381,7 +442,22 @@ async function launch(
   );
   const completion = registry.get(run.id)?.completion;
   if (run.triggerSource === "schedule" && completion !== undefined) {
-    options.onScheduledRunContinued?.(workflowId, run.id, completion);
+    options.onScheduledRunContinued?.(
+      { workflowId, runId: run.id, workflowName: run.workflowName },
+      completion,
+    );
   }
+  return "continued";
+}
+
+const reportedFailures = new Set<string>();
+const REPORTED_FAILURES_MAX = 10_000;
+
+/** a failure is reported once per interruption, however often it is retried */
+function firstFailureOf(run: WorkflowRun): boolean {
+  const key = `${run.id}:${run.continuableSince?.toISOString() ?? ""}`;
+  if (reportedFailures.has(key)) return false;
+  if (reportedFailures.size >= REPORTED_FAILURES_MAX) reportedFailures.clear();
+  reportedFailures.add(key);
   return true;
 }
