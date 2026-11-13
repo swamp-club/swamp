@@ -27,6 +27,7 @@ import {
   type WorkerTokenRevokeEvent,
 } from "./token_revoke.ts";
 
+const DEFINITION_ID = "3f1c2a4e-8b9d-4c6e-9a7f-1b2c3d4e5f60";
 const REVOKED_AT = "2026-06-09T12:00:00.000Z";
 
 function completedEvent(
@@ -54,6 +55,7 @@ function completedEvent(
 
 Deno.test("workerTokenRevoke: yields revoking then completed with state", async () => {
   const deps: WorkerTokenRevokeDeps = {
+    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
     runRevoke: async function* (name) {
       yield await Promise.resolve(
         completedEvent(name, [
@@ -84,6 +86,7 @@ Deno.test("workerTokenRevoke: yields revoking then completed with state", async 
 
 Deno.test("workerTokenRevoke: reports already-revoked tokens as a no-op", async () => {
   const deps: WorkerTokenRevokeDeps = {
+    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
     runRevoke: async function* (name) {
       yield await Promise.resolve(completedEvent(name, []));
     },
@@ -101,6 +104,7 @@ Deno.test("workerTokenRevoke: reports already-revoked tokens as a no-op", async 
 
 Deno.test("workerTokenRevoke: forwards run errors", async () => {
   const deps: WorkerTokenRevokeDeps = {
+    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
     runRevoke: async function* () {
       yield await Promise.resolve(
         {
@@ -126,6 +130,7 @@ Deno.test("workerTokenRevoke: forwards run errors", async () => {
 
 Deno.test("workerTokenRevoke: errors when the stream ends without completing", async () => {
   const deps: WorkerTokenRevokeDeps = {
+    findTokenDefinitionId: () => Promise.resolve(DEFINITION_ID),
     // deno-lint-ignore require-yield
     runRevoke: async function* () {
       await Promise.resolve();
@@ -140,4 +145,50 @@ Deno.test("workerTokenRevoke: errors when the stream ends without completing", a
   >;
   assertEquals(error.kind, "error");
   assertStringIncludes(error.error.message, "without completing");
+});
+
+Deno.test("workerTokenRevoke: refuses a name with no token of its type and runs nothing", async () => {
+  let ran = false;
+  const deps: WorkerTokenRevokeDeps = {
+    findTokenDefinitionId: () => Promise.resolve(null),
+    // deno-lint-ignore require-yield
+    runRevoke: async function* () {
+      ran = true;
+      await Promise.resolve();
+    },
+  };
+  const events = await collect<WorkerTokenRevokeEvent>(
+    workerTokenRevoke(createLibSwampContext(), deps, { name: "srv" }),
+  );
+
+  assertEquals(ran, false);
+  assertEquals(events[1], {
+    kind: "error",
+    error: {
+      code: "model_not_found",
+      message: "Enrollment token 'srv' not found. " +
+        "Use 'swamp worker token list' to see existing tokens.",
+    },
+  });
+});
+
+Deno.test("workerTokenRevoke: runs revoke by the resolved definition id, not the name", async () => {
+  const lookedUp: string[] = [];
+  const ranWith: string[] = [];
+  const deps: WorkerTokenRevokeDeps = {
+    findTokenDefinitionId: (name) => {
+      lookedUp.push(name);
+      return Promise.resolve(DEFINITION_ID);
+    },
+    runRevoke: async function* (definitionId) {
+      ranWith.push(definitionId);
+      yield await Promise.resolve(completedEvent("ci", []));
+    },
+  };
+  await collect<WorkerTokenRevokeEvent>(
+    workerTokenRevoke(createLibSwampContext(), deps, { name: "ci" }),
+  );
+
+  assertEquals(lookedUp, ["ci"]);
+  assertEquals(ranWith, [DEFINITION_ID]);
 });

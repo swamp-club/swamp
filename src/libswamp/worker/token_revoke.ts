@@ -24,6 +24,7 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { createWorkerModelRunDeps } from "./run_deps.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../../domain/models/worker/enrollment_token_model.ts";
 
 export interface WorkerTokenRevokeData {
   name: string;
@@ -48,7 +49,9 @@ export interface WorkerTokenRevokeInput {
 }
 
 export interface WorkerTokenRevokeDeps {
-  runRevoke: (name: string) => AsyncIterable<ModelMethodRunEvent>;
+  /** by type as well as name, so another behavior with the name is never revoked */
+  findTokenDefinitionId: (name: string) => Promise<string | null>;
+  runRevoke: (definitionId: string) => AsyncIterable<ModelMethodRunEvent>;
 }
 
 export async function createWorkerTokenRevokeDeps(
@@ -61,9 +64,14 @@ export async function createWorkerTokenRevokeDeps(
     vaultsDir: options?.vaultsDir,
   });
   return {
-    runRevoke: (name) =>
+    findTokenDefinitionId: async (name) =>
+      (await repoContext.definitionRepo.findByName(
+        ENROLLMENT_TOKEN_MODEL_TYPE,
+        name,
+      ))?.id ?? null,
+    runRevoke: (definitionId) =>
       modelMethodRun(ctx, runDeps, {
-        modelIdOrName: name,
+        modelIdOrName: definitionId,
         methodName: "revoke",
         inputs: {},
         lastEvaluated: false,
@@ -72,6 +80,14 @@ export async function createWorkerTokenRevokeDeps(
 }
 
 const TOKEN_DATA_NAME = "token-main";
+
+function notFoundError(name: string): SwampError {
+  return {
+    code: "model_not_found",
+    message: `Enrollment token '${name}' not found. ` +
+      "Use 'swamp worker token list' to see existing tokens.",
+  };
+}
 
 export async function* workerTokenRevoke(
   ctx: LibSwampContext,
@@ -85,16 +101,21 @@ export async function* workerTokenRevoke(
       (async function* () {
         yield { kind: "revoking" as const, name: input.name };
 
+        const definitionId = await deps.findTokenDefinitionId(input.name);
+        if (definitionId === null) {
+          yield {
+            kind: "error" as const,
+            error: notFoundError(input.name),
+          };
+          return;
+        }
+
         let tokenRecord: Record<string, unknown> | undefined;
         let completed = false;
-        for await (const event of deps.runRevoke(input.name)) {
+        for await (const event of deps.runRevoke(definitionId)) {
           if (event.kind === "error") {
             const error = event.error.code === "model_not_found"
-              ? {
-                code: event.error.code,
-                message: `Enrollment token '${input.name}' not found. ` +
-                  "Use 'swamp worker token list' to see existing tokens.",
-              }
+              ? notFoundError(input.name)
               : event.error;
             yield { kind: "error" as const, error };
             return;

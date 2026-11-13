@@ -35,7 +35,8 @@ import {
   withServerTokenLock,
 } from "../../infrastructure/persistence/server_token_lock.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { findDefinitionOfTypeByIdOrName } from "../../domain/models/model_lookup.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
   createServerTokenRevokeDeps,
@@ -108,18 +109,19 @@ export const accessTokenRevokeCommand = withRemoteOptions(
   // may be a definition id, so lock the name it resolves to.
   const lockName = await serverTokenLockName(repoContext.definitionRepo, name);
   await withServerTokenLock(datastoreConfig, lockName, async () => {
-    const preResult = await findDefinitionByIdOrName(
+    const tokenDefinition = await findDefinitionOfTypeByIdOrName(
       repoContext.definitionRepo,
+      SERVER_TOKEN_MODEL_TYPE,
       name,
     );
     let modelLocks: ModelLockResult | undefined;
-    if (preResult) {
+    if (tokenDefinition) {
       const lockResult = await acquireModelLocks(
         datastoreConfig,
         [
           {
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
+            modelType: SERVER_TOKEN_MODEL_TYPE.normalized,
+            modelId: tokenDefinition.id,
           },
         ],
         repoDir,
