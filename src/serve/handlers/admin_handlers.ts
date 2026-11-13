@@ -2313,6 +2313,8 @@ export function handleRunHistory(
         heartbeatAt: r.heartbeatAt.toISOString(),
         stale: r.isStale(STALE_TTL_MS),
         initiatedBy: r.initiatedBy,
+        interruptReason: r.interruptReason,
+        autoContinuedFrom: r.autoContinuedFrom,
       })),
     },
   });

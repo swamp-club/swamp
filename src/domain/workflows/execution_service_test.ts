@@ -90,6 +90,7 @@ import {
 import { computeStepsToReset } from "./resume_reset.ts";
 import { NestedRunPendingError } from "./nested_run_link.ts";
 import {
+  acquireContinuation,
   ContinuationHeldError,
   type HolderLiveness,
   localHolder,
@@ -15760,6 +15761,144 @@ Deno.test("recover: a guarded forEach iteration left unknown needs no acknowledg
     assertEquals(run.status, "succeeded");
     assertEquals(run.getJob("main")?.getStep("deploy-prod")?.status, "skipped");
     assertEquals(executor.count("main/deploy-prod"), 0);
+  });
+});
+
+async function guardedInterrupted(tempDir: string) {
+  const workflow = Workflow.create({
+    name: "recover-auto-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [modelStep("deploy", { guard: "${{ true }}" })],
+      }),
+    ],
+  });
+  const executor = new CountingStepExecutor();
+  const { runRepo, service } = await setupRetry(
+    tempDir,
+    workflow,
+    undefined,
+    executor,
+  );
+  const run = await storeInterruptedAt(runRepo, workflow, "main", {
+    stepName: "deploy",
+  });
+  const claimStore = new InMemoryContinuationClaimStore();
+  return { workflow, executor, runRepo, service, run, claimStore };
+}
+
+const AUTOMATIC = { kind: "automatic", takeover: false } as const;
+
+Deno.test("recover: an automatic recovery claims the interrupted record and keeps the claim", async () => {
+  await withTempDir(async (tempDir) => {
+    const { workflow, runRepo, service, run, claimStore } =
+      await guardedInterrupted(tempDir);
+    const holder = serveHolder("a");
+    service.continuationClaims = claimsFor(claimStore, holder);
+    const key = await suspensionKeyOf(run);
+
+    const { run: finished } = await finishedRun(
+      service.recover(workflow.name, {
+        runId: run.id,
+        instanceId: "a",
+        automatic: { holder, continuation: AUTOMATIC },
+      }),
+    );
+
+    assertEquals(finished.status, "succeeded");
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.autoContinuation?.count, 1);
+    assertEquals(stored?.autoContinuation?.holder, holder);
+    assertEquals(stored?.autoContinuation?.resetSteps, ["deploy"]);
+    assert(
+      claimStore.claims.some((c) =>
+        c.holder === holder && c.suspensionKey === key
+      ),
+      "the claim on the interrupted record was released",
+    );
+  });
+});
+
+Deno.test("recover: an automatic recovery is refused while a live peer holds the interrupted record", async () => {
+  await withTempDir(async (tempDir) => {
+    const { workflow, executor, runRepo, service, run, claimStore } =
+      await guardedInterrupted(tempDir);
+    const peer = serveHolder("b");
+    service.continuationClaims = claimsFor(claimStore, peer);
+    await acquireContinuation(
+      service.continuationClaims,
+      { runId: run.id, suspensionKey: await suspensionKeyOf(run) },
+      AUTOMATIC,
+      new Date(),
+    );
+    const holder = serveHolder("a");
+    service.continuationClaims = claimsFor(claimStore, holder, {
+      [peer]: "alive",
+    });
+
+    await assertRejects(
+      async () => {
+        for await (
+          const _ of service.recover(workflow.name, {
+            runId: run.id,
+            automatic: { holder, continuation: AUTOMATIC },
+          })
+        ) {
+          // drain
+        }
+      },
+      ContinuationHeldError,
+    );
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.status, "interrupted");
+    assertEquals(stored?.getJob("main")?.getStep("deploy")?.status, "unknown");
+    assertEquals(executor.count("main/deploy"), 0);
+  });
+});
+
+Deno.test("recover: an automatic recovery of a stale copy changes nothing and leaves no claim", async () => {
+  await withTempDir(async (tempDir) => {
+    const { workflow, executor, runRepo, service, run, claimStore } =
+      await guardedInterrupted(tempDir);
+    const holder = serveHolder("a");
+    service.continuationClaims = claimsFor(claimStore, holder);
+    service.runRecordCurrency = () => Promise.resolve(false);
+
+    await assertRejects(
+      async () => {
+        for await (
+          const _ of service.recover(workflow.name, {
+            runId: run.id,
+            automatic: { holder, continuation: AUTOMATIC },
+          })
+        ) {
+          // drain
+        }
+      },
+      RunRecordStaleError,
+    );
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.status, "interrupted");
+    assertEquals(stored?.autoContinuation, undefined);
+    assertEquals(claimStore.claims, []);
+    assertEquals(executor.count("main/deploy"), 0);
+  });
+});
+
+Deno.test("recover: a manual recovery takes no claim and records no automatic continuation", async () => {
+  await withTempDir(async (tempDir) => {
+    const { workflow, runRepo, service, run, claimStore } =
+      await guardedInterrupted(tempDir);
+    service.continuationClaims = claimsFor(claimStore, localHolder());
+
+    const { run: finished } = await finishedRun(
+      service.recover(workflow.name, { runId: run.id }),
+    );
+
+    assertEquals(finished.status, "succeeded");
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.autoContinuation, undefined);
   });
 });
 

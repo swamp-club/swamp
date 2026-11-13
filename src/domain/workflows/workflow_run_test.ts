@@ -1876,6 +1876,143 @@ Deno.test("WorkflowRun.resetUnknownStepsForRecovery: marks the run recovered unt
   assertEquals(stored.toData().recovered, undefined);
 });
 
+function interruptedMidStep(): WorkflowRun {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.interrupt("server_crash");
+  return run;
+}
+
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: an automatic recovery is finished by serve, not left for an operator", () => {
+  const run = interruptedMidStep();
+  const at = new Date("2026-11-12T10:00:00.000Z");
+  run.markContinuable(at);
+  run.resetUnknownStepsForRecovery({ holder: "serve:a", at });
+
+  assertEquals(run.awaitsResumeAfterRecovery, false);
+  assertEquals(run.awaitsAutomaticContinuation, true);
+  assertEquals(run.continuableSince, undefined);
+  assertEquals(run.autoContinuation, {
+    count: 1,
+    continuedAt: at.toISOString(),
+    interruptReason: "server_crash",
+    holder: "serve:a",
+    resetSteps: [run.jobs[0].steps[0].stepName],
+  });
+  const data = run.toData();
+  assertEquals(data.recovered, true);
+  assertEquals(data.recoveredAutomatically, true);
+  const stored = WorkflowRun.fromData(data);
+  assertEquals(stored.awaitsAutomaticContinuation, true);
+  assertEquals(stored.awaitsResumeAfterRecovery, false);
+
+  // a binary that predates the field reads only `recovered` and waits
+  const { recoveredAutomatically: _dropped, ...older } = data;
+  assertEquals(WorkflowRun.fromData(older).awaitsResumeAfterRecovery, true);
+
+  stored.resumeFromSuspended({ pid: 1 });
+  assertEquals(stored.awaitsAutomaticContinuation, false);
+  assertEquals(stored.toData().recoveredAutomatically, undefined);
+  assertEquals(stored.autoContinuation?.count, 1);
+});
+
+Deno.test("WorkflowRun.consecutiveAutoContinuations: counts continuations until a step finishes", () => {
+  const run = interruptedMidStep();
+  run.resetUnknownStepsForRecovery({
+    holder: "serve:a",
+    at: new Date("2026-11-12T10:00:00.000Z"),
+  });
+  run.resumeFromSuspended({ pid: 1 });
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.interrupt("server_crash");
+  assertEquals(run.consecutiveAutoContinuations(), 1);
+  run.resetUnknownStepsForRecovery({
+    holder: "serve:a",
+    at: new Date("2026-11-12T10:01:00.000Z"),
+  });
+  assertEquals(run.autoContinuation?.count, 2);
+
+  run.resumeFromSuspended({ pid: 1 });
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  run.jobs[0].steps[1].start();
+  run.interrupt("server_crash");
+  assertEquals(run.consecutiveAutoContinuations(), 0);
+});
+
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: a manual recovery clears the automatic record", () => {
+  const run = interruptedMidStep();
+  run.resetUnknownStepsForRecovery({
+    holder: "serve:a",
+    at: new Date("2026-11-12T10:00:00.000Z"),
+  });
+  run.resumeFromSuspended({ pid: 1 });
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.interrupt("server_crash");
+  run.markContinuable(new Date());
+  run.resetUnknownStepsForRecovery();
+
+  assertEquals(run.awaitsResumeAfterRecovery, true);
+  assertEquals(run.autoContinuation, undefined);
+  assertEquals(run.continuableSince, undefined);
+  assertEquals(run.consecutiveAutoContinuations(), 0);
+});
+
+Deno.test("WorkflowRun.markContinuable: only an interrupted run is stamped, and the stamp round-trips", () => {
+  const running = WorkflowRun.create(createTestWorkflow());
+  running.start();
+  running.markContinuable(new Date());
+  assertEquals(running.continuableSince, undefined);
+
+  const run = interruptedMidStep();
+  const at = new Date("2026-11-12T10:00:00.000Z");
+  run.markContinuable(at);
+  assertEquals(
+    WorkflowRun.fromData(run.toData()).continuableSince?.toISOString(),
+    at.toISOString(),
+  );
+});
+
+Deno.test("WorkflowRun.recordAutoContinuationRefusal: once per interruption and reason", () => {
+  const run = interruptedMidStep();
+  const refusal = {
+    reason: "unguarded_step",
+    steps: ["one"],
+    message: "step one has no guard",
+  };
+  const at = new Date("2026-11-12T10:00:00.000Z");
+  assertEquals(run.recordAutoContinuationRefusal(refusal, at), false);
+
+  run.markContinuable(at);
+  assertEquals(run.recordAutoContinuationRefusal(refusal, at), true);
+  assertEquals(run.recordAutoContinuationRefusal(refusal, at), false);
+  assertEquals(
+    run.recordAutoContinuationRefusal({ ...refusal, reason: "opted_out" }, at),
+    true,
+  );
+  const stored = WorkflowRun.fromData(run.toData());
+  assertEquals(stored.autoContinuation?.refused?.reason, "opted_out");
+  assertEquals(
+    stored.autoContinuation?.refused?.interruptReason,
+    "server_crash",
+  );
+
+  // judged again after a later interruption
+  stored.markContinuable(new Date("2026-11-12T11:00:00.000Z"));
+  assertEquals(
+    stored.recordAutoContinuationRefusal(
+      { ...refusal, reason: "opted_out" },
+      at,
+    ),
+    true,
+  );
+});
+
 Deno.test("WorkflowRun.resetUnknownStepsForRecovery: throws on non-interrupted run", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);

@@ -50,6 +50,8 @@ const PINNED: Readonly<Record<string, Classification>> = {
     "user-run",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowRun: executeWorkflowWithLocks#2":
     "user-run",
+  "src/serve/resume_launcher.ts: startDetachedResume: service.recover":
+    "user-run",
   "src/serve/resume_launcher.ts: startDetachedResume: service.resume":
     "user-run",
   "src/serve/webhook.ts: WebhookService: execute": "user-run",
@@ -58,7 +60,7 @@ const PINNED: Readonly<Record<string, Classification>> = {
 };
 
 const CALL =
-  /(?<![\w.])((?:this\.(?:deps\.)?)?executeWorkflow\w*|modelMethodRun|execute|service\.resume)\(/g;
+  /(?<![\w.])((?:this\.(?:deps\.)?)?executeWorkflow\w*|modelMethodRun|execute|service\.(?:resume|recover))\(/g;
 
 function callText(source: string, start: number): string {
   let depth = 0;

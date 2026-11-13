@@ -140,6 +140,25 @@ Deno.test("reapOrphanedWorkflowRuns: interrupts run when tracker confirmed stale
   assertEquals(saved.length, 1);
 });
 
+Deno.test("reapOrphanedWorkflowRuns: stamps a run serve drove as continuable, never a local one", async () => {
+  const served = makeRun({ pid: 99999, instanceId: "serve-gone" });
+  const local = makeRun({ pid: 99998 });
+  await reapOrphanedWorkflowRuns(
+    [{ run: served, workflowId: WORKFLOW_ID }, {
+      run: local,
+      workflowId: WORKFLOW_ID,
+    }],
+    () => Promise.resolve(),
+    noStepStarts,
+    trackerReaped,
+    unexpectedPidCheck,
+  );
+  assertEquals(served.status, "interrupted");
+  assertEquals(local.status, "interrupted");
+  assertEquals(served.continuableSince !== undefined, true);
+  assertEquals(local.continuableSince, undefined);
+});
+
 Deno.test("reapOrphanedWorkflowRuns: a step whose start was never saved becomes unknown", async () => {
   const run = WorkflowRun.fromData({
     id: crypto.randomUUID(),

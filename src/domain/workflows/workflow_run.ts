@@ -306,6 +306,32 @@ export const TriggeringPrincipalSchema = z.object({
   }),
 });
 
+const AutoContinuationSchema = z.object({
+  // continuations since a step last finished
+  count: z.number().int().nonnegative(),
+  continuedAt: z.string().datetime().optional(),
+  interruptReason: z.string().optional(),
+  holder: z.string().optional(),
+  resetSteps: z.array(z.string()).optional(),
+  refused: z.object({
+    at: z.string().datetime(),
+    // the continuableSince it refused, so a later interruption is judged again
+    interruptedAt: z.string().datetime(),
+    interruptReason: z.string().optional(),
+    reason: z.string().min(1),
+    steps: z.array(z.string()),
+    message: z.string(),
+  }).optional(),
+});
+
+export type AutoContinuationData = z.infer<typeof AutoContinuationSchema>;
+
+export interface AutoContinuationRefusal {
+  readonly reason: string;
+  readonly steps: readonly string[];
+  readonly message: string;
+}
+
 export const WorkflowRunSchema = z.object({
   id: z.string().uuid(),
   workflowId: z.string().uuid(),
@@ -378,6 +404,13 @@ export const WorkflowRunSchema = z.object({
   // the steps a recovery reset wait for someone to resume the run, so serve
   // does not continue it
   recovered: z.boolean().optional(),
+  // the recovery was serve's own and reset only guarded steps, so serve may
+  // finish it; an older binary reading only `recovered` waits for an operator
+  recoveredAutomatically: z.literal(true).optional(),
+  // set only by serve when it interrupts a run; a run without it is never
+  // continued automatically
+  continuableSince: z.string().datetime().optional(),
+  autoContinuation: AutoContinuationSchema.optional(),
   // a step start older than this belongs to an attempt the resume reset
   resumedAt: z.string().datetime().optional(),
   runPlan: z.object({
@@ -1463,6 +1496,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   private _persistedInputsProvenance: ProvenanceMap | undefined;
   private _replayedEvaluatedCache = false;
   private _resumedAt: Date | undefined;
+  private _recoveredAutomatically = false;
+  private _continuableSince: Date | undefined;
+  private _autoContinuation: AutoContinuationData | undefined;
   private _startKey: RunStartKeyData | undefined;
   private _initiatedByUsername: string | undefined;
 
@@ -1697,6 +1733,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
     );
     run._replayedEvaluatedCache = validated.replayedEvaluatedCache === true;
     if (validated.resumedAt) run._resumedAt = new Date(validated.resumedAt);
+    run._recoveredAutomatically = validated.recoveredAutomatically === true &&
+      validated.recovered === true;
+    if (validated.continuableSince) {
+      run._continuableSince = new Date(validated.continuableSince);
+    }
+    if (validated.autoContinuation) {
+      run._autoContinuation = structuredClone(validated.autoContinuation);
+    }
     run._startKey = validated.startKey;
     run._initiatedByUsername = validated.initiatedByUsername;
     run._displayMaskedInputPaths = validated.displayMaskedInputPaths ?? [];
@@ -2100,12 +2144,32 @@ export class WorkflowRun implements TriggerEvaluationContext {
     return found;
   }
 
-  resetUnknownStepsForRecovery(): void {
+  /**
+   * an automatic recovery counts toward the cap on continuations in a row; a
+   * manual one hands the run back to the operator and clears the count
+   */
+  resetUnknownStepsForRecovery(
+    automatic?: { readonly holder: string; readonly at: Date },
+  ): void {
     if (this._status !== "interrupted") {
       throw new Error(
         `Cannot reset unknown steps: run is ${this._status}, expected interrupted`,
       );
     }
+    const resetSteps = this.unknownSteps();
+    if (automatic !== undefined) {
+      this._autoContinuation = {
+        count: this.consecutiveAutoContinuations() + 1,
+        continuedAt: automatic.at.toISOString(),
+        interruptReason: this._tags["interrupt_reason"],
+        holder: automatic.holder,
+        resetSteps,
+      };
+    } else {
+      this._autoContinuation = undefined;
+    }
+    this._recoveredAutomatically = automatic !== undefined;
+    this._continuableSince = undefined;
     for (const job of this._jobs) {
       for (const step of job.steps) {
         if (step.status === "unknown") {
@@ -2123,10 +2187,75 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   /**
    * the reset steps had an unknown outcome, so only a resume someone asks for
-   * runs them again: serve never continues such a run by itself
+   * runs them again: serve continues by itself only a run it recovered itself
    */
   get awaitsResumeAfterRecovery(): boolean {
-    return this._status === "suspended" && this._recovered;
+    return this._status === "suspended" && this._recovered &&
+      !this._recoveredAutomatically;
+  }
+
+  /** serve recovered it and died before the resume took over */
+  get awaitsAutomaticContinuation(): boolean {
+    return this._status === "suspended" && this._recovered &&
+      this._recoveredAutomatically;
+  }
+
+  /** stamped only by serve: an interruption it can judge for continuation */
+  markContinuable(at: Date): void {
+    if (this._status !== "interrupted") return;
+    this._continuableSince = at;
+  }
+
+  get continuableSince(): Date | undefined {
+    return this._continuableSince;
+  }
+
+  get autoContinuation(): AutoContinuationData | undefined {
+    return this._autoContinuation === undefined
+      ? undefined
+      : structuredClone(this._autoContinuation);
+  }
+
+  /** a step that finished after the last continuation shows the run moving */
+  consecutiveAutoContinuations(): number {
+    const record = this._autoContinuation;
+    if (record?.continuedAt === undefined) return 0;
+    const since = new Date(record.continuedAt).getTime();
+    const moved = this._jobs.some((job) =>
+      job.steps.some((step) =>
+        (step.status === "succeeded" || step.status === "skipped") &&
+        (step.completedAt?.getTime() ?? Number.NEGATIVE_INFINITY) > since
+      )
+    );
+    return moved ? 0 : record.count;
+  }
+
+  /** false when this interruption already carries the same refusal */
+  recordAutoContinuationRefusal(
+    refusal: AutoContinuationRefusal,
+    at: Date,
+  ): boolean {
+    if (this._status !== "interrupted" || !this._continuableSince) return false;
+    const interruptedAt = this._continuableSince.toISOString();
+    const previous = this._autoContinuation?.refused;
+    if (
+      previous?.interruptedAt === interruptedAt &&
+      previous.reason === refusal.reason
+    ) {
+      return false;
+    }
+    this._autoContinuation = {
+      ...(this._autoContinuation ?? { count: 0 }),
+      refused: {
+        at: at.toISOString(),
+        interruptedAt,
+        interruptReason: this._tags["interrupt_reason"],
+        reason: refusal.reason,
+        steps: [...refusal.steps],
+        message: refusal.message,
+      },
+    };
+    return true;
   }
 
   /**
@@ -2224,6 +2353,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._status = "running";
     this._completedAt = undefined;
     this._recovered = false;
+    this._recoveredAutomatically = false;
     this._resumedAt = new Date();
     this.takeOwnership(owner);
   }
@@ -2551,8 +2681,15 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this.isAwaitingResume()) {
       data.awaitingResume = true;
     }
-    if (this.awaitsResumeAfterRecovery) {
+    if (this._status === "suspended" && this._recovered) {
       data.recovered = true;
+      if (this._recoveredAutomatically) data.recoveredAutomatically = true;
+    }
+    if (this._continuableSince !== undefined) {
+      data.continuableSince = this._continuableSince.toISOString();
+    }
+    if (this._autoContinuation !== undefined) {
+      data.autoContinuation = structuredClone(this._autoContinuation);
     }
     if (this._runPlan !== undefined) {
       data.runPlan = { ...this._runPlan };

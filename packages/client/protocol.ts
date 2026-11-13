@@ -976,6 +976,8 @@ export interface RunHistoryResponse {
     heartbeatAt: string;
     stale: boolean;
     initiatedBy?: string | null;
+    interruptReason?: string | null;
+    autoContinuedFrom?: string | null;
   }>;
 }
 

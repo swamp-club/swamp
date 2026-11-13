@@ -193,6 +193,21 @@ export interface WorkflowRunView {
    * nested run it waits on has finished, so it can be resumed.
    */
   awaitingResume?: boolean;
+  /** why the run stopped, while it is interrupted */
+  interruptReason?: string;
+  /** serve's last automatic continuation of the run, or its refusal */
+  autoContinuation?: {
+    count: number;
+    continuedAt?: string;
+    interruptReason?: string;
+    resetSteps?: string[];
+    refused?: {
+      at: string;
+      reason: string;
+      steps: string[];
+      message: string;
+    };
+  };
 }
 
 export function extractFirstStepError(run: WorkflowRunView): string {

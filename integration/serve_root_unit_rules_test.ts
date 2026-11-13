@@ -248,6 +248,8 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/handlers/model_handlers.ts: handleModelMethodRun (x2)",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowResume",
   "src/serve/resume_launcher.ts: startDetachedResume",
+  // runs from the boot, lead and reconciliation passes, never inside a root
+  "src/serve/interrupted_run_continuation.ts: recordRefusal",
   // Workflow runs from the workflow.run handler, webhooks and the scheduler:
   // the post-run push. Each step's model lock still pushes on its own.
   "src/serve/deps.ts: executeWorkflowWithLocks",

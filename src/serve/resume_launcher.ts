@@ -118,6 +118,11 @@ export const RUN_RECORD_STALE_CODE = "run_record_stale";
 
 export interface DetachedResumeRequest {
   workflowIdOrName: string;
+  /**
+   * serve's own continuation of an interrupted run: recovered under a claim on
+   * the interrupted record, then resumed, as `holder`
+   */
+  recoverInterrupted?: { readonly holder: string };
   runId?: string;
   byId?: boolean;
   expectedName?: string;
@@ -202,6 +207,32 @@ function lostRace(request: DetachedResumeRequest, error: unknown): boolean {
     error instanceof RunNotSuspendedError;
 }
 
+async function resolveInterruptedRun(
+  ctx: ConnectionContext,
+  request: DetachedResumeRequest,
+): Promise<{ run: WorkflowRun; workflowName: string; workflowId: string }> {
+  const workflow = await ctx.repoContext.workflowRepo.findById(
+    createWorkflowId(request.workflowIdOrName),
+  );
+  const run = workflow === null || request.runId === undefined
+    ? null
+    : await ctx.repoContext.workflowRunRepo.findById(
+      workflow.id,
+      createWorkflowRunId(request.runId),
+    );
+  if (workflow === null || run === null) {
+    throw new SuspendedRunNotFoundError(
+      `Run ${request.runId} of workflow ${request.workflowIdOrName} not found`,
+    );
+  }
+  if (run.status !== "interrupted") {
+    throw new RunNotSuspendedError(
+      `Run ${run.id} is no longer interrupted (status: ${run.status}).`,
+    );
+  }
+  return { run, workflowName: workflow.name, workflowId: workflow.id };
+}
+
 export async function startDetachedResume(
   ctx: ConnectionContext,
   registry: ActiveRunRegistry,
@@ -214,20 +245,22 @@ export async function startDetachedResume(
   let workflowName: string;
   let workflowId: string;
   try {
-    const result = await resolveResumableRun(
-      workflowRepo,
-      runRepo,
-      request.workflowIdOrName,
-      request.runId,
-      {
-        fromStep: request.from,
-        fromJob: request.fromJob,
-        suspendedOnly: request.suspendedOnly,
-        byId: request.byId,
-        expectedName: request.expectedName,
-        signalWaits: ctx.repoContext.signalWaits,
-      },
-    );
+    const result = request.recoverInterrupted !== undefined
+      ? await resolveInterruptedRun(ctx, request)
+      : await resolveResumableRun(
+        workflowRepo,
+        runRepo,
+        request.workflowIdOrName,
+        request.runId,
+        {
+          fromStep: request.from,
+          fromJob: request.fromJob,
+          suspendedOnly: request.suspendedOnly,
+          byId: request.byId,
+          expectedName: request.expectedName,
+          signalWaits: ctx.repoContext.signalWaits,
+        },
+      );
     resolvedRun = result.run;
     workflowName = result.workflowName;
     workflowId = result.workflowId;
@@ -454,23 +487,40 @@ export async function startDetachedResume(
               resolvedRun,
               request.resumer?.vaultScope ?? undefined,
             );
+            const recoverInterrupted = request.recoverInterrupted;
+            const events = recoverInterrupted !== undefined
+              ? runGeneratorWithVaultAccess(
+                vaultScope?.access,
+                () =>
+                  service.recover(workflowName, {
+                    runId: resolvedRun.id,
+                    signal: runController.signal,
+                    instanceId: ctx.instanceId,
+                    automatic: {
+                      holder: recoverInterrupted.holder,
+                      continuation: request.continuation ??
+                        { kind: "automatic", takeover: false },
+                    },
+                  }),
+              )
+              : runGeneratorWithVaultAccess(
+                vaultScope?.access,
+                () =>
+                  service.resume(workflowName, resolvedRun.id, {
+                    signal: runController.signal,
+                    inputs: request.inputs ?? {},
+                    fromStep: request.from,
+                    fromJob: request.fromJob,
+                    suspendedOnly: request.suspendedOnly,
+                    instanceId: ctx.instanceId,
+                    continuation: request.continuation,
+                    requireCurrentRecord: request.requireCurrentRecord,
+                  }),
+              );
             const doResume = async () => {
               for await (
                 const { event } of deferCompletedForOutputs(
-                  runGeneratorWithVaultAccess(
-                    vaultScope?.access,
-                    () =>
-                      service.resume(workflowName, resolvedRun.id, {
-                        signal: runController.signal,
-                        inputs: request.inputs ?? {},
-                        fromStep: request.from,
-                        fromJob: request.fromJob,
-                        suspendedOnly: request.suspendedOnly,
-                        instanceId: ctx.instanceId,
-                        continuation: request.continuation,
-                        requireCurrentRecord: request.requireCurrentRecord,
-                      }),
-                  ),
+                  events,
                   (completed) => {
                     completedRun.run = completed;
                     return Promise.resolve(undefined);
@@ -1068,9 +1118,12 @@ export async function continueSettledRun(
     : null;
   const known = resolution.status === "found" && workflow !== null &&
     workflow.name === resolution.name;
-  if (
-    known && !workflow.shouldAutoResume(ctx.serveOptions?.autoResume ?? false)
-  ) {
+  // a run serve recovered itself and died before resuming is finished under
+  // the workflow's autoContinue, which allowed the recovery
+  const allowed = run.awaitsAutomaticContinuation
+    ? workflow?.shouldAutoContinue()
+    : workflow?.shouldAutoResume(ctx.serveOptions?.autoResume ?? false);
+  if (known && !allowed) {
     return false;
   }
 

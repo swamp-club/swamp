@@ -2231,3 +2231,28 @@ Deno.test("ScheduledExecutionService: a pause read that never settles is bounded
   );
   await cold.service.stop();
 });
+
+Deno.test("ScheduledExecutionService: a run serve continued holds off its workflow's fires until it ends", async () => {
+  const wf = createTestWorkflow("continued-wf", "* * * * * *");
+  const executor = createPerRunExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  const continued = Promise.withResolvers<void>();
+  service.adoptContinuedRun(wf.id, "continued-run", continued.promise);
+  await service.start((e) => events.push(e));
+  try {
+    await waitFor(
+      () => events.some((e) => e.kind === "schedule_skipped"),
+      "a fire skipped as overlap",
+    );
+    assertEquals(executor.runs.length, 0);
+    continued.resolve();
+    await waitFor(() => executor.runs.length > 0, "a fire after the run ended");
+  } finally {
+    await service.stop();
+  }
+});

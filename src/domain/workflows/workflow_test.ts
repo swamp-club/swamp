@@ -1236,6 +1236,29 @@ Deno.test("Workflow autoResume: undefined when not set", () => {
   assertEquals(workflow.toData().autoResume, undefined);
 });
 
+Deno.test("Workflow autoContinue: round-trips through toData and opts out", () => {
+  const workflow = Workflow.create({
+    name: "kept",
+    jobs: [createTestJob("main")],
+    autoContinue: false,
+  });
+  assertEquals(workflow.shouldAutoContinue(), false);
+  const data = workflow.toData();
+  assertEquals(data.autoContinue, false);
+  assertEquals(Workflow.fromData(data).shouldAutoContinue(), false);
+});
+
+Deno.test("Workflow.shouldAutoContinue: on when unset, whatever the inputs", () => {
+  const workflow = Workflow.create({
+    name: "kept",
+    jobs: [createTestJob("main")],
+    inputs: { type: "object", properties: { key: { type: "string" } } },
+  });
+  assertEquals(workflow.autoContinue, undefined);
+  assertEquals(workflow.toData().autoContinue, undefined);
+  assertEquals(workflow.shouldAutoContinue(), true);
+});
+
 Deno.test("workflowDeclaresInputs: detects named and open-ended inputs", () => {
   assertEquals(workflowDeclaresInputs(undefined), false);
   assertEquals(workflowDeclaresInputs({ type: "object" }), false);

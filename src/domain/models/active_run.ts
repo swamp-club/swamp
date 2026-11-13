@@ -56,6 +56,8 @@ export interface ActiveRunData {
   readonly cancelReason?: string | null;
   /** read from the tracker only; stamped from the process that registers the row */
   readonly hostIdentity?: string | null;
+  /** read from the tracker only: the interruption serve continued it from */
+  readonly autoContinuedFrom?: string | null;
 }
 
 export class ActiveRun {
@@ -76,6 +78,7 @@ export class ActiveRun {
   readonly settled: boolean;
   readonly cancelReason: string | null;
   readonly hostIdentity: string | null;
+  readonly autoContinuedFrom: string | null;
 
   private constructor(data: ActiveRunData) {
     this.id = data.id;
@@ -94,10 +97,16 @@ export class ActiveRun {
     this.settled = data.settled ?? false;
     this.cancelReason = data.cancelReason ?? null;
     this.hostIdentity = data.hostIdentity ?? null;
+    this.autoContinuedFrom = data.autoContinuedFrom ?? null;
   }
 
   get status(): ActiveRunStatus {
     return this._status;
+  }
+
+  /** the reason recorded only for a run that ended interrupted */
+  get interruptReason(): string | null {
+    return this._status === "interrupted" ? this.cancelReason : null;
   }
 
   get heartbeatAt(): Date {

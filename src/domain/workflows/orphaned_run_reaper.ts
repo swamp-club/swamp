@@ -34,7 +34,7 @@ import {
   type WorkflowRunId,
 } from "./workflow_id.ts";
 import type { UnreadableRun } from "./unreadable_run_record.ts";
-import { WorkflowRun } from "./workflow_run.ts";
+import { isServeDrivenRun, WorkflowRun } from "./workflow_run.ts";
 
 const logger = getSwampLogger(["workflows", "orphaned-runs"]);
 
@@ -43,6 +43,11 @@ const UNREADABLE_RECORD_PLACEHOLDER = "unreadable-record";
 export interface ReapResult {
   readonly reaped: number;
   readonly skipped: number;
+}
+
+/** only serve reaps, so a run serve drove is one it may judge for continuation */
+function markServeInterruption(run: WorkflowRun): void {
+  if (isServeDrivenRun(run)) run.markContinuable(new Date());
 }
 
 /**
@@ -105,6 +110,7 @@ export async function reapOrphanedWorkflowRuns(
         },
       );
       run.interruptOrphaned("server_crash", await startsOf(workflowId, run));
+      markServeInterruption(run);
       await save(workflowId, run);
       reaped++;
       continue;
@@ -143,6 +149,7 @@ export async function reapOrphanedWorkflowRuns(
           "server_crash",
           await startsOf(workflowId, run),
         );
+        markServeInterruption(run);
         await save(workflowId, run);
         reaped++;
         continue;
@@ -177,6 +184,7 @@ export async function reapOrphanedWorkflowRuns(
       { runId: run.id, workflowName: run.workflowName, reason },
     );
     run.interruptOrphaned("server_crash", await startsOf(workflowId, run));
+    markServeInterruption(run);
     await save(workflowId, run);
     reaped++;
   }

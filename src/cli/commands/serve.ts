@@ -26,6 +26,10 @@ import {
 import { RESERVED_TOKEN_NAMES } from "../../domain/access/delegated_token.ts";
 import { DelegationStore } from "../../serve/delegation_store.ts";
 import { createRecordLock } from "../../serve/deps.ts";
+import {
+  continueInterruptedRuns,
+  type InterruptedRunContinuationCause,
+} from "../../serve/interrupted_run_continuation.ts";
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
 import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
 import { DelegationSyncService } from "../../serve/delegation_sync_service.ts";
@@ -6279,7 +6283,7 @@ export const serveCommand = new Command()
       );
       if (reapResult.reaped > 0) {
         logger.warn(
-          "Boot: {reaped} workflow run(s) interrupted by crash — recover with 'swamp workflow recover <workflow>'",
+          "Boot: {reaped} workflow run(s) interrupted by crash — serve continues each one that is safe to repeat once boot settles, and names the rest",
           { reaped: reapResult.reaped },
         );
       }
@@ -10282,6 +10286,46 @@ export const serveCommand = new Command()
           .info`Replayed ${replayed} pending run(s) a stopped serve process left`;
       }
     };
+    const continueInterruptedAtLead = async (
+      cause: InterruptedRunContinuationCause,
+      runIds?: ReadonlySet<string>,
+    ): Promise<void> => {
+      try {
+        const { continued, refused } = await continueInterruptedRuns(
+          connectionCtx,
+          cause,
+          {
+            runIds,
+            onScheduledRunContinued: (workflowId, runId, completion) =>
+              scheduler.current()?.adoptContinuedRun(
+                workflowId,
+                runId,
+                completion,
+              ),
+          },
+        );
+        if (continued.length > 0) {
+          logger
+            .info`Continued ${continued.length} interrupted run(s) automatically`;
+        }
+        for (const refusal of refused) {
+          logger.warn(
+            "Run {runId} of workflow {workflow} stays interrupted ({reason}): {message}",
+            {
+              runId: refusal.runId,
+              workflow: refusal.workflowName,
+              reason: refusal.reason,
+              message: refusal.message,
+            },
+          );
+        }
+      } catch (err: unknown) {
+        logger.warn(
+          "Continuing interrupted runs failed: {error}",
+          { error: err instanceof Error ? err.message : String(err) },
+        );
+      }
+    };
     const replayPendingAtLead = async (): Promise<void> => {
       const deferred = new Set<string>();
       const replayed = await replayPending(deferred);
@@ -10296,6 +10340,8 @@ export const serveCommand = new Command()
     };
     if (!v3Follows) {
       await replayPendingAtLead();
+      // before the catch-up, so a continued scheduled run holds off its slot
+      await continueInterruptedAtLead("boot");
       // after the replay, so a replayed run queues ahead of a catch-up
       scheduler.current()?.startCatchUp();
     }
@@ -10323,11 +10369,13 @@ export const serveCommand = new Command()
           // A follower settles nothing, nor does a leader whose lease was taken
           // over and has not ticked since: it would misjudge the new leader
           // gone.
+          const interruptedNow = new Set<string>();
           const reaped = isFollowing() ||
               (v3Location !== undefined &&
                 !holdsCurrentV3WriterLease(v3Location.path))
             ? 0
             : await reconcileRemoteInterruptedRuns({
+              onRunInterrupted: (runId) => interruptedNow.add(runId),
               controlPlaneStore,
               instanceId,
               runTracker,
@@ -10344,6 +10392,9 @@ export const serveCommand = new Command()
           if (reaped > 0) {
             logger
               .info`Continuous reconciliation reaped ${reaped} run(s)`;
+          }
+          if (interruptedNow.size > 0) {
+            await continueInterruptedAtLead("reconciliation", interruptedNow);
           }
         } catch (err: unknown) {
           logger.warn(
@@ -10551,6 +10602,10 @@ export const serveCommand = new Command()
             reconcileRemoteAtLead,
           );
           await leaderStep("replaying pending runs", replayPendingAtLead);
+          await leaderStep(
+            "continuing interrupted runs",
+            () => continueInterruptedAtLead("lead"),
+          );
           await leaderStep(
             "applying the grant config",
             applyGrantConfigAtLead,

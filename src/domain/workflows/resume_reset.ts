@@ -569,7 +569,7 @@ function removedUnfinishedJob(
  * a fan-out job never re-plans, so a resume refuses a run whose plan is gone or
  * whose workflow no longer selects the same workers
  */
-function fanOutStructure(
+export function fanOutStructure(
   workflow: Workflow,
   run: WorkflowRun,
 ): string | undefined {

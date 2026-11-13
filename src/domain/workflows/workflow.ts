@@ -128,6 +128,8 @@ export const WorkflowObjectSchema = z.object({
   affinity: z.boolean().optional(),
   writes: z.boolean().optional(),
   autoResume: z.boolean().optional(),
+  /** false leaves a run cut off by a serve restart for an operator to recover */
+  autoContinue: z.boolean().optional(),
   /**
    * a run is refused every vault operation on a vault not listed, whoever
    * triggers it; nested workflows intersect their list with their parent's
@@ -193,6 +195,7 @@ export interface CreateWorkflowProps {
   platform?: string;
   queueTimeout?: number;
   autoResume?: boolean;
+  autoContinue?: boolean;
   vaults?: string[];
 }
 
@@ -215,6 +218,7 @@ export class Workflow {
     readonly platform: string | undefined,
     readonly queueTimeout: number | undefined,
     readonly autoResume: boolean | undefined,
+    readonly autoContinue: boolean | undefined,
     readonly vaults: readonly string[] | undefined,
   ) {}
 
@@ -243,6 +247,7 @@ export class Workflow {
       platform: props.platform,
       queueTimeout: props.queueTimeout,
       autoResume: props.autoResume,
+      autoContinue: props.autoContinue,
       vaults: props.vaults,
     };
 
@@ -277,6 +282,7 @@ export class Workflow {
       data.platform,
       data.queueTimeout,
       data.autoResume,
+      data.autoContinue,
       data.vaults,
     );
   }
@@ -314,6 +320,7 @@ export class Workflow {
       validated.platform,
       validated.queueTimeout,
       validated.autoResume,
+      validated.autoContinue,
       validated.vaults,
     );
   }
@@ -374,6 +381,11 @@ export class Workflow {
     return serverDefault && !workflowDeclaresInputs(this.inputs);
   }
 
+  /** on unless the workflow opts out: only a run safe to repeat is continued */
+  shouldAutoContinue(): boolean {
+    return this.autoContinue ?? true;
+  }
+
   get placementFields(): PlacementFields {
     return {
       target: this.target,
@@ -402,6 +414,7 @@ export class Workflow {
       platform: this.platform,
       queueTimeout: this.queueTimeout,
       autoResume: this.autoResume,
+      autoContinue: this.autoContinue,
       vaults: this.vaults !== undefined ? [...this.vaults] : undefined,
     };
   }

@@ -825,6 +825,13 @@ runs signalled by a local command. Things to know:
 - A run reset by `swamp workflow recover` is never resumed by serve, with no
   event: run `swamp workflow resume` as recover says. A run recovered before the
   upgrade is not protected this way.
+- A run a restart, crash or dead peer interrupted is continued by serve itself
+  when every cut-off step has a guard and the workflow does not set
+  `autoContinue: false` (audit `workflow.auto_continue`). Otherwise it stays
+  `interrupted`: the boot log and `workflow.auto_continue_refused` name the
+  reason and step, and `swamp workflow recover` decides it. A continued webhook
+  run does not count against its route's `maxConcurrentRuns`; a continued cron
+  run makes the next fire of its workflow skip as an overlap.
 - A run that cannot be resumed stays suspended; the audit log has one
   `workflow.auto_resume_skipped` or `workflow.auto_resume_failed` event with the
   reason (`global_cap`, ...). A run whose auto-resume policy is off is left

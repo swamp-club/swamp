@@ -169,6 +169,31 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
     }
   }
 
+  if (data.interruptReason !== undefined) {
+    writeOutput(yellow(`Interrupted: ${data.interruptReason}`));
+  }
+  const continuation = data.autoContinuation;
+  if (continuation?.refused !== undefined && data.status === "interrupted") {
+    writeOutput(
+      yellow(
+        `Not continued automatically (${continuation.refused.reason}): ${
+          escapeControlCharacters(continuation.refused.message)
+        }`,
+      ),
+    );
+  } else if (continuation?.continuedAt !== undefined) {
+    const steps = continuation.resetSteps?.length
+      ? `; its guards judged ${
+        escapeControlCharacters(continuation.resetSteps.join(", "))
+      } again`
+      : "";
+    writeOutput(
+      `Continued automatically after ${
+        continuation.interruptReason ?? "an interruption"
+      } at ${formatTimestamp(continuation.continuedAt)}${steps}`,
+    );
+  }
+
   const durationSuffix = data.duration !== undefined
     ? ` (${data.duration}ms)`
     : "";

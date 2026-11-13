@@ -220,6 +220,7 @@ export async function interruptShutdownRuns(
               match.run.status === "cancelled")
           ) {
             match.run.interrupt("server_shutdown");
+            match.run.markContinuable(new Date());
             await repoContext.workflowRunRepo.save(
               match.workflowId,
               match.run,

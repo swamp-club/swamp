@@ -116,6 +116,7 @@ Deno.test("interruptShutdownRuns: saves a running run interrupted, then pushes i
   assertEquals(result, { interrupted: [run.id] });
   assertEquals(events, ["load", `save ${run.id} interrupted`, "push ns"]);
   assertEquals(run.tags["interrupt_reason"], "server_shutdown");
+  assertEquals(run.continuableSince !== undefined, true);
 });
 
 Deno.test("interruptShutdownRuns: a run that ended cancelled is interrupted and pushed", async () => {

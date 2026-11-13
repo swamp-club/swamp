@@ -1325,6 +1325,7 @@ Deno.test("handleRunDoctor: the fix's run saves stage into a root unit over the 
               id: "run-1",
               instanceId: "dead-peer",
               interruptOrphaned: () => {},
+              markContinuable: () => {},
             },
             workflowId: "wf-1",
           }]),

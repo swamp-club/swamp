@@ -282,6 +282,7 @@ const arbWorkflowShape: fc.Arbitrary<WorkflowShape> = fc
       }, { requiredKeys: [] }),
       affinity: fc.boolean(),
       autoResume: fc.boolean(),
+      autoContinue: fc.boolean(),
     }, { requiredKeys: [] }),
     arbPlacementFields,
     fc.array(arbJobShape, { minLength: 1, maxLength: 3 }),

@@ -85,7 +85,7 @@ function ownHostIdentity(rowHostname: string): string | null {
 const RETENTION_DAYS = 7;
 /** backstop retention for an interrupted row that no path ever settles */
 const UNSETTLED_RETENTION_DAYS = 90;
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 /** the serve process that queued a pending run, judged before another replays it */
 export interface PendingRunOwner {
@@ -158,6 +158,7 @@ interface ActiveRunRow {
   initiated_by: string | null;
   instance_id: string | null;
   host_identity: string | null;
+  auto_continued?: string | null;
 }
 
 export class RunTrackerStore implements RunTrackerRepository {
@@ -343,6 +344,14 @@ export class RunTrackerStore implements RunTrackerRepository {
         this.db.exec("ALTER TABLE pending_runs ADD COLUMN owner TEXT");
       }
     }
+
+    if (currentVersion < 9) {
+      const columns = this.db.prepare("PRAGMA table_info(active_runs)")
+        .all() as unknown as { name: string }[];
+      if (columns.length && !columns.some((c) => c.name === "auto_continued")) {
+        this.db.exec("ALTER TABLE active_runs ADD COLUMN auto_continued TEXT");
+      }
+    }
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -366,7 +375,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         initiated_by  TEXT,
         instance_id   TEXT,
         definition_id TEXT,
-        host_identity TEXT
+        host_identity TEXT,
+        auto_continued TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_active_runs_status
@@ -467,6 +477,13 @@ export class RunTrackerStore implements RunTrackerRepository {
         AND status IN ('completed', 'failed', 'cancelled', 'suspended')
     `).run(runId, pid, hostname);
     return Number(result.changes) > 0;
+  }
+
+  /** kept for the life of the row, so history shows it after the run ends */
+  markAutoContinued(runId: string, interruptReason: string): void {
+    this.db.prepare(`
+      UPDATE active_runs SET auto_continued = ? WHERE id = ?
+    `).run(interruptReason, runId);
   }
 
   markSettled(runId: string, reason: string): void {
@@ -726,6 +743,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       settled: row.status === "interrupted" && row.cancel_reason !== null,
       cancelReason: row.cancel_reason,
       hostIdentity: row.host_identity,
+      autoContinuedFrom: row.auto_continued ?? null,
     };
   }
 }

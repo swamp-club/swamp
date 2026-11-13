@@ -710,6 +710,9 @@
       "autoResume": {
         "type": "boolean"
       },
+      "autoContinue": {
+        "type": "boolean"
+      },
       "vaults": {
         "type": "array",
         "items": {

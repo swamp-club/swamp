@@ -769,6 +769,29 @@ export function withRunStepOutputs(
   };
 }
 
+function autoContinuationView(
+  run: WorkflowRun,
+): Pick<WorkflowRunView, "autoContinuation"> {
+  const record = run.autoContinuation;
+  if (record === undefined) return {};
+  const { holder: _holder, refused, ...shown } = record;
+  return {
+    autoContinuation: {
+      ...shown,
+      ...(refused !== undefined
+        ? {
+          refused: {
+            at: refused.at,
+            reason: refused.reason,
+            steps: refused.steps,
+            message: refused.message,
+          },
+        }
+        : {}),
+    },
+  };
+}
+
 export function toRunData(
   run: WorkflowRun,
   path?: string,
@@ -925,6 +948,11 @@ export function toRunData(
       : {}),
     ...(run.client !== undefined ? { client: run.client } : {}),
     references: run.references,
+    ...(run.status === "interrupted" &&
+        run.tags["interrupt_reason"] !== undefined
+      ? { interruptReason: run.tags["interrupt_reason"] }
+      : {}),
+    ...autoContinuationView(run),
     ...(run.parentRun?.kind === "valid"
       ? {
         parentRun: {

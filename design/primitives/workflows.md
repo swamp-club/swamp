@@ -248,6 +248,10 @@ When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
   with inputs may rely on a late input supplied at resume (Resume inputs
   below). It must opt in with `autoResume: true` itself.
 
+`autoResume` does not govern a run a serve restart cut off. That is
+`autoContinue` (default on), and see
+[automatic continuation](#recovery) under Recovery.
+
 The resume uses the workflow name and run id the approval resolved, not the
 request fields. It counts against the approver's principal for the
 `ActiveRunRegistry` caps, and the run keeps its original `initiatedBy` and
@@ -4814,6 +4818,62 @@ acknowledgement.
 
 When unknown steps have no guards, `--acknowledge-unknown` accepts the risk of
 re-running steps whose external side effects may already have happened.
+
+**Automatic continuation by serve (swamp-club#4693):** serve runs the same
+recovery itself, without an operator, when the rule above needs no
+acknowledgement. Only a run serve interrupted is a candidate: the boot reaper,
+reconciliation of a dead peer and the shutdown interrupt stamp the run with
+`continuableSince`, and only on a run serve drove (a recorded triggering
+principal or serve instance id). A run left interrupted by an older swamp, or
+by a local CLI process, carries no stamp and is never continued.
+`decideAutoContinuation` (`src/domain/workflows/auto_continuation.ts`) judges
+each candidate and continues it, or refuses with one of these reasons:
+
+- `workflow_missing`: the workflow no longer exists.
+- `not_serve_driven`: the run was not started through serve.
+- `opted_out`: the workflow sets `autoContinue: false`. The field is on by
+  default and sits outside the definition fingerprint, so toggling it never
+  reads as a changed definition. It is separate from `autoResume`, which is
+  off by default and governs resuming after approvals and signal waits.
+- `continued_too_often`: the run was continued
+  `MAX_CONSECUTIVE_AUTO_CONTINUATIONS` (3) times in a row with no step
+  finishing in between, so a step that takes serve down with it cannot loop
+  across restarts. A step that finishes after a continuation clears the count,
+  and so does a manual recover.
+- `definition_changed`, `unguarded_step`: the recovery assessment above.
+- `fan_out_changed`: the fan-out plan or worker selector no longer matches, or
+  no worker pool is available.
+- `nested_run_unsettled`: a nested run the run waits on is still open.
+
+Serve judges candidates at boot (after the pending-run replay and before the
+schedule catch-up), after a reconciliation tick interrupts a dead peer's runs,
+and when a team leader takes over (after its own replay). Followers never
+continue a run. A continuation claims the interrupted record
+(`suspensionKeyOf` of the interrupted run) and compares the copy with the
+datastore before `recover` resets anything. Two instances, or the old and new
+process of a rolling restart, therefore never both continue one interruption.
+The claim is kept after the reset, so a peer holding the same stale copy is
+refused even where record currency cannot be checked. The resume then runs
+under the same run id through the serve resume launcher, under the run's
+recorded principal and vault scope, with every refusal a resume already has
+(such as a run started through a delegation that has ended). A run serve
+recovered but did not resume before it stopped is `recoveredAutomatically`,
+and the continuation sweep finishes it under `autoContinue`. A run reset by
+`swamp workflow recover` still waits for its operator. A continued scheduled
+run holds off its workflow's next fire until it ends. A continued webhook run
+does not count against its route's `maxConcurrentRuns`, because its delivery
+was admitted before the restart.
+
+The run records the outcome in `autoContinuation`: the continuation (time,
+interruption reason, reset steps, consecutive count) or the refusal (reason,
+steps, operator message). A refusal is written once per interruption, under
+the same claim and currency check, so it never lands over an operator's
+recover. The audit log records `workflow.auto_continue`,
+`workflow.auto_continue_refused` and `workflow.auto_continue_failed`. The
+boot and reconciliation logs name each refused run and step, with the
+`swamp workflow recover` command to decide it. `swamp run history` shows
+the interruption reason and `[CONTINUED]`, and `workflow history get` and the
+dashboard run view show both.
 
 **Non-goals:** recovery does not promise exactly-once execution. A crash can
 happen after an external side effect succeeds but before Swamp records the step
