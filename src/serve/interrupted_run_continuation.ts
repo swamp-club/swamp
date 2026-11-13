@@ -105,7 +105,9 @@ export interface InterruptedRunContinuationResult {
   readonly deferred: readonly InterruptedRunTarget[];
 }
 
-type LaunchOutcome = "continued" | "deferred" | "settled";
+type LaunchOutcome =
+  | { readonly kind: "continued" | "deferred" | "settled" }
+  | { readonly kind: "refused"; readonly message: string };
 
 function holderOf(ctx: ConnectionContext): string {
   return ctx.repoContext.continuationClaims?.holder ??
@@ -162,8 +164,16 @@ export async function continueInterruptedRuns(
         continue;
       }
       const outcome = await launch(ctx, run, workflowId, cause, options);
-      if (outcome === "continued") continued.push(run.id);
-      if (outcome === "deferred") deferred.push(target);
+      if (outcome.kind === "continued") continued.push(run.id);
+      if (outcome.kind === "deferred") deferred.push(target);
+      if (outcome.kind === "refused") {
+        refused.push({
+          runId: run.id,
+          workflowName: run.workflowName,
+          reason: "launch_refused",
+          message: outcome.message,
+        });
+      }
     } catch (error) {
       deferred.push(target);
       logger.warn(
@@ -357,8 +367,8 @@ async function launch(
   const registry = ctx.activeRunRegistry!;
   // kept for the recover, which takes it again as its own holder and keeps it
   const attempt = await holdInterruptedRecord(ctx, run, workflowId);
-  if (attempt.kind === "busy") return "deferred";
-  if (attempt.kind === "orphaned") return "settled";
+  if (attempt.kind === "busy") return { kind: "deferred" };
+  if (attempt.kind === "orphaned") return { kind: "settled" };
   const hold = attempt.hold;
   const detail =
     `workflow=${run.workflowName} run=${run.id} cause=${cause} interrupted=${
@@ -390,27 +400,24 @@ async function launch(
   });
   if (!launched.ok) {
     // a lost race shares its claim with the pass that won, which keeps it
-    if (LOST_RACE_CODES.has(launched.code)) return "settled";
+    if (LOST_RACE_CODES.has(launched.code)) return { kind: "settled" };
     if (launched.refusal === "refused") {
       // a definite answer stands for this interruption, like a verdict's
       await hold.release();
+      const message =
+        `${launched.message}. Decide with 'swamp workflow recover ${run.workflowName} --run ${run.id}'.`;
       const recorded = await recordRefusal(ctx, run, workflowId, {
         kind: "refuse",
-        refusal: {
-          reason: "launch_refused",
-          steps: [],
-          message:
-            `${launched.message}. Decide with 'swamp workflow recover ${run.workflowName} --run ${run.id}'.`,
-        },
+        refusal: { reason: "launch_refused", steps: [], message },
       });
-      if (recorded) {
-        emitSystemAuditEvent(
-          ctx,
-          "workflow.auto_continue_refused",
-          `${detail} reason=launch_refused`,
-        );
-      }
-      return "settled";
+      if (recorded === "busy") return { kind: "deferred" };
+      if (recorded === "skipped") return { kind: "settled" };
+      emitSystemAuditEvent(
+        ctx,
+        "workflow.auto_continue_refused",
+        `${detail} reason=launch_refused`,
+      );
+      return { kind: "refused", message };
     }
     // a fault, such as a full registry: tried again later, reported once
     await hold.release();
@@ -429,7 +436,7 @@ async function launch(
         },
       );
     }
-    return "deferred";
+    return { kind: "deferred" };
   }
   emitSystemAuditEvent(ctx, "workflow.auto_continue", detail);
   logger.info(
@@ -447,7 +454,7 @@ async function launch(
       completion,
     );
   }
-  return "continued";
+  return { kind: "continued" };
 }
 
 const reportedFailures = new Set<string>();

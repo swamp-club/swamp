@@ -32,8 +32,6 @@ import {
   type InterruptedRunContinuationCause,
   type InterruptedRunTarget,
 } from "../../serve/interrupted_run_continuation.ts";
-
-const PENDING_INTERRUPTED_MAX = 10_000;
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
 import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
 import { DelegationSyncService } from "../../serve/delegation_sync_service.ts";
@@ -832,6 +830,8 @@ import {
   coLocatedTokenKeyWarning,
   TOKEN_SECRETS_KEY_RECORD,
 } from "../../serve/token_key_exposure.ts";
+
+const PENDING_INTERRUPTED_MAX = 10_000;
 
 /** what a reload's prepare phase settled before anything changed */
 interface ReloadPrepared extends GrantReloadPrepared {
@@ -10299,7 +10299,18 @@ export const serveCommand = new Command()
     };
     // judged again by the continuation sweep; a full pass replaces it
     const pendingInterrupted = new Map<string, InterruptedRunTarget>();
-    const continueInterruptedAtLead = async (
+    // one pass at a time: two passes of this serve share its claims
+    let continuationPass: Promise<void> = Promise.resolve();
+    const continueInterruptedAtLead = (
+      cause: InterruptedRunContinuationCause,
+      targets?: readonly InterruptedRunTarget[],
+    ): Promise<void> => {
+      continuationPass = continuationPass.then(() =>
+        runContinuationPass(cause, targets)
+      );
+      return continuationPass;
+    };
+    const runContinuationPass = async (
       cause: InterruptedRunContinuationCause,
       targets?: readonly InterruptedRunTarget[],
     ): Promise<void> => {
@@ -10313,7 +10324,15 @@ export const serveCommand = new Command()
               continuingScheduled.set(run.runId, run);
               const release = () => {
                 continuingScheduled.delete(run.runId);
-                scheduler.current()?.admitQueued();
+                try {
+                  scheduler.current()?.admitQueued();
+                } catch (error) {
+                  logger.warn("Scheduled run queue stalled: {error}", {
+                    error: error instanceof Error
+                      ? error.message
+                      : String(error),
+                  });
+                }
               };
               completion.then(release, release);
             },

@@ -836,3 +836,44 @@ Deno.test({
       );
     }),
 });
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a refused launch whose record moved on before the refusal is written is deferred, not audited",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "ended-link-busy" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary", {
+        delegation: "0b9f6f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+      });
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      (serve.ctx as { delegationDirectory?: unknown }).delegationDirectory = {
+        standingOf: () => ({ kind: "ended" }),
+      };
+      // current for the launch's hold, behind by the time the refusal is held
+      let reads = 0;
+      let behind = true;
+      serve.ctx.repoContext.runRecordCurrency = () =>
+        Promise.resolve(++reads === 1 || !behind);
+
+      const first = await continueInterruptedRuns(serve.ctx, "boot");
+      assertEquals(first.refused, []);
+      assertEquals(first.deferred, [{ workflowId: workflow.id, runId }]);
+      assertEquals(serve.audit, []);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.autoContinuation,
+        undefined,
+      );
+
+      behind = false;
+      const later = await continueInterruptedRuns(serve.ctx, "sweep", {
+        targets: first.deferred,
+      });
+      assertEquals(later.refused.map((r) => r.reason), ["launch_refused"]);
+      assertEquals(serve.audit.map((a) => a.action), [
+        "workflow.auto_continue_refused",
+      ]);
+    }),
+});
