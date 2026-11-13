@@ -86,11 +86,7 @@ function carriesInFlight(err: Error): boolean {
     (details as { inFlight?: unknown }).inFlight === true;
 }
 
-/**
- * a may-land error keeps the inFlight its own flag, or a cause that was in
- * flight (a forwarded request lost at the leader, or a send that may have
- * reached serve), gives it
- */
+/** a may-land error carries inFlight from its own flag or an in-flight cause */
 function mayLandInFlight(err: Error): boolean {
   if ((err as { code?: unknown }).code !== COMMIT_MAY_LAND_CODE) return false;
   let current: unknown = err;
@@ -128,13 +124,11 @@ const MAY_LAND_OUTAGE_CODES: ReadonlySet<string> = new Set([
   COMMIT_UNREACHABLE_CODE,
   LEASE_LAPSED_CODE,
   SERVE_NOT_LEADER_CODE,
+  V3_STORAGE_UNREACHABLE_CODE,
+  CATCH_UP_UNREACHABLE_CODE,
 ]);
 
-/**
- * an outage ending a command whose change may have landed, as the may-land
- * error the user is shown; keyed on the top-level code, so a wrapper carrying
- * the outage's code is covered. A lease-lost refusal keeps its own code
- */
+/** keyed on the top-level code, so a wrapper is covered; lease-lost keeps its own */
 function mayLandRelabelOf(
   error: unknown,
   context: ErrorPresentationContext,
@@ -319,17 +313,22 @@ export function exitCodeForError(
   if (code === COMMIT_UNREACHABLE_CODE) {
     return context.commandLanded === true ? 1 : 75;
   }
-  // cut off from the storage before writing, or while catching up: nothing
-  // changed
-  if (code === V3_STORAGE_UNREACHABLE_CODE) return 75;
-  if (code === CATCH_UP_UNREACHABLE_CODE) return 75;
+  // cut off from the storage before writing, or while catching up: this
+  // refusal changed nothing, though an earlier commit of the command may have
+  if (
+    code === V3_STORAGE_UNREACHABLE_CODE || code === CATCH_UP_UNREACHABLE_CODE
+  ) {
+    return context.commandLanded === true ? 1 : 75;
+  }
   // the serve the datastore is written through is unreachable: the write was
   // refused, not sent to the storage
   if (code === V3_SERVE_UNREACHABLE_CODE) {
     return context.commandLanded === true ? 1 : 75;
   }
   // a serve node that does not lead refused the write
-  if (code === SERVE_NOT_LEADER_CODE) return 75;
+  if (code === SERVE_NOT_LEADER_CODE) {
+    return context.commandLanded === true ? 1 : 75;
+  }
   // a follower whose copy is behind the caller's refused a read while it
   // catches up; nothing changed
   if (code === SERVE_FOLLOWER_BEHIND_CODE) return 75;
