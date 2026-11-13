@@ -310,22 +310,7 @@ export class ServeLeadership {
       await feed.stop();
     }
     if (this.#stopped) return;
-    if (!await this.#refresh(true)) {
-      if (this.#stopped) return;
-      // The lease lapsed while the copy was restored: take() restores under
-      // it, never this follower's half-done restore. The feed is stopped.
-      logger
-        .info`The datastore's writer lease lapsed while this serve node refreshed its copy; it tries the lease`;
-      const retaken = await lease.take();
-      if (this.#stopped) return;
-      if (retaken === "writer") {
-        await this.#lead();
-        return;
-      }
-      // the holder renewed after all: the refresh runs to its end this time,
-      // so a lapse the take disagrees with cannot keep the copy stale
-      if (!await this.#refresh(false)) return;
-    }
+    if (!await this.#refresh()) return;
     if (this.#stopped || this.#role !== "follower") return;
     this.#refreshedAt = this.#now();
     await this.#readLeader();
@@ -333,14 +318,10 @@ export class ServeLeadership {
     feed?.follow(this.#leader);
   }
 
-  /**
-   * false when the refresh was aborted, by stop() or, when watched, once the
-   * holder's lease lapsed, which a timer apart from the tick watches
-   */
-  async #refresh(watchLapse: boolean): Promise<boolean> {
+  /** false when stop() aborted the refresh */
+  async #refresh(): Promise<boolean> {
     const refresh = new AbortController();
     this.#refreshing = refresh;
-    const watch = watchLapse ? this.#abortAtLapse(refresh) : undefined;
     try {
       await this.#deps.refreshCopy(refresh.signal);
       return true;
@@ -349,42 +330,7 @@ export class ServeLeadership {
       throw error;
     } finally {
       this.#refreshing = undefined;
-      await watch?.cancel();
     }
-  }
-
-  /**
-   * re-reads the expiry each time it comes due, so a holder that renewed
-   * meanwhile keeps the refresh going
-   */
-  #abortAtLapse(refresh: AbortController): { cancel(): Promise<void> } {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let checking: Promise<void> = Promise.resolve();
-    const check = async (): Promise<void> => {
-      const expiresAt = await this.#deps.lease.expiresAt().catch(
-        () => undefined,
-      );
-      if (cancelled) return;
-      const wait = expiresAt === undefined || !Number.isFinite(expiresAt)
-        ? this.#tickMs
-        : expiresAt + LEASE_EXPIRY_MARGIN_MS - this.#now();
-      if (wait <= 0) {
-        refresh.abort(new Error("the writer lease lapsed"));
-        return;
-      }
-      timer = setTimeout(() => {
-        checking = check();
-      }, wait);
-    };
-    checking = check();
-    return {
-      async cancel() {
-        cancelled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        await checking;
-      },
-    };
   }
 
   /**

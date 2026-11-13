@@ -794,82 +794,35 @@ function hangingRefresh() {
   return { state, refreshCopy, end: () => ended.resolve() };
 }
 
-Deno.test("ServeLeadership: a follower whose refresh is still running when the holder's lease lapses aborts it and takes the lease in the same tick (swamp-club#4679)", async () => {
+Deno.test("ServeLeadership: a follower's refresh still running when the holder's lease lapses runs to its end, and the lease is taken after it", async () => {
   const lease = new FakeLease();
   const feed = new FakeFeed();
   const refresh = hangingRefresh();
-  const events: string[] = [];
   const leadership = new ServeLeadership({
     instanceId: "me",
     lease,
     store: memoryStore(),
     feed,
     refreshCopy: refresh.refreshCopy,
-    onLead: () => {
-      events.push(`lead:${feed.stops}`);
-      return Promise.resolve();
-    },
-    onLostLead: () => Promise.resolve(),
-    tickMs: 3_600_000,
-  });
-  await leadership.start("follower");
-  let ticked = false;
-  try {
-    const expiry = Date.now() + 200;
-    lease.expiry = expiry;
-    lease.freeFrom = { at: expiry, fence: 3 };
-    const ticking = leadership.tick().then(() => {
-      ticked = true;
-    });
-    await waitFor(() => ticked, "the tick to take the lease", {
-      timeoutMs: 5_000,
-    });
-    await ticking;
-    assertEquals(leadership.role, "leader");
-    assertEquals([refresh.state.calls, refresh.state.aborted], [1, 1]);
-    assertEquals(lease.takes, 2);
-    // the feed stopped before the refresh, so the lead finds it stopped
-    assertEquals(events, ["lead:1"]);
-    assertEquals(feed.followed.length, 1, "no feed restarted on the leader");
-  } finally {
-    refresh.end();
-    await leadership.stop();
-  }
-});
-
-Deno.test("ServeLeadership: a refresh outlasting an expiry the holder renewed meanwhile runs to its end (swamp-club#4679)", async () => {
-  const lease = new FakeLease();
-  const refresh = hangingRefresh();
-  const leadership = new ServeLeadership({
-    instanceId: "me",
-    lease,
-    store: memoryStore(),
-    refreshCopy: refresh.refreshCopy,
     onLead: () => Promise.resolve(),
     onLostLead: () => Promise.resolve(),
     tickMs: 3_600_000,
   });
   await leadership.start("follower");
-  // set once started, so only the tick's watch reads it
-  let readsWhenDue = 0;
-  const firstExpiry = Date.now() + 100;
-  lease.expiresAt = () => {
-    if (Date.now() < firstExpiry) return Promise.resolve(firstExpiry);
-    // renewed: the expiry moved on by the time the first one came due
-    readsWhenDue++;
-    return Promise.resolve(Date.now() + 3_600_000);
-  };
   try {
+    const expiry = Date.now() + 100;
+    lease.expiry = expiry;
+    lease.freeFrom = { at: expiry, fence: 3 };
     const ticking = leadership.tick();
-    await waitFor(() => readsWhenDue >= 1, "the expiry to be re-read", {
-      timeoutMs: 5_000,
-    });
-    refresh.end();
-    await ticking;
+    await waitFor(() => Date.now() > expiry + 500, "the lease to lapse");
     assertEquals([refresh.state.calls, refresh.state.aborted], [1, 0]);
     assertEquals(lease.takes, 1);
+    refresh.end();
+    await ticking;
     assertEquals(leadership.role, "follower");
-    assertEquals(leadership.isStale(), false);
+    await leadership.tick();
+    assertEquals(leadership.role, "leader");
+    assertEquals(lease.takes, 2);
   } finally {
     refresh.end();
     await leadership.stop();

@@ -8727,9 +8727,9 @@ recovered, marked or replicated by a follower.
   sooner) a follower tries the lease once and, when it is busy, restores its
   copy from the published lineage when it is behind
   (`refreshV3FollowerCopy`) and reads the leader record. A refresh still
-  running when the holder's lease expires is aborted before its restore is
-  installed, and the follower tries the lease at once (swamp-club#4679,
-  "Phase 4D2" in `datastore-litestream.md`). A follower that wins takes the
+  running when the holder's lease expires runs to its end, and the next tick
+  tries the lease (swamp-club#4679, "Phase 4D2" in
+  `datastore-litestream.md`). A follower that wins takes the
   writer's full hold path: restore the latest replicated state, raise the
   fence, check the claim, recover the outbox and start a lineage at its
   fence.

@@ -1328,18 +1328,17 @@ superseded. The next writer restarts.
 after the holder's lease expires by this node's clock when that is sooner
 (`LeadershipLease.expiresAt()`, plus 1 s, since `take()` judges expiry
 strictly). It never waits longer than the interval, since the same timer
-drives refreshes. A tick no longer waits out its copy refresh when the
-holder's lease has expired: a timer apart from the tick, at the expiry plus
-1 s, aborts the refresh, and the tick then calls `take()`, which restores
-under the lease as before. The timer reads the expiry again when it comes
-due, so a holder that renewed meanwhile keeps the refresh going; after a
-`take()` that loses, the refresh runs again, this time to its end. A restore
-is abortable only before it is installed: `refreshV3FollowerCopy`,
-`ensureV3CopyCurrent` and `makeV3CopyCurrent` check the signal at the
-restore-lock wait, around quiesce, during the Litestream restore and before
-the integrity check, truncation and install. After install the refresh runs
-to its end, and only the read-model catch-up after it is skipped. Serve's
-`stop()` aborts a follower refresh the same way and still waits for a
+drives refreshes. A refresh still running when the holder's lease expires
+runs to its end, and the next tick takes the lease. An abort at the expiry
+was tried and rejected: `take()` restores the same lineage under the lease,
+so aborting the refresh only throws its progress away (a 590 MB restore on
+GCS takes 43–56 s), and on the dogfood rounds the follower's restore of the
+old lineage finished inside the lease-lapse wait (3.5–14.9 s, starting
+6–7 s after the cut). A restore is abortable only before it is installed:
+`refreshV3FollowerCopy`, `ensureV3CopyCurrent` and `makeV3CopyCurrent` check
+the signal at the restore-lock wait, around quiesce, during the Litestream
+restore and before the integrity check, truncation and install. Serve's
+`stop()` uses that to abort a follower refresh and still waits for a
 `take()` in flight.
 
 **Serve** publishes a head whenever its last commit moved (one sync and
