@@ -1463,8 +1463,9 @@ secret reference, and its runs are authorized as `service:webhook` like any
 other route. A route file's route must sit under `/hooks/`
 (`fileRouteProblem` in `src/serve/webhook_route.ts`): not the bare prefix, with
 no empty, `.` or `..` segments, and every segment made of letters, digits and
-`-._~` only, so the route is its own canonical pathname. Routes from
-`serve.yaml` and `--webhook` have no such restriction. The secret must be
+`-._~` only, so the route is its own canonical pathname. Serve answers no path
+of its own under `/hooks/`, so a route file never shadows a serve route. Routes
+from `serve.yaml` and `--webhook` have no such restriction. The secret must be
 `@vault=<vault>:<key>`; a literal, `@env=` or `@file=` secret is refused.
 Unknown keys, a symlink leaving the directory, anything but a regular file, a
 file over 64 KiB, a YAML alias that repeats a mapping or list, parsed values
