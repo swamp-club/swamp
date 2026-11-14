@@ -49,8 +49,7 @@ const PINNED: readonly string[] = [
   "src/cli/commands/serve.ts #1",
   // A resolveOrCreateDefinition result inside the model resolver a workflow
   // step calls: the error fails that step and is never rendered here.
-  "src/cli/commands/workflow_resume.ts #1",
-  "src/cli/commands/workflow_run.ts #1",
+  "src/cli/direct_type_resolver.ts #1",
 ];
 
 Deno.test("swamp error rethrow: CLI and renderers rethrow stream errors as UserError", async () => {

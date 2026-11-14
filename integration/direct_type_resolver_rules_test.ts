@@ -17,9 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// a CLI command that builds its own direct-type resolver can drop an argument
-// the run path passes, so the CLI composes createDirectTypeResolver instead
-
 import {
   assertPinnedSet,
   isCommentLine,
@@ -30,6 +27,8 @@ import {
 
 const DEFINING_FILE = "src/libswamp/models/direct_execution.ts";
 
+// a CLI command that builds its own direct-type resolver can drop an argument
+// the run path passes, so the CLI composes createDirectTypeResolver instead
 const PINNED_CALLERS: readonly string[] = [
   "src/cli/direct_type_resolver.ts",
   "src/serve/deps.ts",

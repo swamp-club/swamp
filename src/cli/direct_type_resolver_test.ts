@@ -20,7 +20,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { z } from "zod";
-import { type ModelDefinition, modelRegistry } from "../domain/models/model.ts";
+import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
@@ -47,7 +47,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         execute: () => Promise.resolve({ dataHandles: [] }),
       },
     },
-  } as unknown as ModelDefinition);
+  });
   const autoDefinitionsDir = join(repoDir, ".swamp", "auto-definitions");
   const repoFor = () =>
     new YamlDefinitionRepository(
