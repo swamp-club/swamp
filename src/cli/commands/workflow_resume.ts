@@ -54,10 +54,9 @@ import { cancelStrandedRun } from "../../domain/workflows/stranded_run.ts";
 import { runHasDeadOwner } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { openSignalWaitMessage } from "../../domain/workflows/signal_wait.ts";
 import { findUnsettledWait } from "../../domain/workflows/signal_wait_cleanup.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { createDirectTypeResolver } from "../direct_type_resolver.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
-  type DirectTypeResolver,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import {
@@ -74,13 +73,7 @@ import {
   createWorkflowRunRenderer,
   showsDataAttributes,
 } from "../../presentation/renderers/workflow_run.ts";
-import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
-import type { DefinitionId } from "../../domain/definitions/definition.ts";
-import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
-import { getAutoResolver } from "../auto_resolver_context.ts";
 import { renderAwaitingParent } from "./nested_run_hints.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { awaitingParentOf } from "../../libswamp/workflows/nested_runs.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -435,73 +428,7 @@ export const workflowResumeCommand = withRemoteOptions(
       cliCtx.logger.info`Resume input(s) supplied: ${resumeKeys.join(", ")}`;
     }
 
-    const directResolver: DirectTypeResolver = async (
-      typeArg,
-      defName,
-      methodName,
-      inputs,
-      _globalArgs,
-      authoredExpressions,
-      sensitiveValues,
-      provenance,
-    ) => {
-      let resolvedType = ModelType.create(typeArg);
-      let modelDef = await resolveModelType(
-        resolvedType,
-        getAutoResolver(),
-      );
-      if (!modelDef && typeArg.startsWith("@")) {
-        const strippedType = ModelType.create(typeArg.slice(1));
-        const strippedDef = await resolveModelType(
-          strippedType,
-          getAutoResolver(),
-        );
-        if (strippedDef) {
-          resolvedType = strippedType;
-          modelDef = strippedDef;
-        }
-      }
-      if (!modelDef) {
-        throw new Error(`Unknown behavior type: ${resolvedType.normalized}`);
-      }
-      resolvedType = modelDef.type;
-      const autoDefRepo = new YamlDefinitionRepository(
-        repoDir,
-        undefined,
-        repoContext.autoDefinitionsDir,
-        false,
-        repoContext.markDirty,
-      );
-      const result = await resolveOrCreateDefinition(
-        {
-          lookupDefinition: (name) =>
-            findDefinitionByIdOrName(repoContext.definitionRepo, name),
-          getModelDef: (type) => resolveModelType(type, getAutoResolver()),
-          saveDefinition: (type, def) => autoDefRepo.save(type, def),
-          getDefinitionPath: (type, id) =>
-            autoDefRepo.getPath(type, id as DefinitionId),
-        },
-        typeArg,
-        defName,
-        methodName,
-        inputs,
-        resolvedType,
-        modelDef,
-        undefined,
-        repoContext.autoDefinitionsDir,
-        authoredExpressions,
-        sensitiveValues,
-        provenance,
-      );
-      if (!result.ok) throw new Error(result.error.message);
-      return {
-        definition: result.definition,
-        modelType: result.modelType,
-        created: result.created,
-        routedMethodInputs: result.routedInputs.methodArguments,
-        authoredExpressions: result.authoredExpressions,
-      };
-    };
+    const directResolver = createDirectTypeResolver(repoDir, repoContext);
 
     const ephemeral = createEphemeralStore(
       repoContext.unifiedDataRepo.namespace,

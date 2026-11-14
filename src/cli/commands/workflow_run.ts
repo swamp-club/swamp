@@ -69,18 +69,10 @@ import {
   type SyncGate,
 } from "../../infrastructure/persistence/sync_gate_lock.ts";
 import { createStepLockHook } from "../../serve/deps.ts";
-import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
-  type DirectTypeResolver,
   type StepLockHook,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
-import type { DefinitionId } from "../../domain/definitions/definition.ts";
-import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
-import { getAutoResolver } from "../auto_resolver_context.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   resolvePulledExtensionsRoot,
   SWAMP_SUBDIRS,
@@ -89,6 +81,7 @@ import {
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { WorkflowRunCheckpointer } from "../../infrastructure/persistence/workflow_run_checkpointer.ts";
 import { localNestedCascade } from "../local_nested_cascade.ts";
+import { createDirectTypeResolver } from "../direct_type_resolver.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
   cancelAndSettle,
@@ -555,85 +548,10 @@ export const workflowRunCommand = new Command()
                 ephRepo,
                 ephCatalog,
               ) => {
-                const directResolver: DirectTypeResolver = async (
-                  typeArg,
-                  defName,
-                  methodName,
-                  inputs,
-                  globalArgs,
-                  authoredExpressions,
-                  sensitiveValues,
-                  provenance,
-                ) => {
-                  const typeStr = typeArg;
-                  let resolvedType = ModelType.create(typeStr);
-                  let modelDef = await resolveModelType(
-                    resolvedType,
-                    getAutoResolver(),
-                  );
-
-                  // Fallback: @ is the CLI syntax marker but repo-local extensions
-                  // register types without @. Try stripping it.
-                  if (!modelDef && typeStr.startsWith("@")) {
-                    const strippedType = ModelType.create(typeStr.slice(1));
-                    const strippedDef = await resolveModelType(
-                      strippedType,
-                      getAutoResolver(),
-                    );
-                    if (strippedDef) {
-                      resolvedType = strippedType;
-                      modelDef = strippedDef;
-                    }
-                  }
-
-                  if (!modelDef) {
-                    throw new Error(
-                      `Unknown behavior type: ${resolvedType.normalized}`,
-                    );
-                  }
-                  resolvedType = modelDef.type;
-                  const autoDefRepo = new YamlDefinitionRepository(
-                    dir,
-                    undefined,
-                    repoContext.autoDefinitionsDir,
-                    false,
-                    repoContext.markDirty,
-                  );
-                  const result = await resolveOrCreateDefinition(
-                    {
-                      lookupDefinition: (name) =>
-                        findDefinitionByIdOrName(
-                          repoContext.definitionRepo,
-                          name,
-                        ),
-                      getModelDef: (type) =>
-                        resolveModelType(type, getAutoResolver()),
-                      saveDefinition: (type, def) =>
-                        autoDefRepo.save(type, def),
-                      getDefinitionPath: (type, id) =>
-                        autoDefRepo.getPath(type, id as DefinitionId),
-                    },
-                    typeStr,
-                    defName,
-                    methodName,
-                    inputs,
-                    resolvedType,
-                    modelDef,
-                    globalArgs,
-                    repoContext.autoDefinitionsDir,
-                    authoredExpressions,
-                    sensitiveValues,
-                    provenance,
-                  );
-                  if (!result.ok) throw new Error(result.error.message);
-                  return {
-                    definition: result.definition,
-                    modelType: result.modelType,
-                    created: result.created,
-                    routedMethodInputs: result.routedInputs.methodArguments,
-                    authoredExpressions: result.authoredExpressions,
-                  };
-                };
+                const directResolver = createDirectTypeResolver(
+                  dir,
+                  repoContext,
+                );
 
                 const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
                 executionTrackers.add(tracker);
