@@ -24,12 +24,11 @@ import type { SwampifyRow } from "../../client/swampify.ts";
 import type { ComparisonRecord } from "../../client/useSwampify.ts";
 import { comparisonSummaryOf } from "../../client/swampify.ts";
 import {
-  formatBreakEven,
   formatShortDay,
   type OfferView,
   type OptionView,
 } from "../../lib/swampify_view.ts";
-import { ComparisonBody } from "./SwampifyComparison.tsx";
+import { ComparisonBody, SummaryLine } from "./SwampifyComparison.tsx";
 import { optionStatus } from "./SwampifyOptions.tsx";
 
 /** Options built, or measured against swamp, from the offer. */
@@ -87,11 +86,7 @@ function BuiltRow(
           {summary
             ? (
               <>
-                Run{" "}
-                <span className={summary.outcome === "failed" ? "sw-fail" : ""}>
-                  {summary.outcome}
-                </span>{" "}
-                · {formatBreakEven(summary.breakEven)}
+                Run <SummaryLine summary={summary} />
               </>
             )
             : <span className="sw-muted">Not compared yet</span>}

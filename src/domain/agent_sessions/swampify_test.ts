@@ -46,9 +46,10 @@ import {
   type SwampifyCandidateSet,
   swampifyCandidateSetSummary,
   swampifyCandidateSetTags,
-  type SwampifyComparison,
   swampifyComparisonDataName,
   swampifyComparisonPredicate,
+  type SwampifyComparisonRecord,
+  swampifyComparisonSummary,
   swampifyComparisonTags,
   type SwampifyOffer,
   type SwampifyOfferOption,
@@ -162,7 +163,7 @@ function offer(extra: Record<string, unknown> = {}) {
 
 const tokens = { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 };
 
-function comparison(extra: Record<string, unknown> = {}) {
+function comparisonV2(extra: Record<string, unknown> = {}) {
   return {
     schemaVersion: 2,
     generatedAt: "2026-10-30T10:00:00.000Z",
@@ -185,6 +186,24 @@ function comparison(extra: Record<string, unknown> = {}) {
     ...extra,
   };
 }
+
+function comparison(extra: Record<string, unknown> = {}) {
+  const v2 = comparisonV2();
+  return {
+    ...v2,
+    schemaVersion: 3,
+    build: { ...v2.build, sessions: 1 },
+    swampRun: { ...v2.swampRun, startedAt: "2026-10-30T08:00:00.000Z" },
+    ...extra,
+  };
+}
+
+const latestRun = {
+  startedAt: "2026-10-30T09:00:00.000Z",
+  wallMs: 1500,
+  tokens: { input: 5400, output: 180, cacheRead: 0, cacheWrite: 0 },
+  outcome: "succeeded",
+};
 
 const readers = {
   "candidate set": {
@@ -243,6 +262,57 @@ Deno.test("readSwampifyCandidateSet: v1 is older and says to rerun", () => {
 Deno.test("readSwampifyComparison: v1 is older", () => {
   const reading = readSwampifyComparison(comparison({ schemaVersion: 1 }));
   assertEquals(reading.kind === "skipped" && reading.reason, "older");
+});
+
+Deno.test("readSwampifyComparison: v2 still reads as a record", () => {
+  const reading = readSwampifyComparison(comparisonV2());
+  assert(reading.kind === "record");
+  assertEquals(reading.record.schemaVersion, 2);
+  assertEquals<unknown>(reading.record, comparisonV2());
+});
+
+Deno.test("readSwampifyComparison: v4 is skipped as newer", () => {
+  const reading = readSwampifyComparison(comparison({ schemaVersion: 4 }));
+  assertEquals(reading.kind === "skipped" && reading.reason, "newer");
+  assertStringIncludes(noteOf(reading), "reads up to version 3");
+});
+
+Deno.test("readSwampifyComparison: v3 reads with and without each optional field", () => {
+  const v3 = comparison();
+  const cases: Array<Record<string, unknown>> = [
+    {},
+    { swampRun: { ...v3.swampRun, unrecordedSteps: 2 } },
+    { swampRun: { ...v3.swampRun, modelSteps: 0 } },
+    { swampRun: { ...v3.swampRun, modelSteps: 3, unrecordedSteps: 3 } },
+    { latestRun: { ...latestRun, modelSteps: 2, unrecordedSteps: 1 } },
+    { latestRun },
+    { latestRun: { ...latestRun, unrecordedSteps: 1 } },
+    { history: { ...v3.history, noCallOccurrences: 1 } },
+    { build: { ...v3.build, sessions: 3 } },
+    { estimatedUsd: { build: 1, swampRun: 0, latestRun: 0.2 }, latestRun },
+    // every occurrence without calls leaves no per-occurrence figures
+    { history: { occurrences: 2, noCallOccurrences: 2 } },
+  ];
+  for (const extra of cases) {
+    const content = comparison(extra);
+    const reading = readSwampifyComparison(content);
+    assert(reading.kind === "record", JSON.stringify(reading));
+    assertEquals<unknown>(reading.record, content);
+  }
+});
+
+Deno.test("readSwampifyComparison: v2 does not take v3's fields, nor v3 lack build.sessions", () => {
+  assertEquals(
+    comparisonInvalidAt(comparisonV2({ latestRun })),
+    "the record",
+  );
+  const { sessions: _, ...build } = comparison().build;
+  assertEquals(comparisonInvalidAt(comparison({ build })), "build.sessions");
+  const { startedAt: __, ...swampRun } = comparison().swampRun;
+  assertEquals(
+    comparisonInvalidAt(comparison({ swampRun })),
+    "swampRun.startedAt",
+  );
 });
 
 Deno.test("readSwampifyCandidateSet: oversized lists are refused by count, naming the path", () => {
@@ -305,7 +375,7 @@ Deno.test("readSwampifyComparison: oversized candidateIds are refused by count",
   );
   assertEquals(
     noteOf(readSwampifyComparison(comparison({ candidateIds: ids }))),
-    "does not match version 2: too_big at candidateIds",
+    "does not match version 3: too_big at candidateIds",
   );
 });
 
@@ -596,7 +666,7 @@ function comparisonInvalidAt(content: unknown): string {
   return noteOf(readSwampifyComparison(content)).split(" at ")[1];
 }
 
-Deno.test("SwampifyComparisonV2Schema: cross-field rules each refuse at their path", () => {
+Deno.test("SwampifyComparisonV2Schema and V3: cross-field rules each refuse at their path", () => {
   const whole = cost();
   const chore = { ...cost(), toolCalls: range(5, 6, 7) };
   const cases: Array<[Record<string, unknown>, string]> = [
@@ -636,7 +706,66 @@ Deno.test("SwampifyComparisonV2Schema: cross-field rules each refuse at their pa
     }, "estimatedUsd.historyPerOccurrence"],
   ];
   for (const [extra, path] of cases) {
+    assertEquals(comparisonInvalidAt(comparisonV2(extra)), path);
     assertEquals(comparisonInvalidAt(comparison(extra)), path);
+  }
+});
+
+Deno.test("SwampifyComparisonV3Schema: its own rules each refuse at their path", () => {
+  const v3 = comparison();
+  const whole = cost();
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ build: { ...v3.build, sessions: 0 } }, "build.sessions"],
+    [{ build: { ...v3.build, sessions: 1.5 } }, "build.sessions"],
+    [
+      { swampRun: { ...v3.swampRun, unrecordedSteps: 0 } },
+      "swampRun.unrecordedSteps",
+    ],
+    [
+      { history: { ...v3.history, noCallOccurrences: 0 } },
+      "history.noCallOccurrences",
+    ],
+    [
+      { history: { ...v3.history, noCallOccurrences: 5 } },
+      "history.noCallOccurrences",
+    ],
+    // with all four occurrences callless there is nothing to take ranges over
+    [{
+      history: {
+        occurrences: 4,
+        noCallOccurrences: 4,
+        perOccurrence: { chore: whole, wholeTurns: whole },
+      },
+    }, "history.perOccurrence"],
+    [
+      { history: { occurrences: 4, noCallOccurrences: 1 } },
+      "history.perOccurrence",
+    ],
+    [{ latestRun: { ...latestRun, outcome: "failed" } }, "latestRun.outcome"],
+    [
+      { latestRun: { ...latestRun, unrecordedSteps: 0 } },
+      "latestRun.unrecordedSteps",
+    ],
+    [{
+      latestRun: { ...latestRun, startedAt: "2026-10-30T10:00:01.000Z" },
+    }, "latestRun.startedAt"],
+    [{ estimatedUsd: { latestRun: 0.2 } }, "estimatedUsd.latestRun"],
+    [{
+      swampRun: { ...v3.swampRun, startedAt: "2026-10-30T10:00:01.000Z" },
+    }, "swampRun.startedAt"],
+    [{
+      latestRun: { ...latestRun, startedAt: v3.swampRun.startedAt },
+    }, "latestRun.startedAt"],
+    [{
+      swampRun: { ...v3.swampRun, modelSteps: 1, unrecordedSteps: 2 },
+    }, "swampRun.unrecordedSteps"],
+    [{
+      latestRun: { ...latestRun, modelSteps: 0, unrecordedSteps: 1 },
+    }, "latestRun.unrecordedSteps"],
+    [{ swampRun: { ...v3.swampRun, modelSteps: -1 } }, "swampRun.modelSteps"],
+  ];
+  for (const [extra, path] of cases) {
+    assertEquals(comparisonInvalidAt(comparison(extra)), path, path);
   }
 });
 
@@ -736,13 +865,82 @@ Deno.test("readSwampifyOfferSummary: pick and target only where the state carrie
 Deno.test("swampifyComparisonTags: carry the option id and a summary that reads back", () => {
   const reading = readSwampifyComparison(comparison());
   assert(reading.kind === "record");
-  const record: SwampifyComparison = reading.record;
-  const tags = swampifyComparisonTags(record);
+  const tags = swampifyComparisonTags(reading.record);
   assertEquals(tags.optionId, OPT_A);
   assertEquals(
     readSwampifyComparisonSummary(tags[SWAMPIFY_SUMMARY_TAG])?.optionId,
     OPT_A,
   );
+});
+
+function comparisonRecord(content: unknown): SwampifyComparisonRecord {
+  const reading = readSwampifyComparison(content);
+  assert(reading.kind === "record", JSON.stringify(reading));
+  return reading.record;
+}
+
+Deno.test("swampifyComparisonSummary: a v2 record keeps today's summary exactly", () => {
+  assertEquals(swampifyComparisonSummary(comparisonRecord(comparisonV2())), {
+    optionId: OPT_A,
+    target: { kind: "workflow", name: "release-notes" },
+    outcome: "succeeded",
+    historyOccurrences: 4,
+    forwardRaw: 0,
+    forwardSwamp: 1,
+    breakEven: { low: 2, high: 5 },
+  });
+});
+
+Deno.test("swampifyComparisonSummary: v3 carries the build sessions, the latest outcome and what went unmeasured", () => {
+  const v3 = comparison();
+  assertEquals(
+    swampifyComparisonSummary(comparisonRecord(v3)).buildSessions,
+    1,
+  );
+  const fixed = comparisonRecord(comparison({
+    build: { ...v3.build, sessions: 2 },
+    swampRun: { ...v3.swampRun, outcome: "failed", unrecordedSteps: 3 },
+    latestRun: { ...latestRun, unrecordedSteps: 1 },
+    history: { ...v3.history, noCallOccurrences: 1 },
+  }));
+  const summary = swampifyComparisonSummary(fixed);
+  assertEquals(summary.outcome, "failed");
+  assertEquals(summary.latestOutcome, "succeeded");
+  assertEquals(summary.buildSessions, 2);
+  // the latest run is what break-even is against, so its count is shown
+  assertEquals(summary.unrecordedSteps, 1);
+  assertEquals(summary.noCallOccurrences, 1);
+  assertEquals(
+    readSwampifyComparisonSummary(
+      swampifyComparisonTags(fixed)[SWAMPIFY_SUMMARY_TAG],
+    ),
+    summary,
+  );
+  const firstOnly = comparisonRecord(comparison({
+    swampRun: { ...v3.swampRun, unrecordedSteps: 3 },
+  }));
+  const plain = swampifyComparisonSummary(firstOnly);
+  assertEquals(plain.unrecordedSteps, 3);
+  assertEquals("latestOutcome" in plain, false);
+  assertEquals("noCallOccurrences" in plain, false);
+});
+
+Deno.test("readSwampifyComparisonSummary: the new fields are optional and bounded", () => {
+  const base = swampifyComparisonSummary(comparisonRecord(comparisonV2()));
+  assert(readSwampifyComparisonSummary(JSON.stringify(base)));
+  for (
+    const extra of [
+      { buildSessions: 0 },
+      { unrecordedSteps: 0 },
+      { noCallOccurrences: 0 },
+      { latestOutcome: "failed" },
+    ]
+  ) {
+    assertEquals(
+      readSwampifyComparisonSummary(JSON.stringify({ ...base, ...extra })),
+      undefined,
+    );
+  }
 });
 
 Deno.test("summary readers: never throw, and refuse oversized, non-JSON and non-string tags", () => {

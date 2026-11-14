@@ -29,6 +29,7 @@ import type {
   SwampifyCandidate,
   SwampifyCandidateSet,
   SwampifyComparison,
+  SwampifyComparisonV2,
   SwampifyOffer,
   SwampifyOfferState,
   SwampifyRange,
@@ -349,7 +350,7 @@ export function fixtureComparison(
   const whole = cost(3);
   const strip = ({ weightedTokens: _, ...rest }: typeof chore) => rest;
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: "2026-11-10T10:30:00.000Z",
     importerVersion: "2026.11.10.1",
     optionId: OPTION_IDS[0],
@@ -363,12 +364,14 @@ export function fixtureComparison(
         cacheWrite: 61_000,
       },
       activeMs: 1_260_000,
+      sessions: 1,
     },
     history: {
       occurrences: 59,
       perOccurrence: { chore: strip(chore), wholeTurns: strip(whole) },
     },
     swampRun: {
+      startedAt: "2026-11-10T10:05:00.000Z",
       wallMs: 48_000,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       outcome: "succeeded",
@@ -382,4 +385,54 @@ export function fixtureComparison(
     estimatedUsd: { build: 3.1, swampRun: 0 },
     ...overrides,
   };
+}
+
+/**
+ * A target fixed in a second session: the first run failed with a model step
+ * unrecorded, the latest succeeded, and two past runs attributed no calls.
+ */
+export function fixtureComparisonFixed(): SwampifyComparison {
+  const base = fixtureComparison();
+  return {
+    ...base,
+    generatedAt: "2026-11-11T09:00:00.000Z",
+    build: {
+      tokens: {
+        input: 81_000,
+        output: 27_000,
+        cacheRead: 1_400_000,
+        cacheWrite: 90_000,
+      },
+      activeMs: 2_040_000,
+      sessions: 2,
+    },
+    history: { ...base.history, noCallOccurrences: 2 },
+    swampRun: {
+      startedAt: "2026-11-10T10:05:00.000Z",
+      wallMs: 51_000,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      outcome: "failed",
+      modelSteps: 3,
+      unrecordedSteps: 1,
+    },
+    latestRun: {
+      startedAt: "2026-11-11T08:40:00.000Z",
+      wallMs: 63_000,
+      tokens: { input: 54_000, output: 1_800, cacheRead: 0, cacheWrite: 0 },
+      outcome: "succeeded",
+      modelSteps: 3,
+    },
+    breakEven: { low: 6, high: 19 },
+    estimatedUsd: { build: 4.9, swampRun: 0, latestRun: 0.19 },
+  };
+}
+
+/** The same option as a v2 comparison, as written before v3. */
+export function fixtureComparisonV2(): SwampifyComparisonV2 {
+  const {
+    build: { sessions: _, ...build },
+    swampRun: { startedAt: __, ...swampRun },
+    ...rest
+  } = fixtureComparison();
+  return { ...rest, schemaVersion: 2, build, swampRun };
 }

@@ -87,9 +87,10 @@ run it outside the sandbox.
 | ------------- | ---------------------------------- | --------------------- | ------------------------------- | ------- |
 | candidate set | `swampify-candidates`              | `swampify-candidates` | `assess`                        | 2       |
 | offer         | `swampify-offer`                   | `swampify-offer`      | the skill, via an offer method  | 1       |
-| comparison    | `swampify-comparison-<option id>`  | `swampify-comparison` | `compare`                       | 2       |
+| comparison    | `swampify-comparison-<option id>`  | `swampify-comparison` | `compare`                       | 3       |
 
-Each re-run writes a new version of the same data item.
+Each re-run writes a new version of the same data item. Readers still read
+comparison version 2.
 
 - **Candidate set.** One assessment: its window, scope and up to 100 ranked
   candidates. A candidate has a kind (`prompt-repeat`, `call-sequence`,
@@ -113,6 +114,21 @@ Each re-run writes a new version of the same data item.
   `candidateIds`, the target, the build cost, history ranges (the chore's own
   calls up to whole turns) summed over all the option's candidates, the swamp
   run, forward figures, break-even, and an optional labelled money estimate.
+  Version 3 adds what a fixed target and model steps need:
+  - `build.sessions`, at least 1: the build session plus later sessions that
+    fixed the target, whose cost `build` includes;
+  - `swampRun.startedAt`, required, so the two runs can be placed;
+  - `latestRun`, optional: the latest successful run when it differs from the
+    first (`swampRun`), in the same shape with `outcome` fixed to
+    `succeeded`. Break-even is computed against it when present, a
+    writer rule core cannot check, so readers label it so; `estimatedUsd`
+    may price it as `latestRun`;
+  - `modelSteps` and `unrecordedSteps`, optional on either run: how many steps
+    called a model, and how many of them did not record token usage, so zero
+    tokens is not read as a measurement;
+  - `history.noCallOccurrences`, optional: occurrences that attributed no
+    calls. `occurrences` still counts them; the per-occurrence ranges leave
+    them out rather than count them as free.
 
 ### Ids
 
@@ -174,7 +190,7 @@ They are the record's rules:
 | ------------- | --------------------------------------------------------------------------------------------------- |
 | candidate set | `since`, `until`, `harnesses`, `candidates`, `thin`, `interactive`, `headless`, counts per kind     |
 | offer         | `state`, `options`, `pickedOptionId` when picked or built, `target` when built                      |
-| comparison    | `optionId`, `target`, `outcome`, `historyOccurrences`, `forwardRaw`, `forwardSwamp`, `breakEven`    |
+| comparison    | `optionId`, `target`, `outcome`, `historyOccurrences`, `forwardRaw`, `forwardSwamp`, `breakEven`; from v3, `buildSessions` and, when set, `latestOutcome`, `unrecordedSteps` (of the run break-even is against), `noCallOccurrences` |
 
 A set is `thin` when it has fewer than `SWAMPIFY_THIN_BELOW` (3) candidates.
 
@@ -195,8 +211,13 @@ An item that passes its JSON Schema can still be skipped as `invalid`:
   `builtAt` and `declinedAt` fall between `createdAt` and `updatedAt`, with
   `pickedAt <= builtAt`;
 - in a comparison, `candidateIds` are unique; a `perOccurrence` cost is present
-  exactly when there are occurrences; each `chore` statistic is at most the
-  `wholeTurns` one; `breakEven.low <= high`, and `high` is null when `low` is;
+  exactly when there are occurrences (in history, occurrences with calls);
+  each `chore` statistic is at most the `wholeTurns` one; `breakEven.low <=
+  high`, and `high` is null when `low` is; in v3, `noCallOccurrences <=
+  occurrences`, every optional count but `modelSteps` is at least 1, both runs
+  start no later than `generatedAt`, `latestRun` succeeded and starts after
+  `swampRun`, `unrecordedSteps <= modelSteps`, and a `latestRun` estimate
+  needs a `latestRun`;
 - in the summaries, `thin` matches the count, the candidate counts add up, and
   the offer's pick and target appear exactly where its state carries them.
 
@@ -243,6 +264,12 @@ seconds while the tab is in view. Its requests are in
   opens to its ranges, excerpts and session refs, and to the option it is
   part of.
 - **Built tab.** Each option built or compared, opening to its comparison.
+- **A comparison.** Its line, from the summary tag, gives the run's outcome,
+  the latest run's when the target was fixed, the build sessions when there
+  were several, a flag when model usage went unrecorded, and break-even. Its
+  body shows a v3 comparison's first and latest runs, the build sessions and a
+  note for unrecorded model steps or occurrences without calls; a v2 one shows
+  what it holds.
 - **An option's review.** At `/swampify/options/<optionId>`, so Back returns to
   the list. What swamp would build and the hand-off come first, then the
   comparison, then the evidence.
