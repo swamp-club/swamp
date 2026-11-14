@@ -3098,6 +3098,7 @@ function HomeScreen({ status, client, onStatus }: ScreenProps) {
     client,
     onStatus,
     "start.resume",
+    status.launch !== undefined && !launchOpened(status.launch),
   );
   const [resumed, setResumed] = useState(false);
   const other = useOpenAgent(client, onStatus);
@@ -3475,8 +3476,11 @@ function useOpenAgent(
         });
       }
     } catch (err) {
+      failed = true;
       setError(errorMessage(err, `Couldn't open ${displayName}.`));
     } finally {
+      // an earlier agent's copy steps must not sit beside this one's error
+      if (failed) setOpened(null);
       setOpeningId(null);
     }
   };

@@ -148,7 +148,6 @@ Deno.test("orderTerminals: the ancestry walk stops after a bounded number of ste
     processes.push({ pid, ppid: pid - 1, name: "sh" });
   }
   const planned = linux({ selfPid: 59, processes });
-  // too deep to count as running here, but kitty is still open
   assertEquals(planned.find((p) => p.name === "kitty")?.chosen, "open");
 });
 

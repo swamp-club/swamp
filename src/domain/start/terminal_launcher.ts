@@ -69,12 +69,12 @@ const REASON_TEXT: Record<NoTerminalReason, string> = {
   container:
     "swamp start is running inside a container (toolbox or distrobox), so your desktop's terminals aren't available to it.",
   no_display: "No graphical display was found to open a terminal on.",
-  ssh: "swamp start is running over SSH, so a window here would go unseen.",
+  ssh:
+    "swamp start is running over SSH, so a window would open where you can't see it.",
   remote_browser:
-    "The page is open on another machine, so a window here would go unseen.",
+    "The page is open on another machine, so a window would open where you can't see it.",
 };
 
-/** What a launch that opened no window tried, and why none could work. */
 export function failedLaunchDetail(
   outcome: Pick<LaunchOutcome, "tried" | "reason">,
 ): string {
@@ -93,7 +93,11 @@ export function failedLaunchDetail(
   } else {
     parts.push("No terminal was tried.");
   }
-  if (outcome.reason !== undefined) parts.push(REASON_TEXT[outcome.reason]);
+  if (outcome.reason !== undefined) {
+    parts.push(REASON_TEXT[outcome.reason]);
+  } else if (tried.some((t) => t.result === "not_found")) {
+    parts.push("Set TERMINAL to your terminal, or copy the command.");
+  }
   return parts.join(" ");
 }
 

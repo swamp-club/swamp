@@ -1191,7 +1191,6 @@ Deno.test("startStartServer: a task launched by an earlier run shows on the home
       const resumed = await b.request("start.resume");
       assertEquals(resumed.screen, "home");
       assertEquals(fakes.opened.length, 2);
-      // the resume names the conversation the launch started
       const [flag, sessionId] = fakes.opened[0].args;
       assertEquals(flag, "--session-id");
       assertEquals(fakes.opened[1].args, ["--resume", sessionId]);

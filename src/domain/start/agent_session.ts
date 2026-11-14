@@ -31,7 +31,6 @@ export function isAgentSessionId(value: unknown): value is string {
   return typeof value === "string" && SESSION_ID_PATTERN.test(value);
 }
 
-/** the fields start reads from a Codex session file's first line */
 export interface CodexSessionHeader {
   readonly id: string;
   readonly startedAt: Date;
@@ -64,7 +63,6 @@ export function pickCodexSession(
   return best?.id ?? null;
 }
 
-/** finds the conversation a launch started, for harnesses that pick their own id */
 export interface AgentSessionFinder {
   find(
     harness: DetectableAiTool,

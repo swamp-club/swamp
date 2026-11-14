@@ -336,9 +336,11 @@ Deno.test("planHarnessLaunch: a resume names the recorded conversation", () => {
     `projects."${WS}".trust_level="trusted"`,
   ]);
   assertEquals(resume("codex", "windows", SESSION).args, ["resume", SESSION]);
-  // a failed resume still opens a fresh session, never the newest one
-  assertEquals(resume("claude", "linux", SESSION).fallbackArgs, []);
-  // other agents keep their behaviour
+  assertEquals(resume("claude", "linux", SESSION).fallbackArgs, [
+    "--session-id",
+    SESSION,
+  ]);
+  assertEquals(resume("claude", "linux").fallbackArgs, []);
   assertEquals(resume("opencode", "linux", SESSION).args, ["--continue"]);
 });
 

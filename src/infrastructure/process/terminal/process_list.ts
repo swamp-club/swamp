@@ -31,17 +31,19 @@ export async function readLinuxProcesses(
   procRoot: string,
   uid: number,
 ): Promise<ProcessInfo[]> {
-  const found: ProcessInfo[] = [];
-  let seen = 0;
+  const pids: number[] = [];
   try {
     for await (const entry of Deno.readDir(procRoot)) {
-      if (!/^\d+$/.test(entry.name)) continue;
-      if (++seen > MAX_PROCESSES) break;
-      const info = await readLinuxProcess(join(procRoot, entry.name), uid);
-      if (info !== null) found.push(info);
+      if (/^\d+$/.test(entry.name)) pids.push(Number(entry.name));
     }
   } catch {
-    return found;
+    return [];
+  }
+  // past the cap the newest processes are kept: an open terminal is likelier there
+  const found: ProcessInfo[] = [];
+  for (const pid of pids.sort((a, b) => b - a).slice(0, MAX_PROCESSES)) {
+    const info = await readLinuxProcess(join(procRoot, String(pid)), uid);
+    if (info !== null) found.push(info);
   }
   return found;
 }

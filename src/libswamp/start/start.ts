@@ -854,20 +854,19 @@ export type StartPrepareEvent =
   | { kind: "completed"; data: StartStatus }
   | { kind: "error"; error: SwampError };
 
-/**
- * a failed save is only a warning: the agent is already running, and reporting
- * failure would invite a second agent on the same brief
- */
-/** the event for an outcome, logging a launch that opened no window */
 function launchedEvent(
   outcome: LaunchOutcome,
   displayName: string,
 ): Extract<StartLaunchEvent, { kind: "launched" }> {
   if (!outcome.opened) {
-    getLogger(["swamp", "start"])
-      .warn`Couldn't open a terminal for ${displayName}. ${
-      failedLaunchDetail(outcome)
-    }`;
+    const logger = getLogger(["swamp", "start"]);
+    const detail = failedLaunchDetail(outcome);
+    // over SSH or to another machine, the copied command is the intended path
+    if (outcome.reason === "ssh" || outcome.reason === "remote_browser") {
+      logger.info`Couldn't open a terminal for ${displayName}. ${detail}`;
+    } else {
+      logger.warn`Couldn't open a terminal for ${displayName}. ${detail}`;
+    }
   }
   return {
     kind: "launched",
@@ -879,11 +878,7 @@ function launchedEvent(
   };
 }
 
-/**
- * The conversation a resume reopens: the one recorded, or for an agent that
- * picks its own id, the one found for this launch. A lookup that fails reads
- * as none, so resume falls back to the agent's latest conversation.
- */
+/** a lookup that fails reads as none, so resume falls back to the agent's latest */
 async function sessionToResume(
   deps: StartDeps,
   harness: HarnessDefinition,
@@ -911,6 +906,10 @@ async function sessionToResume(
   }
 }
 
+/**
+ * a failed save is only a warning: the agent is already running, and reporting
+ * failure would invite a second agent on the same brief
+ */
 async function saveLaunch(
   deps: StartDeps,
   session: StartSession,
@@ -1700,9 +1699,17 @@ export async function* startResume(
       ),
       input.workspacePath,
     );
-    // The session id is kept, so every later resume reopens the same one.
+    // A lookup that found nothing searches from the task's launch again next
+    // time; moving `at` to now would hide the session that launch started.
+    const keepAt = sessionId === undefined && harness.sessionIds === "found"
+      ? session.launch?.at
+      : undefined;
     session.confirmTrustAndRecordLaunch(
-      { ...outcome, ...(sessionId !== undefined ? { sessionId } : {}) },
+      {
+        ...outcome,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(keepAt !== undefined ? { at: keepAt } : {}),
+      },
       launchedAt,
     );
     await saveLaunch(deps, session);

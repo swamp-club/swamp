@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import {
   type AgentSessionFinder,
   type CodexSessionHeader,
@@ -40,7 +40,6 @@ export function codexSessionsRoot(
   return home !== "" ? join(home, ".codex", "sessions") : undefined;
 }
 
-/** reads up to the first newline, never past the cap */
 export async function readFirstLine(
   path: string,
   maxBytes = MAX_HEADER_BYTES,
@@ -158,6 +157,16 @@ async function sessionFiles(folder: string): Promise<string[]> {
   return names.sort().map((name) => join(folder, name));
 }
 
+const FILE_STAMP = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-/;
+
+/** a file named as starting well before the launch is skipped unread */
+function startsBefore(file: string, since: Date): boolean {
+  const m = FILE_STAMP.exec(basename(file));
+  if (m === null) return false;
+  const named = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  return named.getTime() < since.getTime() - 60_000;
+}
+
 async function realPathOr(path: string): Promise<string> {
   try {
     return await Deno.realPath(path);
@@ -188,6 +197,7 @@ export class CodexSessionFinder implements AgentSessionFinder {
     // Oldest first, so the read cap keeps the sessions nearest the launch.
     for (const folder of dayFolders(root, since, this.deps.now())) {
       for (const file of await sessionFiles(folder)) {
+        if (startsBefore(file, since)) continue;
         if (read++ >= MAX_SESSION_FILES) {
           return pickCodexSession(headers, workspace, since);
         }

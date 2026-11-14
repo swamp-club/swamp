@@ -65,6 +65,12 @@ export interface HarnessDefinition {
     os: string,
     sessionId?: string,
   ) => readonly string[];
+  /** run when a resume fails at once; openArgs when absent */
+  readonly resumeFallbackArgs?: (
+    workspacePath: string,
+    os: string,
+    sessionId?: string,
+  ) => readonly string[];
   /**
    * assigned: start gives the task launch its conversation id; found: the
    * agent picks one, and start looks it up at resume
@@ -111,6 +117,10 @@ export const HARNESSES: readonly HarnessDefinition[] = [
     // `--continue` picks the most recent conversation in the current folder.
     resumeArgs: (_ws, _os, sessionId) =>
       sessionId === undefined ? ["--continue"] : ["--resume", sessionId],
+    // A recorded conversation that never started (a copied command never run)
+    // is started under the same id, so the next resume finds it.
+    resumeFallbackArgs: (_ws, _os, sessionId) =>
+      sessionId === undefined ? [] : ["--session-id", sessionId],
     sessionIds: "assigned",
   },
   {
@@ -262,7 +272,8 @@ export function planHarnessLaunch(
     ? (harness.resumeArgs ?? harness.openArgs)(workspacePath, os, id)
     : harness.openArgs(workspacePath, os);
   const fallbackArgs = mode === "resume" && harness.resumeArgs !== undefined
-    ? harness.openArgs(workspacePath, os)
+    ? harness.resumeFallbackArgs?.(workspacePath, os, id) ??
+      harness.openArgs(workspacePath, os)
     : undefined;
   return {
     harness: harness.id,

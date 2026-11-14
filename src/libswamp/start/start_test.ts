@@ -2984,7 +2984,6 @@ Deno.test("startResume: Codex reopens the session found for the launch, and keep
     await collect(
       startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
     );
-    // Codex picks its own id, so the task launch names none
     assert(!f.opened[0].spec.args.includes("--session-id"));
     for (let i = 0; i < 2; i++) {
       await collect(
@@ -3015,16 +3014,19 @@ Deno.test("startResume: Codex falls back to resume --last when no session is fou
       await collect(
         startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
       );
+      const launchedAt = (await f.deps.sessions.load(ws, f.taskId!))?.launch
+        ?.at;
+      let clock = Date.parse(launchedAt!) + 60_000;
+      f.deps = { ...f.deps, now: () => new Date(clock += 1000) };
       await capturingStartWarnings(async () => {
         await collect(
           startResume(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
         );
       });
       assertEquals(f.opened[1].spec.args.slice(0, 2), ["resume", "--last"]);
-      assertEquals(
-        (await f.deps.sessions.load(ws, f.taskId!))?.launch?.sessionId,
-        undefined,
-      );
+      const saved = (await f.deps.sessions.load(ws, f.taskId!))?.launch;
+      assertEquals(saved?.sessionId, undefined);
+      assertEquals(saved?.at, launchedAt);
     });
   }
 });
@@ -3113,4 +3115,26 @@ Deno.test("startLaunch: records the launch time from before the window opens, so
       "2026-11-14T10:00:00.000Z",
     );
   });
+});
+
+Deno.test("startLaunch: over SSH or to a page elsewhere, a launch with no window logs no warning", async () => {
+  for (const reason of ["ssh", "remote_browser"] as const) {
+    await withTempDir(async (dir) => {
+      const f = makeFakes(dir, "linux");
+      const ws = await trustReady(f);
+      f.outcome = {
+        method: "copy_command",
+        opened: false,
+        command: "c",
+        tried: [],
+        reason,
+      };
+      const warnings = await capturingStartWarnings(async () => {
+        await collect(
+          startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+        );
+      });
+      assertEquals(warnings, [], reason);
+    });
+  }
 });

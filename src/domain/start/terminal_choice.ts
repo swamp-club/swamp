@@ -150,12 +150,7 @@ export interface TerminalOrderInput {
   readonly selfPid: number;
 }
 
-/**
- * Linux: TERMINAL, the terminal running swamp start, xdg-terminal-exec, open
- * terminals, x-terminal-emulator, then the fixed list. macOS: the terminal
- * running swamp start, open terminals, then the default .command handler.
- * Each terminal appears once, at its earliest place.
- */
+/** each terminal appears once, at its earliest place */
 export function orderTerminals(input: TerminalOrderInput): PlannedTerminal[] {
   const { os, scriptPath, processes, selfPid } = input;
   const planned: PlannedTerminal[] = [];

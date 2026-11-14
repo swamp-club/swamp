@@ -244,3 +244,28 @@ Deno.test("CodexSessionFinder.find: reads at most MAX_SESSION_FILES files", asyn
     assertEquals(await finder(root, now).find("codex", ws, since), A);
   });
 });
+
+Deno.test("CodexSessionFinder.find: files named as starting before the launch don't use up the read cap", async () => {
+  await withTempDir(async (dir) => {
+    const ws = join(dir, "ws");
+    await Deno.mkdir(ws);
+    const root = join(dir, "sessions");
+    const day = join(root, "2026", "11", "14");
+    await Deno.mkdir(day, { recursive: true });
+    for (let i = 0; i < MAX_SESSION_FILES + 10; i++) {
+      const m = String(Math.floor(i / 60)).padStart(2, "0");
+      const sec = String(i % 60).padStart(2, "0");
+      await Deno.writeTextFile(
+        join(day, `rollout-2026-11-14T03-${m}-${sec}-x${i}.jsonl`),
+        "{}\n",
+      );
+    }
+    const since = new Date(2026, 10, 14, 12, 0, 0);
+    await Deno.writeTextFile(
+      join(day, `rollout-2026-11-14T12-00-05-${A}.jsonl`),
+      `${headerLine(A, new Date(since.getTime() + 5000), ws)}\n`,
+    );
+    const now = new Date(2026, 10, 14, 23, 0, 0);
+    assertEquals(await finder(root, now).find("codex", ws, since), A);
+  });
+});

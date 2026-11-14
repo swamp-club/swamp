@@ -194,6 +194,17 @@ Deno.test("StartSession.confirmTrustAndRecordLaunch: keeps the session id and wh
   assertEquals(StartSession.fromData(session.toData()).launch, session.launch);
 });
 
+Deno.test("StartSession.confirmTrustAndRecordLaunch: keeps a launch time the caller passes", () => {
+  const session = sessionAt("launched");
+  const kept = session.launch!.at;
+  session.confirmTrustAndRecordLaunch(
+    { method: "copy_command", command: "c", opened: false, at: kept },
+    new Date("2026-10-04T00:00:00.000Z"),
+  );
+  assertEquals(session.launch?.at, kept);
+  assertEquals(session.trustConfirmedAt, "2026-10-04T00:00:00.000Z");
+});
+
 Deno.test("StartSession.confirmTrustAndRecordLaunch: is refused at task and agent", () => {
   for (const step of ["task", "agent"] as const) {
     assertThrows(

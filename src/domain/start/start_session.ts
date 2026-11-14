@@ -202,8 +202,9 @@ export class StartSession {
     this.data = { ...this.withoutTrust(), step: "task" };
   }
 
+  /** a launch's own `at` is kept as given, for a resume that must not move it */
   confirmTrustAndRecordLaunch(
-    launch: Omit<StartLaunchRecord, "at">,
+    launch: Omit<StartLaunchRecord, "at"> & { readonly at?: string },
     now: Date,
   ): void {
     this.require("launch", ["trust", "launched"]);
@@ -214,7 +215,7 @@ export class StartSession {
     this.data = {
       ...this.data,
       trustConfirmedAt: at,
-      launch: { ...launch, at },
+      launch: { ...launch, at: launch.at ?? at },
       step: "launched",
     };
   }
