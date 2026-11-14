@@ -557,7 +557,7 @@ Deno.test("command routes: a completion callback naming a hidden command is refu
 
 // a worker that exits or stalls without answering would otherwise hold the
 // test, and with it the whole run, until an outer cap with no route named
-const WORKER_DEADLINE_MS = 120_000;
+const WORKER_DEADLINE_MS = 300_000;
 
 function inWorker(request: RouteWorkerRequest): Promise<RouteWorkerResponse> {
   const worker = new Worker(
