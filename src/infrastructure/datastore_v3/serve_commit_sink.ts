@@ -178,6 +178,17 @@ export interface ServeCommitSink extends OutboxCommitSink {
   readonly upstream: ServeUpstreamCommitStore;
 }
 
+/** a send may have run at the leader, and no read here can show it did not */
+export class CommitOutcomeUnknownError extends Error {
+  constructor(readonly partition: string) {
+    super(
+      `The commit to partition ${partition} may have landed at serve's ` +
+        `leader, though this checkout's copy does not show it yet`,
+    );
+    this.name = "CommitOutcomeUnknownError";
+  }
+}
+
 export function createServeCommitSink(
   options: ServeCommitSinkOptions,
 ): ServeCommitSink {
@@ -185,6 +196,15 @@ export function createServeCommitSink(
   // The txnIds whose last send serve never received: their recovery need
   // not ask serve, which cannot hold them.
   const neverSent = new Set<string>();
+  // Sent once already and maybe run: a later refusal before sending, or a
+  // follower's copy without it, never shows that it did not land.
+  const mayHaveRunTxns = new Set<string>();
+  const noteNeverSent = (txnId: string): void => {
+    if (!mayHaveRunTxns.has(txnId)) neverSent.add(txnId);
+  };
+  // set by a forwarded send that may have run: no later send of the command
+  // goes, as after serve was unreachable
+  let sendsStopped: { readonly cause: unknown } | undefined;
 
   const chunksOf = async (
     commit: Commit,
@@ -259,8 +279,26 @@ export function createServeCommitSink(
     (error instanceof ServeUnreachableError && error.sent === "maybe") ||
     (error instanceof ServeNotLeaderError && error.inFlight);
 
-  const noteMayHaveRun = (commit: Commit): void =>
+  const noteMayHaveRun = (commit: Commit, error: unknown): void => {
+    mayHaveRunTxns.add(commit.txnId);
     noteCommandMayHaveLanded(commit.partition, intentKindsOfOps(commit.ops));
+    if (error instanceof ServeNotLeaderError) stopSends(error);
+  };
+
+  const stopSends = (error: unknown): void => {
+    sendsStopped ??= { cause: error };
+    latchServeUnreachable(client.baseUrl, error);
+  };
+
+  const refuseStopped = (): void => {
+    if (sendsStopped !== undefined) {
+      throw new ServeUnreachableError(
+        client.baseUrl,
+        "never",
+        sendsStopped.cause,
+      );
+    }
+  };
 
   const forward = (
     commit: Commit,
@@ -276,7 +314,7 @@ export function createServeCommitSink(
           if (error instanceof ServeUnreachableError) {
             latchServeUnreachable(client.baseUrl, error);
           }
-          if (mayHaveRun(error)) noteMayHaveRun(commit);
+          if (mayHaveRun(error)) noteMayHaveRun(commit, error);
           throw error;
         }
       },
@@ -313,7 +351,7 @@ export function createServeCommitSink(
         // serve refused the commit, so it never landed: a recovery must not
         // ask the serve that refused it
         if (caught instanceof ServeUpstreamDivergedError) {
-          neverSent.add(commit.txnId);
+          noteNeverSent(commit.txnId);
         }
         return caught;
       }
@@ -324,12 +362,12 @@ export function createServeCommitSink(
       );
     }
     if (error instanceof ServeUnreachableError && error.sent === "never") {
-      neverSent.add(commit.txnId);
+      noteNeverSent(commit.txnId);
     }
     // refused before serve took it; one a follower forwarded before losing the
     // leader says inFlight, and may have run
     if (error instanceof ServeNotLeaderError && !error.inFlight) {
-      neverSent.add(commit.txnId);
+      noteNeverSent(commit.txnId);
     }
     return error;
   };
@@ -342,6 +380,7 @@ export function createServeCommitSink(
     signal: AbortSignal,
   ): Promise<CommitStoreAppendResult> => {
     neverSent.delete(commit.txnId);
+    mayHaveRunTxns.delete(commit.txnId);
     carriedFailures.delete(commit.txnId);
     catchUp.recordLanded?.(commit.namespace, commit.partition, commit.txnId);
     if (leaseId !== undefined && options.onLeasedCommit !== undefined) {
@@ -392,6 +431,11 @@ export function createServeCommitSink(
   ): Promise<CommitStoreAppendResult> => {
     const exhausted = exhaustedFailure(commit);
     if (exhausted !== undefined) throw exhausted.error;
+    try {
+      refuseStopped();
+    } catch (error) {
+      throw await refusedWith(commit, error, options.signal());
+    }
     const signal = options.signal();
     const envelope = envelopeOf(commit, leaseId);
     const refs = [...new Set(commit.chunkRefs())];
@@ -493,7 +537,7 @@ export function createServeCommitSink(
     let stopped = false;
     for (const entry of waiting) {
       if (stopped) {
-        neverSent.add(entry.commit.txnId);
+        noteNeverSent(entry.commit.txnId);
         entry.reject(
           new CommitNotTriedError(entry.commit.partition.toString()),
         );
@@ -522,6 +566,7 @@ export function createServeCommitSink(
     // one commit and nothing to end goes on the single route, as does one
     // that has used up its uploads: alone, it fails without sending
     if (
+      sendsStopped !== undefined ||
       (waiting.length === 1 && release === undefined) ||
       waiting.some((entry) => exhaustedFailure(entry.commit) !== undefined)
     ) {
@@ -585,7 +630,7 @@ export function createServeCommitSink(
       }
       for (const [index, entry] of waiting.entries()) {
         noteCarriedFailure(entry.commit, sentChunks[index] ?? [], error);
-        if (mayHaveEnded) noteMayHaveRun(entry.commit);
+        if (mayHaveEnded) noteMayHaveRun(entry.commit, error);
         entry.reject(await refusedWith(entry.commit, error, signal));
       }
       return;
@@ -613,7 +658,7 @@ export function createServeCommitSink(
             ),
           );
         } else if (outcome.kind === "not-tried") {
-          neverSent.add(entry.commit.txnId);
+          noteNeverSent(entry.commit.txnId);
           entry.reject(
             new CommitNotTriedError(entry.commit.partition.toString()),
           );
@@ -786,6 +831,21 @@ export function createServeCommitSink(
     ...sink,
     outbox: sink.outbox === undefined ? undefined : {
       ...sink.outbox,
+      // the unit's own question, after its send failed: one that may have run
+      // and is not seen landed may still be at serve
+      ...(sink.outbox.landedSeq === undefined ? {} : {
+        landedSeq: async (namespace, partition, txnId) => {
+          const seq = await sink.outbox!.landedSeq!(
+            namespace,
+            partition,
+            txnId,
+          );
+          if (seq === undefined && mayHaveRunTxns.has(txnId)) {
+            throw new CommitOutcomeUnknownError(partition.toString());
+          }
+          return seq;
+        },
+      }),
       // the entry records the lease it was built under, which its recovery
       // names
       prepare: (preparation) => {

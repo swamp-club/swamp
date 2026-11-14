@@ -1968,6 +1968,7 @@ export {
   createDatastoreStatusDeps,
   type DatastoreHeldLeaseStatus,
   type DatastoreOutboxEntryStatus,
+  type DatastoreOutboxWriteStatus,
   type DatastoreQuarantineStatus,
   type DatastoreServeSection,
   datastoreStatus,

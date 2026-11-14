@@ -279,6 +279,24 @@ export function takeUnrenewedLease(
   return failed;
 }
 
+/**
+ * whether a bind-time renewal under root timed out or found serve unreachable;
+ * a refusal serve answered is not, and nothing is taken
+ */
+export function bindRenewalUnanswered(root: string): boolean {
+  const prefix = `${root}\0`;
+  for (const [key, { error }] of unrenewedAtBind) {
+    if (!key.startsWith(prefix)) continue;
+    if (
+      error instanceof ServeUnreachableError ||
+      (error instanceof Error && error.name === "TimeoutError")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function resetUnrenewedLeasesForTesting(): void {
   unrenewedAtBind.clear();
 }

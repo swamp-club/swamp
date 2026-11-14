@@ -183,3 +183,30 @@ Deno.test("datastore status: a run record serve refused for its initiator says s
     "run_initiator_mismatch",
   );
 });
+
+Deno.test("datastore status renderer: a rejected entry lists each version that did not land and what to do, in both modes", () => {
+  const next =
+    "Nothing to do: the next command that reaches serve sends it again, renumbered past what serve holds.";
+  const data: DatastoreStatusData = {
+    ...STATUS,
+    outbox: [{
+      state: "rejected",
+      partition: "model--aws%2Fec2--web",
+      txnId: "44444444-4444-4444-8444-444444444444",
+      reason:
+        "Data result version 246 is already live; only an append re-records it",
+      savedAt: "2026-10-30T12:03:00.000Z",
+      writes: [{ behavior: "aws/ec2/web", name: "result", version: 246 }],
+      retryable: true,
+      next,
+    }],
+  };
+  const log = render("log", data);
+  assertStringIncludes(log, "rejected model--aws%2Fec2--web");
+  assertStringIncludes(log, "aws/ec2/web result version 246 did not land");
+  assertStringIncludes(log, next);
+  const json = JSON.parse(render("json", data));
+  assertEquals(json.outbox[0].writes, data.outbox![0].writes);
+  assertEquals(json.outbox[0].retryable, true);
+  assertEquals(json.outbox[0].next, next);
+});

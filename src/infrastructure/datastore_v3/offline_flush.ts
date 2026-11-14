@@ -36,6 +36,11 @@ import {
   outboxKeyOf,
 } from "../../domain/datastore_v3/commit_outbox.ts";
 import { CommitsCompactedError } from "../../domain/datastore_v3/commit_store.ts";
+import {
+  behaviorOf,
+  type RejectedWrite,
+  rejectedWritesOf,
+} from "../../domain/datastore_v3/rejected_write.ts";
 import type { DataMetadata } from "../../domain/data/data_metadata.ts";
 import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import {
@@ -150,6 +155,7 @@ export interface OfflineFlushReport {
   readonly waiting: number;
   readonly rejected: number;
   readonly quarantined: number;
+  readonly rejectedWrites: readonly RejectedWrite[];
   readonly renumbered: readonly FlushedVersion[];
   readonly latest: readonly FlushedLatest[];
   readonly latestAtEnd: readonly FlushedLatest[];
@@ -171,13 +177,6 @@ export function latestAtEndOf(
     atEnd.set(JSON.stringify([choice.behavior, choice.name]), choice);
   }
   return [...atEnd.values()];
-}
-
-function behaviorOf(partition: Commit["partition"]): string {
-  const identity = partition.identity;
-  return identity.kind === "model"
-    ? `${identity.type}/${identity.id}`
-    : partition.toString();
 }
 
 type EntryOutcome =
@@ -211,6 +210,7 @@ export async function flushOfflineEntries(
   let waiting = 0;
   let rejected = 0;
   let quarantined = 0;
+  const rejectedWrites: RejectedWrite[] = [];
   const renumbered: FlushedVersion[] = [];
   const latest: FlushedLatest[] = [];
   // A partition whose entry waits keeps its later entries waiting too:
@@ -296,18 +296,17 @@ export async function flushOfflineEntries(
           await port.markSentMaybe(key, clock().getTime());
         }
         break;
-      case "rejected":
+      case "rejected": {
         rejected++;
         held.add(partition);
         await port.mark([key], "rejected", outcome.reason, outcome.code);
-        if (outcome.code === RUN_INITIATOR_MISMATCH_CODE) {
-          logger
-            .warn`A run record this checkout saved offline to ${partition} was refused for its initiator: an older swamp CLI wrote it. It is kept in the outbox; upgrade swamp and run the work again: ${outcome.reason}`;
-        } else {
-          logger
-            .warn`A change this checkout saved offline to ${partition} could not be sent and is kept in its outbox: ${outcome.reason}`;
+        const writes = rejectedWritesOf(entry.commit, outcome);
+        for (const write of writes) {
+          rejectedWrites.push(write);
+          warnRejected(write);
         }
         break;
+      }
       case "quarantined":
         quarantined++;
         held.add(partition);
@@ -330,6 +329,7 @@ export async function flushOfflineEntries(
     waiting,
     rejected,
     quarantined,
+    rejectedWrites,
     renumbered,
     latest,
     latestAtEnd: latestAtEndOf(latest),
@@ -371,6 +371,7 @@ async function flushEntry(
   // Cleared when serve will not give this checkout the content a
   // restatement re-puts: the rebased version then takes latest.
   let restate = true;
+  const floors = new Map<string, number>();
   for (let attempt = 1;; attempt++) {
     let ops: readonly Op[];
     let outcome: Pick<
@@ -393,10 +394,15 @@ async function flushEntry(
           restate,
           carry,
           reserved,
+          floor: (name) => floors.get(name) ?? 0,
         })
       );
       if (rebased.kind === "rejected") {
-        return { kind: "rejected", reason: rebased.detail };
+        return {
+          kind: "rejected",
+          reason: rebased.detail,
+          code: rebased.reason,
+        };
       }
       ops = rebased.kind === "unchanged"
         ? rebased.commit.ops
@@ -444,6 +450,20 @@ async function flushEntry(
         if (error.reason === "seq-gap" && attempt < FLUSH_SEQ_GAP_ATTEMPTS) {
           continue;
         }
+        // Serve holds a version the copy's state did not show: a stale basis,
+        // not a conflict, so it is rebased above what it sent; it never lands
+        // on a version serve holds, since serve refuses one.
+        const sent = freshVersionsOf(built.ops);
+        if (
+          (error.reason === "version-live" ||
+            error.reason === "version-reused") && sent.size > 0
+        ) {
+          if (attempt >= FLUSH_SEQ_GAP_ATTEMPTS) return { kind: "waiting" };
+          for (const [name, version] of sent) {
+            floors.set(name, Math.max(floors.get(name) ?? 0, version));
+          }
+          continue;
+        }
         // The lease it was queued under has ended or was superseded: sent
         // again under none, rebased on what landed meanwhile.
         if (
@@ -454,7 +474,7 @@ async function flushEntry(
           continue;
         }
         if (error.reason === "lease-lost") return { kind: "waiting" };
-        return { kind: "rejected", reason: error.message };
+        return { kind: "rejected", reason: error.message, code: error.reason };
       }
       if (error instanceof ServeCommitRefusedError) {
         if (error.reason === "forbidden") {
@@ -499,6 +519,24 @@ function reservedBy(
     }
     return reserved;
   };
+}
+
+/** the highest version of each name the ops record afresh, not by an append */
+function freshVersionsOf(ops: readonly Op[]): Map<string, number> {
+  const appended = new Set<string>();
+  for (const op of ops) {
+    if (op.kind === "put" && op.intent.kind === "data.append") {
+      appended.add(JSON.stringify([op.intent.name, op.intent.version]));
+    }
+  }
+  const fresh = new Map<string, number>();
+  for (const op of ops) {
+    if (op.kind !== "data-version") continue;
+    const { name, version } = op.metadata;
+    if (appended.has(JSON.stringify([name, version]))) continue;
+    fresh.set(name, Math.max(fresh.get(name) ?? 0, version));
+  }
+  return fresh;
 }
 
 const CHUNK_NOT_PROVIDED = "chunk_not_provided";
@@ -757,6 +795,16 @@ function base64Of(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+function warnRejected(write: RejectedWrite): void {
+  if (write.name === undefined) {
+    logger
+      .warn`A change to ${write.behavior} saved offline did not land: serve refused it and it is kept in this checkout's outbox (txnId ${write.txnId}): ${write.reason} ${write.next}`;
+    return;
+  }
+  logger
+    .warn`${write.behavior} ${write.name} version ${write.version}, saved offline, did not land: serve refused it and it is kept in this checkout's outbox (txnId ${write.txnId}): ${write.reason} ${write.next}`;
 }
 
 function reportFlush(report: OfflineFlushReport): void {

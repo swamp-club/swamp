@@ -44,6 +44,7 @@ import {
   sameHead,
 } from "../../domain/datastore_v3/commit_outbox.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import { isRetryableRejection } from "../../domain/datastore_v3/rejected_write.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import {
@@ -192,6 +193,12 @@ export async function recoverCommitOutbox(
     await outbox.discard([key]);
     logger
       .warn`Dropped an unreadable v3 commit outbox entry for partition ${key.partition}: ${detail}`;
+  }
+  if (target.offline !== undefined) {
+    listing = {
+      ...listing,
+      entries: await requeueRetryableRejections(outbox, listing.entries),
+    };
   }
   // read before judging: a landed entry settles, never drops
   const landedKeys = new Set<OutboxEntry>();
@@ -366,6 +373,29 @@ export async function recoverCommitOutbox(
     skipped: plan.skipped.length + deferred + plan.held.length,
     drops,
   };
+}
+
+/**
+ * an entry an older flush rejected because its basis was stale is queued
+ * offline again, so this flush renumbers it; a genuine conflict stays rejected
+ */
+export async function requeueRetryableRejections(
+  outbox: Pick<CommitOutbox, "resendRejected">,
+  entries: readonly OutboxEntry[],
+): Promise<OutboxEntry[]> {
+  const requeued: OutboxEntry[] = [];
+  for (const entry of entries) {
+    if (
+      entry.abandonedAt !== undefined || !isRetryableRejection(entry) ||
+      !await outbox.resendRejected(outboxKeyOf(entry.commit))
+    ) {
+      requeued.push(entry);
+      continue;
+    }
+    const { stateReason: _reason, stateCode: _code, ...rest } = entry;
+    requeued.push({ ...rest, state: "offline" });
+  }
+  return requeued;
 }
 
 type EntryOutcome =

@@ -29,6 +29,7 @@ import type {
   OfflineContext,
 } from "../../domain/datastore_v3/offline_write_policy.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import type { RejectedWrite } from "../../domain/datastore_v3/rejected_write.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { readExplicitLeases } from "./explicit_model_leases.ts";
 
@@ -75,6 +76,7 @@ export type ServeOfflineNotice =
     readonly waiting: number;
     readonly rejected: number;
     readonly quarantined: number;
+    readonly rejectedWrites: readonly RejectedWrite[];
     readonly renumbered: readonly unknown[];
     readonly latest: readonly unknown[];
     readonly latestAtEnd: readonly unknown[];

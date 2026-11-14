@@ -24,6 +24,7 @@
  */
 
 import { clearServeUnreachableLatches } from "./serve_datastore_client.ts";
+import { bindRenewalUnanswered } from "./explicit_model_leases.ts";
 import { dirname, join, resolve } from "@std/path";
 import {
   type DatastoreConfig,
@@ -1325,6 +1326,13 @@ async function recoverV3Outbox(
   // a serve-mode checkout lands its entries through serve, never only in its
   // copy of serve's log
   const upstream = handle.serveUpstreamStore;
+  // the bind's renewal went unanswered: this command goes offline, so what the
+  // outbox holds waits for the next command that reaches serve
+  if (upstream !== undefined && bindRenewalUnanswered(handle.datastorePath)) {
+    logger
+      .debug`Serve did not answer this command's lease renewal; a later command lands this checkout's outbox`;
+    return;
+  }
   try {
     await recoverCommitOutbox(
       upstream === undefined ? handle : {

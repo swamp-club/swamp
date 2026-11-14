@@ -22,16 +22,20 @@ import { join } from "@std/path";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   acquireExplicitLease,
+  bindRenewalUnanswered,
   EXPLICIT_LEASE_RENEWAL_RESPONSE_MS,
   EXPLICIT_LEASES_FILE,
   type ExplicitLease,
   ExplicitLeaseHeldError,
   explicitLeaseOn,
   ExplicitLeaseUnsupportedError,
+  noteUnrenewedLeases,
   readExplicitLeases,
   recordExplicitLease,
   releaseExplicitLease,
   renewExplicitLeases,
+  resetUnrenewedLeasesForTesting,
+  takeUnrenewedLease,
 } from "./explicit_model_leases.ts";
 import type { LockAcquireReply, LockLease } from "./serve_datastore_client.ts";
 import { ServeUnreachableError } from "./serve_upstream_errors.ts";
@@ -355,4 +359,39 @@ Deno.test("acquireExplicitLease: another explicit lease that outlasts the wait i
     assert(error.message.includes("user:boss"), error.message);
     assert(error.message.includes(until), error.message);
   });
+});
+
+Deno.test("bindRenewalUnanswered: a bind-time renewal that timed out or found serve unreachable counts, one serve refused does not, and the lock still takes it", () => {
+  const lease = (leaseId: string): ExplicitLease => ({
+    leaseId,
+    lockKey: `data/t/${leaseId}/.lock`,
+    fence: 1,
+    holdMs: 60_000,
+    expiresAt: "2026-11-14T12:00:00.000Z",
+    floor: [],
+  });
+  const timeout = new DOMException("timed out", "TimeoutError");
+  const unreachable = new ServeUnreachableError(
+    "https://serve.test",
+    "never",
+    new Error("fetch failed"),
+  );
+  try {
+    noteUnrenewedLeases("/refused", "https://serve.test", [
+      { lease: lease("r"), error: new Error("does not lead") },
+    ]);
+    noteUnrenewedLeases("/timed-out", "https://serve.test", [
+      { lease: lease("t"), error: timeout },
+    ]);
+    noteUnrenewedLeases("/away", "https://serve.test", [
+      { lease: lease("a"), error: unreachable },
+    ]);
+    assertEquals(bindRenewalUnanswered("/refused"), false);
+    assertEquals(bindRenewalUnanswered("/timed-out"), true);
+    assertEquals(bindRenewalUnanswered("/away"), true);
+    assertEquals(bindRenewalUnanswered("/other"), false);
+    assertEquals(takeUnrenewedLease("/timed-out", "t")?.error, timeout);
+  } finally {
+    resetUnrenewedLeasesForTesting();
+  }
 });

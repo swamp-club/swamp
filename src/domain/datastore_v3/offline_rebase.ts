@@ -208,6 +208,11 @@ export interface OfflineRebaseOptions {
    * on one, so a queued number never names two versions.
    */
   readonly reserved?: (name: string) => ReadonlySet<number>;
+  /**
+   * A version of `name` serve refused as live or removed, though the
+   * partition state given does not hold it: renumbering starts above it.
+   */
+  readonly floor?: (name: string) => number;
 }
 
 export interface RenumberedVersion {
@@ -278,7 +283,10 @@ export async function rebaseOfflineCommits(
     let state = names.get(name);
     if (state === undefined) {
       state = {
-        highWater: partition.highWater(name),
+        highWater: Math.max(
+          partition.highWater(name),
+          options.floor?.(name) ?? 0,
+        ),
         live: new Set(partition.versions(name)),
         latest: partition.latest(name),
         observedAt: new Map(),

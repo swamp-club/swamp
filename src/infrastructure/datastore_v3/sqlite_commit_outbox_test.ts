@@ -816,7 +816,7 @@ Deno.test("SqliteCommitOutbox.resetKeepingKept: keeps rejected and quarantined e
   });
 });
 
-Deno.test("SqliteCommitOutbox.queuedDataHighWater: counts the versions kept entries record, not pending ones (swamp-club#4195)", async () => {
+Deno.test("SqliteCommitOutbox.queuedDataHighWater: counts the versions kept entries and unconfirmed pending ones record, not abandoned pending ones", async () => {
   await withTempDir(async (dir) => {
     const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
     try {
@@ -839,10 +839,65 @@ Deno.test("SqliteCommitOutbox.queuedDataHighWater: counts the versions kept entr
       }
       await outbox.markState([outboxKeyOf(queued)], "offline");
       const partition = queued.partition.toString();
-      assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 4);
+      assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 9);
       assertEquals(await outbox.queuedDataHighWater("", partition, "x"), 0);
+      await outbox.abandon([outboxKeyOf(pending)]);
+      assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 4);
       await outbox.settle([outboxKeyOf(queued)]);
       assertEquals(await outbox.queuedDataHighWater("", partition, "out"), 0);
+    } finally {
+      await outbox.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitOutbox.resendRejected: queues a rejected entry offline again, clearing its reason, and leaves any other entry alone", async () => {
+  await withTempDir(async (dir) => {
+    const outbox = new SqliteCommitOutbox(join(dir, "outbox.db"));
+    try {
+      const rejected = fixtureCommit({
+        seq: 1,
+        txnId: "t-rejected",
+        ops: await saveOps({ name: "out", version: 2 }),
+      });
+      const quarantined = fixtureCommit({
+        seq: 1,
+        txnId: "t-quarantined",
+        ops: await saveOps({ name: "out", version: 3 }),
+      });
+      for (const commit of [rejected, quarantined]) {
+        await outbox.prepare({
+          commit,
+          unitId: "u",
+          base: { seq: 0, txnId: undefined },
+        });
+      }
+      await outbox.markState(
+        [outboxKeyOf(rejected)],
+        "rejected",
+        "Data out version 2 is already live",
+        "version-live",
+      );
+      await outbox.markState([outboxKeyOf(quarantined)], "quarantined", "no");
+      assertEquals(await outbox.resendRejected(outboxKeyOf(rejected)), true);
+      assertEquals(await outbox.resendRejected(outboxKeyOf(rejected)), false);
+      assertEquals(
+        await outbox.resendRejected(outboxKeyOf(quarantined)),
+        false,
+      );
+      const { entries } = await outbox.entries();
+      assertEquals(
+        entries.map((entry) => [
+          entry.commit.txnId,
+          entry.state,
+          entry.stateReason,
+          entry.stateCode,
+        ]),
+        [
+          ["t-rejected", "offline", undefined, undefined],
+          ["t-quarantined", "quarantined", "no", undefined],
+        ],
+      );
     } finally {
       await outbox.close();
     }

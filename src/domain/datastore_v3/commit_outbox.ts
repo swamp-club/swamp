@@ -406,8 +406,13 @@ export interface CommitOutbox {
    */
   markSentMaybe(key: OutboxKey, at: number): Promise<void>;
   /**
+   * queues a rejected entry offline again, so the next flush rebases and sends
+   * it; false when the outbox holds no rejected entry under the key
+   */
+  resendRejected(key: OutboxKey): Promise<boolean>;
+  /**
    * a command allocates above it, so work queued offline never reuses a version
-   * another queued commit holds
+   * another queued or unconfirmed commit holds; an abandoned pending one is left out
    */
   queuedDataHighWater(
     namespace: string,

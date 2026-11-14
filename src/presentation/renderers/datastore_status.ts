@@ -109,10 +109,20 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
                 dim(`(${entry.txnId}, saved ${entry.savedAt})`)
               }`,
             );
+            for (const write of entry.writes ?? []) {
+              if (write.name === undefined) continue;
+              lines.push(
+                `    ${write.behavior} ${
+                  bold(write.name)
+                } version ${write.version} ${dim("did not land")}`,
+              );
+            }
             if (entry.reason !== undefined) {
               lines.push(`    ${dim(entry.reason)}`);
             }
-            if (entry.code === RUN_INITIATOR_MISMATCH_CODE) {
+            if (entry.next !== undefined) {
+              lines.push(`    ${entry.next}`);
+            } else if (entry.code === RUN_INITIATOR_MISMATCH_CODE) {
               lines.push(
                 "    This run record was refused for its initiator: an older " +
                   "swamp CLI wrote it. Upgrade swamp and run the work again; " +

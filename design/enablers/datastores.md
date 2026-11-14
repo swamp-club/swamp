@@ -8476,6 +8476,10 @@ drop rule takes it (`stale-fence`, `overtaken`, `abandoned`, `expired`,
 `head-moved`, `unit-dropped` and the 7-day retry bound all skip it): it may
 be the only record of a change a run made to real infrastructure.
 `rejected`: the flush could not land it; kept and reported with its reason.
+Every recovery first returns to `offline` a `rejected` entry that serve
+refused because its data version was already live or reused (by its stored
+code, or by that message for an entry an older swamp rejected), so it is
+renumbered and sent again; only a genuine conflict stays `rejected`.
 `quarantined`: serve refused it for a grant the caller lacks; kept for an
 admin. An entry the sink is about to queue is prepared already marked
 `offline`, so a process that dies before the queue's own mark never leaves
@@ -8563,6 +8567,12 @@ lands an entry twice.
 - **Refused for a grant** (`403` with reason `forbidden`) is
   `quarantined`; refused for its content (`content-refused`, a forwarded
   run's outputs) is `rejected`.
+- **A version serve holds already** (`version-live` or reused: the copy
+  lacked a version that landed, such as this checkout's own may-land commit)
+  raises the rebase's floor to that version and sends again, up to the same
+  bound as a sequence gap; past it the entry stays `offline`, never
+  `rejected`. Queued versions also count the outbox's pending entries, so an
+  offline write does not take a version an unconfirmed commit holds.
 - **Serve unreachable again** stops the flush; the rest stays `offline`.
 - **An error of the entry's own** (a chunk missing from the checkout's
   cache, content that does not check, a commit that cannot be rebuilt)
@@ -8574,7 +8584,10 @@ lands an entry twice.
   by txnId: it is `rejected` (possible duplicate), never resent blind.
 - Each command reports once what its flush did: versions rebased, which
   version holds each name's latest once the flush ends (`latestAtEnd`),
-  entries rejected or quarantined.
+  entries rejected or quarantined. Each rejected write is named
+  (`rejectedWrites`: behavior, data name, version, txnId, reason, whether it
+  retries, what to do), with a warning per write on stderr in log mode, and
+  `datastore status` lists the same per entry.
 
 **Quarantine.** A quarantined entry is deposited with serve, with its
 chunks: a revoked principal cannot `PUT chunks`, so serve keeps both in the

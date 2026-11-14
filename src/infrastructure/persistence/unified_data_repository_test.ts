@@ -5054,3 +5054,59 @@ function makeJsonDataTagged(name: string, type: string): Data {
     ownerDefinition: owner,
   });
 }
+
+Deno.test("collectGarbage: a version gap, as an offline write renumbered past a live version leaves, keeps latest, the listing and count retention correct", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    const data = Data.create({
+      name: "gapped",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 2,
+      streaming: false,
+      tags: { type: "resource" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+    for (const content of ["v1", "v2", "v3", "v4"]) {
+      await repo.save(testType, "gap", data, new TextEncoder().encode(content));
+    }
+    await repo.delete(testType, "gap", "gapped", 3);
+
+    assertEquals(await repo.listVersions(testType, "gap", "gapped"), [1, 2, 4]);
+    assertEquals(
+      (await repo.findByName(testType, "gap", "gapped"))?.version,
+      4,
+    );
+    assertEquals(
+      new TextDecoder().decode(
+        (await repo.getContent(testType, "gap", "gapped"))!,
+      ),
+      "v4",
+    );
+
+    const result = await repo.collectGarbage(testType, "gap");
+    assertEquals(result.versionsRemoved, 1);
+    assertEquals(await repo.listVersions(testType, "gap", "gapped"), [2, 4]);
+    assertEquals(
+      (await repo.findByName(testType, "gap", "gapped"))?.version,
+      4,
+    );
+    assertEquals(
+      (await repo.save(testType, "gap", data, new TextEncoder().encode("v5")))
+        .version,
+      5,
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
