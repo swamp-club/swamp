@@ -34,10 +34,10 @@ export const SWAMPIFY_OFFER_SCHEMA_VERSION = 1;
 
 export const SUPPORTED_SWAMPIFY_OFFER_SCHEMA_VERSIONS: readonly number[] = [1];
 
-export const SWAMPIFY_COMPARISON_SCHEMA_VERSION = 2;
+export const SWAMPIFY_COMPARISON_SCHEMA_VERSION = 3;
 
 export const SUPPORTED_SWAMPIFY_COMPARISON_SCHEMA_VERSIONS: readonly number[] =
-  [2];
+  [2, 3];
 
 /** writers use this behavior by convention; readers never filter on it */
 export const SWAMPIFY_BEHAVIOR_NAME = "swampify";
@@ -132,6 +132,7 @@ const SessionIdSchema = z.string().max(L.sessionIdLength).regex(SESSION_ID);
 const NameSchema = z.string().min(1).max(L.nameLength);
 const CountSchema = z.number().int().nonnegative();
 const AmountSchema = z.number().nonnegative();
+const PositiveCountSchema = z.number().int().min(1);
 const StepSchema = z.string().min(1).max(L.stepLength);
 
 export const SwampifyCandidateIdSchema = z.string().regex(CANDIDATE_ID);
@@ -587,12 +588,20 @@ function costMetrics(
   ];
 }
 
-/**
- * one offer option that was swamped; history is summed over all its
- * candidates, and estimatedUsd comes from a price table the writer supplies
- */
-export const SwampifyComparisonV2Schema = z.strictObject({
-  schemaVersion: z.literal(2),
+const SwampRunOutcomeSchema = z.enum(["succeeded", "failed"]);
+
+const SwampifyUsdHistorySchema = z.strictObject({
+  chore: SwampifyRangeSchema,
+  wholeTurns: SwampifyRangeSchema,
+});
+
+const SwampifyForwardSchema = z.strictObject({
+  since: z.iso.datetime(),
+  raw: SwampifyOccurrencesSchema,
+  swamp: SwampifyOccurrencesSchema,
+});
+
+const SwampifyComparisonHeadShape = {
   generatedAt: z.iso.datetime(),
   importerVersion: NameSchema,
   optionId: SwampifyOptionIdSchema,
@@ -600,34 +609,26 @@ export const SwampifyComparisonV2Schema = z.strictObject({
     L.candidatesPerOption,
   ),
   target: SwampifyTargetSchema,
-  build: z.strictObject({
-    tokens: TokenTotalsSchema,
-    activeMs: AmountSchema,
-  }),
-  history: z.strictObject({
-    occurrences: CountSchema,
-    perOccurrence: SwampifyHistoryCostSchema.optional(),
-  }),
-  swampRun: z.strictObject({
-    wallMs: AmountSchema,
-    tokens: TokenTotalsSchema,
-    outcome: z.enum(["succeeded", "failed"]),
-  }),
-  forward: z.strictObject({
-    since: z.iso.datetime(),
-    raw: SwampifyOccurrencesSchema,
-    swamp: SwampifyOccurrencesSchema,
-  }),
-  breakEven: SwampifyBreakEvenSchema,
-  estimatedUsd: z.strictObject({
-    build: AmountSchema.optional(),
-    historyPerOccurrence: z.strictObject({
-      chore: SwampifyRangeSchema,
-      wholeTurns: SwampifyRangeSchema,
-    }).optional(),
-    swampRun: AmountSchema.optional(),
-  }).optional(),
-}).superRefine((comparison, ctx) => {
+};
+
+interface ComparisonRulesInput {
+  readonly candidateIds: readonly string[];
+  readonly history: {
+    readonly occurrences: number;
+    readonly perOccurrence?: z.infer<typeof SwampifyHistoryCostSchema>;
+  };
+  readonly forward: z.infer<typeof SwampifyForwardSchema>;
+  readonly estimatedUsd?: {
+    readonly historyPerOccurrence?: z.infer<typeof SwampifyUsdHistorySchema>;
+  };
+}
+
+/** the rules v2 and v3 share; historyWithCalls is what perOccurrence covers */
+function checkComparison(
+  comparison: ComparisonRulesInput,
+  historyWithCalls: number,
+  ctx: z.RefinementCtx,
+): void {
   const seen = new Set<string>();
   comparison.candidateIds.forEach((id, i) => {
     if (seen.has(id)) {
@@ -640,15 +641,23 @@ export const SwampifyComparisonV2Schema = z.strictObject({
     seen.add(id);
   });
   const sides = [
-    ["history", comparison.history],
-    ["forward.raw", comparison.forward.raw],
-    ["forward.swamp", comparison.forward.swamp],
+    ["history", comparison.history.perOccurrence, historyWithCalls],
+    [
+      "forward.raw",
+      comparison.forward.raw.perOccurrence,
+      comparison.forward.raw.occurrences,
+    ],
+    [
+      "forward.swamp",
+      comparison.forward.swamp.perOccurrence,
+      comparison.forward.swamp.occurrences,
+    ],
   ] as const;
-  for (const [where, side] of sides) {
-    if ((side.perOccurrence !== undefined) !== (side.occurrences > 0)) {
+  for (const [where, perOccurrence, counted] of sides) {
+    if ((perOccurrence !== undefined) !== (counted > 0)) {
       ctx.addIssue({
         code: "custom",
-        message: side.occurrences > 0
+        message: counted > 0
           ? "occurrences need a perOccurrence cost"
           : "a perOccurrence cost needs occurrences",
         path: [...where.split("."), "perOccurrence"],
@@ -683,6 +692,113 @@ export const SwampifyComparisonV2Schema = z.strictObject({
       path: ["estimatedUsd", "historyPerOccurrence"],
     });
   }
+}
+
+/**
+ * one offer option that was swamped; history is summed over all its
+ * candidates, and estimatedUsd comes from a price table the writer supplies
+ */
+export const SwampifyComparisonV2Schema = z.strictObject({
+  schemaVersion: z.literal(2),
+  ...SwampifyComparisonHeadShape,
+  build: z.strictObject({
+    tokens: TokenTotalsSchema,
+    activeMs: AmountSchema,
+  }),
+  history: z.strictObject({
+    occurrences: CountSchema,
+    perOccurrence: SwampifyHistoryCostSchema.optional(),
+  }),
+  swampRun: z.strictObject({
+    wallMs: AmountSchema,
+    tokens: TokenTotalsSchema,
+    outcome: SwampRunOutcomeSchema,
+  }),
+  forward: SwampifyForwardSchema,
+  breakEven: SwampifyBreakEvenSchema,
+  estimatedUsd: z.strictObject({
+    build: AmountSchema.optional(),
+    historyPerOccurrence: SwampifyUsdHistorySchema.optional(),
+    swampRun: AmountSchema.optional(),
+  }).optional(),
+}).superRefine((comparison, ctx) => {
+  checkComparison(comparison, comparison.history.occurrences, ctx);
+});
+
+/**
+ * v2 plus what a fixed target and model steps need: the build's session count,
+ * the latest successful run, model steps that recorded no usage, and history
+ * occurrences that attributed no calls, which the per-occurrence ranges leave
+ * out; breakEven is against latestRun when present
+ */
+export const SwampifyComparisonV3Schema = z.strictObject({
+  schemaVersion: z.literal(3),
+  ...SwampifyComparisonHeadShape,
+  build: z.strictObject({
+    tokens: TokenTotalsSchema,
+    activeMs: AmountSchema,
+    sessions: PositiveCountSchema,
+  }),
+  history: z.strictObject({
+    occurrences: CountSchema,
+    noCallOccurrences: PositiveCountSchema.optional(),
+    perOccurrence: SwampifyHistoryCostSchema.optional(),
+  }),
+  swampRun: z.strictObject({
+    wallMs: AmountSchema,
+    tokens: TokenTotalsSchema,
+    outcome: SwampRunOutcomeSchema,
+    unrecordedSteps: PositiveCountSchema.optional(),
+  }),
+  latestRun: z.strictObject({
+    startedAt: z.iso.datetime(),
+    wallMs: AmountSchema,
+    tokens: TokenTotalsSchema,
+    outcome: z.literal("succeeded"),
+    unrecordedSteps: PositiveCountSchema.optional(),
+  }).optional(),
+  forward: SwampifyForwardSchema,
+  breakEven: SwampifyBreakEvenSchema,
+  estimatedUsd: z.strictObject({
+    build: AmountSchema.optional(),
+    historyPerOccurrence: SwampifyUsdHistorySchema.optional(),
+    swampRun: AmountSchema.optional(),
+    latestRun: AmountSchema.optional(),
+  }).optional(),
+}).superRefine((comparison, ctx) => {
+  const { occurrences, noCallOccurrences = 0 } = comparison.history;
+  if (noCallOccurrences > occurrences) {
+    ctx.addIssue({
+      code: "custom",
+      message: "more occurrences without calls than occurrences",
+      path: ["history", "noCallOccurrences"],
+    });
+  }
+  checkComparison(
+    comparison,
+    Math.max(0, occurrences - noCallOccurrences),
+    ctx,
+  );
+  const latest = comparison.latestRun;
+  if (
+    latest !== undefined &&
+    Date.parse(latest.startedAt) > Date.parse(comparison.generatedAt)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message: "the latest run starts after the comparison was generated",
+      path: ["latestRun", "startedAt"],
+    });
+  }
+  if (
+    comparison.estimatedUsd?.latestRun !== undefined && latest === undefined
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message: "an estimate for the latest run needs a latestRun",
+      path: ["estimatedUsd", "latestRun"],
+    });
+  }
 });
 
 export type SwampifyCandidateKind = z.infer<typeof SwampifyCandidateKindSchema>;
@@ -694,7 +810,13 @@ export type SwampifyCandidateSet = z.infer<typeof SwampifyCandidateSetV2Schema>;
 export type SwampifyOfferOption = z.infer<typeof SwampifyOfferOptionSchema>;
 export type SwampifyOfferState = z.infer<typeof SwampifyOfferStateSchema>;
 export type SwampifyOffer = z.infer<typeof SwampifyOfferV1Schema>;
-export type SwampifyComparison = z.infer<typeof SwampifyComparisonV2Schema>;
+/** what writers write */
+export type SwampifyComparison = z.infer<typeof SwampifyComparisonV3Schema>;
+export type SwampifyComparisonV2 = z.infer<typeof SwampifyComparisonV2Schema>;
+/** what readers return: any version still read */
+export type SwampifyComparisonRecord =
+  | SwampifyComparison
+  | SwampifyComparisonV2;
 
 export type SwampifySkipReason = "newer" | "older" | "invalid";
 
@@ -714,7 +836,7 @@ export type SwampifyOfferReading =
   | SwampifySkipped;
 
 export type SwampifyComparisonReading =
-  | { readonly kind: "record"; readonly record: SwampifyComparison }
+  | { readonly kind: "record"; readonly record: SwampifyComparisonRecord }
   | SwampifySkipped;
 
 interface ItemSpec<T> {
@@ -860,6 +982,12 @@ export function readSwampifyOffer(content: unknown): SwampifyOfferReading {
   });
 }
 
+// routes by schemaVersion, so a refused item reports the path inside its version
+const SwampifyComparisonSchema = z.discriminatedUnion("schemaVersion", [
+  SwampifyComparisonV2Schema,
+  SwampifyComparisonV3Schema,
+]);
+
 export function readSwampifyComparison(
   content: unknown,
 ): SwampifyComparisonReading {
@@ -867,7 +995,7 @@ export function readSwampifyComparison(
     newest: SWAMPIFY_COMPARISON_SCHEMA_VERSION,
     supported: SUPPORTED_SWAMPIFY_COMPARISON_SCHEMA_VERSIONS,
     rerun: "Run the comparison again.",
-    schema: SwampifyComparisonV2Schema,
+    schema: SwampifyComparisonSchema,
     oversized: oversizedComparison,
   });
 }
@@ -1095,11 +1223,16 @@ export const SwampifyOfferSummaryV1Schema = z.strictObject({
   }
 });
 
-export const SwampifyComparisonSummaryV2Schema = z.strictObject({
+// the tag carries no version, so a field v2 cannot fill is optional
+export const SwampifyComparisonSummarySchema = z.strictObject({
   optionId: SwampifyOptionIdSchema,
   target: SwampifyTargetSchema,
-  outcome: z.enum(["succeeded", "failed"]),
+  outcome: SwampRunOutcomeSchema,
+  latestOutcome: z.literal("succeeded").optional(),
+  buildSessions: PositiveCountSchema.optional(),
+  unrecordedSteps: PositiveCountSchema.optional(),
   historyOccurrences: CountSchema,
+  noCallOccurrences: PositiveCountSchema.optional(),
   forwardRaw: CountSchema,
   forwardSwamp: CountSchema,
   breakEven: SwampifyBreakEvenSchema,
@@ -1110,7 +1243,7 @@ export type SwampifyCandidateSetSummary = z.infer<
 >;
 export type SwampifyOfferSummary = z.infer<typeof SwampifyOfferSummaryV1Schema>;
 export type SwampifyComparisonSummary = z.infer<
-  typeof SwampifyComparisonSummaryV2Schema
+  typeof SwampifyComparisonSummarySchema
 >;
 
 export function swampifyCandidateSetSummary(
@@ -1153,14 +1286,27 @@ export function swampifyOfferSummary(
   };
 }
 
+/** unrecordedSteps is the run break-even is against: the latest, else the first */
 export function swampifyComparisonSummary(
-  comparison: SwampifyComparison,
+  comparison: SwampifyComparisonRecord,
 ): SwampifyComparisonSummary {
+  const v3 = comparison.schemaVersion === 3 ? comparison : undefined;
+  const unrecorded = v3 === undefined
+    ? undefined
+    : v3.latestRun
+    ? v3.latestRun.unrecordedSteps
+    : v3.swampRun.unrecordedSteps;
   return {
     optionId: comparison.optionId,
     target: { ...comparison.target },
     outcome: comparison.swampRun.outcome,
+    ...(v3?.latestRun ? { latestOutcome: v3.latestRun.outcome } : {}),
+    ...(v3 ? { buildSessions: v3.build.sessions } : {}),
+    ...(unrecorded !== undefined ? { unrecordedSteps: unrecorded } : {}),
     historyOccurrences: comparison.history.occurrences,
+    ...(v3?.history.noCallOccurrences !== undefined
+      ? { noCallOccurrences: v3.history.noCallOccurrences }
+      : {}),
     forwardRaw: comparison.forward.raw.occurrences,
     forwardSwamp: comparison.forward.swamp.occurrences,
     breakEven: { ...comparison.breakEven },
@@ -1189,7 +1335,7 @@ export function swampifyOfferTags(
 
 /** derived from the comparison so the tags cannot drift from it */
 export function swampifyComparisonTags(
-  comparison: SwampifyComparison,
+  comparison: SwampifyComparisonRecord,
 ): Record<string, string> {
   return {
     [SWAMPIFY_GENERATED_AT_TAG]: new Date(comparison.generatedAt)
@@ -1237,7 +1383,7 @@ export function readSwampifyOfferSummary(
 export function readSwampifyComparisonSummary(
   value: unknown,
 ): SwampifyComparisonSummary | undefined {
-  return readSummaryTag(value, SwampifyComparisonSummaryV2Schema);
+  return readSummaryTag(value, SwampifyComparisonSummarySchema);
 }
 
 function jsonSchema(schema: z.ZodType): Record<string, unknown> {
@@ -1267,14 +1413,14 @@ export function swampifyOfferSummaryJsonSchema(): Record<string, unknown> {
 }
 
 export function swampifyComparisonJsonSchema(): Record<string, unknown> {
-  return jsonSchema(SwampifyComparisonV2Schema);
+  return jsonSchema(SwampifyComparisonV3Schema);
 }
 
 export function swampifyComparisonSummaryJsonSchema(): Record<
   string,
   unknown
 > {
-  return jsonSchema(SwampifyComparisonSummaryV2Schema);
+  return jsonSchema(SwampifyComparisonSummarySchema);
 }
 
 /** the checked-in files under design/surfaces/ and what generates each */

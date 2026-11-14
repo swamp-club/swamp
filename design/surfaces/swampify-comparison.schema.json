@@ -4,7 +4,7 @@
   "properties": {
     "schemaVersion": {
       "type": "number",
-      "const": 2
+      "const": 3
     },
     "generatedAt": {
       "type": "string",
@@ -89,11 +89,17 @@
         "activeMs": {
           "type": "number",
           "minimum": 0
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       },
       "required": [
         "tokens",
-        "activeMs"
+        "activeMs",
+        "sessions"
       ],
       "additionalProperties": false
     },
@@ -103,6 +109,11 @@
         "occurrences": {
           "type": "integer",
           "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "noCallOccurrences": {
+          "type": "integer",
+          "minimum": 1,
           "maximum": 9007199254740991
         },
         "perOccurrence": {
@@ -488,9 +499,76 @@
             "succeeded",
             "failed"
           ]
+        },
+        "unrecordedSteps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       },
       "required": [
+        "wallMs",
+        "tokens",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "latestRun": {
+      "type": "object",
+      "properties": {
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "wallMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cacheRead": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "cacheWrite": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "input",
+            "output",
+            "cacheRead",
+            "cacheWrite"
+          ],
+          "additionalProperties": false
+        },
+        "outcome": {
+          "type": "string",
+          "const": "succeeded"
+        },
+        "unrecordedSteps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "startedAt",
         "wallMs",
         "tokens",
         "outcome"
@@ -961,6 +1039,10 @@
           "additionalProperties": false
         },
         "swampRun": {
+          "type": "number",
+          "minimum": 0
+        },
+        "latestRun": {
           "type": "number",
           "minimum": 0
         }

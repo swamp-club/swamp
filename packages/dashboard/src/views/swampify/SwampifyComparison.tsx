@@ -29,7 +29,8 @@ import {
   type ComparisonRecord,
 } from "../../client/useSwampify.ts";
 import type {
-  SwampifyComparison,
+  SwampifyComparisonRecord,
+  SwampifyComparisonSummary,
   SwampifyCostRange,
   SwampifyRange,
 } from "../../lib/agent_sessions/swampify.ts";
@@ -74,13 +75,7 @@ export function ComparisonBlock(
               <>
                 Compared: {summary.target.kind}{" "}
                 <code>{summary.target.name}</code>, run{" "}
-                <span
-                  className={summary.outcome === "failed" ? "sw-fail" : ""}
-                >
-                  {summary.outcome}
-                </span>
-                {" · "}
-                {formatBreakEven(summary.breakEven)}
+                <SummaryLine summary={summary} />
               </>
             )
             : "Compared"}
@@ -99,6 +94,27 @@ export function ComparisonBlock(
       </div>
       {open && <ComparisonBody row={row} records={records} onLoad={onLoad} />}
     </div>
+  );
+}
+
+/** A summary tag's outcome and flags; callers put "run" or "Run" before it. */
+export function SummaryLine(
+  { summary }: { summary: SwampifyComparisonSummary },
+) {
+  const extras = [
+    summary.buildSessions !== undefined && summary.buildSessions > 1 &&
+    `built over ${formatCount(summary.buildSessions)} sessions`,
+    summary.unrecordedSteps !== undefined && "model usage not recorded",
+    formatBreakEven(summary.breakEven),
+  ].filter((part): part is string => typeof part === "string");
+  return (
+    <>
+      <span className={summary.outcome === "failed" ? "sw-fail" : ""}>
+        {summary.outcome}
+      </span>
+      {summary.latestOutcome && <>, latest {summary.latestOutcome}</>}
+      {extras.map((part) => ` · ${part}`).join("")}
+    </>
   );
 }
 
@@ -161,12 +177,31 @@ const METRICS: ReadonlyArray<
   ["Active time", (c) => c.activeMs, formatDuration],
 ];
 
-function tokenLine(t: SwampifyComparison["build"]["tokens"]): string {
+function tokenLine(t: SwampifyComparisonRecord["build"]["tokens"]): string {
   return `in ${formatTokens(t.input)} · out ${
     formatTokens(t.output)
   } · cache read ${formatTokens(t.cacheRead)} · cache write ${
     formatTokens(t.cacheWrite)
   }`;
+}
+
+function unrecordedNote(steps: number | undefined): ReactNode {
+  if (steps === undefined) return null;
+  return (
+    <div className="sw-muted sw-small">
+      {steps === 1
+        ? "1 model step did not record its usage; its tokens are not counted."
+        : `${
+          formatCount(steps)
+        } model steps did not record their usage; their tokens are not counted.`}
+    </div>
+  );
+}
+
+function runsLabel(runs: number, withCalls: number): string {
+  return withCalls === runs
+    ? `${formatCount(runs)} runs`
+    : `${formatCount(withCalls)} of ${formatCount(runs)} runs`;
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -180,29 +215,33 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
 
 /** A comparison's figures as stored: medians, with each range beneath. */
 export function ComparisonDetail(
-  { comparison }: { comparison: SwampifyComparison },
+  { comparison }: { comparison: SwampifyComparisonRecord },
 ) {
   const { history, forward, build, swampRun, estimatedUsd } = comparison;
+  const v3 = comparison.schemaVersion === 3 ? comparison : undefined;
+  const latest = v3?.latestRun;
+  const noCalls = v3?.history.noCallOccurrences ?? 0;
+  const pastRuns = runsLabel(
+    history.occurrences,
+    history.occurrences - noCalls,
+  );
   const columns: ReadonlyArray<
-    readonly [string, number, SwampifyCostRange | undefined]
+    readonly [string, string, SwampifyCostRange | undefined]
   > = [
+    ["Past runs: the chore's calls", pastRuns, history.perOccurrence?.chore],
+    ["Past runs: whole turns", pastRuns, history.perOccurrence?.wholeTurns],
     [
-      "Past runs: the chore's calls",
-      history.occurrences,
-      history.perOccurrence?.chore,
+      "Since: still raw",
+      runsLabel(forward.raw.occurrences, forward.raw.occurrences),
+      forward.raw.perOccurrence,
     ],
-    [
-      "Past runs: whole turns",
-      history.occurrences,
-      history.perOccurrence?.wholeTurns,
-    ],
-    ["Since: still raw", forward.raw.occurrences, forward.raw.perOccurrence],
     [
       "Since: through swamp",
-      forward.swamp.occurrences,
+      runsLabel(forward.swamp.occurrences, forward.swamp.occurrences),
       forward.swamp.perOccurrence,
     ],
   ];
+  const latestUsd = v3?.estimatedUsd?.latestRun;
   return (
     <div className="sw-compare-body">
       <table className="data-table sw-compare-table">
@@ -216,7 +255,7 @@ export function ComparisonDetail(
             {columns.map(([label, runs]) => (
               <th key={label} scope="col" className="sw-num">
                 {label}
-                <div className="sw-muted">{formatCount(runs)} runs</div>
+                <div className="sw-muted">{runs}</div>
               </th>
             ))}
           </tr>
@@ -236,21 +275,53 @@ export function ComparisonDetail(
           ))}
         </tbody>
       </table>
+      {noCalls > 0 && (
+        <p className="sw-muted sw-small">
+          {noCalls === 1
+            ? "1 past run had no calls attributed to the chore; the per-run figures leave it out rather than count it as free."
+            : `${
+              formatCount(noCalls)
+            } past runs had no calls attributed to the chore; the per-run figures leave them out rather than count them as free.`}
+        </p>
+      )}
       <dl className="sw-dl">
         <Row label="Target">
           {comparison.target.kind} <code>{comparison.target.name}</code>
         </Row>
         <Row label="Build cost">
           {tokenLine(build.tokens)}, {formatDuration(build.activeMs)} active
+          {v3 && (
+            <>
+              , across {formatCount(v3.build.sessions)}{" "}
+              {v3.build.sessions === 1 ? "session" : "sessions"}
+            </>
+          )}
         </Row>
-        <Row label="Swamp run">
+        <Row label={latest ? "First run" : "Swamp run"}>
           <span className={swampRun.outcome === "failed" ? "sw-fail" : ""}>
             {swampRun.outcome}
           </span>{" "}
           in {formatDuration(swampRun.wallMs)}; model tokens{" "}
           {tokenLine(swampRun.tokens)}
+          {unrecordedNote(v3?.swampRun.unrecordedSteps)}
         </Row>
-        <Row label="Break-even">{formatBreakEven(comparison.breakEven)}</Row>
+        {latest && (
+          <Row label="Latest run">
+            {latest.outcome} on {formatDay(latest.startedAt)} in{" "}
+            {formatDuration(latest.wallMs)}; model tokens{" "}
+            {tokenLine(latest.tokens)}
+            {unrecordedNote(latest.unrecordedSteps)}
+          </Row>
+        )}
+        <Row label="Break-even">
+          {formatBreakEven(comparison.breakEven)}
+          {latest && (
+            <>
+              {" "}
+              <span className="sw-muted">(against the latest run)</span>
+            </>
+          )}
+        </Row>
         {estimatedUsd && (
           <Row label="Estimated cost">
             {[
@@ -266,7 +337,10 @@ export function ComparisonDetail(
                 )
               } (whole turns)`,
               estimatedUsd.swampRun !== undefined &&
-              `swamp run ${formatUsd(estimatedUsd.swampRun)}`,
+              `${latest ? "first run" : "swamp run"} ${
+                formatUsd(estimatedUsd.swampRun)
+              }`,
+              latestUsd !== undefined && `latest run ${formatUsd(latestUsd)}`,
             ].filter(Boolean).join("; ")}{" "}
             <span className="sw-muted">
               (an estimate from the writer's prices)

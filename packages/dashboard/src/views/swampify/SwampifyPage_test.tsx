@@ -22,9 +22,11 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  readSwampifyComparison,
   type SwampifyCandidateSet,
   swampifyCandidateSetTags,
   type SwampifyComparisonReading,
+  type SwampifyComparisonRecord,
   swampifyComparisonTags,
   type SwampifyOffer,
   swampifyOfferTags,
@@ -42,6 +44,8 @@ import {
   emptyCandidateSet,
   fixtureCandidateSet,
   fixtureComparison,
+  fixtureComparisonFixed,
+  fixtureComparisonV2,
   fixtureOffer,
   hostileCandidateSet,
   OPTION_IDS,
@@ -50,6 +54,7 @@ import {
 import { SwampifyPage } from "./SwampifyPage.tsx";
 import { type LaunchState, OptionReview } from "./SwampifyReview.tsx";
 import { builtOptions, BuiltPane } from "./SwampifyBuilt.tsx";
+import { ComparisonBody, ComparisonDetail } from "./SwampifyComparison.tsx";
 import {
   offerView,
   type SwampifyHandOff,
@@ -659,6 +664,135 @@ Deno.test("BuiltPane: an open row shows its comparison body", () => {
   );
   assertStringIncludes(html, 'aria-expanded="true"');
   assertStringIncludes(html, "Past runs");
+});
+
+function builtPane(record: SwampifyComparisonRecord): string {
+  const offer = fixtureOffer("built");
+  const set = fixtureCandidateSet();
+  const view = offerView(offer, set, set.generatedAt);
+  const row: SwampifyRow = {
+    ...comparisonRow,
+    tags: swampifyComparisonTags(record),
+  };
+  return renderToStaticMarkup(
+    <BuiltPane
+      view={view}
+      options={builtOptions(view, new Map([[OPTION_IDS[0], row]]))}
+      comparisons={new Map([[OPTION_IDS[0], row]])}
+      records={new Map([[
+        comparisonKey(row),
+        read({ kind: "record", record }),
+      ]])}
+      onLoadComparison={noop}
+      initialOpen={OPTION_IDS[0]}
+    />,
+  );
+}
+
+Deno.test("ComparisonDetail: a v3 comparison shows both runs, the build sessions and what was not measured", () => {
+  const html = renderToStaticMarkup(
+    <ComparisonDetail comparison={fixtureComparisonFixed()} />,
+  );
+  assertStringIncludes(html, "<dt>First run</dt>");
+  assertStringIncludes(html, '<span class="sw-fail">failed</span> in 51s');
+  assertStringIncludes(html, "<dt>Latest run</dt>");
+  assertStringIncludes(html, "succeeded on 2026-11-11 in 1m 03s");
+  assertStringIncludes(html, "in 54K · out 1,800");
+  assertStringIncludes(html, ", across 2 sessions");
+  assertStringIncludes(
+    html,
+    "1 model step did not record its usage; its tokens are not counted.",
+  );
+  assertStringIncludes(
+    html,
+    "2 past runs had no calls attributed to the chore; the per-run figures leave them out",
+  );
+  assertStringIncludes(html, "57 of 59 runs");
+  assert(
+    /19 runs(<!-- -->)? <span class="sw-muted">\(against the latest run\)/
+      .test(html),
+  );
+  assertStringIncludes(html, "first run $0.00; latest run $0.19");
+});
+
+Deno.test("ComparisonDetail: a v3 comparison with every past run callless shows dashes, not zero cost", () => {
+  const fixed = fixtureComparisonFixed();
+  const html = renderToStaticMarkup(
+    <ComparisonDetail
+      comparison={{
+        ...fixed,
+        history: { occurrences: 3, noCallOccurrences: 3 },
+        estimatedUsd: { build: 4.9 },
+      }}
+    />,
+  );
+  assert(
+    readSwampifyComparison({
+      ...fixed,
+      history: { occurrences: 3, noCallOccurrences: 3 },
+      estimatedUsd: { build: 4.9 },
+    }).kind === "record",
+  );
+  assertStringIncludes(html, "0 of 3 runs");
+  assertStringIncludes(html, '<td class="sw-num sw-muted">—</td>');
+  assertStringIncludes(html, "3 past runs had no calls attributed");
+});
+
+Deno.test("ComparisonDetail: a v2 comparison renders as before, with none of v3's rows", () => {
+  const html = renderToStaticMarkup(
+    <ComparisonDetail comparison={fixtureComparisonV2()} />,
+  );
+  assertStringIncludes(html, "<dt>Swamp run</dt>");
+  assertStringIncludes(html, "59 runs");
+  assertStringIncludes(html, "swamp run $0.00");
+  for (
+    const absent of [
+      "Latest run",
+      "First run",
+      "session",
+      "did not record",
+      "no calls attributed",
+      "against the latest run",
+    ]
+  ) {
+    assert(!html.includes(absent), absent);
+  }
+});
+
+Deno.test("BuiltPane: the row's summary shows the latest outcome, build sessions and unrecorded usage", () => {
+  const fixed = builtPane(fixtureComparisonFixed());
+  assertStringIncludes(
+    fixed,
+    'Run <span class="sw-fail">failed</span>, latest succeeded · built over 2 sessions · After 6 – 19 runs',
+  );
+  const unrecorded = fixtureComparison({
+    swampRun: { ...fixtureComparison().swampRun, unrecordedSteps: 2 },
+  });
+  assertStringIncludes(
+    builtPane(unrecorded),
+    " · model usage not recorded · After 4 – 11 runs",
+  );
+  const v2 = builtPane(fixtureComparisonV2());
+  assertStringIncludes(
+    v2,
+    'Run <span class="">succeeded</span> · After 4 – 11 runs',
+  );
+});
+
+Deno.test("ComparisonBody: a v4 comparison is skipped as newer, never shown", () => {
+  const reading = readSwampifyComparison({
+    ...fixtureComparison(),
+    schemaVersion: 4,
+  });
+  const html = renderToStaticMarkup(
+    <ComparisonBody
+      row={comparisonRow}
+      records={new Map([[comparisonKey(comparisonRow), read(reading)]])}
+      onLoad={noop}
+    />,
+  );
+  assertStringIncludes(html, "this reader reads up to version 3");
+  assert(!html.includes("Past runs"));
 });
 
 Deno.test("SwampifyPage: Built says so when nothing is built yet", () => {

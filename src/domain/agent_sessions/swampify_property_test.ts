@@ -294,7 +294,7 @@ const arbBreakEven = fc.option(
   return { low, high: extra === null ? null : low + extra };
 });
 
-const arbComparison = fc.record({
+const arbComparisonV2 = fc.record({
   generatedAt: arbIso,
   importerVersion: arbText(30),
   optionId: arbHex16,
@@ -337,6 +337,92 @@ const arbComparison = fc.record({
     ...(estimate === undefined ? {} : { estimatedUsd: estimate }),
   };
 });
+
+const arbPositive = fc.integer({ min: 1, max: 1_000_000 });
+
+// noCall can equal occurrences, which leaves no per-occurrence figures
+interface HistoryV3 {
+  occurrences: number;
+  noCallOccurrences?: number;
+  perOccurrence?: unknown;
+}
+
+const arbHistoryV3: fc.Arbitrary<HistoryV3> = arbCount.chain((occurrences) =>
+  fc.option(fc.integer({ min: 1, max: Math.max(1, occurrences) }), {
+    nil: undefined,
+  }).chain((noCall) => {
+    const counted = noCall === undefined || noCall > occurrences
+      ? occurrences
+      : occurrences - noCall;
+    const noCalls = noCall !== undefined && noCall <= occurrences
+      ? { noCallOccurrences: noCall }
+      : {};
+    return counted > 0
+      ? arbHistoryCost.map((perOccurrence) => ({
+        occurrences,
+        ...noCalls,
+        perOccurrence,
+      }))
+      : fc.constant({ occurrences, ...noCalls });
+  })
+);
+
+const arbComparisonV3 = fc.tuple(
+  arbComparisonV2,
+  arbPositive,
+  arbHistoryV3,
+  fc.option(arbPositive, { nil: undefined }),
+  fc.option(
+    fc.record({
+      wallMs: arbAmount,
+      tokens: arbTokens,
+      unrecordedSteps: arbPositive,
+      latestUsd: arbAmount,
+      // how long before generatedAt the latest run started
+      beforeMs: fc.integer({ min: 0, max: 1e9 }),
+    }, { requiredKeys: ["wallMs", "tokens", "beforeMs"] }),
+    { nil: undefined },
+  ),
+).map(([v2, sessions, history, unrecorded, latest]) => {
+  const { estimatedUsd, ...rest } = v2 as typeof v2 & {
+    estimatedUsd?: Record<string, unknown>;
+  };
+  const estimate = estimatedUsd === undefined
+    ? undefined
+    : (history.perOccurrence === undefined
+      ? (({ historyPerOccurrence: _, ...e }) => e)(estimatedUsd)
+      : estimatedUsd);
+  const latestRun = latest === undefined ? undefined : {
+    startedAt: new Date(
+      Math.max(0, Date.parse(v2.generatedAt) - latest.beforeMs),
+    ).toISOString(),
+    wallMs: latest.wallMs,
+    tokens: latest.tokens,
+    outcome: "succeeded" as const,
+    ...(latest.unrecordedSteps === undefined
+      ? {}
+      : { unrecordedSteps: latest.unrecordedSteps }),
+  };
+  const usd = estimate === undefined
+    ? undefined
+    : latest?.latestUsd !== undefined
+    ? { ...estimate, latestRun: latest.latestUsd }
+    : estimate;
+  return {
+    ...rest,
+    schemaVersion: 3,
+    build: { ...v2.build, sessions },
+    history,
+    swampRun: {
+      ...v2.swampRun,
+      ...(unrecorded === undefined ? {} : { unrecordedSteps: unrecorded }),
+    },
+    ...(latestRun === undefined ? {} : { latestRun }),
+    ...(usd === undefined ? {} : { estimatedUsd: usd }),
+  };
+});
+
+const arbComparison = fc.oneof(arbComparisonV2, arbComparisonV3);
 
 const json = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
@@ -537,6 +623,21 @@ const COMPARISON_OVER_BOUNDS: ReadonlyArray<
   }],
 ];
 
+const COMPARISON_V3_OVER_BOUNDS: ReadonlyArray<
+  readonly [string, (comparison: Json) => void]
+> = [
+  ["build sessions", (c) => {
+    (c.build as Json).sessions = 0;
+  }],
+  ["swamp run unrecorded steps", (c) => {
+    (c.swampRun as Json).unrecordedSteps = 0;
+  }],
+  ["no-call occurrences", (c) => {
+    const history = c.history as Json;
+    history.noCallOccurrences = (history.occurrences as number) + 1;
+  }],
+];
+
 function assertOverBoundsRefused<T>(
   arb: fc.Arbitrary<T>,
   bounds: ReadonlyArray<readonly [string, (item: Json) => void]>,
@@ -570,6 +671,11 @@ Deno.test("swampify property: one past any bound is refused as invalid", () => {
     COMPARISON_OVER_BOUNDS,
     readSwampifyComparison,
   );
+  assertOverBoundsRefused(
+    arbComparisonV3,
+    COMPARISON_V3_OVER_BOUNDS,
+    readSwampifyComparison,
+  );
 });
 
 Deno.test("swampify property: readers never throw on arbitrary JSON", () => {
@@ -592,6 +698,10 @@ Deno.test("swampify property: readers never throw on arbitrary JSON", () => {
       ...d,
       schemaVersion: 2,
     })),
+    fc.dictionary(fc.string(), fc.jsonValue()).map((d) => ({
+      ...d,
+      schemaVersion: 3,
+    })),
   );
   fc.assert(
     fc.property(arbContent, (content) => {
@@ -613,7 +723,7 @@ Deno.test("swampify property: a summary at every cap still fits the tag", () => 
     activeMs: r0,
   };
   const comparison = readSwampifyComparison({
-    schemaVersion: 2,
+    schemaVersion: 3,
     generatedAt: "2026-10-30T10:00:00.000Z",
     importerVersion: "test",
     optionId: "0".repeat(16),
@@ -622,15 +732,25 @@ Deno.test("swampify property: a summary at every cap still fits the tag", () => 
     build: {
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       activeMs: 0,
+      sessions: max,
     },
     history: {
       occurrences: max,
+      noCallOccurrences: max - 1,
       perOccurrence: { chore: zero, wholeTurns: zero },
     },
     swampRun: {
       wallMs: 0,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       outcome: "succeeded",
+      unrecordedSteps: max,
+    },
+    latestRun: {
+      startedAt: "2026-10-30T10:00:00.000Z",
+      wallMs: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      outcome: "succeeded",
+      unrecordedSteps: max,
     },
     forward: {
       since: "2026-10-30T10:00:00.000Z",
