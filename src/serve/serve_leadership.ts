@@ -150,6 +150,7 @@ export class ServeLeadership {
   #leadPending = false;
   #lastTakeAt: number | undefined;
   #lostLead: Promise<void> | undefined;
+  #leaseLost = false;
   #leadCheck: Promise<void> | undefined;
   #unsubscribeLost: (() => void) | undefined;
   #stopped = false;
@@ -185,16 +186,12 @@ export class ServeLeadership {
   }
 
   /**
-   * a leader whose lease is lost, from then until serve stops: it is not
-   * ready. Asking starts the check that gives the lead up.
+   * a leader whose lease the hold reported lost, from then until serve stops;
+   * a hold still retaking it may win it back, so that alone never counts
    */
   leadLost(): boolean {
     if (this.#lostLead !== undefined) return true;
-    if (this.#role !== "leader" || this.#deps.lease.holdsCurrent()) {
-      return false;
-    }
-    this.#checkLeadNow();
-    return true;
+    return this.#role === "leader" && this.#leaseLost;
   }
 
   isStale(): boolean {
@@ -204,9 +201,10 @@ export class ServeLeadership {
   }
 
   async start(initial: "writer" | "follower"): Promise<void> {
-    this.#unsubscribeLost ??= this.#deps.lease.onLost?.(() =>
-      this.#checkLeadNow()
-    );
+    this.#unsubscribeLost ??= this.#deps.lease.onLost?.(() => {
+      this.#leaseLost = true;
+      this.#checkLeadNow();
+    });
     if (initial === "writer") {
       // Serve's boot did the leader's work before it listened, so a node
       // that took the lease at boot leads from the first request: it never

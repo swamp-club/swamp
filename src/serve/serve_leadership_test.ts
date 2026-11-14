@@ -256,15 +256,23 @@ Deno.test("ServeLeadership: a lease lost while a tick is in flight is checked ag
   }
 });
 
-Deno.test("ServeLeadership.leadLost: a leader whose lease is lost reports it before and after its check stops it; a holder or follower never does", async () => {
+Deno.test("ServeLeadership.leadLost: a hold lost while its retake may still win it back keeps the leader ready; once the hold reports it lost, the leader is not ready and gives up the lead", async () => {
   const { lease, events, leadership } = setup();
   assertEquals(leadership.leadLost(), false);
   lease.hold = { fence: 5, lost: false };
   await leadership.start("writer");
   try {
     assertEquals(leadership.leadLost(), false);
-    // lost with no signal: the readiness probe alone starts the check
+    // lost but retaking: a readiness probe neither reports it nor acts on it
     lease.hold.lost = true;
+    assertEquals(leadership.leadLost(), false);
+    await Promise.resolve();
+    assertEquals(leadership.role, "leader");
+    assertEquals(events, ["lead"]);
+    lease.hold.lost = false;
+    assertEquals(leadership.leadLost(), false);
+    // the hold gave up: reported at once, and the lead is given up
+    lease.lose();
     assertEquals(leadership.leadLost(), true);
     await waitFor(
       () => leadership.role === "follower",
