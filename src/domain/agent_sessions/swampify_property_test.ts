@@ -389,7 +389,6 @@ const arbComparisonV3 = fc.tuple(
     modelSteps: arbCount,
     unrecordedSteps: arbPositive,
   }, { requiredKeys: [] }),
-  // the first run starts this long before generatedAt
   fc.integer({ min: 1, max: 1e9 }),
   fc.option(
     fc.record({

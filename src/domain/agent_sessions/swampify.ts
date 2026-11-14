@@ -725,8 +725,7 @@ export const SwampifyComparisonV2Schema = z.strictObject({
   checkComparison(comparison, comparison.history.occurrences, ctx);
 });
 
-// modelSteps may be 0, for a run with no model steps; unrecordedSteps is
-// left out rather than 0
+// modelSteps may be 0; unrecordedSteps is left out rather than 0
 const SwampifyRunShape = {
   startedAt: z.iso.datetime(),
   wallMs: AmountSchema,
@@ -735,12 +734,7 @@ const SwampifyRunShape = {
   unrecordedSteps: PositiveCountSchema.optional(),
 };
 
-/**
- * v2 plus what a fixed target and model steps need: the build's session count,
- * the latest successful run, model steps that recorded no usage, and history
- * occurrences that attributed no calls, which the per-occurrence ranges leave
- * out; breakEven is against latestRun when present
- */
+/** breakEven is against latestRun when present */
 export const SwampifyComparisonV3Schema = z.strictObject({
   schemaVersion: z.literal(3),
   ...SwampifyComparisonHeadShape,
