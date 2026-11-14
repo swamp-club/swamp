@@ -400,9 +400,9 @@ const PINNED: ReadonlyArray<
     file: "src/presentation/renderers/extension_list.ts",
     reason: "installed extensions",
     calls: [
-      "Math.max(...exts.map((ext) => ext.latestVersion ? ext.latestVersion.length + 1 : 1))",
+      "Math.max(...exts.map((ext) => ext.latestVersion ? ext.latestVersion.length : 1))",
       "Math.max(...exts.map((ext) => ext.name.length))",
-      "Math.max(...exts.map((ext) => ext.version.length + 1 + channelTag(ext).length))",
+      "Math.max(...exts.map((ext) => ext.version.length + channelTag(ext).length))",
     ],
   },
   {
