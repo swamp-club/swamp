@@ -27,6 +27,10 @@ import type { SwampError } from "../errors.ts";
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { RepoService } from "../../domain/repo/repo_service.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import {
+  builtInToolConfig,
+  isBuiltInTool,
+} from "../../domain/repo/custom_tool.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
   isSwampBrief,
@@ -315,7 +319,9 @@ function promptFor(
     return ownAgentPrompt(
       briefPath(workspacePath, briefFile),
       kind,
-      harness.enrolTool,
+      isBuiltInTool(harness.enrolTool)
+        ? builtInToolConfig(harness.enrolTool).skillsDir
+        : ".claude/skills",
     );
   } catch {
     return undefined;

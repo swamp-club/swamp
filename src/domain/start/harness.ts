@@ -19,7 +19,6 @@
 
 import type { DetectableAiTool } from "../telemetry/agent_harness_detection.ts";
 import { markErrorPaths } from "../errors.ts";
-import { builtInToolConfig, isBuiltInTool } from "../repo/custom_tool.ts";
 import { isBriefFile } from "./brief.ts";
 import type { TrustMode } from "./start_session.ts";
 import type { StartTaskKind } from "./start_task.ts";
@@ -58,7 +57,8 @@ function hasLineBreakingChar(text: string): boolean {
 export function ownAgentPrompt(
   briefAbsolutePath: string,
   kind: StartTaskKind,
-  enrolTool: string,
+  /** where the task's agent was enrolled, e.g. `.agents/skills` */
+  enrolledSkillsDir: string,
 ): string {
   if (briefAbsolutePath === "" || hasLineBreakingChar(briefAbsolutePath)) {
     throw markErrorPaths(
@@ -71,9 +71,7 @@ export function ownAgentPrompt(
   const skill = kind === "swampify" ? "swampify" : "swamp-getting-started";
   // The agent-sessions pull writes .claude/skills for every swampify task;
   // a plain task's skill sits where its agent was enrolled.
-  const skillsDir = kind !== "swampify" && isBuiltInTool(enrolTool)
-    ? builtInToolConfig(enrolTool).skillsDir
-    : ".claude/skills";
+  const skillsDir = kind === "swampify" ? ".claude/skills" : enrolledSkillsDir;
   return `Read the brief at ${briefAbsolutePath} and follow it. If the ${skill} skill isn't loaded, read ${skillsDir}/${skill}/SKILL.md in the workspace the brief names.`;
 }
 
