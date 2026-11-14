@@ -1487,10 +1487,10 @@ tail is older than an hour.
 The cost: each interval uploads a full snapshot of `commits.db`, about the
 database size × 24 a day at 1 hour, and the bucket holds those snapshots until
 Litestream's snapshot retention (24 hours, left at the default) removes them,
-so up to about 24 database-sized objects. Each new snapshot is also a
-[verification](#verifying-the-replica-swamp-club3935) trigger, so a serve that
-writes all day can run up to 24 full verification restores a day, each about
-the database size downloaded.
+so up to about 24 database-sized objects. A new snapshot triggers a
+[verification](#verifying-the-replica-swamp-club3935) only a day after the
+last one, so hourly snapshots leave a serve that writes all day checked at
+the 4-hour backstop, as with Litestream's daily snapshot.
 
 The datastore block of `.swamp.yaml` sets it as `snapshotInterval`, a whole
 number of minutes or hours from `5m` to `24h` (`readSnapshotIntervalKey` in
@@ -2062,7 +2062,9 @@ acknowledgement, is left out, so the next check sees it as new.
   triggers:
   - **a new lineage:** no verdict on it yet;
   - **a new snapshot:** the replica's newest level-9 snapshot is not the one
-    the last verdict recorded. The sidecar learns it from
+    the last verdict recorded, and that verdict is at least 24 hours old
+    (`REPLICA_VERIFY_SNAPSHOT_SPACING_MS`), so the hourly interval does not
+    multiply full restores. The sidecar learns it from
     `litestream ltx -level 9 -json`, one LIST request, at most every 15
     minutes and only while something is uncovered. Litestream 0.5.17 writes
     a snapshot when a lineage starts and then at most once per snapshot

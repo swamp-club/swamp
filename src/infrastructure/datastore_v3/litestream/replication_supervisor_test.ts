@@ -591,7 +591,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "runReplicationSupervisor: a new snapshot is checked before the backstop (swamp-club#4261)",
+    "runReplicationSupervisor: a new snapshot within a day of the last check waits for the backstop",
   ignore: !UNIX,
   async fn() {
     await withTempDir(async (dir) => {
@@ -600,21 +600,35 @@ Deno.test({
         3,
         (elapsed) => elapsed < HOUR ? txidOf(1) : txidOf(50),
       );
-      assertEquals(restores.length, 2);
-      assertEquals(restores[1].snapshotTxid, txidOf(50));
+      assertEquals(restores.length, 1);
     });
   },
 });
 
 Deno.test({
   name:
-    "runReplicationSupervisor: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it, not at the backstop (swamp-club#4261)",
+    "runReplicationSupervisor: a snapshot written ahead of the acknowledged TXID is not checked early once the writer passes it",
   ignore: !UNIX,
   async fn() {
     await withTempDir(async (dir) => {
       const { restores } = await serveDay(dir, 3, () => txidOf(71));
-      assertEquals(restores.length, 2);
-      assertEquals(restores[1].snapshotTxid, txidOf(71));
+      assertEquals(restores.length, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "runReplicationSupervisor: hourly snapshots under the default backstop are checked every backstop, not every snapshot",
+  ignore: !UNIX,
+  async fn() {
+    await withTempDir(async (dir) => {
+      const { restores } = await serveDay(
+        dir,
+        24,
+        (elapsed) => txidOf(1 + Math.floor(elapsed / HOUR) * 60),
+      );
+      assertEquals(restores.length, 24 * HOUR / REPLICA_VERIFY_BACKSTOP_MS);
     });
   },
 });

@@ -26,6 +26,12 @@ import { normalizeTxid } from "./published_lineage.ts";
 export const REPLICA_VERIFY_BACKSTOP_MS = 4 * 60 * 60 * 1000;
 
 /**
+ * a new snapshot triggers a check only this long after the last verdict, so an
+ * hourly snapshotInterval keeps the cadence of Litestream's daily snapshot
+ */
+export const REPLICA_VERIFY_SNAPSHOT_SPACING_MS = 24 * 60 * 60 * 1000;
+
+/**
  * retry delay after a check that recorded no verdict (replica unreachable or
  * deadline passed); it says nothing about the lineage, so the backstop does not
  * apply
@@ -90,8 +96,8 @@ export interface ReplicaVerifyObservation {
 
 /**
  * check only when something acknowledged is uncovered and a check can change
- * the answer: no verdict, new snapshot, or backstop passed; an idling sidecar
- * never retries a tried TXID
+ * the answer: no verdict, a new snapshot a day on, or backstop passed; an
+ * idling sidecar never retries a tried TXID
  */
 export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   if (o.acknowledgedTxid === undefined) return false;
@@ -106,8 +112,10 @@ export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   // Only a snapshot a restore at the acknowledged TXID reads through: one
   // written ahead of it is new only once the writer passes it.
   const marker = snapshotReadAt(o.snapshotTxid, acknowledged);
+  const spaced = last === undefined ||
+    o.nowMs - Date.parse(last.checkedAt) >= REPLICA_VERIFY_SNAPSHOT_SPACING_MS;
   const newSnapshotSince = (seen: string | undefined): boolean =>
-    marker !== undefined &&
+    spaced && marker !== undefined &&
     (seen === undefined || normalizeTxid(seen) !== marker);
   if (o.lastAttempt !== undefined) {
     const attempt = o.lastAttempt;

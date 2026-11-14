@@ -30,6 +30,9 @@ import {
 const BACKSTOP = 4 * 60 * 60 * 1000;
 const RETRY = 10 * 60 * 1000;
 const CHECKED_AT_MS = Date.parse("2026-10-25T12:00:00.000Z");
+const DAY = 24 * 60 * 60 * 1000;
+// isolates the snapshot trigger, which waits a day, from the default backstop
+const SNAPSHOT_ONLY = { backstopMs: 2 * DAY, nowMs: CHECKED_AT_MS + DAY };
 
 function observe(
   overrides: Partial<ReplicaVerifyObservation> = {},
@@ -130,17 +133,54 @@ Deno.test("shouldVerifyReplica: the backstop counts from the recorded verdict, n
   );
 });
 
-Deno.test("shouldVerifyReplica: a new snapshot is checked before the backstop", () => {
+Deno.test("shouldVerifyReplica: a new snapshot is checked before the backstop once a day has passed", () => {
   assertEquals(
     shouldVerifyReplica(
-      observe({ ...moved, snapshotTxid: "0000000000000011" }),
+      observe({ ...moved, ...SNAPSHOT_ONLY, snapshotTxid: "0000000000000011" }),
     ),
     true,
   );
   assertEquals(
-    shouldVerifyReplica(observe({ ...moved, snapshotTxid: "1" })),
+    shouldVerifyReplica(
+      observe({
+        ...moved,
+        ...SNAPSHOT_ONLY,
+        nowMs: CHECKED_AT_MS + DAY - 1,
+        snapshotTxid: "0000000000000011",
+      }),
+    ),
     false,
   );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({ ...moved, ...SNAPSHOT_ONLY, snapshotTxid: "1" }),
+    ),
+    false,
+  );
+});
+
+Deno.test("shouldVerifyReplica: hourly snapshots under steady writes are checked at the backstop, not each snapshot", () => {
+  const HOUR = 60 * 60 * 1000;
+  let last = verdict();
+  let checks = 0;
+  for (let hour = 1; hour <= 24; hour++) {
+    const nowMs = CHECKED_AT_MS + hour * HOUR;
+    const txid = (100 * hour).toString(16).padStart(16, "0");
+    const o = observe({
+      last,
+      acknowledgedTxid: txid,
+      snapshotTxid: txid,
+      nowMs,
+    });
+    if (!shouldVerifyReplica(o)) continue;
+    checks++;
+    last = verdict({
+      txid,
+      checkedAt: new Date(nowMs).toISOString(),
+      snapshotTxid: txid,
+    });
+  }
+  assertEquals(checks, 24 * HOUR / BACKSTOP);
 });
 
 Deno.test("shouldVerifyReplica: an unknown snapshot is never a new one", () => {
@@ -154,7 +194,11 @@ Deno.test("shouldVerifyReplica: a verdict from before snapshots were recorded is
   const old = verdict({ snapshotTxid: undefined });
   assertEquals(
     shouldVerifyReplica(
-      observe({ last: old, acknowledgedTxid: "0000000000000011" }),
+      observe({
+        last: old,
+        acknowledgedTxid: "0000000000000011",
+        ...SNAPSHOT_ONLY,
+      }),
     ),
     true,
   );
@@ -279,7 +323,7 @@ Deno.test("shouldVerifyReplica: a sidecar about to idle out never checks a TXID 
   );
 });
 
-Deno.test("shouldVerifyReplica: a check that recorded a verdict holds back the next until the backstop or a new snapshot", () => {
+Deno.test("shouldVerifyReplica: a check that recorded a verdict holds back the next until the backstop or a new snapshot a day on", () => {
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
     endedAtMs: CHECKED_AT_MS,
@@ -309,6 +353,16 @@ Deno.test("shouldVerifyReplica: a check that recorded a verdict holds back the n
         snapshotTxid: "0000000000000002",
       }),
     ),
+    false,
+  );
+  assertEquals(
+    shouldVerifyReplica(
+      observe({
+        ...after,
+        ...SNAPSHOT_ONLY,
+        snapshotTxid: "0000000000000002",
+      }),
+    ),
     true,
   );
 });
@@ -321,7 +375,7 @@ Deno.test("snapshotReadAt: only a snapshot at or below the restored TXID", () =>
   assertEquals(snapshotReadAt("12", undefined), undefined);
 });
 
-Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it", () => {
+Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it and a day has passed", () => {
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
     endedAtMs: CHECKED_AT_MS,
@@ -339,7 +393,7 @@ Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXI
         lastAttempt: attempt,
         acknowledgedTxid: "20",
         snapshotTxid: "12",
-        nowMs: CHECKED_AT_MS + 15 * 60_000,
+        ...SNAPSHOT_ONLY,
       }),
     ),
     true,
