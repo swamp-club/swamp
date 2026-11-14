@@ -1068,11 +1068,7 @@ export function startStartServer(
           );
           handedOffHere.add(taskId);
           view = "flow";
-          // Waits like a copied command: no window opened, the page holds
-          // what the user still has to paste.
-          launchedName = status.harness?.displayName ?? "Your agent";
-          copyFallback = true;
-          reevaluate();
+          // Nothing opened, so the server ends as it would before a launch.
           return present(status);
         }, { sameTask: true });
         respond(status);

@@ -183,13 +183,10 @@ export function useHandOff(
         () => {},
       );
       if (status.ownAgentPrompt && status.taskId) {
-        const ok = await copyText(status.ownAgentPrompt);
-        handOffCopies.set(status.taskId, ok);
-        if (ok) {
-          client.request("start.copied").catch(() => {
-            // Only an acknowledgement; a failure changes nothing on the page.
-          });
-        }
+        handOffCopies.set(
+          status.taskId,
+          await copyText(status.ownAgentPrompt),
+        );
       }
       onStatus(status);
       return true;
@@ -209,9 +206,10 @@ export const OWN_AGENT_LABEL = "Use my own agent";
  * The prompt for the user's own agent, with a Copy button and the steps to
  * use it. Shown after a hand-off and whenever no terminal could be opened.
  */
+// No `start.copied` here: that tells the server the named agent is running,
+// and a prompt pasted into another agent app is not that.
 export function OwnAgentPrompt(
-  { client, prompt, apiKeyFromEnv, copied: copiedAlready = false }: {
-    client: StartClient;
+  { prompt, apiKeyFromEnv, copied: copiedAlready = false }: {
     prompt: string;
     apiKeyFromEnv: boolean;
     copied?: boolean;
@@ -221,13 +219,7 @@ export function OwnAgentPrompt(
     copiedAlready ? "copied" : "idle",
   );
   const copy = async () => {
-    const ok = await copyText(prompt);
-    setCopied(ok ? "copied" : "failed");
-    if (ok) {
-      client.request("start.copied").catch(() => {
-        // Only an acknowledgement; a failure changes nothing on the page.
-      });
-    }
+    setCopied(await copyText(prompt) ? "copied" : "failed");
   };
   return (
     <div className="start-copy start-own-agent">

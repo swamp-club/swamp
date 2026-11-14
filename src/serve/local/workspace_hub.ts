@@ -316,7 +316,10 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
       );
     }
     if (!prompt) {
-      return fail("swampify_handoff_failed", "The brief was not saved.");
+      return fail(
+        "swampify_handoff_failed",
+        "No prompt could be made for this brief. Copy the brief instead.",
+      );
     }
     reply({ type: SWAMPIFY_HANDOFF, id, payload: { data: { prompt } } });
   };

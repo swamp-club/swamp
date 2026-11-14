@@ -319,6 +319,7 @@ function promptFor(
     return ownAgentPrompt(
       briefPath(workspacePath, briefFile),
       kind,
+      // Every harness enrols a built-in tool; the fallback is never reached.
       isBuiltInTool(harness.enrolTool)
         ? builtInToolConfig(harness.enrolTool).skillsDir
         : ".claude/skills",

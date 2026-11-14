@@ -937,6 +937,19 @@ Deno.test("startStartServer: a dashboard tab keeps the server up after a launch,
   assertEquals(hub.shutdowns, 1);
 });
 
+Deno.test("startStartServer: a hand-off ends paused, not launched, even after a copy", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    const client = await Client.open(handle.port);
+    await walkToTrust(client);
+    const handed = await client.request("start.handoff");
+    assertEquals(handed.screen, "handed_off");
+    await client.request("start.copied");
+    await client.close();
+    assertEquals(await handle.ended, { kind: "paused" });
+    assertEquals(fakes.opened, []);
+  }, { ...LONG, afterLaunchIdleMs: 20, beforeLaunchIdleMs: 20 });
+});
+
 Deno.test("startStartServer: ends paused once the page closes after a copy-command launch", async () => {
   await withStartServer(async ({ handle, fakes }) => {
     const client = await Client.open(handle.port);

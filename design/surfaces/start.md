@@ -329,8 +329,9 @@ is refused (`ownAgentPrompt` in `src/domain/start/harness.ts`). The skill is
 `swampify` for a swampify task, under `.claude/skills`, where the
 agent-sessions pull always writes; otherwise `swamp-getting-started`, in the
 skills folder of the agent the task was enrolled for. The start server
-presents a handed-off task as the `handed_off` screen until it is launched;
-the server waits for it like a copied command. With the key from
+presents a handed-off task as the `handed_off` screen until it is launched.
+Nothing opened, so the server ends as it would before a launch, and copying
+the prompt never reports the agent as running. With the key from
 `SWAMP_API_KEY`, the page notes that the agent needs it too.
 
 When a launch opens no terminal, the launched screen says so and shows the

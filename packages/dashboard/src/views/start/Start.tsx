@@ -2999,7 +2999,6 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
   const commandBlock = status.ownAgentPrompt
     ? (
       <OwnAgentPrompt
-        client={client}
         prompt={status.ownAgentPrompt}
         apiKeyFromEnv={status.apiKeyFromEnv}
       />
@@ -3164,7 +3163,6 @@ function HandedOffScreen({ status, client, onStatus }: ScreenProps) {
       {status.ownAgentPrompt
         ? (
           <OwnAgentPrompt
-            client={client}
             prompt={status.ownAgentPrompt}
             apiKeyFromEnv={status.apiKeyFromEnv}
             copied={handOffCopied(status.taskId)}

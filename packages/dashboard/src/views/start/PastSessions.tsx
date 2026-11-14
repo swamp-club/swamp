@@ -147,7 +147,7 @@ export function PastSessionsPanel(
     );
   }
 
-  // A retry after a failed launch only launches: the task is already saved.
+  // Saved once: a retry, or the other button after one, reuses the task.
   const save = async (ownAgent: boolean): Promise<boolean> => {
     if (saved !== null) return true;
     if (harness === undefined) return false;

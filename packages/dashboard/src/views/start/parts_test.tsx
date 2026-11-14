@@ -21,11 +21,7 @@
 /** @jsxImportSource react */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { StartClient } from "./client.ts";
 import { handOffCopied, OwnAgentPrompt } from "./parts.tsx";
-
-// Static rendering runs no effects, so the client is never called.
-const CLIENT = {} as unknown as StartClient;
 
 const PROMPT =
   "Read the brief at /ws/tasks/2026-11-14-x.md and follow it. If the swamp-getting-started skill isn't loaded, read .claude/skills/swamp-getting-started/SKILL.md in the workspace the brief names.";
@@ -33,7 +29,6 @@ const PROMPT =
 function render(apiKeyFromEnv = false, copied = false): string {
   return renderToStaticMarkup(
     <OwnAgentPrompt
-      client={CLIENT}
       prompt={PROMPT}
       apiKeyFromEnv={apiKeyFromEnv}
       copied={copied}
