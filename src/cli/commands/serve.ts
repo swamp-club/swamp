@@ -6312,7 +6312,7 @@ export const serveCommand = new Command()
       );
       if (reapResult.reaped > 0) {
         logger.warn(
-          "Boot: {reaped} workflow run(s) interrupted by crash — serve continues each one that is safe to repeat once boot settles, and names the rest",
+          "Boot: {reaped} workflow run(s) interrupted by crash — serve continues each one that is safe to repeat once boot settles; each one it leaves is logged with the 'swamp workflow recover' command that decides it",
           { reaped: reapResult.reaped },
         );
       }

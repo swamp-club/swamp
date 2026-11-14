@@ -40,7 +40,10 @@ import {
   settleDeadOwnerRun,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { claimForOperatorRecover } from "../../domain/workflows/continuation_claim.ts";
+import {
+  claimForOperatorRecover,
+  OPERATOR_CLAIM_STALE_MS,
+} from "../../domain/workflows/continuation_claim.ts";
 import {
   localOwnerLiveness,
   RunTrackerStore,
@@ -236,7 +239,9 @@ export const workflowRecoverCommand = new Command()
         const held = await claimForOperatorRecover(claims, run, new Date());
         if (held?.replaced !== undefined && cliCtx.outputMode !== "json") {
           writeOutput(
-            `Took over run ${run.id} from ${held.replaced}, which held it for more than a minute.`,
+            `Took over run ${run.id} from ${held.replaced}, which is not known to be running and held it for more than ${
+              OPERATOR_CLAIM_STALE_MS / 60_000
+            } minutes.`,
           );
         }
         try {

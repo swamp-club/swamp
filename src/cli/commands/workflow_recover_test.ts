@@ -848,7 +848,7 @@ Deno.test("workflowRecoverCommand: waits while serve holds the run's claim, and 
     await assertRejects(
       () => recover(["guarded", "--json", "--repo-dir", dir]),
       UserError,
-      "retry in a moment",
+      "If it has stopped, retry in",
     );
     const untouched = await repoContext.workflowRunRepo.findById(
       workflow.id,

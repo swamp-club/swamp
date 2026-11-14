@@ -446,10 +446,63 @@ Deno.test("claimForOperatorRecover: takes a free claim, refuses a fresh one held
   await assertRejects(
     () => claimForOperatorRecover(cli, run, now),
     UserError,
-    "retry in a moment",
+    "retry in 295s",
   );
   const later = new Date(now.getTime() + OPERATOR_CLAIM_STALE_MS);
   const replaced = await claimForOperatorRecover(cli, run, later);
   assertEquals(replaced?.claim.generation, 2);
   assertEquals(replaced?.replaced, serve);
+});
+
+Deno.test("claimForOperatorRecover: never takes over a holder known alive, however old its claim, and takes over a dead or unknown one once stale", async () => {
+  const run = interruptedRunForClaims();
+  const key = await suspensionKeyOf(run);
+  const now = new Date("2026-11-14T10:00:00.000Z");
+  const serve = serveHolder("a");
+  const old = {
+    runId: run.id,
+    suspensionKey: key,
+    generation: 1,
+    holder: serve,
+    claimedAt: new Date(now.getTime() - 60 * 60_000).toISOString(),
+  };
+
+  const continuing = new InMemoryContinuationClaimStore();
+  await continuing.create(old);
+  await assertRejects(
+    () =>
+      claimForOperatorRecover(
+        claimsFor(continuing, localHolder(), { [serve]: "alive" }),
+        run,
+        now,
+      ),
+    UserError,
+    "holds it until that run ends",
+  );
+  assertEquals(continuing.claims.length, 1);
+
+  for (const liveness of ["dead", "unknown"] as const) {
+    const store = new InMemoryContinuationClaimStore();
+    await store.create(old);
+    const replaced = await claimForOperatorRecover(
+      claimsFor(store, localHolder(), { [serve]: liveness }),
+      run,
+      now,
+    );
+    assertEquals(replaced?.claim.generation, 2, liveness);
+    assertEquals(replaced?.replaced, serve, liveness);
+  }
+});
+
+Deno.test("CancelIntentRecorder: an error reporter that throws still lets settled() resolve", async () => {
+  const recorder = new CancelIntentRecorder(
+    () => Promise.reject(new Error("store down")),
+    () => {
+      throw new Error("reporter broke");
+    },
+  );
+  const controller = new AbortController();
+  abortCancelled(recorder, crypto.randomUUID(), controller, "why");
+  assert(controller.signal.aborted);
+  await recorder.settled();
 });

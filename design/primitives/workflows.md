@@ -4888,10 +4888,12 @@ recorded principal and vault scope, with every refusal a resume already has
 recovered but did not resume before it stopped is `recoveredAutomatically`,
 and the continuation sweep finishes it under `autoContinue`. A run reset by
 `swamp workflow recover` still waits for its operator. `swamp workflow recover`
-takes the same claim before it resets anything: it waits ("retry in a
-moment") while another holder's claim is under five minutes old, well past
-serve's longest hold (two run-record fetches of up to 30 s), and takes over an
-older one, saying so
+takes the same claim before it resets anything. Serve keeps that claim for the
+whole continued run, so recover refuses while the holder is a serve whose
+heartbeat is current, whatever the claim's age. Any other holder (one that
+reads dead or unknown, as every serve on a filesystem datastore does) it waits
+on while the claim is under five minutes old, naming the seconds left, and
+takes over an older one, saying so
 (`tookOverFrom` in `--json`). So a refusal serve writes never lands over an
 operator's recover. Without a shared claim store neither one continuer nor a
 recorded cancel can be guaranteed, so serve continues nothing automatically

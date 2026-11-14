@@ -408,7 +408,13 @@ export class CancelIntentRecorder {
     );
     const write: Promise<void> = Promise.race([recorded, timedOut]).then(
       () => {},
-      (error) => this.#onError(runId, error),
+      (error) => {
+        try {
+          this.#onError(runId, error);
+        } catch {
+          // reporting must never leave the write pending
+        }
+      },
     ).then(() => {
       clearTimeout(timer);
       this.#pending.delete(write);
@@ -436,8 +442,9 @@ export function abortCancelled(
   recorder.abort(runId, controller, reason);
 }
 
-// well past serve's longest hold (two run-record fetches of up to 30s each), so
-// a claim older than this belongs to a holder gone mid-action
+// for a holder not known alive; serve keeps its claim for the whole continued
+// run, so a serve whose heartbeat is current is never taken over, whatever
+// the claim's age
 export const OPERATOR_CLAIM_STALE_MS = 5 * 60_000;
 
 export interface OperatorRecoverClaim {
@@ -464,23 +471,34 @@ export async function claimForOperatorRecover(
     holder: claims.holder,
     claimedAt: now.toISOString(),
   });
-  const busy = (holder: string) =>
+  const raced = () =>
     new UserError(
-      `${holder} is acting on run ${run.id} right now; retry in a moment.`,
+      `Another process took run ${run.id} at the same moment; retry the recover.`,
     );
   const held = await claims.store.find(run.id, suspensionKey);
   if (held === undefined) {
     const first = mine(1);
     if (await claims.store.create(first)) return { claim: first };
-    throw busy("Another process");
+    throw raced();
   }
   if (held.holder === claims.holder) return { claim: held };
-  if (now.getTime() - Date.parse(held.claimedAt) <= OPERATOR_CLAIM_STALE_MS) {
-    throw busy(held.holder);
+  if (await claims.liveness(held.holder) === "alive") {
+    throw new UserError(
+      `${held.holder} is continuing run ${run.id} and holds it until that run ends; see 'swamp workflow history get ${run.id}'.`,
+    );
+  }
+  const age = now.getTime() - Date.parse(held.claimedAt);
+  if (age <= OPERATOR_CLAIM_STALE_MS) {
+    const waitSeconds = Math.ceil((OPERATOR_CLAIM_STALE_MS - age) / 1000);
+    throw new UserError(
+      `${held.holder} took run ${run.id} ${
+        Math.floor(age / 1000)
+      }s ago. If it has stopped, retry in ${waitSeconds}s, when a claim that old is taken over.`,
+    );
   }
   const next = mine(held.generation + 1);
   if (await claims.store.create(next)) {
     return { claim: next, replaced: held.holder };
   }
-  throw busy("Another process");
+  throw raced();
 }
