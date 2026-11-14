@@ -177,7 +177,21 @@ export function startHarnessId(harness: string): string | null {
 export type SwampifyLauncher = (
   text: string,
   harness: string,
-) => Promise<{ readonly opened: boolean; readonly command: string }>;
+) => Promise<{
+  readonly opened: boolean;
+  readonly command: string;
+  /** what to paste into the user's own agent; absent when start gave none */
+  readonly prompt?: string;
+}>;
+
+/**
+ * Saves a start task for the user's own agent and opens nothing; resolves
+ * with the prompt to paste.
+ */
+export type SwampifyHandOff = (
+  text: string,
+  harness: string,
+) => Promise<{ readonly prompt: string }>;
 
 /** A harness id as people say it; an unknown one as stored. */
 export function harnessName(harness: string): string {

@@ -35,6 +35,7 @@ import {
   importProblem,
   initialAgentPick,
   isHttpsUrl,
+  isLongPastSessionsWindow,
   isValidWorkspaceName,
   joinNames,
   keepSuggestion,
@@ -50,10 +51,13 @@ import {
   nextWorkspaceOrder,
   orderExamples,
   parseExcludedPaths,
+  parsePastSessionsWindow,
   parseTokenFromHash,
   parseWorkspaceOrder,
+  PAST_SESSIONS_DEFAULT_WINDOW,
   PAST_SESSIONS_WINDOWS,
   pastSessionsHarnesses,
+  pastSessionsWindowLabel,
   pathLabel,
   pickFirstTaskIdea,
   planHistorySync,
@@ -1112,4 +1116,35 @@ Deno.test("parseExcludedPaths: one path per line, trimmed, no blanks or repeats"
 
 Deno.test("PAST_SESSIONS_WINDOWS: offers the 30-day default", () => {
   assertEquals(PAST_SESSIONS_WINDOWS.includes(30), true);
+});
+
+Deno.test("PAST_SESSIONS_WINDOWS: offers 7 to 365 days and all history, 30 by default", () => {
+  assertEquals(PAST_SESSIONS_WINDOWS, [7, 30, 90, 180, 365, "all"]);
+  assertEquals(PAST_SESSIONS_DEFAULT_WINDOW, 30);
+  assertEquals(
+    PAST_SESSIONS_WINDOWS.map(pastSessionsWindowLabel),
+    [
+      "Last 7 days",
+      "Last 30 days",
+      "Last 90 days",
+      "Last 180 days",
+      "Last 365 days",
+      "All history",
+    ],
+  );
+});
+
+Deno.test("parsePastSessionsWindow: reads each choice back and defaults otherwise", () => {
+  for (const w of PAST_SESSIONS_WINDOWS) {
+    assertEquals(parsePastSessionsWindow(String(w)), w);
+  }
+  assertEquals(parsePastSessionsWindow("45"), 30);
+  assertEquals(parsePastSessionsWindow(""), 30);
+});
+
+Deno.test("isLongPastSessionsWindow: only the windows past 90 days and all history", () => {
+  assertEquals(
+    PAST_SESSIONS_WINDOWS.filter(isLongPastSessionsWindow),
+    [180, 365, "all"],
+  );
 });

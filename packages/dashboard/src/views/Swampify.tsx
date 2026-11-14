@@ -23,7 +23,10 @@ import { useCallback } from "react";
 import { useComparisonRecords, useSwampify } from "../client/useSwampify.ts";
 import { useSwamp } from "../client/SwampProvider.tsx";
 import { PAGE_WORKSPACE } from "../client/workspace_path.ts";
-import type { SwampifyLauncher } from "../lib/swampify_view.ts";
+import type {
+  SwampifyHandOff,
+  SwampifyLauncher,
+} from "../lib/swampify_view.ts";
 import { navigateTo } from "../hooks/useRouter.ts";
 import { SwampifyPage } from "./swampify/SwampifyPage.tsx";
 import "../styles/swampify.css";
@@ -35,12 +38,21 @@ export function Swampify({ optionId }: { optionId: string | null }) {
   const { request } = useSwamp();
   const launch = useCallback<SwampifyLauncher>(async (text, harness) => {
     const reply = await request<
-      { data?: { opened?: boolean; command?: string } }
+      { data?: { opened?: boolean; command?: string; prompt?: string } }
     >("swampify.launch", { text, harness, trustConfirmed: true });
     return {
       opened: reply.data?.opened === true,
       command: reply.data?.command ?? "",
+      ...(reply.data?.prompt ? { prompt: reply.data.prompt } : {}),
     };
+  }, [request]);
+  const handOff = useCallback<SwampifyHandOff>(async (text, harness) => {
+    const reply = await request<{ data?: { prompt?: string } }>(
+      "swampify.handoff",
+      { text, harness },
+    );
+    if (!reply.data?.prompt) throw new Error("The brief was not saved.");
+    return { prompt: reply.data.prompt };
   }, [request]);
   return (
     <SwampifyPage
@@ -49,6 +61,7 @@ export function Swampify({ optionId }: { optionId: string | null }) {
       onLoadComparison={(row) => void load(row)}
       optionId={optionId}
       launch={PAGE_WORKSPACE === null ? undefined : launch}
+      handOff={PAGE_WORKSPACE === null ? undefined : handOff}
       onOpenOption={(id) =>
         navigateTo({
           view: "swampify",

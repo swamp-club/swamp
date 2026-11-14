@@ -175,10 +175,12 @@ button and Cancel close it. It says what will be read (transcript text on this
 machine, prompts and replies included), what the workspace stores (counts,
 token costs and up to five short redacted excerpts per chore) and that where
 the data goes is the user's choice. Then one row each, label beside control,
-for the window (7, 30 or 90 days, default 30), the scope (every session on
-this machine, until **Limit the scope** opens a box of folders to leave out),
-the agent (a small card each for Claude Code and Codex, only those whose
-signal is on, those not on PATH disabled) and a workspace name, prefilled
+for the window (7, 30, 90, 180 or 365 days, or all history; default 30, with
+a note under 180, 365 and all history that a longer window takes longer to
+assess), the scope (every session on this machine, until **Limit the scope**
+opens a box of folders to leave out), the agent (a small card each for Claude
+Code and Codex, only those whose signal is on; one not on PATH is marked and
+can be picked only for **Use my own agent**) and a workspace name, prefilled
 `swampify`, or `swampify-2`, `-3` when taken.
 
 The panel's **Swampify!** sends `start.swampify.kickoff` with those fields and
@@ -191,7 +193,11 @@ or creates the workspace and saves one swampify task with its agent chosen
 agent is chosen once and Back never reaches the task editor with the kick-off
 text. If the launch fails, the panel keeps the error and offers **Try again**
 (launch only) or **Choose another agent**, which opens the agent screen for
-the saved task. Core writes the task
+the saved task. Beside it, **Use my own agent** sends the same kick-off with
+`ownAgent: true`, which skips only the PATH check, then `start.handoff` (see
+[Your own agent](#your-own-agent)). The window travels as `windowDays`, a
+whole number from 1 to 365 or `"all"`, and is checked by the request schema
+and again by `SwampifyKickoff`. Core writes the task
 text (`SwampifyKickoff` in `src/domain/start/swampify_kickoff.ts`); its only
 user input is the window and the excluded paths. Each path must be absolute
 or start with `~`, at most 20 of 512 characters, with no quotes, backticks,
@@ -305,6 +311,32 @@ behavior and a first run.
   (Cursor's `--trust`, Codex's `-c projects."<ws>".trust_level`). For Claude
   Code it explains the dialog; it never edits another tool's state.
 
+## Your own agent
+
+**Use my own agent** sits beside the launch button on the agent step, the
+kick-off panel and the [Swampify page](./swampify.md#the-page). It saves the
+task's brief as a launch does, through the same sign-in, brief and enrolment
+steps (`startHandOff`, sharing `prepareBrief` with `startLaunch`), and opens
+nothing. It records no launch and no trust, and the agent need not be on PATH
+(`startChooseHarness` with `ownAgent`), since another agent app reads the
+brief. The page copies the prompt and shows it with a Copy button and the
+steps to use it; the status carries it as `ownAgentPrompt`:
+
+`Read the brief at <absolute brief path> and follow it. If the <skill> skill isn't loaded, read <skills folder>/<skill>/SKILL.md in the workspace the brief names.`
+
+The brief path is its only user input, and a path that could start a new line
+is refused (`ownAgentPrompt` in `src/domain/start/harness.ts`). The skill is
+`swampify` for a swampify task, under `.claude/skills`, where the
+agent-sessions pull always writes; otherwise `swamp-getting-started`, in the
+skills folder of the agent the task was enrolled for. The start server
+presents a handed-off task as the `handed_off` screen until it is launched;
+the server waits for it like a copied command. With the key from
+`SWAMP_API_KEY`, the page notes that the agent needs it too.
+
+When a launch opens no terminal, the launched screen says so and shows the
+same prompt and steps, not a terminal command; "Window didn't appear?" reveals
+them too.
+
 ## Harnesses
 
 The launch prompt names the task's brief:
@@ -327,7 +359,8 @@ Windows opens with Windows Terminal (`wt.exe`) or `cmd start`; Linux with the
 first terminal found when a display is set. macOS opens the launcher with the
 default application for `.command` files, normally Terminal.app. Over SSH, on
 a non-loopback `--host` (the browser is on another machine, so a window here
-would go unseen), or when nothing opens, the page shows a command to copy;
+would go unseen), or when nothing opens, the page shows the prompt for your
+own agent;
 **Browse…** is hidden in the same cases.
 
 ## Not in phase 1

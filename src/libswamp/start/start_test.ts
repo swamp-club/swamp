@@ -50,6 +50,8 @@ import {
   startCheckWorkspaceLocation,
   startChooseHarness,
   type StartDeps,
+  startHandOff,
+  startHandOffTask,
   startImportWorkspace,
   startInspect,
   startLaunch,
@@ -504,6 +506,9 @@ Deno.test("buildStartStatus: carries task, harness and launch without secrets", 
       opened: false,
       at: s.launch!.at,
     },
+    ownAgentPrompt: `Read the brief at ${
+      join("/w", "tasks", "1970-01-01-list-pods.md")
+    } and follow it. If the swamp-getting-started skill isn't loaded, read .claude/skills/swamp-getting-started/SKILL.md in the workspace the brief names.`,
     tools: ["claude"],
     trusted: false,
     canPickFolder: false,
@@ -2890,5 +2895,225 @@ Deno.test("startStatus: carries swampify only while it is on", async () => {
       (await status(startStatus(ctx, f.deps, bound))).swampify,
       true,
     );
+  });
+});
+
+function promptFor(briefPath: string, skill: string, skillsDir: string) {
+  return `Read the brief at ${briefPath} and follow it. If the ${skill} skill isn't loaded, read ${skillsDir}/${skill}/SKILL.md in the workspace the brief names.`;
+}
+
+Deno.test("startHandOff: writes the brief and opens nothing, recording no launch or trust", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await trustReady(f);
+    const events = await collect(
+      startHandOff(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(events.map((e) => e.kind), [
+      "checking",
+      "enrolling",
+      "brief_written",
+      "completed",
+    ]);
+    assertEquals(f.opened, []);
+    assertEquals(f.setToolsCalls, [{ path: ws, tools: ["claude"] }]);
+    assertEquals(f.briefs.length, 1);
+    assertStringIncludes(f.briefs[0].content, "list my pods");
+    const done = lastOf(events) as Extract<
+      StartLaunchEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(done.data.launch, undefined);
+    assertEquals(
+      done.data.ownAgentPrompt,
+      promptFor(
+        join(ws, "tasks", "2026-10-03-list-my-pods.md"),
+        "swamp-getting-started",
+        ".claude/skills",
+      ),
+    );
+    const saved = await f.deps.sessions.load(ws, f.taskId!);
+    assertEquals(saved?.step, "trust");
+    assertEquals(saved?.launch, undefined);
+    assertEquals(saved?.trustConfirmedAt, undefined);
+    assertEquals(saved?.briefFile, "tasks/2026-10-03-list-my-pods.md");
+    assertEquals((await f.deps.registry.load())?.isTrusted(ws), false);
+  });
+});
+
+Deno.test("startHandOff: the agent need not be on PATH, and a Codex task names its skill folder", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath = { claude: ["/usr/local/bin/claude"] };
+    const ws = join(dir, "workspaces", "first-workspace");
+    await Deno.mkdir(ws, { recursive: true });
+    f.repos.add(ws);
+    f.tools.set(ws, []);
+    const taskId = await newTask(f, ws, "list my pods");
+    await status(
+      startChooseHarness(ctx, f.deps, {
+        workspacePath: ws,
+        taskId,
+        harness: "codex",
+        ownAgent: true,
+      }),
+    );
+    const done = lastOf(
+      await collect(startHandOff(ctx, f.deps, { workspacePath: ws, taskId })),
+    );
+    assert(done.kind === "completed", JSON.stringify(done));
+    assertStringIncludes(
+      done.data.ownAgentPrompt!,
+      " .agents/skills/swamp-getting-started/SKILL.md ",
+    );
+    assertEquals(f.opened, []);
+  });
+});
+
+Deno.test("startChooseHarness: still refuses an agent not on PATH unless it is for your own agent", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath = {};
+    const ws = join(dir, "ws");
+    await Deno.mkdir(ws, { recursive: true });
+    f.repos.add(ws);
+    const taskId = await newTask(f, ws, "list my pods");
+    const [refused] = await collect(
+      startChooseHarness(ctx, f.deps, {
+        workspacePath: ws,
+        taskId,
+        harness: "claude",
+      }),
+    );
+    assert(refused.kind === "error");
+    assertStringIncludes(refused.error.message, "isn't on your PATH");
+  });
+});
+
+Deno.test("startHandOff: refuses when not signed in, writing nothing", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await trustReady(f);
+    f.signedIn = { kind: "not_signed_in" };
+    const last = lastOf(
+      await collect(
+        startHandOff(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+      ),
+    );
+    assert(last.kind === "error");
+    assertStringIncludes(last.error.message, "Sign in");
+    assertEquals(f.briefs, []);
+    assertEquals(f.setToolsCalls, []);
+    assertEquals(f.opened, []);
+  });
+});
+
+Deno.test("startHandOffTask: saves the Swampify page's task with no agent on PATH and opens nothing", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath = {};
+    const ws = await swampifyRepo(f, dir);
+    const events = await collect(
+      startHandOffTask(ctx, f.deps, {
+        workspacePath: ws,
+        text: SWAMPIFY_TASK,
+        kind: "swampify",
+        harness: "codex",
+      }),
+    );
+    const done = lastOf(events);
+    assert(done.kind === "completed", JSON.stringify(done));
+    assertEquals(f.opened, []);
+    assert(!events.some((e) => e.kind === "launched"));
+    const [task] = await f.deps.sessions.list(ws);
+    assertEquals(task.task?.kind, "swampify");
+    assertEquals(task.launch, undefined);
+    assertEquals(
+      done.data.ownAgentPrompt,
+      promptFor(
+        join(ws, ...task.briefFile!.split("/")),
+        "swampify",
+        ".claude/skills",
+      ),
+    );
+    assertStringIncludes(f.briefs[0].content, SWAMPIFY_TASK);
+  });
+});
+
+Deno.test("startHandOffTask: not signed in, it saves no task", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await swampifyRepo(f, dir);
+    f.signedIn = { kind: "not_signed_in" };
+    const last = lastOf(
+      await collect(
+        startHandOffTask(ctx, f.deps, {
+          workspacePath: ws,
+          text: SWAMPIFY_TASK,
+          kind: "swampify",
+          harness: "claude",
+        }),
+      ),
+    );
+    assert(last.kind === "error");
+    assertEquals(await f.deps.sessions.list(ws), []);
+  });
+});
+
+Deno.test("startSaveSwampifyKickoff: all history for your own agent, and the prompt carries no kick-off input", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.swampify = true;
+    f.signals = { ...SIGNALS, claudeTranscripts: true };
+    f.onPath = {};
+    const ws = await kickoffWorkspace(f);
+    const s = await status(
+      startSaveSwampifyKickoff(ctx, f.deps, {
+        workspacePath: ws,
+        windowDays: "all",
+        exclude: ["~/src/client-secret"],
+        harness: "claude",
+        ownAgent: true,
+      }),
+    );
+    assertStringIncludes(s.task!.text, "\nWindow: all history\n");
+    const done = lastOf(
+      await collect(
+        startHandOff(ctx, f.deps, { workspacePath: ws, taskId: s.taskId! }),
+      ),
+    );
+    assert(done.kind === "completed", JSON.stringify(done));
+    const prompt = done.data.ownAgentPrompt!;
+    assertEquals(
+      prompt,
+      promptFor(
+        join(ws, ...done.data.task!.briefFile!.split("/")),
+        "swampify",
+        ".claude/skills",
+      ),
+    );
+    assert(!prompt.includes("client-secret"));
+    assert(!prompt.includes("Window"));
+    assertEquals(f.opened, []);
+    assertStringIncludes(f.briefs[0].content, "\nWindow: all history\n");
+  });
+});
+
+Deno.test("startSaveSwampifyKickoff: for your own agent still refuses while Swampify is off", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.signals = { ...SIGNALS, claudeTranscripts: true };
+    const ws = await kickoffWorkspace(f);
+    const [event] = await collect(
+      startSaveSwampifyKickoff(ctx, f.deps, {
+        workspacePath: ws,
+        windowDays: "all",
+        harness: "claude",
+        ownAgent: true,
+      }),
+    );
+    assert(event.kind === "error");
+    assertEquals(event.error.code, "swampify_off");
+    assertEquals(await tasksDirEntries(ws), []);
   });
 });

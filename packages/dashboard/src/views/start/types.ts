@@ -36,6 +36,8 @@ export type StartScreen =
   | "agent"
   | "trust"
   | "launched"
+  /** A task this server handed to the user's own agent: the prompt to paste. */
+  | "handed_off"
   /** The workspace's home: every task, and the open one's summary. */
   | "home";
 
@@ -80,6 +82,8 @@ export interface StartStatus {
      */
     canResume: boolean;
   };
+  /** What to paste into an agent swamp doesn't open; names only the brief. */
+  ownAgentPrompt?: string;
   launch?: {
     method: LaunchMethod;
     command: string;

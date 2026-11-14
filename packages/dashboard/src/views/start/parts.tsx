@@ -19,6 +19,7 @@
 
 import { type ReactNode, useCallback, useState } from "react";
 import { RequestError } from "../../client/stream.ts";
+import { copyText } from "../../components/clipboard.ts";
 import type { StartClient } from "./client.ts";
 import {
   type LaunchStep,
@@ -152,4 +153,113 @@ export function useLaunch(
   }, [client, onStatus, request]);
 
   return { launch, running, reached, error };
+}
+
+// Whether the hand-off's own copy reached the clipboard, by task, so the
+// prompt screen that follows can say so. Page-local: a reload starts over.
+const handOffCopies = new Map<string, boolean>();
+
+export function handOffCopied(taskId: string | undefined): boolean {
+  return taskId !== undefined && handOffCopies.get(taskId) === true;
+}
+
+/**
+ * Streams `start.handoff`: saves the open task's brief for the user's own
+ * agent and opens nothing, then copies the prompt it returns.
+ */
+export function useHandOff(
+  client: StartClient,
+  onStatus: (s: StartStatus) => void,
+) {
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handOff = useCallback(async () => {
+    setRunning(true);
+    setError(null);
+    try {
+      const status = await client.stream<StartStatus>(
+        "start.handoff",
+        undefined,
+        () => {},
+      );
+      if (status.ownAgentPrompt && status.taskId) {
+        const ok = await copyText(status.ownAgentPrompt);
+        handOffCopies.set(status.taskId, ok);
+        if (ok) {
+          client.request("start.copied").catch(() => {
+            // Only an acknowledgement; a failure changes nothing on the page.
+          });
+        }
+      }
+      onStatus(status);
+      return true;
+    } catch (err) {
+      setError(errorMessage(err, "The brief couldn't be saved."));
+      return false;
+    } finally {
+      setRunning(false);
+    }
+  }, [client, onStatus]);
+  return { handOff, running, error };
+}
+
+export const OWN_AGENT_LABEL = "Use my own agent";
+
+/**
+ * The prompt for the user's own agent, with a Copy button and the steps to
+ * use it. Shown after a hand-off and whenever no terminal could be opened.
+ */
+export function OwnAgentPrompt(
+  { client, prompt, apiKeyFromEnv, copied: copiedAlready = false }: {
+    client: StartClient;
+    prompt: string;
+    apiKeyFromEnv: boolean;
+    copied?: boolean;
+  },
+) {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">(
+    copiedAlready ? "copied" : "idle",
+  );
+  const copy = async () => {
+    const ok = await copyText(prompt);
+    setCopied(ok ? "copied" : "failed");
+    if (ok) {
+      client.request("start.copied").catch(() => {
+        // Only an acknowledgement; a failure changes nothing on the page.
+      });
+    }
+  };
+  return (
+    <div className="start-copy start-own-agent">
+      <ol className="start-copy-steps">
+        <li>Open your agent app, such as Claude Code, Codex or Zed.</li>
+        <li>
+          Paste this prompt. It points the agent at the brief, which says what
+          to do.
+        </li>
+      </ol>
+      <div className="start-command">
+        <pre className="start-command-text">{prompt}</pre>
+        <button
+          type="button"
+          className="start-primary"
+          onClick={() => void copy()}
+        >
+          {copied === "copied" ? "Copied" : "Copy prompt"}
+        </button>
+        {copied === "failed" && (
+          <p className="start-hint">
+            Couldn't copy automatically. Select the prompt and copy it.
+          </p>
+        )}
+      </div>
+      {apiKeyFromEnv && (
+        <p className="start-hint">
+          You signed in with{" "}
+          <code>SWAMP_API_KEY</code>. Your agent needs it too: make sure it can
+          see it, or sign in with <code>swamp auth login</code>.
+        </p>
+      )}
+    </div>
+  );
 }

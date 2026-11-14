@@ -55,6 +55,7 @@ const SCREENS: ReadonlySet<string> = new Set<StartScreen>([
   "agent",
   "trust",
   "launched",
+  "handed_off",
   "home",
 ]);
 
@@ -1103,9 +1104,37 @@ export function railRequest(
 /** The agents "Start from your past sessions" can read with. */
 export type PastSessionsHarness = "claude" | "codex";
 
-/** The window choices offered, in days; the first default is 30. */
-export const PAST_SESSIONS_WINDOWS: readonly number[] = [7, 30, 90];
-export const PAST_SESSIONS_DEFAULT_WINDOW = 30;
+/** A window in days, or all history (no start date). */
+export type PastSessionsWindow = number | "all";
+
+/** The window choices offered; the default is 30 days. */
+export const PAST_SESSIONS_WINDOWS: readonly PastSessionsWindow[] = [
+  7,
+  30,
+  90,
+  180,
+  365,
+  "all",
+];
+export const PAST_SESSIONS_DEFAULT_WINDOW: PastSessionsWindow = 30;
+
+/** Past this many days a window gets the note that assessing takes longer. */
+const PAST_SESSIONS_LONG_WINDOW = 90;
+
+export function pastSessionsWindowLabel(window: PastSessionsWindow): string {
+  return window === "all" ? "All history" : `Last ${window} days`;
+}
+
+/** The window a select value names; anything else is the default. */
+export function parsePastSessionsWindow(value: string): PastSessionsWindow {
+  return PAST_SESSIONS_WINDOWS.find((w) => String(w) === value) ??
+    PAST_SESSIONS_DEFAULT_WINDOW;
+}
+
+/** True for the choices that get the "takes longer to assess" note. */
+export function isLongPastSessionsWindow(window: PastSessionsWindow): boolean {
+  return window === "all" || window > PAST_SESSIONS_LONG_WINDOW;
+}
 
 /** The harnesses whose history was found here, Claude Code first. */
 export function pastSessionsHarnesses(

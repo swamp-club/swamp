@@ -126,3 +126,30 @@ Deno.test("WorkspaceSections: the past-sessions card comes before the workspace 
   assert(card !== -1 && card < workspaces, html);
   assert(workspaces < html.indexOf("steps"), html);
 });
+
+Deno.test("PastSessionsPanel: open, the window offers 7 to 365 days and all history, 30 picked, no note", () => {
+  const html = render(true);
+  for (
+    const option of [
+      '<option value="7">Last 7 days</option>',
+      '<option value="30" selected="">Last 30 days</option>',
+      '<option value="90">Last 90 days</option>',
+      '<option value="180">Last 180 days</option>',
+      '<option value="365">Last 365 days</option>',
+      '<option value="all">All history</option>',
+    ]
+  ) {
+    assertStringIncludes(html, option);
+  }
+  assertEquals(html.includes("takes longer to assess"), false);
+});
+
+Deno.test("PastSessionsPanel: open, Use my own agent sits beside Swampify! and says nothing opens", () => {
+  const html = render(true);
+  assertStringIncludes(
+    html,
+    '<button type="button" class="start-secondary">Use my own agent</button>',
+  );
+  assert(html.indexOf(">Use my own agent<") < html.lastIndexOf(">Swampify!<"));
+  assertStringIncludes(html, "nothing opens.");
+});

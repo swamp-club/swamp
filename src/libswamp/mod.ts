@@ -2146,6 +2146,8 @@ export {
   type StartContents,
   type StartDeps,
   type StartFolderCheck,
+  startHandOff,
+  startHandOffTask,
   type StartHarnessInfo,
   startImportWorkspace,
   startInspect,

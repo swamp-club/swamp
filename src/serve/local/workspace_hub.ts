@@ -41,7 +41,9 @@ import {
   FORWARDED_READS,
   isDelegatedAction,
   notAvailableLocally,
+  SWAMPIFY_HANDOFF,
   SWAMPIFY_LAUNCH,
+  swampifyHandOffRequest,
   type SwampifyLaunchRequest,
   swampifyLaunchRequest,
 } from "./local_actions.ts";
@@ -93,6 +95,12 @@ export interface WorkspaceHubDeps {
   actions?: ActionRunner;
   /** without it the Swampify page's launch is refused like any write */
   launchSwampify?: (
+    repoDir: string,
+    request: SwampifyLaunchRequest,
+    page: StartPageAddress | undefined,
+  ) => AsyncIterable<StartLaunchEvent>;
+  /** the Swampify page's Use my own agent; refused without it */
+  handOffSwampify?: (
     repoDir: string,
     request: SwampifyLaunchRequest,
     page: StartPageAddress | undefined,
@@ -245,12 +253,14 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
       return fail("swampify_launch_failed", request.error);
     }
     let launched: StartLaunchEvent & { kind: "launched" } | undefined;
+    let prompt: string | undefined;
     try {
       for await (const event of deps.launchSwampify!(repoDir, request, page)) {
         if (event.kind === "error") {
           return fail(event.error.code, event.error.message);
         }
         if (event.kind === "launched") launched = event;
+        if (event.kind === "completed") prompt = event.data.ownAgentPrompt;
       }
     } catch (error) {
       logger.warn`Swampify launch in ${repoDir} failed: ${error}`;
@@ -266,9 +276,49 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
       type: SWAMPIFY_LAUNCH,
       id,
       payload: {
-        data: { opened: launched.opened, command: launched.command },
+        data: {
+          opened: launched.opened,
+          command: launched.command,
+          ...(prompt ? { prompt } : {}),
+        },
       },
     });
+  };
+
+  const runSwampifyHandOff = async (
+    repoDir: string,
+    id: string,
+    payload: unknown,
+    reply: (frame: ActionFrame) => void,
+    page: StartPageAddress | undefined,
+  ) => {
+    const fail = (code: string, message: string) =>
+      reply({ type: "error", id, error: { code, message } });
+    const request = swampifyHandOffRequest(payload);
+    if ("error" in request) {
+      return fail("swampify_handoff_failed", request.error);
+    }
+    let prompt: string | undefined;
+    try {
+      for await (
+        const event of deps.handOffSwampify!(repoDir, request, page)
+      ) {
+        if (event.kind === "error") {
+          return fail(event.error.code, event.error.message);
+        }
+        if (event.kind === "completed") prompt = event.data.ownAgentPrompt;
+      }
+    } catch (error) {
+      logger.warn`Swampify hand-off in ${repoDir} failed: ${error}`;
+      return fail(
+        "swampify_handoff_failed",
+        "The brief could not be saved. Copy the brief instead.",
+      );
+    }
+    if (!prompt) {
+      return fail("swampify_handoff_failed", "The brief was not saved.");
+    }
+    reply({ type: SWAMPIFY_HANDOFF, id, payload: { data: { prompt } } });
   };
 
   const runAction = async (
@@ -484,6 +534,12 @@ export function createWorkspaceHub(deps: WorkspaceHubDeps): WorkspaceHub {
       if (frame.type === SWAMPIFY_LAUNCH && deps.launchSwampify) {
         keep(
           runSwampifyLaunch(repoDir, frame.id, frame.payload, reply, page),
+        );
+        return;
+      }
+      if (frame.type === SWAMPIFY_HANDOFF && deps.handOffSwampify) {
+        keep(
+          runSwampifyHandOff(repoDir, frame.id, frame.payload, reply, page),
         );
         return;
       }

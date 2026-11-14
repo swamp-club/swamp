@@ -25,6 +25,7 @@ import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createStartDeps,
   type SignedInState,
+  startHandOffTask,
   startInspect,
   startLaunchTask,
   startListWorkspaces,
@@ -413,6 +414,14 @@ export async function runStart(
       spawnChild: spawnDashboardChild,
       launchSwampify: (repoDir, request, page) =>
         startLaunchTask(ctx, deps, {
+          workspacePath: repoDir,
+          text: request.text,
+          kind: "swampify",
+          harness: request.harness,
+          ...(page ? { page } : {}),
+        }),
+      handOffSwampify: (repoDir, request, page) =>
+        startHandOffTask(ctx, deps, {
           workspacePath: repoDir,
           text: request.text,
           kind: "swampify",

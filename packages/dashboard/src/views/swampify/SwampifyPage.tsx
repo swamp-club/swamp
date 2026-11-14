@@ -34,6 +34,7 @@ import {
   offerView,
   optionByCandidate,
   setFullness,
+  type SwampifyHandOff,
   type SwampifyLauncher,
 } from "../../lib/swampify_view.ts";
 import { formatAbsoluteTime, pluralize } from "../../lib/format.ts";
@@ -95,6 +96,8 @@ export interface SwampifyPageProps {
   readonly onOpenOption: (optionId: string | null) => void;
   /** The local dashboard's launch; absent under serve, which only copies. */
   readonly launch?: SwampifyLauncher;
+  /** the local dashboard's Use my own agent; absent under serve */
+  readonly handOff?: SwampifyHandOff;
   /** Tests open a row from the start. */
   readonly initialOpen?: string;
   readonly initialTab?: Tab;
@@ -137,6 +140,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
         onLoadComparison={props.onLoadComparison}
         onBack={() => onOpenOption(null)}
         launch={props.launch}
+        handOff={props.handOff}
       />
     );
   }

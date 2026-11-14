@@ -53,7 +53,8 @@ these lines, pinned by a test on both sides:
 
 - `Swampify kick-off: start from your past sessions`, the task's title;
 - `<!-- swampify kick-off v1 -->`, the line after it;
-- `Window: last <N> days`;
+- `Window: last <N> days`, or `Window: all history` for a window with no
+  start date, which the skill reads as no `since`;
 - `Scope: every session on this machine`;
 - `Excluded paths: none`, or `Excluded paths:` followed by a `json` code fence
   holding one JSON array of paths.
@@ -248,9 +249,12 @@ the viewer can read; hiding is not access control. Its requests are in
   hub saves it as a [start](./start.md) task of kind `swampify` in the repo it
   serves and launches the offer's reading harness on it, with start's
   sign-in, PATH and trust checks; the click is the trust confirmation, as
-  start's Launch is. The page shows the agent opened, the command to run when
-  no terminal could open, or start's refusal. Under `swamp serve` the page is
-  review-only: Copy brief and no launch. The page writes no Swampify data;
+  start's Launch is. **Use my own agent** sends the same task as
+  `swampify.handoff`: the hub saves it and its brief without opening anything
+  or asking for trust, and the page copies the prompt it returns (see
+  [start](./start.md#your-own-agent)). The page shows the agent opened, the
+  prompt for your own agent when no terminal could open, or start's refusal.
+  Under `swamp serve` the page is review-only: Copy brief and no launch. The page writes no Swampify data;
   the agent records the pick.
 - **Refreshes.** A build happens in the agent's session, so the page
   re-reads its candidate-set, offer and comparison lists when the tab comes

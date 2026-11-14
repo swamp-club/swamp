@@ -44,8 +44,12 @@ import {
   describeChooseError,
   ErrorBox,
   errorMessage,
+  handOffCopied,
+  OWN_AGENT_LABEL,
+  OwnAgentPrompt,
   type ScreenProps,
   useAction,
+  useHandOff,
   useLaunch,
   WorkspaceSections,
 } from "./parts.tsx";
@@ -361,7 +365,7 @@ function StartFrame({ children }: { children: ReactNode }) {
 const RAIL_STEPS = [
   { label: "Workspace", screens: ["workspace"] },
   { label: "Task", screens: ["task"] },
-  { label: "Launch", screens: ["agent", "trust", "launched"] },
+  { label: "Launch", screens: ["agent", "trust", "launched", "handed_off"] },
 ] as const;
 
 /** The step a screen belongs to, or -1 for screens outside the steps. */
@@ -732,6 +736,8 @@ function renderScreen(
       return <AgentScreen {...props} />;
     case "launched":
       return <LaunchedScreen {...props} />;
+    case "handed_off":
+      return <HandedOffScreen {...props} />;
     case "home":
       return <HomeScreen {...props} />;
     case "unknown":
@@ -2397,7 +2403,8 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
   } = useLaunch(client, onStatus);
   // Held across both requests, so nothing re-enables between choose and launch.
   const [launching, setLaunching] = useState(false);
-  const busy = choosing || running || launching;
+  const owner = useHandOff(client, onStatus);
+  const busy = choosing || running || launching || owner.running;
   useNavReport(false, busy);
 
   // The agent that opens is always set up; it is never an extra.
@@ -2454,6 +2461,23 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
         })
       );
       if (chosen) await launch();
+    } finally {
+      setLaunching(false);
+    }
+  };
+  // Same choice, but nothing opens: the brief is saved and its prompt copied.
+  const useOwnAgent = async () => {
+    if (selected === null || busy) return;
+    setLaunching(true);
+    try {
+      const chosen = await run(() =>
+        client.request<StartStatus>("start.harness.choose", {
+          id: selected,
+          tools: toolsToSend,
+          ownAgent: true,
+        })
+      );
+      if (chosen) await owner.handOff();
     } finally {
       setLaunching(false);
     }
@@ -2515,7 +2539,9 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
           <span className="start-task-strip-text">{status.task.title}</span>
         </div>
       )}
-      <ErrorBox message={error ?? launchError ?? listError} />
+      <ErrorBox
+        message={error ?? launchError ?? owner.error ?? listError}
+      />
       {harnesses === null && !listError && (
         <div className="login-waiting">
           <div className="login-spinner" />
@@ -2655,6 +2681,16 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
         >
           Back
         </button>
+        {!noneLaunchable && (
+          <button
+            type="button"
+            className="start-secondary"
+            disabled={busy || selected === null}
+            onClick={() => void useOwnAgent()}
+          >
+            {owner.running ? "Saving the brief…" : OWN_AGENT_LABEL}
+          </button>
+        )}
         {noneLaunchable
           ? (
             <button
@@ -2958,13 +2994,23 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
   const { launch, running, reached, error } = useLaunch(client, onStatus);
   const [showCommand, setShowCommand] = useState(false);
   const opened = launchOpened(status.launch);
-  const commandBlock = (
-    <CopyCommandSteps
-      client={client}
-      command={status.launch?.command ?? ""}
-      name={name}
-    />
-  );
+  // No terminal command: the prompt works in any agent. The command is left
+  // only for a status that carries no prompt.
+  const commandBlock = status.ownAgentPrompt
+    ? (
+      <OwnAgentPrompt
+        client={client}
+        prompt={status.ownAgentPrompt}
+        apiKeyFromEnv={status.apiKeyFromEnv}
+      />
+    )
+    : (
+      <CopyCommandSteps
+        client={client}
+        command={status.launch?.command ?? ""}
+        name={name}
+      />
+    );
 
   return (
     <div className="login-card start-card">
@@ -2975,8 +3021,14 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
         disabled={busy || running}
       />
       <h2 tabIndex={-1}>
-        {opened ? `${name} is on it.` : `${name} is ready to start.`}
+        {opened ? `${name} is on it.` : "Your task is ready for your agent."}
       </h2>
+      {!opened && (
+        <p className="start-lead">
+          Swamp couldn't open a terminal window here. Paste the prompt below
+          into your agent to start on the task.
+        </p>
+      )}
       {!opened && status.task?.text && (
         <div className="start-task-hero">
           <div className="start-task-hero-label">Your task</div>
@@ -3026,7 +3078,7 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
                   className="start-link"
                   onClick={() => setShowCommand(true)}
                 >
-                  Copy the command
+                  {OWN_AGENT_LABEL}
                 </button>
               </p>
             )}
@@ -3065,6 +3117,99 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
           onClick={() => void launch()}
         >
           {running ? "Launching…" : "Launch again"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * After Use my own agent: the brief is saved and nothing opened, so the
+ * prompt to paste leads. Launching from here is still offered.
+ */
+function HandedOffScreen({ status, client, onStatus }: ScreenProps) {
+  const name = status.harness?.displayName ?? "your agent";
+  const { busy, error: actionError, run } = useAction(onStatus);
+  const { launch, running, reached, error } = useLaunch(client, onStatus);
+  return (
+    <div className="login-card start-card">
+      <StatusChips
+        status={status}
+        client={client}
+        onStatus={onStatus}
+        disabled={busy || running}
+      />
+      <h2 tabIndex={-1}>Paste the prompt into your agent.</h2>
+      {status.task?.text && (
+        <div className="start-task-hero">
+          <div className="start-task-hero-label">Your task</div>
+          <TaskPreview text={status.task.text} />
+        </div>
+      )}
+      <ul className="start-done">
+        <li>
+          Signed in{status.username ? ` as ${status.username}` : ""}
+        </li>
+        <li>
+          Workspace:{" "}
+          <span className="start-inline-path">{status.workspacePath}</span>
+        </li>
+        {status.task?.briefFile && (
+          <li>
+            Brief saved:{" "}
+            <span className="start-inline-path">{status.task.briefFile}</span>
+          </li>
+        )}
+      </ul>
+      {status.ownAgentPrompt
+        ? (
+          <OwnAgentPrompt
+            client={client}
+            prompt={status.ownAgentPrompt}
+            apiKeyFromEnv={status.apiKeyFromEnv}
+            copied={handOffCopied(status.taskId)}
+          />
+        )
+        : (
+          <p>
+            The brief is saved in the workspace. Ask your agent to read it and
+            follow it.
+          </p>
+        )}
+      {status.workspaceName && (
+        <p className="start-hint">
+          What your agent builds and runs shows up on{" "}
+          <a href={dashboardBaseFor(status.workspaceName)}>
+            this workspace's dashboard
+          </a>.
+        </p>
+      )}
+      <ErrorBox message={error ?? actionError} />
+      {running && <LaunchChecklist reached={reached} name={name} />}
+      <div className="start-actions">
+        <AllTasksLink
+          count={status.tasks?.length}
+          disabled={busy || running}
+          onClick={() =>
+            void run(() => client.request<StartStatus>("start.tasks.show"))}
+        />
+        <button
+          type="button"
+          className="start-secondary"
+          disabled={busy || running}
+          onClick={() =>
+            void run(() => client.request<StartStatus>("start.new_task"))}
+        >
+          <span className="start-new-task-plus" aria-hidden="true">+</span>
+          New task in this workspace
+        </button>
+        <button
+          type="button"
+          className="start-secondary"
+          disabled={busy || running}
+          onClick={() => void launch()}
+        >
+          {running ? "Launching…" : `Trust and launch ${name} instead`}
         </button>
       </div>
     </div>

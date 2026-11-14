@@ -39,12 +39,14 @@ import {
   findHarness,
   type HarnessDefinition,
   HARNESSES,
+  ownAgentPrompt,
   pickBinaryPath,
   planHarnessLaunch,
 } from "../../domain/start/harness.ts";
 import {
   SWAMPIFY_KICKOFF_HARNESSES,
   SwampifyKickoff,
+  type SwampifyKickoffWindow,
 } from "../../domain/start/swampify_kickoff.ts";
 import {
   type LaunchMethod,
@@ -124,6 +126,8 @@ export type StartScreen =
   | "agent"
   | "trust"
   | "launched"
+  // Only the start server presents it, for a task it handed off.
+  | "handed_off"
   | "home";
 
 export interface StartSignals {
@@ -161,6 +165,8 @@ export interface StartStatus {
     readonly opened: boolean;
     readonly at: string;
   };
+  /** what to paste into an agent swamp does not open; names only the brief */
+  readonly ownAgentPrompt?: string;
   readonly contents?: StartContents;
   readonly enrolledTools?: readonly string[];
   readonly tools?: readonly string[];
@@ -298,6 +304,24 @@ export async function resolveStartWorkspacePath(
     .path;
 }
 
+/** a brief or workspace path the prompt refuses leaves the page without one */
+function promptFor(
+  workspacePath: string,
+  briefFile: string,
+  kind: StartTaskKind,
+  harness: HarnessDefinition,
+): string | undefined {
+  try {
+    return ownAgentPrompt(
+      briefPath(workspacePath, briefFile),
+      kind,
+      harness.enrolTool,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 function deriveScreen(
   session: StartSession | null,
   signedIn: SignedInState,
@@ -320,6 +344,9 @@ export function buildStartStatus(
   const task = session?.task;
   const harness = session?.harness ? findHarness(session.harness) : undefined;
   const launch = session?.launch;
+  const prompt = harness && task && session?.briefFile
+    ? promptFor(workspacePath, session.briefFile, task.kind, harness)
+    : undefined;
   return {
     workspacePath,
     workspaceName: basename(workspacePath),
@@ -360,6 +387,7 @@ export function buildStartStatus(
         },
       }
       : {}),
+    ...(prompt ? { ownAgentPrompt: prompt } : {}),
     ...(contents ? { contents } : {}),
     ...(enrolledTools ? { enrolledTools } : {}),
     ...(session?.harness ? { tools: session.tools } : {}),
@@ -683,11 +711,17 @@ export function startChooseHarness(
     taskId: string;
     harness: string;
     tools?: readonly string[];
+    /** handed to the user's own agent, so the harness need not be on PATH */
+    ownAgent?: boolean;
   },
 ): AsyncIterable<StartStatusEvent> {
   return taskCommand(deps, input.workspacePath, input.taskId, async (s) => {
     await requireSignedIn(deps);
-    const harness = await requireLaunchableHarness(deps, input.harness);
+    const harness = await requireLaunchableHarness(
+      deps,
+      input.harness,
+      input.ownAgent !== true,
+    );
     const extras = (input.tools ?? []).map((id) => {
       const tool = findHarness(id);
       if (!tool) throw new UserError(`Unknown agent "${id}".`);
@@ -701,6 +735,7 @@ export function startChooseHarness(
 async function requireLaunchableHarness(
   deps: StartDeps,
   id: string,
+  onPath = true,
 ): Promise<HarnessDefinition> {
   const harness = findHarness(id);
   if (!harness) throw new UserError(`Unknown agent "${id}".`);
@@ -709,7 +744,7 @@ async function requireLaunchableHarness(
       `${harness.displayName} can't be started with a task yet. Pick another agent.`,
     );
   }
-  if (!await resolveHarnessBinary(deps, harness.binary)) {
+  if (onPath && !await resolveHarnessBinary(deps, harness.binary)) {
     throw new UserError(
       `${harness.displayName} (\`${harness.binary}\`) isn't on your PATH. Install it, or pick another agent.`,
     );
@@ -728,9 +763,11 @@ async function rememberAgent(
 }
 
 export interface StartSwampifyKickoffInput {
-  readonly windowDays: number;
+  readonly windowDays: SwampifyKickoffWindow;
   readonly exclude?: readonly string[];
   readonly harness: string;
+  /** handed to the user's own agent, so the harness need not be on PATH */
+  readonly ownAgent?: boolean;
 }
 
 export interface CheckedSwampifyKickoff {
@@ -780,7 +817,11 @@ export async function startCheckSwampifyKickoff(
   }
   return {
     task,
-    harness: await requireLaunchableHarness(deps, input.harness),
+    harness: await requireLaunchableHarness(
+      deps,
+      input.harness,
+      input.ownAgent !== true,
+    ),
   };
 }
 
@@ -1425,6 +1466,55 @@ export interface StartPageAddress {
 }
 
 /** every step is idempotent, so launching again runs the same path */
+/**
+ * Writes the task's brief and enrols its agent: the part a launch and a
+ * hand-off share. Only a launch confirms trust, since only it opens an agent.
+ */
+async function* prepareBrief(
+  deps: StartDeps,
+  input: { workspacePath: string; page?: StartPageAddress },
+  session: StartSession,
+  harness: HarnessDefinition,
+  confirmTrust: boolean,
+): AsyncGenerator<StartLaunchEvent, string> {
+  // A task migrated without a brief gets its path now.
+  if (session.briefFile === undefined) {
+    session.assignBriefFile(
+      await deps.sessions.reserveBriefFile(
+        input.workspacePath,
+        session.createdAt,
+        session.task!.title(),
+      ),
+    );
+  }
+  const briefFile = session.briefFile!;
+  // Checked before anything is set up, so a refused launch changes nothing.
+  await assertBriefIsOurs(deps, input.workspacePath, briefFile);
+  if (confirmTrust) await requireTrust(deps, input.workspacePath, true);
+
+  yield { kind: "enrolling", tool: session.tools.join(", ") };
+  await enrol(deps, input.workspacePath, session);
+
+  await deps.writeBrief(
+    input.workspacePath,
+    briefFile,
+    renderBrief({
+      task: session.task!,
+      workspacePath: input.workspacePath,
+      harnessDisplayName: harness.displayName,
+      imported: await isImportedFolder(deps, input.workspacePath),
+      swampifyPageUrl: input.page
+        ? swampifyPageUrl(input.page.origin, input.page.workspaceName)
+        : null,
+    }),
+  );
+  yield {
+    kind: "brief_written",
+    path: briefPath(input.workspacePath, briefFile),
+  };
+  return briefFile;
+}
+
 export async function* startLaunch(
   _ctx: LibSwampContext,
   deps: StartDeps,
@@ -1438,41 +1528,7 @@ export async function* startLaunch(
       deps,
       session,
     );
-    // A task migrated without a brief gets its path now.
-    if (session.briefFile === undefined) {
-      session.assignBriefFile(
-        await deps.sessions.reserveBriefFile(
-          input.workspacePath,
-          session.createdAt,
-          session.task!.title(),
-        ),
-      );
-    }
-    const briefFile = session.briefFile!;
-    // Checked before anything is set up, so a refused launch changes nothing.
-    await assertBriefIsOurs(deps, input.workspacePath, briefFile);
-    await requireTrust(deps, input.workspacePath, true);
-
-    yield { kind: "enrolling", tool: session.tools.join(", ") };
-    await enrol(deps, input.workspacePath, session);
-
-    await deps.writeBrief(
-      input.workspacePath,
-      briefFile,
-      renderBrief({
-        task: session.task!,
-        workspacePath: input.workspacePath,
-        harnessDisplayName: harness.displayName,
-        imported: await isImportedFolder(deps, input.workspacePath),
-        swampifyPageUrl: input.page
-          ? swampifyPageUrl(input.page.origin, input.page.workspaceName)
-          : null,
-      }),
-    );
-    yield {
-      kind: "brief_written",
-      path: briefPath(input.workspacePath, briefFile),
-    };
+    const briefFile = yield* prepareBrief(deps, input, session, harness, true);
 
     yield { kind: "window_opening" };
     const outcome = await deps.terminalLauncher.open(
@@ -1502,6 +1558,77 @@ export async function* startLaunch(
   } catch (error) {
     yield errorEvent(error);
   }
+}
+
+/**
+ * Writes the brief for the user's own agent and opens nothing. No launch or
+ * trust is recorded, and the agent need not be on PATH; the status carries
+ * the prompt to paste.
+ */
+export async function* startHandOff(
+  _ctx: LibSwampContext,
+  deps: StartDeps,
+  input: { workspacePath: string; taskId: string; page?: StartPageAddress },
+): AsyncIterable<StartLaunchEvent> {
+  try {
+    yield { kind: "checking" };
+    const session = await loadTask(deps, input.workspacePath, input.taskId);
+    session.assertCanLaunch();
+    const signedIn = await requireSignedIn(deps, "before handing off a task");
+    const harness = session.harness ? findHarness(session.harness) : undefined;
+    if (!harness) throw new UserError("Choose an agent first.");
+    const hadBrief = session.briefFile !== undefined;
+    yield* prepareBrief(deps, input, session, harness, false);
+    if (!hadBrief) await deps.sessions.save(session);
+    yield {
+      kind: "completed",
+      data: await statusOf(deps, input.workspacePath, session, signedIn),
+    };
+  } catch (error) {
+    yield errorEvent(error);
+  }
+}
+
+/** saves a finished task with its agent chosen; yields only an error */
+async function* saveTaskWithAgent(
+  ctx: LibSwampContext,
+  deps: StartDeps,
+  input: {
+    workspacePath: string;
+    text: string;
+    kind: StartTaskKind;
+    harness: string;
+  },
+  ownAgent: boolean,
+  saved: (taskId: string) => void,
+): AsyncGenerator<StartLaunchEvent & { kind: "error" }, boolean> {
+  let taskId: string | undefined;
+  const steps = [
+    () =>
+      startSaveTask(ctx, deps, {
+        workspacePath: input.workspacePath,
+        text: input.text,
+        kind: input.kind,
+      }),
+    () =>
+      startChooseHarness(ctx, deps, {
+        workspacePath: input.workspacePath,
+        taskId: taskId!,
+        harness: input.harness,
+        ownAgent,
+      }),
+  ];
+  for (const step of steps) {
+    for await (const event of step()) {
+      if (event.kind === "error") {
+        yield event;
+        return false;
+      }
+      taskId = event.data.taskId;
+    }
+  }
+  saved(taskId!);
+  return true;
 }
 
 /**
@@ -1541,33 +1668,47 @@ export async function* startLaunchTask(
     yield errorEvent(error);
     return;
   }
-  let taskId: string | undefined;
-  const steps = [
-    () =>
-      startSaveTask(ctx, deps, {
-        workspacePath: input.workspacePath,
-        text: input.text,
-        kind: input.kind,
-      }),
-    () =>
-      startChooseHarness(ctx, deps, {
-        workspacePath: input.workspacePath,
-        taskId: taskId!,
-        harness: input.harness,
-      }),
-  ];
-  for (const step of steps) {
-    for await (const event of step()) {
-      if (event.kind === "error") {
-        yield event;
-        return;
-      }
-      taskId = event.data.taskId;
-    }
-  }
+  let taskId = "";
+  if (
+    !(yield* saveTaskWithAgent(ctx, deps, input, false, (id) => taskId = id))
+  ) return;
   yield* startLaunch(ctx, deps, {
     workspacePath: input.workspacePath,
-    taskId: taskId!,
+    taskId,
+    ...(input.page ? { page: input.page } : {}),
+  });
+}
+
+/**
+ * Saves a task, picks its agent and writes its brief for the user's own
+ * agent, for the Swampify page's Use my own agent. Opens nothing.
+ */
+export async function* startHandOffTask(
+  ctx: LibSwampContext,
+  deps: StartDeps,
+  input: {
+    workspacePath: string;
+    text: string;
+    kind: StartTaskKind;
+    harness: string;
+    page?: StartPageAddress;
+  },
+): AsyncIterable<StartLaunchEvent> {
+  try {
+    yield { kind: "checking" };
+    await requireSignedIn(deps, "before handing off a task");
+    await requireLaunchableHarness(deps, input.harness, false);
+  } catch (error) {
+    yield errorEvent(error);
+    return;
+  }
+  let taskId = "";
+  if (
+    !(yield* saveTaskWithAgent(ctx, deps, input, true, (id) => taskId = id))
+  ) return;
+  yield* startHandOff(ctx, deps, {
+    workspacePath: input.workspacePath,
+    taskId,
     ...(input.page ? { page: input.page } : {}),
   });
 }

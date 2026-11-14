@@ -180,7 +180,10 @@ export function actionCommand(
 
 export type ActionFrame =
   | {
-    readonly type: DelegatedAction | typeof SWAMPIFY_LAUNCH;
+    readonly type:
+      | DelegatedAction
+      | typeof SWAMPIFY_LAUNCH
+      | typeof SWAMPIFY_HANDOFF;
     readonly id: string;
     readonly payload: { readonly data: unknown };
   }
@@ -250,6 +253,12 @@ function lastLine(text: string): string | null {
  */
 export const SWAMPIFY_LAUNCH = "swampify.launch";
 
+/**
+ * the Swampify page's Use my own agent: the hub saves the brief as a launch
+ * does and opens nothing, so no trust is asked for
+ */
+export const SWAMPIFY_HANDOFF = "swampify.handoff";
+
 export interface SwampifyLaunchRequest {
   readonly text: string;
   readonly harness: string;
@@ -265,6 +274,13 @@ export function swampifyLaunchRequest(
       error: "Confirm you trust this folder before an agent opens in it.",
     };
   }
+  return swampifyHandOffRequest(payload);
+}
+
+export function swampifyHandOffRequest(
+  payload: unknown,
+): SwampifyLaunchRequest | { readonly error: string } {
+  const p = (payload ?? {}) as Record<string, unknown>;
   if (typeof p.text !== "string" || p.text.trim() === "") {
     return { error: "The request has no brief." };
   }

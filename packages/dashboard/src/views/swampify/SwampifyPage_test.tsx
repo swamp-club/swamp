@@ -50,7 +50,11 @@ import {
 import { SwampifyPage } from "./SwampifyPage.tsx";
 import { type LaunchState, OptionReview } from "./SwampifyReview.tsx";
 import { builtOptions, BuiltPane } from "./SwampifyBuilt.tsx";
-import { offerView, type SwampifyLauncher } from "../../lib/swampify_view.ts";
+import {
+  offerView,
+  type SwampifyHandOff,
+  type SwampifyLauncher,
+} from "../../lib/swampify_view.ts";
 
 const noop = () => {};
 
@@ -140,6 +144,7 @@ function review(
     briefShown = true,
     row,
     launch,
+    handOff,
     launchState,
   }: {
     set?: SwampifyCandidateSet;
@@ -148,6 +153,7 @@ function review(
     briefShown?: boolean;
     row?: SwampifyRow;
     launch?: SwampifyLauncher;
+    handOff?: SwampifyHandOff;
     launchState?: LaunchState;
   } = {},
 ): string {
@@ -165,6 +171,7 @@ function review(
       onBack={noop}
       initialBriefShown={briefShown}
       launch={launch}
+      handOff={handOff}
       initialLaunch={launchState}
     />,
   );
@@ -172,6 +179,11 @@ function review(
 
 const launcher: SwampifyLauncher = () =>
   Promise.resolve({ opened: true, command: "claude" });
+
+const PROMPT =
+  "Read the brief at /repo/tasks/2026-11-14-build.md and follow it. If the swampify skill isn't loaded, read .claude/skills/swampify/SKILL.md in the workspace the brief names.";
+
+const handOff: SwampifyHandOff = () => Promise.resolve({ prompt: PROMPT });
 
 function read(reading: SwampifyComparisonReading): ComparisonRecord {
   return { state: "read", reading };
@@ -439,13 +451,63 @@ Deno.test("OptionReview: an opened agent is said, and Swampify! can't run twice"
   assert(!html.includes("confirms you trust"));
 });
 
-Deno.test("OptionReview: with no terminal to open, the command to run is shown", () => {
+Deno.test("OptionReview: with no terminal to open, the prompt for your own agent leads and the command is gone", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    handOff,
+    launchState: {
+      kind: "command",
+      command: "cd /repo && claude",
+      prompt: PROMPT,
+    },
+    briefShown: false,
+  });
+  assertStringIncludes(html, "No terminal could be opened here");
+  assertStringIncludes(html, "Open your agent app");
+  assertStringIncludes(html, PROMPT.replaceAll("'", "&#x27;"));
+  assertStringIncludes(html, 'aria-label="Copy prompt"');
+  assert(!html.includes("cd /repo"));
+  assert(!html.includes('role="alert"'));
+});
+
+Deno.test("OptionReview: Use my own agent sits beside Swampify! on the local dashboard only", () => {
+  const local = review(fixtureOffer("offered"), {
+    launch: launcher,
+    handOff,
+    briefShown: false,
+  });
+  assertStringIncludes(
+    local,
+    '<button type="button" class="sw-btn">Use my own agent</button>',
+  );
+  assert(local.indexOf("Swampify!") < local.indexOf("Use my own agent"));
+  assertStringIncludes(local, "nothing opens.");
+  const serve = review(fixtureOffer("offered"));
+  assert(!serve.includes("Use my own agent"));
+});
+
+Deno.test("OptionReview: after Use my own agent the copied prompt shows and nothing can run twice", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    handOff,
+    launchState: { kind: "handed", prompt: PROMPT, copied: true },
+    briefShown: false,
+  });
+  assertStringIncludes(html, "The brief is saved and nothing opened.");
+  assertStringIncludes(html, "The prompt below is copied.");
+  assertStringIncludes(html, 'aria-label="Copied"');
+  assertStringIncludes(html, 'disabled="">Swampify!</button>');
+  assertStringIncludes(html, 'disabled="">Use my own agent</button>');
+  assert(!html.includes("Opened Claude Code"));
+});
+
+Deno.test("OptionReview: a no-terminal launch without a prompt still shows the command", () => {
   const html = review(fixtureOffer("offered"), {
     launch: launcher,
     launchState: { kind: "command", command: "cd /repo && claude" },
     briefShown: false,
   });
-  assertStringIncludes(html, "No terminal could be opened.");
+  assertStringIncludes(html, "No terminal could be opened here.");
   assertStringIncludes(
     html,
     '<pre class="sw-brief">cd /repo &amp;&amp; claude</pre>',
