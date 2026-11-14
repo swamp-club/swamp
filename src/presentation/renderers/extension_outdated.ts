@@ -58,23 +58,23 @@ class LogExtensionOutdatedRenderer implements Renderer<ExtensionOutdatedEvent> {
             case "update_available":
               logger.info("{line}", {
                 line:
-                  `${paddedName}  v${ext.installedVersion} -> v${ext.latestVersion}  (update available)`,
+                  `${paddedName}  ${ext.installedVersion} -> ${ext.latestVersion}  (update available)`,
               });
               break;
             case "not_found":
               logger.warn("{line}", {
                 line:
-                  `${paddedName}  v${ext.installedVersion}  (not found in registry)`,
+                  `${paddedName}  ${ext.installedVersion}  (not found in registry)`,
               });
               break;
             case "failed":
               logger.warn("{line}", {
                 line:
-                  `${paddedName}  v${ext.installedVersion}  (check failed: ${ext.error})`,
+                  `${paddedName}  ${ext.installedVersion}  (check failed: ${ext.error})`,
               });
               break;
             case "deprecated": {
-              let line = `${paddedName}  v${ext.installedVersion}  (deprecated`;
+              let line = `${paddedName}  ${ext.installedVersion}  (deprecated`;
               if (ext.supersededBy) {
                 line += ` — use ${ext.supersededBy} instead`;
               }

@@ -204,7 +204,7 @@ Deno.test("LogExtensionListRenderer - flags an on-disk version that differs from
     console.warn = original.warn;
   }
   const row = lines.find((l) => l.includes("(pulled 2026-01-01)")) ?? "";
-  assertEquals(row.includes("(on disk v2026.09.01.1)"), true, row);
+  assertEquals(row.includes("(on disk 2026.09.01.1)"), true, row);
   assertEquals(row.includes("(auto-resolved)"), false, row);
   assertEquals(
     lines.some((l) => l.includes("Auto-resolved extensions")),
@@ -217,6 +217,11 @@ Deno.test("LogExtensionListRenderer - flags an on-disk version that differs from
     remedy.includes(
       "swamp extension pull @swamp/s3-datastore@2026.08.27.1 --force",
     ),
+    true,
+    remedy,
+  );
+  assertEquals(
+    remedy.includes("is 2026.09.01.1 on disk, not the pinned 2026.08.27.1;"),
     true,
     remedy,
   );
@@ -280,7 +285,7 @@ Deno.test("LogExtensionListRenderer - an auto-resolved skew remedy deletes what 
   assertEquals(
     remedy.includes(
       "delete .swamp/config/pulled-extensions/@swamp/aws/ec2, " +
-        ".swamp/pulled-extensions/skills/ec2 and it is reinstalled",
+        ".swamp/pulled-extensions/skills/ec2 and it is reinstalled at 2026.08.27.1 on next use.",
     ),
     true,
     remedy,
@@ -349,14 +354,14 @@ Deno.test("LogExtensionListRenderer - tags the published channel, and the follow
   }
   const row = (name: string) => lines.find((l) => l.includes(name)) ?? "";
   assertEquals(
-    row("@ns/exact-beta").includes("v2026.10.01.1 [beta, following stable]"),
+    row("@ns/exact-beta").includes("  2026.10.01.1 [beta, following stable]"),
     true,
     row("@ns/exact-beta"),
   );
-  assertEquals(row("@ns/on-beta").includes("v2026.10.01.1 [beta]"), true);
-  assertEquals(row("@ns/old-entry").includes("v2026.10.01.1 [rc]"), true);
+  assertEquals(row("@ns/on-beta").includes("  2026.10.01.1 [beta]"), true);
+  assertEquals(row("@ns/old-entry").includes("  2026.10.01.1 [rc]"), true);
   assertEquals(
-    row("@ns/plain").includes("v2026.10.01.1 ["),
+    row("@ns/plain").includes("2026.10.01.1 ["),
     false,
     row("@ns/plain"),
   );
@@ -487,5 +492,71 @@ Deno.test("LogExtensionListRenderer - an entry installed on next use gets no ins
     lines.some((l) => l.includes("Run 'swamp extension install'")),
     false,
     lines.join("\n"),
+  );
+});
+
+Deno.test("LogExtensionListRenderer - pads the version and latest columns to the widest version, with no prefix", async () => {
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({
+    _reset: true,
+    logLevel: "info",
+    _logsConfig: { exporterKind: "none" },
+  });
+  const lines: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+  };
+  const capture = (...args: unknown[]) => lines.push(args.join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  try {
+    const renderer = createExtensionListRenderer("log");
+    await renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        extensions: [
+          {
+            name: "@ns/short",
+            version: "2026.10.01.1",
+            pulledAt: "2026-01-01",
+            files: [],
+            latestVersion: "2026.10.01.12",
+            updateStatus: "update_available",
+          },
+          {
+            name: "@ns/longer",
+            version: "2026.10.01.12",
+            pulledAt: "2026-01-02",
+            files: [],
+            latestVersion: null,
+            updateStatus: "up_to_date",
+          },
+        ],
+      },
+    });
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+  }
+  const row = (name: string) => lines.find((l) => l.includes(name)) ?? "";
+  assertEquals(
+    row("@ns/short").includes(
+      `"@ns/short   2026.10.01.1   2026.10.01.12  (update available)  (pulled 2026-01-01)"`,
+    ),
+    true,
+    row("@ns/short"),
+  );
+  assertEquals(
+    row("@ns/longer").includes(
+      `"@ns/longer  2026.10.01.12  —              (pulled 2026-01-02)"`,
+    ),
+    true,
+    row("@ns/longer"),
   );
 });

@@ -163,7 +163,7 @@ export const extensionRemoveCommand = withRemoteOptions(
 
       if (ctx.outputMode === "log" && !options.yes && !options.force) {
         const confirmed = await promptConfirmation(
-          `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
+          `Remove ${preview.name} (${preview.version})? This will delete ${preview.fileCount} file(s).`,
         );
         if (!confirmed) {
           renderExtensionRmCancelled(ctx.outputMode);
