@@ -394,13 +394,14 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_approve.ts: workflowApproveCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/commands/workflow_reject.ts: workflowRejectCommand: YamlEvaluatedWorkflowRepository",
-  "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlDefinitionRepository",
   "src/cli/commands/workflow_resume.ts: workflowResumeCommand: YamlEvaluatedWorkflowRepository",
-  "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlDefinitionRepository",
   "src/cli/commands/workflow_run.ts: workflowRunCommand: YamlEvaluatedWorkflowRepository",
   "src/cli/completion_types.ts: ModelNameType: YamlDefinitionRepository",
   "src/cli/completion_types.ts: WorkflowNameType: YamlWorkflowRepository",
   "src/cli/datastore_expression_resolver.ts: createEarlyVaults: YamlVaultConfigRepository",
+  // the workflow run and resume direct-type resolver; its auto-definition repo
+  // takes the context's mark hook
+  "src/cli/direct_type_resolver.ts: createDirectTypeResolver: YamlDefinitionRepository",
   "src/cli/mod.ts: configureExtensionAutoResolver: LockfileRepository",
   "src/cli/mod.ts: configureStartupExtensions: LockfileRepository",
   "src/cli/mod.ts: initTelemetryService: YamlVaultConfigRepository",
