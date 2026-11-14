@@ -2064,7 +2064,8 @@ acknowledgement, is left out, so the next check sees it as new.
   - **a new snapshot:** the replica's newest level-9 snapshot is not the one
     the last verdict recorded, and that verdict is at least 24 hours old
     (`REPLICA_VERIFY_SNAPSHOT_SPACING_MS`), so the hourly interval does not
-    multiply full restores. The sidecar learns it from
+    multiply full restores. A verdict that read through no snapshot (a
+    lineage's first check, run before Litestream wrote one) waits no day. The sidecar learns it from
     `litestream ltx -level 9 -json`, one LIST request, at most every 15
     minutes and only while something is uncovered. Litestream 0.5.17 writes
     a snapshot when a lineage starts and then at most once per snapshot

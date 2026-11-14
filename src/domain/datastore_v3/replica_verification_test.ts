@@ -194,11 +194,7 @@ Deno.test("shouldVerifyReplica: a verdict from before snapshots were recorded is
   const old = verdict({ snapshotTxid: undefined });
   assertEquals(
     shouldVerifyReplica(
-      observe({
-        last: old,
-        acknowledgedTxid: "0000000000000011",
-        ...SNAPSHOT_ONLY,
-      }),
+      observe({ last: old, acknowledgedTxid: "0000000000000011" }),
     ),
     true,
   );
@@ -375,7 +371,7 @@ Deno.test("snapshotReadAt: only a snapshot at or below the restored TXID", () =>
   assertEquals(snapshotReadAt("12", undefined), undefined);
 });
 
-Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it and a day has passed", () => {
+Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it", () => {
   const attempt = {
     startedAtMs: CHECKED_AT_MS,
     endedAtMs: CHECKED_AT_MS,
@@ -393,7 +389,7 @@ Deno.test("shouldVerifyReplica: a snapshot written ahead of the acknowledged TXI
         lastAttempt: attempt,
         acknowledgedTxid: "20",
         snapshotTxid: "12",
-        ...SNAPSHOT_ONLY,
+        nowMs: CHECKED_AT_MS + 15 * 60_000,
       }),
     ),
     true,

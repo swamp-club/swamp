@@ -607,12 +607,13 @@ Deno.test({
 
 Deno.test({
   name:
-    "runReplicationSupervisor: a snapshot written ahead of the acknowledged TXID is not checked early once the writer passes it",
+    "runReplicationSupervisor: a snapshot written ahead of the acknowledged TXID is checked once the writer passes it, not at the backstop (swamp-club#4261)",
   ignore: !UNIX,
   async fn() {
     await withTempDir(async (dir) => {
       const { restores } = await serveDay(dir, 3, () => txidOf(71));
-      assertEquals(restores.length, 1);
+      assertEquals(restores.length, 2);
+      assertEquals(restores[1].snapshotTxid, txidOf(71));
     });
   },
 });

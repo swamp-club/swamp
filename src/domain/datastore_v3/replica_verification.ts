@@ -26,8 +26,8 @@ import { normalizeTxid } from "./published_lineage.ts";
 export const REPLICA_VERIFY_BACKSTOP_MS = 4 * 60 * 60 * 1000;
 
 /**
- * a new snapshot triggers a check only this long after the last verdict, so an
- * hourly snapshotInterval keeps the cadence of Litestream's daily snapshot
+ * a new snapshot triggers a check only this long after the last verdict that
+ * read one, so an hourly snapshotInterval keeps the daily snapshot's cadence
  */
 export const REPLICA_VERIFY_SNAPSHOT_SPACING_MS = 24 * 60 * 60 * 1000;
 
@@ -112,7 +112,8 @@ export function shouldVerifyReplica(o: ReplicaVerifyObservation): boolean {
   // Only a snapshot a restore at the acknowledged TXID reads through: one
   // written ahead of it is new only once the writer passes it.
   const marker = snapshotReadAt(o.snapshotTxid, acknowledged);
-  const spaced = last === undefined ||
+  // a verdict that read through no snapshot verified none, so the next is due
+  const spaced = last?.snapshotTxid === undefined ||
     o.nowMs - Date.parse(last.checkedAt) >= REPLICA_VERIFY_SNAPSHOT_SPACING_MS;
   const newSnapshotSince = (seen: string | undefined): boolean =>
     spaced && marker !== undefined &&
