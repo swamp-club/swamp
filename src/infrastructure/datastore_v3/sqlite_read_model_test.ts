@@ -1611,6 +1611,17 @@ const FALLBACKS: readonly {
               (await env.store.readPartition(...args)).filter((change) =>
                 change.commit.seq !== RECOVERY_COMMITS
               ),
+            readPartitionOfNames: async (
+              ...args: Parameters<SqliteCommitStore["readPartitionOfNames"]>
+            ) => {
+              const page = await env.store.readPartitionOfNames(...args);
+              return {
+                changes: page.changes.filter((change) =>
+                  change.commit.seq !== RECOVERY_COMMITS
+                ),
+                seqs: page.seqs.filter((seq) => seq !== RECOVERY_COMMITS),
+              };
+            },
           }),
         },
       };
@@ -1642,6 +1653,8 @@ const FALLBACKS: readonly {
         options: {
           commitStore: proxied(env.store, {
             readPartition: () =>
+              Promise.reject(new CommitsCompactedError(20, "compacted")),
+            readPartitionOfNames: () =>
               Promise.reject(new CommitsCompactedError(20, "compacted")),
           }),
         },
@@ -1806,6 +1819,12 @@ Deno.test("SqliteReadModel.recover: an interrupted writer after a long history o
       ) => {
         partitionsRead.add(args[1].toString());
         return env.store.readPartition(...args);
+      },
+      readPartitionOfNames: (
+        ...args: Parameters<SqliteCommitStore["readPartitionOfNames"]>
+      ) => {
+        partitionsRead.add(args[1].toString());
+        return env.store.readPartitionOfNames(...args);
       },
     });
     let cleared = 0;
@@ -3474,5 +3493,104 @@ Deno.test("SqliteReadModel.recover: a removal of a whole name cut short in an ol
       await readModel.close();
     }
     assertEquals(await readOrAbsent(older), "r12@1");
+  });
+});
+
+function rewriteStoredVersions(
+  env: { repoDir: string },
+  rewrite: (metadata: Record<string, unknown>) => Record<string, unknown>,
+): void {
+  const db = new DatabaseSync(
+    join(readModelStateDir(env.repoDir), READ_MODEL_STATE_FILE),
+  );
+  try {
+    const rows = db.prepare(
+      "SELECT namespace, partition, name, version, metadata FROM data_versions",
+    ).all() as {
+      namespace: string;
+      partition: string;
+      name: string;
+      version: number;
+      metadata: string;
+    }[];
+    const update = db.prepare(
+      "UPDATE data_versions SET metadata = ? WHERE namespace = ? AND partition = ? AND name = ? AND version = ?",
+    );
+    for (const row of rows) {
+      update.run(
+        JSON.stringify(rewrite(JSON.parse(row.metadata))),
+        row.namespace,
+        row.partition,
+        row.name,
+        row.version,
+      );
+    }
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("SqliteReadModel.recover: stored versions written in another key order still match the replay, so the recovery stays targeted (swamp-club#4702)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    rewriteStoredVersions(
+      env,
+      (metadata) => Object.fromEntries(Object.entries(metadata).reverse()),
+    );
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: stored versions in an older swamp's shape, with a field today's schema drops, still match the replay, so the recovery stays targeted (swamp-club#4702)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    rewriteStoredVersions(env, (metadata) => ({
+      retiredField: "kept by an older swamp",
+      ...Object.fromEntries(Object.entries(metadata).reverse()),
+    }));
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "targeted");
+      assertEquals(attributes["fallback"], undefined);
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
+Deno.test("SqliteReadModel.recover: a stored version whose metadata differs from the replay's falls back to a full rebuild (swamp-club#4702)", async () => {
+  await withEnv(async (env) => {
+    const { since, clock } = await interruptedCheckout(env);
+    await writeUncommittedRow(env, "r12", 2);
+    rewriteStoredVersions(env, (metadata) => ({
+      ...metadata,
+      contentType: "text/x-drifted",
+    }));
+    const readModel = env.open({ clock, pageSize: 5 });
+    try {
+      const { attributes } = await recoverWithSpan(
+        readModel,
+        targetedOptions(since),
+      );
+      assertEquals(attributes["path"], "full");
+      assertEquals(attributes["fallback"], "versions_mismatch");
+    } finally {
+      await readModel.close();
+    }
   });
 });

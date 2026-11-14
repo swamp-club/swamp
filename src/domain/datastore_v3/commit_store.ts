@@ -68,6 +68,12 @@ export interface PartitionHead {
   readonly highestFence: number | undefined;
 }
 
+export interface PartitionPageOfNames {
+  readonly changes: readonly CommitChange[];
+  /** every row's seq, ascending, matched or not */
+  readonly seqs: readonly number[];
+}
+
 /** One entry of the store-wide change feed. */
 export interface CommitChange {
   /** The entry's position. Positions only grow and are never reused. */
@@ -232,7 +238,10 @@ export interface CompactedBasePage {
 export interface CompactHistoryOptions {
   /** Commits folded per transaction. */
   readonly batchSize?: number;
-  /** Stops between batches. */
+  /**
+   * Stops between batches, and before each partition snapshot a batch after
+   * the first rebuilds.
+   */
   readonly signal?: AbortSignal;
   /** When chunks are released; the wall clock by default. */
   readonly clock?: () => Date;
@@ -323,6 +332,19 @@ export interface CommitStore {
     fromSeq: number,
     limit: number,
   ): Promise<readonly CommitChange[]>;
+
+  /**
+   * {@link readPartition}'s page with only the commits that touch `names`
+   * decoded, as catalogNamesOfCommit names them, and every seq the page held;
+   * optional, a store without it is read whole
+   */
+  readPartitionOfNames?(
+    namespace: string,
+    partition: PartitionKey,
+    fromSeq: number,
+    limit: number,
+    names: ReadonlySet<string>,
+  ): Promise<PartitionPageOfNames>;
 
   /** A partition's head; seq 0 with no fence for a partition never written. */
   head(namespace: string, partition: PartitionKey): Promise<PartitionHead>;

@@ -72,6 +72,65 @@ export function greatestLiveIn(
     greatest(versionsOf(name).filter((v) => !excluding.has(v.version)));
 }
 
+/**
+ * one name's live versions, changed in place: a commit costs what it changes,
+ * and the greatest live version is found from the top, past the few excluded
+ */
+export class LiveVersionIndex {
+  readonly #byVersion = new Map<number, LiveDataVersion>();
+  /** ascending */
+  readonly #order: number[] = [];
+
+  constructor(versions: Iterable<LiveDataVersion> = []) {
+    for (const entry of versions) this.#put(entry);
+  }
+
+  greatestExcluding(
+    excluding: ReadonlySet<number>,
+  ): LiveDataVersion | undefined {
+    for (let i = this.#order.length - 1; i >= 0; i--) {
+      const version = this.#order[i];
+      if (!excluding.has(version)) return this.#byVersion.get(version);
+    }
+    return undefined;
+  }
+
+  apply(changes: LiveVersionChanges | undefined): void {
+    for (const version of changes?.removed ?? []) {
+      if (!this.#byVersion.delete(version)) continue;
+      this.#order.splice(this.#indexOf(version), 1);
+    }
+    for (const entry of changes?.put ?? []) this.#put(entry);
+  }
+
+  toArray(): LiveDataVersion[] {
+    return this.#order.map((version) => this.#byVersion.get(version)!);
+  }
+
+  #put(entry: LiveDataVersion): void {
+    const known = this.#byVersion.has(entry.version);
+    this.#byVersion.set(entry.version, entry);
+    if (known) return;
+    const last = this.#order.at(-1);
+    if (last === undefined || entry.version > last) {
+      this.#order.push(entry.version);
+    } else {
+      this.#order.splice(this.#indexOf(entry.version), 0, entry.version);
+    }
+  }
+
+  #indexOf(version: number): number {
+    let low = 0;
+    let high = this.#order.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (this.#order[mid] < version) low = mid + 1;
+      else high = mid;
+    }
+    return low;
+  }
+}
+
 export function liveAfter(
   before: readonly LiveDataVersion[],
   changes: LiveVersionChanges | undefined,

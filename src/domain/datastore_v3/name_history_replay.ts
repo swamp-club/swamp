@@ -19,9 +19,8 @@
 
 import {
   type CatalogAction,
-  greatestLiveIn,
-  liveAfter,
   type LiveDataVersion,
+  LiveVersionIndex,
   projectCatalog,
 } from "./catalog_projection.ts";
 import type { Commit } from "./commit.ts";
@@ -65,6 +64,43 @@ export function catalogNamesOfCommit(commit: Commit): string[] {
 }
 
 /**
+ * catalogNamesOfCommit read off a stored commit's JSON before it is decoded;
+ * undefined when the JSON is not shaped as a commit, so the caller decodes it
+ */
+export function catalogNamesOfRawCommit(raw: unknown): string[] | undefined {
+  const ops = (raw as { ops?: unknown } | null)?.ops;
+  if (!Array.isArray(ops)) return undefined;
+  const names = new Set<string>();
+  for (const op of ops) {
+    if (typeof op !== "object" || op === null) return undefined;
+    const { kind, key, intent, metadata } = op as Record<string, unknown>;
+    let name: string | undefined;
+    if (kind === "data-version") {
+      name = (metadata as { name?: unknown } | undefined)?.name as
+        | string
+        | undefined;
+      if (typeof name !== "string") return undefined;
+    } else if (kind === "tombstone" || kind === "put") {
+      const removal = intent as { kind?: unknown; name?: unknown } | undefined;
+      if (
+        kind === "tombstone" &&
+        (removal?.kind === "data.delete" || removal?.kind === "data.gc")
+      ) {
+        if (typeof removal.name !== "string") return undefined;
+        name = removal.name;
+      } else {
+        if (typeof key !== "string") return undefined;
+        name = dataNameOfKey(key)?.name;
+      }
+    } else if (typeof kind !== "string") {
+      return undefined;
+    }
+    if (name !== undefined) names.add(name);
+  }
+  return [...names].sort();
+}
+
+/**
  * replays the names' history as a full rebuild does, exact since projectCatalog
  * keys every change by name; commits are the partition's after the base's
  * compacted seq, in seq order
@@ -75,13 +111,13 @@ export function catalogActionsForNames(
   names: ReadonlySet<string>,
 ): NameHistoryReplay {
   const actions: CatalogAction[] = [];
-  const live = new Map<string, LiveDataVersion[]>();
-  for (const name of [...names].sort()) live.set(name, []);
+  const live = new Map<string, LiveVersionIndex>();
+  for (const name of [...names].sort()) live.set(name, new LiveVersionIndex());
   for (
     const [name, state] of [...base.names].sort(([a], [b]) => compare(a, b))
   ) {
     if (!names.has(name)) continue;
-    live.set(name, [...state.versions].sort((a, b) => a.version - b.version));
+    live.set(name, new LiveVersionIndex(state.versions));
     actions.push(
       { kind: "remove-name", name },
       { kind: "end-forward", name },
@@ -108,14 +144,21 @@ export function catalogActionsForNames(
     if (ops.length === 0) continue;
     const projection = projectCatalog(
       ops,
-      greatestLiveIn((name) => live.get(name) ?? []),
+      (name, excluding) => live.get(name)?.greatestExcluding(excluding),
     );
     for (const action of projection.actions) actions.push(action);
     for (const [name, changes] of projection.versions) {
-      live.set(name, liveAfter(live.get(name) ?? [], changes));
+      let index = live.get(name);
+      if (index === undefined) {
+        index = new LiveVersionIndex();
+        live.set(name, index);
+      }
+      index.apply(changes);
     }
   }
-  return { actions, live, commits: replayed };
+  const versions = new Map<string, LiveDataVersion[]>();
+  for (const [name, index] of live) versions.set(name, index.toArray());
+  return { actions, live: versions, commits: replayed };
 }
 
 function compare(a: string, b: string): number {

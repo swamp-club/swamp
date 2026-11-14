@@ -26,6 +26,7 @@
 import { getLogger } from "@logtape/logtape";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
+import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
 import {
   type CatalogProjection,
   type LiveDataVersion,
@@ -47,6 +48,7 @@ import {
   CommitsCompactedError,
   type CommitStore,
   type PartitionBase,
+  type PartitionPageOfNames,
 } from "../../domain/datastore_v3/commit_store.ts";
 import {
   scopeCovers,
@@ -935,7 +937,7 @@ export class SqliteReadModel implements ReadModel {
         // checked first, as rewriting files one by one is what costs
         const suspect = scan.changed.length + scan.unowned.length +
           missing.length;
-        const present = this.#state.presentKeys(namespace).size;
+        const present = this.#state.presentKeyCount(namespace);
         if (
           suspect > TARGETED_FILES_FLOOR &&
           suspect > this.#targetedShare * Math.max(present, 1)
@@ -1310,10 +1312,10 @@ export class SqliteReadModel implements ReadModel {
     counts.replayMs += performance.now() - started;
     started = performance.now();
     for (const name of names) {
-      const held = this.#state.liveVersions(namespace, key, name);
+      const held = this.#state.liveVersionRows(namespace, key, name);
       counts.liveVersions += held.length;
       const replayed = replay.live.get(name) ?? [];
-      if (!sameVersions(held, replayed)) {
+      if (!sameStoredVersions(held, replayed)) {
         throw new TargetedRecoveryFallback(
           "versions_mismatch",
           `the live versions of ${name} in partition ${key} replay differently from the read model's`,
@@ -1368,6 +1370,37 @@ export class SqliteReadModel implements ReadModel {
     return history;
   }
 
+  /** a commit on other names projects nothing for these, so none is kept */
+  async #pageOfNames(
+    namespace: string,
+    partition: PartitionKey,
+    from: number,
+    names: ReadonlySet<string>,
+  ): Promise<PartitionPageOfNames> {
+    const store = this.#commitStore;
+    if (store.readPartitionOfNames !== undefined) {
+      return await store.readPartitionOfNames(
+        namespace,
+        partition,
+        from,
+        this.#pageSize,
+        names,
+      );
+    }
+    const page = await store.readPartition(
+      namespace,
+      partition,
+      from,
+      this.#pageSize,
+    );
+    return {
+      changes: page.filter((change) =>
+        catalogNamesOfCommit(change.commit).some((name) => names.has(name))
+      ),
+      seqs: page.map((change) => change.commit.seq),
+    };
+  }
+
   async #nameHistory(
     namespace: string,
     scoped: ScopedPartition,
@@ -1390,23 +1423,18 @@ export class SqliteReadModel implements ReadModel {
         let from = base.compactedSeq + 1;
         while (from <= applied) {
           signal.throwIfAborted();
-          const page = await this.#commitStore.readPartition(
+          const page = await this.#pageOfNames(
             namespace,
             scoped.partition,
             from,
-            this.#pageSize,
+            names,
           );
-          for (const change of page) {
+          for (const seq of page.seqs) {
+            if (seq > applied) break;
+            reached = seq;
+          }
+          for (const change of page.changes) {
             if (change.commit.seq > applied) break;
-            reached = change.commit.seq;
-            // a commit on other names projects nothing for these
-            if (
-              !catalogNamesOfCommit(change.commit).some((name) =>
-                names.has(name)
-              )
-            ) {
-              continue;
-            }
             commits.push(change.commit);
             if (++held.commits > this.#targetedCommitsCeiling) {
               throw new TargetedRecoveryFallback(
@@ -1415,8 +1443,8 @@ export class SqliteReadModel implements ReadModel {
               );
             }
           }
-          const last = page.at(-1)?.commit.seq;
-          if (page.length < this.#pageSize || last === undefined) break;
+          const last = page.seqs.at(-1);
+          if (page.seqs.length < this.#pageSize || last === undefined) break;
           from = last + 1;
         }
         return { base, commits, reached };
@@ -4948,16 +4976,21 @@ function fallsBackToFull(error: unknown): boolean {
     !(error instanceof CheckoutCopyAtRiskError) && !isNetworkFailure(error);
 }
 
-function sameVersions(
-  a: readonly LiveDataVersion[],
-  b: readonly LiveDataVersion[],
+/**
+ * numbers first, so a mismatch costs no parse; stored rows may carry fields
+ * today's schema drops, so each is compared parsed
+ */
+function sameStoredVersions(
+  held: readonly { readonly version: number; readonly metadata: string }[],
+  replayed: readonly LiveDataVersion[],
 ): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (
-      a[i].version !== b[i].version ||
-      canonicalJson(a[i].metadata) !== canonicalJson(b[i].metadata)
-    ) {
+  if (held.length !== replayed.length) return false;
+  for (let i = 0; i < held.length; i++) {
+    if (held[i].version !== replayed[i].version) return false;
+  }
+  for (let i = 0; i < held.length; i++) {
+    const parsed = DataMetadataSchema.parse(JSON.parse(held[i].metadata));
+    if (canonicalJson(parsed) !== canonicalJson(replayed[i].metadata)) {
       return false;
     }
   }
