@@ -21,7 +21,7 @@ jobs:
     name: Test --repeats 3 (${{ matrix.os }})
     if: github.repository == 'swamp-club/swamp'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     strategy:

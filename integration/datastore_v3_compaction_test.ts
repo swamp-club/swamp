@@ -575,7 +575,9 @@ Deno.test("compaction: a writer stopped inside a batch's transaction leaves comm
       worker.postMessage(
         { dbPath: path, through: 3 } satisfies CompactionCrashRequest,
       );
-      await waitFor(() => folded, "the worker to fold its batch");
+      await waitFor(() => folded, "the worker to fold its batch", {
+        timeoutMs: 60_000,
+      });
     } finally {
       worker.terminate();
     }

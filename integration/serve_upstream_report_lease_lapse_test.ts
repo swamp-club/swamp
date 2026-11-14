@@ -99,7 +99,12 @@ Deno.test({
       const dir = join(scratch.dir, "barrier");
       await Deno.mkdir(dir);
       // the report holds the workflow's lease until the test has ended it
-      registerBarrierReport(dir, "member", ["member", "released"], 120_000);
+      using _barrier = registerBarrierReport(
+        dir,
+        "member",
+        ["member", "released"],
+        120_000,
+      );
 
       const exitCodeBefore = Deno.exitCode;
       Deno.exitCode = 0;

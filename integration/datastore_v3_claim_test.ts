@@ -450,7 +450,10 @@ function startWriter(request: ClaimRaceRequest) {
       () => messages.some(test) || messages.some((m) => "failed" in m),
       "the writer's message",
       { timeoutMs: 60_000 },
-    ).then(() => {
+    ).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`${reason}; the writer sent ${JSON.stringify(messages)}`);
+    }).then(() => {
       const failed = messages.find((m) => "failed" in m);
       if (failed !== undefined && "failed" in failed) {
         throw new Error(`the writer failed: ${failed.failed}`);

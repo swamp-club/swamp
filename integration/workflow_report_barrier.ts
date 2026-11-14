@@ -40,8 +40,9 @@ export function registerBarrierReport(
   label: string,
   labels: readonly string[],
   waitMs: number,
-): void {
-  if (reportRegistry.has(BARRIER_REPORT)) return;
+): Disposable {
+  // replaced, never kept: the report captures this call's directory and label
+  reportRegistry.invalidateType(BARRIER_REPORT);
   reportRegistry.register(BARRIER_REPORT, {
     description: "waits for the other runs at a barrier",
     scope: "workflow",
@@ -63,4 +64,7 @@ export function registerBarrierReport(
       return { markdown: `# barrier ${label}`, json: { label } };
     },
   });
+  return {
+    [Symbol.dispose]: () => reportRegistry.invalidateType(BARRIER_REPORT),
+  };
 }
