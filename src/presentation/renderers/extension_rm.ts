@@ -36,7 +36,7 @@ class LogExtensionRmRenderer implements ExtensionRmRenderer {
       deleting: () => {},
       completed: (e) => {
         this.#logger.info(
-          "Removed {name} (v{version}) — deleted {count} file(s)",
+          "Removed {name} ({version}) — deleted {count} file(s)",
           {
             name: e.data.name,
             version: e.data.version,

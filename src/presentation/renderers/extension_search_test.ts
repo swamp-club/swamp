@@ -53,8 +53,8 @@ Deno.test("createExtensionSearchRenderer: non-interactive log lists every extens
     })
   );
   assertEquals(lines.length, 3);
-  assertStringIncludes(lines[0], "@acme/aws v1.0.0\n@acme/aws description");
-  assertStringIncludes(lines[0], "@acme/aws-s3 v1.0.0");
+  assertStringIncludes(lines[0], "@acme/aws 1.0.0\n@acme/aws description");
+  assertStringIncludes(lines[0], "@acme/aws-s3 1.0.0");
   assertEquals(lines[2], "extensions: 2");
   assertEquals(renderer.selectedAction(), undefined);
 });

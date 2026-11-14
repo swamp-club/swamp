@@ -137,10 +137,116 @@ Deno.test("extension_update log renderer: an update kept despite a type collisio
 
   assertStringIncludes(
     out,
-    "@ns/a: kept v2026.03.01.1 (was v2026.01.01.1) despite a type collision",
+    "@ns/a: kept 2026.03.01.1 (was 2026.01.01.1) despite a type collision",
   );
   assertStringIncludes(
     out,
     "1 extension(s): 0 updated, 0 up to date, 0 failed, 1 kept with a type collision",
+  );
+});
+
+Deno.test("extension_update log renderer: check rows and result lines print versions without a prefix", async () => {
+  const check = await captureConsole(async () => {
+    await createExtensionUpdateRenderer("log").handlers().completed({
+      kind: "completed",
+      data: {
+        ...emptyResult(),
+        extensions: [
+          {
+            status: "update_available",
+            name: "@ns/a",
+            installedVersion: "2026.01.01.1",
+            latestVersion: "2026.03.01.1",
+          },
+          {
+            status: "up_to_date",
+            name: "@ns/b",
+            installedVersion: "2026.02.01.1",
+            latestVersion: "2026.02.01.1",
+          },
+          {
+            status: "not_found",
+            name: "@ns/c",
+            installedVersion: "2026.04.01.1",
+            error: "not in registry",
+          },
+          {
+            status: "failed",
+            name: "@ns/d",
+            installedVersion: "2026.05.01.1",
+            error: "timeout",
+          },
+          {
+            status: "deprecated",
+            name: "@ns/e",
+            installedVersion: "2026.06.01.1",
+            deprecationReason: null,
+            supersededBy: null,
+          },
+        ],
+      },
+      mode: "check",
+    });
+  });
+  assertStringIncludes(
+    check,
+    "@ns/a  2026.01.01.1 -> 2026.03.01.1  (update available)",
+  );
+  assertStringIncludes(check, "@ns/b  2026.02.01.1  (up to date)");
+  assertStringIncludes(check, "@ns/c  2026.04.01.1  (not found in registry)");
+  assertStringIncludes(check, "@ns/d  2026.05.01.1  (update failed: timeout)");
+  assertStringIncludes(check, "@ns/e  2026.06.01.1  (deprecated)");
+
+  const update = await captureConsole(async () => {
+    await createExtensionUpdateRenderer("log").handlers().completed({
+      kind: "completed",
+      data: {
+        ...emptyResult(),
+        extensions: [
+          {
+            status: "updated",
+            name: "@ns/a",
+            previousVersion: "2026.01.01.1",
+            newVersion: "2026.03.01.1",
+          },
+          {
+            status: "up_to_date",
+            name: "@ns/b",
+            installedVersion: "2026.02.01.1",
+            latestVersion: "2026.02.01.1",
+          },
+        ],
+      },
+      mode: "update",
+    });
+  });
+  assertStringIncludes(update, "Updated @ns/a: 2026.01.01.1 -> 2026.03.01.1");
+  assertStringIncludes(update, "@ns/b: already up to date (2026.02.01.1)");
+});
+
+Deno.test("extension_update log renderer: progress lines print the quoted version without a prefix", async () => {
+  const out = await captureConsole(async () => {
+    const handlers = createExtensionUpdateRenderer("log").handlers();
+    await handlers.updating({
+      kind: "updating",
+      name: "@ns/a",
+      from: "2026.01.01.1",
+      to: "2026.03.01.1",
+    });
+    await handlers["orphans-pruned"]({
+      kind: "orphans-pruned",
+      name: "@ns/a",
+      from: "2026.01.01.1",
+      to: "2026.03.01.1",
+      paths: ["models/gone.ts"],
+    });
+  });
+  assertStringIncludes(
+    out,
+    'Updating "@ns/a": "2026.01.01.1" -> "2026.03.01.1"',
+  );
+  assertStringIncludes(
+    out,
+    'Removed 1 file(s) no longer in "@ns/a" ("2026.01.01.1" -> "2026.03.01.1"):',
   );
 });

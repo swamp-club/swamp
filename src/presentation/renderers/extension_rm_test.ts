@@ -82,6 +82,17 @@ Deno.test("createExtensionRmRenderer: log mode lists files it could not delete",
   assertStringIncludes(out, "PermissionDenied");
 });
 
+Deno.test("createExtensionRmRenderer: log mode prints the removed version without a prefix", () => {
+  const handlers = createExtensionRmRenderer("log").handlers();
+  const out = captureConsole(() => {
+    handlers.completed({ kind: "completed", data: REMOVED });
+  });
+  assertStringIncludes(
+    out,
+    'Removed "@test/ext" ("1.0.0") — deleted 2 file(s)',
+  );
+});
+
 Deno.test("createExtensionRmRenderer: log mode prints no failure warning when every file was deleted", () => {
   const handlers = createExtensionRmRenderer("log").handlers();
   const out = captureConsole(() => {

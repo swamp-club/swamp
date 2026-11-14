@@ -145,7 +145,7 @@ const DESCRIPTION_MAX = 60;
 
 function versionLabel(item: ExtensionSearchItem): string {
   return item.latestVersion
-    ? `v${item.latestVersion}`
+    ? item.latestVersion
     : item.latestRc
     ? `rc: ${item.latestRc}`
     : item.latestBeta

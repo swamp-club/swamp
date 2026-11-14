@@ -86,12 +86,12 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
           Math.floor(cols * 0.4),
         );
         const maxVersion = Math.max(
-          ...exts.map((ext) => ext.version.length + 1 + channelTag(ext).length),
+          ...exts.map((ext) => ext.version.length + channelTag(ext).length),
         );
         const maxLatest = enriched
           ? Math.max(
             ...exts.map((ext) =>
-              ext.latestVersion ? ext.latestVersion.length + 1 : 1
+              ext.latestVersion ? ext.latestVersion.length : 1
             ),
           )
           : 0;
@@ -101,14 +101,12 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             ? ext.name.substring(0, maxName - 1) + "…"
             : ext.name;
           const paddedName = name.padEnd(maxName);
-          const paddedVersion = `v${ext.version}${channelTag(ext)}`.padEnd(
+          const paddedVersion = `${ext.version}${channelTag(ext)}`.padEnd(
             maxVersion,
           );
           let line = `${paddedName}  ${paddedVersion}`;
           if (enriched) {
-            const latestText = ext.latestVersion
-              ? `v${ext.latestVersion}`
-              : "—";
+            const latestText = ext.latestVersion || "—";
             line += `  ${latestText.padEnd(maxLatest)}`;
             if (ext.updateStatus === "update_available") {
               line += "  (update available)";
@@ -123,7 +121,7 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             line += "  (auto-resolved)";
           }
           if (ext.onDiskVersion) {
-            line += `  (on disk v${ext.onDiskVersion})`;
+            line += `  (on disk ${ext.onDiskVersion})`;
           }
           if (ext.missing) {
             line += ext.installsOnNextUse
@@ -141,12 +139,12 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
               : "what it installed";
             const remedy = ext.autoResolved
               ? `it was auto-resolved, so delete ${toRemove} and it is ` +
-                `reinstalled at v${ext.version} on next use.`
+                `reinstalled at ${ext.version} on next use.`
               : `run 'swamp extension pull ${ext.name}@${ext.version} ` +
                 `--force' to install the pinned version.`;
             logger.warn("{line}", {
-              line: `  ${ext.name} is v${ext.onDiskVersion} on disk, not ` +
-                `the pinned v${ext.version}; ${remedy}`,
+              line: `  ${ext.name} is ${ext.onDiskVersion} on disk, not ` +
+                `the pinned ${ext.version}; ${remedy}`,
             });
           }
           if (this.verbose) {

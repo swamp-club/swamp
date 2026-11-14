@@ -531,7 +531,7 @@ The entry also records the published channel, in `publishedChannel`, when it
 was known at install time; a restore that cannot look it up keeps the value
 recorded for the same version. The lockfile is repo-controlled, so the value is
 read through `readPublishedChannel`, which ignores anything that is not a
-channel name. `swamp extension list` shows it: `v2026.10.01.1 [beta, following
+channel name. `swamp extension list` shows it: `2026.10.01.1 [beta, following
 stable]` when it differs from the followed channel, and `publishedChannel` in
 JSON entries.
 

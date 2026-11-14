@@ -46,11 +46,11 @@ class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
       },
       checking: () => {},
       updating: (e) => {
-        logger.info`Updating ${e.name}: v${e.from} -> v${e.to}`;
+        logger.info`Updating ${e.name}: ${e.from} -> ${e.to}`;
       },
       "orphans-pruned": (e) => {
         logger.info(
-          "Removed {count} file(s) no longer in {name} (v{from} -> v{to}):",
+          "Removed {count} file(s) no longer in {name} ({from} -> {to}):",
           {
             count: e.paths.length,
             name: e.name,
@@ -177,29 +177,29 @@ function renderCheckLog(result: ExtensionUpdateResult, logger: Logger): void {
     switch (ext.status) {
       case "up_to_date":
         logger.info("{line}", {
-          line: `${paddedName}  v${ext.installedVersion}  (up to date)`,
+          line: `${paddedName}  ${ext.installedVersion}  (up to date)`,
         });
         break;
       case "update_available":
         logger.info("{line}", {
           line:
-            `${paddedName}  v${ext.installedVersion} -> v${ext.latestVersion}  (update available)`,
+            `${paddedName}  ${ext.installedVersion} -> ${ext.latestVersion}  (update available)`,
         });
         break;
       case "not_found":
         logger.warn("{line}", {
           line:
-            `${paddedName}  v${ext.installedVersion}  (not found in registry)`,
+            `${paddedName}  ${ext.installedVersion}  (not found in registry)`,
         });
         break;
       case "failed":
         logger.warn("{line}", {
           line:
-            `${paddedName}  v${ext.installedVersion}  (update failed: ${ext.error})`,
+            `${paddedName}  ${ext.installedVersion}  (update failed: ${ext.error})`,
         });
         break;
       case "deprecated": {
-        let line = `${paddedName}  v${ext.installedVersion}  (deprecated`;
+        let line = `${paddedName}  ${ext.installedVersion}  (deprecated`;
         if (ext.supersededBy) {
           line += ` — use ${ext.supersededBy} instead`;
         }
@@ -233,12 +233,12 @@ function renderUpdateLog(result: ExtensionUpdateResult, logger: Logger): void {
       case "updated":
         logger.info("{line}", {
           line:
-            `Updated ${ext.name}: v${ext.previousVersion} -> v${ext.newVersion}`,
+            `Updated ${ext.name}: ${ext.previousVersion} -> ${ext.newVersion}`,
         });
         break;
       case "up_to_date":
         logger.info("{line}", {
-          line: `${ext.name}: already up to date (v${ext.installedVersion})`,
+          line: `${ext.name}: already up to date (${ext.installedVersion})`,
         });
         break;
       case "not_found":
@@ -254,7 +254,7 @@ function renderUpdateLog(result: ExtensionUpdateResult, logger: Logger): void {
       case "kept_with_collision":
         logger.warn("{line}", {
           line:
-            `${ext.name}: kept v${ext.newVersion} (was v${ext.previousVersion}) despite a type collision: ${ext.error}`,
+            `${ext.name}: kept ${ext.newVersion} (was ${ext.previousVersion}) despite a type collision: ${ext.error}`,
         });
         break;
       case "deprecated": {

@@ -202,7 +202,7 @@ export async function* extensionRm(
 
       const result = await service.execute(input.extensionName);
       ctx.logger
-        .debug`Removed ${input.extensionName} (v${result.version}); ${result.filesDeleted} file(s) deleted, ${result.filesSkipped} skipped, ${result.failedFiles.length} failed, ${result.retainedFiles.length} retained, ${result.dirsRemoved} dir(s) pruned`;
+        .debug`Removed ${input.extensionName} (${result.version}); ${result.filesDeleted} file(s) deleted, ${result.filesSkipped} skipped, ${result.failedFiles.length} failed, ${result.retainedFiles.length} retained, ${result.dirsRemoved} dir(s) pruned`;
       yield {
         kind: "completed",
         data: {
