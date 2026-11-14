@@ -195,7 +195,7 @@ function HandOff(
     setLaunched({ kind: "handing_off" });
     try {
       const { prompt } = await handOff(task, startId);
-      setLaunched({ kind: "handed", prompt, copied: await copyText(prompt) });
+      setLaunched({ kind: "handed", prompt, copied: false });
     } catch (error) {
       setLaunched({
         kind: "failed",
@@ -211,7 +211,7 @@ function HandOff(
     <>
       <p className="sw-small">
         {canLaunch
-          ? `Swampify! opens ${agent} in this repo on a brief that tells it to record your pick, build the ${becomes}, run it once and show you the result.`
+          ? `Launch ${agent} opens it in this repo on a brief that tells it to record your pick, build the ${becomes}, run it once and show you the result.`
           : `Hand it to your agent: the brief tells it to record your pick, build the ${becomes}, run it once and show you the result. Paste it to your agent in this repo.`}
       </p>
       <div className="sw-handoff-actions">
@@ -222,7 +222,9 @@ function HandOff(
             disabled={busy || done}
             onClick={() => void onLaunch()}
           >
-            {launched.kind === "launching" ? `Opening ${agent}…` : "Swampify!"}
+            {launched.kind === "launching"
+              ? `Opening ${agent}…`
+              : `Launch ${agent}`}
           </button>
         )}
         {canHandOff && (
@@ -251,7 +253,7 @@ function HandOff(
         <p className="sw-muted sw-small">
           {agent}{" "}
           opens in a new terminal and can read, edit and run files in this repo.
-          Clicking Swampify! confirms you trust this folder.
+          Clicking Launch {agent} confirms you trust this folder.
           {canHandOff &&
             " Use my own agent saves the brief and copies a prompt for the agent app you already use; nothing opens."}
         </p>

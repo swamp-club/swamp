@@ -155,6 +155,7 @@ export interface StartStatus {
     readonly text: string;
     readonly title: string;
     readonly createdAt: string;
+    readonly kind: StartTaskKind;
     readonly briefFile?: string;
   };
   readonly harness?: {
@@ -171,6 +172,8 @@ export interface StartStatus {
   };
   /** what to paste into an agent swamp does not open; names only the brief */
   readonly ownAgentPrompt?: string;
+  /** set by the start server: the page Back returns to from a launch step */
+  readonly reachedFrom?: "kickoff" | "home";
   readonly contents?: StartContents;
   readonly enrolledTools?: readonly string[];
   readonly tools?: readonly string[];
@@ -370,6 +373,7 @@ export function buildStartStatus(
           text: task.text,
           title: task.title(),
           createdAt: session.createdAt,
+          kind: task.kind,
           ...(session.briefFile ? { briefFile: session.briefFile } : {}),
         },
       }

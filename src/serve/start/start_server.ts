@@ -160,6 +160,7 @@ const RequestSchema = z.discriminatedUnion("type", [
     payload: z.object({ trustConfirmed: z.literal(true) }),
   }),
   z.object({ type: z.literal("start.handoff"), id: z.string() }),
+  z.object({ type: z.literal("start.handoff.leave"), id: z.string() }),
   z.object({ type: z.literal("start.new_task"), id: z.string() }),
   z.object({ type: z.literal("start.copied"), id: z.string() }),
   z.object({
@@ -450,6 +451,9 @@ export function startStartServer(
   // Tasks this process handed to the user's own agent; they show the prompt
   // until launched, since a hand-off records no launch.
   const handedOffHere = new Set<string>();
+  // Where a task's launch step was reached from when that wasn't its own
+  // editor, so the page's Back returns there.
+  const reachedFrom = new Map<string, "kickoff" | "home">();
   let selectedTask: string | null = null;
   let previousTask: string | null = null;
   let view: "home" | "flow" = "flow";
@@ -462,16 +466,20 @@ export function startStartServer(
     if (view === "home" && (named.tasks?.length ?? 0) > 0) {
       return { ...named, screen: "home" };
     }
+    const from = named.taskId !== undefined
+      ? reachedFrom.get(named.taskId)
+      : undefined;
+    const marked = from !== undefined ? { ...named, reachedFrom: from } : named;
     if (
-      named.screen === "trust" && named.taskId !== undefined &&
-      handedOffHere.has(named.taskId)
+      marked.screen === "trust" && marked.taskId !== undefined &&
+      handedOffHere.has(marked.taskId)
     ) {
-      return { ...named, screen: "handed_off" };
+      return { ...marked, screen: "handed_off" };
     }
-    return named.screen === "launched" &&
-        !(named.taskId !== undefined && launchedHere.has(named.taskId))
-      ? { ...named, screen: "home" }
-      : named;
+    return marked.screen === "launched" &&
+        !(marked.taskId !== undefined && launchedHere.has(marked.taskId))
+      ? { ...marked, screen: "home" }
+      : marked;
   };
 
   const readStatus = async (path: string): Promise<StartStatus> => {
@@ -854,6 +862,7 @@ export function startStartServer(
             launchedName = undefined;
             reevaluate();
             selectedTask = status.taskId ?? null;
+            if (selectedTask !== null) reachedFrom.set(selectedTask, "kickoff");
             previousTask = null;
             view = "flow";
             return present(status);
@@ -947,6 +956,11 @@ export function startStartServer(
             selectedTask = request.payload.id;
             previousTask = null;
             view = status.screen === "launched" ? "home" : "flow";
+            if (status.screen === "agent" || status.screen === "trust") {
+              reachedFrom.set(request.payload.id, "home");
+            } else {
+              reachedFrom.delete(request.payload.id);
+            }
             return present(status);
           }),
         );
@@ -973,11 +987,25 @@ export function startStartServer(
             return present(await readStatus(path));
           }),
         );
+      case "start.handoff.leave":
+        // Back from the prompt: the task never left the agent step.
+        return respond(
+          await inWorkspace(async (path) => {
+            handedOffHere.delete(requireTask());
+            view = "flow";
+            return present(await readStatus(path));
+          }),
+        );
       case "start.back":
+        if (selectedTask !== null) {
+          handedOffHere.delete(selectedTask);
+          reachedFrom.delete(selectedTask);
+        }
         return await statusOp((path) =>
           startBack(ctx, deps, { workspacePath: path, taskId: requireTask() })
         );
       case "start.harness.choose":
+        if (selectedTask !== null) handedOffHere.delete(selectedTask);
         return await statusOp((path) =>
           startChooseHarness(ctx, deps, {
             workspacePath: path,

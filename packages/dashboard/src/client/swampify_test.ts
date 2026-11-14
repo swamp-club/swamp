@@ -40,6 +40,7 @@ import {
   comparisonListPayload,
   comparisonsByOption,
   comparisonSummaryOf,
+  hasSwampifyBehavior,
   itemPayload,
   offerListPayload,
   offerSummaryOf,
@@ -53,6 +54,7 @@ import {
   SWAMPIFY_BUILD_POLL_MS,
   SWAMPIFY_COMPARISON_LIMIT,
   SWAMPIFY_ITEM_LIMIT,
+  SWAMPIFY_WAIT_POLL_MS,
   swampifyPollMs,
   type SwampifyRow,
   swampifyRowKey,
@@ -271,15 +273,28 @@ Deno.test("refetchOnReturn: the Swampify page re-reads every list when the tab c
   stop();
 });
 
-Deno.test("swampifyPollMs: polls only while the tab is in view and the offer is picked", () => {
+Deno.test("swampifyPollMs: polls only while the tab is in view and the offer is picked or the first assessment is awaited", () => {
   const reading = (kind: "offered" | "picked" | "built" | "declined") => ({
     kind: "record" as const,
     record: fixtureOffer(kind),
   });
   assertEquals(swampifyPollMs(reading("picked"), true), SWAMPIFY_BUILD_POLL_MS);
   assertEquals(swampifyPollMs(reading("picked"), false), null);
+  assertEquals(swampifyPollMs(null, true, true), SWAMPIFY_WAIT_POLL_MS);
+  assertEquals(swampifyPollMs(null, false, true), null);
   for (const kind of ["offered", "built", "declined"] as const) {
     assertEquals(swampifyPollMs(reading(kind), true), null, kind);
   }
   assertEquals(swampifyPollMs(null, true), null);
+});
+
+Deno.test("hasSwampifyBehavior: true only for an agent-sessions behavior", () => {
+  assertEquals(
+    hasSwampifyBehavior([{ type: "command/shell" }, {
+      type: "@swamp/agent-sessions",
+    }]),
+    true,
+  );
+  assertEquals(hasSwampifyBehavior([{ type: "command/shell" }, {}]), false);
+  assertEquals(hasSwampifyBehavior([]), false);
 });

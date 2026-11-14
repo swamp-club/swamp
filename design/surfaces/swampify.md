@@ -221,9 +221,13 @@ local, synced to a datastore, or served with `swamp serve`.
 
 The dashboard's Swampify page, at `/swampify` below Agent sessions in the
 sidebar, shows the latest assessment and what to build from it. The sidebar
-item shows only when one `data.query` with
-`SWAMPIFY_CANDIDATES_QUERY_PREDICATE` and a limit of 1 finds a candidate set
-the viewer can read; hiding is not access control. Its requests are in
+item shows when one `data.query` with `SWAMPIFY_CANDIDATES_QUERY_PREDICATE`
+and a limit of 1 finds a candidate set the viewer can read, when
+`model.search` finds a behavior of type `@swamp/agent-sessions` (the kick-off
+creates one before anything is read, so an assessment is coming), or while
+the page is open; hiding is not access control. With no candidate set yet the
+page says it is waiting for the user's agent and re-reads its lists every 5
+seconds while the tab is in view. Its requests are in
 `packages/dashboard/src/client/swampify.ts`, and
 `integration/swampify_page_test.ts` sends them through serve's handlers.
 
@@ -244,7 +248,7 @@ the viewer can read; hiding is not access control. Its requests are in
   comparison, then the evidence.
 - **The hand-off.** The brief, `swampifyBuildBrief`, carries the option's
   name, why, outline and counts, never labels or excerpts. Copy brief puts it
-  on the clipboard. On the local dashboard, **Swampify!** sends the same
+  on the clipboard. On the local dashboard, **Launch <agent>** sends the same
   brief's task text (`swampifyBuildTask`) as a `swampify.launch` request: the
   hub saves it as a [start](./start.md) task of kind `swampify` in the repo it
   serves and launches the offer's reading harness on it, with start's
@@ -260,8 +264,7 @@ the viewer can read; hiding is not access control. Its requests are in
   re-reads its candidate-set, offer and comparison lists when the tab comes
   back into view, and every 15 seconds while the tab is in view and the
   shown offer is `picked`. A body is re-read when its row's version changes.
-  The sidebar's probe re-reads on return too, so the item appears after the
-  first assessment.
+  The sidebar's probes re-read on return too.
 - **Computes nothing.** It shows the ranges, counts, rates and break-even the
   writers stored, and only formats them; the thin flag comes from the summary
   tag.

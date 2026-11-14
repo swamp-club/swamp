@@ -279,6 +279,22 @@ export function parseComparisonReply(
 /** How often the page re-reads while a picked option is being built. */
 export const SWAMPIFY_BUILD_POLL_MS = 15_000;
 
+/** How often the page re-reads while it waits for the first assessment. */
+export const SWAMPIFY_WAIT_POLL_MS = 5_000;
+
+/** The type the kick-off creates its swampify behavior from. */
+export const SWAMPIFY_BEHAVIOR_TYPE = "@swamp/agent-sessions";
+
+/**
+ * True when the workspace has a behavior the swampify skill works through:
+ * an assessment is coming, so the page is worth a sidebar entry.
+ */
+export function hasSwampifyBehavior(
+  models: readonly { readonly type?: unknown }[],
+): boolean {
+  return models.some((m) => m.type === SWAMPIFY_BEHAVIOR_TYPE);
+}
+
 /**
  * The page's poll: only while the tab is in view and the shown offer is
  * picked, since the build happens in the agent's session and tells the page
@@ -287,7 +303,9 @@ export const SWAMPIFY_BUILD_POLL_MS = 15_000;
 export function swampifyPollMs(
   offer: SwampifyOfferReading | null,
   visible: boolean,
+  waitingForSet = false,
 ): number | null {
+  if (waitingForSet) return visibleIntervalMs(SWAMPIFY_WAIT_POLL_MS, visible);
   const picked = offer?.kind === "record" &&
     offer.record.state.kind === "picked";
   return visibleIntervalMs(picked ? SWAMPIFY_BUILD_POLL_MS : null, visible);

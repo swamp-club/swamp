@@ -952,7 +952,39 @@ Deno.test("backRequest: each screen goes back one step toward all workspaces", (
   assertEquals(backRequest({ screen: "agent", taskId: "t1" }), "start.back");
   assertEquals(backRequest({ screen: "trust", taskId: "t1" }), "start.back");
   assertEquals(backRequest({ screen: "launched", tasks }), "start.tasks.show");
+  assertEquals(
+    backRequest({ screen: "handed_off", taskId: "t1", tasks }),
+    "start.handoff.leave",
+  );
   assertEquals(backRequest({ screen: "sign_in" }), null);
+});
+
+Deno.test("backRequest: a launch step goes back where it was reached from", () => {
+  const tasks = [TASK];
+  for (const screen of ["agent", "trust", "launched", "handed_off"] as const) {
+    assertEquals(
+      backRequest({ screen, taskId: "t1", tasks, reachedFrom: "kickoff" }),
+      "start.workspace.leave",
+      screen,
+    );
+  }
+  assertEquals(
+    backRequest({ screen: "agent", taskId: "t1", tasks, reachedFrom: "home" }),
+    "start.tasks.show",
+  );
+  assertEquals(
+    backRequest({ screen: "trust", taskId: "t1", tasks, reachedFrom: "home" }),
+    "start.tasks.show",
+  );
+  assertEquals(
+    backRequest({
+      screen: "handed_off",
+      taskId: "t1",
+      tasks,
+      reachedFrom: "home",
+    }),
+    "start.handoff.leave",
+  );
 });
 
 Deno.test("navDepth: Back never climbs, and no forward step climbs more than one", () => {
@@ -965,12 +997,17 @@ Deno.test("navDepth: Back never climbs, and no forward step climbs more than one
     { screen: "agent", taskId: "t1", tasks },
     { screen: "trust", taskId: "t1", tasks },
     { screen: "launched", taskId: "t1", tasks },
+    { screen: "handed_off", taskId: "t1", tasks },
   ];
-  const after: Record<string, { screen: "workspace" | "home" | "task" }> = {
+  const after: Record<
+    string,
+    { screen: "workspace" | "home" | "task" | "agent" }
+  > = {
     "start.workspace.leave": { screen: "workspace" },
     "start.tasks.show": { screen: "home" },
     "start.new_task.cancel": { screen: "home" },
     "start.back": { screen: "task" },
+    "start.handoff.leave": { screen: "agent" },
   };
   for (const status of cases) {
     const target = after[backRequest(status) ?? ""];
@@ -984,6 +1021,7 @@ Deno.test("navDepth: Back never climbs, and no forward step climbs more than one
     ["home", "task"],
     ["task", "agent"],
     ["trust", "launched"],
+    ["trust", "handed_off"],
   ];
   for (const [from, to] of forward) {
     const climb = navDepth({ screen: to }) - navDepth({ screen: from });
@@ -999,6 +1037,14 @@ Deno.test("railRequest: only steps behind the screen are links, and a launched t
   assertEquals(railRequest("task", "task"), null);
   assertEquals(railRequest("task", "agent"), "start.back");
   assertEquals(railRequest("task", "trust"), "start.back");
+  assertEquals(railRequest("workspace", "handed_off"), "start.workspace.leave");
+  assertEquals(railRequest("task", "handed_off"), "start.back");
+  assertEquals(railRequest("task", "handed_off", "kickoff"), null);
+  assertEquals(railRequest("task", "agent", "kickoff"), null);
+  assertEquals(
+    railRequest("workspace", "handed_off", "kickoff"),
+    "start.workspace.leave",
+  );
   assertEquals(railRequest("task", "launched"), null);
 });
 

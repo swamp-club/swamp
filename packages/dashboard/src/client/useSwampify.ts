@@ -26,11 +26,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRequest } from "./useRequest.ts";
 import { useSwamp } from "./SwampProvider.tsx";
 import { replyData } from "./agent_sessions.ts";
+import { extractArray } from "./extract.ts";
 import {
   candidateSetListPayload,
   candidateSetProbePayload,
   comparisonListPayload,
   comparisonsByOption,
+  hasSwampifyBehavior,
   itemPayload,
   offerListPayload,
   parseCandidateSetReply,
@@ -55,11 +57,18 @@ import type {
  * Whether the viewer can read a candidate set: one query, limit 1, rerun on
  * reconnect like the Agent sessions probe.
  */
-export function useSwampifyVisible(): boolean {
+/**
+ * Whether the sidebar offers Swampify: a candidate set exists, a swampify
+ * behavior means one is coming, or the page is open.
+ */
+export function useSwampifyVisible(onPage = false): boolean {
   const probe = useRequest("data.query", candidateSetProbePayload());
+  const models = useRequest("model.search");
   // The first assessment lands while the user is in their agent's window.
-  useListsOnReturn([probe.refetch]);
-  return parseSwampifyRows(replyData(probe.data)).rows.length > 0;
+  useListsOnReturn([probe.refetch, models.refetch]);
+  return onPage ||
+    parseSwampifyRows(replyData(probe.data)).rows.length > 0 ||
+    hasSwampifyBehavior(extractArray<{ type?: unknown }>(models.data));
 }
 
 /** Calls the latest `refetches` each time the tab comes back into view. */
@@ -189,9 +198,11 @@ export function useSwampify(): SwampifyState {
   // Bodies follow: a list row with a new version re-reads its body.
   const lists = [set.list.refetch, offer.list.refetch, comparisonReq.refetch];
   useListsOnReturn(lists);
+  const waitingForSet = !set.list.loading && !set.list.error &&
+    set.list.value === undefined;
   useListsOnInterval(
     lists,
-    swampifyPollMs(offer.body.value, useDocumentVisible()),
+    swampifyPollMs(offer.body.value, useDocumentVisible(), waitingForSet),
   );
   return {
     setRow: set.list,

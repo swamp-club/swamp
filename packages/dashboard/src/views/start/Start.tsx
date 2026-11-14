@@ -44,7 +44,6 @@ import {
   describeChooseError,
   ErrorBox,
   errorMessage,
-  handOffCopied,
   OWN_AGENT_LABEL,
   OwnAgentPrompt,
   type ScreenProps,
@@ -53,7 +52,11 @@ import {
   useLaunch,
   WorkspaceSections,
 } from "./parts.tsx";
-import { PastSessionsPanel } from "./PastSessions.tsx";
+import {
+  PastSessionsPanel,
+  reopenPastSessions,
+  takePastSessionsReopen,
+} from "./PastSessions.tsx";
 import { StartClient } from "./client.ts";
 import {
   dashboardBaseFor,
@@ -462,6 +465,8 @@ interface NavReport {
   unsaved: boolean;
   busy: boolean;
   inner: (() => void) | null;
+  /** The kick-off panel stands in for workspace and task: the rail is on Launch. */
+  launchStep?: boolean;
 }
 
 const NavReportContext = createContext<(report: NavReport) => void>(
@@ -473,6 +478,7 @@ function useNavReport(
   unsaved: boolean,
   busy: boolean,
   inner: (() => void) | null = null,
+  launchStep = false,
 ): void {
   const report = useContext(NavReportContext);
   const innerRef = useRef(inner);
@@ -483,8 +489,9 @@ function useNavReport(
       unsaved,
       busy,
       inner: hasInner ? () => innerRef.current?.() : null,
+      launchStep,
     });
-  }, [report, unsaved, busy, hasInner]);
+  }, [report, unsaved, busy, hasInner, launchStep]);
   // Cleared only on unmount: clearing between updates would drop the open
   // form's history entry for a moment.
   useEffect(
@@ -513,6 +520,7 @@ function useStartNav(
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<BackRequest | null>(null);
+  const [launchStep, setLaunchStep] = useState(false);
   const statusRef = useRef(status);
   statusRef.current = status;
   // The depth of each history entry the page made, and the one it is on.
@@ -549,6 +557,7 @@ function useStartNav(
   }, [wantDepth]);
   const setReport = useCallback((r: NavReport) => {
     report.current = r;
+    setLaunchStep(r.launchStep === true);
     if (entries.current !== null) resync();
   }, [resync]);
 
@@ -605,6 +614,12 @@ function useStartNav(
         return;
       }
       const request = backRequest(statusRef.current);
+      if (
+        request === "start.workspace.leave" &&
+        statusRef.current.reachedFrom === "kickoff"
+      ) {
+        reopenPastSessions();
+      }
       if (request === null || !go(request)) resync();
     };
     globalThis.addEventListener("popstate", onPop);
@@ -626,7 +641,18 @@ function useStartNav(
     resync();
   }, [screen, resync]);
 
-  return { go, confirm, pending, cancel, busy, error, setReport };
+  const closeInner = useCallback(() => report.current.inner?.(), []);
+  return {
+    go,
+    confirm,
+    pending,
+    cancel,
+    busy,
+    error,
+    setReport,
+    launchStep,
+    closeInner,
+  };
 }
 
 function ScreenView(props: ScreenProps) {
@@ -684,12 +710,16 @@ function ScreenView(props: ScreenProps) {
     </>
   );
   const linkFor = (i: number) => {
+    // The kick-off panel: Workspace closes it; Task has no editor to open.
+    if (nav.launchStep) return i === 0 ? nav.closeInner : null;
     const target = RAIL_TARGETS[i];
-    const request = target ? railRequest(target, props.status.screen) : null;
+    const request = target
+      ? railRequest(target, props.status.screen, props.status.reachedFrom)
+      : null;
     return request ? () => void nav.go(request) : null;
   };
 
-  const step = railStep(key);
+  const step = nav.launchStep ? RAIL_STEPS.length - 1 : railStep(key);
   return (
     <NavReportContext.Provider value={nav.setReport}>
       {step < 0
@@ -1338,12 +1368,13 @@ function WorkspaceScreen({ status, client, onStatus }: ScreenProps) {
       : creating && nameOk && locationProblem === null &&
         serverNameProblem === null);
   // An open past-sessions panel is a step of its own: Back closes it.
-  const [pastOpen, setPastOpen] = useState(false);
+  const [pastOpen, setPastOpen] = useState(takePastSessionsReopen);
   const closePast = useCallback(() => setPastOpen(false), []);
   useNavReport(
     false,
     busy,
     pastOpen ? closePast : formOverList ? cancelForm : null,
+    pastOpen,
   );
   const now = new Date();
 
@@ -2988,6 +3019,61 @@ function CopyCommandSteps(
   );
 }
 
+const DASHBOARD_REDIRECT_SECONDS = 20;
+
+/** What the dashboard link is called for this task. */
+function taskDashboardName(status: StartStatus): string {
+  return status.task?.kind === "swampify" ? "Swampify" : "the dashboard";
+}
+
+/** Where a task's agent work shows up: the Swampify page for a swampify task. */
+function taskDashboardHref(status: StartStatus): string | undefined {
+  if (!status.workspaceName) return undefined;
+  const base = dashboardBaseFor(status.workspaceName);
+  return status.task?.kind === "swampify" ? `${base}/swampify` : base;
+}
+
+/**
+ * The dashboard button after a launch, and a countdown that goes there.
+ * "Stay on this page" stops it, as does opening the prompt.
+ */
+function DashboardRedirect(
+  { href, name, stopped }: { href: string; name: string; stopped: boolean },
+) {
+  const [seconds, setSeconds] = useState(DASHBOARD_REDIRECT_SECONDS);
+  const [stayed, setStayed] = useState(false);
+  const counting = !stopped && !stayed;
+  useEffect(() => {
+    if (!counting) return;
+    if (seconds <= 0) {
+      location.assign(href);
+      return;
+    }
+    const timer = setTimeout(() => setSeconds((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [counting, seconds, href]);
+  return (
+    <div className="start-next">
+      <a className="start-primary start-dashboard-link" href={href}>
+        Open {name}
+      </a>
+      {counting && (
+        <p className="start-hint">
+          Redirecting to {name} in {seconds}{" "}
+          {seconds === 1 ? "second" : "seconds"}.{" "}
+          <button
+            type="button"
+            className="start-link"
+            onClick={() => setStayed(true)}
+          >
+            Stay on this page
+          </button>
+        </p>
+      )}
+    </div>
+  );
+}
+
 function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
   const name = status.harness?.displayName ?? "Your agent";
   const { busy, error: actionError, run } = useAction(onStatus);
@@ -2996,11 +3082,14 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
   const opened = launchOpened(status.launch);
   // No terminal command: the prompt works in any agent. The command is left
   // only for a status that carries no prompt.
+  const dashboardHref = taskDashboardHref(status);
   const commandBlock = status.ownAgentPrompt
     ? (
       <OwnAgentPrompt
         prompt={status.ownAgentPrompt}
         apiKeyFromEnv={status.apiKeyFromEnv}
+        dashboardName={taskDashboardName(status)}
+        {...(dashboardHref ? { dashboardHref } : {})}
       />
     )
     : (
@@ -3059,15 +3148,12 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
               will show you the result there, and what it builds and runs shows
               up on this workspace's dashboard.
             </p>
-            {status.workspaceName && (
-              <p>
-                <a
-                  className="start-primary start-dashboard-link"
-                  href={dashboardBaseFor(status.workspaceName)}
-                >
-                  Open the dashboard
-                </a>
-              </p>
+            {dashboardHref && (
+              <DashboardRedirect
+                href={dashboardHref}
+                name={taskDashboardName(status)}
+                stopped={showCommand}
+              />
             )}
             {showCommand ? commandBlock : (
               <p className="start-hint">
@@ -3124,19 +3210,17 @@ function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
 
 /**
  * After Use my own agent: the brief is saved and nothing opened, so the
- * prompt to paste leads. Launching from here is still offered.
+ * prompt to paste leads, then the way on to the dashboard.
  */
 function HandedOffScreen({ status, client, onStatus }: ScreenProps) {
-  const name = status.harness?.displayName ?? "your agent";
-  const { busy, error: actionError, run } = useAction(onStatus);
-  const { launch, running, reached, error } = useLaunch(client, onStatus);
+  const { busy, error, run } = useAction(onStatus);
   return (
     <div className="login-card start-card">
       <StatusChips
         status={status}
         client={client}
         onStatus={onStatus}
-        disabled={busy || running}
+        disabled={busy}
       />
       <h2 tabIndex={-1}>Paste the prompt into your agent.</h2>
       {status.task?.text && (
@@ -3165,7 +3249,10 @@ function HandedOffScreen({ status, client, onStatus }: ScreenProps) {
           <OwnAgentPrompt
             prompt={status.ownAgentPrompt}
             apiKeyFromEnv={status.apiKeyFromEnv}
-            copied={handOffCopied(status.taskId)}
+            dashboardName={taskDashboardName(status)}
+            {...(taskDashboardHref(status)
+              ? { dashboardHref: taskDashboardHref(status) }
+              : {})}
           />
         )
         : (
@@ -3174,40 +3261,32 @@ function HandedOffScreen({ status, client, onStatus }: ScreenProps) {
             follow it.
           </p>
         )}
-      {status.workspaceName && (
-        <p className="start-hint">
-          What your agent builds and runs shows up on{" "}
-          <a href={dashboardBaseFor(status.workspaceName)}>
-            this workspace's dashboard
-          </a>.
-        </p>
-      )}
-      <ErrorBox message={error ?? actionError} />
-      {running && <LaunchChecklist reached={reached} name={name} />}
+      <ErrorBox message={error} />
       <div className="start-actions">
+        {/* The browser's Back, so both return to the same place. */}
+        <button
+          type="button"
+          className="start-secondary"
+          disabled={busy}
+          onClick={() => history.back()}
+        >
+          Back
+        </button>
         <AllTasksLink
           count={status.tasks?.length}
-          disabled={busy || running}
+          disabled={busy}
           onClick={() =>
             void run(() => client.request<StartStatus>("start.tasks.show"))}
         />
         <button
           type="button"
           className="start-secondary"
-          disabled={busy || running}
+          disabled={busy}
           onClick={() =>
             void run(() => client.request<StartStatus>("start.new_task"))}
         >
           <span className="start-new-task-plus" aria-hidden="true">+</span>
           New task in this workspace
-        </button>
-        <button
-          type="button"
-          className="start-secondary"
-          disabled={busy || running}
-          onClick={() => void launch()}
-        >
-          {running ? "Launching…" : `Trust and launch ${name} instead`}
         </button>
       </div>
     </div>

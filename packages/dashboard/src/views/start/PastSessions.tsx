@@ -47,6 +47,30 @@ import type { HarnessList, StartStatus } from "./types.ts";
 export const PAST_SESSIONS_CARD_TEXT =
   "Find tasks to automate from your agent session history.";
 
+interface PanelChoices {
+  windowDays: PastSessionsWindow;
+  excludeText: string;
+  scopeOpen: boolean;
+  picked: PastSessionsHarness | null;
+}
+
+// Page-local: Back from a kick-off's launch step reopens the panel with the
+// choices it was sent with. A reload starts over.
+let reopenPanel = false;
+let sentChoices: PanelChoices | null = null;
+
+export function reopenPastSessions(): void {
+  reopenPanel = true;
+}
+
+/** True once after `reopenPastSessions`, for the workspace screen's state. */
+export function takePastSessionsReopen(): boolean {
+  const reopen = reopenPanel;
+  reopenPanel = false;
+  if (!reopen) sentChoices = null;
+  return reopen;
+}
+
 const PAST_SESSIONS_HARNESS_NAMES: Record<PastSessionsHarness, string> = {
   claude: "Claude Code",
   codex: "Codex",
@@ -71,16 +95,20 @@ export function PastSessionsPanel(
 ) {
   const offered = pastSessionsHarnesses(status.signals);
   const [windowDays, setWindowDays] = useState<PastSessionsWindow>(
-    PAST_SESSIONS_DEFAULT_WINDOW,
+    sentChoices?.windowDays ?? PAST_SESSIONS_DEFAULT_WINDOW,
   );
-  const [excludeText, setExcludeText] = useState("");
-  const [scopeOpen, setScopeOpen] = useState(false);
-  const [picked, setPicked] = useState<PastSessionsHarness | null>(null);
+  const [excludeText, setExcludeText] = useState(
+    sentChoices?.excludeText ?? "",
+  );
+  const [scopeOpen, setScopeOpen] = useState(sentChoices?.scopeOpen ?? false);
+  const [picked, setPicked] = useState<PastSessionsHarness | null>(
+    sentChoices?.picked ?? null,
+  );
   const [name, setName] = useState("");
   const [installed, setInstalled] = useState<Record<string, boolean> | null>(
     null,
   );
-  // Swampify! saves the kick-off, then launches it at once: the click is the
+  // Launch saves the kick-off, then launches it at once: the click is the
   // trust confirmation, as it is on the Swampify page.
   const launcher = useLaunch(client, onStatus);
   // Use my own agent saves the same kick-off and opens nothing.
@@ -119,6 +147,9 @@ export function PastSessionsPanel(
   const harness = picked !== null && offered.includes(picked)
     ? picked
     : offered.find((h) => installed?.[h] !== false) ?? offered[0];
+  const launchLabel = harness
+    ? `Launch ${PAST_SESSIONS_HARNESS_NAMES[harness]}`
+    : "Launch";
   const suggested = swampifyWorkspaceName(taken);
   const finalName = name.trim() || suggested;
   const nameOk = isValidWorkspaceName(finalName);
@@ -151,6 +182,7 @@ export function PastSessionsPanel(
   const save = async (ownAgent: boolean): Promise<boolean> => {
     if (saved !== null) return true;
     if (harness === undefined) return false;
+    sentChoices = { windowDays, excludeText, scopeOpen, picked: harness };
     const exclude = parseExcludedPaths(excludeText);
     setSaving(true);
     setSaveError(null);
@@ -359,12 +391,11 @@ export function PastSessionsPanel(
         )
         : (
           <p className="start-hint start-past-note">
-            Swampify! creates the workspace and opens{" "}
-            {harness ? PAST_SESSIONS_HARNESS_NAMES[harness] : "your agent"}{" "}
-            in it. Clicking it confirms you trust that folder. {OWN_AGENT_LABEL}
-            {" "}
-            saves the same brief and copies a prompt for the agent app you
-            already use; nothing opens.
+            Both create the workspace and save the brief. {launchLabel}{" "}
+            opens it there, and clicking it confirms you trust that folder.{" "}
+            {OWN_AGENT_LABEL}{" "}
+            gives you a prompt to paste into the agent app you already use;
+            nothing opens.
           </p>
         )}
       <div className="start-actions">
@@ -404,7 +435,7 @@ export function PastSessionsPanel(
             ? "Opening your agent…"
             : saved !== null
             ? "Try again"
-            : "Swampify!"}
+            : launchLabel}
         </button>
       </div>
     </form>

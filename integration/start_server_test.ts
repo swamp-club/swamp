@@ -937,6 +937,78 @@ Deno.test("startStartServer: a dashboard tab keeps the server up after a launch,
   assertEquals(hub.shutdowns, 1);
 });
 
+Deno.test("startStartServer: Back from a hand-off returns to the agent step, and choosing again does not show the prompt", async () => {
+  await withStartServer(async ({ handle }) => {
+    const client = await Client.open(handle.port);
+    try {
+      await walkToTrust(client);
+      assertEquals(
+        (await client.request("start.handoff")).screen,
+        "handed_off",
+      );
+      const back = await client.request("start.handoff.leave");
+      assertEquals(back.screen, "trust");
+      const chosen = await client.request("start.harness.choose", {
+        id: "claude",
+      });
+      assertEquals(chosen.screen, "trust");
+      assertEquals(
+        (await client.request("start.handoff")).screen,
+        "handed_off",
+      );
+      assertEquals((await client.request("start.back")).screen, "task");
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a kick-off's launch steps say they were reached from the kick-off", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    fakes.swampify = true;
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      const saved = await client.request("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: 30,
+        harness: "claude",
+        ownAgent: true,
+      });
+      assertEquals(saved.reachedFrom, "kickoff");
+      const handed = await client.request("start.handoff");
+      assertEquals(handed.reachedFrom, "kickoff");
+      const left = await client.request("start.workspace.leave");
+      assertEquals(left.screen, "workspace");
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a task opened from home at its agent step says so, until it goes back to its editor", async () => {
+  await withStartServer(async ({ handle }) => {
+    const client = await Client.open(handle.port);
+    try {
+      await walkToTrust(client);
+      const trust = await client.request("start.status");
+      assertEquals(trust.screen, "trust");
+      assertEquals(trust.reachedFrom, undefined);
+      await client.request("start.tasks.show");
+      const opened = await client.request("start.task.open", {
+        id: trust.taskId,
+      });
+      assertEquals(opened.screen, "trust");
+      assertEquals(opened.reachedFrom, "home");
+      const editor = await client.request("start.back");
+      assertEquals(editor.screen, "task");
+      assertEquals(editor.reachedFrom, undefined);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 Deno.test("startStartServer: a hand-off ends paused, not launched, even after a copy", async () => {
   await withStartServer(async ({ handle, fakes }) => {
     const client = await Client.open(handle.port);

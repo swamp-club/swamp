@@ -20,6 +20,7 @@
 import { type ReactNode, useCallback, useState } from "react";
 import { RequestError } from "../../client/stream.ts";
 import { copyText } from "../../components/clipboard.ts";
+import { CheckIcon, CopyIcon } from "../swampify/SwampifyParts.tsx";
 import type { StartClient } from "./client.ts";
 import {
   type LaunchStep,
@@ -155,17 +156,9 @@ export function useLaunch(
   return { launch, running, reached, error };
 }
 
-// Whether the hand-off's own copy reached the clipboard, by task, so the
-// prompt screen that follows can say so. Page-local: a reload starts over.
-const handOffCopies = new Map<string, boolean>();
-
-export function handOffCopied(taskId: string | undefined): boolean {
-  return taskId !== undefined && handOffCopies.get(taskId) === true;
-}
-
 /**
  * Streams `start.handoff`: saves the open task's brief for the user's own
- * agent and opens nothing, then copies the prompt it returns.
+ * agent and opens nothing. The page shows the prompt; the person copies it.
  */
 export function useHandOff(
   client: StartClient,
@@ -177,18 +170,9 @@ export function useHandOff(
     setRunning(true);
     setError(null);
     try {
-      const status = await client.stream<StartStatus>(
-        "start.handoff",
-        undefined,
-        () => {},
+      onStatus(
+        await client.stream<StartStatus>("start.handoff", undefined, () => {}),
       );
-      if (status.ownAgentPrompt && status.taskId) {
-        handOffCopies.set(
-          status.taskId,
-          await copyText(status.ownAgentPrompt),
-        );
-      }
-      onStatus(status);
       return true;
     } catch (err) {
       setError(errorMessage(err, "The brief couldn't be saved."));
@@ -204,19 +188,28 @@ export const OWN_AGENT_LABEL = "Use my own agent";
 
 /**
  * The prompt for the user's own agent, with a Copy button and the steps to
- * use it. Shown after a hand-off and whenever no terminal could be opened.
+ * use it, then the way on to the dashboard.
  */
 // No `start.copied` here: that tells the server the named agent is running,
 // and a prompt pasted into another agent app is not that.
 export function OwnAgentPrompt(
-  { prompt, apiKeyFromEnv, copied: copiedAlready = false }: {
+  {
+    prompt,
+    apiKeyFromEnv,
+    dashboardHref,
+    dashboardName = "the dashboard",
+    initiallyCopied = false,
+  }: {
     prompt: string;
     apiKeyFromEnv: boolean;
-    copied?: boolean;
+    dashboardHref?: string;
+    dashboardName?: string;
+    /** Tests start in the copied state. */
+    initiallyCopied?: boolean;
   },
 ) {
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">(
-    copiedAlready ? "copied" : "idle",
+    initiallyCopied ? "copied" : "idle",
   );
   const copy = async () => {
     setCopied(await copyText(prompt) ? "copied" : "failed");
@@ -224,33 +217,48 @@ export function OwnAgentPrompt(
   return (
     <div className="start-copy start-own-agent">
       <ol className="start-copy-steps">
-        <li>Open your agent app, such as Claude Code, Codex or Zed.</li>
+        <li>Copy the prompt.</li>
         <li>
-          Paste this prompt. It points the agent at the brief, which says what
-          to do.
+          Open your agent app, such as Claude Code, Codex or Zed, and paste it.
+          It points the agent at the brief, which says what to do.
         </li>
       </ol>
-      <div className="start-command">
+      <div className="start-command-wrap">
         <pre className="start-command-text">{prompt}</pre>
         <button
           type="button"
-          className="start-primary"
+          className="start-copy-icon"
+          aria-label={copied === "copied" ? "Copied" : "Copy prompt"}
+          title={copied === "copied" ? "Copied" : "Copy prompt"}
           onClick={() => void copy()}
         >
-          {copied === "copied" ? "Copied" : "Copy prompt"}
+          {copied === "copied" ? <CheckIcon /> : <CopyIcon />}
         </button>
-        {copied === "failed" && (
-          <p className="start-hint">
-            Couldn't copy automatically. Select the prompt and copy it.
-          </p>
-        )}
       </div>
+      {copied === "failed" && (
+        <p className="start-hint">
+          Couldn't copy automatically. Select the prompt and copy it.
+        </p>
+      )}
       {apiKeyFromEnv && (
         <p className="start-hint">
           You signed in with{" "}
           <code>SWAMP_API_KEY</code>. Your agent needs it too: make sure it can
           see it, or sign in with <code>swamp auth login</code>.
         </p>
+      )}
+      {dashboardHref && (
+        <div className="start-next">
+          <ol className="start-copy-steps" start={3}>
+            <li>Once your agent is running, head over to {dashboardName}.</li>
+          </ol>
+          <a
+            className="start-primary start-dashboard-link"
+            href={dashboardHref}
+          >
+            Open {dashboardName}
+          </a>
+        </div>
       )}
     </div>
   );

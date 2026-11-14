@@ -1005,9 +1005,20 @@ export type BackRequest =
   | "start.workspace.leave"
   | "start.tasks.show"
   | "start.new_task.cancel"
-  | "start.back";
+  | "start.back"
+  | "start.handoff.leave";
 
-type NavStatus = Pick<StartStatus, "screen" | "taskId" | "tasks">;
+type NavStatus = Pick<
+  StartStatus,
+  "screen" | "taskId" | "tasks" | "reachedFrom"
+>;
+
+const LAUNCH_SCREENS: ReadonlySet<string> = new Set([
+  "agent",
+  "trust",
+  "launched",
+  "handed_off",
+]);
 
 function hasTasks(status: NavStatus): boolean {
   return (status.tasks?.length ?? 0) > 0;
@@ -1019,6 +1030,16 @@ function hasTasks(status: NavStatus): boolean {
  * workspace's first screen to all workspaces. Null where there is no back.
  */
 export function backRequest(status: NavStatus): BackRequest | null {
+  // A kick-off reaches its launch step from the panel on all workspaces.
+  if (status.reachedFrom === "kickoff" && LAUNCH_SCREENS.has(status.screen)) {
+    return "start.workspace.leave";
+  }
+  if (
+    status.reachedFrom === "home" &&
+    (status.screen === "agent" || status.screen === "trust")
+  ) {
+    return "start.tasks.show";
+  }
   switch (status.screen) {
     case "home":
       return "start.workspace.leave";
@@ -1032,6 +1053,8 @@ export function backRequest(status: NavStatus): BackRequest | null {
       return "start.back";
     case "launched":
       return "start.tasks.show";
+    case "handed_off":
+      return "start.handoff.leave";
     default:
       return null;
   }
@@ -1050,6 +1073,7 @@ export function navDepth(status: NavStatus): number {
     case "agent":
     case "trust":
     case "launched":
+    case "handed_off":
       return 2;
     default:
       return 0;
@@ -1091,14 +1115,19 @@ export function planHistorySync(
 export function railRequest(
   step: "workspace" | "task",
   screen: StartStatus["screen"],
+  reachedFrom?: StartStatus["reachedFrom"],
 ): BackRequest | null {
+  // A kick-off's task is the panel's, never typed in the editor.
+  if (step === "task" && reachedFrom === "kickoff") return null;
   if (step === "workspace") {
     return screen === "task" || screen === "agent" || screen === "trust" ||
-        screen === "launched"
+        screen === "launched" || screen === "handed_off"
       ? "start.workspace.leave"
       : null;
   }
-  return screen === "agent" || screen === "trust" ? "start.back" : null;
+  return screen === "agent" || screen === "trust" || screen === "handed_off"
+    ? "start.back"
+    : null;
 }
 
 /** The agents "Start from your past sessions" can read with. */

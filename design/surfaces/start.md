@@ -183,7 +183,7 @@ Code and Codex, only those whose signal is on; one not on PATH is marked and
 can be picked only for **Use my own agent**) and a workspace name, prefilled
 `swampify`, or `swampify-2`, `-3` when taken.
 
-The panel's **Swampify!** sends `start.swampify.kickoff` with those fields and
+The panel's **Launch <agent>** (named for the agent picked) sends `start.swampify.kickoff` with those fields and
 no text, then `start.launch` with `trustConfirmed`: the click is the trust
 confirmation, as it is on the Swampify page, and the panel says so. The
 server checks sign-in, the window and paths and the agent first
@@ -207,7 +207,7 @@ code fence. See [swampify.md](./swampify.md#the-kick-off) for the text.
 ### The Swampify page link
 
 When a swampify task is launched from a page (start's Launch, or the
-Swampify page's **Swampify!** through the hub), the brief's `# Context` ends
+Swampify page's **Launch <agent>** through the hub), the brief's `# Context` ends
 with one line, `- Swampify page: <url>`, pinned by a test here and in the
 swampify skill. The URL is `<origin>/dashboard/w/<workspace>/swampify`, where
 the origin is the one the browser reached this server at: the checked
@@ -319,8 +319,11 @@ task's brief as a launch does, through the same sign-in, brief and enrolment
 steps (`startHandOff`, sharing `prepareBrief` with `startLaunch`), and opens
 nothing. It records no launch and no trust, and the agent need not be on PATH
 (`startChooseHarness` with `ownAgent`), since another agent app reads the
-brief. The page copies the prompt and shows it with a Copy button and the
-steps to use it; the status carries it as `ownAgentPrompt`:
+brief. The page shows the prompt with a Copy button and the steps to use it,
+copying nothing until the person clicks Copy; the status carries it as
+`ownAgentPrompt`. A copy icon sits in the prompt's corner. Below it a third step and **Open the
+dashboard** (**Open Swampify** for a swampify task) say to head there once
+their agent is running:
 
 `Read the brief at <absolute brief path> and follow it. If the <skill> skill isn't loaded, read <skills folder>/<skill>/SKILL.md in the workspace the brief names.`
 
@@ -330,6 +333,21 @@ is refused (`ownAgentPrompt` in `src/domain/start/harness.ts`). The skill is
 agent-sessions pull always writes; otherwise `swamp-getting-started`, in the
 skills folder of the agent the task was enrolled for. The start server
 presents a handed-off task as the `handed_off` screen until it is launched.
+It offers no launch. Its Back is the browser's Back.
+
+Back returns to the screen the person came from. The start server marks a
+launch step it reached other than from the task's own editor with
+`reachedFrom`: `kickoff` for the kick-off panel, where Back leaves the
+workspace and reopens the panel with the choices it sent, and `home` for a
+task opened from the workspace's home at its agent step, where Back returns
+home. From the hand-off screen Back otherwise returns to the agent step
+(`start.handoff.leave`). A kick-off's Task step in the rail is not a link.
+
+After a launch that opened a window, the launched screen shows **Open the
+dashboard** and goes there after 20 seconds unless the person chooses **Stay
+on this page** or opens the prompt. For a swampify task that link, and the
+hand-off's, go to the workspace's Swampify page and say **Open Swampify**: the
+first assessment lands there, and the page waits for it.
 Nothing opened, so the server ends as it would before a launch, and copying
 the prompt never reports the agent as running. With the key from
 `SWAMP_API_KEY`, the page notes that the agent needs it too.

@@ -71,6 +71,8 @@ export interface StartStatus {
     createdAt?: string;
     /** Its brief, relative to the workspace (`tasks/<name>.md`). */
     briefFile?: string;
+    /** `swampify` for a Swampify task; its next stop is the Swampify page. */
+    kind?: "task" | "swampify";
   };
   harness?: {
     id: string;
@@ -84,6 +86,8 @@ export interface StartStatus {
   };
   /** What to paste into an agent swamp doesn't open; names only the brief. */
   ownAgentPrompt?: string;
+  /** Where Back from a launch step returns, when not the task's own editor. */
+  reachedFrom?: "kickoff" | "home";
   launch?: {
     method: LaunchMethod;
     command: string;

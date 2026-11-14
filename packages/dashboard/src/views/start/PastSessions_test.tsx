@@ -84,7 +84,7 @@ Deno.test("PastSessionsPanel: open, it shows the disclosure, window, scope, agen
       'aria-expanded="false"',
       'name="start-past-agent"',
       'id="start-past-name"',
-      ">Swampify!</button>",
+      ">Launch Claude Code</button>",
     ]
   ) {
     assertStringIncludes(html, part);
@@ -144,12 +144,15 @@ Deno.test("PastSessionsPanel: open, the window offers 7 to 365 days and all hist
   assertEquals(html.includes("takes longer to assess"), false);
 });
 
-Deno.test("PastSessionsPanel: open, Use my own agent sits beside Swampify! and says nothing opens", () => {
+Deno.test("PastSessionsPanel: open, Use my own agent sits before Launch, which names the picked agent", () => {
   const html = render(true);
   assertStringIncludes(
     html,
     '<button type="button" class="start-secondary">Use my own agent</button>',
   );
-  assert(html.indexOf(">Use my own agent<") < html.lastIndexOf(">Swampify!<"));
+  assert(
+    html.indexOf(">Use my own agent<") < html.indexOf(">Launch Claude Code<"),
+  );
+  assertEquals(html.includes(">Swampify!</button>"), false);
   assertStringIncludes(html, "nothing opens.");
 });
