@@ -117,13 +117,15 @@ comparison version 2.
   Version 3 adds what a fixed target and model steps need:
   - `build.sessions`, at least 1: the build session plus later sessions that
     fixed the target, whose cost `build` includes;
+  - `swampRun.startedAt`, required, so the two runs can be placed;
   - `latestRun`, optional: the latest successful run when it differs from the
-    first (`swampRun`), with `startedAt`, `wallMs`, `tokens`, `outcome` and
-    `unrecordedSteps`. Break-even is computed against it when present, a
+    first (`swampRun`), in the same shape with `outcome` fixed to
+    `succeeded`. Break-even is computed against it when present, a
     writer rule core cannot check, so readers label it so; `estimatedUsd`
     may price it as `latestRun`;
-  - `unrecordedSteps`, optional on either run: model steps whose token usage
-    was not recorded, so zero tokens is not read as a measurement;
+  - `modelSteps` and `unrecordedSteps`, optional on either run: how many steps
+    called a model, and how many of them did not record token usage, so zero
+    tokens is not read as a measurement;
   - `history.noCallOccurrences`, optional: occurrences that attributed no
     calls. `occurrences` still counts them; the per-occurrence ranges leave
     them out rather than count them as free.
@@ -212,9 +214,10 @@ An item that passes its JSON Schema can still be skipped as `invalid`:
   exactly when there are occurrences (in history, occurrences with calls);
   each `chore` statistic is at most the `wholeTurns` one; `breakEven.low <=
   high`, and `high` is null when `low` is; in v3, `noCallOccurrences <=
-  occurrences`, every optional count is at least 1, `latestRun` succeeded and
-  started no later than `generatedAt`, and a `latestRun` estimate needs a
-  `latestRun`;
+  occurrences`, every optional count but `modelSteps` is at least 1, both runs
+  start no later than `generatedAt`, `latestRun` succeeded and starts after
+  `swampRun`, `unrecordedSteps <= modelSteps`, and a `latestRun` estimate
+  needs a `latestRun`;
 - in the summaries, `thin` matches the count, the candidate counts add up, and
   the offer's pick and target appear exactly where its state carries them.
 

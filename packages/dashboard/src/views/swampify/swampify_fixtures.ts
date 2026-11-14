@@ -371,6 +371,7 @@ export function fixtureComparison(
       perOccurrence: { chore: strip(chore), wholeTurns: strip(whole) },
     },
     swampRun: {
+      startedAt: "2026-11-10T10:05:00.000Z",
       wallMs: 48_000,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       outcome: "succeeded",
@@ -407,9 +408,11 @@ export function fixtureComparisonFixed(): SwampifyComparison {
     },
     history: { ...base.history, noCallOccurrences: 2 },
     swampRun: {
+      startedAt: "2026-11-10T10:05:00.000Z",
       wallMs: 51_000,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       outcome: "failed",
+      modelSteps: 3,
       unrecordedSteps: 1,
     },
     latestRun: {
@@ -417,6 +420,7 @@ export function fixtureComparisonFixed(): SwampifyComparison {
       wallMs: 63_000,
       tokens: { input: 54_000, output: 1_800, cacheRead: 0, cacheWrite: 0 },
       outcome: "succeeded",
+      modelSteps: 3,
     },
     breakEven: { low: 6, high: 19 },
     estimatedUsd: { build: 4.9, swampRun: 0, latestRun: 0.19 },
@@ -425,6 +429,10 @@ export function fixtureComparisonFixed(): SwampifyComparison {
 
 /** The same option as a v2 comparison, as written before v3. */
 export function fixtureComparisonV2(): SwampifyComparisonV2 {
-  const { build: { sessions: _, ...build }, ...rest } = fixtureComparison();
-  return { ...rest, schemaVersion: 2, build };
+  const {
+    build: { sessions: _, ...build },
+    swampRun: { startedAt: __, ...swampRun },
+    ...rest
+  } = fixtureComparison();
+  return { ...rest, schemaVersion: 2, build, swampRun };
 }

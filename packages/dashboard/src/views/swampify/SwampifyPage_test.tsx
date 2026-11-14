@@ -694,14 +694,17 @@ Deno.test("ComparisonDetail: a v3 comparison shows both runs, the build sessions
     <ComparisonDetail comparison={fixtureComparisonFixed()} />,
   );
   assertStringIncludes(html, "<dt>First run</dt>");
-  assertStringIncludes(html, '<span class="sw-fail">failed</span> in 51s');
+  assertStringIncludes(
+    html,
+    '<span class="sw-fail">failed</span> on 2026-11-10 in 51s',
+  );
   assertStringIncludes(html, "<dt>Latest run</dt>");
   assertStringIncludes(html, "succeeded on 2026-11-11 in 1m 03s");
   assertStringIncludes(html, "in 54K · out 1,800");
   assertStringIncludes(html, ", across 2 sessions");
   assertStringIncludes(
     html,
-    "1 model step did not record its usage; its tokens are not counted.",
+    "1 of 3 model steps did not record their usage; their tokens are not counted.",
   );
   assertStringIncludes(
     html,
@@ -736,6 +739,31 @@ Deno.test("ComparisonDetail: a v3 comparison with every past run callless shows 
   assertStringIncludes(html, "0 of 3 runs");
   assertStringIncludes(html, '<td class="sw-num sw-muted">—</td>');
   assertStringIncludes(html, "3 past runs had no calls attributed");
+});
+
+Deno.test("ComparisonDetail: without a model step count the note gives a bare count", () => {
+  const base = fixtureComparison();
+  const one = renderToStaticMarkup(
+    <ComparisonDetail
+      comparison={{
+        ...base,
+        swampRun: { ...base.swampRun, unrecordedSteps: 1 },
+      }}
+    />,
+  );
+  assertStringIncludes(
+    one,
+    "1 model step did not record its usage; its tokens are not counted.",
+  );
+  const two = renderToStaticMarkup(
+    <ComparisonDetail
+      comparison={{
+        ...base,
+        swampRun: { ...base.swampRun, unrecordedSteps: 2 },
+      }}
+    />,
+  );
+  assertStringIncludes(two, "2 model steps did not record their usage");
 });
 
 Deno.test("ComparisonDetail: a v2 comparison renders as before, with none of v3's rows", () => {

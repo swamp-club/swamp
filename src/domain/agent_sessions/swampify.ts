@@ -725,6 +725,16 @@ export const SwampifyComparisonV2Schema = z.strictObject({
   checkComparison(comparison, comparison.history.occurrences, ctx);
 });
 
+// modelSteps may be 0, for a run with no model steps; unrecordedSteps is
+// left out rather than 0
+const SwampifyRunShape = {
+  startedAt: z.iso.datetime(),
+  wallMs: AmountSchema,
+  tokens: TokenTotalsSchema,
+  modelSteps: CountSchema.optional(),
+  unrecordedSteps: PositiveCountSchema.optional(),
+};
+
 /**
  * v2 plus what a fixed target and model steps need: the build's session count,
  * the latest successful run, model steps that recorded no usage, and history
@@ -745,17 +755,12 @@ export const SwampifyComparisonV3Schema = z.strictObject({
     perOccurrence: SwampifyHistoryCostSchema.optional(),
   }),
   swampRun: z.strictObject({
-    wallMs: AmountSchema,
-    tokens: TokenTotalsSchema,
+    ...SwampifyRunShape,
     outcome: SwampRunOutcomeSchema,
-    unrecordedSteps: PositiveCountSchema.optional(),
   }),
   latestRun: z.strictObject({
-    startedAt: z.iso.datetime(),
-    wallMs: AmountSchema,
-    tokens: TokenTotalsSchema,
+    ...SwampifyRunShape,
     outcome: z.literal("succeeded"),
-    unrecordedSteps: PositiveCountSchema.optional(),
   }).optional(),
   forward: SwampifyForwardSchema,
   breakEven: SwampifyBreakEvenSchema,
@@ -779,16 +784,47 @@ export const SwampifyComparisonV3Schema = z.strictObject({
     Math.max(0, occurrences - noCallOccurrences),
     ctx,
   );
-  const latest = comparison.latestRun;
-  if (
-    latest !== undefined &&
-    Date.parse(latest.startedAt) > Date.parse(comparison.generatedAt)
-  ) {
+  const generated = Date.parse(comparison.generatedAt);
+  const first = Date.parse(comparison.swampRun.startedAt);
+  if (first > generated) {
     ctx.addIssue({
       code: "custom",
-      message: "the latest run starts after the comparison was generated",
-      path: ["latestRun", "startedAt"],
+      message: "the run starts after the comparison was generated",
+      path: ["swampRun", "startedAt"],
     });
+  }
+  const latest = comparison.latestRun;
+  if (latest !== undefined) {
+    const started = Date.parse(latest.startedAt);
+    if (started > generated) {
+      ctx.addIssue({
+        code: "custom",
+        message: "the latest run starts after the comparison was generated",
+        path: ["latestRun", "startedAt"],
+      });
+    } else if (started <= first) {
+      ctx.addIssue({
+        code: "custom",
+        message: "the latest run must start after the first",
+        path: ["latestRun", "startedAt"],
+      });
+    }
+  }
+  const runs = [["swampRun", comparison.swampRun], [
+    "latestRun",
+    latest,
+  ]] as const;
+  for (const [where, run] of runs) {
+    if (
+      run?.modelSteps !== undefined && run.unrecordedSteps !== undefined &&
+      run.unrecordedSteps > run.modelSteps
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "more unrecorded model steps than model steps",
+        path: [where, "unrecordedSteps"],
+      });
+    }
   }
   if (
     comparison.estimatedUsd?.latestRun !== undefined && latest === undefined

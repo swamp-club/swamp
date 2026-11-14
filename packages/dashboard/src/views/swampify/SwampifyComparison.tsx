@@ -185,15 +185,20 @@ function tokenLine(t: SwampifyComparisonRecord["build"]["tokens"]): string {
   }`;
 }
 
-function unrecordedNote(steps: number | undefined): ReactNode {
+function unrecordedNote(
+  run: { modelSteps?: number; unrecordedSteps?: number } | undefined,
+): ReactNode {
+  const steps = run?.unrecordedSteps;
   if (steps === undefined) return null;
+  const of = run?.modelSteps === undefined
+    ? formatCount(steps)
+    : `${formatCount(steps)} of ${formatCount(run.modelSteps)}`;
+  const one = steps === 1 && run?.modelSteps === undefined;
   return (
     <div className="sw-muted sw-small">
-      {steps === 1
+      {one
         ? "1 model step did not record its usage; its tokens are not counted."
-        : `${
-          formatCount(steps)
-        } model steps did not record their usage; their tokens are not counted.`}
+        : `${of} model steps did not record their usage; their tokens are not counted.`}
     </div>
   );
 }
@@ -300,17 +305,18 @@ export function ComparisonDetail(
         <Row label={latest ? "First run" : "Swamp run"}>
           <span className={swampRun.outcome === "failed" ? "sw-fail" : ""}>
             {swampRun.outcome}
-          </span>{" "}
-          in {formatDuration(swampRun.wallMs)}; model tokens{" "}
+          </span>
+          {v3 && <>{" "}on {formatDay(v3.swampRun.startedAt)}</>} in{" "}
+          {formatDuration(swampRun.wallMs)}; model tokens{" "}
           {tokenLine(swampRun.tokens)}
-          {unrecordedNote(v3?.swampRun.unrecordedSteps)}
+          {unrecordedNote(v3?.swampRun)}
         </Row>
         {latest && (
           <Row label="Latest run">
             {latest.outcome} on {formatDay(latest.startedAt)} in{" "}
             {formatDuration(latest.wallMs)}; model tokens{" "}
             {tokenLine(latest.tokens)}
-            {unrecordedNote(latest.unrecordedSteps)}
+            {unrecordedNote(latest)}
           </Row>
         )}
         <Row label="Break-even">

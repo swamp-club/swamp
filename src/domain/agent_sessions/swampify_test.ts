@@ -193,6 +193,7 @@ function comparison(extra: Record<string, unknown> = {}) {
     ...v2,
     schemaVersion: 3,
     build: { ...v2.build, sessions: 1 },
+    swampRun: { ...v2.swampRun, startedAt: "2026-10-30T08:00:00.000Z" },
     ...extra,
   };
 }
@@ -281,6 +282,9 @@ Deno.test("readSwampifyComparison: v3 reads with and without each optional field
   const cases: Array<Record<string, unknown>> = [
     {},
     { swampRun: { ...v3.swampRun, unrecordedSteps: 2 } },
+    { swampRun: { ...v3.swampRun, modelSteps: 0 } },
+    { swampRun: { ...v3.swampRun, modelSteps: 3, unrecordedSteps: 3 } },
+    { latestRun: { ...latestRun, modelSteps: 2, unrecordedSteps: 1 } },
     { latestRun },
     { latestRun: { ...latestRun, unrecordedSteps: 1 } },
     { history: { ...v3.history, noCallOccurrences: 1 } },
@@ -304,6 +308,11 @@ Deno.test("readSwampifyComparison: v2 does not take v3's fields, nor v3 lack bui
   );
   const { sessions: _, ...build } = comparison().build;
   assertEquals(comparisonInvalidAt(comparison({ build })), "build.sessions");
+  const { startedAt: __, ...swampRun } = comparison().swampRun;
+  assertEquals(
+    comparisonInvalidAt(comparison({ swampRun })),
+    "swampRun.startedAt",
+  );
 });
 
 Deno.test("readSwampifyCandidateSet: oversized lists are refused by count, naming the path", () => {
@@ -741,6 +750,19 @@ Deno.test("SwampifyComparisonV3Schema: its own rules each refuse at their path",
       latestRun: { ...latestRun, startedAt: "2026-10-30T10:00:01.000Z" },
     }, "latestRun.startedAt"],
     [{ estimatedUsd: { latestRun: 0.2 } }, "estimatedUsd.latestRun"],
+    [{
+      swampRun: { ...v3.swampRun, startedAt: "2026-10-30T10:00:01.000Z" },
+    }, "swampRun.startedAt"],
+    [{
+      latestRun: { ...latestRun, startedAt: v3.swampRun.startedAt },
+    }, "latestRun.startedAt"],
+    [{
+      swampRun: { ...v3.swampRun, modelSteps: 1, unrecordedSteps: 2 },
+    }, "swampRun.unrecordedSteps"],
+    [{
+      latestRun: { ...latestRun, modelSteps: 0, unrecordedSteps: 1 },
+    }, "latestRun.unrecordedSteps"],
+    [{ swampRun: { ...v3.swampRun, modelSteps: -1 } }, "swampRun.modelSteps"],
   ];
   for (const [extra, path] of cases) {
     assertEquals(comparisonInvalidAt(comparison(extra)), path, path);

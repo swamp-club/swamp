@@ -367,23 +367,43 @@ const arbHistoryV3: fc.Arbitrary<HistoryV3> = arbCount.chain((occurrences) =>
   })
 );
 
+// keeps unrecordedSteps <= modelSteps when both are drawn
+function steps(
+  run: { modelSteps?: number; unrecordedSteps?: number },
+): { modelSteps?: number; unrecordedSteps?: number } {
+  const { modelSteps, unrecordedSteps } = run;
+  if (modelSteps === undefined || unrecordedSteps === undefined) {
+    return {
+      ...(modelSteps === undefined ? {} : { modelSteps }),
+      ...(unrecordedSteps === undefined ? {} : { unrecordedSteps }),
+    };
+  }
+  return { modelSteps: Math.max(modelSteps, unrecordedSteps), unrecordedSteps };
+}
+
 const arbComparisonV3 = fc.tuple(
   arbComparisonV2,
   arbPositive,
   arbHistoryV3,
-  fc.option(arbPositive, { nil: undefined }),
+  fc.record({
+    modelSteps: arbCount,
+    unrecordedSteps: arbPositive,
+  }, { requiredKeys: [] }),
+  // the first run starts this long before generatedAt
+  fc.integer({ min: 1, max: 1e9 }),
   fc.option(
     fc.record({
       wallMs: arbAmount,
       tokens: arbTokens,
+      modelSteps: arbCount,
       unrecordedSteps: arbPositive,
       latestUsd: arbAmount,
-      // how long before generatedAt the latest run started
-      beforeMs: fc.integer({ min: 0, max: 1e9 }),
-    }, { requiredKeys: ["wallMs", "tokens", "beforeMs"] }),
+      // how far after the first run the latest one started, as a fraction
+      after: fc.double({ min: 0, max: 1, noNaN: true }),
+    }, { requiredKeys: ["wallMs", "tokens", "after"] }),
     { nil: undefined },
   ),
-).map(([v2, sessions, history, unrecorded, latest]) => {
+).map(([v2, sessions, history, firstSteps, firstBeforeMs, latest]) => {
   const { estimatedUsd, ...rest } = v2 as typeof v2 & {
     estimatedUsd?: Record<string, unknown>;
   };
@@ -392,17 +412,20 @@ const arbComparisonV3 = fc.tuple(
     : (history.perOccurrence === undefined
       ? (({ historyPerOccurrence: _, ...e }) => e)(estimatedUsd)
       : estimatedUsd);
-  const latestRun = latest === undefined ? undefined : {
-    startedAt: new Date(
-      Math.max(0, Date.parse(v2.generatedAt) - latest.beforeMs),
-    ).toISOString(),
-    wallMs: latest.wallMs,
-    tokens: latest.tokens,
-    outcome: "succeeded" as const,
-    ...(latest.unrecordedSteps === undefined
-      ? {}
-      : { unrecordedSteps: latest.unrecordedSteps }),
-  };
+  const generated = Date.parse(v2.generatedAt);
+  const first = generated - firstBeforeMs;
+  const latestAt = latest === undefined
+    ? undefined
+    : first + 1 + Math.floor(latest.after * (firstBeforeMs - 1));
+  const latestRun = latest === undefined || latestAt === undefined
+    ? undefined
+    : {
+      startedAt: new Date(latestAt).toISOString(),
+      wallMs: latest.wallMs,
+      tokens: latest.tokens,
+      outcome: "succeeded" as const,
+      ...steps(latest),
+    };
   const usd = estimate === undefined
     ? undefined
     : latest?.latestUsd !== undefined
@@ -415,7 +438,8 @@ const arbComparisonV3 = fc.tuple(
     history,
     swampRun: {
       ...v2.swampRun,
-      ...(unrecorded === undefined ? {} : { unrecordedSteps: unrecorded }),
+      startedAt: new Date(first).toISOString(),
+      ...steps(firstSteps),
     },
     ...(latestRun === undefined ? {} : { latestRun }),
     ...(usd === undefined ? {} : { estimatedUsd: usd }),
@@ -740,9 +764,11 @@ Deno.test("swampify property: a summary at every cap still fits the tag", () => 
       perOccurrence: { chore: zero, wholeTurns: zero },
     },
     swampRun: {
+      startedAt: "2026-10-30T09:00:00.000Z",
       wallMs: 0,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       outcome: "succeeded",
+      modelSteps: max,
       unrecordedSteps: max,
     },
     latestRun: {
@@ -750,6 +776,7 @@ Deno.test("swampify property: a summary at every cap still fits the tag", () => 
       wallMs: 0,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       outcome: "succeeded",
+      modelSteps: max,
       unrecordedSteps: max,
     },
     forward: {
