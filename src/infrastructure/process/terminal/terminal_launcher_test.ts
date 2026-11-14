@@ -24,6 +24,7 @@ import { copyCommand } from "../../../domain/start/launcher_script.ts";
 import { NESTED_SWAMP_ENV_VARS } from "../../../domain/remote/environment_snapshot.ts";
 import { startDir } from "../../persistence/start_session_file_repository.ts";
 import { assertPathEquals } from "../../persistence/path_test_helpers.ts";
+import type { ProcessInfo } from "../../../domain/start/terminal_launcher.ts";
 import {
   LAUNCHER_EXPORTED_VARS,
   SystemTerminalLauncher,
@@ -84,6 +85,9 @@ function makeLauncher(options: {
   >;
   graceMs?: number;
   remoteBrowser?: boolean;
+  processes?: ProcessInfo[];
+  pid?: number;
+  files?: string[];
 }): Harness {
   const h: Harness = {
     launcher: undefined as unknown as SystemTerminalLauncher,
@@ -110,6 +114,9 @@ function makeLauncher(options: {
     },
     execPath: "/opt/swamp/bin/swamp",
     graceMs: options.graceMs ?? 5,
+    listProcesses: () => Promise.resolve(options.processes ?? []),
+    pid: options.pid ?? 4242,
+    exists: (path) => Promise.resolve((options.files ?? []).includes(path)),
   });
   return h;
 }
@@ -281,6 +288,8 @@ Deno.test("SystemTerminalLauncher.open: on Linux with no display opens nothing",
     method: "copy_command",
     opened: false,
     command: copyCommand(SPEC, WS, "linux"),
+    tried: [],
+    reason: "no_display",
   });
   assertEquals(h.spawned.length, 0);
   assertEquals(h.scripts.length, 1);
@@ -375,4 +384,130 @@ Deno.test("SystemTerminalLauncher.open: puts the swamp binary's folder first on 
     h.scripts[0].content,
     `export PATH='/opt/swamp/bin':"$PATH"`,
   );
+});
+
+Deno.test("SystemTerminalLauncher.open: a failed launch lists every terminal it tried and why", async () => {
+  const h = makeLauncher({
+    os: "linux",
+    env: { DISPLAY: ":0", TERMINAL: "mystery-term" },
+    onPath: { "gnome-terminal": "/g", konsole: "/k" },
+    outcomes: { "/g": "failure", "/k": "throw" },
+  });
+  const outcome = await h.launcher.open(SPEC, WS);
+  assertEquals(outcome.method, "copy_command");
+  assertEquals(outcome.reason, undefined);
+  const tried = outcome.tried ?? [];
+  assertEquals(tried[0], {
+    terminal: "mystery-term",
+    chosen: "set",
+    result: "not_found",
+  });
+  assertEquals(
+    tried.find((t) => t.terminal === "gnome-terminal")?.result,
+    "failed",
+  );
+  assertEquals(
+    tried.find((t) => t.terminal === "konsole")?.result,
+    "couldnt_start",
+  );
+  assertEquals(
+    tried.find((t) => t.terminal === "ptyxis")?.result,
+    "not_found",
+  );
+});
+
+Deno.test("SystemTerminalLauncher.open: an opened window reports nothing tried", async () => {
+  const h = makeLauncher({
+    os: "linux",
+    env: { DISPLAY: ":0" },
+    onPath: { foot: "/usr/bin/foot" },
+  });
+  const outcome = await h.launcher.open(SPEC, WS);
+  assertEquals(outcome.opened, true);
+  assertEquals(outcome.tried, undefined);
+  assertEquals(h.spawned.map((s) => s.command), ["/usr/bin/foot"]);
+});
+
+Deno.test("SystemTerminalLauncher.open: inside a toolbox or distrobox container says so", async () => {
+  for (const marker of ["/run/.containerenv", "/run/.toolboxenv"]) {
+    const h = makeLauncher({
+      os: "linux",
+      env: { WAYLAND_DISPLAY: "wayland-0" },
+      files: [marker],
+    });
+    const outcome = await h.launcher.open(SPEC, WS);
+    assertEquals(outcome.method, "copy_command");
+    assertEquals(outcome.reason, "container", marker);
+    assert((outcome.tried ?? []).length > 0);
+  }
+});
+
+Deno.test("SystemTerminalLauncher.open: SSH and a remote page give their reason", async () => {
+  const ssh = makeLauncher({
+    os: "linux",
+    env: { SSH_CONNECTION: "a b c d", DISPLAY: ":0" },
+  });
+  assertEquals((await ssh.launcher.open(SPEC, WS)).reason, "ssh");
+  const remote = makeLauncher({ os: "darwin", remoteBrowser: true });
+  assertEquals((await remote.launcher.open(SPEC, WS)).reason, "remote_browser");
+});
+
+Deno.test("SystemTerminalLauncher.open: on Linux opens the terminal swamp start runs in first", async () => {
+  const h = makeLauncher({
+    os: "linux",
+    env: { DISPLAY: ":0" },
+    pid: 30,
+    processes: [
+      { pid: 10, ppid: 1, name: "kitty" },
+      { pid: 20, ppid: 10, name: "bash" },
+      { pid: 30, ppid: 20, name: "swamp" },
+    ],
+    onPath: {
+      kitty: "/usr/bin/kitty",
+      "gnome-terminal": "/usr/bin/gnome-terminal",
+    },
+  });
+  await h.launcher.open(SPEC, WS);
+  const script = join(startDir(WS), "launch.command");
+  assertEquals(h.spawned[0].command, "/usr/bin/kitty");
+  assertEquals(h.spawned[0].args.length, 1);
+  assertPathEquals(h.spawned[0].args[0], script);
+});
+
+Deno.test("SystemTerminalLauncher.open: on macOS opens the running Ghostty, then falls back to open", async () => {
+  const h = makeLauncher({
+    os: "darwin",
+    processes: [{ pid: 11792, ppid: 1, name: "ghostty" }],
+    outcomes: { open: "success" },
+  });
+  const outcome = await h.launcher.open(SPEC, WS);
+  assertEquals(outcome.method, "macos_terminal");
+  assertEquals(h.spawned[0].args.slice(0, 5), [
+    "-na",
+    "Ghostty",
+    "--args",
+    "-e",
+    join(startDir(WS), "launch.command"),
+  ]);
+
+  const failing = makeLauncher({
+    os: "darwin",
+    processes: [{ pid: 11792, ppid: 1, name: "ghostty" }],
+    outcomes: { open: "failure" },
+  });
+  const failed = await failing.launcher.open(SPEC, WS);
+  assertEquals(failed.tried?.map((t) => [t.terminal, t.chosen]), [
+    ["Ghostty", "open"],
+    ["the default app for .command files", "default"],
+  ]);
+});
+
+Deno.test("SystemTerminalLauncher.open: the launcher sets its own folder and PATH, whatever window runs it", async () => {
+  const h = makeLauncher({ os: "linux", env: { DISPLAY: ":0" } });
+  await h.launcher.open(SPEC, WS);
+  const script = h.scripts[0].content;
+  // single-instance terminals run it in their own cwd and environment
+  assertStringIncludes(script, `cd '${WS}' || exit 1`);
+  assertStringIncludes(script, `export PATH='/opt/swamp/bin':"$PATH"`);
+  assertStringIncludes(script, `'${SPEC.binaryPath}'`);
 });

@@ -171,6 +171,40 @@ Deno.test("StartSession.confirmTrustAndRecordLaunch: from launched records a fre
   assertEquals(session.trustConfirmedAt, again.toISOString());
 });
 
+Deno.test("StartSession.confirmTrustAndRecordLaunch: keeps the session id and what was tried", () => {
+  const session = sessionAt("trust");
+  const sessionId = "0b5e8c3a-6f1d-4a2b-9c7e-1d2f3a4b5c6d";
+  const tried = [
+    { terminal: "ptyxis", chosen: "default", result: "not_found" },
+  ] as const;
+  session.confirmTrustAndRecordLaunch(
+    {
+      method: "copy_command",
+      command: "c",
+      opened: false,
+      sessionId,
+      tried,
+      reason: "container",
+    },
+    LATER,
+  );
+  assertEquals(session.launch?.sessionId, sessionId);
+  assertEquals(session.launch?.tried, tried);
+  assertEquals(session.launch?.reason, "container");
+  assertEquals(StartSession.fromData(session.toData()).launch, session.launch);
+});
+
+Deno.test("StartSession.confirmTrustAndRecordLaunch: keeps a launch time the caller passes", () => {
+  const session = sessionAt("launched");
+  const kept = session.launch!.at;
+  session.confirmTrustAndRecordLaunch(
+    { method: "copy_command", command: "c", opened: false, at: kept },
+    new Date("2026-10-04T00:00:00.000Z"),
+  );
+  assertEquals(session.launch?.at, kept);
+  assertEquals(session.trustConfirmedAt, "2026-10-04T00:00:00.000Z");
+});
+
 Deno.test("StartSession.confirmTrustAndRecordLaunch: is refused at task and agent", () => {
   for (const step of ["task", "agent"] as const) {
     assertThrows(

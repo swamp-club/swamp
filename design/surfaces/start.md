@@ -89,14 +89,22 @@ page keeps which task is open in the server's memory; nothing on disk marks a
 task as special. A launched task's summary shows the agent and when it was
 launched, and how many behaviors and workflows the workspace holds; a task not
 launched yet carries on from its own step. Its agent toggle picks which agent to
-open, and **Launch Agent** reopens it without sending the task again: Claude
-Code (`--continue`), Codex (`resume --last`, filtered to the folder) and
-OpenCode (`--continue`) continue their most recent conversation in the
-workspace; the others open a fresh session there. A resume that fails within
-`RESUME_FALLBACK_SECONDS` (10s) opens a fresh session instead: `claude
---continue` exits 1 with "No conversation found to continue" when the folder has
-no earlier conversation (a copy-command launch never run, or another home).
-Codex starts a fresh session on its own. "Launch again", which re-sends the
+open, and **Launch Agent** reopens it without sending the task again, in the
+conversation the task's launch started. Claude Code's task launch gets
+`--session-id` with a fresh UUID each attempt, kept on the launch record, and
+resume runs `--resume <id>`. Codex picks its own id, so resume looks for it: the
+earliest interactive session (not a subagent, not `codex exec`) whose folder,
+compared by real path, is the workspace and which started at or after the
+launch. It reads only each session file's first line, capped at 256 KiB, from
+the day folders under `$CODEX_HOME/sessions` (else `~/.codex/sessions`) from the
+launch date on, at most 500 files; the id found is saved so later resumes reuse
+it. Every session id must be a UUID when read and when the command is built, so
+a crafted task record cannot put a flag on the agent's command line. A record
+with no id (older launches) or no Codex match resumes as before: `--continue`,
+`resume --last` (filtered to the folder). OpenCode keeps `--continue`; the
+others open a fresh session there. A resume that fails within
+`RESUME_FALLBACK_SECONDS` (10s) opens a fresh session instead, for example when
+a copied command was never run. Codex starts a fresh session on its own. "Launch again", which re-sends the
 task, appears only right after a launch in the same run.
 
 Workspaces are registered centrally in `<config dir>/workspaces.json`
@@ -234,8 +242,8 @@ behavior and a first run.
 
 | Layer          | Path                                                              |
 | -------------- | ----------------------------------------------------------------- |
-| Domain         | `src/domain/start/` — `StartTask`, `StartSession`, harness table, brief, launcher scripts, `TerminalLauncher` port |
-| Infrastructure | `start_session_file_repository.ts`, `start_server_record.ts`, `process/terminal/terminal_launcher.ts`, `process/start_instance_probe.ts` |
+| Domain         | `src/domain/start/` — `StartTask`, `StartSession`, harness table, brief, launcher scripts, `TerminalLauncher` and `ProcessLister` ports, terminal order, `AgentSessionFinder` port |
+| Infrastructure | `start_session_file_repository.ts`, `start_server_record.ts`, `process/terminal/terminal_launcher.ts`, `process/terminal/process_list.ts`, `process/agent_sessions/codex_session_finder.ts`, `process/start_instance_probe.ts` |
 | Application    | `src/libswamp/start/start.ts` (exported from `libswamp/mod.ts`)   |
 | Server         | `src/serve/start/start_server.ts`; shares `src/serve/dashboard_assets.ts` and `src/serve/origin.ts` with `swamp serve` |
 | CLI            | `src/cli/commands/start.ts`, `src/presentation/renderers/start.ts` |
@@ -323,12 +331,26 @@ swampify task names the `swampify` skill instead.
 | Amp         | `amp`          | unknown | no         |
 | Antigravity | `agy`          | unknown | no         |
 
-Windows opens with Windows Terminal (`wt.exe`) or `cmd start`; Linux with the
-first terminal found when a display is set. macOS opens the launcher with the
-default application for `.command` files, normally Terminal.app. Over SSH, on
-a non-loopback `--host` (the browser is on another machine, so a window here
-would go unseen), or when nothing opens, the page shows a command to copy;
-**Browse…** is hidden in the same cases.
+Windows opens with Windows Terminal (`wt.exe`) or `cmd start`. Linux, when a
+display is set, tries in order: `$TERMINAL` (with that terminal's own flag when
+it is one listed here, else `-e`), the terminal `swamp start` runs in,
+`xdg-terminal-exec`, terminals the user has open (newest first),
+`x-terminal-emulator`, then `ptyxis`, `kgx`, `gnome-terminal`, `konsole`,
+`xfce4-terminal`, `ghostty`, `kitty`, `alacritty`, `wezterm` and `foot`. macOS
+tries the terminal `swamp start` runs in and open ones (Terminal.app and
+Ghostty, the two checked), then the default application for `.command` files.
+The running and open terminals come from the user's own processes: `/proc` on
+Linux, `ps -x` on macOS; only executable names are read, and a terminal found
+there is still run from `PATH`. Over SSH, on a non-loopback `--host` (the
+browser is on another machine, so a window here would go unseen), or when
+nothing opens, the page shows a command to copy; **Browse…** is hidden in the
+same cases. A launch that opens no window records each terminal tried and why it
+failed (not found, exited with an error, couldn't start), or why none could be
+tried: inside a toolbox or distrobox container (`/run/.containerenv` or
+`/run/.toolboxenv`), no display, SSH, or a remote page. The page shows that in
+one line under the copy steps, says "Still couldn't open a terminal" when a
+retry fails again, and the terminal running `swamp start` logs it at warning
+level.
 
 ## Not in phase 1
 
