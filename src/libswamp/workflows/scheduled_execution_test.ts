@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { CancelIntentRecorder } from "../../domain/workflows/continuation_claim.ts";
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import {
@@ -2296,4 +2297,35 @@ Deno.test("ScheduledExecutionService: a replayed run waits while serve drives a 
   } finally {
     await service.stop();
   }
+});
+
+Deno.test("ScheduledExecutionService: a run a user cancelled stays out of the shutdown's aborted runs while its cancel record is still being written", async () => {
+  const executor = createPerRunExecutor();
+  const write = Promise.withResolvers<void>();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    cancelIntents: new CancelIntentRecorder(() => write.promise, () => {}),
+  });
+  await service.start();
+  replay(service, "wf-cancelled");
+  await waitFor(() => executor.runs.length === 1, "the run started");
+  const runId = crypto.randomUUID();
+  // the executor named its run "run-1"; the cancel needs a run id it can record
+  (service as unknown as {
+    running: Map<string, { runId: string; startedAt?: Date }>;
+  }).running.forEach((entry) => {
+    entry.runId = runId;
+    entry.startedAt = new Date();
+  });
+  assert(service.cancelByRunId(runId, "cancelled by user"));
+  const stopping = service.stop();
+  write.resolve();
+  const aborted = await stopping;
+  assertEquals(aborted.map((r) => r.runId), []);
+  assertEquals(
+    (executor.runs[0].signal.reason as Error).message,
+    "cancelled by user",
+  );
 });

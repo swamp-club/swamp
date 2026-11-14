@@ -5835,9 +5835,10 @@ export const serveCommand = new Command()
 
     // read when the cancel happens: the claim store is resolved later in boot
     const cancelIntents = new CancelIntentRecorder(
-      async (runId, reason) => {
+      async (runId, reason, signal) => {
         const claims = repoContext.continuationClaims;
         if (!claims || (claims.usable && !(await claims.usable()))) return;
+        signal.throwIfAborted();
         await claims.store.recordCancel({
           runId,
           requestedAt: new Date().toISOString(),
@@ -5846,7 +5847,7 @@ export const serveCommand = new Command()
       },
       (runId, error) =>
         logger.warn(
-          "Recording the cancel of run {runId} failed; the run is aborted anyway: {error}",
+          "Recording the cancel of run {runId} failed; the run was aborted anyway: {error}",
           {
             runId,
             error: error instanceof Error ? error.message : String(error),

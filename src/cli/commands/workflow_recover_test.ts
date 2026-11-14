@@ -828,7 +828,7 @@ Deno.test("workflowRecoverCommand: an interrupted fan-out run with its selector 
   });
 });
 
-Deno.test("workflowRecoverCommand: waits while serve holds the run's claim, and takes over a claim held past a minute", async () => {
+Deno.test("workflowRecoverCommand: waits while serve holds the run's claim, and takes over a claim held past five minutes", async () => {
   await withTempDir(async (dir) => {
     const repoContext = await initRepo(dir);
     const workflow = deployWorkflow("guarded", "${{ false }}");
@@ -859,7 +859,7 @@ Deno.test("workflowRecoverCommand: waits while serve holds the run's claim, and 
     await claims.store.release(claim);
     await claims.store.create({
       ...claim,
-      claimedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      claimedAt: new Date(Date.now() - 6 * 60_000).toISOString(),
     });
     const result = lastJson(
       await recover(["guarded", "--json", "--repo-dir", dir]),

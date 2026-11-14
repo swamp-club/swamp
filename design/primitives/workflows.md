@@ -4850,9 +4850,11 @@ each candidate and continues it, or refuses with one of these reasons:
 - `cancel_requested`: someone asked the run to stop since it last started or
   resumed. Every cancel of a workflow run serve drives (the cancel handler,
   cancel-all, the max-run-duration timer, a client's dropped connection, a
-  webhook or cron run's cancel) writes a cancel record with the run's
-  continuation claims (`continuations/<runId>/cancel`) before it aborts the
-  run, so a cancel that has not settled when serve crashes is never lost. The
+  webhook or cron run's cancel) aborts the run at once and writes a cancel
+  record with the run's continuation claims (`continuations/<runId>/cancel`)
+  beside it, so a cancel that has not settled when serve crashes is not lost.
+  The write is best effort and never holds up the abort or shutdown: it has a
+  5 s deadline, and a write that fails or passes it is logged and dropped. The
   shutdown abort writes none: its runs are the ones meant to continue. A later
   manual resume of the run overrides the record.
 
@@ -4887,8 +4889,9 @@ recovered but did not resume before it stopped is `recoveredAutomatically`,
 and the continuation sweep finishes it under `autoContinue`. A run reset by
 `swamp workflow recover` still waits for its operator. `swamp workflow recover`
 takes the same claim before it resets anything: it waits ("retry in a
-moment") while another holder's claim is under a minute old, since serve holds
-one only for the seconds of one action, and takes over an older one, saying so
+moment") while another holder's claim is under five minutes old, well past
+serve's longest hold (two run-record fetches of up to 30 s), and takes over an
+older one, saying so
 (`tookOverFrom` in `--json`). So a refusal serve writes never lands over an
 operator's recover. Without a shared claim store neither one continuer nor a
 recorded cancel can be guaranteed, so serve continues nothing automatically

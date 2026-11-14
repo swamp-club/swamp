@@ -358,37 +358,65 @@ export class ContinuationHeldError extends UserError {
   }
 }
 
+// a cancel record is best effort: storage never holds up the abort or shutdown
+export const CANCEL_INTENT_WRITE_TIMEOUT_MS = 5_000;
+
 /**
- * writes a cancel before the abort it governs, so a crash between the two
- * never loses the user's request; a failed write still aborts
+ * aborts at once and records the cancel beside it, so a crash after the write
+ * lands never continues a run someone stopped; a write that fails or runs past
+ * its deadline is reported and dropped
  */
 export class CancelIntentRecorder {
-  readonly #record: (runId: string, reason: string) => Promise<void>;
+  readonly #record: (
+    runId: string,
+    reason: string,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly #onError: (runId: string, error: unknown) => void;
+  readonly #timeoutMs: number;
   readonly #pending = new Set<Promise<void>>();
 
   constructor(
-    record: (runId: string, reason: string) => Promise<void>,
+    record: (
+      runId: string,
+      reason: string,
+      signal: AbortSignal,
+    ) => Promise<void>,
     onError: (runId: string, error: unknown) => void,
+    timeoutMs = CANCEL_INTENT_WRITE_TIMEOUT_MS,
   ) {
     this.#record = record;
     this.#onError = onError;
+    this.#timeoutMs = timeoutMs;
   }
 
   abort(runId: string, controller: AbortController, reason: string): void {
-    const settle = (): void => {
-      controller.abort(new Error(reason));
+    controller.abort(new Error(reason));
+    const deadline = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(
+          `recording the cancel took longer than ${this.#timeoutMs}ms`,
+        );
+        deadline.abort(error);
+        reject(error);
+      }, this.#timeoutMs);
+    });
+    const recorded = Promise.resolve().then(() =>
+      this.#record(runId, reason, deadline.signal)
+    );
+    const write: Promise<void> = Promise.race([recorded, timedOut]).then(
+      () => {},
+      (error) => this.#onError(runId, error),
+    ).then(() => {
+      clearTimeout(timer);
       this.#pending.delete(write);
-    };
-    const write: Promise<void> = Promise.resolve()
-      .then(() => this.#record(runId, reason))
-      .then(settle, (error) => {
-        this.#onError(runId, error);
-        settle();
-      });
+    });
     this.#pending.add(write);
   }
 
+  /** bounded: every write ends by its deadline */
   async settled(): Promise<void> {
     await Promise.all([...this.#pending]);
   }
@@ -408,9 +436,9 @@ export function abortCancelled(
   recorder.abort(runId, controller, reason);
 }
 
-// serve holds an interrupted record's claim for the seconds of one action, so
-// one older than this belongs to a holder gone mid-action
-export const OPERATOR_CLAIM_STALE_MS = 60_000;
+// well past serve's longest hold (two run-record fetches of up to 30s each), so
+// a claim older than this belongs to a holder gone mid-action
+export const OPERATOR_CLAIM_STALE_MS = 5 * 60_000;
 
 export interface OperatorRecoverClaim {
   readonly claim: ContinuationClaim;

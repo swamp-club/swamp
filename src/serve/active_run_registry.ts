@@ -282,11 +282,13 @@ export class ActiveRunRegistry {
 
   async drainAll(timeoutMs = 30_000): Promise<void> {
     this.beginDraining();
-    await this.#cancelIntents?.settled();
     const runs = [...this.#runs.values()];
-    if (runs.length === 0) return;
-
-    const completions = runs.map((r) => r.completion);
+    // cancel records are bounded by their own deadline and ride the same race
+    const completions: Promise<void>[] = runs.map((r) => r.completion);
+    if (this.#cancelIntents !== undefined) {
+      completions.push(this.#cancelIntents.settled());
+    }
+    if (completions.length === 0) return;
 
     if (timeoutMs <= 0) {
       await Promise.allSettled(completions);

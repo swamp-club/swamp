@@ -17,7 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -339,39 +345,61 @@ Deno.test("decodeCancelIntent: round-trips a cancel and refuses another run's or
   );
 });
 
-Deno.test("CancelIntentRecorder: the cancel is written before the abort, and a failed write still aborts", async () => {
-  const order: string[] = [];
+Deno.test("CancelIntentRecorder: aborts at once, records the cancel beside it, and reports a failed write", async () => {
+  const written: string[] = [];
   const write = Promise.withResolvers<void>();
   const recorder = new CancelIntentRecorder(
     async (runId) => {
-      order.push(`write ${runId}`);
       await write.promise;
+      written.push(runId);
     },
-    (runId) => order.push(`failed ${runId}`),
+    () => {},
   );
   const runId = crypto.randomUUID();
   const controller = new AbortController();
-  controller.signal.addEventListener("abort", () => order.push("abort"));
   abortCancelled(recorder, runId, controller, "cancelled by user");
-  await Promise.resolve();
-  assertEquals(controller.signal.aborted, false);
-  write.resolve();
-  await recorder.settled();
-  assertEquals(order, [`write ${runId}`, "abort"]);
+  assert(controller.signal.aborted, "the cancel waited on the write");
   assertEquals(
     (controller.signal.reason as Error).message,
     "cancelled by user",
   );
+  write.resolve();
+  await recorder.settled();
+  assertEquals(written, [runId]);
 
+  const failures: string[] = [];
   const failing = new CancelIntentRecorder(
     () => Promise.reject(new Error("store down")),
-    (id) => order.push(`failed ${id}`),
+    (id) => failures.push(id),
   );
   const other = new AbortController();
   abortCancelled(failing, runId, other, "cancelled by user");
+  assert(other.signal.aborted);
   await failing.settled();
-  assert(other.signal.aborted, "a failed write left the run running");
-  assertEquals(order.at(-1), `failed ${runId}`);
+  assertEquals(failures, [runId]);
+});
+
+Deno.test("CancelIntentRecorder: a write that hangs is dropped at its deadline, so nothing waits on it longer", async () => {
+  const failures: unknown[] = [];
+  let sawDeadline = false;
+  const recorder = new CancelIntentRecorder(
+    (_runId, _reason, signal) =>
+      new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => {
+          sawDeadline = true;
+          resolve();
+        });
+      }),
+    (_id, error) => failures.push(error),
+    20,
+  );
+  const controller = new AbortController();
+  abortCancelled(recorder, crypto.randomUUID(), controller, "why");
+  assert(controller.signal.aborted);
+  await recorder.settled();
+  assert(sawDeadline, "the write was not told its deadline passed");
+  assertEquals(failures.length, 1);
+  assertStringIncludes(String(failures[0]), "longer than 20ms");
 });
 
 Deno.test("abortCancelled: without a recorder, or for an id no record can name, aborts at once", () => {
