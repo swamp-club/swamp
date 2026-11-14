@@ -1986,6 +1986,109 @@ Deno.test("ServeDatastoreClient: a request its caller timed out leaves its conne
   }
 });
 
+/** a client on its own connections, recording the connection each request used */
+function connectionClient(
+  handler: (call: number) => Response | Promise<Response>,
+  options: Partial<ServeDatastoreClientOptions> = {},
+): { client: ServeDatastoreClient; used: unknown[]; made: () => number } {
+  let made = 0;
+  const used: unknown[] = [];
+  const client = new ServeDatastoreClient({
+    baseUrl: BASE,
+    timeoutSignal: neverTimesOut,
+    ...options,
+    httpClient: () => {
+      made++;
+      return Deno.createHttpClient({});
+    },
+    fetch: (_input, init) => {
+      used.push((init as { client?: unknown }).client);
+      return Promise.resolve(handler(used.length));
+    },
+  });
+  return { client, used, made: () => made };
+}
+
+Deno.test("ServeDatastoreClient: a read refused as not the leader is retried on a fresh connection, which the address may route to the leader", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient(
+      (call) => call === 1 ? notLeader() : chunkReply(CHUNK),
+      refusalClock(),
+    );
+    try {
+      assertEquals(await client.getChunk(sha(CHUNK), signal()), CHUNK);
+      assertEquals(made(), 2);
+      assertNotStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+Deno.test("ServeDatastoreClient: a write refused as not the leader leaves its connection, so the next request opens a fresh one", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient(
+      (call) =>
+        call === 1
+          ? notLeader()
+          : Response.json({ changes: [], cursor: 0, more: false }),
+    );
+    try {
+      await assertRejects(() =>
+        client.postCommit(
+          modelPartition(),
+          { expectedSeq: 0, txnId: crypto.randomUUID(), ops: [] },
+          [],
+          signal(),
+        )
+      );
+      await client.changes(0, signal());
+      assertEquals(made(), 2);
+      assertNotStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+Deno.test("ServeDatastoreClient: a connection that fails leaves the client, so the next request opens a fresh one", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient((call) => {
+      if (call === 1) throw connectRefused();
+      return Response.json({ changes: [], cursor: 0, more: false });
+    });
+    try {
+      await assertRejects(
+        () => client.changes(0, signal()),
+        ServeUnreachableError,
+      );
+      await client.changes(0, signal());
+      assertEquals(made(), 2);
+      assertNotStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+Deno.test("ServeDatastoreClient: an ordinary answer, a 404 included, keeps the connection", async () => {
+  await withRefusalState(async () => {
+    const { client, used, made } = connectionClient((call) =>
+      call === 1
+        ? new Response(null, { status: 404 })
+        : Response.json({ changes: [], cursor: 0, more: false })
+    );
+    try {
+      assertEquals(await client.getChunk(sha(CHUNK), signal()), null);
+      await client.changes(0, signal());
+      assertEquals(made(), 1);
+      assertStrictEquals(used[0], used[1]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
 Deno.test("ServeDatastoreClient: on the process-wide pool, a timed-out request moves later ones to a connection of their own", async () => {
   const used: unknown[] = [];
   const client = new ServeDatastoreClient({

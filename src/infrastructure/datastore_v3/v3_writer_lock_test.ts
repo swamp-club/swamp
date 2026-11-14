@@ -39,8 +39,10 @@ import {
   advanceV3WriterLease,
   assertV3WriterCurrent,
   checkV3WriterLease,
+  holdsCurrentV3WriterLease,
   holdsV3WriterLock,
   onV3HoldRetaken,
+  onV3LeaseLost,
   onV3LeaseTaken,
   tryAcquireV3WriterLock,
   V3_LEGACY_WRITER_LOCK_KEY,
@@ -397,6 +399,27 @@ Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquir
       await lifetime();
     }
     assertEquals(await v3WriterLockHandle(dir).inspect(), null);
+  });
+});
+
+Deno.test("onV3LeaseLost: a renewal that finds the hold taken over, and cannot take it back, tells the listeners", async () => {
+  await withTempDir(async (dir) => {
+    const heard: string[] = [];
+    const unsubscribe = onV3LeaseLost((path) => heard.push(path));
+    const lifetime = await acquireV3WriterLock(dir, {
+      retakeLost: true,
+      ttlMs: 300,
+    });
+    const other = await plantV3WriterLease(dir, { pid: Deno.pid });
+    try {
+      await waitFor(() => heard.length > 0, "the lease-lost listener");
+      assertEquals(heard.length, 1);
+      assertEquals(holdsCurrentV3WriterLease(dir), false);
+    } finally {
+      unsubscribe();
+      await other.release();
+      await lifetime();
+    }
   });
 });
 

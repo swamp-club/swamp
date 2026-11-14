@@ -68,6 +68,15 @@ class FakeLease implements LeadershipLease {
       ? Promise.reject(new Error("lease unreadable"))
       : Promise.resolve(this.current ?? this.hold?.fence);
   fence = () => this.hold?.fence;
+  lostListeners = new Set<() => void>();
+  onLost = (listener: () => void): () => void => {
+    this.lostListeners.add(listener);
+    return () => this.lostListeners.delete(listener);
+  };
+  lose(): void {
+    if (this.hold !== undefined) this.hold.lost = true;
+    for (const listener of [...this.lostListeners]) listener();
+  }
   take = (): Promise<"writer" | "follower"> => {
     this.takes++;
     if (this.freeFrom !== undefined && Date.now() > this.freeFrom.at) {
@@ -195,6 +204,76 @@ Deno.test("ServeLeadership: a leader whose lease is taken over stops once, and n
     await leadership.tick();
     assertEquals(events, ["lead", "lost"]);
     assertEquals(lease.takes, 0);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a leader stops as soon as its lease reports lost, not on the next tick", async () => {
+  const { lease, events, leadership } = setup();
+  lease.hold = { fence: 5, lost: false };
+  await leadership.start("writer");
+  try {
+    lease.lose();
+    await waitFor(
+      () => leadership.role === "follower",
+      "the leader to give up its role",
+      { timeoutMs: 2_000 },
+    );
+    await leadership.lostLeadHandled();
+    assertEquals(events, ["lead", "lost"]);
+    assertEquals(lease.takes, 0);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership: a lease lost while a tick is in flight is checked again once that tick ends", async () => {
+  let block: PromiseWithResolvers<void> | undefined;
+  const { lease, events, leadership } = setup({
+    prove: async () => {
+      await block?.promise;
+      return "proof";
+    },
+  });
+  lease.hold = { fence: 5, lost: false };
+  await leadership.start("writer");
+  try {
+    block = Promise.withResolvers<void>();
+    const inFlight = leadership.tick();
+    lease.lose();
+    block.resolve();
+    await inFlight;
+    await waitFor(
+      () => leadership.role === "follower",
+      "the leader to give up its role",
+      { timeoutMs: 2_000 },
+    );
+    await leadership.lostLeadHandled();
+    assertEquals(events, ["lead", "lost"]);
+  } finally {
+    await leadership.stop();
+  }
+});
+
+Deno.test("ServeLeadership.leadLost: a leader whose lease is lost reports it before and after its check stops it; a holder or follower never does", async () => {
+  const { lease, events, leadership } = setup();
+  assertEquals(leadership.leadLost(), false);
+  lease.hold = { fence: 5, lost: false };
+  await leadership.start("writer");
+  try {
+    assertEquals(leadership.leadLost(), false);
+    // lost with no signal: the readiness probe alone starts the check
+    lease.hold.lost = true;
+    assertEquals(leadership.leadLost(), true);
+    await waitFor(
+      () => leadership.role === "follower",
+      "the leader to give up its role",
+      { timeoutMs: 2_000 },
+    );
+    await leadership.lostLeadHandled();
+    assertEquals(events, ["lead", "lost"]);
+    assertEquals(leadership.leadLost(), true);
   } finally {
     await leadership.stop();
   }

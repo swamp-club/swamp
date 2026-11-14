@@ -67,6 +67,8 @@ export interface LeadershipLease {
   currentFence?(): Promise<number | undefined>;
   /** when the holder's lease lapses by this clock; timing only, take() decides */
   expiresAt(): Promise<number | undefined>;
+  /** calls the listener when this node finds its lease lost; returns an unsubscribe */
+  onLost?(listener: () => void): () => void;
 }
 
 /**
@@ -148,6 +150,8 @@ export class ServeLeadership {
   #leadPending = false;
   #lastTakeAt: number | undefined;
   #lostLead: Promise<void> | undefined;
+  #leadCheck: Promise<void> | undefined;
+  #unsubscribeLost: (() => void) | undefined;
   #stopped = false;
 
   constructor(deps: ServeLeadershipDeps) {
@@ -180,6 +184,19 @@ export class ServeLeadership {
       !this.#deps.lease.confirmed();
   }
 
+  /**
+   * a leader whose lease is lost, from then until serve stops: it is not
+   * ready. Asking starts the check that gives the lead up.
+   */
+  leadLost(): boolean {
+    if (this.#lostLead !== undefined) return true;
+    if (this.#role !== "leader" || this.#deps.lease.holdsCurrent()) {
+      return false;
+    }
+    this.#checkLeadNow();
+    return true;
+  }
+
   isStale(): boolean {
     if (this.#role === "leader") return false;
     return this.#refreshedAt === undefined ||
@@ -187,6 +204,9 @@ export class ServeLeadership {
   }
 
   async start(initial: "writer" | "follower"): Promise<void> {
+    this.#unsubscribeLost ??= this.#deps.lease.onLost?.(() =>
+      this.#checkLeadNow()
+    );
     if (initial === "writer") {
       // Serve's boot did the leader's work before it listened, so a node
       // that took the lease at boot leads from the first request: it never
@@ -236,11 +256,27 @@ export class ServeLeadership {
    */
   async stop(): Promise<void> {
     this.#stopped = true;
+    this.#unsubscribeLost?.();
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#refreshing?.abort(new Error("serve is stopping"));
     await this.#ticking;
+    await this.#leadCheck;
     await this.#scheduled;
     await this.#deps.feed?.stop();
+  }
+
+  /**
+   * After any tick in flight, which may have read the lease before it was
+   * lost; it never rejects, and stop() waits for it.
+   */
+  #checkLeadNow(): void {
+    if (this.#stopped || this.#role !== "leader") return;
+    if (this.#leadCheck !== undefined) return;
+    this.#leadCheck = (this.#ticking ?? Promise.resolve())
+      .then(() => this.tick())
+      .finally(() => {
+        this.#leadCheck = undefined;
+      });
   }
 
   /** A tick never rejects, and stop() waits for the one in flight. */

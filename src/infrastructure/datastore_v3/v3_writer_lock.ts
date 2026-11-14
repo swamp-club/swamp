@@ -430,6 +430,35 @@ export async function checkV3WriterLease(datastorePath: string): Promise<void> {
   await held.get(resolve(datastorePath))?.hold?.assertCurrent();
 }
 
+export type V3LeaseLostListener = (datastorePath: string) => void;
+
+const leaseLostListeners = new Set<V3LeaseLostListener>();
+const lostNotified = new WeakSet<WriterLeaseHold>();
+
+/**
+ * once per hold a renewal finds fenced or released and could not take back;
+ * the path is resolved
+ */
+export function onV3LeaseLost(listener: V3LeaseLostListener): () => void {
+  leaseLostListeners.add(listener);
+  return () => {
+    leaseLostListeners.delete(listener);
+  };
+}
+
+function notifyLeaseLost(datastorePath: string, hold: WriterLeaseHold): void {
+  if (lostNotified.has(hold)) return;
+  lostNotified.add(hold);
+  for (const listener of [...leaseLostListeners]) {
+    try {
+      listener(resolve(datastorePath));
+    } catch (error) {
+      logger
+        .warn`A listener for the writer lease of the v3 datastore at ${datastorePath} failed: ${error}`;
+    }
+  }
+}
+
 export interface V3WriterLeaseHolder {
   readonly fence: number;
   readonly record?: FenceRecord;
@@ -641,6 +670,11 @@ function startRenewal(
       logger.debug`Renewing the v3 writer lease failed: ${error}`;
     }).finally(() => {
       entry.renewing = undefined;
+      // a retake still in flight may yet win the lease back
+      if (
+        entry.hold === hold && hold.lost !== undefined &&
+        entry.retaking === undefined
+      ) notifyLeaseLost(datastorePath, hold);
     });
   };
   entry.renewal = setInterval(

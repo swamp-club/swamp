@@ -781,6 +781,7 @@ import {
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   holdsCurrentV3WriterLease,
+  onV3LeaseLost,
   v3WriterFence,
   v3WriterLeaseConfirmed,
   v3WriterLeaseExpiresAt,
@@ -9804,6 +9805,12 @@ export const serveCommand = new Command()
               { status: 503 },
             );
           }
+          if (serveLeadership?.leadLost() === true) {
+            return Response.json(
+              { status: "lead_lost", instanceId },
+              { status: 503 },
+            );
+          }
           const broken = serveLeadership?.role === "follower" &&
               serveFollowerFeed !== undefined && v3Location !== undefined
             ? followerUnreadyReason({
@@ -10626,6 +10633,10 @@ export const serveCommand = new Command()
           currentFence: async () =>
             (await v3WriterLeaseHolder(location.path))?.fence,
           expiresAt: () => v3WriterLeaseExpiresAt(location.path),
+          onLost: (listener) =>
+            onV3LeaseLost((path) => {
+              if (path === resolve(location.path)) listener();
+            }),
           take: () =>
             holdV3Writer(location, resolvedRepoDir, {
               retakeLost: true,

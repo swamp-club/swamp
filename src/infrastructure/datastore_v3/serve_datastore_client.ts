@@ -528,11 +528,12 @@ export class ServeDatastoreClient {
   readonly #token: string | undefined;
   readonly #makeHttpClient: (() => Deno.HttpClient) | undefined;
   #httpClient: Deno.HttpClient | undefined;
-  // a client whose connection timed out takes no new request; requests still
-  // in flight on it finish there, and it closes once they have
+  // a client whose connection timed out, failed or reached a node that refused
+  // as not serving takes no new request; requests in flight on it finish there,
+  // and it closes once they have
   readonly #retiredClients = new Set<Deno.HttpClient>();
   readonly #inFlight = new Map<Deno.HttpClient, number>();
-  #ownConnectionAfterTimeout = false;
+  #ownConnectionAfterRetire = false;
   readonly #timeoutMs: number;
   readonly #responseBaseMs: number;
   readonly #commitResponseBaseMs: number;
@@ -1489,7 +1490,10 @@ export class ServeDatastoreClient {
             followFailed = true;
             continue;
           }
-          if (isTimeout(error)) {
+          if (
+            isTimeout(error) || isNetworkFailure(error) ||
+            sentOf(error) === "never"
+          ) {
             // its connection may reach a node that no longer answers: the next
             // request opens a fresh one, which the address may route elsewhere
             this.#retireConnection();
@@ -1521,6 +1525,9 @@ export class ServeDatastoreClient {
           );
         }
         span.setAttribute("http.response.status_code", response.status);
+        // a node that is not serving (an old leader, a follower behind, one
+        // shutting down): a fresh connection may reach another behind the address
+        if (response.status === 503) this.#retireConnection();
         if (response.status === 429 && resends + 1 < this.#maxAttempts) {
           const wait = retryAfterMs(response.headers.get("retry-after"));
           if (wait !== undefined) {
@@ -1722,7 +1729,7 @@ export class ServeDatastoreClient {
 
   #clientInit(): { client?: Deno.HttpClient } {
     const make = this.#makeHttpClient ??
-      (this.#ownConnectionAfterTimeout
+      (this.#ownConnectionAfterRetire
         ? () => Deno.createHttpClient({})
         : undefined);
     if (make === undefined) return {};
@@ -1749,7 +1756,7 @@ export class ServeDatastoreClient {
     }
     // the process-wide pool may hold more connections to the same node
     if (this.#makeHttpClient === undefined) {
-      this.#ownConnectionAfterTimeout = true;
+      this.#ownConnectionAfterRetire = true;
     }
   }
 }
