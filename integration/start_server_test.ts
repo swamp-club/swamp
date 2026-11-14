@@ -2031,7 +2031,6 @@ Deno.test("startStartServer: an all-history kick-off for your own agent saves th
         } and follow it. If the swampify skill isn't loaded, read .claude/skills/swampify/SKILL.md in the workspace the brief names.`,
       );
       assert(!handed.ownAgentPrompt!.includes("client-repo"));
-      // A reload keeps the prompt on screen until the task is launched.
       assertEquals((await client.request("start.status")).screen, "handed_off");
       const launched = await client.request("start.launch", {
         trustConfirmed: true,

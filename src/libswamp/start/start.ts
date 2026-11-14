@@ -1471,7 +1471,6 @@ export interface StartPageAddress {
   readonly workspaceName: string;
 }
 
-/** every step is idempotent, so launching again runs the same path */
 /**
  * Writes the task's brief and enrols its agent: the part a launch and a
  * hand-off share. Only a launch confirms trust, since only it opens an agent.
@@ -1521,6 +1520,7 @@ async function* prepareBrief(
   return briefFile;
 }
 
+/** every step is idempotent, so launching again runs the same path */
 export async function* startLaunch(
   _ctx: LibSwampContext,
   deps: StartDeps,
