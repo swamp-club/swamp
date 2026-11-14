@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import { RequestError } from "../../client/stream.ts";
 import type { StartClient } from "./client.ts";
 import {
+  failureStreak,
   type LaunchStep,
   startErrorText,
   toLaunchEvent,
@@ -105,16 +106,21 @@ export function WorkspaceSections(
 
 /**
  * Streams `start.launch` (or `start.resume`), tracking the furthest step and
- * any error. `launch` resolves true once the agent launched.
+ * any error. `launch` resolves true once the agent launched. `repeated` is
+ * set when no window opened again after a launch that also opened none;
+ * `failedBefore` says whether the launch shown on arrival was one.
  */
 export function useLaunch(
   client: StartClient,
   onStatus: (s: StartStatus) => void,
   request: "start.launch" | "start.resume" = "start.launch",
+  failedBefore = false,
 ) {
   const [reached, setReached] = useState<LaunchStep | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [repeated, setRepeated] = useState(false);
+  const lastFailed = useRef(failedBefore);
 
   // `trustConfirmed` carries the user's trust confirmation with a resume;
   // `start.launch` always does, since only the trust screen sends it.
@@ -140,6 +146,9 @@ export function useLaunch(
           }
         },
       );
+      const streak = failureStreak(lastFailed.current, status.launch);
+      setRepeated(streak.repeated);
+      lastFailed.current = streak.failed;
       onStatus(status);
     } catch (err) {
       failed = true;
@@ -151,5 +160,15 @@ export function useLaunch(
     return !failed;
   }, [client, onStatus, request]);
 
-  return { launch, running, reached, error };
+  return { launch, running, reached, error, repeated };
+}
+
+/** The line under the copy-command steps saying what a launch tried. */
+export function LaunchFailureNote({ failure }: { failure?: string }) {
+  if (!failure) return null;
+  return (
+    <p className="start-hint start-copy-failure" role="status">
+      {failure}
+    </p>
+  );
 }

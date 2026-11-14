@@ -28,6 +28,7 @@ import {
   createdLabel,
   DEFAULT_WORKSPACE_ORDER,
   extraToolsToSend,
+  failureStreak,
   FIRST_TASK_IDEAS,
   firstLine,
   formatWorkspaceOrder,
@@ -41,6 +42,7 @@ import {
   launchChecklist,
   launchChoices,
   launchedLabel,
+  launchFailureLine,
   launchOpened,
   locationCheckKey,
   middleEllipsis,
@@ -74,6 +76,7 @@ import {
   taskStatusLabel,
   TITLE_MAX,
   toLaunchEvent,
+  toLaunchFailure,
   toolDisplayName,
   toolsToAdd,
   toSigninEvent,
@@ -1112,4 +1115,91 @@ Deno.test("parseExcludedPaths: one path per line, trimmed, no blanks or repeats"
 
 Deno.test("PAST_SESSIONS_WINDOWS: offers the 30-day default", () => {
   assertEquals(PAST_SESSIONS_WINDOWS.includes(30), true);
+});
+
+Deno.test("launchFailureLine: lists what was tried and suggests TERMINAL on a desktop that found nothing", () => {
+  assertEquals(
+    launchFailureLine({
+      tried: [
+        {
+          terminal: "x-terminal-emulator",
+          chosen: "default",
+          result: "not_found",
+        },
+        { terminal: "gnome-terminal", chosen: "default", result: "not_found" },
+      ],
+    }),
+    "Couldn't open a terminal. Tried: x-terminal-emulator (not found), gnome-terminal (not found). Set TERMINAL to your terminal, or copy the command.",
+  );
+});
+
+Deno.test("launchFailureLine: marks terminals that were open and those that failed", () => {
+  assertEquals(
+    launchFailureLine({
+      tried: [
+        { terminal: "foot", chosen: "running_here", result: "failed" },
+        { terminal: "Ghostty", chosen: "open", result: "couldnt_start" },
+      ],
+    }),
+    "Couldn't open a terminal. Tried: foot (open, exited with an error), Ghostty (open, couldn't start). Copy the command instead.",
+  );
+});
+
+Deno.test("launchFailureLine: says why when nothing could be tried, and says so again on a repeat", () => {
+  assertEquals(
+    launchFailureLine({ tried: [], reason: "ssh" }),
+    "Couldn't open a terminal. swamp start is running over SSH, so a window would open where you can't see it. Copy the command instead.",
+  );
+  const container = launchFailureLine(
+    {
+      tried: [{ terminal: "ptyxis", chosen: "default", result: "not_found" }],
+      reason: "container",
+    },
+    true,
+  );
+  assertEquals(container.startsWith("Still couldn't open a terminal."), true);
+  assertEquals(container.includes("inside a container"), true);
+  assertEquals(container.includes("TERMINAL"), false);
+  assertEquals(
+    launchFailureLine({}),
+    "Couldn't open a terminal. Copy the command instead.",
+  );
+});
+
+Deno.test("failureStreak: a repeat is a launch with no window after one with no window", () => {
+  const none = { method: "copy_command", opened: false };
+  const window = { method: "linux_terminal", opened: true };
+  assertEquals(failureStreak(false, none), { failed: true, repeated: false });
+  assertEquals(failureStreak(true, none), { failed: true, repeated: true });
+  assertEquals(failureStreak(true, window), { failed: false, repeated: false });
+  assertEquals(failureStreak(true, undefined), {
+    failed: false,
+    repeated: false,
+  });
+});
+
+Deno.test("toLaunchEvent: carries what a launch tried, dropping malformed entries", () => {
+  assertEquals(
+    toLaunchEvent({
+      kind: "launched",
+      method: "copy_command",
+      command: "c",
+      opened: false,
+      tried: [
+        { terminal: "foot", chosen: "open", result: "failed" },
+        { terminal: "x", chosen: "nope", result: "failed" },
+        "junk",
+      ],
+      reason: "container",
+    }),
+    {
+      kind: "launched",
+      method: "copy_command",
+      command: "c",
+      opened: false,
+      tried: [{ terminal: "foot", chosen: "open", result: "failed" }],
+      reason: "container",
+    },
+  );
+  assertEquals(toLaunchFailure({ reason: "elsewhere", tried: "x" }), {});
 });

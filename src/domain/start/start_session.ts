@@ -21,6 +21,7 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import type { DetectableAiTool } from "../telemetry/agent_harness_detection.ts";
 import { isBriefFile } from "./brief.ts";
 import { StartTask, type StartTaskKind } from "./start_task.ts";
+import type { NoTerminalReason, TerminalAttempt } from "./terminal_launcher.ts";
 
 export type TrustMode = "dialog" | "passed" | "unknown";
 
@@ -37,6 +38,10 @@ export interface StartLaunchRecord {
   readonly at: string;
   readonly command: string;
   readonly opened: boolean;
+  /** the agent conversation this task's launch started, when known */
+  readonly sessionId?: string;
+  readonly tried?: readonly TerminalAttempt[];
+  readonly reason?: NoTerminalReason;
 }
 
 export interface StartSessionData {

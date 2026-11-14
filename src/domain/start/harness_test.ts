@@ -297,3 +297,81 @@ Deno.test("launchPrompt: a swampify task names the swampify skill", () => {
     "Read tasks/2026-10-12-release-docs.md and use the swampify skill.",
   );
 });
+
+const SESSION = "0b5e8c3a-6f1d-4a2b-9c7e-1d2f3a4b5c6d";
+
+Deno.test("planHarnessLaunch: a Claude task launch carries the session id start assigned", () => {
+  const plan = planHarnessLaunch(
+    harness("claude"),
+    "/bin/claude",
+    WS,
+    "linux",
+    "task",
+    BRIEF,
+    "task",
+    SESSION,
+  );
+  assertEquals(plan.args, ["--session-id", SESSION, LAUNCH_PROMPT]);
+  assertEquals(harness("claude").sessionIds, "assigned");
+  assertEquals(harness("codex").sessionIds, "found");
+});
+
+Deno.test("planHarnessLaunch: a resume names the recorded conversation", () => {
+  const resume = (id: string, os = "linux", sessionId?: string) =>
+    planHarnessLaunch(
+      harness(id),
+      "/bin/x",
+      WS,
+      os,
+      "resume",
+      undefined,
+      undefined,
+      sessionId,
+    );
+  assertEquals(resume("claude", "linux", SESSION).args, ["--resume", SESSION]);
+  assertEquals(resume("codex", "linux", SESSION).args, [
+    "resume",
+    SESSION,
+    "-c",
+    `projects."${WS}".trust_level="trusted"`,
+  ]);
+  assertEquals(resume("codex", "windows", SESSION).args, ["resume", SESSION]);
+  // a failed resume still opens a fresh session, never the newest one
+  assertEquals(resume("claude", "linux", SESSION).fallbackArgs, []);
+  // other agents keep their behaviour
+  assertEquals(resume("opencode", "linux", SESSION).args, ["--continue"]);
+});
+
+Deno.test("planHarnessLaunch: a session id that isn't a UUID is dropped, so nothing reaches the agent as a flag", () => {
+  for (
+    const bad of ["--dangerously-skip-permissions", "", "abc", `${SESSION} x`]
+  ) {
+    assertEquals(
+      planHarnessLaunch(
+        harness("claude"),
+        "/bin/x",
+        WS,
+        "linux",
+        "resume",
+        undefined,
+        undefined,
+        bad,
+      ).args,
+      ["--continue"],
+      bad,
+    );
+    assertEquals(
+      planHarnessLaunch(
+        harness("claude"),
+        "/bin/x",
+        WS,
+        "linux",
+        "task",
+        BRIEF,
+        "task",
+        bad,
+      ).args,
+      [LAUNCH_PROMPT],
+    );
+  }
+});

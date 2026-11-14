@@ -436,3 +436,80 @@ Deno.test("StartSessionFileRepository: round-trips a swampify task's kind", asyn
 });
 
 const NOW_FOR_KIND = new Date("2026-10-03T10:00:00.000Z");
+
+Deno.test("StartSessionFileRepository: round-trips the launch's session id and what it tried", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new StartSessionFileRepository();
+    const session = StartSession.create(crypto.randomUUID(), dir, CREATED);
+    session.saveTask(StartTask.create("list my pods"));
+    session.chooseHarness("claude");
+    session.confirmTrustAndRecordLaunch(
+      {
+        method: "copy_command",
+        command: "c",
+        opened: false,
+        sessionId: "0b5e8c3a-6f1d-4a2b-9c7e-1d2f3a4b5c6d",
+        tried: [{ terminal: "ptyxis", chosen: "default", result: "failed" }],
+        reason: "container",
+      },
+      CREATED,
+    );
+    await repo.save(session);
+    assertEquals((await repo.load(dir, session.id))?.launch, session.launch);
+  });
+});
+
+Deno.test("StartSessionFileRepository: a record from an imported repo with a bad session id or tried list reads without them", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new StartSessionFileRepository();
+    const session = launchedTask(dir);
+    await repo.save(session);
+    const path = recordPath(dir, session.id);
+    const raw = JSON.parse(await Deno.readTextFile(path));
+    const badLaunches = [
+      { sessionId: "--dangerously-skip-permissions" },
+      { sessionId: 42 },
+      { tried: [{ terminal: "x", chosen: "default", result: "exploded" }] },
+      {
+        tried: Array.from({ length: 33 }, () => ({
+          terminal: "x",
+          chosen: "default",
+          result: "failed",
+        })),
+      },
+      { reason: "because" },
+    ];
+    for (const bad of badLaunches) {
+      await Deno.writeTextFile(
+        path,
+        JSON.stringify({
+          ...raw,
+          task: { ...raw.task, launch: { ...raw.task.launch, ...bad } },
+        }),
+      );
+      const loaded = await repo.load(dir, session.id);
+      assertEquals(loaded?.launch?.command, session.launch?.command);
+      assertEquals(loaded?.launch?.sessionId, undefined);
+      assertEquals(loaded?.launch?.tried, undefined);
+      assertEquals(loaded?.launch?.reason, undefined);
+    }
+  });
+});
+
+Deno.test("StartSessionFileRepository: a record written before session ids reads as before", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new StartSessionFileRepository();
+    const session = launchedTask(dir);
+    await repo.save(session);
+    const raw = JSON.parse(
+      await Deno.readTextFile(recordPath(dir, session.id)),
+    );
+    assertEquals(Object.keys(raw.task.launch).sort(), [
+      "at",
+      "command",
+      "method",
+      "opened",
+    ]);
+    assertEquals((await repo.load(dir, session.id))?.launch, session.launch);
+  });
+});

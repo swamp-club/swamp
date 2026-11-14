@@ -25,6 +25,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { join } from "@std/path";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { createLibSwampContext } from "../context.ts";
 import type { AuthLoginEvent } from "../auth/login.ts";
 import { BRIEF_HEADER, renderBrief } from "../../domain/start/brief.ts";
@@ -1463,7 +1464,7 @@ Deno.test("startInspect: filters the workspaces by name", async () => {
   });
 });
 
-Deno.test("startResume: reopens the launched agent with --continue and leaves the brief alone", async () => {
+Deno.test("startResume: a launch with no valid session id reopens with --continue and leaves the brief alone", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
     const ws = await trustReady(f);
@@ -2889,6 +2890,227 @@ Deno.test("startStatus: carries swampify only while it is on", async () => {
     assertEquals(
       (await status(startStatus(ctx, f.deps, bound))).swampify,
       true,
+    );
+  });
+});
+
+async function capturingStartWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "start"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+function withRealIds(f: Fakes): void {
+  f.deps = { ...f.deps, randomUUID: () => crypto.randomUUID() };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+Deno.test("startLaunch: a Claude task launch gets a session id that every resume reopens", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await trustReady(f);
+    withRealIds(f);
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    const [flag, id] = f.opened[0].spec.args;
+    assertEquals(flag, "--session-id");
+    assert(UUID.test(id), id);
+    const saved = await f.deps.sessions.load(ws, f.taskId!);
+    assertEquals(saved?.launch?.sessionId, id);
+    for (let i = 0; i < 2; i++) {
+      await collect(
+        startResume(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+      );
+    }
+    assertEquals(f.opened[1].spec.args, ["--resume", id]);
+    assertEquals(f.opened[2].spec.args, ["--resume", id]);
+    assertEquals(
+      (await f.deps.sessions.load(ws, f.taskId!))?.launch?.sessionId,
+      id,
+    );
+  });
+});
+
+Deno.test("startLaunch: launching again gives the task a fresh session id", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await trustReady(f);
+    withRealIds(f);
+    for (let i = 0; i < 2; i++) {
+      await collect(
+        startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+      );
+    }
+    assert(f.opened[0].spec.args[1] !== f.opened[1].spec.args[1]);
+  });
+});
+
+Deno.test("startResume: Codex reopens the session found for the launch, and keeps it", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath.codex = ["/usr/local/bin/codex"];
+    const ws = await trustReady(f, "codex");
+    const lookups: Array<{ harness: string; since: string }> = [];
+    const found = "01a1d2fd-c180-7601-b367-4298b76a0fb0";
+    f.deps = {
+      ...f.deps,
+      agentSessions: {
+        find: (harness, _ws, since) => {
+          lookups.push({ harness, since: since.toISOString() });
+          return Promise.resolve(found);
+        },
+      },
+    };
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    // Codex picks its own id, so the task launch names none
+    assert(!f.opened[0].spec.args.includes("--session-id"));
+    for (let i = 0; i < 2; i++) {
+      await collect(
+        startResume(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+      );
+    }
+    assertEquals(f.opened[1].spec.args.slice(0, 2), ["resume", found]);
+    assertEquals(f.opened[2].spec.args.slice(0, 2), ["resume", found]);
+    assertEquals(lookups, [
+      { harness: "codex", since: "2026-10-03T10:00:00.000Z" },
+    ]);
+  });
+});
+
+Deno.test("startResume: Codex falls back to resume --last when no session is found or the lookup fails", async () => {
+  for (
+    const find of [
+      () => Promise.resolve(null),
+      () => Promise.resolve("--all"),
+      () => Promise.reject(new Error("unreadable")),
+    ]
+  ) {
+    await withTempDir(async (dir) => {
+      const f = makeFakes(dir);
+      f.onPath.codex = ["/usr/local/bin/codex"];
+      const ws = await trustReady(f, "codex");
+      f.deps = { ...f.deps, agentSessions: { find } };
+      await collect(
+        startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+      );
+      await capturingStartWarnings(async () => {
+        await collect(
+          startResume(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+        );
+      });
+      assertEquals(f.opened[1].spec.args.slice(0, 2), ["resume", "--last"]);
+      assertEquals(
+        (await f.deps.sessions.load(ws, f.taskId!))?.launch?.sessionId,
+        undefined,
+      );
+    });
+  }
+});
+
+Deno.test("startLaunch: a launch that opens no window reports what it tried, on the event, the status and the log", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir, "linux");
+    const ws = await trustReady(f);
+    f.outcome = {
+      method: "copy_command",
+      opened: false,
+      command: "cd '/w' && 'claude'",
+      tried: [
+        {
+          terminal: "x-terminal-emulator",
+          chosen: "default",
+          result: "not_found",
+        },
+        { terminal: "foot", chosen: "open", result: "failed" },
+      ],
+      reason: "container",
+    };
+    let events: StartLaunchEvent[] = [];
+    const warnings = await capturingStartWarnings(async () => {
+      events = await collect(
+        startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+      );
+    });
+    const launched = events.find((e) => e.kind === "launched");
+    assert(launched?.kind === "launched");
+    assertEquals(launched.tried, f.outcome.tried);
+    assertEquals(launched.reason, "container");
+    const done = lastOf(events);
+    assert(done.kind === "completed");
+    assertEquals(done.data.launch?.tried, f.outcome.tried);
+    assertEquals(done.data.launch?.reason, "container");
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(
+      warnings[0],
+      "Couldn't open a terminal for Claude Code.",
+    );
+    assertStringIncludes(
+      warnings[0],
+      "Tried: x-terminal-emulator (not found), foot (open, exited with an error).",
+    );
+    assertStringIncludes(warnings[0], "inside a container");
+  });
+});
+
+Deno.test("startLaunch: a launch that opens a window logs no warning", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await trustReady(f);
+    const warnings = await capturingStartWarnings(async () => {
+      await collect(
+        startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+      );
+    });
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("startLaunch: records the launch time from before the window opens, so a session the agent starts meanwhile is found", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath.codex = ["/usr/local/bin/codex"];
+    const ws = await trustReady(f, "codex");
+    let clock = new Date("2026-11-14T10:00:00.000Z").getTime();
+    const opener = f.deps.terminalLauncher;
+    f.deps = {
+      ...f.deps,
+      now: () => new Date(clock),
+      // the launcher's grace window passes while the agent starts
+      terminalLauncher: {
+        open: (spec, path) => {
+          clock += 1500;
+          return opener.open(spec, path);
+        },
+      },
+    };
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(
+      (await f.deps.sessions.load(ws, f.taskId!))?.launch?.at,
+      "2026-11-14T10:00:00.000Z",
     );
   });
 });

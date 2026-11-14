@@ -25,6 +25,7 @@ import {
   type StartSessionData,
 } from "../../domain/start/start_session.ts";
 import { StartTask } from "../../domain/start/start_task.ts";
+import { isAgentSessionId } from "../../domain/start/agent_session.ts";
 import type {
   LegacyMigration,
   StartSessionRepository,
@@ -115,6 +116,9 @@ export function briefPath(workspacePath: string, briefFile: string): string {
 
 const SCHEMA_VERSION = 1;
 
+const MAX_TERMINALS_TRIED = 32;
+const MAX_TERMINAL_NAME = 256;
+
 /**
  * a task id names a file under .swamp/start/tasks/, so nothing that could leave
  * that folder (.., a separator) is accepted
@@ -154,6 +158,17 @@ const TaskDataSchema = z.object({
     at: z.string(),
     command: z.string(),
     opened: z.boolean(),
+    // Workspace data an imported repo can ship: a bad value reads as absent.
+    sessionId: z.string().refine(isAgentSessionId).optional().catch(
+      undefined,
+    ),
+    tried: z.array(z.object({
+      terminal: z.string().min(1).max(MAX_TERMINAL_NAME),
+      chosen: z.enum(["set", "running_here", "open", "default"]),
+      result: z.enum(["not_found", "failed", "couldnt_start"]),
+    })).max(MAX_TERMINALS_TRIED).optional().catch(undefined),
+    reason: z.enum(["container", "no_display", "ssh", "remote_browser"])
+      .optional().catch(undefined),
   }).optional(),
   briefFile: z.string().optional(),
 });
