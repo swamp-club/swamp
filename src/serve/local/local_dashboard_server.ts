@@ -39,6 +39,14 @@ import type {
 import { createHealthStreamResponse } from "../health_stream.ts";
 import { handleHttpRequest } from "../http_request_route.ts";
 import { SERVE_REQUEST_PATH } from "../protocol.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  misdirectedResponse,
+  refusedHost,
+  RefusedHostLog,
+} from "./misdirected_host.ts";
+
+const logger = getSwampLogger(["serve", "local-dashboard"]);
 
 export interface LocalDashboardServerOptions {
   ctx: ConnectionContext;
@@ -120,6 +128,7 @@ export function startLocalDashboardServer(
     };
   };
   const ac = new AbortController();
+  const refusedHostLog = new RefusedHostLog((message) => logger.warn(message));
   let port = 0;
   const server = Deno.serve(
     { hostname: "127.0.0.1", port: 0, onListen: () => {} },
@@ -127,7 +136,10 @@ export function startLocalDashboardServer(
       // DNS rebinding: only our own loopback authority.
       const host = req.headers.get("host");
       if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
-        return new Response("Misdirected request", { status: 421 });
+        // Only the hub reaches this server, so --trusted-hosts is no fix here.
+        const refused = refusedHost(host, null);
+        refusedHostLog.note(refused);
+        return misdirectedResponse(refused);
       }
       const url = new URL(req.url);
       const offered = hubTokenOffered(req);

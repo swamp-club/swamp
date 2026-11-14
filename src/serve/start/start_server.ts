@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import {
+  misdirectedResponse,
+  refusedHost,
+  RefusedHostLog,
+} from "../local/misdirected_host.ts";
 import type { LibSwampContext } from "../../libswamp/context.ts";
 import {
   resolveStartWorkspacePath,
@@ -1189,6 +1194,9 @@ export function startStartServer(
     };
   }
 
+  const refusedHostLog = new RefusedHostLog((message) =>
+    ctx.logger.warn(message)
+  );
   let port = 0;
   const server = listen(
     listenHost,
@@ -1199,7 +1207,12 @@ export function startStartServer(
         host !== `127.0.0.1:${port}` && host !== `localhost:${port}` &&
         host !== `[::1]:${port}` && !trustedHosts.acceptsHost(host)
       ) {
-        return new Response("Misdirected request", { status: 421 });
+        const refused = refusedHost(
+          host,
+          startPage ? "swamp start" : "swamp dashboard",
+        );
+        refusedHostLog.note(refused);
+        return misdirectedResponse(refused);
       }
       const url = new URL(req.url);
       if (

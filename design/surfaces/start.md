@@ -280,6 +280,15 @@ behavior and a first run.
   machine's own name and routable addresses gets 421 (DNS rebinding): an
   attacker's domain can never be one of those. WebSocket upgrades pass the serve
   Origin allowlist with the same trusted names.
+  The 421 body names the refused host and the fix: `To allow it, start swamp
+  start with --trusted-hosts <host>` (`swamp dashboard` when the hub serves
+  it). The host is echoed lower-cased with its port dropped, and only when it
+  is a host name or bracketed IPv6 address of at most 255 characters; any
+  other Host gets a body that echoes nothing from it. The terminal running the
+  server warns once per refused host with the same text, remembering at most
+  32 hosts before one last warning that it stops. The per-repo dashboard
+  children answer the same way without the hint, since only the hub reaches
+  them.
   A single-label machine name is resolved through the client's search domain,
   so on a network whose DNS someone else controls, open the page by address.
 - Each server record (`.swamp/start/servers/<pid>.json`) names the address the
@@ -316,8 +325,33 @@ behavior and a first run.
 - `GET /start/ping` reports liveness only; it carries no workspace or
   account data.
 - Swamp passes folder trust to a harness only through a documented mechanism
-  (Cursor's `--trust`, Codex's `-c projects."<ws>".trust_level`). For Claude
-  Code it explains the dialog; it never edits another tool's state.
+  (Cursor's `--trust`, Codex's `-c projects={"<ws>"={trust_level="trusted"}}`,
+  an inline table because Codex splits a `-c` key at every dot, quoted or
+  not, and an untrusted folder runs read-only). For Claude Code it explains the
+  dialog; it never edits another tool's state.
+- Trusted, Codex runs its commands in a sandbox that writes only inside the
+  workspace and keeps the workspace's `.agents`, `.git` and `.codex`
+  read-only. swamp writes outside that: its data folder (`SWAMP_HOME`, else
+  `~/.swamp`: the embedded Deno runtime, the bundler's cache, other caches)
+  and its config folder (sign-in refresh, telemetry), and extension pull
+  installs Codex skills under `.agents/skills`. So a launch, open or resume of
+  Codex passes each as `--add-dir <folder>`, on Windows too.
+  **This is a deliberate hole in Codex's sandbox.** The data folder holds every
+  other start workspace, with its `.codex` and `.git`, and the embedded Deno
+  runtime and caches that swamp runs outside any sandbox. A prompt-injected
+  agent can plant a `.codex/config.toml` that turns the sandbox off for the next
+  launch into another workspace, a git hook, or a replaced runtime that runs on
+  the next swamp command. The current workspace's own `.codex` and `.git` stay
+  read-only on Linux, where Codex guards them for its working folder whatever
+  the roots; macOS and Windows are unchecked. The alternative, passing only
+  `.agents` and extracting the runtime before launch, makes Codex ask for
+  approval whenever swamp writes elsewhere under its folders. Start creates `.agents` first, since Codex ignores a folder
+  that does not exist, and leaves out a symlinked one, which would open its
+  target instead. Network access stays as the user's Codex has it, so a
+  registry call still asks for approval in the default mode. Whether Codex's
+  Windows sandbox guards `.agents` the same way is unchecked; the extra
+  folder is harmless either way. Claude Code needs none of this: its sandbox
+  is off by default and `swamp repo init` does not turn it on.
 
 ## Your own agent
 
