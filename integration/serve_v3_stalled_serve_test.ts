@@ -209,7 +209,12 @@ Deno.test({
           .flatMap((entry) => entry.keys)
           .filter((key) => key.includes("/out/") && key.endsWith("/raw"));
         assertEquals(new Set(outs).size, outs.length, "nothing landed twice");
-        assert(outs.length === after, outs.join(", "));
+        // the kept entry still holds version 2, so the next save takes 3
+        assertEquals(after, 3, outs.join(", "));
+        assert(
+          outs.some((key) => key.endsWith(`/out/${after}/raw`)),
+          outs.join(", "),
+        );
       } finally {
         await proxy.close();
       }
