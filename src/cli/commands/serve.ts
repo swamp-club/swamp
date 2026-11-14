@@ -27,7 +27,6 @@ import { RESERVED_TOKEN_NAMES } from "../../domain/access/delegated_token.ts";
 import { DelegationStore } from "../../serve/delegation_store.ts";
 import { createRecordLock } from "../../serve/deps.ts";
 import {
-  type ContinuedScheduledRun,
   continueInterruptedRuns,
   type InterruptedRunContinuationCause,
   type InterruptedRunTarget,
@@ -740,7 +739,11 @@ import {
   isCustomDatastoreConfig,
   resolveLockTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
-import { serveHolder } from "../../domain/workflows/continuation_claim.ts";
+import { ContinuedScheduledRuns } from "../../serve/continued_scheduled_runs.ts";
+import {
+  CancelIntentRecorder,
+  serveHolder,
+} from "../../domain/workflows/continuation_claim.ts";
 import { isAtomicControlPlaneStore } from "../../infrastructure/persistence/control_plane_signal_wait_store.ts";
 import {
   ContinuationSweepService,
@@ -5830,13 +5833,34 @@ export const serveCommand = new Command()
       runtimeDataPoller.start();
     }
 
-    const cancelRegistry = new RunCancelRegistry();
+    // read when the cancel happens: the claim store is resolved later in boot
+    const cancelIntents = new CancelIntentRecorder(
+      async (runId, reason) => {
+        const claims = repoContext.continuationClaims;
+        if (!claims || (claims.usable && !(await claims.usable()))) return;
+        await claims.store.recordCancel({
+          runId,
+          requestedAt: new Date().toISOString(),
+          reason: reason.slice(0, 512),
+        });
+      },
+      (runId, error) =>
+        logger.warn(
+          "Recording the cancel of run {runId} failed; the run is aborted anyway: {error}",
+          {
+            runId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        ),
+    );
+    const cancelRegistry = new RunCancelRegistry(cancelIntents);
     const detachRuns = merged.detachRuns;
     const admission = new ServeAdmission();
     const activeRunRegistry = new ActiveRunRegistry({
       maxConcurrent: maxConcurrentRuns,
       maxPerPrincipal: maxRunsPerPrincipal,
       maxRunDurationMs,
+      cancelIntents,
     });
     // closed by shutdown for the runs it interrupts, so an executor that
     // outlived the abort grace cannot save over them
@@ -7011,8 +7035,17 @@ export const serveCommand = new Command()
       (v3Location === undefined || holdsCurrentV3WriterLease(v3Location.path));
     // refreshed each time a scheduler is built; replay reads it
     let configuredCronWorkflows: ReadonlySet<string> = new Set();
-    // continued scheduled runs, kept here so every scheduler built sees them
-    const continuingScheduled = new Map<string, ContinuedScheduledRun>();
+    // kept here, so every scheduler built sees the runs serve continued
+    const continuedScheduledRuns = new ContinuedScheduledRuns(() => {
+      try {
+        scheduler.current()?.admitQueued();
+      } catch (error) {
+        logger.warn("Scheduled run queue stalled: {error}", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    connectionCtx.continuedScheduledRuns = continuedScheduledRuns;
     // assigned once the replay it shares with boot is built
     let replayOwnPendingCron = (
       _service: ScheduledExecutionService,
@@ -7028,11 +7061,8 @@ export const serveCommand = new Command()
         triggerOverrides: options.triggerOverrides,
         maxConcurrentRuns: options.maxConcurrentRuns,
         busyElsewhere: options.busyElsewhere,
-        continuing: (identity) =>
-          [...continuingScheduled.values()].some((run) =>
-            identity.includes(run.workflowId) ||
-            identity.includes(run.workflowName)
-          ),
+        cancelIntents,
+        continuing: (identity) => continuedScheduledRuns.holds(identity),
         onRunSettled: options.onRunSettled,
         initiatedBy: principalToString(SCHEDULER_PRINCIPAL),
         authorizeRun: createScheduledRunAuthorizer(
@@ -7703,6 +7733,7 @@ export const serveCommand = new Command()
     const endpoints = [...initialWebhookRoutes.endpoints];
     // built with no routes too, so a reload can add the first one
     const webhookService = new WebhookService({
+      cancelIntents,
       acceptsRuns: () => !isFollowing(),
       startupComplete: () => admission.phase !== "starting",
       shuttingDown: () => admission.phase === "draining",
@@ -10327,22 +10358,6 @@ export const serveCommand = new Command()
               if (pendingInterrupted.size < PENDING_INTERRUPTED_MAX) {
                 pendingInterrupted.set(target.runId, target);
               }
-            },
-            onScheduledRunContinued: (run, completion) => {
-              continuingScheduled.set(run.runId, run);
-              const release = () => {
-                continuingScheduled.delete(run.runId);
-                try {
-                  scheduler.current()?.admitQueued();
-                } catch (error) {
-                  logger.warn("Scheduled run queue stalled: {error}", {
-                    error: error instanceof Error
-                      ? error.message
-                      : String(error),
-                  });
-                }
-              };
-              completion.then(release, release);
             },
           },
         );

@@ -1324,5 +1324,20 @@ export async function continueSettledRun(
   // run suspended is launched again after its backoff, and the launch and its
   // failure are each reported once
   if (failures === 0) emitSystemAuditEvent(ctx, "workflow.auto_resume", detail);
+  // a scheduled run serve recovered itself holds off its workflow's fires
+  const completion = registry.get(run.id)?.completion;
+  if (
+    run.awaitsAutomaticContinuation && run.triggerSource === "schedule" &&
+    completion !== undefined
+  ) {
+    ctx.continuedScheduledRuns?.add(
+      {
+        workflowId: resolution.id,
+        runId: run.id,
+        workflowName: run.workflowName,
+      },
+      completion,
+    );
+  }
   return true;
 }

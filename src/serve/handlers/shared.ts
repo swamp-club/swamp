@@ -19,6 +19,7 @@
 
 import { isConsentRefusal } from "../../domain/access/grant_based_access_decision_service.ts";
 import type { DelegationStore } from "../delegation_store.ts";
+import type { ContinuedScheduledRuns } from "../continued_scheduled_runs.ts";
 import type { DelegationAuditRecord } from "../delegation_routes.ts";
 import { delegationOfSessionName } from "../delegated_token_auth.ts";
 import { integrationClient } from "../../domain/access/client.ts";
@@ -418,6 +419,8 @@ export interface ConnectionContext {
   authConfig: ServeAuthConfig;
   cancelRegistry?: RunCancelRegistry;
   activeRunRegistry?: import("../active_run_registry.ts").ActiveRunRegistry;
+  /** scheduled runs serve continued, which hold off their workflows' fires */
+  continuedScheduledRuns?: ContinuedScheduledRuns;
   admission?: import("../serve_admission.ts").ServeAdmission;
   runTracker?: RunTrackerRepository;
   dispatchService?: import("../dispatch_service.ts").DispatchService;

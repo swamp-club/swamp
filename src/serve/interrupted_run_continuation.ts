@@ -27,6 +27,7 @@ import {
   acquireContinuation,
   type ContinuationClaim,
   serveHolder,
+  serveInstanceOf,
   suspensionKeyOf,
 } from "../domain/workflows/continuation_claim.ts";
 import { assertNestedWaitsSettled } from "../domain/workflows/nested_run_link.ts";
@@ -79,20 +80,11 @@ export interface InterruptedRunTarget {
   readonly runId: string;
 }
 
-export interface ContinuedScheduledRun extends InterruptedRunTarget {
-  readonly workflowName: string;
-}
-
 export interface InterruptedRunContinuationOptions {
   /** read by id; every interrupted run is scanned when absent */
   readonly targets?: readonly InterruptedRunTarget[];
   /** a continuation that failed after its launch, to judge again later */
   readonly onDeferredLater?: (target: InterruptedRunTarget) => void;
-  /** a continued scheduled run, so the next fire of its workflow overlaps */
-  readonly onScheduledRunContinued?: (
-    run: ContinuedScheduledRun,
-    completion: Promise<void>,
-  ) => void;
 }
 
 export interface InterruptedRunContinuationResult {
@@ -130,6 +122,18 @@ export async function continueInterruptedRuns(
   const deferred: InterruptedRunTarget[] = [];
   const registry = ctx.activeRunRegistry;
   if (!registry || registry.draining) return { continued, refused, deferred };
+  // without a shared claim store neither one continuer nor a recorded cancel
+  // can be guaranteed
+  const claims = ctx.repoContext.continuationClaims;
+  if (!claims || (claims.usable && !(await claims.usable()))) {
+    if (!warnedNoClaims) {
+      warnedNoClaims = true;
+      logger.info(
+        "Interrupted runs are not continued automatically: this datastore has no shared control-plane store that can create a record atomically",
+      );
+    }
+    return { continued, refused, deferred };
+  }
 
   const candidates = await candidatesOf(ctx, options.targets);
   for (const { run, workflowId } of candidates) {
@@ -191,6 +195,8 @@ export async function continueInterruptedRuns(
   return { continued, refused, deferred };
 }
 
+let warnedNoClaims = false;
+
 async function candidatesOf(
   ctx: ConnectionContext,
   targets: readonly InterruptedRunTarget[] | undefined,
@@ -223,6 +229,11 @@ async function verdictFor(
     run,
     {
       fanOutPoolAvailable: getWorkerPoolReader() !== null,
+      cancelRequestedAt: async (subject) => {
+        const intent = await ctx.repoContext.continuationClaims?.store
+          .findCancel(subject.id);
+        return intent === undefined ? undefined : new Date(intent.requestedAt);
+      },
       nestedRunUnsettled: async (subject) => {
         try {
           await assertNestedWaitsSettled({
@@ -287,7 +298,12 @@ async function holdInterruptedRecord(
       new Date(),
     );
     if (acquired.kind !== "acquired") {
-      if (acquired.liveness === "alive") return { kind: "busy" };
+      // only a serve known gone is left to the operator; a live or unknown
+      // holder, an operator's recover, or a claim gone again is tried later
+      const gone = acquired.liveness === "dead" &&
+        serveInstanceOf(acquired.claim.holder) !== undefined &&
+        acquired.claim.holder !== claims.holder;
+      if (!gone) return { kind: "busy" };
       warnHeldClaim(run, acquired.claim);
       return { kind: "orphaned" };
     }
@@ -398,7 +414,9 @@ async function launch(
     requireCurrentRecord: true,
     lostRaceIsOrdinary: true,
     onTerminal: async (terminal) => {
-      // a lost race shares its claim with the pass that won, which keeps it
+      // the run has moved on and been pushed, so the claim guards nothing
+      if (terminal.kind !== "error") await hold.release();
+      // a lost race shares its claim with the pass that won, which keeps it;
       // a copy still syncing is no peer's win: judged again once it settles
       if (
         terminal.kind === "error" && terminal.code === RUN_RECORD_STALE_CODE
@@ -470,7 +488,7 @@ async function launch(
   );
   const completion = registry.get(run.id)?.completion;
   if (run.triggerSource === "schedule" && completion !== undefined) {
-    options.onScheduledRunContinued?.(
+    ctx.continuedScheduledRuns?.add(
       { workflowId, runId: run.id, workflowName: run.workflowName },
       completion,
     );

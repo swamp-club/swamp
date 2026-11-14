@@ -44,6 +44,44 @@ export const ContinuationClaimSchema = z.object({
 
 export type ContinuationClaim = z.infer<typeof ContinuationClaimSchema>;
 
+/** written before a cancel aborts the run, so a crash cannot lose it */
+export const CancelIntentSchema = z.object({
+  runId: z.string().regex(UUID, "must be a UUID"),
+  requestedAt: z.string().datetime(),
+  reason: z.string().max(512),
+});
+
+export type CancelIntent = z.infer<typeof CancelIntentSchema>;
+
+export function continuationCancelKey(runId: string): string {
+  return `${continuationRunPrefix(runId)}cancel`;
+}
+
+export function encodeCancelIntent(intent: CancelIntent): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(intent));
+}
+
+/** undefined for a record that is missing, too large or not this run's */
+export function decodeCancelIntent(
+  bytes: Uint8Array | null,
+  runId: string,
+): CancelIntent | undefined {
+  if (bytes === null || bytes.length > CONTINUATION_CLAIM_MAX_BYTES) {
+    return undefined;
+  }
+  try {
+    const parsed = CancelIntentSchema.safeParse(
+      JSON.parse(new TextDecoder().decode(bytes)),
+    );
+    return parsed.success && parsed.data.runId.toLowerCase() ===
+        runId.toLowerCase()
+      ? parsed.data
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function serveHolder(instanceId: string): string {
   return `serve:${instanceId}`;
 }
@@ -159,6 +197,11 @@ export interface ContinuationClaimStore {
   release(claim: ContinuationClaim): Promise<void>;
 
   removeForRun(runId: string): Promise<void>;
+
+  /** the latest request replaces an earlier one */
+  recordCancel(intent: CancelIntent): Promise<void>;
+
+  findCancel(runId: string): Promise<CancelIntent | undefined>;
 }
 
 /**
@@ -313,4 +356,103 @@ export class ContinuationHeldError extends UserError {
     );
     this.name = "ContinuationHeldError";
   }
+}
+
+/**
+ * writes a cancel before the abort it governs, so a crash between the two
+ * never loses the user's request; a failed write still aborts
+ */
+export class CancelIntentRecorder {
+  readonly #record: (runId: string, reason: string) => Promise<void>;
+  readonly #onError: (runId: string, error: unknown) => void;
+  readonly #pending = new Set<Promise<void>>();
+
+  constructor(
+    record: (runId: string, reason: string) => Promise<void>,
+    onError: (runId: string, error: unknown) => void,
+  ) {
+    this.#record = record;
+    this.#onError = onError;
+  }
+
+  abort(runId: string, controller: AbortController, reason: string): void {
+    const settle = (): void => {
+      controller.abort(new Error(reason));
+      this.#pending.delete(write);
+    };
+    const write: Promise<void> = Promise.resolve()
+      .then(() => this.#record(runId, reason))
+      .then(settle, (error) => {
+        this.#onError(runId, error);
+        settle();
+      });
+    this.#pending.add(write);
+  }
+
+  async settled(): Promise<void> {
+    await Promise.all([...this.#pending]);
+  }
+}
+
+/** the shutdown abort never passes a recorder: its runs are meant to continue */
+export function abortCancelled(
+  recorder: CancelIntentRecorder | undefined,
+  runId: string,
+  controller: AbortController,
+  reason: string,
+): void {
+  if (recorder === undefined || !UUID.test(runId)) {
+    controller.abort(new Error(reason));
+    return;
+  }
+  recorder.abort(runId, controller, reason);
+}
+
+// serve holds an interrupted record's claim for the seconds of one action, so
+// one older than this belongs to a holder gone mid-action
+export const OPERATOR_CLAIM_STALE_MS = 60_000;
+
+export interface OperatorRecoverClaim {
+  readonly claim: ContinuationClaim;
+  /** the holder an older claim was taken from */
+  readonly replaced?: string;
+}
+
+/**
+ * the claim serve's own continuation takes, so an operator's recover and serve
+ * never both act on one interruption; undefined without a claim store
+ */
+export async function claimForOperatorRecover(
+  claims: ContinuationClaims | undefined,
+  run: WorkflowRun,
+  now: Date,
+): Promise<OperatorRecoverClaim | undefined> {
+  if (!claims || (claims.usable && !(await claims.usable()))) return undefined;
+  const suspensionKey = await suspensionKeyOf(run);
+  const mine = (generation: number): ContinuationClaim => ({
+    runId: run.id,
+    suspensionKey,
+    generation,
+    holder: claims.holder,
+    claimedAt: now.toISOString(),
+  });
+  const busy = (holder: string) =>
+    new UserError(
+      `${holder} is acting on run ${run.id} right now; retry in a moment.`,
+    );
+  const held = await claims.store.find(run.id, suspensionKey);
+  if (held === undefined) {
+    const first = mine(1);
+    if (await claims.store.create(first)) return { claim: first };
+    throw busy("Another process");
+  }
+  if (held.holder === claims.holder) return { claim: held };
+  if (now.getTime() - Date.parse(held.claimedAt) <= OPERATOR_CLAIM_STALE_MS) {
+    throw busy(held.holder);
+  }
+  const next = mine(held.generation + 1);
+  if (await claims.store.create(next)) {
+    return { claim: next, replaced: held.holder };
+  }
+  throw busy("Another process");
 }

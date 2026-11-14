@@ -40,7 +40,9 @@ export type AutoContinuationRefusalReason =
   | "fan_out_changed"
   | "nested_run_unsettled"
   // serve's own resume refused the launch, e.g. an ended delegation
-  | "launch_refused";
+  | "launch_refused"
+  // someone asked the run to stop before serve did
+  | "cancel_requested";
 
 export interface AutoContinuationRefusalOf extends AutoContinuationRefusal {
   readonly reason: AutoContinuationRefusalReason;
@@ -63,6 +65,8 @@ export type AutoContinuationVerdict =
 
 export interface AutoContinuationChecks {
   readonly fanOutPoolAvailable: boolean;
+  /** when a cancel of this run was last asked for, if ever */
+  cancelRequestedAt?(run: WorkflowRun): Promise<Date | undefined>;
   /** the unsettled nested run's description, or undefined when all settled */
   nestedRunUnsettled(run: WorkflowRun): Promise<string | undefined>;
 }
@@ -107,6 +111,17 @@ export async function decideAutoContinuation(
     return refuse(
       "not_serve_driven",
       "The run was not started through serve.",
+    );
+  }
+  const cancelAt = await checks.cancelRequestedAt?.(run);
+  const startedAt = run.lastStartedAt;
+  if (
+    cancelAt !== undefined &&
+    (startedAt === undefined || cancelAt.getTime() >= startedAt.getTime())
+  ) {
+    return refuse(
+      "cancel_requested",
+      "The run was asked to stop before serve stopped, so it is not continued.",
     );
   }
   if (!workflow.shouldAutoContinue()) {

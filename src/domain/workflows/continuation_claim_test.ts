@@ -26,6 +26,16 @@ import { WorkflowRun } from "./workflow_run.ts";
 import { SignalWait } from "./signal_wait.ts";
 import { acceptedOutcomeFor } from "./signal_wait_store_test_helpers.ts";
 import {
+  abortCancelled,
+  CancelIntentRecorder,
+  claimForOperatorRecover,
+  continuationCancelKey,
+  decodeCancelIntent,
+  encodeCancelIntent,
+  OPERATOR_CLAIM_STALE_MS,
+} from "./continuation_claim.ts";
+import { UserError } from "../errors.ts";
+import {
   acquireContinuation,
   type ContinuationClaim,
   continuationClaimKey,
@@ -284,4 +294,134 @@ Deno.test("removeClaimsOfRuns: one run whose claims cannot be removed does not k
   );
   assertEquals(removed, [a, b]);
   await removeClaimsOfRuns(undefined, [a]);
+});
+
+function interruptedRunForClaims(): WorkflowRun {
+  const run = WorkflowRun.create(
+    Workflow.create({
+      name: "claimed",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({ name: "a", task: StepTask.model("m", "run") })],
+      })],
+    }),
+  );
+  run.start(1, "serve-a");
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.interrupt("server_crash");
+  return run;
+}
+
+Deno.test("decodeCancelIntent: round-trips a cancel and refuses another run's or a damaged one", () => {
+  const runId = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+  const intent = {
+    runId,
+    requestedAt: "2026-11-14T10:00:00.000Z",
+    reason: "cancelled by user",
+  };
+  assertEquals(decodeCancelIntent(encodeCancelIntent(intent), runId), intent);
+  assertEquals(
+    decodeCancelIntent(
+      encodeCancelIntent(intent),
+      "7a2d3b4c-5e6f-4a70-9b8c-0d1e2f3a4b5c",
+    ),
+    undefined,
+  );
+  assertEquals(
+    decodeCancelIntent(new TextEncoder().encode("{"), runId),
+    undefined,
+  );
+  assertEquals(decodeCancelIntent(null, runId), undefined);
+  assertEquals(
+    continuationCancelKey(runId),
+    `${continuationRunPrefix(runId)}cancel`,
+  );
+});
+
+Deno.test("CancelIntentRecorder: the cancel is written before the abort, and a failed write still aborts", async () => {
+  const order: string[] = [];
+  const write = Promise.withResolvers<void>();
+  const recorder = new CancelIntentRecorder(
+    async (runId) => {
+      order.push(`write ${runId}`);
+      await write.promise;
+    },
+    (runId) => order.push(`failed ${runId}`),
+  );
+  const runId = crypto.randomUUID();
+  const controller = new AbortController();
+  controller.signal.addEventListener("abort", () => order.push("abort"));
+  abortCancelled(recorder, runId, controller, "cancelled by user");
+  await Promise.resolve();
+  assertEquals(controller.signal.aborted, false);
+  write.resolve();
+  await recorder.settled();
+  assertEquals(order, [`write ${runId}`, "abort"]);
+  assertEquals(
+    (controller.signal.reason as Error).message,
+    "cancelled by user",
+  );
+
+  const failing = new CancelIntentRecorder(
+    () => Promise.reject(new Error("store down")),
+    (id) => order.push(`failed ${id}`),
+  );
+  const other = new AbortController();
+  abortCancelled(failing, runId, other, "cancelled by user");
+  await failing.settled();
+  assert(other.signal.aborted, "a failed write left the run running");
+  assertEquals(order.at(-1), `failed ${runId}`);
+});
+
+Deno.test("abortCancelled: without a recorder, or for an id no record can name, aborts at once", () => {
+  const plain = new AbortController();
+  abortCancelled(undefined, crypto.randomUUID(), plain, "why");
+  assert(plain.signal.aborted);
+  let wrote = false;
+  const recorder = new CancelIntentRecorder(() => {
+    wrote = true;
+    return Promise.resolve();
+  }, () => {});
+  const unstarted = new AbortController();
+  abortCancelled(recorder, "", unstarted, "why");
+  assert(unstarted.signal.aborted);
+  assertEquals(wrote, false);
+});
+
+Deno.test("claimForOperatorRecover: takes a free claim, refuses a fresh one held elsewhere, replaces a stale one", async () => {
+  const run = interruptedRunForClaims();
+  const key = await suspensionKeyOf(run);
+  const now = new Date("2026-11-14T10:00:00.000Z");
+  assertEquals(await claimForOperatorRecover(undefined, run, now), undefined);
+
+  const free = new InMemoryContinuationClaimStore();
+  const operator = claimsFor(free, localHolder());
+  const taken = await claimForOperatorRecover(operator, run, now);
+  assertEquals(taken?.claim.generation, 1);
+  assertEquals(taken?.replaced, undefined);
+  assertEquals(
+    (await claimForOperatorRecover(operator, run, now))?.claim.generation,
+    1,
+  );
+
+  const store = new InMemoryContinuationClaimStore();
+  const serve = serveHolder("a");
+  await store.create({
+    runId: run.id,
+    suspensionKey: key,
+    generation: 1,
+    holder: serve,
+    claimedAt: new Date(now.getTime() - 5_000).toISOString(),
+  });
+  const cli = claimsFor(store, localHolder());
+  await assertRejects(
+    () => claimForOperatorRecover(cli, run, now),
+    UserError,
+    "retry in a moment",
+  );
+  const later = new Date(now.getTime() + OPERATOR_CLAIM_STALE_MS);
+  const replaced = await claimForOperatorRecover(cli, run, later);
+  assertEquals(replaced?.claim.generation, 2);
+  assertEquals(replaced?.replaced, serve);
 });

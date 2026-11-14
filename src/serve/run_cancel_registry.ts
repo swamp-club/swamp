@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import {
+  abortCancelled,
+  type CancelIntentRecorder,
+} from "../domain/workflows/continuation_claim.ts";
 
 const logger = getLogger(["serve", "cancel-registry"]);
 
@@ -39,6 +43,22 @@ export interface HeldRunWorkflow {
 
 export class RunCancelRegistry {
   private readonly entries = new Map<string, RunCancelEntry>();
+
+  /** a workflow run's cancel is recorded before its abort */
+  constructor(private readonly cancelIntents?: CancelIntentRecorder) {}
+
+  private abort(entry: RunCancelEntry, reason: string): void {
+    if (entry.executionType !== "workflow-run") {
+      entry.controller.abort(new Error(reason));
+      return;
+    }
+    abortCancelled(
+      this.cancelIntents,
+      entry.executionId,
+      entry.controller,
+      reason,
+    );
+  }
 
   private key(type: ExecutionType, id: string): string {
     return `${type}:${id}`;
@@ -86,7 +106,7 @@ export class RunCancelRegistry {
       return false;
     }
     logger.info`Cancelling ${executionType} ${executionId}`;
-    entry.controller.abort(new Error(reason));
+    this.abort(entry, reason);
     return true;
   }
 
@@ -100,7 +120,7 @@ export class RunCancelRegistry {
         continue;
       }
       logger.info`Cancelling ${entry.executionType} ${entry.executionId}`;
-      entry.controller.abort(new Error(reason));
+      this.abort(entry, reason);
       count++;
     }
     return count;

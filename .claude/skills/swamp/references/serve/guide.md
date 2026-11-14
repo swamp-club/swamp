@@ -833,7 +833,10 @@ runs signalled by a local command. Things to know:
   run does not count against its route's `maxConcurrentRuns`; a continued cron
   run makes the next fire of its workflow skip as an overlap, also after a
   `serve reload`. A run waiting on an open nested run, or whose record was still
-  syncing, is judged again on each `--continuation-sweep-interval`.
+  syncing, is judged again on each `--continuation-sweep-interval`. A run
+  someone cancelled is never continued, even if serve crashed before the cancel
+  took effect (`cancel_requested`). `swamp workflow recover` waits while serve
+  is acting on the same run, and takes over a claim older than a minute.
 - A run that cannot be resumed stays suspended; the audit log has one
   `workflow.auto_resume_skipped` or `workflow.auto_resume_failed` event with the
   reason (`global_cap`, ...). A run whose auto-resume policy is off is left

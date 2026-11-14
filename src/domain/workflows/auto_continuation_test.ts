@@ -245,3 +245,26 @@ Deno.test("refusalIsRetried: only a nested run that settles on its own is judged
     assertEquals(refusalIsRetried(reason), false, reason);
   }
 });
+
+Deno.test("decideAutoContinuation: a cancel asked for since the run last started is refused; a later resume overrides it", async () => {
+  const workflow = workflowOf({ guard: GUARD });
+  const run = await interrupted(workflow);
+  const started = run.lastStartedAt!.getTime();
+  const cancelAt = (at: number): AutoContinuationChecks => ({
+    ...SETTLED,
+    cancelRequestedAt: () => Promise.resolve(new Date(at)),
+  });
+
+  const refused = await decideAutoContinuation(
+    workflow,
+    run,
+    cancelAt(started + 1),
+  );
+  if (refused.kind !== "refuse") throw new Error(refused.kind);
+  assertEquals(refused.refusal.reason, "cancel_requested");
+
+  assertEquals(
+    (await decideAutoContinuation(workflow, run, cancelAt(started - 1))).kind,
+    "continue",
+  );
+});

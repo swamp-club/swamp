@@ -19,12 +19,16 @@
 
 import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import {
+  type CancelIntent,
+  continuationCancelKey,
   type ContinuationClaim,
   continuationClaimKey,
   type ContinuationClaimStore,
   continuationRunPrefix,
   continuationSuspensionPrefix,
+  decodeCancelIntent,
   decodeContinuationClaim,
+  encodeCancelIntent,
   encodeContinuationClaim,
   generationFromKey,
   type HolderLiveness,
@@ -83,6 +87,20 @@ export class ControlPlaneContinuationClaimStore
     for (const key of await this.#store.list(continuationRunPrefix(runId))) {
       await this.#store.delete(key);
     }
+  }
+
+  async recordCancel(intent: CancelIntent): Promise<void> {
+    await this.#store.put(
+      continuationCancelKey(intent.runId),
+      encodeCancelIntent(intent),
+    );
+  }
+
+  async findCancel(runId: string): Promise<CancelIntent | undefined> {
+    return decodeCancelIntent(
+      await this.#store.get(continuationCancelKey(runId)),
+      runId,
+    );
   }
 }
 

@@ -35,6 +35,7 @@ import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { executeWorkflowWithLocks } from "../src/serve/deps.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { continueInterruptedRuns } from "../src/serve/interrupted_run_continuation.ts";
+import { ContinuedScheduledRuns } from "../src/serve/continued_scheduled_runs.ts";
 import { continueSettledRun } from "../src/serve/resume_launcher.ts";
 import { MAX_CONSECUTIVE_AUTO_CONTINUATIONS } from "../src/domain/workflows/auto_continuation.ts";
 import {
@@ -42,6 +43,8 @@ import {
   InMemoryContinuationClaimStore,
 } from "../src/domain/workflows/continuation_claim_test_helpers.ts";
 import {
+  CancelIntentRecorder,
+  localHolder,
   serveHolder,
   suspensionKeyOf,
 } from "../src/domain/workflows/continuation_claim.ts";
@@ -422,17 +425,15 @@ Deno.test({
         triggerSource: "schedule",
       });
       const serve = await serveOver(repoDir, serveHolder("a"));
-      const adopted: Array<[string, string]> = [];
-      let completion: Promise<void> | undefined;
+      let ended = 0;
+      const held = new ContinuedScheduledRuns(() => ended++);
+      serve.ctx.continuedScheduledRuns = held;
 
-      await continueInterruptedRuns(serve.ctx, "boot", {
-        onScheduledRunContinued: (run, done) => {
-          adopted.push([run.workflowId, run.runId]);
-          completion = done;
-        },
-      });
-      assertEquals(adopted, [[workflow.id, runId]]);
-      await completion;
+      await continueInterruptedRuns(serve.ctx, "boot");
+      assert(held.holds([workflow.id]), "the scheduler is not held off");
+      await finished(serve, runId);
+      await waitFor(() => ended === 1, "the continued run released");
+      assertEquals(held.holds([workflow.id]), false);
       assertEquals(
         (await storedRun(serve, workflow, runId))?.status,
         "succeeded",
@@ -492,9 +493,13 @@ Deno.test({
     withRepo(async (repoDir) => {
       const counter = join(repoDir, "ran.txt");
       const workflow = twoStepWorkflow({ name: "half-done" }, counter);
-      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      const runId = await interruptedRun(repoDir, workflow, "boundary", {
+        triggerSource: "schedule",
+      });
       await Deno.writeTextFile(counter, "");
       const serve = await serveOver(repoDir, serveHolder("a"));
+      const held = new ContinuedScheduledRuns(() => {});
+      serve.ctx.continuedScheduledRuns = held;
       const repo = serve.ctx.repoContext.workflowRunRepo;
       const run = (await storedRun(serve, workflow, runId))!;
       run.resetUnknownStepsForRecovery({
@@ -509,6 +514,8 @@ Deno.test({
         { kind: "sweep", principalId: null, takeover: true },
       );
       assert(launched, "the sweep left the run suspended");
+      // a scheduled run the sweep finishes holds off its workflow's fires too
+      assert(held.holds([workflow.id]), "the scheduler is not held off");
       await finished(serve, runId);
       assertEquals(
         (await storedRun(serve, workflow, runId))?.status,
@@ -633,11 +640,11 @@ Deno.test({
 Deno.test({
   ...TEST,
   name:
-    "auto-continue: a pass of the same serve that loses the race keeps the claim the winner holds",
+    "auto-continue: the claim on the interrupted record is released once the continuation ends, and a stale pass after it does nothing",
   fn: () =>
     withRepo(async (repoDir) => {
       const counter = join(repoDir, "ran.txt");
-      const workflow = twoStepWorkflow({ name: "overlapped" }, counter);
+      const workflow = twoStepWorkflow({ name: "released" }, counter);
       const runId = await interruptedRun(repoDir, workflow, "boundary");
       await Deno.writeTextFile(counter, "");
       const claims = new InMemoryContinuationClaimStore();
@@ -649,16 +656,15 @@ Deno.test({
       const won = await continueInterruptedRuns(serve.ctx, "lead");
       assertEquals(won.continued, [runId]);
       await finished(serve, runId);
-      // the reconciliation pass read the interrupted copy before the lead won
+      await waitFor(
+        () => !claims.claims.some((c) => c.suspensionKey === interruptedKey),
+        "the interrupted record's claim released",
+      );
+      // a pass that read the interrupted copy before the lead won
       repo.findGlobalByStatus = () => Promise.resolve(stale);
       const lost = await continueInterruptedRuns(serve.ctx, "reconciliation");
       assertEquals(lost.continued, []);
-
       assertEquals(await ranSteps(counter), ["second"]);
-      assert(
-        claims.claims.some((c) => c.suspensionKey === interruptedKey),
-        "the claim on the interrupted record was released",
-      );
       assertEquals(
         serve.audit.filter((a) => a.action === "workflow.auto_continue_failed"),
         [],
@@ -1025,5 +1031,124 @@ Deno.test({
         (await storedRun(serve, workflow, runId))?.status,
         "interrupted",
       );
+    }),
+});
+
+function fakeActiveRun(runId: string, controller: AbortController) {
+  return {
+    runId,
+    kind: "workflow-run",
+    resourceName: "wf",
+    controller,
+    startedAt: new Date(),
+    completion: new Promise<void>(() => {}),
+    principalId: null,
+  } as unknown as Parameters<ActiveRunRegistry["register"]>[0];
+}
+
+function cancelRecorderOver(serve: Serve): CancelIntentRecorder {
+  return new CancelIntentRecorder(async (runId, reason) => {
+    await serve.ctx.repoContext.continuationClaims!.store.recordCancel({
+      runId,
+      requestedAt: new Date().toISOString(),
+      reason,
+    });
+  }, () => {});
+}
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a cancel that had not settled when serve crashed is never continued, on any pass",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow(
+        { name: "cancel-then-crash", guard: "${{ false }}" },
+        counter,
+      );
+      const runId = await interruptedRun(repoDir, workflow, "mid-step");
+      await Deno.writeTextFile(counter, "");
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      // the cancel the user asked for before the crash, through serve's registry
+      const recorder = cancelRecorderOver(serve);
+      const registry = new ActiveRunRegistry({ cancelIntents: recorder });
+      const hung = new AbortController();
+      registry.register(fakeActiveRun(runId, hung));
+      assert(registry.cancel(runId, "cancelled by user"));
+      await recorder.settled();
+      assert(hung.signal.aborted);
+
+      for (const cause of ["boot", "lead", "reconciliation"] as const) {
+        const result = await continueInterruptedRuns(serve.ctx, cause);
+        assertEquals(result.continued, [], cause);
+      }
+      const run = await storedRun(serve, workflow, runId);
+      assertEquals(run?.status, "interrupted");
+      assertEquals(run?.autoContinuation?.refused?.reason, "cancel_requested");
+      assertEquals(
+        serve.audit.filter((a) => a.action === "workflow.auto_continue_refused")
+          .length,
+        1,
+      );
+      assertEquals(await ranSteps(counter), []);
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a run aborted for its maximum duration records the cancel before the abort",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const serve = await serveOver(repoDir, serveHolder("a"));
+      const recorder = cancelRecorderOver(serve);
+      const registry = new ActiveRunRegistry({
+        cancelIntents: recorder,
+        maxRunDurationMs: 1,
+      });
+      const runId = crypto.randomUUID();
+      const timedOut = new AbortController();
+      registry.register(fakeActiveRun(runId, timedOut));
+      await waitFor(() => timedOut.signal.aborted, "the run aborted");
+      const intent = await serve.ctx.repoContext.continuationClaims!.store
+        .findCancel(runId);
+      assertEquals(intent?.reason, "max run duration exceeded");
+      registry.deregister(runId);
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: serve defers a run an operator's recover or a serve of unknown liveness holds",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "operator-holds" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "mid-step");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      const key = await suspensionKeyOf(
+        (await storedRun(serve, workflow, runId))!,
+      );
+      for (
+        const holder of [localHolder(), serveHolder("unreachable")]
+      ) {
+        claims.claims.length = 0;
+        await claims.create({
+          runId,
+          suspensionKey: key,
+          generation: 1,
+          holder,
+          claimedAt: new Date().toISOString(),
+        });
+        const result = await continueInterruptedRuns(serve.ctx, "boot");
+        assertEquals(result.refused, [], holder);
+        assertEquals(result.deferred, [{ workflowId: workflow.id, runId }]);
+      }
+      const run = await storedRun(serve, workflow, runId);
+      assertEquals(run?.autoContinuation, undefined);
+      assertEquals(serve.audit, []);
     }),
 });

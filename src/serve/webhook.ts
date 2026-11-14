@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  abortCancelled,
+  type CancelIntentRecorder,
+} from "../domain/workflows/continuation_claim.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -559,6 +563,8 @@ export type WebhookEventHandler = (event: WebhookEvent) => void;
 export type WebhookRouteSource = "config" | "flag" | "file";
 
 export interface WebhookServiceDeps {
+  /** a user's cancel is recorded before its abort; never the shutdown's */
+  cancelIntents?: CancelIntentRecorder;
   /**
    * false on a follower in team mode, which answers a verified delivery with a
    * retryable 503 so the sender retries to the leader or once one leads.
@@ -1266,6 +1272,7 @@ export class WebhookService {
     while (this.inFlight.size > 0) {
       await Promise.allSettled([...this.inFlight.keys()]);
     }
+    await this.deps.cancelIntents?.settled();
     // read once the runs settled: a run aborted before its started event has its id by now
     const aborted: AbortedWebhookRun[] = [];
     for (const entry of this.abortedAtStop) {
@@ -1304,7 +1311,12 @@ export class WebhookService {
     for (const entry of this.running.values()) {
       if (entry.runId === runId) {
         logger.info("Cancelling webhook run {runId}", { runId });
-        entry.controller.abort(new Error(reason));
+        abortCancelled(
+          this.deps.cancelIntents,
+          entry.runId,
+          entry.controller,
+          reason,
+        );
         return true;
       }
     }
@@ -1315,7 +1327,12 @@ export class WebhookService {
     let count = 0;
     for (const entry of this.running.values()) {
       logger.info("Cancelling webhook run {runId}", { runId: entry.runId });
-      entry.controller.abort(new Error(reason));
+      abortCancelled(
+        this.deps.cancelIntents,
+        entry.runId,
+        entry.controller,
+        reason,
+      );
       count++;
     }
     return count;

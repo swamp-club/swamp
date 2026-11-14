@@ -4847,6 +4847,14 @@ each candidate and continues it, or refuses with one of these reasons:
   no worker pool is available.
 - `nested_run_unsettled`: a nested run the run waits on is still open.
 - `launch_refused`: serve's own resume refused the launch.
+- `cancel_requested`: someone asked the run to stop since it last started or
+  resumed. Every cancel of a workflow run serve drives (the cancel handler,
+  cancel-all, the max-run-duration timer, a client's dropped connection, a
+  webhook or cron run's cancel) writes a cancel record with the run's
+  continuation claims (`continuations/<runId>/cancel`) before it aborts the
+  run, so a cancel that has not settled when serve crashes is never lost. The
+  shutdown abort writes none: its runs are the ones meant to continue. A later
+  manual resume of the run overrides the record.
 
 Serve judges every candidate at boot (after the pending-run replay and before
 the schedule catch-up) and when a team leader takes over (after its own
@@ -4863,19 +4871,28 @@ and stands like any other refusal. A continuation claims the interrupted record
 (`suspensionKeyOf` of the interrupted run) and compares the copy with the
 datastore before `recover` resets anything. Two instances, or the old and new
 process of a rolling restart, therefore never both continue one interruption.
-The claim is kept after the reset, so a peer holding the same stale copy is
-refused even where record currency cannot be checked. It is never taken over
-from another holder: a filesystem datastore keeps no heartbeats, so every peer
-reads as dead there. A holder that died before its reset leaves that
-interruption to the operator, and serve logs that once, naming the holder and
-the recover command; one that died after it leaves the run
+The claim is kept while the continued run runs, so a peer holding the same
+stale copy is refused even where record currency cannot be checked, and is
+released when the continuation ends. It is never taken over from another
+holder: a filesystem datastore keeps no heartbeats, so every peer reads as dead
+there. A claim held by a live serve, a serve of unknown liveness, an operator's
+`swamp workflow recover` or the same serve's own racing write defers the run;
+only one held by a serve known dead leaves that interruption to the operator,
+and serve logs that once, naming the holder and the recover command; one that died after it leaves the run
 `recoveredAutomatically`, which the continuation sweep finishes. The resume then runs
 under the same run id through the serve resume launcher, under the run's
 recorded principal and vault scope, with every refusal a resume already has
 (such as a run started through a delegation that has ended). A run serve
 recovered but did not resume before it stopped is `recoveredAutomatically`,
 and the continuation sweep finishes it under `autoContinue`. A run reset by
-`swamp workflow recover` still waits for its operator. A continued scheduled
+`swamp workflow recover` still waits for its operator. `swamp workflow recover`
+takes the same claim before it resets anything: it waits ("retry in a
+moment") while another holder's claim is under a minute old, since serve holds
+one only for the seconds of one action, and takes over an older one, saying so
+(`tookOverFrom` in `--json`). So a refusal serve writes never lands over an
+operator's recover. Without a shared claim store neither one continuer nor a
+recorded cancel can be guaranteed, so serve continues nothing automatically
+there and logs that once. A continued scheduled
 run holds off its workflow's next fire, and a replayed run of it waits, until
 it ends. Serve keeps the continued scheduled runs itself and hands every
 scheduler it builds a check over them (`continuing` in the scheduler's deps),
