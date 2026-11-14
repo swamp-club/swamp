@@ -278,6 +278,35 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "LitestreamReplicator.acquire: the sidecar it starts snapshots at the request's interval, hourly when unset",
+  ignore: !UNIX,
+  async fn() {
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const unset = await replicator.acquire(world.request(db, 1));
+      assertStringIncludes(
+        await Deno.readTextFile(world.paths.config),
+        "\nsnapshot:\n  interval: 60m\n",
+      );
+      await unset.release();
+    });
+    await withWorld(async (world, db) => {
+      const replicator = new LitestreamReplicator(world.deps());
+      const set = await replicator.acquire({
+        ...world.request(db, 1),
+        snapshotIntervalMs: 15 * 60_000,
+      });
+      assertStringIncludes(
+        await Deno.readTextFile(world.paths.config),
+        "\nsnapshot:\n  interval: 15m\n",
+      );
+      await set.release();
+    });
+  },
+});
+
+Deno.test({
   name: "LitestreamReplicator.acquire: holds in one process share one sidecar",
   ignore: !UNIX,
   async fn() {

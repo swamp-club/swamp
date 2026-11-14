@@ -55,6 +55,7 @@ import {
   v3NamespacedStore,
   v3ReplicaFor,
   v3ReplicatesAt,
+  v3SnapshotIntervalFor,
 } from "./v3_datastore_binding.ts";
 import { v3ChunksOrderedBefore } from "./v3_datastore.ts";
 
@@ -137,6 +138,28 @@ Deno.test("bindV3BucketDatastore: binds a local root under the checkout's copies
     const locking = lockingConfigOf(config);
     assert(!isCustomDatastoreConfig(locking));
     assertEquals(locking.path, location.path);
+  });
+});
+
+Deno.test("v3SnapshotIntervalFor: a bucket datastore's configured interval, else one hour", async () => {
+  await withRepo((repoDir) => {
+    const configured = bindV3BucketDatastore(
+      repoDir,
+      { ...bucketConfig("a"), snapshotIntervalMs: 30 * 60_000 },
+      bucketProvider().provider,
+      { platform: LINUX },
+    );
+    assertEquals(v3SnapshotIntervalFor(configured.path), 30 * 60_000);
+    const unset = bindV3BucketDatastore(
+      repoDir,
+      bucketConfig("b"),
+      bucketProvider({ target: { ...TARGET, bucket: "other-bucket" } })
+        .provider,
+      { platform: LINUX },
+    );
+    assertEquals(v3SnapshotIntervalFor(unset.path), 60 * 60_000);
+    assertEquals(v3SnapshotIntervalFor(join(repoDir, "unbound")), 60 * 60_000);
+    return Promise.resolve();
   });
 });
 

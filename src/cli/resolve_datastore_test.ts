@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join, resolve } from "@std/path";
 import {
   parseDatastoreEnvVar,
@@ -238,6 +238,34 @@ Deno.test("resolveDatastoreConfig: refuses a durable setting that is not a boole
       UserError,
       "Invalid 'durable'",
     );
+  });
+});
+
+Deno.test("resolveDatastoreConfig: carries an extension datastore's snapshotInterval and refuses an invalid one", async () => {
+  await withMockedEnv({ SWAMP_DATASTORE: undefined }, async () => {
+    ensureTestType("test-custom-snapshot");
+    const markerWith = (snapshotInterval?: unknown) =>
+      ({
+        swampVersion: "0.1.0",
+        initializedAt: "2024-01-01",
+        repoId: "test-repo",
+        datastore: {
+          type: "test-custom-snapshot",
+          ...(snapshotInterval === undefined ? {} : { snapshotInterval }),
+        },
+      }) as unknown as RepoMarkerData;
+    const set = await resolveDatastoreConfig(markerWith("30m"), undefined, "/");
+    assert(isCustomDatastoreConfig(set));
+    assertEquals(set.snapshotIntervalMs, 30 * 60_000);
+    const unset = await resolveDatastoreConfig(markerWith(), undefined, "/");
+    assertEquals("snapshotIntervalMs" in unset, false);
+    for (const bad of ["4m", "25h", "1.5h", "90s", 3600]) {
+      await assertRejects(
+        () => resolveDatastoreConfig(markerWith(bad), undefined, "/"),
+        UserError,
+        "Invalid 'snapshotInterval'",
+      );
+    }
   });
 });
 

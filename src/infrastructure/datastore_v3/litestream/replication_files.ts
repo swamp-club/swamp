@@ -42,6 +42,7 @@ import {
   parseReplicaVerification,
   type ReplicaVerification,
 } from "../../../domain/datastore_v3/replica_verification.ts";
+import { DEFAULT_SNAPSHOT_INTERVAL_MS } from "../../../domain/datastore/datastore_config.ts";
 import { atomicWriteTextFile } from "../../persistence/atomic_write.ts";
 import type { V3ReplicaSetting } from "./replica_setting.ts";
 
@@ -499,14 +500,27 @@ export function renderLitestreamConfig(
   paths: Pick<ReplicationPaths, "commitsDb" | "socket">,
   replica: V3ReplicaSetting,
   replicaPath: string,
+  snapshotIntervalMs: number = DEFAULT_SNAPSHOT_INTERVAL_MS,
 ): string {
   const q = (value: string) => JSON.stringify(value);
   return [
     "socket:",
     "  enabled: true",
     `  path: ${q(paths.socket)}`,
+    // Only replication takes snapshots, so the restore config leaves it out.
+    "snapshot:",
+    `  interval: ${goMinutes(snapshotIntervalMs)}`,
     ...databaseConfigLines(paths.commitsDb, replica, replicaPath),
   ].join("\n") + "\n";
+}
+
+function goMinutes(ms: number): string {
+  if (!Number.isSafeInteger(ms) || ms <= 0 || ms % 60_000 !== 0) {
+    throw new Error(
+      `Internal error: a snapshot interval of ${ms} ms is not whole minutes`,
+    );
+  }
+  return `${ms / 60_000}m`;
 }
 
 export function renderLitestreamRestoreConfig(

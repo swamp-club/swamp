@@ -40,7 +40,10 @@ import {
 } from "./replication_files.ts";
 
 import { localProcess } from "../process_identity.ts";
-import { v3ReplicaFor } from "../v3_datastore_binding.ts";
+import {
+  v3ReplicaFor,
+  v3SnapshotIntervalFor,
+} from "../v3_datastore_binding.ts";
 import { stopAutoCheckpointAt } from "../sqlite_commit_store.ts";
 import { withSpan } from "../../tracing/tracer.ts";
 import { SERVE_REQUEST_SYNC_DEADLINE_MS } from "../serve_request_deadlines.ts";
@@ -174,6 +177,7 @@ export async function acquireV3Replication(
     commitsDb,
     replica,
     fence,
+    snapshotIntervalMs: v3SnapshotIntervalFor(datastorePath),
     // A writer that lost its lease reports nothing as replicated.
     assertLeaseCurrent: () => checkV3WriterLease(datastorePath),
     ...(sidecarOwner !== undefined ? { owner: sidecarOwner } : {}),

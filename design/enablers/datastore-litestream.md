@@ -1470,6 +1470,40 @@ cost is near the uncompacted plan's (about 45 ms per file here), which points
 to a plan of uncompacted L0 files. That is inferred, not reproduced on GCS, and
 no config was changed: the next dogfood failover rounds measure it again.
 
+#### The snapshot interval
+
+The replication config swamp generates (`renderLitestreamConfig`) sets
+Litestream's top-level `snapshot.interval`, by default to 1 hour
+(`DEFAULT_SNAPSHOT_INTERVAL_MS`) where 0.5.17's own default is 24 hours. A
+restore reads the newest level-9 snapshot and then every compacted and L0 file
+written since, so its time grows with the tail since that snapshot. In the
+team-mode dogfood (0.5.17 on GCS, the live leader's lineage restored on
+serve-a) a lineage about 1.5 h past its snapshot restored in 16.0 s (53.9 MB
+database); about 3.5 h past it, in 166.6 s and 180.1 s (about 97 MB), with L0
+4,448 objects (186 MB), L1 550, L2 55, L3 5 and the last snapshot at 00:00:02.
+Litestream aligns snapshots to UTC multiples of the interval, so at 1 hour no
+tail is older than an hour.
+
+The cost: each interval uploads a full snapshot of `commits.db`, about the
+database size × 24 a day at 1 hour, and the bucket holds those snapshots until
+Litestream's snapshot retention (24 hours, left at the default) removes them,
+so up to about 24 database-sized objects. Each new snapshot is also a
+[verification](#verifying-the-replica-swamp-club3935) trigger, so a serve that
+writes all day can run up to 24 full verification restores a day, each about
+the database size downloaded.
+
+The datastore block of `.swamp.yaml` sets it as `snapshotInterval`, a whole
+number of minutes or hours from `5m` to `24h` (`readSnapshotIntervalKey` in
+`datastore_config.ts`; anything else is refused when the config is resolved).
+It applies to an extension (bucket) datastore hosting v3, reaches the sidecar
+through the v3 bucket binding, and `datastore setup` keeps it across a re-run.
+A running sidecar keeps the interval it started with. The restore config leaves
+the key out, since only replication takes snapshots.
+
+Compaction levels stay at 0.5.17's defaults (L1 30 s, L2 5 min, L3 1 h). They
+are revisited only if the long-history gate round shows the 1-hour snapshot is
+not enough.
+
 **Tests.** The `integration/datastore_v3_litestream_restore*_test.ts` files,
 sharing `datastore_v3_litestream_restore_helpers.ts`, run real Litestream with
 a file replica, each "machine" a worker with its own module state, host name
@@ -2031,9 +2065,10 @@ acknowledgement, is left out, so the next check sees it as new.
     the last verdict recorded. The sidecar learns it from
     `litestream ltx -level 9 -json`, one LIST request, at most every 15
     minutes and only while something is uncovered. Litestream 0.5.17 writes
-    a snapshot when a lineage starts and then at most once per UTC day, on
-    the first compaction tick past midnight (a sidecar's startup tick
-    included). A listing that fails or prints something unexpected leaves
+    a snapshot when a lineage starts and then at most once per snapshot
+    interval, on the first compaction tick past each UTC multiple of it (a
+    sidecar's startup tick included); swamp sets the interval to 1 hour, see
+    [The snapshot interval](#the-snapshot-interval). A listing that fails or prints something unexpected leaves
     the snapshot unknown, and an unknown snapshot is never a new one. Nor is
     one above the acknowledged TXID: Litestream can snapshot past what the
     writer has acknowledged, and a restore at that TXID would not read it,
@@ -2077,7 +2112,9 @@ acknowledgement, is left out, so the next check sees it as new.
   broken restarts (swamp-club#3935's rule). Data is at risk only if the
   writer's own copy is lost inside that window. For a serve that writes
   all day this cuts the checks from about 144 a day to about 6, plus one
-  per daily snapshot.
+  per snapshot: with the 1-hour [snapshot interval](#the-snapshot-interval)
+  that is up to 24 a day, the same count this paragraph calls too dear for
+  L3.
 - **What counts as broken.** Only a restore SQLite refuses: rows from its
   integrity check, or the check itself failing with `SQLITE_CORRUPT` or
   `SQLITE_NOTADB`, which is how a badly damaged file answers. A restore that

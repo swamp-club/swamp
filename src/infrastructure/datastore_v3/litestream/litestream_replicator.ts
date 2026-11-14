@@ -146,6 +146,8 @@ export interface ReplicationRequest {
   readonly commitsDb: string;
   readonly replica: V3ReplicaSetting;
   readonly fence: number;
+  /** a sidecar this request starts takes it; one found running keeps its own */
+  readonly snapshotIntervalMs?: number;
   assertLeaseCurrent(): Promise<void>;
   /** a sidecar this request starts takes it; one found running keeps its own */
   readonly owner?: SupervisorOwner;
@@ -313,6 +315,7 @@ export class LitestreamReplicator {
         replicaPath,
         use,
         request.owner,
+        request.snapshotIntervalMs,
       );
       return new SharedHandle(
         paths,
@@ -381,6 +384,7 @@ export class LitestreamReplicator {
     replicaPath: string,
     use: Deno.FsFile,
     owner: SupervisorOwner | undefined,
+    snapshotIntervalMs: number | undefined,
   ): Promise<number> {
     const timings = this.deps.timings;
     let waitingSince = this.deps.now();
@@ -427,6 +431,7 @@ export class LitestreamReplicator {
               lineageFence,
               replicaPath,
               owner,
+              snapshotIntervalMs,
             );
           } finally {
             // The probe lock goes once the supervisor is launched (it retries
@@ -563,13 +568,14 @@ export class LitestreamReplicator {
     lineageFence: number,
     replicaPath: string,
     owner: SupervisorOwner | undefined,
+    snapshotIntervalMs: number | undefined,
   ): Promise<void> {
     // Fails here, in the command, when the binary cannot be had.
     await this.deps.resolveBinary();
     await resetForeignLitestreamState(paths, lineageFence);
     await Deno.writeTextFile(
       paths.config,
-      renderLitestreamConfig(paths, replica, replicaPath),
+      renderLitestreamConfig(paths, replica, replicaPath, snapshotIntervalMs),
       { mode: 0o600 },
     );
     const timings = this.deps.timings;
