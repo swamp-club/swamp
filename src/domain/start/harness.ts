@@ -42,6 +42,40 @@ export function launchPrompt(
   return `Read ${briefFile} and use the ${skill} skill.`;
 }
 
+function hasLineBreakingChar(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
+    if (code === 0x2028 || code === 0x2029) return true;
+  }
+  return false;
+}
+
+/**
+ * The prompt for an agent swamp does not open. The brief's absolute path is
+ * its only user input; a path that could start a new line is refused.
+ */
+export function ownAgentPrompt(
+  briefAbsolutePath: string,
+  kind: StartTaskKind,
+  /** where the task's agent was enrolled, e.g. `.agents/skills` */
+  enrolledSkillsDir: string,
+): string {
+  if (briefAbsolutePath === "" || hasLineBreakingChar(briefAbsolutePath)) {
+    throw markErrorPaths(
+      new Error(
+        `Invalid task brief path ${JSON.stringify(briefAbsolutePath)}`,
+      ),
+      [briefAbsolutePath],
+    );
+  }
+  const skill = kind === "swampify" ? "swampify" : "swamp-getting-started";
+  // The agent-sessions pull writes .claude/skills for every swampify task;
+  // a plain task's skill sits where its agent was enrolled.
+  const skillsDir = kind === "swampify" ? ".claude/skills" : enrolledSkillsDir;
+  return `Read the brief at ${briefAbsolutePath} and follow it. If the ${skill} skill isn't loaded, read ${skillsDir}/${skill}/SKILL.md in the workspace the brief names.`;
+}
+
 export interface HarnessDefinition {
   readonly id: DetectableAiTool;
   readonly displayName: string;

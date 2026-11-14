@@ -34,6 +34,7 @@ import {
   offerView,
   optionByCandidate,
   setFullness,
+  type SwampifyHandOff,
   type SwampifyLauncher,
 } from "../../lib/swampify_view.ts";
 import { formatAbsoluteTime, pluralize } from "../../lib/format.ts";
@@ -95,6 +96,8 @@ export interface SwampifyPageProps {
   readonly onOpenOption: (optionId: string | null) => void;
   /** The local dashboard's launch; absent under serve, which only copies. */
   readonly launch?: SwampifyLauncher;
+  /** the local dashboard's Use my own agent; absent under serve */
+  readonly handOff?: SwampifyHandOff;
   /** Tests open a row from the start. */
   readonly initialOpen?: string;
   readonly initialTab?: Tab;
@@ -137,6 +140,7 @@ export function SwampifyPage(props: SwampifyPageProps) {
         onLoadComparison={props.onLoadComparison}
         onBack={() => onOpenOption(null)}
         launch={props.launch}
+        handOff={props.handOff}
       />
     );
   }
@@ -231,10 +235,16 @@ export function SwampifyPage(props: SwampifyPageProps) {
             className="sw-panel"
           >
             {setRow === undefined && !state.setRow.error && (
-              <div className="sw-card sw-note">
-                {state.setRow.loading
-                  ? "Loading the assessment…"
-                  : "No assessment yet. Ask your agent to swampify your past sessions."}
+              <div className="sw-card sw-note" role="status">
+                {state.setRow.loading ? "Loading the assessment…" : (
+                  <>
+                    <strong>Waiting for your agent.</strong>{" "}
+                    No assessment yet. Once your agent is swampifying your past
+                    sessions, it installs the swampify extension, asks before it
+                    reads anything, then assesses them. The options show up here
+                    on their own.
+                  </>
+                )}
               </div>
             )}
             {state.set.loading && setReading === null && setRow !== undefined &&

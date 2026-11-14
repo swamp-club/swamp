@@ -183,13 +183,15 @@ button and Cancel close it. It says what will be read (transcript text on this
 machine, prompts and replies included), what the workspace stores (counts,
 token costs and up to five short redacted excerpts per chore) and that where
 the data goes is the user's choice. Then one row each, label beside control,
-for the window (7, 30 or 90 days, default 30), the scope (every session on
-this machine, until **Limit the scope** opens a box of folders to leave out),
-the agent (a small card each for Claude Code and Codex, only those whose
-signal is on, those not on PATH disabled) and a workspace name, prefilled
+for the window (7, 30, 90, 180 or 365 days, or all history; default 30, with
+a note under 180, 365 and all history that a longer window takes longer to
+assess), the scope (every session on this machine, until **Limit the scope**
+opens a box of folders to leave out), the agent (a small card each for Claude
+Code and Codex, only those whose signal is on; one not on PATH is marked and
+can be picked only for **Use my own agent**) and a workspace name, prefilled
 `swampify`, or `swampify-2`, `-3` when taken.
 
-The panel's **Swampify!** sends `start.swampify.kickoff` with those fields and
+The panel's **Launch <agent>** (named for the agent picked) sends `start.swampify.kickoff` with those fields and
 no text, then `start.launch` with `trustConfirmed`: the click is the trust
 confirmation, as it is on the Swampify page, and the panel says so. The
 server checks sign-in, the window and paths and the agent first
@@ -199,7 +201,11 @@ or creates the workspace and saves one swampify task with its agent chosen
 agent is chosen once and Back never reaches the task editor with the kick-off
 text. If the launch fails, the panel keeps the error and offers **Try again**
 (launch only) or **Choose another agent**, which opens the agent screen for
-the saved task. Core writes the task
+the saved task. Beside it, **Use my own agent** sends the same kick-off with
+`ownAgent: true`, which skips only the PATH check, then `start.handoff` (see
+[Your own agent](#your-own-agent)). The window travels as `windowDays`, a
+whole number from 1 to 365 or `"all"`, and is checked by the request schema
+and again by `SwampifyKickoff`. Core writes the task
 text (`SwampifyKickoff` in `src/domain/start/swampify_kickoff.ts`); its only
 user input is the window and the excluded paths. Each path must be absolute
 or start with `~`, at most 20 of 512 characters, with no quotes, backticks,
@@ -209,7 +215,7 @@ code fence. See [swampify.md](./swampify.md#the-kick-off) for the text.
 ### The Swampify page link
 
 When a swampify task is launched from a page (start's Launch, or the
-Swampify page's **Swampify!** through the hub), the brief's `# Context` ends
+Swampify page's **Launch <agent>** through the hub), the brief's `# Context` ends
 with one line, `- Swampify page: <url>`, pinned by a test here and in the
 swampify skill. The URL is `<origin>/dashboard/w/<workspace>/swampify`, where
 the origin is the one the browser reached this server at: the checked
@@ -313,6 +319,51 @@ behavior and a first run.
   (Cursor's `--trust`, Codex's `-c projects."<ws>".trust_level`). For Claude
   Code it explains the dialog; it never edits another tool's state.
 
+## Your own agent
+
+**Use my own agent** sits beside the launch button on the agent step, the
+kick-off panel and the [Swampify page](./swampify.md#the-page). It saves the
+task's brief as a launch does, through the same sign-in, brief and enrolment
+steps (`startHandOff`, sharing `prepareBrief` with `startLaunch`), and opens
+nothing. It records no launch and no trust, and the agent need not be on PATH
+(`startChooseHarness` with `ownAgent`), since another agent app reads the
+brief. The page shows the prompt with a Copy button and the steps to use it,
+copying nothing until the person clicks Copy; the status carries it as
+`ownAgentPrompt`. A copy icon sits in the prompt's corner. Below it a third step and **Open the
+dashboard** (**Open Swampify** for a swampify task) say to head there once
+their agent is running:
+
+`Read the brief at <absolute brief path> and follow it. If the <skill> skill isn't loaded, read <skills folder>/<skill>/SKILL.md in the workspace the brief names.`
+
+The brief path is its only user input, and a path that could start a new line
+is refused (`ownAgentPrompt` in `src/domain/start/harness.ts`). The skill is
+`swampify` for a swampify task, under `.claude/skills`, where the
+agent-sessions pull always writes; otherwise `swamp-getting-started`, in the
+skills folder of the agent the task was enrolled for. The start server
+presents a handed-off task as the `handed_off` screen until it is launched.
+It offers no launch. Its Back is the browser's Back.
+
+Back returns to the screen the person came from. The start server marks a
+launch step it reached other than from the task's own editor with
+`reachedFrom`: `kickoff` for the kick-off panel, where Back leaves the
+workspace and reopens the panel with the choices it sent, and `home` for a
+task opened from the workspace's home at its agent step, where Back returns
+home. From the hand-off screen Back otherwise returns to the agent step
+(`start.handoff.leave`). A kick-off's Task step in the rail is not a link.
+
+After a launch that opened a window, the launched screen shows **Open the
+dashboard** and goes there after 20 seconds unless the person chooses **Stay
+on this page** or opens the prompt. For a swampify task that link, and the
+hand-off's, go to the workspace's Swampify page and say **Open Swampify**: the
+first assessment lands there, and the page waits for it.
+Nothing opened, so the server ends as it would before a launch, and copying
+the prompt never reports the agent as running. With the key from
+`SWAMP_API_KEY`, the page notes that the agent needs it too.
+
+When a launch opens no terminal, the launched screen says so and shows the
+same prompt and steps, not a terminal command; "Window didn't appear?" reveals
+them too.
+
 ## Harnesses
 
 The launch prompt names the task's brief:
@@ -343,12 +394,12 @@ The running and open terminals come from the user's own processes: `/proc` on
 Linux, `ps -x` on macOS; only executable names are read, and a terminal found
 there is still run from `PATH`. Over SSH, on a non-loopback `--host` (the
 browser is on another machine, so a window here would go unseen), or when
-nothing opens, the page shows a command to copy; **Browse…** is hidden in the
-same cases. A launch that opens no window records each terminal tried and why it
+nothing opens, the page shows the prompt for your own agent; **Browse…** is
+hidden in the same cases. A launch that opens no window records each terminal tried and why it
 failed (not found, exited with an error, couldn't start), or why none could be
 tried: inside a toolbox or distrobox container (`/run/.containerenv` or
 `/run/.toolboxenv`), no display, SSH, or a remote page. The page shows that in
-one line under the copy steps, says "Still couldn't open a terminal" when a
+one line under the prompt, says "Still couldn't open a terminal" when a
 retry fails again, and the terminal running `swamp start` logs it at warning
 level.
 

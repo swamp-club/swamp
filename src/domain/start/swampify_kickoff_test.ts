@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { UserError } from "../errors.ts";
 import {
+  SWAMPIFY_KICKOFF_ALL_HISTORY_LINE,
   SWAMPIFY_KICKOFF_EXCLUDE_MAX,
   SWAMPIFY_KICKOFF_MARKER,
   SWAMPIFY_KICKOFF_PATH_MAX,
@@ -55,6 +56,27 @@ Deno.test("SwampifyKickoff.render: the default kick-off is the pinned text", () 
 Deno.test("SwampifyKickoff.render: fills the window", () => {
   const text = SwampifyKickoff.create({ windowDays: 7 }, "linux").render();
   assert(text.includes("\nWindow: last 7 days\n"));
+});
+
+Deno.test("SwampifyKickoff.render: every window the start page offers renders its line", () => {
+  for (const windowDays of [7, 30, 90, 180, 365]) {
+    const text = SwampifyKickoff.create({ windowDays }, "linux").render();
+    assert(text.includes(`\nWindow: last ${windowDays} days\n`), text);
+  }
+});
+
+// Pinned word for word with the swampify skill, which reads it as no `since`.
+Deno.test("SwampifyKickoff.render: all history is the pinned window line and keeps marker v1", () => {
+  const text = SwampifyKickoff.create({ windowDays: "all" }, "linux").render();
+  assertEquals(
+    text,
+    PINNED_NO_EXCLUDE.replace(
+      "\nWindow: last 30 days\n",
+      "\nWindow: all history\n",
+    ),
+  );
+  assertEquals(SWAMPIFY_KICKOFF_ALL_HISTORY_LINE, "Window: all history");
+  assert(!text.includes("days"));
 });
 
 Deno.test("SwampifyKickoff.render: excluded paths go in one JSON array in a fence", () => {
@@ -95,6 +117,17 @@ Deno.test("SwampifyKickoff.create: refuses a window outside 1 to 365 whole days"
   for (const windowDays of [0, -1, 366, 1.5, Number.NaN]) {
     assertThrows(
       () => SwampifyKickoff.create({ windowDays }, "linux"),
+      UserError,
+      "window",
+    );
+  }
+  for (const windowDays of ["ALL", "forever", "", "365"]) {
+    assertThrows(
+      () =>
+        SwampifyKickoff.create(
+          { windowDays: windowDays as unknown as number },
+          "linux",
+        ),
       UserError,
       "window",
     );

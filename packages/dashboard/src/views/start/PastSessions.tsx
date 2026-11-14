@@ -21,18 +21,24 @@ import { useEffect, useRef, useState } from "react";
 import { NavIcon } from "../../components/nav_icons.tsx";
 import { AgentBadge } from "./AgentBadge.tsx";
 import {
+  isLongPastSessionsWindow,
   isValidWorkspaceName,
   parseExcludedPaths,
+  parsePastSessionsWindow,
   PAST_SESSIONS_DEFAULT_WINDOW,
   PAST_SESSIONS_WINDOWS,
   type PastSessionsHarness,
   pastSessionsHarnesses,
+  type PastSessionsWindow,
+  pastSessionsWindowLabel,
   swampifyWorkspaceName,
 } from "./helpers.ts";
 import {
   describeChooseError,
   ErrorBox,
+  OWN_AGENT_LABEL,
   type ScreenProps,
+  useHandOff,
   useLaunch,
 } from "./parts.tsx";
 import type { HarnessList, StartStatus } from "./types.ts";
@@ -40,6 +46,30 @@ import type { HarnessList, StartStatus } from "./types.ts";
 /** The collapsed card's one line. */
 export const PAST_SESSIONS_CARD_TEXT =
   "Find tasks to automate from your agent session history.";
+
+interface PanelChoices {
+  windowDays: PastSessionsWindow;
+  excludeText: string;
+  scopeOpen: boolean;
+  picked: PastSessionsHarness | null;
+}
+
+// Page-local: Back from a kick-off's launch step reopens the panel with the
+// choices it was sent with. A reload starts over.
+let reopenPanel = false;
+let sentChoices: PanelChoices | null = null;
+
+export function reopenPastSessions(): void {
+  reopenPanel = true;
+}
+
+/** True once after `reopenPastSessions`, for the workspace screen's state. */
+export function takePastSessionsReopen(): boolean {
+  const reopen = reopenPanel;
+  reopenPanel = false;
+  if (!reopen) sentChoices = null;
+  return reopen;
+}
 
 const PAST_SESSIONS_HARNESS_NAMES: Record<PastSessionsHarness, string> = {
   claude: "Claude Code",
@@ -64,22 +94,30 @@ export function PastSessionsPanel(
     },
 ) {
   const offered = pastSessionsHarnesses(status.signals);
-  const [windowDays, setWindowDays] = useState(PAST_SESSIONS_DEFAULT_WINDOW);
-  const [excludeText, setExcludeText] = useState("");
-  const [scopeOpen, setScopeOpen] = useState(false);
-  const [picked, setPicked] = useState<PastSessionsHarness | null>(null);
+  const [windowDays, setWindowDays] = useState<PastSessionsWindow>(
+    sentChoices?.windowDays ?? PAST_SESSIONS_DEFAULT_WINDOW,
+  );
+  const [excludeText, setExcludeText] = useState(
+    sentChoices?.excludeText ?? "",
+  );
+  const [scopeOpen, setScopeOpen] = useState(sentChoices?.scopeOpen ?? false);
+  const [picked, setPicked] = useState<PastSessionsHarness | null>(
+    sentChoices?.picked ?? null,
+  );
   const [name, setName] = useState("");
   const [installed, setInstalled] = useState<Record<string, boolean> | null>(
     null,
   );
-  // Swampify! saves the kick-off, then launches it at once: the click is the
+  // Launch saves the kick-off, then launches it at once: the click is the
   // trust confirmation, as it is on the Swampify page.
   const launcher = useLaunch(client, onStatus);
+  // Use my own agent saves the same kick-off and opens nothing.
+  const owner = useHandOff(client, onStatus);
   const [saved, setSaved] = useState<StartStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const busy = saving || launcher.running;
-  const error = saveError ?? launcher.error;
+  const busy = saving || launcher.running || owner.running;
+  const error = saveError ?? launcher.error ?? owner.error;
   // The card and the panel replace each other, so focus follows the swap.
   const backRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLButtonElement>(null);
@@ -109,12 +147,18 @@ export function PastSessionsPanel(
   const harness = picked !== null && offered.includes(picked)
     ? picked
     : offered.find((h) => installed?.[h] !== false) ?? offered[0];
+  const launchLabel = harness
+    ? `Launch ${PAST_SESSIONS_HARNESS_NAMES[harness]}`
+    : "Launch";
   const suggested = swampifyWorkspaceName(taken);
   const finalName = name.trim() || suggested;
   const nameOk = isValidWorkspaceName(finalName);
   const harnessOk = harness !== undefined && installed?.[harness] !== false;
   const canSubmit = !busy && !disabled &&
     (saved !== null || (nameOk && harnessOk));
+  // Another agent app reads the brief, so this agent need not be installed.
+  const canHandOff = !busy && !disabled &&
+    (saved !== null || (nameOk && harness !== undefined));
 
   if (!open) {
     return (
@@ -134,32 +178,42 @@ export function PastSessionsPanel(
     );
   }
 
+  // Saved once: a retry, or the other button after one, reuses the task.
+  const save = async (ownAgent: boolean): Promise<boolean> => {
+    if (saved !== null) return true;
+    if (harness === undefined) return false;
+    sentChoices = { windowDays, excludeText, scopeOpen, picked: harness };
+    const exclude = parseExcludedPaths(excludeText);
+    setSaving(true);
+    setSaveError(null);
+    try {
+      setSaved(
+        await client.request<StartStatus>("start.swampify.kickoff", {
+          name: finalName,
+          windowDays,
+          ...(exclude.length > 0 ? { exclude } : {}),
+          harness,
+          ...(ownAgent ? { ownAgent: true } : {}),
+        }),
+      );
+      return true;
+    } catch (err) {
+      setSaveError(describeChooseError(err));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-    // A retry after a failed launch only launches: the task is already saved.
-    if (saved === null) {
-      if (harness === undefined) return;
-      const exclude = parseExcludedPaths(excludeText);
-      setSaving(true);
-      setSaveError(null);
-      try {
-        setSaved(
-          await client.request<StartStatus>("start.swampify.kickoff", {
-            name: finalName,
-            windowDays,
-            ...(exclude.length > 0 ? { exclude } : {}),
-            harness,
-          }),
-        );
-      } catch (err) {
-        setSaveError(describeChooseError(err));
-        return;
-      } finally {
-        setSaving(false);
-      }
-    }
-    await launcher.launch();
+    if (await save(false)) await launcher.launch();
+  };
+
+  const useOwnAgent = async () => {
+    if (!canHandOff) return;
+    if (await save(true)) await owner.handOff();
   };
 
   return (
@@ -209,16 +263,30 @@ export function PastSessionsPanel(
           <label className="start-field-label" htmlFor="start-past-window">
             Window
           </label>
-          <select
-            id="start-past-window"
-            className="start-input start-select"
-            value={windowDays}
-            onChange={(e) => setWindowDays(Number(e.target.value))}
-          >
-            {PAST_SESSIONS_WINDOWS.map((days) => (
-              <option key={days} value={days}>Last {days} days</option>
-            ))}
-          </select>
+          <div className="start-past-control">
+            <select
+              id="start-past-window"
+              className="start-input start-select"
+              value={String(windowDays)}
+              onChange={(e) =>
+                setWindowDays(parsePastSessionsWindow(e.target.value))}
+              aria-describedby={isLongPastSessionsWindow(windowDays)
+                ? "start-past-window-hint"
+                : undefined}
+            >
+              {PAST_SESSIONS_WINDOWS.map((w) => (
+                <option key={String(w)} value={String(w)}>
+                  {pastSessionsWindowLabel(w)}
+                </option>
+              ))}
+            </select>
+            {isLongPastSessionsWindow(windowDays) && (
+              <p className="start-hint" id="start-past-window-hint">
+                A longer window takes longer to assess. The agent says how many
+                sessions it will read and asks before it starts.
+              </p>
+            )}
+          </div>
         </div>
         <div className="start-past-row">
           <div className="start-field-label" id="start-past-scope-label">
@@ -285,7 +353,6 @@ export function PastSessionsPanel(
                     value={id}
                     checked={harness === id}
                     onChange={() => setPicked(id)}
-                    disabled={missing}
                   />
                   <AgentBadge id={id} size="md" />
                   <span className="start-past-agent-name">
@@ -324,9 +391,11 @@ export function PastSessionsPanel(
         )
         : (
           <p className="start-hint start-past-note">
-            Swampify! creates the workspace and opens{" "}
-            {harness ? PAST_SESSIONS_HARNESS_NAMES[harness] : "your agent"}{" "}
-            in it. Clicking it confirms you trust that folder.
+            Both create the workspace and save the brief. {launchLabel}{" "}
+            opens it there, and clicking it confirms you trust that folder.{" "}
+            {OWN_AGENT_LABEL}{" "}
+            gives you a prompt to paste into the agent app you already use;
+            nothing opens.
           </p>
         )}
       <div className="start-actions">
@@ -351,6 +420,14 @@ export function PastSessionsPanel(
               Cancel
             </button>
           )}
+        <button
+          type="button"
+          className="start-secondary"
+          disabled={!canHandOff}
+          onClick={() => void useOwnAgent()}
+        >
+          {owner.running ? "Saving the brief…" : OWN_AGENT_LABEL}
+        </button>
         <button type="submit" className="start-primary" disabled={!canSubmit}>
           {saving
             ? "Setting up…"
@@ -358,7 +435,7 @@ export function PastSessionsPanel(
             ? "Opening your agent…"
             : saved !== null
             ? "Try again"
-            : "Swampify!"}
+            : launchLabel}
         </button>
       </div>
     </form>

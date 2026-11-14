@@ -36,6 +36,7 @@ import {
   importProblem,
   initialAgentPick,
   isHttpsUrl,
+  isLongPastSessionsWindow,
   isValidWorkspaceName,
   joinNames,
   keepSuggestion,
@@ -52,10 +53,13 @@ import {
   nextWorkspaceOrder,
   orderExamples,
   parseExcludedPaths,
+  parsePastSessionsWindow,
   parseTokenFromHash,
   parseWorkspaceOrder,
+  PAST_SESSIONS_DEFAULT_WINDOW,
   PAST_SESSIONS_WINDOWS,
   pastSessionsHarnesses,
+  pastSessionsWindowLabel,
   pathLabel,
   pickFirstTaskIdea,
   planHistorySync,
@@ -951,7 +955,39 @@ Deno.test("backRequest: each screen goes back one step toward all workspaces", (
   assertEquals(backRequest({ screen: "agent", taskId: "t1" }), "start.back");
   assertEquals(backRequest({ screen: "trust", taskId: "t1" }), "start.back");
   assertEquals(backRequest({ screen: "launched", tasks }), "start.tasks.show");
+  assertEquals(
+    backRequest({ screen: "handed_off", taskId: "t1", tasks }),
+    "start.handoff.leave",
+  );
   assertEquals(backRequest({ screen: "sign_in" }), null);
+});
+
+Deno.test("backRequest: a launch step goes back where it was reached from", () => {
+  const tasks = [TASK];
+  for (const screen of ["agent", "trust", "launched", "handed_off"] as const) {
+    assertEquals(
+      backRequest({ screen, taskId: "t1", tasks, reachedFrom: "kickoff" }),
+      "start.workspace.leave",
+      screen,
+    );
+  }
+  assertEquals(
+    backRequest({ screen: "agent", taskId: "t1", tasks, reachedFrom: "home" }),
+    "start.tasks.show",
+  );
+  assertEquals(
+    backRequest({ screen: "trust", taskId: "t1", tasks, reachedFrom: "home" }),
+    "start.tasks.show",
+  );
+  assertEquals(
+    backRequest({
+      screen: "handed_off",
+      taskId: "t1",
+      tasks,
+      reachedFrom: "home",
+    }),
+    "start.handoff.leave",
+  );
 });
 
 Deno.test("navDepth: Back never climbs, and no forward step climbs more than one", () => {
@@ -964,12 +1000,17 @@ Deno.test("navDepth: Back never climbs, and no forward step climbs more than one
     { screen: "agent", taskId: "t1", tasks },
     { screen: "trust", taskId: "t1", tasks },
     { screen: "launched", taskId: "t1", tasks },
+    { screen: "handed_off", taskId: "t1", tasks },
   ];
-  const after: Record<string, { screen: "workspace" | "home" | "task" }> = {
+  const after: Record<
+    string,
+    { screen: "workspace" | "home" | "task" | "agent" }
+  > = {
     "start.workspace.leave": { screen: "workspace" },
     "start.tasks.show": { screen: "home" },
     "start.new_task.cancel": { screen: "home" },
     "start.back": { screen: "task" },
+    "start.handoff.leave": { screen: "agent" },
   };
   for (const status of cases) {
     const target = after[backRequest(status) ?? ""];
@@ -983,6 +1024,7 @@ Deno.test("navDepth: Back never climbs, and no forward step climbs more than one
     ["home", "task"],
     ["task", "agent"],
     ["trust", "launched"],
+    ["trust", "handed_off"],
   ];
   for (const [from, to] of forward) {
     const climb = navDepth({ screen: to }) - navDepth({ screen: from });
@@ -998,6 +1040,14 @@ Deno.test("railRequest: only steps behind the screen are links, and a launched t
   assertEquals(railRequest("task", "task"), null);
   assertEquals(railRequest("task", "agent"), "start.back");
   assertEquals(railRequest("task", "trust"), "start.back");
+  assertEquals(railRequest("workspace", "handed_off"), "start.workspace.leave");
+  assertEquals(railRequest("task", "handed_off"), "start.back");
+  assertEquals(railRequest("task", "handed_off", "kickoff"), null);
+  assertEquals(railRequest("task", "agent", "kickoff"), null);
+  assertEquals(
+    railRequest("workspace", "handed_off", "kickoff"),
+    "start.workspace.leave",
+  );
   assertEquals(railRequest("task", "launched"), null);
 });
 
@@ -1115,6 +1165,37 @@ Deno.test("parseExcludedPaths: one path per line, trimmed, no blanks or repeats"
 
 Deno.test("PAST_SESSIONS_WINDOWS: offers the 30-day default", () => {
   assertEquals(PAST_SESSIONS_WINDOWS.includes(30), true);
+});
+
+Deno.test("PAST_SESSIONS_WINDOWS: offers 7 to 365 days and all history, 30 by default", () => {
+  assertEquals(PAST_SESSIONS_WINDOWS, [7, 30, 90, 180, 365, "all"]);
+  assertEquals(PAST_SESSIONS_DEFAULT_WINDOW, 30);
+  assertEquals(
+    PAST_SESSIONS_WINDOWS.map(pastSessionsWindowLabel),
+    [
+      "Last 7 days",
+      "Last 30 days",
+      "Last 90 days",
+      "Last 180 days",
+      "Last 365 days",
+      "All history",
+    ],
+  );
+});
+
+Deno.test("parsePastSessionsWindow: reads each choice back and defaults otherwise", () => {
+  for (const w of PAST_SESSIONS_WINDOWS) {
+    assertEquals(parsePastSessionsWindow(String(w)), w);
+  }
+  assertEquals(parsePastSessionsWindow("45"), 30);
+  assertEquals(parsePastSessionsWindow(""), 30);
+});
+
+Deno.test("isLongPastSessionsWindow: only the windows past 90 days and all history", () => {
+  assertEquals(
+    PAST_SESSIONS_WINDOWS.filter(isLongPastSessionsWindow),
+    [180, 365, "all"],
+  );
 });
 
 Deno.test("launchFailureLine: lists what was tried and suggests TERMINAL on a desktop that found nothing", () => {

@@ -23,6 +23,7 @@ import {
   actionErrorCode,
   attachedReply,
   isDelegatedAction,
+  swampifyHandOffRequest,
   swampifyLaunchRequest,
 } from "./local_actions.ts";
 
@@ -241,5 +242,25 @@ Deno.test("swampifyLaunchRequest: needs the trust confirmation, a brief and an a
     ]
   ) {
     assert("error" in swampifyLaunchRequest(payload), JSON.stringify(payload));
+  }
+});
+
+Deno.test("swampifyHandOffRequest: needs a brief and an agent that can't read as a flag, but no trust", () => {
+  assertEquals(
+    swampifyHandOffRequest({ text: "Automate it", harness: "claude" }),
+    { text: "Automate it", harness: "claude" },
+  );
+  for (
+    const payload of [
+      { text: " ", harness: "claude" },
+      { text: "Automate it", harness: "--yolo" },
+      { text: "Automate it" },
+      null,
+    ]
+  ) {
+    assert(
+      "error" in swampifyHandOffRequest(payload),
+      JSON.stringify(payload),
+    );
   }
 });

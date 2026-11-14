@@ -32,6 +32,16 @@ export const SWAMPIFY_KICKOFF_WINDOW_MAX = 365;
 export const SWAMPIFY_KICKOFF_EXCLUDE_MAX = 20;
 export const SWAMPIFY_KICKOFF_PATH_MAX = 512;
 
+/** a window with no start date; the skill reads it as no `since` */
+export const SWAMPIFY_KICKOFF_ALL_HISTORY = "all";
+
+/** the all-history window line; its wording is pinned on both sides */
+export const SWAMPIFY_KICKOFF_ALL_HISTORY_LINE = "Window: all history";
+
+export type SwampifyKickoffWindow =
+  | number
+  | typeof SWAMPIFY_KICKOFF_ALL_HISTORY;
+
 export type SwampifyKickoffHarness = "claude" | "codex";
 
 export const SWAMPIFY_KICKOFF_HARNESSES: readonly SwampifyKickoffHarness[] = [
@@ -69,21 +79,22 @@ function isAcceptedPath(path: string, os: string): boolean {
  */
 export class SwampifyKickoff {
   private constructor(
-    readonly windowDays: number,
+    readonly windowDays: SwampifyKickoffWindow,
     readonly exclude: readonly string[],
   ) {}
 
   static create(
-    input: { windowDays: number; exclude?: readonly string[] },
+    input: { windowDays: SwampifyKickoffWindow; exclude?: readonly string[] },
     os: string = Deno.build.os,
   ): SwampifyKickoff {
     const { windowDays } = input;
     if (
-      !Number.isInteger(windowDays) || windowDays < 1 ||
-      windowDays > SWAMPIFY_KICKOFF_WINDOW_MAX
+      windowDays !== SWAMPIFY_KICKOFF_ALL_HISTORY &&
+      (!Number.isInteger(windowDays) || windowDays < 1 ||
+        windowDays > SWAMPIFY_KICKOFF_WINDOW_MAX)
     ) {
       throw new UserError(
-        `Choose a window of 1 to ${SWAMPIFY_KICKOFF_WINDOW_MAX} days.`,
+        `Choose a window of 1 to ${SWAMPIFY_KICKOFF_WINDOW_MAX} days, or all history.`,
         "invalid_window",
       );
     }
@@ -134,7 +145,9 @@ export class SwampifyKickoff {
       SWAMPIFY_KICKOFF_TITLE,
       SWAMPIFY_KICKOFF_MARKER,
       "",
-      `Window: last ${this.windowDays} days`,
+      this.windowDays === SWAMPIFY_KICKOFF_ALL_HISTORY
+        ? SWAMPIFY_KICKOFF_ALL_HISTORY_LINE
+        : `Window: last ${this.windowDays} days`,
       "Scope: every session on this machine",
       ...excluded,
       "",

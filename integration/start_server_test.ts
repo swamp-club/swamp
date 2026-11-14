@@ -947,6 +947,91 @@ Deno.test("startStartServer: a dashboard tab keeps the server up after a launch,
   assertEquals(hub.shutdowns, 1);
 });
 
+Deno.test("startStartServer: Back from a hand-off returns to the agent step, and choosing again does not show the prompt", async () => {
+  await withStartServer(async ({ handle }) => {
+    const client = await Client.open(handle.port);
+    try {
+      await walkToTrust(client);
+      assertEquals(
+        (await client.request("start.handoff")).screen,
+        "handed_off",
+      );
+      const back = await client.request("start.handoff.leave");
+      assertEquals(back.screen, "trust");
+      const chosen = await client.request("start.harness.choose", {
+        id: "claude",
+      });
+      assertEquals(chosen.screen, "trust");
+      assertEquals(
+        (await client.request("start.handoff")).screen,
+        "handed_off",
+      );
+      assertEquals((await client.request("start.back")).screen, "task");
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a kick-off's launch steps say they were reached from the kick-off", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    fakes.swampify = true;
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      const saved = await client.request("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: 30,
+        harness: "claude",
+        ownAgent: true,
+      });
+      assertEquals(saved.reachedFrom, "kickoff");
+      const handed = await client.request("start.handoff");
+      assertEquals(handed.reachedFrom, "kickoff");
+      const left = await client.request("start.workspace.leave");
+      assertEquals(left.screen, "workspace");
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a task opened from home at its agent step says so, until it goes back to its editor", async () => {
+  await withStartServer(async ({ handle }) => {
+    const client = await Client.open(handle.port);
+    try {
+      await walkToTrust(client);
+      const trust = await client.request("start.status");
+      assertEquals(trust.screen, "trust");
+      assertEquals(trust.reachedFrom, undefined);
+      await client.request("start.tasks.show");
+      const opened = await client.request("start.task.open", {
+        id: trust.taskId,
+      });
+      assertEquals(opened.screen, "trust");
+      assertEquals(opened.reachedFrom, "home");
+      const editor = await client.request("start.back");
+      assertEquals(editor.screen, "task");
+      assertEquals(editor.reachedFrom, undefined);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a hand-off ends paused, not launched, even after a copy", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    const client = await Client.open(handle.port);
+    await walkToTrust(client);
+    const handed = await client.request("start.handoff");
+    assertEquals(handed.screen, "handed_off");
+    await client.request("start.copied");
+    await client.close();
+    assertEquals(await handle.ended, { kind: "paused" });
+    assertEquals(fakes.opened, []);
+  }, { ...LONG, afterLaunchIdleMs: 20, beforeLaunchIdleMs: 20 });
+});
+
 Deno.test("startStartServer: ends paused once the page closes after a copy-command launch", async () => {
   await withStartServer(async ({ handle, fakes }) => {
     const client = await Client.open(handle.port);
@@ -2003,6 +2088,94 @@ Deno.test("startStartServer: with Swampify off, the status omits it and a kick-o
       assertEquals(opened, []);
       assertEquals(fakes.briefs, []);
       await assertRejects(() => Deno.stat(workspaceDir(dataDir, "swampify")));
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: an all-history kick-off for your own agent saves the brief with the pinned window line and opens nothing", async () => {
+  await withStartServer(async ({ handle, fakes, dataDir }) => {
+    fakes.swampify = true;
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      const saved = await client.request("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: "all",
+        exclude: ["~/src/client-repo"],
+        harness: "claude",
+        ownAgent: true,
+      });
+      assertEquals(saved.screen, "trust");
+      const handed = await client.request("start.handoff");
+      assertEquals(handed.screen, "handed_off");
+      assertEquals(handed.launch, undefined);
+      assertEquals(fakes.opened, []);
+      assertEquals(fakes.briefs.length, 1);
+      const { briefFile, content } = fakes.briefs[0];
+      const lines = content.split("\n");
+      const marker = lines.indexOf("<!-- swampify kick-off v1 -->");
+      assert(marker > 0, content);
+      // Pinned word for word with the swampify skill.
+      assertEquals(lines[marker + 2], "Window: all history");
+      assert(!content.includes("Window: last"));
+      const ws = workspaceDir(dataDir, "swampify");
+      assertEquals(
+        handed.ownAgentPrompt,
+        `Read the brief at ${
+          join(ws, ...briefFile.split("/"))
+        } and follow it. If the swampify skill isn't loaded, read .claude/skills/swampify/SKILL.md in the workspace the brief names.`,
+      );
+      assert(!handed.ownAgentPrompt!.includes("client-repo"));
+      assertEquals((await client.request("start.status")).screen, "handed_off");
+      const launched = await client.request("start.launch", {
+        trustConfirmed: true,
+      });
+      assertEquals(launched.screen, "launched");
+      assertEquals(fakes.opened.length, 1);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: with Swampify off, a kick-off for your own agent is refused too", async () => {
+  await withStartServer(async ({ handle, fakes, dataDir, opened }) => {
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      const refused = await client.requestError("start.swampify.kickoff", {
+        name: "swampify",
+        windowDays: "all",
+        harness: "claude",
+        ownAgent: true,
+      });
+      assertEquals(refused.code, "swampify_off");
+      assertEquals(opened, []);
+      assertEquals(fakes.briefs, []);
+      await assertRejects(() => Deno.stat(workspaceDir(dataDir, "swampify")));
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a kick-off window other than 1 to 365 days or all is refused", async () => {
+  await withStartServer(async ({ handle, fakes, opened }) => {
+    fakes.swampify = true;
+    fakes.signals = { ...fakes.signals, claudeTranscripts: true };
+    const client = await Client.open(handle.port);
+    try {
+      for (const windowDays of ["ALL", "forever", 0, 1.5]) {
+        const refused = await client.requestError("start.swampify.kickoff", {
+          name: "swampify",
+          windowDays,
+          harness: "claude",
+        });
+        assertEquals(refused.code, "invalid_request", String(windowDays));
+      }
+      assertEquals(opened, []);
     } finally {
       await client.close();
     }

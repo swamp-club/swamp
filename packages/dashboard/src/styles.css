@@ -181,7 +181,9 @@ a.start-chip-dashboard {
   cursor: pointer;
 }
 a.start-dashboard-link {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   text-decoration: none;
 }
 
@@ -3692,6 +3694,46 @@ a.cron-badge:hover {
 }
 
 /* swamp start: numbered steps above the command to paste */
+.start-next {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.start-next .start-copy-steps {
+  margin: 0;
+}
+
+.start-command-wrap {
+  position: relative;
+  margin-bottom: 8px;
+}
+
+.start-command-wrap .start-command-text {
+  padding-right: 48px;
+}
+
+.start-copy-icon {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.start-copy-icon:hover {
+  color: var(--text-1);
+}
+
 .start-copy-steps {
   margin: 0 0 10px;
   padding-left: 1.4em;

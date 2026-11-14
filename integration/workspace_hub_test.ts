@@ -30,6 +30,7 @@ import type { SwampifyLaunchRequest } from "../src/serve/local/local_actions.ts"
 import type {
   StartLaunchEvent,
   StartPageAddress,
+  StartStatus,
 } from "../src/libswamp/start/start.ts";
 import { TrustedHosts } from "../src/serve/local/trusted_hosts.ts";
 
@@ -161,6 +162,7 @@ async function withHub(
     actions?: ActionRunner;
     trustedHosts?: TrustedHosts;
     launchSwampify?: WorkspaceHubDeps["launchSwampify"];
+    handOffSwampify?: WorkspaceHubDeps["handOffSwampify"];
   } = {},
 ): Promise<void> {
   const spawned: string[] = [];
@@ -196,6 +198,9 @@ async function withHub(
     ...(options.launchSwampify === undefined
       ? {}
       : { launchSwampify: options.launchSwampify }),
+    ...(options.handOffSwampify === undefined
+      ? {}
+      : { handOffSwampify: options.handOffSwampify }),
     ...(options.trustedHosts === undefined
       ? {}
       : { trustedHosts: options.trustedHosts }),
@@ -1183,6 +1188,95 @@ Deno.test("workspaceHub: a Swampify launch without the trust confirmation launch
     assertEquals(calls, []);
     await closeSocket(ws);
   }, { launchSwampify: launch });
+});
+
+const PROMPT =
+  "Read the brief at /repos/alpha/tasks/2026-11-14-x.md and follow it. If the swampify skill isn't loaded, read .claude/skills/swampify/SKILL.md in the workspace the brief names.";
+
+function completedWithPrompt(): StartLaunchEvent {
+  return {
+    kind: "completed",
+    data: { ownAgentPrompt: PROMPT } as unknown as StartStatus,
+  };
+}
+
+Deno.test("workspaceHub: a Swampify launch with no terminal replies with the prompt for your own agent", async () => {
+  const { launch } = fakeSwampifyLaunch([
+    {
+      kind: "launched",
+      method: "copy_command",
+      command: "cd /repos/alpha && claude",
+      opened: false,
+    },
+    completedWithPrompt(),
+  ]);
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify(LAUNCH_FRAME));
+    await waitFor(() => seen.length === 1, "the launch reply");
+    assertEquals(seen[0], {
+      type: "swampify.launch",
+      id: "s1",
+      payload: {
+        data: {
+          opened: false,
+          command: "cd /repos/alpha && claude",
+          prompt: PROMPT,
+        },
+      },
+    });
+    await closeSocket(ws);
+  }, { launchSwampify: launch });
+});
+
+Deno.test("workspaceHub: Swampify's Use my own agent saves the brief without a trust confirmation and replies with the prompt", async () => {
+  const { launch: handOff, calls } = fakeSwampifyLaunch([
+    { kind: "checking" },
+    { kind: "brief_written", path: "/repos/alpha/tasks/2026-11-14-x.md" },
+    completedWithPrompt(),
+  ]);
+  const { launch, calls: launches } = fakeSwampifyLaunch([]);
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify({
+      type: "swampify.handoff",
+      id: "h1",
+      payload: { text: "Automate it", harness: "claude" },
+    }));
+    await waitFor(() => seen.length === 1, "the hand-off reply");
+    assertEquals(seen[0], {
+      type: "swampify.handoff",
+      id: "h1",
+      payload: { data: { prompt: PROMPT } },
+    });
+    assertEquals(calls, [{
+      repoDir: "/repos/alpha",
+      request: { text: "Automate it", harness: "claude" },
+      page: { origin: `http://${base}`, workspaceName: "alpha" },
+    }]);
+    assertEquals(launches, []);
+    await closeSocket(ws);
+  }, { launchSwampify: launch, handOffSwampify: handOff });
+});
+
+Deno.test("workspaceHub: with no hand-off, Use my own agent is refused like any write", async () => {
+  await withHub(async ({ base }) => {
+    const ws = await openSocket(`ws://${base}/w/alpha/`);
+    const seen = frames(ws);
+    ws.send(JSON.stringify({
+      type: "swampify.handoff",
+      id: "h1",
+      payload: { text: "Automate it", harness: "claude" },
+    }));
+    await waitFor(() => seen.length === 1, "the refusal");
+    assertEquals(
+      (seen[0].error as { code: string }).code,
+      "not_available_locally",
+    );
+    await closeSocket(ws);
+  });
 });
 
 Deno.test("workspaceHub: with no launcher, a Swampify launch is refused like any write", async () => {

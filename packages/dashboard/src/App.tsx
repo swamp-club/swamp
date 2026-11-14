@@ -191,7 +191,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
   const approvals = useApprovals();
   const agentSessionsVisible = useAgentSessionsVisible();
-  const swampifyVisible = useSwampifyVisible();
+  const swampifyVisible = useSwampifyVisible(view === "swampify");
   // Only gates that can still be decided: expired ones are not pending.
   const approvalCount = pendingApprovals(approvals.data).length;
 

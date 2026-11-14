@@ -50,7 +50,11 @@ import {
 import { SwampifyPage } from "./SwampifyPage.tsx";
 import { type LaunchState, OptionReview } from "./SwampifyReview.tsx";
 import { builtOptions, BuiltPane } from "./SwampifyBuilt.tsx";
-import { offerView, type SwampifyLauncher } from "../../lib/swampify_view.ts";
+import {
+  offerView,
+  type SwampifyHandOff,
+  type SwampifyLauncher,
+} from "../../lib/swampify_view.ts";
 
 const noop = () => {};
 
@@ -140,6 +144,7 @@ function review(
     briefShown = true,
     row,
     launch,
+    handOff,
     launchState,
   }: {
     set?: SwampifyCandidateSet;
@@ -148,6 +153,7 @@ function review(
     briefShown?: boolean;
     row?: SwampifyRow;
     launch?: SwampifyLauncher;
+    handOff?: SwampifyHandOff;
     launchState?: LaunchState;
   } = {},
 ): string {
@@ -165,6 +171,7 @@ function review(
       onBack={noop}
       initialBriefShown={briefShown}
       launch={launch}
+      handOff={handOff}
       initialLaunch={launchState}
     />,
   );
@@ -172,6 +179,11 @@ function review(
 
 const launcher: SwampifyLauncher = () =>
   Promise.resolve({ opened: true, command: "claude" });
+
+const PROMPT =
+  "Read the brief at /repo/tasks/2026-11-14-build.md and follow it. If the swampify skill isn't loaded, read .claude/skills/swampify/SKILL.md in the workspace the brief names.";
+
+const handOff: SwampifyHandOff = () => Promise.resolve({ prompt: PROMPT });
 
 function read(reading: SwampifyComparisonReading): ComparisonRecord {
   return { state: "read", reading };
@@ -182,7 +194,9 @@ Deno.test("SwampifyPage: with no candidate set listed it says how to get one", (
     ...state({ setRow: loadable(undefined) }),
     set: loadable(null),
   });
+  assertStringIncludes(html, "Waiting for your agent.");
   assertStringIncludes(html, "No assessment yet.");
+  assertStringIncludes(html, "The options show up here on their own.");
   assert(!html.includes("swamp start"));
   assert(!html.includes("<table"));
 });
@@ -397,37 +411,37 @@ Deno.test("OptionReview: the shown brief has a copy icon button in it", () => {
   );
 });
 
-Deno.test("OptionReview: under serve there is no Swampify! and Show brief is the action", () => {
+Deno.test("OptionReview: under serve there is no launch and Show brief is the action", () => {
   const html = review(fixtureOffer("offered"));
-  assert(!html.includes("Swampify!"));
+  assert(!html.includes("Launch Claude Code"));
   assertStringIncludes(
     html,
     'class="sw-btn sw-btn-primary" aria-expanded="true" aria-controls="sw-brief">Hide brief</button>',
   );
 });
 
-Deno.test("OptionReview: on the local dashboard Swampify! leads, names the agent and asks for trust", () => {
+Deno.test("OptionReview: on the local dashboard Launch leads, names the agent and asks for trust", () => {
   const html = review(fixtureOffer("offered"), {
     launch: launcher,
     briefShown: false,
   });
   assertStringIncludes(
     html,
-    '<button type="button" class="sw-btn sw-btn-primary">Swampify!</button>',
+    '<button type="button" class="sw-btn sw-btn-primary">Launch Claude Code</button>',
   );
   assertStringIncludes(
     html,
     'class="sw-btn" aria-expanded="false" aria-controls="sw-brief">Show brief</button>',
   );
-  assert(html.indexOf("Swampify!") < html.indexOf("Show brief"));
-  assertStringIncludes(html, "Swampify! opens Claude Code in this repo");
+  assert(html.indexOf("Launch Claude Code<") < html.indexOf("Show brief"));
+  assertStringIncludes(html, "Launch Claude Code opens it in this repo");
   assertStringIncludes(
     html,
-    "Clicking Swampify! confirms you trust this folder.",
+    "Clicking Launch Claude Code confirms you trust this folder.",
   );
 });
 
-Deno.test("OptionReview: an opened agent is said, and Swampify! can't run twice", () => {
+Deno.test("OptionReview: an opened agent is said, and Launch can't run twice", () => {
   const html = review(fixtureOffer("offered"), {
     launch: launcher,
     launchState: { kind: "opened" },
@@ -435,17 +449,69 @@ Deno.test("OptionReview: an opened agent is said, and Swampify! can't run twice"
   });
   assertStringIncludes(html, "Opened Claude Code");
   assertStringIncludes(html, "in a new terminal.");
-  assertStringIncludes(html, 'disabled="">Swampify!</button>');
+  assertStringIncludes(html, 'disabled="">Launch Claude Code</button>');
   assert(!html.includes("confirms you trust"));
 });
 
-Deno.test("OptionReview: with no terminal to open, the command to run is shown", () => {
+Deno.test("OptionReview: with no terminal to open, the prompt for your own agent leads and the command is gone", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    handOff,
+    launchState: {
+      kind: "command",
+      command: "cd /repo && claude",
+      prompt: PROMPT,
+    },
+    briefShown: false,
+  });
+  assertStringIncludes(html, "No terminal could be opened here");
+  assertStringIncludes(html, "Open your agent app");
+  assertStringIncludes(html, PROMPT.replaceAll("'", "&#x27;"));
+  assertStringIncludes(html, 'aria-label="Copy prompt"');
+  assert(!html.includes("cd /repo"));
+  assert(!html.includes('role="alert"'));
+});
+
+Deno.test("OptionReview: Use my own agent sits beside Launch on the local dashboard only", () => {
+  const local = review(fixtureOffer("offered"), {
+    launch: launcher,
+    handOff,
+    briefShown: false,
+  });
+  assertStringIncludes(
+    local,
+    '<button type="button" class="sw-btn">Use my own agent</button>',
+  );
+  assert(
+    local.indexOf("Launch Claude Code") < local.indexOf("Use my own agent"),
+  );
+  assertStringIncludes(local, "nothing opens.");
+  const serve = review(fixtureOffer("offered"));
+  assert(!serve.includes("Use my own agent"));
+});
+
+Deno.test("OptionReview: after Use my own agent the copied prompt shows and nothing can run twice", () => {
+  const html = review(fixtureOffer("offered"), {
+    launch: launcher,
+    handOff,
+    launchState: { kind: "handed", prompt: PROMPT, copied: true },
+    briefShown: false,
+  });
+  assertStringIncludes(html, "The brief is saved and nothing opened.");
+  assertStringIncludes(html, "The prompt below is copied.");
+  assertStringIncludes(html, 'aria-label="Copied"');
+  assertStringIncludes(html, 'disabled="">Launch Claude Code</button>');
+  assertStringIncludes(html, 'disabled="">Use my own agent</button>');
+  assert(!html.includes("Opened Claude Code"));
+});
+
+Deno.test("OptionReview: a no-terminal launch without a prompt still shows the command", () => {
   const html = review(fixtureOffer("offered"), {
     launch: launcher,
     launchState: { kind: "command", command: "cd /repo && claude" },
     briefShown: false,
   });
-  assertStringIncludes(html, "No terminal could be opened.");
+  assertStringIncludes(html, "No terminal could be opened here.");
   assertStringIncludes(
     html,
     '<pre class="sw-brief">cd /repo &amp;&amp; claude</pre>',
@@ -461,7 +527,7 @@ Deno.test("OptionReview: a refused launch says why and leaves Show brief", () =>
   assertStringIncludes(html, 'role="alert">Sign in to Swamp Club first.');
   assertStringIncludes(html, "You can still show the brief and copy it.");
   assertStringIncludes(html, ">Show brief</button>");
-  assert(!html.includes('disabled="">Swampify!'));
+  assert(!html.includes('disabled="">Launch Claude Code'));
 });
 
 Deno.test("OptionReview: a built option shows what was built and its comparison, with no brief", () => {

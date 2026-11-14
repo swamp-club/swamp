@@ -35,6 +35,7 @@ import {
   type OfferView,
   type OptionView,
   startHarnessId,
+  type SwampifyHandOff,
   type SwampifyLauncher,
 } from "../../lib/swampify_view.ts";
 import { formatCount, pluralize } from "../../lib/format.ts";
@@ -57,6 +58,8 @@ export interface OptionReviewProps {
   readonly onBack: () => void;
   /** The local dashboard's launch; absent under serve. */
   readonly launch?: SwampifyLauncher;
+  /** The local dashboard's Use my own agent; absent under serve. */
+  readonly handOff?: SwampifyHandOff;
   /** Tests start with the brief shown. */
   readonly initialBriefShown?: boolean;
   /** Tests start in a launch state. */
@@ -76,8 +79,57 @@ export type LaunchState =
   | { readonly kind: "idle" }
   | { readonly kind: "launching" }
   | { readonly kind: "opened" }
-  | { readonly kind: "command"; readonly command: string }
+  | {
+    readonly kind: "command";
+    readonly command: string;
+    readonly prompt?: string;
+  }
+  | { readonly kind: "handing_off" }
+  | {
+    readonly kind: "handed";
+    readonly prompt: string;
+    readonly copied: boolean;
+  }
   | { readonly kind: "failed"; readonly message: string };
+
+/** A prompt for the user's own agent, with its Copy button. */
+function PromptBlock(
+  { prompt, copiedAlready }: { prompt: string; copiedAlready: boolean },
+) {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">(
+    copiedAlready ? "copied" : "idle",
+  );
+  return (
+    <>
+      <div className="sw-brief-wrap">
+        <pre className="sw-brief" aria-label="Prompt for your agent">
+          {prompt}
+        </pre>
+        <button
+          type="button"
+          className="sw-icon-btn sw-copy"
+          aria-label={copied === "copied" ? "Copied" : "Copy prompt"}
+          title={copied === "copied" ? "Copied" : "Copy prompt"}
+          onClick={() =>
+            void copyText(prompt).then((ok) =>
+              setCopied(ok ? "copied" : "failed")
+            )}
+        >
+          {copied === "copied" ? <CheckIcon /> : <CopyIcon />}
+        </button>
+      </div>
+      {copied === "failed" && (
+        <p className="sw-fail sw-small">
+          The browser refused the clipboard. Select the prompt above and copy
+          it.
+        </p>
+      )}
+    </>
+  );
+}
+
+const OWN_AGENT_STEPS =
+  "Open your agent app, such as Claude Code, Codex or Zed, and paste it. It points the agent at the brief.";
 
 function HandOff(
   {
@@ -86,6 +138,7 @@ function HandOff(
     becomes,
     harness,
     launch,
+    handOff,
     initialShown = false,
     initialLaunch,
   }: {
@@ -94,6 +147,7 @@ function HandOff(
     becomes: string;
     harness: string;
     launch: SwampifyLauncher | undefined;
+    handOff: SwampifyHandOff | undefined;
     initialShown?: boolean;
     initialLaunch?: LaunchState;
   },
@@ -121,9 +175,11 @@ function HandOff(
     try {
       const outcome = await launch(task, startId);
       setLaunched(
-        outcome.opened
-          ? { kind: "opened" }
-          : { kind: "command", command: outcome.command },
+        outcome.opened ? { kind: "opened" } : {
+          kind: "command",
+          command: outcome.command,
+          ...(outcome.prompt ? { prompt: outcome.prompt } : {}),
+        },
       );
     } catch (error) {
       setLaunched({
@@ -132,13 +188,30 @@ function HandOff(
       });
     }
   };
-  const busy = launched.kind === "launching";
-  const done = launched.kind === "opened" || launched.kind === "command";
+  const canHandOff = handOff !== undefined && task !== null &&
+    startId !== null;
+  const onHandOff = async () => {
+    if (!canHandOff) return;
+    setLaunched({ kind: "handing_off" });
+    try {
+      const { prompt } = await handOff(task, startId);
+      setLaunched({ kind: "handed", prompt, copied: false });
+    } catch (error) {
+      setLaunched({
+        kind: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const busy = launched.kind === "launching" ||
+    launched.kind === "handing_off";
+  const done = launched.kind === "opened" || launched.kind === "command" ||
+    launched.kind === "handed";
   return (
     <>
       <p className="sw-small">
         {canLaunch
-          ? `Swampify! opens ${agent} in this repo on a brief that tells it to record your pick, build the ${becomes}, run it once and show you the result.`
+          ? `Launch ${agent} opens it in this repo on a brief that tells it to record your pick, build the ${becomes}, run it once and show you the result.`
           : `Hand it to your agent: the brief tells it to record your pick, build the ${becomes}, run it once and show you the result. Paste it to your agent in this repo.`}
       </p>
       <div className="sw-handoff-actions">
@@ -149,7 +222,21 @@ function HandOff(
             disabled={busy || done}
             onClick={() => void onLaunch()}
           >
-            {busy ? `Opening ${agent}…` : "Swampify!"}
+            {launched.kind === "launching"
+              ? `Opening ${agent}…`
+              : `Launch ${agent}`}
+          </button>
+        )}
+        {canHandOff && (
+          <button
+            type="button"
+            className="sw-btn"
+            disabled={busy || done}
+            onClick={() => void onHandOff()}
+          >
+            {launched.kind === "handing_off"
+              ? "Saving the brief…"
+              : "Use my own agent"}
           </button>
         )}
         <button
@@ -166,7 +253,9 @@ function HandOff(
         <p className="sw-muted sw-small">
           {agent}{" "}
           opens in a new terminal and can read, edit and run files in this repo.
-          Clicking Swampify! confirms you trust this folder.
+          Clicking Launch {agent} confirms you trust this folder.
+          {canHandOff &&
+            " Use my own agent saves the brief and copies a prompt for the agent app you already use; nothing opens."}
         </p>
       )}
       <div role="status" className="sw-small">
@@ -176,13 +265,36 @@ function HandOff(
             in a new terminal. It records your pick, then builds the {becomes}.
           </p>
         )}
-        {launched.kind === "command" && (
+        {launched.kind === "command" && (launched.prompt
+          ? (
+            <>
+              <p>
+                No terminal could be opened here, so nothing started. Copy this
+                prompt for your own agent instead. {OWN_AGENT_STEPS}
+              </p>
+              <PromptBlock prompt={launched.prompt} copiedAlready={false} />
+            </>
+          )
+          : (
+            <>
+              <p>
+                No terminal could be opened here. Run this in a terminal to
+                start {agent} on the brief:
+              </p>
+              <pre className="sw-brief">{launched.command}</pre>
+            </>
+          ))}
+        {launched.kind === "handed" && (
           <>
             <p>
-              No terminal could be opened. Run this in a terminal to start{" "}
-              {agent} on the brief:
+              The brief is saved and nothing opened. {launched.copied
+                ? "The prompt below is copied."
+                : "Copy the prompt below."} {OWN_AGENT_STEPS}
             </p>
-            <pre className="sw-brief">{launched.command}</pre>
+            <PromptBlock
+              prompt={launched.prompt}
+              copiedAlready={launched.copied}
+            />
           </>
         )}
       </div>
@@ -279,6 +391,7 @@ export function OptionReview(props: OptionReviewProps) {
                 becomes={option.becomes}
                 harness={offer.offer.reading.harness}
                 launch={props.launch}
+                handOff={props.handOff}
                 initialShown={props.initialBriefShown}
                 initialLaunch={props.initialLaunch}
               />

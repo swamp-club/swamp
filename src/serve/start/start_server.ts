@@ -28,6 +28,7 @@ import {
   startCheckWorkspaceLocation,
   startChooseHarness,
   type StartDeps,
+  startHandOff,
   startImportWorkspace,
   startLaunch,
   type StartLaunchEvent,
@@ -51,6 +52,7 @@ import { MAX_WORKSPACE_PARENT_LENGTH } from "../../libswamp/workspace/workspace_
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { findHarness } from "../../domain/start/harness.ts";
 import {
+  SWAMPIFY_KICKOFF_ALL_HISTORY,
   SWAMPIFY_KICKOFF_EXCLUDE_MAX,
   SWAMPIFY_KICKOFF_PATH_MAX,
   SWAMPIFY_KICKOFF_WINDOW_MAX,
@@ -148,6 +150,7 @@ const RequestSchema = z.discriminatedUnion("type", [
     payload: z.object({
       id: z.string(),
       tools: z.array(z.string()).max(16).optional(),
+      ownAgent: z.literal(true).optional(),
     }),
   }),
   z.object({ type: z.literal("start.signin"), id: z.string() }),
@@ -156,6 +159,8 @@ const RequestSchema = z.discriminatedUnion("type", [
     id: z.string(),
     payload: z.object({ trustConfirmed: z.literal(true) }),
   }),
+  z.object({ type: z.literal("start.handoff"), id: z.string() }),
+  z.object({ type: z.literal("start.handoff.leave"), id: z.string() }),
   z.object({ type: z.literal("start.new_task"), id: z.string() }),
   z.object({ type: z.literal("start.copied"), id: z.string() }),
   z.object({
@@ -195,10 +200,14 @@ const RequestSchema = z.discriminatedUnion("type", [
     payload: z.object({
       name: z.string().max(64),
       parent: z.string().max(MAX_WORKSPACE_PARENT_LENGTH).optional(),
-      windowDays: z.number().int().min(1).max(SWAMPIFY_KICKOFF_WINDOW_MAX),
+      windowDays: z.union([
+        z.number().int().min(1).max(SWAMPIFY_KICKOFF_WINDOW_MAX),
+        z.literal(SWAMPIFY_KICKOFF_ALL_HISTORY),
+      ]),
       exclude: z.array(z.string().max(SWAMPIFY_KICKOFF_PATH_MAX))
         .max(SWAMPIFY_KICKOFF_EXCLUDE_MAX).optional(),
       harness: z.string().max(32),
+      ownAgent: z.literal(true).optional(),
     }),
   }),
   z.object({
@@ -439,6 +448,12 @@ export function startStartServer(
   // launched screen; a task launched by an earlier run shows on the home,
   // so the page never re-sends its brief.
   const launchedHere = new Set<string>();
+  // Tasks this process handed to the user's own agent; they show the prompt
+  // until launched, since a hand-off records no launch.
+  const handedOffHere = new Set<string>();
+  // Where a task's launch step was reached from when that wasn't its own
+  // editor, so the page's Back returns there.
+  const reachedFrom = new Map<string, "kickoff" | "home">();
   let selectedTask: string | null = null;
   let previousTask: string | null = null;
   let view: "home" | "flow" = "flow";
@@ -451,10 +466,20 @@ export function startStartServer(
     if (view === "home" && (named.tasks?.length ?? 0) > 0) {
       return { ...named, screen: "home" };
     }
-    return named.screen === "launched" &&
-        !(named.taskId !== undefined && launchedHere.has(named.taskId))
-      ? { ...named, screen: "home" }
-      : named;
+    const from = named.taskId !== undefined
+      ? reachedFrom.get(named.taskId)
+      : undefined;
+    const marked = from !== undefined ? { ...named, reachedFrom: from } : named;
+    if (
+      marked.screen === "trust" && marked.taskId !== undefined &&
+      handedOffHere.has(marked.taskId)
+    ) {
+      return { ...marked, screen: "handed_off" };
+    }
+    return marked.screen === "launched" &&
+        !(marked.taskId !== undefined && launchedHere.has(marked.taskId))
+      ? { ...marked, screen: "home" }
+      : marked;
   };
 
   const readStatus = async (path: string): Promise<StartStatus> => {
@@ -837,6 +862,7 @@ export function startStartServer(
             launchedName = undefined;
             reevaluate();
             selectedTask = status.taskId ?? null;
+            if (selectedTask !== null) reachedFrom.set(selectedTask, "kickoff");
             previousTask = null;
             view = "flow";
             return present(status);
@@ -930,6 +956,11 @@ export function startStartServer(
             selectedTask = request.payload.id;
             previousTask = null;
             view = status.screen === "launched" ? "home" : "flow";
+            if (status.screen === "agent" || status.screen === "trust") {
+              reachedFrom.set(request.payload.id, "home");
+            } else {
+              reachedFrom.delete(request.payload.id);
+            }
             return present(status);
           }),
         );
@@ -956,17 +987,32 @@ export function startStartServer(
             return present(await readStatus(path));
           }),
         );
+      case "start.handoff.leave":
+        // Back from the prompt: the task never left the agent step.
+        return respond(
+          await inWorkspace(async (path) => {
+            handedOffHere.delete(requireTask());
+            view = "flow";
+            return present(await readStatus(path));
+          }),
+        );
       case "start.back":
+        if (selectedTask !== null) {
+          handedOffHere.delete(selectedTask);
+          reachedFrom.delete(selectedTask);
+        }
         return await statusOp((path) =>
           startBack(ctx, deps, { workspacePath: path, taskId: requireTask() })
         );
       case "start.harness.choose":
+        if (selectedTask !== null) handedOffHere.delete(selectedTask);
         return await statusOp((path) =>
           startChooseHarness(ctx, deps, {
             workspacePath: path,
             taskId: requireTask(),
             harness: request.payload.id,
             tools: request.payload.tools,
+            ...(request.payload.ownAgent ? { ownAgent: true } : {}),
           })
         );
       case "start.harness.list": {
@@ -1032,6 +1078,30 @@ export function startStartServer(
         return respond(
           await pickFolder(request.payload?.purpose ?? "import"),
         );
+      case "start.handoff": {
+        const origin = socketOrigins.get(socket);
+        const status = await deduped("launch", async (path) => {
+          const taskId = requireTask();
+          const page = origin !== undefined && bound !== null
+            ? { origin, workspaceName: bound.name }
+            : undefined;
+          const { status } = await launchStatus(
+            startHandOff(ctx, deps, {
+              workspacePath: path,
+              taskId,
+              ...(page ? { page } : {}),
+            }),
+            forward,
+            "Hand-off",
+          );
+          handedOffHere.add(taskId);
+          view = "flow";
+          // Nothing opened, so the server ends as it would before a launch.
+          return present(status);
+        }, { sameTask: true });
+        respond(status);
+        return send({ type: "done", id: request.id });
+      }
       case "start.launch": {
         const origin = socketOrigins.get(socket);
         const status = await deduped("launch", async (path) => {

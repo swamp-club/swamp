@@ -36,7 +36,7 @@ const arbPath = fc.oneof(
 Deno.test("SwampifyKickoff.render: accepted paths round-trip through the JSON block and nothing else is added", () => {
   fc.assert(
     fc.property(
-      fc.integer({ min: 1, max: 365 }),
+      fc.oneof(fc.integer({ min: 1, max: 365 }), fc.constant("all" as const)),
       fc.array(arbPath, { maxLength: 6 }),
       (windowDays, exclude) => {
         let kickoff: SwampifyKickoff;
