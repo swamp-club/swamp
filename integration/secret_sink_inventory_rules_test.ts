@@ -358,6 +358,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
     "src/infrastructure/process/process_kill.ts: runPs": TOOLING,
     "src/infrastructure/process/resolve_command.ts: defaultLookupRunner":
       TOOLING,
+    "src/infrastructure/process/terminal/process_list.ts: readMacProcesses":
+      TOOLING,
     "src/infrastructure/process/terminal/terminal_launcher.ts: createSystemTerminalLauncher":
       TOOLING,
     "src/infrastructure/process/terminal/terminal_launcher.ts: lookupExecutable":

@@ -44,6 +44,7 @@ import {
   describeChooseError,
   ErrorBox,
   errorMessage,
+  LaunchFailureNote,
   OWN_AGENT_LABEL,
   OwnAgentPrompt,
   type ScreenProps,
@@ -74,6 +75,7 @@ import {
   createdLabel,
   DEFAULT_WORKSPACE_ORDER,
   extraToolsToSend,
+  failureStreak,
   firstLine,
   formatWorkspaceOrder,
   importNameFromPath,
@@ -87,6 +89,7 @@ import {
   launchChecklist,
   launchChoices,
   launchedLabel,
+  launchFailureLine,
   launchOpened,
   type LaunchStep,
   locationCheckKey,
@@ -129,6 +132,7 @@ import type {
   ExamplePrompt,
   HarnessList,
   LaunchEvent,
+  LaunchFailure,
   SigninEvent,
   StartHarness,
   StartStatus,
@@ -2996,13 +3000,15 @@ function CommandBlock(
 
 /**
  * What to do when no window could be opened: open a terminal, paste the
- * command. The command box comes last, under the steps.
+ * command. The command box comes under the steps, and the line saying what
+ * was tried comes last.
  */
 function CopyCommandSteps(
-  { client, command, name }: {
+  { client, command, name, failure }: {
     client: StartClient;
     command: string;
     name: string;
+    failure?: string;
   },
 ) {
   return (
@@ -3015,6 +3021,7 @@ function CopyCommandSteps(
         </li>
       </ol>
       <CommandBlock client={client} command={command} />
+      <LaunchFailureNote failure={failure} />
     </div>
   );
 }
@@ -3077,26 +3084,38 @@ function DashboardRedirect(
 function LaunchedScreen({ status, client, onStatus }: ScreenProps) {
   const name = status.harness?.displayName ?? "Your agent";
   const { busy, error: actionError, run } = useAction(onStatus);
-  const { launch, running, reached, error } = useLaunch(client, onStatus);
-  const [showCommand, setShowCommand] = useState(false);
   const opened = launchOpened(status.launch);
+  const { launch, running, reached, error, repeated } = useLaunch(
+    client,
+    onStatus,
+    "start.launch",
+    !opened,
+  );
+  const [showCommand, setShowCommand] = useState(false);
+  const failure = !opened && status.launch
+    ? launchFailureLine(status.launch, repeated)
+    : undefined;
   // No terminal command: the prompt works in any agent. The command is left
   // only for a status that carries no prompt.
   const dashboardHref = taskDashboardHref(status);
   const commandBlock = status.ownAgentPrompt
     ? (
-      <OwnAgentPrompt
-        prompt={status.ownAgentPrompt}
-        apiKeyFromEnv={status.apiKeyFromEnv}
-        dashboardName={taskDashboardName(status)}
-        {...(dashboardHref ? { dashboardHref } : {})}
-      />
+      <>
+        <OwnAgentPrompt
+          prompt={status.ownAgentPrompt}
+          apiKeyFromEnv={status.apiKeyFromEnv}
+          dashboardName={taskDashboardName(status)}
+          {...(dashboardHref ? { dashboardHref } : {})}
+        />
+        <LaunchFailureNote failure={failure} />
+      </>
     )
     : (
       <CopyCommandSteps
         client={client}
         command={status.launch?.command ?? ""}
         name={name}
+        {...(failure ? { failure } : {})}
       />
     );
 
@@ -3301,10 +3320,11 @@ function HandedOffScreen({ status, client, onStatus }: ScreenProps) {
 function HomeScreen({ status, client, onStatus }: ScreenProps) {
   const name = status.harness?.displayName ?? "Your agent";
   const { busy, error: actionError, run } = useAction(onStatus);
-  const { launch, running, reached, error } = useLaunch(
+  const { launch, running, reached, error, repeated } = useLaunch(
     client,
     onStatus,
     "start.resume",
+    status.launch !== undefined && !launchOpened(status.launch),
   );
   const [resumed, setResumed] = useState(false);
   const other = useOpenAgent(client, onStatus);
@@ -3351,12 +3371,14 @@ function HomeScreen({ status, client, onStatus }: ScreenProps) {
   // trust was recorded): the click confirms trust, shown above the button.
   const needsTrust = !status.trusted;
   const launchName = isTaskAgent ? name : pickedOther?.displayName ?? name;
+  // What the last attempt showed stays up while a retry runs, so a retry that
+  // fails again doesn't blank the page and redraw it unchanged.
   const launchAgent = async () => {
-    setResumed(false);
-    other.reset();
     if (isTaskAgent) {
-      if (await launch(needsTrust)) setResumed(true);
+      other.reset();
+      setResumed(await launch(needsTrust));
     } else if (pickedOther) {
+      setResumed(false);
       await other.openAgent(
         pickedOther.id,
         pickedOther.displayName,
@@ -3526,6 +3548,10 @@ function HomeScreen({ status, client, onStatus }: ScreenProps) {
                   client={client}
                   command={other.opened.command}
                   name={other.opened.name}
+                  failure={launchFailureLine(
+                    other.opened.failure,
+                    other.opened.repeated,
+                  )}
                 />
               )
           )}
@@ -3544,6 +3570,7 @@ function HomeScreen({ status, client, onStatus }: ScreenProps) {
                   client={client}
                   command={status.launch?.command ?? ""}
                   name={name}
+                  failure={launchFailureLine(status.launch ?? {}, repeated)}
                 />
               )
           )}
@@ -3610,6 +3637,9 @@ interface AgentOpened {
   name: string;
   opened: boolean;
   command: string;
+  failure: LaunchFailure;
+  /** this open, and the one before it, opened no window */
+  repeated: boolean;
 }
 
 /**
@@ -3632,7 +3662,6 @@ function useOpenAgent(
   ) => {
     setOpeningId(id);
     setReached(null);
-    setOpened(null);
     setError(null);
     let failed = false;
     // Filled by the stream callback; an object so TS doesn't narrow it away.
@@ -3657,15 +3686,27 @@ function useOpenAgent(
       onStatus(next);
       if (!failed) {
         const done = result.launched;
-        setOpened({
-          name: displayName,
-          opened: launchOpened(done),
-          command: done?.command ?? "",
+        setOpened((previous) => {
+          const streak = failureStreak(
+            previous !== null && !previous.opened &&
+              previous.name === displayName,
+            done,
+          );
+          return {
+            name: displayName,
+            opened: !streak.failed,
+            command: done?.command ?? "",
+            failure: { tried: done?.tried, reason: done?.reason },
+            repeated: streak.repeated,
+          };
         });
       }
     } catch (err) {
+      failed = true;
       setError(errorMessage(err, `Couldn't open ${displayName}.`));
     } finally {
+      // an earlier agent's copy steps must not sit beside this one's error
+      if (failed) setOpened(null);
       setOpeningId(null);
     }
   };

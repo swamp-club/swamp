@@ -20,6 +20,7 @@
 import type {
   ExamplePrompt,
   LaunchEvent,
+  LaunchFailure,
   LaunchMethod,
   SigninEvent,
   StartHarness,
@@ -27,6 +28,7 @@ import type {
   StartSignals,
   StartStatus,
   TaskSummary,
+  TerminalAttempt,
   WorkspaceSummary,
 } from "./types.ts";
 
@@ -150,6 +152,106 @@ export function toSigninEvent(event: unknown): SigninEvent | null {
   }
 }
 
+const ATTEMPT_CHOICES = ["set", "running_here", "open", "default"] as const;
+const ATTEMPT_RESULTS = ["not_found", "failed", "couldnt_start"] as const;
+const FAILURE_REASONS = [
+  "container",
+  "no_display",
+  "ssh",
+  "remote_browser",
+] as const;
+
+function oneOf<T extends string>(
+  values: readonly T[],
+  value: unknown,
+): value is T {
+  return typeof value === "string" && (values as readonly string[]).includes(
+    value,
+  );
+}
+
+/** The well-formed `tried` and `reason` of a launch, dropping anything else. */
+export function toLaunchFailure(
+  record: Record<string, unknown>,
+): LaunchFailure {
+  const failure: LaunchFailure = {};
+  if (Array.isArray(record.tried)) {
+    failure.tried = record.tried.flatMap((raw): TerminalAttempt[] => {
+      if (typeof raw !== "object" || raw === null) return [];
+      const a = raw as Record<string, unknown>;
+      return typeof a.terminal === "string" &&
+          oneOf(ATTEMPT_CHOICES, a.chosen) && oneOf(ATTEMPT_RESULTS, a.result)
+        ? [{ terminal: a.terminal, chosen: a.chosen, result: a.result }]
+        : [];
+    });
+  }
+  if (oneOf(FAILURE_REASONS, record.reason)) failure.reason = record.reason;
+  return failure;
+}
+
+const ATTEMPT_TEXT: Record<TerminalAttempt["result"], string> = {
+  not_found: "not found",
+  failed: "exited with an error",
+  couldnt_start: "couldn't start",
+};
+
+const REASON_TEXT: Record<NonNullable<LaunchFailure["reason"]>, string> = {
+  container:
+    "swamp start is running inside a container (toolbox or distrobox), so your desktop's terminals aren't available to it. Run swamp start on the host, or copy the command.",
+  no_display:
+    "No graphical display was found to open a terminal on. Copy the command instead.",
+  ssh:
+    "swamp start is running over SSH, so a window would open where you can't see it. Copy the command instead.",
+  remote_browser:
+    "This page is open on another machine, so a window would open where you can't see it. Copy the command instead.",
+};
+
+/**
+ * The one line under the copy-command steps: what was tried and what to do.
+ * `repeated` is set when the attempt before this one failed too.
+ */
+export function launchFailureLine(
+  failure: LaunchFailure,
+  repeated = false,
+): string {
+  const parts = [
+    repeated ? "Still couldn't open a terminal." : "Couldn't open a terminal.",
+  ];
+  const tried = failure.tried ?? [];
+  if (tried.length > 0) {
+    parts.push(
+      `Tried: ${
+        tried.map((t) =>
+          `${t.terminal} (${
+            t.chosen === "open" || t.chosen === "running_here" ? "open, " : ""
+          }${ATTEMPT_TEXT[t.result]})`
+        ).join(", ")
+      }.`,
+    );
+  }
+  if (failure.reason !== undefined) {
+    parts.push(REASON_TEXT[failure.reason]);
+  } else if (tried.some((t) => t.result === "not_found")) {
+    // Only a PATH lookup reports not found, so this is a Linux desktop.
+    parts.push("Set TERMINAL to your terminal, or copy the command.");
+  } else {
+    parts.push("Copy the command instead.");
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Whether a launch opened no window, and whether the one before it opened
+ * none either, so the page can say a retry failed again.
+ */
+export function failureStreak(
+  lastFailed: boolean,
+  launch: { opened?: boolean; method?: string } | undefined,
+): { failed: boolean; repeated: boolean } {
+  const failed = launch !== undefined && !launchOpened(launch);
+  return { failed, repeated: failed && lastFailed };
+}
+
 /** Normalises a `start.launch` stream event, or null for one to skip. */
 export function toLaunchEvent(event: unknown): LaunchEvent | null {
   const kind = eventKind(event);
@@ -167,7 +269,7 @@ export function toLaunchEvent(event: unknown): LaunchEvent | null {
         command: str(record, "command"),
       };
       if (typeof record.opened === "boolean") launched.opened = record.opened;
-      return launched;
+      return { ...launched, ...toLaunchFailure(record) };
     }
     case "error":
       return { kind, message: str(record, "message") || "Launch failed." };

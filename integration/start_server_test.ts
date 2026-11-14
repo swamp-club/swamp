@@ -37,6 +37,8 @@ import type {
   StartWorkspaceSummary,
 } from "../src/libswamp/start/start.ts";
 import type { HarnessLaunchSpec } from "../src/domain/start/harness.ts";
+import type { LaunchOutcome } from "../src/domain/start/terminal_launcher.ts";
+import { CodexSessionFinder } from "../src/infrastructure/process/agent_sessions/codex_session_finder.ts";
 import type { WorkspaceHub } from "../src/serve/local/workspace_hub.ts";
 import { TrustedHosts } from "../src/serve/local/trusted_hosts.ts";
 import { ListenHost } from "../src/serve/local/listen_host.ts";
@@ -80,6 +82,8 @@ interface Fakes {
   briefs: Array<{ briefFile: string; content: string }>;
   signals: StartSignals;
   swampify: boolean;
+  onPath: Record<string, string>;
+  failure: Pick<LaunchOutcome, "tried" | "reason">;
 }
 
 function makeFakes(dataDir: string): Fakes {
@@ -105,6 +109,8 @@ function makeFakes(dataDir: string): Fakes {
       codexSessions: false,
     },
     swampify: false,
+    onPath: { claude: "/usr/local/bin/claude" },
+    failure: {},
   };
   const tools = new Map<string, string[]>();
   f.deps = {
@@ -132,16 +138,16 @@ function makeFakes(dataDir: string): Fakes {
       },
     },
     sessions: new StartSessionFileRepository(),
-    lookup: (name) =>
-      Promise.resolve(name === "claude" ? ["/usr/local/bin/claude"] : []),
+    lookup: (name) => Promise.resolve(f.onPath[name] ? [f.onPath[name]] : []),
     terminalLauncher: {
       open: async (spec) => {
         f.opened.push(spec);
         if (f.openGate) await f.openGate;
         return {
-          method: "macos_terminal",
+          method: f.launchOpened ? "macos_terminal" : "copy_command",
           opened: f.launchOpened,
           command: "cd '/w' && 'claude'",
+          ...(f.launchOpened ? {} : f.failure),
         };
       },
     },
@@ -163,6 +169,10 @@ function makeFakes(dataDir: string): Fakes {
     random: () => 0,
     isRunning: () => Promise.resolve(false),
     registry: new WorkspaceRegistryFileRepository(join(dataDir, ".config")),
+    agentSessions: new CodexSessionFinder({
+      sessionsRoot: join(dataDir, "codex-sessions"),
+      now: () => new Date("2026-10-03T12:00:00.000Z"),
+    }),
     folderPicker: {
       available: () => Promise.resolve(true),
       pick: async (prompt) => {
@@ -1266,7 +1276,9 @@ Deno.test("startStartServer: a task launched by an earlier run shows on the home
       const resumed = await b.request("start.resume");
       assertEquals(resumed.screen, "home");
       assertEquals(fakes.opened.length, 2);
-      assertEquals(fakes.opened[1].args, ["--continue"]);
+      const [flag, sessionId] = fakes.opened[0].args;
+      assertEquals(flag, "--session-id");
+      assertEquals(fakes.opened[1].args, ["--resume", sessionId]);
     } finally {
       await b.close();
       await later.shutdown();
@@ -2361,4 +2373,98 @@ Deno.test("startStartServer: an address this machine does not have is a UserErro
   );
   assertStringIncludes(error.message, "192.0.2.123");
   assertStringIncludes(error.message, "--host");
+});
+
+/** a Codex session file, where and as Codex writes it */
+async function writeCodexSession(
+  root: string,
+  id: string,
+  at: Date,
+  cwd: string,
+): Promise<void> {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const dir = join(
+    root,
+    String(at.getFullYear()),
+    pad(at.getMonth() + 1),
+    pad(at.getDate()),
+  );
+  await Deno.mkdir(dir, { recursive: true });
+  const name = `rollout-${pad(at.getHours())}${pad(at.getMinutes())}${
+    pad(at.getSeconds())
+  }-${id}.jsonl`;
+  const header = {
+    timestamp: at.toISOString(),
+    type: "session_meta",
+    payload: { id, timestamp: at.toISOString(), cwd, source: "cli" },
+  };
+  await Deno.writeTextFile(
+    join(dir, name),
+    `${JSON.stringify(header)}\n{"type":"event"}\n`,
+  );
+}
+
+Deno.test("startStartServer: a Codex resume reopens the session the launch started, not a newer one elsewhere", async () => {
+  await withStartServer(async ({ handle, fakes, dataDir }) => {
+    fakes.onPath.codex = "/usr/local/bin/codex";
+    const client = await Client.open(handle.port);
+    try {
+      await client.request("start.workspace.choose", {
+        name: "first-workspace",
+      });
+      await client.request("start.task.save", { text: "list my pods" });
+      await client.request("start.harness.choose", { id: "codex" });
+      const launched = await client.request("start.launch", {
+        trustConfirmed: true,
+      });
+      const ws = launched.workspacePath as string;
+      const sessions = join(dataDir, "codex-sessions");
+      const launchedId = "01a1d2fd-c180-7601-b367-4298b76a0fb0";
+      const elsewhere = join(dataDir, "elsewhere");
+      await Deno.mkdir(elsewhere);
+      await writeCodexSession(
+        sessions,
+        launchedId,
+        new Date("2026-10-03T10:00:03.000Z"),
+        ws,
+      );
+      await writeCodexSession(
+        sessions,
+        "01a1d2fe-0000-7601-b367-4298b76a0fb1",
+        new Date("2026-10-03T11:00:00.000Z"),
+        elsewhere,
+      );
+      await client.request("start.resume");
+      assertEquals(fakes.opened[1].args.slice(0, 2), ["resume", launchedId]);
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+Deno.test("startStartServer: a launch that opens no window reports what it tried in the status", async () => {
+  await withStartServer(async ({ handle, fakes }) => {
+    fakes.launchOpened = false;
+    fakes.failure = {
+      tried: [{ terminal: "ptyxis", chosen: "default", result: "not_found" }],
+      reason: "container",
+    };
+    const client = await Client.open(handle.port);
+    try {
+      await walkToTrust(client);
+      const status = await client.request("start.launch", {
+        trustConfirmed: true,
+      });
+      const launch = status.launch as StartStatus["launch"];
+      assertEquals(launch?.opened, false);
+      assertEquals(launch?.tried, fakes.failure.tried);
+      assertEquals(launch?.reason, "container");
+      const event = client.frames.find((f) =>
+        f.type === "start.launch" && f.event?.kind === "launched"
+      );
+      assertEquals(event?.event?.tried, fakes.failure.tried);
+    } finally {
+      await client.close();
+    }
+  });
 });

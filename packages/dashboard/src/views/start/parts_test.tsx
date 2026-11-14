@@ -21,7 +21,8 @@
 /** @jsxImportSource react */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
-import { OwnAgentPrompt } from "./parts.tsx";
+import { launchFailureLine } from "./helpers.ts";
+import { LaunchFailureNote, OwnAgentPrompt } from "./parts.tsx";
 
 const PROMPT =
   "Read the brief at /ws/tasks/2026-11-14-x.md and follow it. If the swamp-getting-started skill isn't loaded, read .claude/skills/swamp-getting-started/SKILL.md in the workspace the brief names.";
@@ -87,4 +88,23 @@ Deno.test("OwnAgentPrompt: a swampify task's link names Swampify", () => {
     html,
     'href="/dashboard/w/demo/swampify">Open Swampify</a>',
   );
+});
+
+Deno.test("LaunchFailureNote: shows the line saying what was tried", () => {
+  const html = renderToStaticMarkup(
+    <LaunchFailureNote
+      failure={launchFailureLine({
+        tried: [{ terminal: "ptyxis", chosen: "default", result: "not_found" }],
+      }, true)}
+    />,
+  );
+  assertStringIncludes(html, 'role="status"');
+  assertStringIncludes(
+    html,
+    "Still couldn&#x27;t open a terminal. Tried: ptyxis (not found).",
+  );
+});
+
+Deno.test("LaunchFailureNote: renders nothing without a failure", () => {
+  assertEquals(renderToStaticMarkup(<LaunchFailureNote />), "");
 });

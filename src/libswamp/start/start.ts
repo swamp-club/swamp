@@ -62,7 +62,21 @@ import {
   StartTask,
   type StartTaskKind,
 } from "../../domain/start/start_task.ts";
-import type { TerminalLauncher } from "../../domain/start/terminal_launcher.ts";
+import {
+  failedLaunchDetail,
+  type LaunchOutcome,
+  type NoTerminalReason,
+  type TerminalAttempt,
+  type TerminalLauncher,
+} from "../../domain/start/terminal_launcher.ts";
+import {
+  type AgentSessionFinder,
+  isAgentSessionId,
+} from "../../domain/start/agent_session.ts";
+import {
+  CodexSessionFinder,
+  codexSessionsRoot,
+} from "../../infrastructure/process/agent_sessions/codex_session_finder.ts";
 import {
   parseWorkspaceName,
   suggestWorkspaceName,
@@ -169,6 +183,9 @@ export interface StartStatus {
     readonly command: string;
     readonly opened: boolean;
     readonly at: string;
+    /** what was tried when no window opened */
+    readonly tried?: readonly TerminalAttempt[];
+    readonly reason?: NoTerminalReason;
   };
   /** what to paste into an agent swamp does not open; names only the brief */
   readonly ownAgentPrompt?: string;
@@ -267,6 +284,8 @@ export interface StartDeps {
     briefFile: string,
   ) => Promise<string | null>;
   readonly folderPicker?: FolderPicker;
+  /** finds the conversation a launch started, for agents that pick its id */
+  readonly agentSessions?: AgentSessionFinder;
 }
 
 /**
@@ -395,6 +414,8 @@ export function buildStartStatus(
           command: launch.command,
           opened: launch.opened,
           at: launch.at,
+          ...(launch.tried !== undefined ? { tried: launch.tried } : {}),
+          ...(launch.reason !== undefined ? { reason: launch.reason } : {}),
         },
       }
       : {}),
@@ -884,6 +905,58 @@ export type StartPrepareEvent =
   | { kind: "workspace_ready"; path: string; created: boolean }
   | { kind: "completed"; data: StartStatus }
   | { kind: "error"; error: SwampError };
+
+function launchedEvent(
+  outcome: LaunchOutcome,
+  displayName: string,
+): Extract<StartLaunchEvent, { kind: "launched" }> {
+  if (!outcome.opened) {
+    const logger = getLogger(["swamp", "start"]);
+    const detail = failedLaunchDetail(outcome);
+    // over SSH or to another machine, the copied command is the intended path
+    if (outcome.reason === "ssh" || outcome.reason === "remote_browser") {
+      logger.info`Couldn't open a terminal for ${displayName}. ${detail}`;
+    } else {
+      logger.warn`Couldn't open a terminal for ${displayName}. ${detail}`;
+    }
+  }
+  return {
+    kind: "launched",
+    method: outcome.method,
+    command: outcome.command,
+    opened: outcome.opened,
+    ...(outcome.tried !== undefined ? { tried: outcome.tried } : {}),
+    ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+  };
+}
+
+/** a lookup that fails reads as none, so resume falls back to the agent's latest */
+async function sessionToResume(
+  deps: StartDeps,
+  harness: HarnessDefinition,
+  session: StartSession,
+): Promise<string | undefined> {
+  const launch = session.launch;
+  if (launch === undefined) return undefined;
+  if (isAgentSessionId(launch.sessionId)) return launch.sessionId;
+  if (harness.sessionIds !== "found" || deps.agentSessions === undefined) {
+    return undefined;
+  }
+  const since = new Date(launch.at);
+  if (Number.isNaN(since.getTime())) return undefined;
+  try {
+    const found = await deps.agentSessions.find(
+      harness.id,
+      session.workspacePath,
+      since,
+    );
+    return isAgentSessionId(found) ? found : undefined;
+  } catch (error) {
+    getLogger(["swamp", "start"])
+      .warn`Couldn't look up the ${harness.displayName} conversation to resume: ${error}`;
+    return undefined;
+  }
+}
 
 /**
  * a failed save is only a warning: the agent is already running, and reporting
@@ -1389,7 +1462,14 @@ export type StartLaunchEvent =
   | { kind: "enrolling"; tool: string }
   | { kind: "brief_written"; path: string }
   | { kind: "window_opening" }
-  | { kind: "launched"; method: LaunchMethod; command: string; opened: boolean }
+  | {
+    kind: "launched";
+    method: LaunchMethod;
+    command: string;
+    opened: boolean;
+    tried?: readonly TerminalAttempt[];
+    reason?: NoTerminalReason;
+  }
   | { kind: "completed"; data: StartStatus }
   | { kind: "error"; error: SwampError };
 
@@ -1542,6 +1622,14 @@ export async function* startLaunch(
     const briefFile = yield* prepareBrief(deps, input, session, harness, true);
 
     yield { kind: "window_opening" };
+    // A fresh id each attempt: an earlier window may already hold the last.
+    const assigned = harness.sessionIds === "assigned"
+      ? deps.randomUUID()
+      : undefined;
+    const sessionId = isAgentSessionId(assigned) ? assigned : undefined;
+    // Taken before the window opens: the agent may start its session while
+    // the launcher waits out its grace window, and resume looks from here.
+    const launchedAt = deps.now();
     const outcome = await deps.terminalLauncher.open(
       planHarnessLaunch(
         harness,
@@ -1551,17 +1639,16 @@ export async function* startLaunch(
         "task",
         briefFile,
         session.task!.kind,
+        sessionId,
       ),
       input.workspacePath,
     );
-    session.confirmTrustAndRecordLaunch(outcome, deps.now());
+    session.confirmTrustAndRecordLaunch(
+      { ...outcome, ...(sessionId !== undefined ? { sessionId } : {}) },
+      launchedAt,
+    );
     await saveLaunch(deps, session);
-    yield {
-      kind: "launched",
-      method: outcome.method,
-      command: outcome.command,
-      opened: outcome.opened,
-    };
+    yield launchedEvent(outcome, harness.displayName);
     yield {
       kind: "completed",
       data: await statusOf(deps, input.workspacePath, session, signedIn),
@@ -1748,7 +1835,9 @@ export async function* startResume(
     yield { kind: "enrolling", tool: session.tools.join(", ") };
     await enrol(deps, input.workspacePath, session);
 
+    const sessionId = await sessionToResume(deps, harness, session);
     yield { kind: "window_opening" };
+    const launchedAt = deps.now();
     const outcome = await deps.terminalLauncher.open(
       planHarnessLaunch(
         harness,
@@ -1756,17 +1845,27 @@ export async function* startResume(
         input.workspacePath,
         deps.os,
         "resume",
+        undefined,
+        undefined,
+        sessionId,
       ),
       input.workspacePath,
     );
-    session.confirmTrustAndRecordLaunch(outcome, deps.now());
+    // A lookup that found nothing searches from the task's launch again next
+    // time; moving `at` to now would hide the session that launch started.
+    const keepAt = sessionId === undefined && harness.sessionIds === "found"
+      ? session.launch?.at
+      : undefined;
+    session.confirmTrustAndRecordLaunch(
+      {
+        ...outcome,
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(keepAt !== undefined ? { at: keepAt } : {}),
+      },
+      launchedAt,
+    );
     await saveLaunch(deps, session);
-    yield {
-      kind: "launched",
-      method: outcome.method,
-      command: outcome.command,
-      opened: outcome.opened,
-    };
+    yield launchedEvent(outcome, harness.displayName);
     yield {
       kind: "completed",
       data: await statusOf(deps, input.workspacePath, session, signedIn),
@@ -1877,12 +1976,7 @@ export async function* startOpenAgent(
       ),
       input.workspacePath,
     );
-    yield {
-      kind: "launched",
-      method: outcome.method,
-      command: outcome.command,
-      opened: outcome.opened,
-    };
+    yield launchedEvent(outcome, harness.displayName);
     yield {
       kind: "completed",
       data: await statusOf(
@@ -1973,17 +2067,12 @@ export async function transcriptSignals(
 ): Promise<Pick<StartSignals, "claudeTranscripts" | "codexSessions">> {
   // An empty override means unset, as the extension reads it.
   const claudeConfig = env("CLAUDE_CONFIG_DIR") || undefined;
-  const codexHome = env("CODEX_HOME") || undefined;
   const claudeRoot = claudeConfig !== undefined
     ? join(claudeConfig, "projects")
     : home !== ""
     ? join(home, ".claude", "projects")
     : undefined;
-  const codexRoot = codexHome !== undefined
-    ? join(codexHome, "sessions")
-    : home !== ""
-    ? join(home, ".codex", "sessions")
-    : undefined;
+  const codexRoot = codexSessionsRoot(home, env);
   return {
     claudeTranscripts: claudeRoot !== undefined &&
       await isDirectory(claudeRoot),
@@ -2080,6 +2169,10 @@ export function createStartDeps(options: {
         ),
       }),
       ...await transcriptSignals(home, (name) => Deno.env.get(name)),
+    }),
+    agentSessions: new CodexSessionFinder({
+      sessionsRoot: codexSessionsRoot(home, (name) => Deno.env.get(name)),
+      now: () => new Date(),
     }),
     signIn: (ctx) =>
       authLogin(ctx, loginDeps, {

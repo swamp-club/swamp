@@ -19,6 +19,7 @@
 
 import type { DetectableAiTool } from "../telemetry/agent_harness_detection.ts";
 import { markErrorPaths } from "../errors.ts";
+import { isAgentSessionId } from "./agent_session.ts";
 import { isBriefFile } from "./brief.ts";
 import type { TrustMode } from "./start_session.ts";
 import type { StartTaskKind } from "./start_task.ts";
@@ -86,6 +87,7 @@ export interface HarnessDefinition {
     workspacePath: string,
     os: string,
     prompt: string,
+    sessionId?: string,
   ) => readonly string[];
   readonly openArgs: (workspacePath: string, os: string) => readonly string[];
   /**
@@ -95,7 +97,19 @@ export interface HarnessDefinition {
   readonly resumeArgs?: (
     workspacePath: string,
     os: string,
+    sessionId?: string,
   ) => readonly string[];
+  /** run when a resume fails at once; openArgs when absent */
+  readonly resumeFallbackArgs?: (
+    workspacePath: string,
+    os: string,
+    sessionId?: string,
+  ) => readonly string[];
+  /**
+   * assigned: start gives the task launch its conversation id; found: the
+   * agent picks one, and start looks it up at resume
+   */
+  readonly sessionIds?: "assigned" | "found";
 }
 
 export type LaunchMode = "task" | "resume" | "open";
@@ -131,10 +145,17 @@ export const HARNESSES: readonly HarnessDefinition[] = [
     enrolTool: "claude",
     trustMode: "dialog",
     launchable: true,
-    args: (_ws, _os, prompt) => [prompt],
+    args: (_ws, _os, prompt, sessionId) =>
+      sessionId === undefined ? [prompt] : ["--session-id", sessionId, prompt],
     openArgs: () => [],
     // `--continue` picks the most recent conversation in the current folder.
-    resumeArgs: () => ["--continue"],
+    resumeArgs: (_ws, _os, sessionId) =>
+      sessionId === undefined ? ["--continue"] : ["--resume", sessionId],
+    // A recorded conversation that never started (a copied command never run)
+    // is started under the same id, so the next resume finds it.
+    resumeFallbackArgs: (_ws, _os, sessionId) =>
+      sessionId === undefined ? [] : ["--session-id", sessionId],
+    sessionIds: "assigned",
   },
   {
     id: "codex",
@@ -149,10 +170,13 @@ export const HARNESSES: readonly HarnessDefinition[] = [
     openArgs: (ws, os) =>
       os === "windows" ? [] : ["-c", codexTrustOverride(ws)],
     // `resume --last` is filtered to the current folder unless `--all`.
-    resumeArgs: (ws, os) =>
-      os === "windows"
-        ? ["resume", "--last"]
-        : ["resume", "--last", "-c", codexTrustOverride(ws)],
+    resumeArgs: (ws, os, sessionId) => {
+      const target = sessionId === undefined ? ["--last"] : [sessionId];
+      return os === "windows"
+        ? ["resume", ...target]
+        : ["resume", ...target, "-c", codexTrustOverride(ws)];
+    },
+    sessionIds: "found",
   },
   {
     id: "cursor",
@@ -266,15 +290,24 @@ export function planHarnessLaunch(
   mode: LaunchMode = "task",
   briefFile?: string,
   taskKind: StartTaskKind = "task",
+  sessionId?: string,
 ): HarnessLaunchSpec {
   const trustMode = effectiveTrustMode(harness, os);
+  // Checked here as well as on read, so no caller can pass a flag through.
+  const id = isAgentSessionId(sessionId) ? sessionId : undefined;
   const args = mode === "task"
-    ? harness.args(workspacePath, os, launchPrompt(briefFile ?? "", taskKind))
+    ? harness.args(
+      workspacePath,
+      os,
+      launchPrompt(briefFile ?? "", taskKind),
+      id,
+    )
     : mode === "resume"
-    ? (harness.resumeArgs ?? harness.openArgs)(workspacePath, os)
+    ? (harness.resumeArgs ?? harness.openArgs)(workspacePath, os, id)
     : harness.openArgs(workspacePath, os);
   const fallbackArgs = mode === "resume" && harness.resumeArgs !== undefined
-    ? harness.openArgs(workspacePath, os)
+    ? harness.resumeFallbackArgs?.(workspacePath, os, id) ??
+      harness.openArgs(workspacePath, os)
     : undefined;
   return {
     harness: harness.id,

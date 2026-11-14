@@ -94,7 +94,7 @@ export interface StartStatus {
     opened: boolean;
     /** ISO time of the last launch. */
     at: string;
-  };
+  } & LaunchFailure;
   /** Tools the workspace is already set up for, from its `.swamp.yaml`. */
   enrolledTools: string[];
   /** Every tool chosen for this task, the harness included. */
@@ -225,8 +225,21 @@ export type LaunchEvent =
     command: string;
     /** Sent by `start.agent.open`: false when no window opened. */
     opened?: boolean;
-  }
+  } & LaunchFailure
   | { kind: "error"; message: string };
+
+/** A terminal a launch tried, and why it didn't open. */
+export interface TerminalAttempt {
+  terminal: string;
+  chosen: "set" | "running_here" | "open" | "default";
+  result: "not_found" | "failed" | "couldnt_start";
+}
+
+/** Why no window opened; both are absent when one did. */
+export interface LaunchFailure {
+  tried?: TerminalAttempt[];
+  reason?: "container" | "no_display" | "ssh" | "remote_browser";
+}
 
 /** An example task offered on the task screen. */
 export interface ExamplePrompt {

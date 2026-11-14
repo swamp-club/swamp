@@ -21,6 +21,7 @@ import { markErrorPaths, UserError } from "../errors.ts";
 import type { DetectableAiTool } from "../telemetry/agent_harness_detection.ts";
 import { isBriefFile } from "./brief.ts";
 import { StartTask, type StartTaskKind } from "./start_task.ts";
+import type { NoTerminalReason, TerminalAttempt } from "./terminal_launcher.ts";
 
 export type TrustMode = "dialog" | "passed" | "unknown";
 
@@ -37,6 +38,10 @@ export interface StartLaunchRecord {
   readonly at: string;
   readonly command: string;
   readonly opened: boolean;
+  /** the agent conversation this task's launch started, when known */
+  readonly sessionId?: string;
+  readonly tried?: readonly TerminalAttempt[];
+  readonly reason?: NoTerminalReason;
 }
 
 export interface StartSessionData {
@@ -197,8 +202,9 @@ export class StartSession {
     this.data = { ...this.withoutTrust(), step: "task" };
   }
 
+  /** a launch's own `at` is kept as given, for a resume that must not move it */
   confirmTrustAndRecordLaunch(
-    launch: Omit<StartLaunchRecord, "at">,
+    launch: Omit<StartLaunchRecord, "at"> & { readonly at?: string },
     now: Date,
   ): void {
     this.require("launch", ["trust", "launched"]);
@@ -209,7 +215,7 @@ export class StartSession {
     this.data = {
       ...this.data,
       trustConfirmedAt: at,
-      launch: { ...launch, at },
+      launch: { ...launch, at: launch.at ?? at },
       step: "launched",
     };
   }
