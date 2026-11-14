@@ -19,6 +19,7 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   acquireExplicitLease,
@@ -361,7 +362,7 @@ Deno.test("acquireExplicitLease: another explicit lease that outlasts the wait i
   });
 });
 
-Deno.test("bindRenewalUnanswered: a bind-time renewal that timed out or found serve unreachable counts, one serve refused does not, and the lock still takes it", () => {
+Deno.test("bindRenewalUnanswered: a bind-time renewal that timed out, found serve unreachable or found no leader counts, another refusal does not, and the lock still takes it", () => {
   const lease = (leaseId: string): ExplicitLease => ({
     leaseId,
     lockKey: `data/t/${leaseId}/.lock`,
@@ -386,7 +387,11 @@ Deno.test("bindRenewalUnanswered: a bind-time renewal that timed out or found se
     noteUnrenewedLeases("/away", "https://serve.test", [
       { lease: lease("a"), error: unreachable },
     ]);
+    noteUnrenewedLeases("/no-leader", "https://serve.test", [
+      { lease: lease("n"), error: new ServeNotLeaderError(undefined) },
+    ]);
     assertEquals(bindRenewalUnanswered("/refused"), false);
+    assertEquals(bindRenewalUnanswered("/no-leader"), true);
     assertEquals(bindRenewalUnanswered("/timed-out"), true);
     assertEquals(bindRenewalUnanswered("/away"), true);
     assertEquals(bindRenewalUnanswered("/other"), false);

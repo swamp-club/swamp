@@ -37,6 +37,7 @@ import type {
 } from "./serve_datastore_client.ts";
 import { type LandedVersion, raisedFloor } from "./serve_lease_registry.ts";
 import { ServeUnreachableError } from "./serve_upstream_errors.ts";
+import { ServeNotLeaderError } from "../../domain/datastore_v3/serve_leader.ts";
 
 const logger = getSwampLogger(["datastore", "v3", "lease"]);
 
@@ -280,8 +281,8 @@ export function takeUnrenewedLease(
 }
 
 /**
- * whether a bind-time renewal under root timed out or found serve unreachable;
- * a refusal serve answered is not, and nothing is taken
+ * whether a bind-time renewal under root timed out, found serve unreachable or
+ * found no leader, so nothing this command sends could land; nothing is taken
  */
 export function bindRenewalUnanswered(root: string): boolean {
   const prefix = `${root}\0`;
@@ -289,6 +290,7 @@ export function bindRenewalUnanswered(root: string): boolean {
     if (!key.startsWith(prefix)) continue;
     if (
       error instanceof ServeUnreachableError ||
+      error instanceof ServeNotLeaderError ||
       (error instanceof Error && error.name === "TimeoutError")
     ) {
       return true;

@@ -1770,3 +1770,54 @@ Deno.test({
     });
   },
 });
+
+for (const inFlight of [false, true]) {
+  Deno.test({
+    name:
+      `serve offline, no leader: a command whose bind-time renewal is refused as not the leader${
+        inFlight ? ", forwarded in flight," : ""
+      } never sends the entries it inherited, and queues its own write`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      await withScratch(async (scratch) => {
+        const serve = await scratch.serve({ grants: TEAM });
+        const alice = await scratch.client("a");
+        await withProxy(serve, async (proxy) => {
+          const env = serveEnv(proxy, "alice-token");
+          await command(
+            scratch,
+            alice,
+            env,
+            (ctx) => saveOut(ctx, serve, "online"),
+          );
+          await takeLease(scratch, serve, alice, env);
+          await proxy.down();
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "inherited"),
+            2,
+          );
+          proxy.up();
+          const refused = refuseWritesWithoutLeader(proxy, { inFlight });
+          assertEquals(
+            await lockedSave(scratch, serve, alice, env, "no leader", {
+              deferred: true,
+            }),
+            3,
+          );
+          assertEquals(
+            refused.filter((call) => call.startsWith("POST ")),
+            [],
+            "no inherited entry was sent",
+          );
+          assertEquals(leaseRenewals(refused), 1);
+          assertEquals(await servedVersions(serve), [1]);
+
+          proxy.answer = undefined;
+          await command(scratch, alice, env, () => Promise.resolve());
+          assertEquals(await servedVersions(serve), [1, 2, 3]);
+        });
+      });
+    },
+  });
+}

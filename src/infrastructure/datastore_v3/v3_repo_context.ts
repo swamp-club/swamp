@@ -1326,8 +1326,8 @@ async function recoverV3Outbox(
   // a serve-mode checkout lands its entries through serve, never only in its
   // copy of serve's log
   const upstream = handle.serveUpstreamStore;
-  // the bind's renewal went unanswered: this command goes offline, so what the
-  // outbox holds waits for the next command that reaches serve
+  // the bind's renewal went unanswered or found no leader: this command goes
+  // offline, so what the outbox holds waits for the next that reaches serve
   if (upstream !== undefined && bindRenewalUnanswered(handle.datastorePath)) {
     logger
       .debug`Serve did not answer this command's lease renewal; a later command lands this checkout's outbox`;
