@@ -26,6 +26,7 @@ import {
 } from "@std/assert";
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import type { AuthLoginEvent } from "../src/libswamp/auth/login.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import type {
@@ -115,6 +116,7 @@ function makeFakes(dataDir: string): Fakes {
   const tools = new Map<string, string[]>();
   f.deps = {
     dataDir,
+    configDir: join(dataDir, "config"),
     os: "darwin",
     checkSignedIn: () => Promise.resolve(f.signedIn),
     apiKeyFromEnv: () => false,
@@ -2467,4 +2469,74 @@ Deno.test("startStartServer: a launch that opens no window reports what it tried
       await client.close();
     }
   });
+});
+
+async function rawResponse(port: number, host: string): Promise<string> {
+  const conn = await Deno.connect({ hostname: "127.0.0.1", port });
+  try {
+    await conn.write(
+      new TextEncoder().encode(
+        `GET /dashboard/start HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`,
+      ),
+    );
+    let text = "";
+    const buf = new Uint8Array(4096);
+    for (;;) {
+      const n = await conn.read(buf);
+      if (n === null) break;
+      text += new TextDecoder().decode(buf.subarray(0, n));
+    }
+    return text;
+  } finally {
+    conn.close();
+  }
+}
+
+Deno.test("startStartServer: a 421 names the refused host and --trusted-hosts, and warns once per host", async () => {
+  const bodies: string[] = [];
+  const logs = await captureLogs(() =>
+    withStartServer(async ({ handle }) => {
+      bodies.push(await rawResponse(handle.port, "Phone.Tail1234.ts.net:443"));
+      bodies.push(await rawResponse(handle.port, "phone.tail1234.ts.net"));
+      bodies.push(
+        await rawResponse(handle.port, `evil{x}<b>.${"a".repeat(300)}`),
+      );
+    })
+  );
+  const expected =
+    'Misdirected request: swamp start does not answer for host "phone.tail1234.ts.net". To allow it, start swamp start with --trusted-hosts phone.tail1234.ts.net';
+  assert(bodies[0].startsWith("HTTP/1.1 421"), bodies[0]);
+  assert(bodies[0].endsWith(expected), bodies[0]);
+  assert(bodies[1].endsWith(expected), bodies[1]);
+  assert(
+    bodies[2].endsWith(
+      "Misdirected request: swamp start refused a Host header that is not a valid host name.",
+    ),
+    bodies[2],
+  );
+  assert(!bodies[2].includes("evil"));
+  const warnings = logs.filter((l) => l.text.startsWith("Misdirected request"));
+  assertEquals(warnings.map((l) => [l.level, l.text]), [
+    ["warning", expected],
+    [
+      "warning",
+      "Misdirected request: swamp start refused a Host header that is not a valid host name.",
+    ],
+  ]);
+});
+
+Deno.test("startStartServer: under swamp dashboard a 421 names swamp dashboard", async () => {
+  await withStartServer(
+    async ({ handle }) => {
+      const response = await rawResponse(handle.port, "proxy.example");
+      assert(response.startsWith("HTTP/1.1 421"), response);
+      assertStringIncludes(
+        response,
+        "To allow it, start swamp dashboard with --trusted-hosts proxy.example",
+      );
+    },
+    LONG,
+    undefined,
+    false,
+  );
 });

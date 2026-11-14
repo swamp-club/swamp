@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
+import { captureLogs } from "./remote_secrets_baseline_harness.ts";
 import {
   type LocalDashboardServer,
   startLocalDashboardServer,
@@ -159,4 +160,52 @@ Deno.test("localDashboardServer: answers the HTTP request route as an anonymous 
     assertEquals(res.status, 404);
     assertEquals((await res.json()).code, "use_websocket");
   }, ctx);
+});
+
+async function rawResponse(port: number, host: string): Promise<string> {
+  const conn = await Deno.connect({ hostname: "127.0.0.1", port });
+  try {
+    await conn.write(
+      new TextEncoder().encode(
+        `GET /auth/info HTTP/1.1\r\nHost: ${host}\r\n` +
+          `x-swamp-hub-token: ${TOKEN}\r\nConnection: close\r\n\r\n`,
+      ),
+    );
+    let text = "";
+    const buf = new Uint8Array(4096);
+    for (;;) {
+      const n = await conn.read(buf);
+      if (n === null) break;
+      text += new TextDecoder().decode(buf.subarray(0, n));
+    }
+    return text;
+  } finally {
+    conn.close();
+  }
+}
+
+Deno.test("localDashboardServer: a 421 names the refused host with no --trusted-hosts hint, and warns once per host", async () => {
+  const bodies: string[] = [];
+  const logs = await captureLogs(() =>
+    withServer(async (server) => {
+      bodies.push(await rawResponse(server.port, "evil.example:8080"));
+      bodies.push(await rawResponse(server.port, "EVIL.example"));
+      bodies.push(await rawResponse(server.port, `${"x".repeat(400)}.example`));
+    })
+  );
+  const expected =
+    'Misdirected request: this server does not answer for host "evil.example".';
+  assert(bodies[0].startsWith("HTTP/1.1 421"), bodies[0]);
+  assert(bodies[0].endsWith(expected), bodies[0]);
+  assert(bodies[1].endsWith(expected), bodies[1]);
+  assert(!bodies[0].includes("--trusted-hosts"));
+  assert(
+    bodies[2].endsWith(
+      "Misdirected request: this server refused a Host header that is not a valid host name.",
+    ),
+    bodies[2],
+  );
+  const warnings = logs.filter((l) => l.text.startsWith("Misdirected request"));
+  assertEquals(warnings.map((l) => l.level), ["warning", "warning"]);
+  assertEquals(warnings[0].text, expected);
 });

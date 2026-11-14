@@ -83,13 +83,22 @@ export interface HarnessDefinition {
   readonly enrolTool: string;
   readonly trustMode: TrustMode;
   readonly launchable: boolean;
+  /** set when the launch args can widen the harness's sandbox */
+  readonly takesWritableRoots?: true;
+  // writableRoots: folders outside the harness's own sandbox that swamp
+  // writes to; a harness with no sandbox flag ignores them.
   readonly args: (
     workspacePath: string,
     os: string,
     prompt: string,
+    writableRoots: readonly string[],
     sessionId?: string,
   ) => readonly string[];
-  readonly openArgs: (workspacePath: string, os: string) => readonly string[];
+  readonly openArgs: (
+    workspacePath: string,
+    os: string,
+    writableRoots: readonly string[],
+  ) => readonly string[];
   /**
    * The arguments that continue the agent's most recent conversation in the
    * workspace folder. Absent when the harness has no verified way to do it.
@@ -97,12 +106,14 @@ export interface HarnessDefinition {
   readonly resumeArgs?: (
     workspacePath: string,
     os: string,
+    writableRoots: readonly string[],
     sessionId?: string,
   ) => readonly string[];
   /** run when a resume fails at once; openArgs when absent */
   readonly resumeFallbackArgs?: (
     workspacePath: string,
     os: string,
+    writableRoots: readonly string[],
     sessionId?: string,
   ) => readonly string[];
   /**
@@ -129,12 +140,18 @@ export interface HarnessLaunchSpec {
 }
 
 /**
- * the folder is a quoted key so the dots in .swamp are not read as key
- * separators
+ * an inline table, because Codex splits a -c key at every dot, quoted or not,
+ * and the folder always holds one (.swamp); a folder it cannot match runs
+ * untrusted, in a read-only sandbox
  */
 function codexTrustOverride(workspacePath: string): string {
   const escaped = workspacePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `projects."${escaped}".trust_level="trusted"`;
+  return `projects={"${escaped}"={trust_level="trusted"}}`;
+}
+
+/** paths carry no quote, so cmd can take these on Windows too */
+function codexAddDirs(writableRoots: readonly string[]): string[] {
+  return writableRoots.flatMap((root) => ["--add-dir", root]);
 }
 
 export const HARNESSES: readonly HarnessDefinition[] = [
@@ -145,15 +162,15 @@ export const HARNESSES: readonly HarnessDefinition[] = [
     enrolTool: "claude",
     trustMode: "dialog",
     launchable: true,
-    args: (_ws, _os, prompt, sessionId) =>
+    args: (_ws, _os, prompt, _roots, sessionId) =>
       sessionId === undefined ? [prompt] : ["--session-id", sessionId, prompt],
     openArgs: () => [],
     // `--continue` picks the most recent conversation in the current folder.
-    resumeArgs: (_ws, _os, sessionId) =>
+    resumeArgs: (_ws, _os, _roots, sessionId) =>
       sessionId === undefined ? ["--continue"] : ["--resume", sessionId],
     // A recorded conversation that never started (a copied command never run)
     // is started under the same id, so the next resume finds it.
-    resumeFallbackArgs: (_ws, _os, sessionId) =>
+    resumeFallbackArgs: (_ws, _os, _roots, sessionId) =>
       sessionId === undefined ? [] : ["--session-id", sessionId],
     sessionIds: "assigned",
   },
@@ -164,17 +181,28 @@ export const HARNESSES: readonly HarnessDefinition[] = [
     enrolTool: "codex",
     trustMode: "passed",
     launchable: true,
-    // cmd cannot carry the quoted key, so Windows falls back to the dialog.
-    args: (ws, os, prompt) =>
-      os === "windows" ? [prompt] : ["-c", codexTrustOverride(ws), prompt],
-    openArgs: (ws, os) =>
-      os === "windows" ? [] : ["-c", codexTrustOverride(ws)],
+    takesWritableRoots: true,
+    // cmd cannot carry the override's quotes, so Windows shows the dialog.
+    args: (ws, os, prompt, roots) =>
+      os === "windows"
+        ? [...codexAddDirs(roots), prompt]
+        : [...codexAddDirs(roots), "-c", codexTrustOverride(ws), prompt],
+    openArgs: (ws, os, roots) =>
+      os === "windows"
+        ? codexAddDirs(roots)
+        : [...codexAddDirs(roots), "-c", codexTrustOverride(ws)],
     // `resume --last` is filtered to the current folder unless `--all`.
-    resumeArgs: (ws, os, sessionId) => {
+    resumeArgs: (ws, os, roots, sessionId) => {
       const target = sessionId === undefined ? ["--last"] : [sessionId];
       return os === "windows"
-        ? ["resume", ...target]
-        : ["resume", ...target, "-c", codexTrustOverride(ws)];
+        ? ["resume", ...target, ...codexAddDirs(roots)]
+        : [
+          "resume",
+          ...target,
+          ...codexAddDirs(roots),
+          "-c",
+          codexTrustOverride(ws),
+        ];
     },
     sessionIds: "found",
   },
@@ -291,6 +319,7 @@ export function planHarnessLaunch(
   briefFile?: string,
   taskKind: StartTaskKind = "task",
   sessionId?: string,
+  writableRoots: readonly string[] = [],
 ): HarnessLaunchSpec {
   const trustMode = effectiveTrustMode(harness, os);
   // Checked here as well as on read, so no caller can pass a flag through.
@@ -300,14 +329,15 @@ export function planHarnessLaunch(
       workspacePath,
       os,
       launchPrompt(briefFile ?? "", taskKind),
+      writableRoots,
       id,
     )
-    : mode === "resume"
-    ? (harness.resumeArgs ?? harness.openArgs)(workspacePath, os, id)
-    : harness.openArgs(workspacePath, os);
+    : mode === "resume" && harness.resumeArgs !== undefined
+    ? harness.resumeArgs(workspacePath, os, writableRoots, id)
+    : harness.openArgs(workspacePath, os, writableRoots);
   const fallbackArgs = mode === "resume" && harness.resumeArgs !== undefined
-    ? harness.resumeFallbackArgs?.(workspacePath, os, id) ??
-      harness.openArgs(workspacePath, os)
+    ? harness.resumeFallbackArgs?.(workspacePath, os, writableRoots, id) ??
+      harness.openArgs(workspacePath, os, writableRoots)
     : undefined;
   return {
     harness: harness.id,

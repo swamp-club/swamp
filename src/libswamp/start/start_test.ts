@@ -26,6 +26,7 @@ import {
 } from "@std/assert";
 import { join } from "@std/path";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { exists } from "@std/fs";
 import { createLibSwampContext } from "../context.ts";
 import type { AuthLoginEvent } from "../auth/login.ts";
 import { BRIEF_HEADER, renderBrief } from "../../domain/start/brief.ts";
@@ -38,10 +39,14 @@ import { parseWorkspaceName } from "../../domain/workspace/workspace_name.ts";
 import type { LaunchOutcome } from "../../domain/start/terminal_launcher.ts";
 import { StartSessionFileRepository } from "../../infrastructure/persistence/start_session_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../../infrastructure/persistence/workspace_registry_file_repository.ts";
-import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
+import {
+  assertPathEquals,
+  withMockedEnv,
+} from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   buildStartStatus,
   buildUnboundStatus,
+  createStartDeps,
   expandHome,
   PICK_FOLDER_PROMPT,
   type SignedInState,
@@ -155,6 +160,7 @@ function makeFakes(dataDir: string, os = "darwin"): Fakes {
   };
   f.deps = {
     dataDir,
+    configDir: join(dataDir, "config"),
     os,
     checkSignedIn: () => Promise.resolve(f.signedIn),
     apiKeyFromEnv: () => f.apiKeyFromEnv,
@@ -3363,4 +3369,121 @@ Deno.test("startLaunch: over SSH or to a page elsewhere, a launch with no window
       assertEquals(warnings, [], reason);
     });
   }
+});
+
+function addDirs(spec: HarnessLaunchSpec): string[] {
+  const args = [...spec.args, ...(spec.fallbackArgs ?? [])];
+  return args.flatMap((arg, i) => arg === "--add-dir" ? [args[i + 1]] : []);
+}
+
+Deno.test("startLaunch: codex gets swamp's folders and the workspace's .agents as writable roots, in every launch mode", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath["codex"] = ["/usr/local/bin/codex"];
+    await Deno.mkdir(f.deps.configDir, { recursive: true });
+    const ws = await trustReady(f, "codex");
+    const agents = join(ws, ".agents");
+    const roots = [dir, f.deps.configDir, agents];
+
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assert((await Deno.lstat(agents)).isDirectory);
+    assertEquals(addDirs(f.opened[0].spec), roots);
+
+    await collect(
+      startResume(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(f.opened[1].spec.args.slice(0, 2), ["resume", "--last"]);
+    assertEquals(addDirs(f.opened[1].spec), [...roots, ...roots]);
+
+    await collect(
+      startOpenAgent(ctx, f.deps, { workspacePath: ws, harness: "codex" }),
+    );
+    assertEquals(addDirs(f.opened[2].spec).slice(0, 3), roots);
+  });
+});
+
+Deno.test("startLaunch: codex on Windows still gets its writable roots", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir, "windows");
+    f.onPath["codex"] = ["C:\\npm\\codex.cmd"];
+    const ws = await trustReady(f, "codex");
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(addDirs(f.opened[0].spec), [dir, join(ws, ".agents")]);
+    assert(!f.opened[0].spec.args.includes("-c"));
+  });
+});
+
+Deno.test("startLaunch: a harness without a sandbox flag gets no roots and no .agents folder", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    const ws = await trustReady(f);
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(addDirs(f.opened[0].spec), []);
+    assertEquals(await exists(join(ws, ".agents")), false);
+  });
+});
+
+Deno.test("startLaunch: a symlinked .agents is never a writable root", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath["codex"] = ["/usr/local/bin/codex"];
+    const ws = await trustReady(f, "codex");
+    const target = join(dir, "elsewhere");
+    await Deno.mkdir(target);
+    await Deno.symlink(target, join(ws, ".agents"), { type: "dir" });
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(f.opened.length, 1);
+    assertEquals(addDirs(f.opened[0].spec), [dir]);
+  });
+});
+
+Deno.test("startLaunch: a missing config folder is left out and a repeated folder is passed once", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath["codex"] = ["/usr/local/bin/codex"];
+    const ws = await trustReady(f, "codex");
+    await collect(
+      startLaunch(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(addDirs(f.opened[0].spec), [dir, join(ws, ".agents")]);
+
+    f.deps = { ...f.deps, configDir: dir };
+    await collect(
+      startResume(ctx, f.deps, { workspacePath: ws, taskId: f.taskId! }),
+    );
+    assertEquals(addDirs(f.opened[1].spec).slice(0, 2), [
+      dir,
+      join(ws, ".agents"),
+    ]);
+  });
+});
+
+Deno.test("createStartDeps: swamp's data and config folders follow SWAMP_HOME, set and unset", () => {
+  const deps = (env: Record<string, string | undefined>) =>
+    withMockedEnv({
+      SWAMP_CONFIG_DIR: undefined,
+      XDG_CONFIG_HOME: undefined,
+      ...env,
+    }, () =>
+      createStartDeps({
+        version: "0.0.0-test",
+        checkSignedIn: () => Promise.resolve(SIGNED_IN),
+        serverUrl: "http://127.0.0.1:1",
+        isRunning: () => Promise.resolve(false),
+      }));
+  const home = join("/", "home", "u");
+  const set = deps({ SWAMP_HOME: join(home, "swamp-home"), HOME: home });
+  assertPathEquals(set.dataDir, join(home, "swamp-home"));
+  assertPathEquals(set.configDir, join(home, "swamp-home", "config"));
+  const unset = deps({ SWAMP_HOME: undefined, HOME: home });
+  assertPathEquals(unset.dataDir, join(home, ".swamp"));
+  assertPathEquals(unset.configDir, join(home, ".config", "swamp"));
 });

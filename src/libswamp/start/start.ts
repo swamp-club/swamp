@@ -115,7 +115,10 @@ import {
   createSystemTerminalLauncher,
   lookupExecutable,
 } from "../../infrastructure/process/terminal/terminal_launcher.ts";
-import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
+import {
+  getSwampConfigDir,
+  getSwampDataDir,
+} from "../../infrastructure/persistence/paths.ts";
 import { apiKeySourceName } from "../../infrastructure/persistence/api_key_source.ts";
 import {
   authLogin,
@@ -256,6 +259,7 @@ export interface StartRepoOps {
 
 export interface StartDeps {
   readonly dataDir: string;
+  readonly configDir: string;
   readonly os: string;
   readonly checkSignedIn: (live: boolean) => Promise<SignedInState>;
   readonly apiKeyFromEnv: () => boolean;
@@ -1494,6 +1498,49 @@ async function prepareHarness(
 }
 
 /**
+ * swamp's data and config folders, which every swamp command may write, and
+ * the workspace's .agents folder, which Codex keeps read-only inside its
+ * workspace but extension pull installs skills into
+ */
+async function sandboxWritableRoots(
+  deps: StartDeps,
+  harness: HarnessDefinition,
+  workspacePath: string,
+): Promise<string[]> {
+  if (harness.takesWritableRoots !== true) return [];
+  const roots: string[] = [];
+  // Chosen over prompts: this lets the agent write other workspaces and the
+  // runtime swamp runs unsandboxed (see design/surfaces/start.md, Security).
+  for (const dir of [deps.dataDir, deps.configDir]) {
+    // A folder the harness cannot find is ignored by it, so leave it out.
+    if (await isDirectory(dir) && !roots.includes(dir)) roots.push(dir);
+  }
+  const agents = await ensureAgentsDir(workspacePath);
+  if (agents !== null) roots.push(agents);
+  return roots;
+}
+
+/**
+ * null for a symlink or anything but a folder: a writable root follows links,
+ * so a linked .agents would open its target to the agent
+ */
+async function ensureAgentsDir(workspacePath: string): Promise<string | null> {
+  const path = join(workspacePath, ".agents");
+  try {
+    return (await Deno.lstat(path)).isDirectory ? path : null;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) return null;
+  }
+  try {
+    // Not recursive, so a link created since the lstat makes this fail.
+    await Deno.mkdir(path);
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * sets up the union of the workspace's tools and the session's; never removes a
  * tool
  */
@@ -1640,6 +1687,7 @@ export async function* startLaunch(
         briefFile,
         session.task!.kind,
         sessionId,
+        await sandboxWritableRoots(deps, harness, input.workspacePath),
       ),
       input.workspacePath,
     );
@@ -1848,6 +1896,7 @@ export async function* startResume(
         undefined,
         undefined,
         sessionId,
+        await sandboxWritableRoots(deps, harness, input.workspacePath),
       ),
       input.workspacePath,
     );
@@ -1973,6 +2022,10 @@ export async function* startOpenAgent(
         input.workspacePath,
         deps.os,
         usedHere && canResume(harness) ? "resume" : "open",
+        undefined,
+        undefined,
+        undefined,
+        await sandboxWritableRoots(deps, harness, input.workspacePath),
       ),
       input.workspacePath,
     );
@@ -2112,6 +2165,7 @@ export function createStartDeps(options: {
   };
   return {
     dataDir: getSwampDataDir(),
+    configDir: getSwampConfigDir(),
     os: Deno.build.os,
     checkSignedIn: options.checkSignedIn,
     apiKeyFromEnv: () => apiKeySourceName() !== undefined,

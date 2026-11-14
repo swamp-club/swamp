@@ -230,7 +230,8 @@ re-read once.
 ## Security
 
 - The hub binds `127.0.0.1`, on an ephemeral port unless `--port` names one,
-  and answers any other `Host` with 421 (DNS rebinding). `--host` binds another
+  and answers any other `Host` with 421 (DNS rebinding), naming the host and
+  the `--trusted-hosts` fix as [start](./start.md#security) does. `--host` binds another
   IP address of this machine instead, as for [start](./start.md#security): a
   non-loopback one serves the page to other machines over plain HTTP, adds this
   machine's own name and addresses to the trusted Hosts, and is warned about on

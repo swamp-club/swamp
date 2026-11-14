@@ -87,7 +87,7 @@ Deno.test("planHarnessLaunch: builds the exact arguments for each harness on POS
     claude: [LAUNCH_PROMPT],
     codex: [
       "-c",
-      `projects."${WS}".trust_level="trusted"`,
+      `projects={"${WS}"={trust_level="trusted"}}`,
       LAUNCH_PROMPT,
     ],
     cursor: ["--trust", LAUNCH_PROMPT],
@@ -205,7 +205,10 @@ Deno.test("planHarnessLaunch: codex escapes quotes and backslashes in the folder
     "task",
     BRIEF,
   );
-  assertEquals(spec.args[1], `projects."/a\\"b\\\\c".trust_level="trusted"`);
+  assertEquals(
+    spec.args[1],
+    `projects={"/a\\"b\\\\c"={trust_level="trusted"}}`,
+  );
 });
 
 Deno.test("pickBinaryPath: returns null for no hits", () => {
@@ -256,7 +259,7 @@ Deno.test("planHarnessLaunch: resume continues the conversation where the harnes
     "resume",
     "--last",
     "-c",
-    `projects."${WS}".trust_level="trusted"`,
+    `projects={"${WS}"={trust_level="trusted"}}`,
   ]);
   assertEquals(args("codex", "windows"), ["resume", "--last"]);
   assertEquals(args("opencode"), ["--continue"]);
@@ -274,7 +277,7 @@ Deno.test("planHarnessLaunch: a resume falls back to a fresh session, and nothin
   assertEquals(plan("opencode", "resume").fallbackArgs, []);
   assertEquals(plan("codex", "resume").fallbackArgs, [
     "-c",
-    `projects."${WS}".trust_level="trusted"`,
+    `projects={"${WS}"={trust_level="trusted"}}`,
   ]);
   for (const h of HARNESSES) {
     assertEquals(plan(h.id, "task").fallbackArgs, undefined, h.id);
@@ -366,7 +369,7 @@ Deno.test("planHarnessLaunch: a resume names the recorded conversation", () => {
     "resume",
     SESSION,
     "-c",
-    `projects."${WS}".trust_level="trusted"`,
+    `projects={"${WS}"={trust_level="trusted"}}`,
   ]);
   assertEquals(resume("codex", "windows", SESSION).args, ["resume", SESSION]);
   assertEquals(resume("claude", "linux", SESSION).fallbackArgs, [
@@ -408,5 +411,72 @@ Deno.test("planHarnessLaunch: a session id that isn't a UUID is dropped, so noth
       ).args,
       [LAUNCH_PROMPT],
     );
+  }
+});
+
+Deno.test("planHarnessLaunch: codex adds each writable root with --add-dir in every mode", () => {
+  const roots = ["/home/u/.swamp", "/home/u/.config/swamp", `${WS}/.agents`];
+  const addDirs = roots.flatMap((r) => ["--add-dir", r]);
+  const trust = ["-c", `projects={"${WS}"={trust_level="trusted"}}`];
+  const plan = (mode: "task" | "resume" | "open", sessionId?: string) =>
+    planHarnessLaunch(
+      harness("codex"),
+      "/bin/codex",
+      WS,
+      "linux",
+      mode,
+      BRIEF,
+      "task",
+      sessionId,
+      roots,
+    );
+  assertEquals(plan("task").args, [...addDirs, ...trust, LAUNCH_PROMPT]);
+  assertEquals(plan("open").args, [...addDirs, ...trust]);
+  assertEquals(plan("resume").args, ["resume", "--last", ...addDirs, ...trust]);
+  assertEquals(plan("resume").fallbackArgs, [...addDirs, ...trust]);
+  const id = "019a4b2c-3d4e-7f60-8a1b-2c3d4e5f6a7b";
+  assertEquals(plan("resume", id).args, ["resume", id, ...addDirs, ...trust]);
+});
+
+Deno.test("planHarnessLaunch: codex on Windows keeps --add-dir and still drops -c", () => {
+  const ws = "C:\\Users\\u\\.swamp\\workspaces\\w";
+  const roots = ["C:\\Users\\u\\.swamp", `${ws}\\.agents`];
+  const addDirs = roots.flatMap((r) => ["--add-dir", r]);
+  const plan = (mode: "task" | "resume" | "open") =>
+    planHarnessLaunch(
+      harness("codex"),
+      "C:\\npm\\codex.cmd",
+      ws,
+      "windows",
+      mode,
+      BRIEF,
+      "task",
+      undefined,
+      roots,
+    );
+  assertEquals(plan("task").args, [...addDirs, LAUNCH_PROMPT]);
+  assertEquals(plan("open").args, addDirs);
+  assertEquals(plan("resume").args, ["resume", "--last", ...addDirs]);
+  assertEquals(plan("task").trustMode, "dialog");
+});
+
+Deno.test("planHarnessLaunch: harnesses without a sandbox flag ignore writable roots", () => {
+  for (const h of HARNESSES.filter((h) => h.id !== "codex")) {
+    for (const mode of ["task", "open", "resume"] as const) {
+      const without = planHarnessLaunch(h, "/bin/x", WS, "linux", mode, BRIEF);
+      const withRoots = planHarnessLaunch(
+        h,
+        "/bin/x",
+        WS,
+        "linux",
+        mode,
+        BRIEF,
+        "task",
+        undefined,
+        ["/home/u/.swamp"],
+      );
+      assertEquals(withRoots.args, without.args, `${h.id} ${mode}`);
+      assertEquals(withRoots.fallbackArgs, without.fallbackArgs, h.id);
+    }
   }
 });
