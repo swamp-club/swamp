@@ -1847,7 +1847,10 @@ datastore, pushes those records under the shared sync gate
 swamp-club#3252). That covers API runs and webhook and cron runs alike: the
 webhook and scheduler services' `stop()` report the runs they abort, and
 `runShutdownDrain` returns them beside the registry's, so a run cut off by a
-restart is recoverable however it started (swamp-club#4656). A run a user or a
+restart is recoverable however it started (swamp-club#4656). Each such run is
+stamped `continuableSince`, and the next boot (or a new leader) continues it by
+itself when every step the abort cut off has a guard (swamp-club#4693, see
+Automatic continuation under Recovery in `design/primitives/workflows.md`). A run a user or a
 webhook cancel request cancelled before the abort is not reported and stays
 `cancelled`. Before it loads them it closes their run write fence
 (`ServeRunWriteFence`, `src/serve/run_write_fence.ts`) and waits up to 2 s for

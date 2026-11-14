@@ -44,6 +44,44 @@ export const ContinuationClaimSchema = z.object({
 
 export type ContinuationClaim = z.infer<typeof ContinuationClaimSchema>;
 
+/** written before a cancel aborts the run, so a crash cannot lose it */
+export const CancelIntentSchema = z.object({
+  runId: z.string().regex(UUID, "must be a UUID"),
+  requestedAt: z.string().datetime(),
+  reason: z.string().max(512),
+});
+
+export type CancelIntent = z.infer<typeof CancelIntentSchema>;
+
+export function continuationCancelKey(runId: string): string {
+  return `${continuationRunPrefix(runId)}cancel`;
+}
+
+export function encodeCancelIntent(intent: CancelIntent): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(intent));
+}
+
+/** undefined for a record that is missing, too large or not this run's */
+export function decodeCancelIntent(
+  bytes: Uint8Array | null,
+  runId: string,
+): CancelIntent | undefined {
+  if (bytes === null || bytes.length > CONTINUATION_CLAIM_MAX_BYTES) {
+    return undefined;
+  }
+  try {
+    const parsed = CancelIntentSchema.safeParse(
+      JSON.parse(new TextDecoder().decode(bytes)),
+    );
+    return parsed.success && parsed.data.runId.toLowerCase() ===
+        runId.toLowerCase()
+      ? parsed.data
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function serveHolder(instanceId: string): string {
   return `serve:${instanceId}`;
 }
@@ -159,6 +197,11 @@ export interface ContinuationClaimStore {
   release(claim: ContinuationClaim): Promise<void>;
 
   removeForRun(runId: string): Promise<void>;
+
+  /** the latest request replaces an earlier one */
+  recordCancel(intent: CancelIntent): Promise<void>;
+
+  findCancel(runId: string): Promise<CancelIntent | undefined>;
 }
 
 /**
@@ -313,4 +356,149 @@ export class ContinuationHeldError extends UserError {
     );
     this.name = "ContinuationHeldError";
   }
+}
+
+// a cancel record is best effort: storage never holds up the abort or shutdown
+export const CANCEL_INTENT_WRITE_TIMEOUT_MS = 5_000;
+
+/**
+ * aborts at once and records the cancel beside it, so a crash after the write
+ * lands never continues a run someone stopped; a write that fails or runs past
+ * its deadline is reported and dropped
+ */
+export class CancelIntentRecorder {
+  readonly #record: (
+    runId: string,
+    reason: string,
+    signal: AbortSignal,
+  ) => Promise<void>;
+  readonly #onError: (runId: string, error: unknown) => void;
+  readonly #timeoutMs: number;
+  readonly #pending = new Set<Promise<void>>();
+
+  constructor(
+    record: (
+      runId: string,
+      reason: string,
+      signal: AbortSignal,
+    ) => Promise<void>,
+    onError: (runId: string, error: unknown) => void,
+    timeoutMs = CANCEL_INTENT_WRITE_TIMEOUT_MS,
+  ) {
+    this.#record = record;
+    this.#onError = onError;
+    this.#timeoutMs = timeoutMs;
+  }
+
+  abort(runId: string, controller: AbortController, reason: string): void {
+    controller.abort(new Error(reason));
+    const deadline = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(
+          `recording the cancel took longer than ${this.#timeoutMs}ms`,
+        );
+        deadline.abort(error);
+        reject(error);
+      }, this.#timeoutMs);
+    });
+    const recorded = Promise.resolve().then(() =>
+      this.#record(runId, reason, deadline.signal)
+    );
+    const write: Promise<void> = Promise.race([recorded, timedOut]).then(
+      () => {},
+      (error) => {
+        try {
+          this.#onError(runId, error);
+        } catch {
+          // reporting must never leave the write pending
+        }
+      },
+    ).then(() => {
+      clearTimeout(timer);
+      this.#pending.delete(write);
+    });
+    this.#pending.add(write);
+  }
+
+  /** bounded: every write ends by its deadline */
+  async settled(): Promise<void> {
+    await Promise.all([...this.#pending]);
+  }
+}
+
+/** the shutdown abort never passes a recorder: its runs are meant to continue */
+export function abortCancelled(
+  recorder: CancelIntentRecorder | undefined,
+  runId: string,
+  controller: AbortController,
+  reason: string,
+): void {
+  if (recorder === undefined || !UUID.test(runId)) {
+    controller.abort(new Error(reason));
+    return;
+  }
+  recorder.abort(runId, controller, reason);
+}
+
+// for a holder not known alive; serve keeps its claim for the whole continued
+// run, so a serve whose heartbeat is current is never taken over, whatever
+// the claim's age
+export const OPERATOR_CLAIM_STALE_MS = 5 * 60_000;
+
+export interface OperatorRecoverClaim {
+  readonly claim: ContinuationClaim;
+  /** the holder an older claim was taken from */
+  readonly replaced?: string;
+}
+
+/**
+ * the claim serve's own continuation takes, so an operator's recover and serve
+ * never both act on one interruption; undefined without a claim store
+ */
+export async function claimForOperatorRecover(
+  claims: ContinuationClaims | undefined,
+  run: WorkflowRun,
+  now: Date,
+): Promise<OperatorRecoverClaim | undefined> {
+  if (!claims || (claims.usable && !(await claims.usable()))) return undefined;
+  const suspensionKey = await suspensionKeyOf(run);
+  const mine = (generation: number): ContinuationClaim => ({
+    runId: run.id,
+    suspensionKey,
+    generation,
+    holder: claims.holder,
+    claimedAt: now.toISOString(),
+  });
+  const raced = () =>
+    new UserError(
+      `Another process took run ${run.id} at the same moment; retry the recover.`,
+    );
+  const held = await claims.store.find(run.id, suspensionKey);
+  if (held === undefined) {
+    const first = mine(1);
+    if (await claims.store.create(first)) return { claim: first };
+    throw raced();
+  }
+  if (held.holder === claims.holder) return { claim: held };
+  if (await claims.liveness(held.holder) === "alive") {
+    throw new UserError(
+      `${held.holder} is continuing run ${run.id} and holds it until that run ends; see 'swamp workflow history get ${run.id}'.`,
+    );
+  }
+  const age = now.getTime() - Date.parse(held.claimedAt);
+  if (age <= OPERATOR_CLAIM_STALE_MS) {
+    const waitSeconds = Math.ceil((OPERATOR_CLAIM_STALE_MS - age) / 1000);
+    throw new UserError(
+      `${held.holder} took run ${run.id} ${
+        Math.floor(age / 1000)
+      }s ago. If it has stopped, retry in ${waitSeconds}s, when a claim that old is taken over.`,
+    );
+  }
+  const next = mine(held.generation + 1);
+  if (await claims.store.create(next)) {
+    return { claim: next, replaced: held.holder };
+  }
+  throw raced();
 }

@@ -98,6 +98,8 @@ function responseToActiveRuns(response: RunHistoryResponse): ActiveRun[] {
       heartbeatAt: r.heartbeatAt,
       status: r.status as ActiveRunStatus,
       initiatedBy: r.initiatedBy,
+      cancelReason: r.interruptReason,
+      autoContinuedFrom: r.autoContinuedFrom,
     })
   );
 }

@@ -1759,6 +1759,39 @@ Deno.test("RunTrackerStore: v8 migration reads an existing pending run as ownerl
   }
 });
 
+Deno.test("RunTrackerStore: v9 migration adds the automatic continuation, kept once the run ends", () => {
+  using tempDb = makeTempDb();
+  const path = tempDb.path;
+  const db = new DatabaseSync(path);
+  db.exec(
+    `CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO run_tracker_meta VALUES ('schema_version', '8');
+    CREATE TABLE active_runs (id TEXT PRIMARY KEY, run_kind TEXT NOT NULL,
+      model_type TEXT, method_name TEXT, workflow_name TEXT,
+      pid INTEGER NOT NULL, hostname TEXT NOT NULL, started_at TEXT NOT NULL,
+      heartbeat_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running',
+      completed_at TEXT, cancel_reason TEXT, initiated_by TEXT,
+      instance_id TEXT, definition_id TEXT, host_identity TEXT);`,
+  );
+  db.close();
+  const store = new RunTrackerStore(path);
+  try {
+    const run = makeRun();
+    store.register(run);
+    assertEquals(store.findById(run.id)?.autoContinuedFrom, null);
+    store.complete(run.id, "interrupted", "server_crash");
+    store.markAutoContinued(run.id, "server_crash");
+    store.reactivate(run.id, Deno.pid, "test-host", "instance-A");
+    store.complete(run.id, "completed");
+    const row = store.findById(run.id);
+    assertEquals(row?.status, "completed");
+    assertEquals(row?.cancelReason, null);
+    assertEquals(row?.autoContinuedFrom, "server_crash");
+  } finally {
+    store.close();
+  }
+});
+
 Deno.test("RunTrackerStore: a run whose owner does not parse is claimable as ownerless", () => {
   using tempDb = makeTempDb();
   const store = new RunTrackerStore(tempDb.path);

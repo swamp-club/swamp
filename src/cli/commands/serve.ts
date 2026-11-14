@@ -26,6 +26,11 @@ import {
 import { RESERVED_TOKEN_NAMES } from "../../domain/access/delegated_token.ts";
 import { DelegationStore } from "../../serve/delegation_store.ts";
 import { createRecordLock } from "../../serve/deps.ts";
+import {
+  continueInterruptedRuns,
+  type InterruptedRunContinuationCause,
+  type InterruptedRunTarget,
+} from "../../serve/interrupted_run_continuation.ts";
 import { ServeLinkClient } from "../../serve/serve_link_client.ts";
 import { DelegationLinkService } from "../../serve/delegation_link_service.ts";
 import { DelegationSyncService } from "../../serve/delegation_sync_service.ts";
@@ -734,7 +739,11 @@ import {
   isCustomDatastoreConfig,
   resolveLockTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
-import { serveHolder } from "../../domain/workflows/continuation_claim.ts";
+import { ContinuedScheduledRuns } from "../../serve/continued_scheduled_runs.ts";
+import {
+  CancelIntentRecorder,
+  serveHolder,
+} from "../../domain/workflows/continuation_claim.ts";
 import { isAtomicControlPlaneStore } from "../../infrastructure/persistence/control_plane_signal_wait_store.ts";
 import {
   ContinuationSweepService,
@@ -824,6 +833,8 @@ import {
   coLocatedTokenKeyWarning,
   TOKEN_SECRETS_KEY_RECORD,
 } from "../../serve/token_key_exposure.ts";
+
+const PENDING_INTERRUPTED_MAX = 10_000;
 
 /** what a reload's prepare phase settled before anything changed */
 interface ReloadPrepared extends GrantReloadPrepared {
@@ -5822,13 +5833,35 @@ export const serveCommand = new Command()
       runtimeDataPoller.start();
     }
 
-    const cancelRegistry = new RunCancelRegistry();
+    // read when the cancel happens: the claim store is resolved later in boot
+    const cancelIntents = new CancelIntentRecorder(
+      async (runId, reason, signal) => {
+        const claims = repoContext.continuationClaims;
+        if (!claims || (claims.usable && !(await claims.usable()))) return;
+        signal.throwIfAborted();
+        await claims.store.recordCancel({
+          runId,
+          requestedAt: new Date().toISOString(),
+          reason: reason.slice(0, 512),
+        });
+      },
+      (runId, error) =>
+        logger.warn(
+          "Recording the cancel of run {runId} failed; the run was aborted anyway: {error}",
+          {
+            runId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        ),
+    );
+    const cancelRegistry = new RunCancelRegistry(cancelIntents);
     const detachRuns = merged.detachRuns;
     const admission = new ServeAdmission();
     const activeRunRegistry = new ActiveRunRegistry({
       maxConcurrent: maxConcurrentRuns,
       maxPerPrincipal: maxRunsPerPrincipal,
       maxRunDurationMs,
+      cancelIntents,
     });
     // closed by shutdown for the runs it interrupts, so an executor that
     // outlived the abort grace cannot save over them
@@ -6279,7 +6312,7 @@ export const serveCommand = new Command()
       );
       if (reapResult.reaped > 0) {
         logger.warn(
-          "Boot: {reaped} workflow run(s) interrupted by crash — recover with 'swamp workflow recover <workflow>'",
+          "Boot: {reaped} workflow run(s) interrupted by crash — serve continues each one that is safe to repeat once boot settles; each one it leaves is logged with the 'swamp workflow recover' command that decides it",
           { reaped: reapResult.reaped },
         );
       }
@@ -7003,6 +7036,17 @@ export const serveCommand = new Command()
       (v3Location === undefined || holdsCurrentV3WriterLease(v3Location.path));
     // refreshed each time a scheduler is built; replay reads it
     let configuredCronWorkflows: ReadonlySet<string> = new Set();
+    // kept here, so every scheduler built sees the runs serve continued
+    const continuedScheduledRuns = new ContinuedScheduledRuns(() => {
+      try {
+        scheduler.current()?.admitQueued();
+      } catch (error) {
+        logger.warn("Scheduled run queue stalled: {error}", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    connectionCtx.continuedScheduledRuns = continuedScheduledRuns;
     // assigned once the replay it shares with boot is built
     let replayOwnPendingCron = (
       _service: ScheduledExecutionService,
@@ -7018,6 +7062,8 @@ export const serveCommand = new Command()
         triggerOverrides: options.triggerOverrides,
         maxConcurrentRuns: options.maxConcurrentRuns,
         busyElsewhere: options.busyElsewhere,
+        cancelIntents,
+        continuing: (identity) => continuedScheduledRuns.holds(identity),
         onRunSettled: options.onRunSettled,
         initiatedBy: principalToString(SCHEDULER_PRINCIPAL),
         authorizeRun: createScheduledRunAuthorizer(
@@ -7688,6 +7734,7 @@ export const serveCommand = new Command()
     const endpoints = [...initialWebhookRoutes.endpoints];
     // built with no routes too, so a reload can add the first one
     const webhookService = new WebhookService({
+      cancelIntents,
       acceptsRuns: () => !isFollowing(),
       startupComplete: () => admission.phase !== "starting",
       shuttingDown: () => admission.phase === "draining",
@@ -10282,6 +10329,54 @@ export const serveCommand = new Command()
           .info`Replayed ${replayed} pending run(s) a stopped serve process left`;
       }
     };
+    // judged again by the continuation sweep; a full pass replaces it
+    const pendingInterrupted = new Map<string, InterruptedRunTarget>();
+    // one pass at a time: two passes of this serve share its claims
+    let continuationPass: Promise<void> = Promise.resolve();
+    const continueInterruptedAtLead = (
+      cause: InterruptedRunContinuationCause,
+      targets?: readonly InterruptedRunTarget[],
+    ): Promise<void> => {
+      continuationPass = continuationPass.then(() =>
+        runContinuationPass(cause, targets)
+      );
+      return continuationPass;
+    };
+    const runContinuationPass = async (
+      cause: InterruptedRunContinuationCause,
+      targets?: readonly InterruptedRunTarget[],
+    ): Promise<void> => {
+      // removed before the pass, so a run handed back during it stays
+      const judged = targets ?? [...pendingInterrupted.values()];
+      for (const target of judged) pendingInterrupted.delete(target.runId);
+      try {
+        const { continued, deferred } = await continueInterruptedRuns(
+          connectionCtx,
+          cause,
+          {
+            targets,
+            onDeferredLater: (target) => {
+              if (pendingInterrupted.size < PENDING_INTERRUPTED_MAX) {
+                pendingInterrupted.set(target.runId, target);
+              }
+            },
+          },
+        );
+        for (const target of deferred) {
+          if (pendingInterrupted.size >= PENDING_INTERRUPTED_MAX) break;
+          pendingInterrupted.set(target.runId, target);
+        }
+        if (continued.length > 0) {
+          logger
+            .info`Continued ${continued.length} interrupted run(s) automatically`;
+        }
+      } catch (err: unknown) {
+        logger.warn(
+          "Continuing interrupted runs failed: {error}. Recover them with 'swamp workflow recover <workflow>'",
+          { error: err instanceof Error ? err.message : String(err) },
+        );
+      }
+    };
     const replayPendingAtLead = async (): Promise<void> => {
       const deferred = new Set<string>();
       const replayed = await replayPending(deferred);
@@ -10296,6 +10391,8 @@ export const serveCommand = new Command()
     };
     if (!v3Follows) {
       await replayPendingAtLead();
+      // before the catch-up, so a continued scheduled run holds off its slot
+      await continueInterruptedAtLead("boot");
       // after the replay, so a replayed run queues ahead of a catch-up
       scheduler.current()?.startCatchUp();
     }
@@ -10323,11 +10420,14 @@ export const serveCommand = new Command()
           // A follower settles nothing, nor does a leader whose lease was taken
           // over and has not ticked since: it would misjudge the new leader
           // gone.
+          const interruptedNow: InterruptedRunTarget[] = [];
           const reaped = isFollowing() ||
               (v3Location !== undefined &&
                 !holdsCurrentV3WriterLease(v3Location.path))
             ? 0
             : await reconcileRemoteInterruptedRuns({
+              onRunInterrupted: (runId, workflowId) =>
+                interruptedNow.push({ runId, workflowId }),
               controlPlaneStore,
               instanceId,
               runTracker,
@@ -10344,6 +10444,9 @@ export const serveCommand = new Command()
           if (reaped > 0) {
             logger
               .info`Continuous reconciliation reaped ${reaped} run(s)`;
+          }
+          if (interruptedNow.length > 0) {
+            await continueInterruptedAtLead("reconciliation", interruptedNow);
           }
         } catch (err: unknown) {
           logger.warn(
@@ -10551,6 +10654,10 @@ export const serveCommand = new Command()
             reconcileRemoteAtLead,
           );
           await leaderStep("replaying pending runs", replayPendingAtLead);
+          await leaderStep(
+            "continuing interrupted runs",
+            () => continueInterruptedAtLead("lead"),
+          );
           await leaderStep(
             "applying the grant config",
             applyGrantConfigAtLead,
@@ -11023,6 +11130,11 @@ export const serveCommand = new Command()
             isStopping,
             signal,
           });
+          if (!isStopping() && pendingInterrupted.size > 0) {
+            await continueInterruptedAtLead("sweep", [
+              ...pendingInterrupted.values(),
+            ]);
+          }
           if (!isStopping()) await sweepHeldSignalsWhenDue(connectionCtx);
           return result;
         },

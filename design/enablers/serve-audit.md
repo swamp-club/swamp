@@ -507,6 +507,16 @@ The `system` audit category records infrastructure lifecycle events with
 - `instance.join`: a new peer instance appeared in the cluster
 - `instance.leave`: a peer instance left the cluster
 - `health.transition`: instance health changed (healthy/degraded/unhealthy)
+- `workflow.auto_resume`, `workflow.auto_resume_skipped`,
+  `workflow.auto_resume_failed`: serve resumed a suspended run by itself, or
+  left it suspended with `reason=`
+- `workflow.auto_continue`: serve continued a run a restart, crash or dead
+  peer interrupted (`cause=boot|reconciliation|lead`, `interrupted=<reason>`)
+- `workflow.auto_continue_refused`: serve left an interrupted run for an
+  operator (`reason=`, and `step=` naming the steps it judged), once per
+  interruption
+- `workflow.auto_continue_failed`: a continuation serve launched failed
+  (`code=`); a continuation a peer took first is not reported
 
 System events are always at `metadata` level (management tier).
 

@@ -45,6 +45,11 @@ export interface ReapResult {
   readonly skipped: number;
 }
 
+/** only serve reaps, so the run is one it may judge for continuation */
+function markServeInterruption(run: WorkflowRun): void {
+  run.markContinuable(new Date());
+}
+
 /**
  * serve calls this at boot before starting any run, so a tracker row not
  * running is trusted as the verdict and a run with no row falls back to a pid
@@ -105,6 +110,8 @@ export async function reapOrphanedWorkflowRuns(
         },
       );
       run.interruptOrphaned("server_crash", await startsOf(workflowId, run));
+      // a row a cancel settled says the owner was told to stop, not cut off
+      if (tracked.status === "interrupted") markServeInterruption(run);
       await save(workflowId, run);
       reaped++;
       continue;
@@ -143,6 +150,7 @@ export async function reapOrphanedWorkflowRuns(
           "server_crash",
           await startsOf(workflowId, run),
         );
+        markServeInterruption(run);
         await save(workflowId, run);
         reaped++;
         continue;
@@ -177,6 +185,7 @@ export async function reapOrphanedWorkflowRuns(
       { runId: run.id, workflowName: run.workflowName, reason },
     );
     run.interruptOrphaned("server_crash", await startsOf(workflowId, run));
+    markServeInterruption(run);
     await save(workflowId, run);
     reaped++;
   }

@@ -127,6 +127,12 @@ interface WorkflowRun {
   client?: string;
   jobs: JobRun[];
   workflowDataArtifacts?: ArtifactRef[];
+  interruptReason?: string;
+  autoContinuation?: {
+    continuedAt?: string;
+    interruptReason?: string;
+    refused?: { reason: string; message: string };
+  };
 }
 
 /** A `workflow.run.search` row for this run. */
@@ -753,6 +759,7 @@ function RunHeader(
             client={run.client}
           />
         )}
+        {run && <RestartFact run={run} />}
       </dl>
 
       <RecentRuns
@@ -1302,5 +1309,31 @@ function extractLogs(payload: unknown): LogsData | null {
     return obj as unknown as LogsData;
   }
 
+  return null;
+}
+
+/** why serve stopped the run, and whether it continued it by itself */
+function RestartFact({ run }: { run: WorkflowRun }) {
+  const continuation = run.autoContinuation;
+  if (run.status === "interrupted" && run.interruptReason) {
+    return (
+      <Fact label="Interrupted">
+        <span>
+          {continuation?.refused
+            ? `${run.interruptReason} · not continued: ${continuation.refused.message}`
+            : run.interruptReason}
+        </span>
+      </Fact>
+    );
+  }
+  if (continuation?.continuedAt) {
+    return (
+      <Fact label="Continued">
+        <span title={formatAbsoluteTime(continuation.continuedAt)}>
+          automatically after {continuation.interruptReason ?? "a restart"}
+        </span>
+      </Fact>
+    );
+  }
   return null;
 }

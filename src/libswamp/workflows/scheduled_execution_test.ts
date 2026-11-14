@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { CancelIntentRecorder } from "../../domain/workflows/continuation_claim.ts";
 import { assert, assertEquals, assertGreater } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import {
@@ -2230,4 +2231,101 @@ Deno.test("ScheduledExecutionService: a pause read that never settles is bounded
     "fire on a cold boot with a hung store",
   );
   await cold.service.stop();
+});
+
+Deno.test("ScheduledExecutionService: a run serve continued holds off its workflow's fires, across a rebuilt scheduler, until it ends", async () => {
+  const wf = createTestWorkflow("continued-wf", "* * * * * *");
+  // kept by serve, outside any one scheduler
+  let continuing = true;
+  const build = (executor: ReturnType<typeof createPerRunExecutor>) =>
+    new ScheduledExecutionService({
+      workflowRepo: createMockWorkflowRepo([wf]),
+      repoDir: "/tmp/nonexistent-test-repo",
+      executeWorkflow: executor.executeWorkflow,
+      continuing: (identity) => continuing && identity.includes(wf.id),
+    });
+  const before = createPerRunExecutor();
+  const first = build(before);
+  const events: ScheduledExecutionEvent[] = [];
+  await first.start((e) => events.push(e));
+  try {
+    await waitFor(
+      () => events.some((e) => e.kind === "schedule_skipped"),
+      "a fire skipped as overlap",
+    );
+    assertEquals(before.runs.length, 0);
+  } finally {
+    await first.stop();
+  }
+
+  const after = createPerRunExecutor();
+  const rebuilt = build(after);
+  const later: ScheduledExecutionEvent[] = [];
+  await rebuilt.start((e) => later.push(e));
+  try {
+    await waitFor(
+      () => later.some((e) => e.kind === "schedule_skipped"),
+      "the rebuilt scheduler skips the fire too",
+    );
+    assertEquals(after.runs.length, 0);
+    continuing = false;
+    await waitFor(() => after.runs.length > 0, "a fire after the run ended");
+  } finally {
+    await rebuilt.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a replayed run waits while serve drives a continued run of its workflow", async () => {
+  const executor = createPerRunExecutor();
+  let continuing = true;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    maxConcurrentRuns: 2,
+    continuing: (identity) => continuing && identity.includes("wf-held"),
+  });
+  await service.start();
+  try {
+    replay(service, "wf-held", "wf-free");
+    await waitFor(() => executor.runs.length === 1, "the free workflow runs");
+    assertEquals(executor.runs[0].workflow, "wf-free");
+    continuing = false;
+    service.admitQueued();
+    await waitFor(() => executor.runs.length === 2, "the held workflow runs");
+    assertEquals(executor.runs[1].workflow, "wf-held");
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a run a user cancelled stays out of the shutdown's aborted runs while its cancel record is still being written", async () => {
+  const executor = createPerRunExecutor();
+  const write = Promise.withResolvers<void>();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    cancelIntents: new CancelIntentRecorder(() => write.promise, () => {}),
+  });
+  await service.start();
+  replay(service, "wf-cancelled");
+  await waitFor(() => executor.runs.length === 1, "the run started");
+  const runId = crypto.randomUUID();
+  // the executor named its run "run-1"; the cancel needs a run id it can record
+  (service as unknown as {
+    running: Map<string, { runId: string; startedAt?: Date }>;
+  }).running.forEach((entry) => {
+    entry.runId = runId;
+    entry.startedAt = new Date();
+  });
+  assert(service.cancelByRunId(runId, "cancelled by user"));
+  const stopping = service.stop();
+  write.resolve();
+  const aborted = await stopping;
+  assertEquals(aborted.map((r) => r.runId), []);
+  assertEquals(
+    (executor.runs[0].signal.reason as Error).message,
+    "cancelled by user",
+  );
 });

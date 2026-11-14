@@ -2260,3 +2260,78 @@ Deno.test("startDetachedResume: a run bound to a delegation whose person is no l
   if (!result.ok) assertEquals(result.refusal, "refused");
   assertEquals(registry.registered.length, 0);
 });
+
+Deno.test("startDetachedResume: serve's own continuation of an interrupted run keeps the ended-delegation refusal", async () => {
+  const workflow = makeWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start(1, "serve-gone");
+  run.getJob("main")!.start();
+  run.getJob("main")!.getStep("gate")!.start();
+  run.interrupt("server_crash");
+  run.recordTriggeringPrincipal({
+    kind: "user",
+    id: "pat",
+    tokenBinding: {
+      name: "delegation:0b9f6f0e-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      principalId: "user:pat",
+    },
+    membership: { localGroups: [], idpGroups: [], collectives: [] },
+  });
+  const { ctx, registry } = makeHarness(workflow, run);
+  (ctx.repoContext.workflowRepo as { findById: unknown }).findById = () =>
+    Promise.resolve(workflow);
+  (ctx as { delegationDirectory?: unknown }).delegationDirectory = {
+    standingOf: () => ({ kind: "ended" }),
+  };
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: workflow.id,
+    byId: true,
+    runId: run.id,
+    recoverInterrupted: { holder: serveHolder("a") },
+    principalId: null,
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.refusal, "refused");
+  assertEquals(registry.registered.length, 0);
+});
+
+Deno.test("startDetachedResume: serve's own continuation refuses a run no longer interrupted without registering it", async () => {
+  const workflow = makeWorkflow();
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry } = makeHarness(workflow, run);
+  (ctx.repoContext.workflowRepo as { findById: unknown }).findById = () =>
+    Promise.resolve(workflow);
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: workflow.id,
+    byId: true,
+    runId: run.id,
+    recoverInterrupted: { holder: serveHolder("a") },
+    principalId: null,
+    lostRaceIsOrdinary: true,
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.code, RUN_NOT_SUSPENDED_CODE);
+  assertEquals(registry.registered.length, 0);
+});
+
+Deno.test("startDetachedResume: serve's own continuation refuses a workflow renamed since the verdict", async () => {
+  const workflow = makeWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start(1, "serve-gone");
+  run.interrupt("server_crash");
+  const { ctx, registry } = makeHarness(workflow, run);
+  (ctx.repoContext.workflowRepo as { findById: unknown }).findById = () =>
+    Promise.resolve(workflow);
+  const result = await startDetachedResume(ctx, registry, {
+    workflowIdOrName: workflow.id,
+    byId: true,
+    expectedName: "renamed",
+    runId: run.id,
+    recoverInterrupted: { holder: serveHolder("a") },
+    principalId: null,
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.refusal, "not_found");
+  assertEquals(registry.registered.length, 0);
+});

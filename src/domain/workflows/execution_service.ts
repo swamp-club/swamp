@@ -8594,6 +8594,14 @@ export class WorkflowExecutionService {
       acknowledgeUnknown?: boolean;
       signal?: AbortSignal;
       instanceId?: string;
+      /**
+       * serve continuing the run by itself: the interrupted record is claimed
+       * and compared before the reset, so only one process recovers it
+       */
+      automatic?: {
+        readonly holder: string;
+        readonly continuation: ContinuationMode;
+      };
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const assessment = await this.assessRecovery(
@@ -8638,18 +8646,61 @@ export class WorkflowExecutionService {
     refuseFanOutRecover(workflow, run);
     refuseFanOutRun(workflow, getWorkerPoolReader() !== null);
 
-    await this.runRepo.withdrawSettledStepStarts?.(
-      workflow.id,
-      run.id,
-      run.unknownSteps(),
-    );
-    run.resetUnknownStepsForRecovery();
-    await this.saveRun(workflow.id, run);
-
-    yield* this.resume(workflowIdOrName, run.id, {
-      signal: options?.signal,
-      instanceId: options?.instanceId,
-    });
+    const automatic = options?.automatic;
+    // claimed on the interrupted record and kept once it is reset, so a peer
+    // holding the same stale copy is refused even where currency is unknown
+    const claim = automatic === undefined
+      ? undefined
+      : await this.claimSuspension(
+        run.id,
+        await suspensionKeyOf(run),
+        automatic.continuation,
+      );
+    try {
+      if (
+        automatic !== undefined && this.runRecordCurrency &&
+        !(await this.runRecordCurrency({
+          workflowId: workflow.id,
+          runId: run.id,
+        }))
+      ) {
+        throw new RunRecordStaleError(run.id);
+      }
+      await this.runRepo.withdrawSettledStepStarts?.(
+        workflow.id,
+        run.id,
+        run.unknownSteps(),
+      );
+      run.resetUnknownStepsForRecovery(
+        automatic === undefined
+          ? undefined
+          : { holder: automatic.holder, at: new Date() },
+      );
+      await this.saveRun(workflow.id, run);
+    } catch (error) {
+      await this.releaseSuspension(claim);
+      throw error;
+    }
+    // marked once the resume has handed the tracker row over, since a dead
+    // peer's run has no row here until then
+    let marked = automatic === undefined;
+    const interruptReason = run.autoContinuation?.interruptReason ?? "unknown";
+    for await (
+      const event of this.resume(workflowIdOrName, run.id, {
+        signal: options?.signal,
+        instanceId: options?.instanceId,
+        continuation: automatic?.continuation,
+        // compared under the claim before the reset; this copy now holds the
+        // reset unpushed, so a byte comparison would read it stale
+        requireCurrentRecord: false,
+      })
+    ) {
+      if (!marked) {
+        marked = true;
+        this.runTracker?.markAutoContinued?.(run.id, interruptReason);
+      }
+      yield event;
+    }
   }
 
   #expectStart(

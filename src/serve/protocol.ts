@@ -2224,6 +2224,10 @@ export interface RunHistoryResponse {
     heartbeatAt: string;
     stale: boolean;
     initiatedBy?: string | null;
+    /** why an interrupted run stopped */
+    interruptReason?: string | null;
+    /** the interruption serve continued the run from by itself */
+    autoContinuedFrom?: string | null;
     progress?: import("../domain/remote/run_progress.ts").RunProgressSnapshot[];
     progressScope?: string;
   }>;

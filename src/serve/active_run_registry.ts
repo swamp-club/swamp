@@ -20,6 +20,10 @@
 import type { RunEventBuffer } from "./run_event_buffer.ts";
 import type { CompletedRunSlot } from "./handlers/run_data_attributes.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  abortCancelled,
+  type CancelIntentRecorder,
+} from "../domain/workflows/continuation_claim.ts";
 
 const logger = getSwampLogger(["serve", "active-run-registry"]);
 
@@ -78,6 +82,8 @@ export interface ActiveRunRegistryOptions {
   maxConcurrent?: number;
   maxPerPrincipal?: number;
   maxRunDurationMs?: number;
+  /** a workflow run's cancel is recorded before its abort */
+  cancelIntents?: CancelIntentRecorder;
 }
 
 export class ActiveRunRegistry {
@@ -88,6 +94,7 @@ export class ActiveRunRegistry {
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #reserved = new Set<string>();
   readonly #nested = new Map<string, string>();
+  readonly #cancelIntents: CancelIntentRecorder | undefined;
   #draining = false;
 
   constructor(options?: ActiveRunRegistryOptions) {
@@ -96,6 +103,15 @@ export class ActiveRunRegistry {
       ? Math.max(1, options.maxPerPrincipal)
       : undefined;
     this.#maxRunDurationMs = options?.maxRunDurationMs;
+    this.#cancelIntents = options?.cancelIntents;
+  }
+
+  #abort(run: ActiveRun, reason: string): void {
+    if (run.kind === "method-run") {
+      run.controller.abort(new Error(reason));
+      return;
+    }
+    abortCancelled(this.#cancelIntents, run.runId, run.controller, reason);
   }
 
   get maxConcurrent(): number {
@@ -159,7 +175,7 @@ export class ActiveRunRegistry {
           "Run {runId} exceeded max duration ({durationMs}ms), aborting",
           { runId: run.runId, durationMs },
         );
-        run.controller.abort(new Error("max run duration exceeded"));
+        this.#abort(run, "max run duration exceeded");
       }, durationMs);
       Deno.unrefTimer(timer);
       this.#timers.set(run.runId, timer);
@@ -230,7 +246,7 @@ export class ActiveRunRegistry {
   cancel(runId: string, reason = "cancelled by user"): boolean {
     const run = this.#runs.get(runId);
     if (!run) return false;
-    run.controller.abort(new Error(reason));
+    this.#abort(run, reason);
     return true;
   }
 
@@ -238,7 +254,7 @@ export class ActiveRunRegistry {
     let count = 0;
     for (const run of this.#runs.values()) {
       if (typeFilter && !matchesTypeFilter(run.kind, typeFilter)) continue;
-      run.controller.abort(new Error(reason));
+      this.#abort(run, reason);
       count++;
     }
     return count;
@@ -267,9 +283,12 @@ export class ActiveRunRegistry {
   async drainAll(timeoutMs = 30_000): Promise<void> {
     this.beginDraining();
     const runs = [...this.#runs.values()];
-    if (runs.length === 0) return;
-
-    const completions = runs.map((r) => r.completion);
+    // cancel records are bounded by their own deadline and ride the same race
+    const completions: Promise<void>[] = runs.map((r) => r.completion);
+    if (this.#cancelIntents !== undefined) {
+      completions.push(this.#cancelIntents.settled());
+    }
+    if (completions.length === 0) return;
 
     if (timeoutMs <= 0) {
       await Promise.allSettled(completions);

@@ -376,3 +376,61 @@ Deno.test("renderWorkflowRunDisplay: json mode prints a run whose attributes nes
     { depth: 6_000, leaf: [0, 1, 2] },
   );
 });
+
+function endedRun(
+  status: WorkflowRunView["status"],
+  extra: Partial<WorkflowRunView>,
+): WorkflowRunView {
+  return {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "release",
+    status,
+    jobs: [],
+    ...extra,
+  };
+}
+
+Deno.test("renderWorkflowRunDisplay: an interrupted run names its reason and why serve left it", () => {
+  const out = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      endedRun("interrupted", {
+        interruptReason: "server_shutdown",
+        autoContinuation: {
+          count: 0,
+          refused: {
+            at: DEADLINE,
+            reason: "unguarded_step",
+            steps: ["deploy"],
+            message: "Step deploy was cut off and has no guard.",
+          },
+        },
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(out, "Interrupted: server_shutdown");
+  assertStringIncludes(
+    out,
+    "Not continued automatically (unguarded_step): Step deploy was cut off",
+  );
+});
+
+Deno.test("renderWorkflowRunDisplay: a run serve continued says so once it moves on", () => {
+  const out = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      endedRun("succeeded", {
+        autoContinuation: {
+          count: 1,
+          continuedAt: DEADLINE,
+          interruptReason: "server_crash",
+          resetSteps: ["deploy"],
+        },
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(out, "Continued automatically after server_crash");
+  assertStringIncludes(out, "deploy");
+  assertEquals(out.includes("Not continued"), false);
+});

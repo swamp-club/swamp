@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  serveHolder,
+  suspensionKeyOf,
+} from "../../domain/workflows/continuation_claim.ts";
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { Command } from "@cliffy/command";
@@ -821,5 +825,46 @@ Deno.test("workflowRecoverCommand: an interrupted fan-out run with its selector 
       reloaded?.getJob("main")?.getStep("deploy[w-a]")?.status,
       "pending",
     );
+  });
+});
+
+Deno.test("workflowRecoverCommand: waits while serve holds the run's claim, and takes over a claim held past five minutes", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = deployWorkflow("guarded", "${{ false }}");
+    await repoContext.workflowRepo.save(workflow);
+    const run = interruptedRun(workflow, "2026-09-20T10:00:00.000Z");
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    const claims = repoContext.continuationClaims!;
+    const claim = {
+      runId: run.id,
+      suspensionKey: await suspensionKeyOf(run),
+      generation: 1,
+      holder: serveHolder("a"),
+      claimedAt: new Date().toISOString(),
+    };
+    await claims.store.create(claim);
+
+    await assertRejects(
+      () => recover(["guarded", "--json", "--repo-dir", dir]),
+      UserError,
+      "If it has stopped, retry in",
+    );
+    const untouched = await repoContext.workflowRunRepo.findById(
+      workflow.id,
+      createWorkflowRunId(run.id),
+    );
+    assertEquals(untouched?.status, "interrupted");
+
+    await claims.store.release(claim);
+    await claims.store.create({
+      ...claim,
+      claimedAt: new Date(Date.now() - 6 * 60_000).toISOString(),
+    });
+    const result = lastJson(
+      await recover(["guarded", "--json", "--repo-dir", dir]),
+    );
+    assertEquals(result.recovered, true);
+    assertEquals(result.tookOverFrom, serveHolder("a"));
   });
 });

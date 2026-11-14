@@ -24,6 +24,8 @@ import type { WebhookAdmissionSnapshot } from "../../domain/remote/run_progress.
 import {
   writeDoctorRunsJson,
   writeDoctorRunsLog,
+  writeModelRunsJson,
+  writeModelRunsLog,
 } from "./model_runs_output.ts";
 
 function captureLogs(fn: () => void): string {
@@ -284,4 +286,49 @@ Deno.test("writeDoctorRunsLog: an unreadable run is reported even with nothing e
   const leftAlone = write(unfixed, true);
   assertEquals(leftAlone.includes("Settled"), false);
   assertStringIncludes(leftAlone, "left as it is");
+});
+
+function historyRun(
+  status: "interrupted" | "completed",
+  extra: { cancelReason?: string; autoContinuedFrom?: string },
+): ActiveRun {
+  const now = new Date().toISOString();
+  return ActiveRun.fromData({
+    id: crypto.randomUUID(),
+    runKind: "workflow",
+    modelType: null,
+    methodName: null,
+    workflowName: "deploy",
+    pid: 1,
+    hostname: "host",
+    startedAt: now,
+    heartbeatAt: now,
+    status,
+    ...extra,
+  });
+}
+
+Deno.test("writeModelRunsLog: names why a run was interrupted and that serve continued one", () => {
+  const out = captureLogs(() =>
+    writeModelRunsLog([
+      historyRun("interrupted", { cancelReason: "server_shutdown" }),
+      historyRun("completed", { autoContinuedFrom: "server_crash" }),
+    ])
+  );
+  assertStringIncludes(out, "interrupted (server_shutdown)");
+  assertStringIncludes(out, "completed [CONTINUED]");
+});
+
+Deno.test("writeModelRunsJson: carries the interrupt reason and the continuation", () => {
+  const out = captureLogs(() =>
+    writeModelRunsJson([
+      historyRun("interrupted", { cancelReason: "server_shutdown" }),
+      historyRun("completed", { autoContinuedFrom: "server_crash" }),
+    ])
+  );
+  const { runs } = JSON.parse(out);
+  assertEquals(runs[0].interruptReason, "server_shutdown");
+  assertEquals(runs[0].autoContinuedFrom, null);
+  assertEquals(runs[1].interruptReason, null);
+  assertEquals(runs[1].autoContinuedFrom, "server_crash");
 });

@@ -248,6 +248,10 @@ When a `workflow.approve` decides the run's last gate (`allGatesDecided` on
   with inputs may rely on a late input supplied at resume (Resume inputs
   below). It must opt in with `autoResume: true` itself.
 
+`autoResume` does not govern a run a serve restart cut off. That is
+`autoContinue` (default on), and see
+[automatic continuation](#recovery) under Recovery.
+
 The resume uses the workflow name and run id the approval resolved, not the
 request fields. It counts against the approver's principal for the
 `ActiveRunRegistry` caps, and the run keeps its original `initiatedBy` and
@@ -4814,6 +4818,108 @@ acknowledgement.
 
 When unknown steps have no guards, `--acknowledge-unknown` accepts the risk of
 re-running steps whose external side effects may already have happened.
+
+**Automatic continuation by serve (swamp-club#4693):** serve runs the same
+recovery itself, without an operator, when the rule above needs no
+acknowledgement. Only a run serve interrupted is a candidate: the boot reaper,
+reconciliation of a dead peer and the shutdown interrupt stamp the run with
+`continuableSince`, and only on a run serve drove (a recorded triggering
+principal or serve instance id). A run left interrupted by an older swamp, or
+one only a local CLI ever drove, carries no stamp and is never continued. A
+serve-started run a local CLI resumed keeps its triggering principal, so it is
+stamped and judged like any other.
+`decideAutoContinuation` (`src/domain/workflows/auto_continuation.ts`) judges
+each candidate and continues it, or refuses with one of these reasons:
+
+- `workflow_missing`: the workflow no longer exists.
+- `not_serve_driven`: the run was not started through serve.
+- `opted_out`: the workflow sets `autoContinue: false`. The field is on by
+  default and sits outside the definition fingerprint, so toggling it never
+  reads as a changed definition. It is separate from `autoResume`, which is
+  off by default and governs resuming after approvals and signal waits.
+- `continued_too_often`: the run was continued
+  `MAX_CONSECUTIVE_AUTO_CONTINUATIONS` (3) times in a row with no step
+  finishing in between, so a step that takes serve down with it cannot loop
+  across restarts. A step that finishes after a continuation clears the count,
+  and so does a manual recover.
+- `definition_changed`, `unguarded_step`: the recovery assessment above.
+- `fan_out_changed`: the fan-out plan or worker selector no longer matches, or
+  no worker pool is available.
+- `nested_run_unsettled`: a nested run the run waits on is still open.
+- `launch_refused`: serve's own resume refused the launch.
+- `cancel_requested`: someone asked the run to stop since it last started or
+  resumed. Every cancel of a workflow run serve drives (the cancel handler,
+  cancel-all, the max-run-duration timer, a client's dropped connection, a
+  webhook or cron run's cancel) aborts the run at once and writes a cancel
+  record with the run's continuation claims (`continuations/<runId>/cancel`)
+  beside it, so a cancel that has not settled when serve crashes is not lost.
+  The write is best effort and never holds up the abort or shutdown: it has a
+  5 s deadline, and a write that fails or passes it is logged and dropped. The
+  shutdown abort writes none: its runs are the ones meant to continue. A later
+  manual resume of the run overrides the record.
+
+Serve judges every candidate at boot (after the pending-run replay and before
+the schedule catch-up) and when a team leader takes over (after its own
+replay), and the runs a reconciliation tick interrupts as it interrupts them.
+A pass defers a run it cannot settle yet: its copy is behind the datastore, a
+live peer holds its claim, its nested run is still open, or the launch failed
+for a fault such as a full registry. Serve keeps the deferred runs (at most
+10,000) and the continuation sweep judges just those again on each pass, read
+by id rather than by scanning history; a full pass at boot or lead replaces the
+set. A launch fault is reported once per interruption, however often it is
+retried. Followers never continue a run. A launch the resume refuses for a definite reason (a run
+started through a delegation that has ended) is recorded as `launch_refused`
+and stands like any other refusal. A continuation claims the interrupted record
+(`suspensionKeyOf` of the interrupted run) and compares the copy with the
+datastore before `recover` resets anything. Two instances, or the old and new
+process of a rolling restart, therefore never both continue one interruption.
+The claim is kept while the continued run runs, so a peer holding the same
+stale copy is refused even where record currency cannot be checked, and is
+released when the continuation ends. It is never taken over from another
+holder: a filesystem datastore keeps no heartbeats, so every peer reads as dead
+there. A claim held by a live serve, a serve of unknown liveness, an operator's
+`swamp workflow recover` or the same serve's own racing write defers the run;
+only one held by a serve known dead leaves that interruption to the operator,
+and serve logs that once, naming the holder and the recover command; one that died after it leaves the run
+`recoveredAutomatically`, which the continuation sweep finishes. The resume then runs
+under the same run id through the serve resume launcher, under the run's
+recorded principal and vault scope, with every refusal a resume already has
+(such as a run started through a delegation that has ended). A run serve
+recovered but did not resume before it stopped is `recoveredAutomatically`,
+and the continuation sweep finishes it under `autoContinue`. A run reset by
+`swamp workflow recover` still waits for its operator. `swamp workflow recover`
+takes the same claim before it resets anything. Serve keeps that claim for the
+whole continued run, so recover refuses while the holder is a serve whose
+heartbeat is current, whatever the claim's age. Any other holder (one that
+reads dead or unknown, as every serve on a filesystem datastore does) it waits
+on while the claim is under five minutes old, naming the seconds left, and
+takes over an older one, saying so
+(`tookOverFrom` in `--json`). So a refusal serve writes never lands over an
+operator's recover. Without a shared claim store neither one continuer nor a
+recorded cancel can be guaranteed, so serve continues nothing automatically
+there and logs that once. A continued scheduled
+run holds off its workflow's next fire, and a replayed run of it waits, until
+it ends. Serve keeps the continued scheduled runs itself and hands every
+scheduler it builds a check over them (`continuing` in the scheduler's deps),
+so a reload, turning scheduling off and on, or a scheduler started after the
+continuation still sees the run. A continued webhook run
+does not count against its route's `maxConcurrentRuns`, because its delivery
+was admitted before the restart.
+
+The run records the outcome in `autoContinuation`: the continuation (time,
+interruption reason, reset steps, consecutive count) or the refusal (reason,
+steps, operator message). A refusal is written once per interruption, under
+the same claim and currency check, so it never lands over an operator's
+recover. It stands for that interruption: lifting its cause later (turning
+`autoContinue` back on, reverting the definition) leaves the run to the
+operator, except `nested_run_unsettled`: the run is deferred, and the
+continuation sweep judges it again until the nested run settles on its own
+(`refusalIsRetried`). The audit log records `workflow.auto_continue`,
+`workflow.auto_continue_refused` and `workflow.auto_continue_failed`. The
+serve log names each refused run and step, with the
+`swamp workflow recover` command to decide it. `swamp run history` shows
+the interruption reason and `[CONTINUED]`, and `workflow history get` and the
+dashboard run view show both.
 
 **Non-goals:** recovery does not promise exactly-once execution. A crash can
 happen after an external side effect succeeds but before Swamp records the step

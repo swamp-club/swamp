@@ -98,7 +98,8 @@ function harness(runs: WorkflowRun[], workflowId: WorkflowId) {
 
 Deno.test("interruptShutdownRuns: saves a running run interrupted, then pushes it (swamp-club#3252)", async () => {
   const wf = workflow();
-  const run = runningRun(wf);
+  const run = WorkflowRun.create(wf);
+  run.start(1, "serve-a");
   const { events, repoContext } = harness([run], wf.id);
 
   const result = await interruptShutdownRuns([active(run)], {
@@ -116,6 +117,7 @@ Deno.test("interruptShutdownRuns: saves a running run interrupted, then pushes i
   assertEquals(result, { interrupted: [run.id] });
   assertEquals(events, ["load", `save ${run.id} interrupted`, "push ns"]);
   assertEquals(run.tags["interrupt_reason"], "server_shutdown");
+  assertEquals(run.continuableSince !== undefined, true);
 });
 
 Deno.test("interruptShutdownRuns: a run that ended cancelled is interrupted and pushed", async () => {
@@ -811,4 +813,33 @@ Deno.test("interruptShutdownRuns: a run whose record it leaves alone, or could n
   });
 
   assertEquals(events.filter((event) => event.startsWith("take over")), []);
+});
+
+Deno.test("interruptShutdownRuns: only a run the shutdown itself cut off is stamped for automatic continuation", async () => {
+  const wf = workflow();
+  const served = () => {
+    const run = WorkflowRun.create(wf);
+    run.start(1, "serve-a");
+    return run;
+  };
+  const byShutdown = served();
+  byShutdown.endAsCancelled("server shutdown");
+  const byUser = served();
+  byUser.endAsCancelled("cancelled by user");
+  // a user cancel the executor had not saved yet: the record still reads running
+  const unsaved = served();
+  const userAbort = new AbortController();
+  userAbort.abort(new Error("cancelled by user"));
+  const { repoContext } = harness([byShutdown, byUser, unsaved], wf.id);
+
+  const result = await interruptShutdownRuns([
+    active(byShutdown),
+    active(byUser),
+    { ...active(unsaved), controller: userAbort },
+  ], { repoContext });
+
+  assertEquals(result.interrupted.length, 3);
+  assertEquals(byShutdown.continuableSince !== undefined, true);
+  assertEquals(byUser.continuableSince, undefined);
+  assertEquals(unsaved.continuableSince, undefined);
 });

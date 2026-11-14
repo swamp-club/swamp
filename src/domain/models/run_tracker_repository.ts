@@ -22,6 +22,8 @@ import type { ActiveRun, ActiveRunStatus } from "./active_run.ts";
 export interface RunTrackerRepository {
   register(run: ActiveRun): void;
 
+  markAutoContinued?(runId: string, interruptReason: string): void;
+
   heartbeat(runId: string): void;
 
   complete(runId: string, status: ActiveRunStatus, reason?: string): void;

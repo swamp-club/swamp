@@ -530,7 +530,10 @@ A run whose process was killed (for example by a second Ctrl-C) stays `running`
 with a dead pid. `swamp run doctor --fix` or
 `swamp workflow recover <workflow> --run <id>` marks it `interrupted`, with the
 in-flight step `unknown`, and marks the step's method run `cancelled` in
-`swamp behavior history`. Then resume it with `swamp workflow resume`.
+`swamp behavior history`. Then resume it with `swamp workflow resume`. A run
+`swamp serve` drove is continued by serve itself when that is safe (see
+Auto-continue); `swamp run history` shows `[CONTINUED]` beside it, and an
+interrupted run's reason beside its status.
 
 The history output shows the `KIND` column as `workflow` or `method`, with the
 workflow name or behavior/method name respectively.
@@ -1211,6 +1214,16 @@ name: deploy-prod
 autoResume: true
 jobs: [...]
 ```
+
+**Auto-continue after a restart (serve only):** when serve crashes, is killed,
+or a shutdown cuts a run off, the next boot (or a new team leader) continues the
+interrupted run by itself under the same run id, if every step that was cut off
+has a `guard`. A run that stopped between steps also qualifies. Guards decide
+whether each cut-off step runs again. A run is left `interrupted` for
+`swamp workflow recover` when a cut-off step has no guard, the definition
+changed, it was continued 3 times in a row with no step finishing, it was not
+started through serve, or the workflow sets `autoContinue: false` (default on;
+separate from `autoResume`). `swamp workflow history get` names the reason.
 
 A fresh `workflow run` automatically supersedes (cancels) prior suspended runs
 of the same workflow whose resolved inputs match. Use `--no-supersede` to keep

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type {
+  CancelIntent,
   ContinuationClaim,
   ContinuationClaims,
   ContinuationClaimStore,
@@ -26,6 +27,16 @@ import type {
 
 export class InMemoryContinuationClaimStore implements ContinuationClaimStore {
   readonly claims: ContinuationClaim[] = [];
+  readonly cancels = new Map<string, CancelIntent>();
+
+  recordCancel(intent: CancelIntent): Promise<void> {
+    this.cancels.set(intent.runId, { ...intent });
+    return Promise.resolve();
+  }
+
+  findCancel(runId: string): Promise<CancelIntent | undefined> {
+    return Promise.resolve(this.cancels.get(runId));
+  }
 
   find(
     runId: string,
@@ -59,6 +70,7 @@ export class InMemoryContinuationClaimStore implements ContinuationClaimStore {
     for (let i = this.claims.length - 1; i >= 0; i--) {
       if (this.claims[i].runId === runId) this.claims.splice(i, 1);
     }
+    this.cancels.delete(runId);
     return Promise.resolve();
   }
 }

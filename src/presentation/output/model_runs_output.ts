@@ -80,8 +80,12 @@ export function writeModelRunsLog(runs: ActiveRun[]): void {
     const name = run.runKind === "workflow"
       ? run.workflowName ?? "unknown"
       : `${run.modelType ?? "unknown"}/${run.methodName ?? "unknown"}`;
+    const reason = run.interruptReason !== null
+      ? ` (${run.interruptReason})`
+      : "";
+    const continued = run.autoContinuedFrom !== null ? " [CONTINUED]" : "";
     return [
-      stale ? `${run.status} [STALE]` : run.status,
+      `${run.status}${reason}${continued}${stale ? " [STALE]" : ""}`,
       kind,
       name,
       run.id.slice(0, 8),
@@ -98,10 +102,11 @@ export function writeModelRunsLog(runs: ActiveRun[]): void {
       if (trimmed.includes("[STALE]")) {
         return value.replace(trimmed, red(trimmed));
       }
-      if (trimmed === "running") return value.replace(trimmed, green(trimmed));
-      if (trimmed === "failed") return value.replace(trimmed, red(trimmed));
-      if (trimmed === "cancelled") {
-        return value.replace(trimmed, yellow(trimmed));
+      const status = trimmed.split(" ")[0];
+      if (status === "running") return value.replace(status, green(status));
+      if (status === "failed") return value.replace(status, red(status));
+      if (status === "cancelled") {
+        return value.replace(status, yellow(status));
       }
     }
     if (col === 3 || col === 5) return dim(value);
@@ -126,6 +131,8 @@ export function writeModelRunsJson(runs: ActiveRun[]): void {
       heartbeatAt: r.heartbeatAt.toISOString(),
       stale: r.isStale(STALE_TTL_MS),
       initiatedBy: r.initiatedBy,
+      interruptReason: r.interruptReason,
+      autoContinuedFrom: r.autoContinuedFrom,
     })),
   }));
 }

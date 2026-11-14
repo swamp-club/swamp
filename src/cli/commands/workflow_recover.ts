@@ -41,6 +41,10 @@ import {
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
+  claimForOperatorRecover,
+  OPERATOR_CLAIM_STALE_MS,
+} from "../../domain/workflows/continuation_claim.ts";
+import {
   localOwnerLiveness,
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
@@ -229,13 +233,29 @@ export const workflowRecoverCommand = new Command()
           );
         }
 
-        await repoContext.workflowRunRepo.withdrawSettledStepStarts(
-          workflow.id,
-          run.id,
-          run.unknownSteps(),
-        );
-        run.resetUnknownStepsForRecovery();
-        await repoContext.workflowRunRepo.save(workflow.id, run);
+        // the claim serve's own continuation takes, so the two never both
+        // reset this interruption
+        const claims = repoContext.continuationClaims;
+        const held = await claimForOperatorRecover(claims, run, new Date());
+        if (held?.replaced !== undefined && cliCtx.outputMode !== "json") {
+          writeOutput(
+            `Took over run ${run.id} from ${held.replaced}, which is not known to be running and held it for more than ${
+              OPERATOR_CLAIM_STALE_MS / 60_000
+            } minutes.`,
+          );
+        }
+        try {
+          await repoContext.workflowRunRepo.withdrawSettledStepStarts(
+            workflow.id,
+            run.id,
+            run.unknownSteps(),
+          );
+          run.resetUnknownStepsForRecovery();
+          await repoContext.workflowRunRepo.save(workflow.id, run);
+        } catch (error) {
+          if (held !== undefined) await claims!.store.release(held.claim);
+          throw error;
+        }
         // a fan-out job plans and dispatches only through serve
         const resumeCommand =
           `swamp workflow resume ${workflowIdOrName} --run ${run.id}${
@@ -250,6 +270,9 @@ export const workflowRecoverCommand = new Command()
               recovered: true,
               runId: run.id,
               resumeCommand,
+              ...(held?.replaced !== undefined
+                ? { tookOverFrom: held.replaced }
+                : {}),
             },
             null,
             2,

@@ -46,7 +46,8 @@ CREATE TABLE active_runs (
   cancel_reason TEXT,
   initiated_by  TEXT,
   instance_id   TEXT,                 -- owning serve instance (HA)
-  host_identity TEXT                  -- owner's hostname + pid namespace; NULL before schema v7
+  host_identity TEXT,                 -- owner's hostname + pid namespace; NULL before schema v7
+  auto_continued TEXT                 -- interrupt reason serve continued the run from; NULL before schema v9
 );
 CREATE INDEX idx_active_runs_status    ON active_runs(status);
 CREATE INDEX idx_active_runs_heartbeat ON active_runs(heartbeat_at);
@@ -84,7 +85,12 @@ days are purged at startup, except a workflow or method row reaped
 `interrupted` with no reason (`cancel_reason` null): its workflow or method run
 record may still say `running`, and the row is the evidence that settles it
 (see Dead owner below). Once the record is
-settled, `markSettled` stores a reason and the row is purged as usual. An
+settled, `markSettled` stores a reason and the row is purged as usual. When
+serve continues an interrupted run by itself (swamp-club#4693), the automatic
+`recover` stores the interrupt reason in `auto_continued` (`markAutoContinued`).
+No later status change clears it, so `swamp run history` shows `[CONTINUED]`
+after the run ends. An interrupted row's `cancel_reason` is shown beside its
+status. An
 unsettled row is still purged once it is 90 days old, so no path that fails
 to settle it keeps it forever. `swamp run gc` removes older records on demand:
 30-day default, `--older-than`, `--dry-run`, `--server`

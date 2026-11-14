@@ -17,6 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  abortCancelled,
+  type CancelIntentRecorder,
+} from "../../domain/workflows/continuation_claim.ts";
 import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
@@ -299,6 +303,13 @@ export interface ScheduledExecutionDeps {
    * keys (its id or name), so a run of it waits rather than overlapping
    */
   busyElsewhere?: (identity: readonly string[]) => boolean;
+  /**
+   * true while serve drives a continued run of one of a workflow's keys; kept
+   * by serve, so a rebuilt scheduler still sees a run continued before it
+   */
+  continuing?: (identity: readonly string[]) => boolean;
+  /** a user's cancel is recorded before its abort; never the shutdown's */
+  cancelIntents?: CancelIntentRecorder;
   /** after each run settles, so a sibling waiting on its workflow can start */
   onRunSettled?: () => void;
   now?: () => number;
@@ -578,6 +589,7 @@ export class ScheduledExecutionService {
       FIRE_SETTLE_TIMEOUT_MS,
     );
 
+    await this.deps.cancelIntents?.settled();
     this.running.clear();
     this.workflowNames.clear();
     this.eventHandler = null;
@@ -704,7 +716,12 @@ export class ScheduledExecutionService {
       return false;
     }
     logger.info`Cancelling scheduled run for workflow ${workflowId}`;
-    entry.controller.abort(new Error("cancelled by user"));
+    abortCancelled(
+      this.deps.cancelIntents,
+      entry.runId,
+      entry.controller,
+      "cancelled by user",
+    );
     return true;
   }
 
@@ -727,7 +744,12 @@ export class ScheduledExecutionService {
       if (entry.runId === runId) {
         logger
           .info`Cancelling scheduled run ${runId} for workflow ${workflowId}`;
-        entry.controller.abort(new Error(reason));
+        abortCancelled(
+          this.deps.cancelIntents,
+          entry.runId,
+          entry.controller,
+          reason,
+        );
         return true;
       }
     }
@@ -738,7 +760,12 @@ export class ScheduledExecutionService {
     let count = 0;
     for (const [workflowId, entry] of this.running) {
       logger.info`Cancelling scheduled run for workflow ${workflowId}`;
-      entry.controller.abort(new Error(reason));
+      abortCancelled(
+        this.deps.cancelIntents,
+        entry.runId,
+        entry.controller,
+        reason,
+      );
       count++;
     }
     return count;
@@ -1383,7 +1410,8 @@ export class ScheduledExecutionService {
     // Replayed runs are keyed by name (not UUID), so check both.
     if (
       this.running.has(workflowId) ||
-      this.running.has(workflowName as WorkflowId)
+      this.running.has(workflowName as WorkflowId) ||
+      this.deps.continuing?.([workflowId, workflowName])
     ) {
       this.emit({
         kind: "schedule_skipped",
@@ -1772,7 +1800,8 @@ export class ScheduledExecutionService {
       const index = this.runQueue.findIndex((entry) => {
         const identity = this.identityOf(entry);
         return !identity.some((key) => this.claimed.has(key)) &&
-          !this.deps.busyElsewhere?.(identity);
+          !this.deps.busyElsewhere?.(identity) &&
+          !this.deps.continuing?.(identity);
       });
       if (index === -1) return;
       const [entry] = this.runQueue.splice(index, 1);
