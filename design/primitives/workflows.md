@@ -4894,7 +4894,11 @@ heartbeat is current, whatever the claim's age. Any other holder (one that
 reads dead or unknown, as every serve on a filesystem datastore does) it waits
 on while the claim is under five minutes old, naming the seconds left, and
 takes over an older one, saying so
-(`tookOverFrom` in `--json`). So a refusal serve writes never lands over an
+(`tookOverFrom` in `--json`). A recover that fails, its commit included,
+releases its claim. One killed before it could leaves the claim on the
+interrupted record: serve defers the run while that claim is under five minutes
+old, then leaves it to the operator and logs that once with the recover
+command, which takes the claim over by then. So a refusal serve writes never lands over an
 operator's recover. Without a shared claim store neither one continuer nor a
 recorded cancel can be guaranteed, so serve continues nothing automatically
 there and logs that once. A continued scheduled

@@ -43,6 +43,7 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   claimForOperatorRecover,
   OPERATOR_CLAIM_STALE_MS,
+  type OperatorRecoverClaim,
 } from "../../domain/workflows/continuation_claim.ts";
 import {
   localOwnerLiveness,
@@ -157,6 +158,8 @@ export const workflowRecoverCommand = new Command()
         outputMode: cliCtx.outputMode,
       });
 
+      const claims = repoContext.continuationClaims;
+      let held = undefined as OperatorRecoverClaim | undefined;
       // root unit of work with no push, so the run saves stage into it instead
       // of reaching the hook through signalChange's fallback
       await runCommandInRootUnit(repoContext, { push: undefined }, async () => {
@@ -235,8 +238,7 @@ export const workflowRecoverCommand = new Command()
 
         // the claim serve's own continuation takes, so the two never both
         // reset this interruption
-        const claims = repoContext.continuationClaims;
-        const held = await claimForOperatorRecover(claims, run, new Date());
+        held = await claimForOperatorRecover(claims, run, new Date());
         if (held?.replaced !== undefined && cliCtx.outputMode !== "json") {
           writeOutput(
             `Took over run ${run.id} from ${held.replaced}, which is not known to be running and held it for more than ${
@@ -244,18 +246,13 @@ export const workflowRecoverCommand = new Command()
             } minutes.`,
           );
         }
-        try {
-          await repoContext.workflowRunRepo.withdrawSettledStepStarts(
-            workflow.id,
-            run.id,
-            run.unknownSteps(),
-          );
-          run.resetUnknownStepsForRecovery();
-          await repoContext.workflowRunRepo.save(workflow.id, run);
-        } catch (error) {
-          if (held !== undefined) await claims!.store.release(held.claim);
-          throw error;
-        }
+        await repoContext.workflowRunRepo.withdrawSettledStepStarts(
+          workflow.id,
+          run.id,
+          run.unknownSteps(),
+        );
+        run.resetUnknownStepsForRecovery();
+        await repoContext.workflowRunRepo.save(workflow.id, run);
         // a fan-out job plans and dispatches only through serve
         const resumeCommand =
           `swamp workflow resume ${workflowIdOrName} --run ${run.id}${
@@ -285,6 +282,13 @@ export const workflowRecoverCommand = new Command()
             `Resume with: ${resumeCommand}`,
           );
         }
+      }).catch(async (error) => {
+        // the reset may not have committed, and a claim on a key it did change
+        // guards nothing; a failed release must not hide the error itself
+        if (held !== undefined) {
+          await claims!.store.release(held.claim).catch(() => {});
+        }
+        throw error;
       });
     },
   );

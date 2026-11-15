@@ -26,6 +26,7 @@ import {
 import {
   acquireContinuation,
   type ContinuationClaim,
+  OPERATOR_CLAIM_STALE_MS,
   serveHolder,
   serveInstanceOf,
   suspensionKeyOf,
@@ -260,6 +261,13 @@ function warnHeldClaim(run: WorkflowRun, claim: ContinuationClaim): void {
   if (warnedClaims.has(key)) return;
   if (warnedClaims.size >= WARNED_CLAIMS_MAX) warnedClaims.clear();
   warnedClaims.add(key);
+  if (serveInstanceOf(claim.holder) === undefined) {
+    logger.warn(
+      "Run {runId} of workflow {workflow} stays interrupted while an operator's recover that did not finish holds its continuation; recover it again with 'swamp workflow recover {workflow} --run {runId}'",
+      { runId: run.id, workflow: run.workflowName },
+    );
+    return;
+  }
   logger.warn(
     "Run {runId} of workflow {workflow} stays interrupted while {holder} holds its continuation; if that serve is no longer running, recover it with 'swamp workflow recover {workflow} --run {runId}'",
     { runId: run.id, workflow: run.workflowName, holder: claim.holder },
@@ -276,6 +284,12 @@ type HoldAttempt =
   | { readonly kind: "busy" }
   /** a holder not known alive: left to the operator, who is told once */
   | { readonly kind: "orphaned" };
+
+/** on the interrupted record's own key, so the recover's reset never landed */
+function operatorRecoverAbandoned(claim: ContinuationClaim): boolean {
+  return serveInstanceOf(claim.holder) === undefined &&
+    Date.now() - Date.parse(claim.claimedAt) > OPERATOR_CLAIM_STALE_MS;
+}
 
 /**
  * the claim the automatic recover takes, held on a current copy, so only one
@@ -298,12 +312,14 @@ async function holdInterruptedRecord(
       new Date(),
     );
     if (acquired.kind !== "acquired") {
-      // only a serve known gone is left to the operator; a live or unknown
-      // holder, an operator's recover, or a claim gone again is tried later
+      // a serve known gone, or an operator's recover old enough for its retry
+      // to take over, is left to the operator; anything else is tried later
       const gone = acquired.liveness === "dead" &&
         serveInstanceOf(acquired.claim.holder) !== undefined &&
         acquired.claim.holder !== claims.holder;
-      if (!gone) return { kind: "busy" };
+      if (!gone && !operatorRecoverAbandoned(acquired.claim)) {
+        return { kind: "busy" };
+      }
       warnHeldClaim(run, acquired.claim);
       return { kind: "orphaned" };
     }
@@ -337,8 +353,8 @@ async function recordRefusal(
   if (attempt.kind === "orphaned") return "skipped";
   const hold = attempt.hold;
   try {
-    // read again under the claim: an operator's recover takes no claim, so a
-    // copy read before it would write the interruption back over that run
+    // read again under the claim: a recover that already finished leaves this
+    // copy out of date, and writing it would put the interruption back
     const fresh = await ctx.repoContext.workflowRunRepo.findById(
       workflowId,
       createWorkflowRunId(run.id),

@@ -45,6 +45,7 @@ import {
 import {
   CancelIntentRecorder,
   localHolder,
+  OPERATOR_CLAIM_STALE_MS,
   serveHolder,
   suspensionKeyOf,
 } from "../src/domain/workflows/continuation_claim.ts";
@@ -669,6 +670,144 @@ Deno.test({
         serve.audit.filter((a) => a.action === "workflow.auto_continue_failed"),
         [],
       );
+    }),
+});
+
+/** the claim an operator's recover took and never released */
+async function operatorClaimLeft(
+  serve: Serve,
+  claims: InMemoryContinuationClaimStore,
+  workflow: Workflow,
+  runId: string,
+  ageMs: number,
+): Promise<void> {
+  const holder = localHolder();
+  await claimsFor(claims, holder).store.create({
+    runId,
+    suspensionKey: await suspensionKeyOf(
+      (await storedRun(serve, workflow, runId))!,
+    ),
+    generation: 1,
+    holder,
+    claimedAt: new Date(Date.now() - ageMs).toISOString(),
+  });
+}
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: an operator's recover that may still be running holds the run off without a warning",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "recover-in-flight" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      await operatorClaimLeft(serve, claims, workflow, runId, 0);
+
+      const logs = await captureLogs(async () => {
+        const result = await continueInterruptedRuns(serve.ctx, "boot");
+        assertEquals(result.continued, []);
+        assertEquals(result.deferred.map((t) => t.runId), [runId]);
+      });
+
+      assertEquals(
+        logs.filter((l) => l.level === "warning" && l.text.includes(runId)),
+        [],
+      );
+      assertEquals(claims.claims.length, 1);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "interrupted",
+      );
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a claim an operator's failed recover left past five minutes leaves the run interrupted and says so once",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow({ name: "recover-left-claim" }, counter);
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      await Deno.writeTextFile(counter, "");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      await operatorClaimLeft(
+        serve,
+        claims,
+        workflow,
+        runId,
+        OPERATOR_CLAIM_STALE_MS + 60_000,
+      );
+
+      const logs = await captureLogs(async () => {
+        assertEquals(await continueInterruptedRuns(serve.ctx, "boot"), {
+          continued: [],
+          refused: [],
+          deferred: [],
+        });
+        await continueInterruptedRuns(serve.ctx, "reconciliation");
+      });
+
+      const warned = logs.filter((l) =>
+        l.level === "warning" && l.text.includes(runId)
+      );
+      assertEquals(warned.length, 1);
+      assertStringIncludes(warned[0].text, "recover");
+      assertStringIncludes(
+        warned[0].text,
+        `swamp workflow recover ${workflow.name} --run ${runId}`,
+      );
+      assertEquals(claims.claims.length, 1);
+      assertEquals(await ranSteps(counter), []);
+      assertEquals(
+        (await storedRun(serve, workflow, runId))?.status,
+        "interrupted",
+      );
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a refusal is not written over a claim an operator's failed recover left, which is reported once",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow(
+        { name: "recover-left-refusal" },
+        counter,
+      );
+      const runId = await interruptedRun(repoDir, workflow, "mid-step");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      await operatorClaimLeft(
+        serve,
+        claims,
+        workflow,
+        runId,
+        OPERATOR_CLAIM_STALE_MS + 60_000,
+      );
+
+      const logs = await captureLogs(async () => {
+        const first = await continueInterruptedRuns(serve.ctx, "boot");
+        assertEquals(first.refused, []);
+        await continueInterruptedRuns(serve.ctx, "reconciliation");
+      });
+
+      assertEquals(
+        logs.filter((l) => l.level === "warning" && l.text.includes(runId))
+          .length,
+        1,
+      );
+      const run = await storedRun(serve, workflow, runId);
+      assertEquals(run?.status, "interrupted");
+      assertEquals(run?.autoContinuation?.refused, undefined);
+      assertEquals(serve.audit, []);
     }),
 });
 

@@ -44,6 +44,8 @@ import { hostname } from "node:os";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { createLegacyUnitOfWork } from "../../infrastructure/persistence/legacy_unit_of_work.ts";
+import { useUnitOfWorkFactoryForTesting } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 
 import "../../domain/models/models.ts";
 
@@ -866,5 +868,50 @@ Deno.test("workflowRecoverCommand: waits while serve holds the run's claim, and 
     );
     assertEquals(result.recovered, true);
     assertEquals(result.tookOverFrom, serveHolder("a"));
+  });
+});
+
+Deno.test("workflowRecoverCommand: a recover whose commit fails releases the run's claim", async () => {
+  await withTempDir(async (dir) => {
+    const repoContext = await initRepo(dir);
+    const workflow = deployWorkflow("guarded", "${{ false }}");
+    await repoContext.workflowRepo.save(workflow);
+    const run = interruptedRun(workflow, "2026-09-20T10:00:00.000Z");
+    await repoContext.workflowRunRepo.save(workflow.id, run);
+    const claims = repoContext.continuationClaims!;
+    const key = await suspensionKeyOf(run);
+
+    let roots = 0;
+    const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
+      const unit = createLegacyUnitOfWork(markDirty, {
+        flush: options.flush,
+        parent: options.parent,
+        afterCommit: "forward",
+      });
+      if (options.role !== "root") return unit;
+      roots++;
+      return {
+        ...unit,
+        stage: (change) => unit.stage(change),
+        staged: () => unit.staged(),
+        abandon: () => unit.abandon(),
+        commit: async () => {
+          await unit.commit();
+          throw new Error("datastore unreachable");
+        },
+      };
+    });
+    try {
+      await assertRejects(
+        () => recover(["guarded", "--json", "--repo-dir", dir]),
+        Error,
+        "datastore unreachable",
+      );
+    } finally {
+      dispose();
+    }
+
+    assertEquals(roots, 1);
+    assertEquals(await claims.store.find(run.id, key), undefined);
   });
 });
