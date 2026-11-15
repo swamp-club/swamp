@@ -871,47 +871,85 @@ Deno.test("workflowRecoverCommand: waits while serve holds the run's claim, and 
   });
 });
 
-Deno.test("workflowRecoverCommand: a recover whose commit fails releases the run's claim", async () => {
-  await withTempDir(async (dir) => {
-    const repoContext = await initRepo(dir);
-    const workflow = deployWorkflow("guarded", "${{ false }}");
-    await repoContext.workflowRepo.save(workflow);
-    const run = interruptedRun(workflow, "2026-09-20T10:00:00.000Z");
-    await repoContext.workflowRunRepo.save(workflow.id, run);
-    const claims = repoContext.continuationClaims!;
-    const key = await suspensionKeyOf(run);
-
-    let roots = 0;
-    const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
-      const unit = createLegacyUnitOfWork(markDirty, {
-        flush: options.flush,
-        parent: options.parent,
-        afterCommit: "forward",
-      });
-      if (options.role !== "root") return unit;
-      roots++;
-      return {
-        ...unit,
-        stage: (change) => unit.stage(change),
-        staged: () => unit.staged(),
-        abandon: () => unit.abandon(),
-        commit: async () => {
-          await unit.commit();
-          throw new Error("datastore unreachable");
-        },
-      };
+/** fails the recover's root unit at its commit, after `beforeThrow` */
+function failingCommit(
+  beforeThrow: () => Promise<void>,
+): { roots: () => number; dispose: () => void } {
+  let roots = 0;
+  const dispose = useUnitOfWorkFactoryForTesting((markDirty, options) => {
+    const unit = createLegacyUnitOfWork(markDirty, {
+      flush: options.flush,
+      parent: options.parent,
+      afterCommit: "forward",
     });
-    try {
-      await assertRejects(
-        () => recover(["guarded", "--json", "--repo-dir", dir]),
-        Error,
-        "datastore unreachable",
-      );
-    } finally {
-      dispose();
-    }
-
-    assertEquals(roots, 1);
-    assertEquals(await claims.store.find(run.id, key), undefined);
+    if (options.role !== "root") return unit;
+    roots++;
+    return {
+      stage: (change) => unit.stage(change),
+      staged: () => unit.staged(),
+      abandon: () => unit.abandon(),
+      commit: async () => {
+        await unit.commit();
+        await beforeThrow();
+        throw new Error("datastore unreachable");
+      },
+    };
   });
-});
+  return { roots: () => roots, dispose };
+}
+
+for (
+  const landed of [false, true]
+) {
+  Deno.test(
+    `workflowRecoverCommand: a recover whose commit fails ${
+      landed ? "keeps" : "releases"
+    } the run's claim when its reset ${
+      landed ? "reached" : "never reached"
+    } the record`,
+    async () => {
+      await withTempDir(async (dir) => {
+        const repoContext = await initRepo(dir);
+        const workflow = deployWorkflow("guarded", "${{ false }}");
+        await repoContext.workflowRepo.save(workflow);
+        const run = interruptedRun(workflow, "2026-09-20T10:00:00.000Z");
+        await repoContext.workflowRunRepo.save(workflow.id, run);
+        const claims = repoContext.continuationClaims!;
+        const key = await suspensionKeyOf(run);
+
+        // put back, as a staged reset whose commit failed leaves the record
+        const failing = failingCommit(() =>
+          landed
+            ? Promise.resolve()
+            : repoContext.workflowRunRepo.save(workflow.id, run)
+        );
+        try {
+          await assertRejects(
+            () => recover(["guarded", "--json", "--repo-dir", dir]),
+            Error,
+            "datastore unreachable",
+          );
+        } finally {
+          failing.dispose();
+        }
+
+        assertEquals(failing.roots(), 1);
+        const stored = await repoContext.workflowRunRepo.findById(
+          workflow.id,
+          createWorkflowRunId(run.id),
+        );
+        assertEquals(stored?.status === "interrupted", !landed);
+        assertEquals(
+          (await claims.store.find(run.id, key)) !== undefined,
+          landed,
+        );
+        if (!landed) {
+          const retried = lastJson(
+            await recover(["guarded", "--json", "--repo-dir", dir]),
+          );
+          assertEquals(retried.recovered, true);
+        }
+      });
+    },
+  );
+}

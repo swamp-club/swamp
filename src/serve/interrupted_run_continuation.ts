@@ -26,6 +26,7 @@ import {
 import {
   acquireContinuation,
   type ContinuationClaim,
+  type HolderLiveness,
   OPERATOR_CLAIM_STALE_MS,
   serveHolder,
   serveInstanceOf,
@@ -263,7 +264,7 @@ function warnHeldClaim(run: WorkflowRun, claim: ContinuationClaim): void {
   warnedClaims.add(key);
   if (serveInstanceOf(claim.holder) === undefined) {
     logger.warn(
-      "Run {runId} of workflow {workflow} stays interrupted while an operator's recover that did not finish holds its continuation; recover it again with 'swamp workflow recover {workflow} --run {runId}'",
+      "Run {runId} of workflow {workflow} stays interrupted while a local command (a recover or resume) has held its continuation for over five minutes: it has not finished, or what it saved has not reached this serve. If it is no longer running, recover the run with 'swamp workflow recover {workflow} --run {runId}'",
       { runId: run.id, workflow: run.workflowName },
     );
     return;
@@ -285,9 +286,15 @@ type HoldAttempt =
   /** a holder not known alive: left to the operator, who is told once */
   | { readonly kind: "orphaned" };
 
-/** on the interrupted record's own key, so the recover's reset never landed */
-function operatorRecoverAbandoned(claim: ContinuationClaim): boolean {
-  return serveInstanceOf(claim.holder) === undefined &&
+/**
+ * a local command's claim on the interrupted record's own key, old enough
+ * that the operator's retry takes it over
+ */
+function localClaimStale(
+  claim: ContinuationClaim,
+  liveness: HolderLiveness,
+): boolean {
+  return serveInstanceOf(claim.holder) === undefined && liveness !== "alive" &&
     Date.now() - Date.parse(claim.claimedAt) > OPERATOR_CLAIM_STALE_MS;
 }
 
@@ -312,12 +319,20 @@ async function holdInterruptedRecord(
       new Date(),
     );
     if (acquired.kind !== "acquired") {
-      // a serve known gone, or an operator's recover old enough for its retry
-      // to take over, is left to the operator; anything else is tried later
+      // a serve known gone, or a local command's claim old enough for the
+      // operator's retry to take over, is left to the operator; anything else
+      // is tried later
       const gone = acquired.liveness === "dead" &&
         serveInstanceOf(acquired.claim.holder) !== undefined &&
         acquired.claim.holder !== claims.holder;
-      if (!gone && !operatorRecoverAbandoned(acquired.claim)) {
+      const stale = !gone &&
+        localClaimStale(acquired.claim, acquired.liveness);
+      if (!gone && !stale) return { kind: "busy" };
+      // a copy behind may miss what that command saved, so nothing is reported
+      const currency = ctx.repoContext.runRecordCurrency;
+      if (
+        stale && currency && !(await currency({ workflowId, runId: run.id }))
+      ) {
         return { kind: "busy" };
       }
       warnHeldClaim(run, acquired.claim);

@@ -673,7 +673,6 @@ Deno.test({
     }),
 });
 
-/** the claim an operator's recover took and never released */
 async function operatorClaimLeft(
   serve: Serve,
   claims: InMemoryContinuationClaimStore,
@@ -768,6 +767,43 @@ Deno.test({
         (await storedRun(serve, workflow, runId))?.status,
         "interrupted",
       );
+    }),
+});
+
+Deno.test({
+  ...TEST,
+  name:
+    "auto-continue: a stale local claim is not reported while serve's copy of the run is behind",
+  fn: () =>
+    withRepo(async (repoDir) => {
+      const counter = join(repoDir, "ran.txt");
+      const workflow = twoStepWorkflow(
+        { name: "recover-not-arrived" },
+        counter,
+      );
+      const runId = await interruptedRun(repoDir, workflow, "boundary");
+      const claims = new InMemoryContinuationClaimStore();
+      const serve = await serveOver(repoDir, serveHolder("a"), claims);
+      await operatorClaimLeft(
+        serve,
+        claims,
+        workflow,
+        runId,
+        OPERATOR_CLAIM_STALE_MS + 60_000,
+      );
+      serve.ctx.repoContext.runRecordCurrency = () => Promise.resolve(false);
+
+      const logs = await captureLogs(async () => {
+        const result = await continueInterruptedRuns(serve.ctx, "boot");
+        assertEquals(result.continued, []);
+        assertEquals(result.deferred.map((t) => t.runId), [runId]);
+      });
+
+      assertEquals(
+        logs.filter((l) => l.level === "warning" && l.text.includes(runId)),
+        [],
+      );
+      assertEquals(claims.claims.length, 1);
     }),
 });
 
