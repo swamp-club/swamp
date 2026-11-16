@@ -190,7 +190,6 @@ Deno.test("findParkedRun: a run id that could name another key is never read", a
 
 Deno.test("handsOverRuns: runs park only with a drain and a store a later process can continue them through", () => {
   assertEquals(handsOverRuns(30_000, true), true);
-  // nothing would continue a parked run, so it drains to completion
   assertEquals(handsOverRuns(30_000, false), false);
   assertEquals(handsOverRuns(0, true), false);
 });
@@ -198,6 +197,5 @@ Deno.test("handsOverRuns: runs park only with a drain and a store a later proces
 Deno.test("parkedRunsAreContinuable: only with claims and run records the next process reads current", () => {
   assertEquals(parkedRunsAreContinuable(true, false), true);
   assertEquals(parkedRunsAreContinuable(false, false), false);
-  // a synced copy would read the parked run as still running and drop it
   assertEquals(parkedRunsAreContinuable(true, true), false);
 });

@@ -27465,7 +27465,6 @@ Deno.test("handover: a run parks after its running step and starts no step after
     assertEquals(executor.count("main/a"), 1);
     assertEquals(executor.count("main/b"), 1);
     assertEquals(executor.count("main/c"), 1);
-    // a park cut nothing off, so it never counts toward the repeat cap
     assertEquals(continued.autoContinuation?.count, 0);
   });
 });
@@ -27703,7 +27702,6 @@ Deno.test("handover: a parent parks with its nested child and both finish once c
 
     assert(run.isParked, `parent is ${run.status}`);
     const nestedStep = run.getJob("outer")!.getStep("nested")!;
-    // a nested wait records as waiting_approval, as a suspended child's does
     assertEquals(nestedStep.status, "waiting_approval");
     const childRef = nestedStep.nestedRun;
     assert(childRef?.kind === "valid", "the nested step names no child run");

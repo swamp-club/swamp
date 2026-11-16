@@ -877,8 +877,8 @@ Deno.test("WorkflowRun.park: a park leaves nothing unknown and keeps every outco
         const step = run.getJob(ref.jobName)!.getStep(ref.stepName)!;
         try {
           TRANSITIONS[transition](step);
-        } catch {
-          // an illegal transition leaves the step as it was
+        } catch (error) {
+          assert(error instanceof Error);
         }
       }
       const before = run.jobs.flatMap((job) =>

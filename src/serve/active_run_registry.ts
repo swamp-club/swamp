@@ -206,7 +206,6 @@ export class ActiveRunRegistry {
     };
   }
 
-  /** keeps an ended continued run attachable for `retainMs` */
   deregisterRetained(
     runId: string,
     retainMs = CONTINUED_RUN_RETENTION_MS,

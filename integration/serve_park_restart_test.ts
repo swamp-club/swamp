@@ -237,7 +237,6 @@ Deno.test({
 
       const { runId, kinds } = await parkedRun(repoDir, workflow, markers);
 
-      // the engine ends the run parked, never completed
       assertEquals(kinds.includes("parked"), true);
       assertEquals(kinds.includes("completed"), false);
       assertEquals(await ranSteps(counter), ["first"]);
@@ -261,7 +260,6 @@ Deno.test({
       assertEquals(run?.status, "succeeded");
       assertEquals(await ranSteps(counter), ["first", "second", "third"]);
       assertEquals(run?.autoContinuation?.count, 0);
-      // a client reattaching after the continued run ended still gets its end
       const ended = serve.registry.findForAttach(runId);
       assertEquals(ended?.buffer.finished, true);
       assertEquals(serve.registry.get(runId), undefined);
