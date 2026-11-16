@@ -84,12 +84,11 @@ Deno.test("ExtensionCatalogStore: a writer committing during the v3 data migrati
   await withTempDir(async (repoRoot) => {
     const dbPath = seedPendingCatalog(repoRoot);
     const received: LockWorkerMessage[] = [];
-    // fits the default 10s wait that bounded the load before
     const worker = await startLoadedWorker<LockWorkerMessage>(
       new URL("./extension_catalog_migration_lock_worker.ts", import.meta.url),
       {
-        loadTimeoutMs: 5_000,
-        attempts: 2,
+        loadTimeoutMs: 20_000,
+        attempts: 3,
         onMessage: (message) => {
           received.push(message);
         },

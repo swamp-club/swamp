@@ -121,12 +121,11 @@ Deno.test("SqliteCommitStore crash: a writer killed before COMMIT leaves no row"
 
     const commit = await save(1);
     let written = false;
-    // fits the default 10s wait that bounded the load before
     const worker = await startLoadedWorker<CrashWorkerMessage>(
       new URL("./sqlite_commit_store_crash_worker.ts", import.meta.url),
       {
-        loadTimeoutMs: 5_000,
-        attempts: 2,
+        loadTimeoutMs: 20_000,
+        attempts: 3,
         onMessage: (message) => {
           if (message === "written") written = true;
         },

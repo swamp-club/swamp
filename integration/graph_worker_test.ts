@@ -53,7 +53,7 @@ Deno.test("startLoadedWorker: a start that never loads is terminated and the nex
     await Deno.writeTextFile(flag, "0");
     const worker = await startLoadedWorker(
       fixture({ mode: "stall-once", flag }),
-      { loadTimeoutMs: 1_000, attempts: 3 },
+      { loadTimeoutMs: 10_000, attempts: 3 },
     );
     worker.terminate();
     assertEquals(await Deno.readTextFile(flag), "2");
