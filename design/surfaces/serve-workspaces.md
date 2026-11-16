@@ -193,7 +193,8 @@ wait). Observed states are `stopped`, `starting`, `ready`, `backoff` and
   started again after a short backoff and the exit never counts as a crash.
 - Any other exit the host did not ask for is a crash: exponential backoff,
   capped. Repeated crashes inside a window hold in `failed` until someone
-  resumes the workspace.
+  resumes the workspace. Suspending or deleting a failed workspace leaves it
+  `failed`; like `stopped`, it has no child, so removal accepts either.
 - Stop is SIGTERM, so serve's drain path runs.
 
 **Children.** Each child is `swamp serve --json` in its repo folder, configured
