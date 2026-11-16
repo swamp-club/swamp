@@ -138,6 +138,35 @@ export class InvalidBasePageTokenError extends Error {
   }
 }
 
+/** One partition of serve's base index, before any per-caller filtering. */
+export interface BaseIndexEntry {
+  readonly partition: string;
+  readonly seq: number;
+  /** base rows across every partition-keyed base table, files by owner */
+  readonly rows: number;
+  /** no difference is served from below it */
+  readonly horizon: number;
+  /** a key under this partition's records is owned by another partition */
+  readonly contested: boolean;
+}
+
+/** A base row a fold removed: its table's section and its key there. */
+export interface BaseRemoval {
+  readonly section: "record" | "version" | "catalog" | "forward";
+  readonly key: string;
+}
+
+/**
+ * One partition's base, whole or since a seq: with `since`, only the rows
+ * written after it and the rows removed after it.
+ */
+export interface PartitionBaseRows {
+  readonly seq: number;
+  readonly horizon: number;
+  readonly entries: readonly CompactedBaseEntry[];
+  readonly removed: readonly BaseRemoval[];
+}
+
 /** One entry of the compacted base, as {@link CommitStore.readCompactedBase} pages it. */
 export type CompactedBaseEntry =
   /** A partition's last compacted seq. */
@@ -263,6 +292,11 @@ export interface CompactHistoryOptions {
    * passes now less `COMPACTED_TXN_RETENTION_MS`, past every retry it makes.
    */
   readonly pruneTxnsBefore?: Date;
+  /**
+   * forgets base rows removed before this instant; each partition's difference
+   * horizon rises past them, so no difference is ever served across the gap
+   */
+  readonly pruneRemovedBefore?: Date;
 }
 
 /** What {@link CommitStore.compactHistory} did. */
@@ -277,6 +311,8 @@ export interface CompactionReport {
   readonly released: number;
   /** Compacted txnIds forgotten; present when `pruneTxnsBefore` was given. */
   readonly prunedTxns?: number;
+  /** Distinct partitions the folded commits belonged to. */
+  readonly partitions?: number;
 }
 
 /**

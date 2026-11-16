@@ -98,6 +98,8 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/serve_upstream_binding.ts:resetCopyForCaller",
   "src/infrastructure/datastore_v3/checkout_view.ts:leaseUnlessAligned",
   "src/infrastructure/datastore_v3/serve_catch_up.ts:ServeCatchUp",
+  // runs only on a handle the command opened behind the guard
+  "src/infrastructure/datastore_v3/serve_compaction_follow.ts:ServeCompactionFollower",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:ensureV3CopyCurrentNow",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:startV3ReplicationUpkeep",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:recoverAndMark",

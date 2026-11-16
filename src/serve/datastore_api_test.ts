@@ -256,6 +256,7 @@ Deno.test("callerReplyHeaders: a token serve names the caller's principal, encod
       "lease-holder",
       "authorize-only",
       "commit-batch",
+      "base-difference",
     ],
   );
   // a header value the Fetch API accepts
@@ -267,6 +268,44 @@ Deno.test("callerReplyHeaders: a serve without authentication names no principal
   assertEquals(headers.has("x-swamp-datastore-principal"), false);
   assertEquals(
     headers.get("x-swamp-datastore-features")?.split(","),
-    ["step-starts", "lease-holder", "authorize-only", "commit-batch"],
+    [
+      "step-starts",
+      "lease-holder",
+      "authorize-only",
+      "commit-batch",
+      "base-difference",
+    ],
+  );
+});
+
+Deno.test("matchDatastoreRoute: the base index and a partition's base are their own routes, named by template", () => {
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/base/index"), {
+    kind: "base-index",
+    namespace: "ns",
+  });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/base/partition"), {
+    kind: "base-partition",
+    namespace: "ns",
+  });
+  assertEquals(matchDatastoreRoute("/api/v1/datastore/ns/base"), {
+    kind: "base",
+    namespace: "ns",
+  });
+  for (
+    const path of [
+      "/api/v1/datastore/ns/base/other",
+      "/api/v1/datastore/ns/base/index/extra",
+      "/api/v1/datastore/ns/base/partition/p",
+    ]
+  ) {
+    assertEquals(matchDatastoreRoute(path), undefined, path);
+  }
+  assertEquals(
+    resolveHttpRoute("/api/v1/datastore/ns/base/index"),
+    "/api/v1/datastore/{namespace}/base/index",
+  );
+  assertEquals(
+    resolveHttpRoute("/api/v1/datastore/ns/base/partition"),
+    "/api/v1/datastore/{namespace}/base/partition",
   );
 });

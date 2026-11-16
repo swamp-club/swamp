@@ -48,6 +48,8 @@ export interface BaseRecord {
  * the compaction's transaction; namespace "" is the unnamespaced datastore
  */
 export interface CompactedBaseWriter {
+  /** the commit the writes until the next call belong to */
+  atCommit(namespace: string, partition: string, seq: number): void;
   putRecord(
     namespace: string,
     partition: string,
@@ -96,6 +98,7 @@ export function foldCommit(
 ): void {
   const namespace = commit.namespace;
   const partition = commit.partition.toString();
+  base.atCommit(namespace, partition, commit.seq);
   const ownership = (key: string) => base.fileOwnership(namespace, key);
   for (const change of finalKeyStates(commit)) {
     const key = change.key.toString();

@@ -163,6 +163,7 @@ import type {
 } from "../infrastructure/datastore_v3/upload_ledger.ts";
 import {
   AUTHORIZE_ONLY_FEATURE,
+  BASE_DIFFERENCE_FEATURE,
   COMMIT_BATCH_FEATURE,
   LEASE_HOLDER_FEATURE,
   LEASE_OPS_FEATURE,
@@ -538,6 +539,7 @@ export function callerReplyHeaders(
         LEASE_HOLDER_FEATURE,
         AUTHORIZE_ONLY_FEATURE,
         COMMIT_BATCH_FEATURE,
+        BASE_DIFFERENCE_FEATURE,
       ].join(","),
     ]];
   }
@@ -550,6 +552,7 @@ export function callerReplyHeaders(
         LEASE_HOLDER_FEATURE,
         AUTHORIZE_ONLY_FEATURE,
         COMMIT_BATCH_FEATURE,
+        BASE_DIFFERENCE_FEATURE,
       ].join(","),
     ],
     [SERVE_DATASTORE_PRINCIPAL_HEADER, encodeURIComponent(principal)],
@@ -762,6 +765,14 @@ async function answerDatastoreRequest(
       case "base":
         return req.method === "GET"
           ? await api.compactedBase(req)
+          : methodNotAllowed("GET");
+      case "base-index":
+        return req.method === "GET"
+          ? await api.baseIndex()
+          : methodNotAllowed("GET");
+      case "base-partition":
+        return req.method === "GET"
+          ? await api.basePartition(req)
           : methodNotAllowed("GET");
       case "locks":
         return req.method === "POST"
@@ -1891,6 +1902,181 @@ class DatastoreApi {
       entries,
       ...(next === undefined ? {} : { next }),
     });
+  }
+
+  /**
+   * `GET base/index`: each compacted partition the caller may read, with its
+   * compacted seq, row count, difference horizon and whether another
+   * partition owns a key under its records.
+   */
+  async baseIndex(): Promise<Response> {
+    const partitions = [];
+    for (
+      const entry of await this.#v3.commitStore.readBaseIndex(this.#namespace)
+    ) {
+      if (!await this.#mayReadAnyOf(PartitionKey.parse(entry.partition))) {
+        continue;
+      }
+      partitions.push(entry);
+    }
+    return Response.json({
+      point: await this.#v3.commitStore.compactionPoint(),
+      partitions,
+    });
+  }
+
+  /**
+   * `GET base/partition?partition=P[&since=S]`: P's base, or only what
+   * changed after S, through the same per-entry filter as `GET base`.
+   * 410 below P's difference horizon, 413 past the row limit.
+   */
+  async basePartition(req: Request): Promise<Response> {
+    const params = new URL(req.url).searchParams;
+    let partition: PartitionKey;
+    try {
+      partition = PartitionKey.parse(params.get("partition") ?? "");
+    } catch {
+      return failure(
+        400,
+        "invalid_request",
+        "partition must be a partition key",
+      );
+    }
+    const after = params.get("after");
+    if (after !== null || params.get("paged") === "1") {
+      return await this.#basePartitionPage(
+        partition,
+        after ?? undefined,
+        params,
+      );
+    }
+    const sinceParam = params.get("since");
+    const since = sinceParam === null ? undefined : nonNegative(sinceParam);
+    if (sinceParam !== null && since === undefined) {
+      return failure(400, "invalid_request", "since must be a seq");
+    }
+    const limitParam = params.get("limit");
+    const limit = limitParam === null
+      ? MAX_PARTITION_BASE_ROWS
+      : nonNegative(limitParam);
+    if (limit === undefined || limit === 0) {
+      return failure(
+        400,
+        "invalid_request",
+        "limit must be a positive integer",
+      );
+    }
+    if (!await this.#mayReadAnyOf(partition)) {
+      return failure(404, "not_found", "No such compacted partition");
+    }
+    const read = await this.#v3.commitStore.readBaseOfPartition(
+      this.#namespace,
+      partition.toString(),
+      since,
+      Math.min(limit, MAX_PARTITION_BASE_ROWS),
+    );
+    if (read === "gone") {
+      return failure(
+        410,
+        "difference_gone",
+        "The partition's removals before this seq were forgotten; read its whole base",
+      );
+    }
+    if (read === "too-large") {
+      return failure(
+        413,
+        "partition_base_too_large",
+        "The partition's base or difference is larger than the limit",
+      );
+    }
+    const announced = new Set<string>([partition.toString()]);
+    const marks = await this.#compactedPartition(partition);
+    const entries: Record<string, unknown>[] = marks === undefined
+      ? []
+      : [observedBaseEntryToJSON(marks)];
+    for (const entry of read.entries) {
+      const readable = await this.#readableBaseEntry(entry, announced);
+      if (readable === undefined) continue;
+      for (const sent of readable) entries.push(observedBaseEntryToJSON(sent));
+    }
+    const dataAccess = await baseDataReadAccessOf(partition, this.#resolver);
+    const removed = [];
+    for (const removal of read.removed) {
+      let required;
+      try {
+        required = removal.section === "record"
+          ? await baseRecordReadAccessOf(
+            partition,
+            RecordKey.create(removal.key),
+            this.#resolver,
+          )
+          : dataAccess;
+      } catch {
+        return failure(
+          500,
+          "invalid_base",
+          "Serve's compacted base holds a removed record key it cannot read",
+        );
+      }
+      if (this.#mayRead(required)) removed.push(removal);
+    }
+    return Response.json({
+      seq: read.seq,
+      horizon: read.horizon,
+      entries,
+      removed,
+    });
+  }
+
+  /** `GET base/partition?partition=P&paged=1[&after=T]`: P's whole base, a page at a time */
+  async #basePartitionPage(
+    partition: PartitionKey,
+    after: string | undefined,
+    params: URLSearchParams,
+  ): Promise<Response> {
+    const limit = pageLimit(params.get("limit"));
+    if (limit === undefined) {
+      return failure(400, "invalid_request", "limit must be an integer");
+    }
+    if (!await this.#mayReadAnyOf(partition)) {
+      return failure(404, "not_found", "No such compacted partition");
+    }
+    let page;
+    try {
+      page = await this.#v3.commitStore.readBaseOfPartitionPage(
+        this.#namespace,
+        partition.toString(),
+        after,
+        limit,
+      );
+    } catch (error) {
+      if (!(error instanceof InvalidBasePageTokenError)) throw error;
+      return failure(
+        400,
+        "invalid_request",
+        "after must be the next token of a page",
+      );
+    }
+    const announced = new Set<string>([partition.toString()]);
+    const entries: Record<string, unknown>[] = [];
+    for (const entry of page.entries) {
+      const readable = await this.#readableBaseEntry(entry, announced);
+      if (readable === undefined) continue;
+      for (const sent of readable) entries.push(observedBaseEntryToJSON(sent));
+    }
+    return Response.json({
+      seq: page.seq,
+      entries,
+      ...(page.next === undefined ? {} : { next: page.next }),
+    });
+  }
+
+  /** as `GET base` announces a partition: readable whole, or its data is */
+  async #mayReadAnyOf(partition: PartitionKey): Promise<boolean> {
+    return this.#mayRead(
+      await partitionReadAccessOf(partition, this.#resolver),
+    ) ||
+      this.#mayRead(await baseDataReadAccessOf(partition, this.#resolver));
   }
 
   /**
@@ -4281,6 +4467,9 @@ function chunkNotProvided(hash: string | undefined): Response {
 }
 
 const failure = httpFailure;
+
+/** a whole read of a larger partition is paged instead */
+const MAX_PARTITION_BASE_ROWS = 100_000;
 
 function leaseNotFound(): Response {
   return failure(

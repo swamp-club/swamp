@@ -40,6 +40,7 @@ import {
 import {
   closeV3DatastoresAfterFailure,
   closeV3DatastoresAfterSuccess,
+  followServeCompactionAtCommandEnd,
 } from "./v3_teardown.ts";
 import { reportedV3Failure } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
@@ -275,4 +276,16 @@ Deno.test("closeV3DatastoresAfterFailure: a workflow failure with no outage keep
     () => COMMITTED,
   );
   assertEquals(closes, [{ storageUnreachable: false }]);
+});
+
+Deno.test("followServeCompactionAtCommandEnd: never fails the command, whatever following serve's compaction throws", async () => {
+  await followServeCompactionAtCommandEnd(() =>
+    Promise.reject(new Error("serve went away"))
+  );
+  let ran = false;
+  await followServeCompactionAtCommandEnd(() => {
+    ran = true;
+    return Promise.resolve();
+  });
+  assert(ran);
 });

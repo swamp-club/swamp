@@ -180,7 +180,15 @@ import { isChunkQuarantine } from "../../domain/datastore/datastore_storage.ts";
 import { serveUpstreamAt } from "./serve_upstream_registry.ts";
 import { ServeUnreachableError } from "./serve_upstream_errors.ts";
 import { LockCatchUpBehindError } from "./serve_catch_up.ts";
-import { reportQueuedOffline, resetServeOffline } from "./serve_offline.ts";
+import {
+  FOLLOW_COMPACTION_BUDGET_MS,
+  followEachWithin,
+} from "./serve_compaction_follow.ts";
+import {
+  reportQueuedOffline,
+  resetServeOffline,
+  serveOfflineAt,
+} from "./serve_offline.ts";
 import { type ServeFeedWatch, watchServeFeed } from "./serve_feed_client.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -2020,6 +2028,19 @@ async function recoverDroppedWork(
   } catch (error) {
     keep(`its recovery failed: ${errorMessage(error)}`);
   }
+}
+
+/** never fails the command: what it leaves undone the next command resumes */
+export async function followServeCompactionAtCommandEnd(
+  budgetMs: number = FOLLOW_COMPACTION_BUDGET_MS,
+): Promise<void> {
+  await followEachWithin(opened.values(), budgetMs, {
+    followsServe: (path) => serveUpstreamAt(path) !== undefined,
+    offline: (path) => serveOfflineAt(path) !== undefined,
+    onError: (path, error) =>
+      logger
+        .debug`Following serve's compaction for the copy at ${path} stopped; the next command resumes: ${error}`,
+  });
 }
 
 /**

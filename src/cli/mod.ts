@@ -121,6 +121,7 @@ import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts
 import {
   closeV3DatastoresAfterFailure,
   closeV3DatastoresAfterSuccess,
+  followServeCompactionAtCommandEnd,
 } from "./v3_teardown.ts";
 
 import "../domain/datastore/datastore_types.ts";
@@ -2728,6 +2729,12 @@ async function runInvocation(
         "swamp.cli.teardown.retention",
         {},
         () => runRetentionAtCommandEnd(),
+      );
+      // capped, installs only, and skipped when another process holds the copy
+      await withSpan(
+        "swamp.cli.teardown.follow_compaction",
+        {},
+        () => followServeCompactionAtCommandEnd(),
       );
       await withSpan(
         "swamp.cli.teardown.datastores",

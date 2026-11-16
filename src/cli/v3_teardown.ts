@@ -20,6 +20,7 @@
 import { V3ReplicationError } from "../domain/datastore_v3/litestream_replication.ts";
 import {
   closeV3Datastores,
+  followServeCompactionAtCommandEnd as followServeCompaction,
   reportedV3Failure,
   type V3CommandCommits,
   v3CommandCommits,
@@ -71,4 +72,16 @@ export async function closeV3DatastoresAfterFailure(
     // Best effort: the writer lock's TTL expires if its release failed.
   }
   return reported;
+}
+
+/** never fails the command: what it leaves undone the next command resumes */
+export async function followServeCompactionAtCommandEnd(
+  follow: () => Promise<void> = followServeCompaction,
+): Promise<void> {
+  try {
+    await follow();
+  } catch (error) {
+    getSwampLogger(["datastore", "v3"])
+      .debug`Following serve's compaction at the command's end failed: ${error}`;
+  }
 }
