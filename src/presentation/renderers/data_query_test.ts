@@ -396,11 +396,9 @@ Deno.test("renderQueryResultsTerminal: a map projection with a nested array prin
     total: 1,
     limited: false,
   });
-  const expected = JSON.stringify(INVENTORY, null, 2);
-  assertEquals(output, expected);
-  const widest = Math.max(...expected.split("\n").map((l) => l.length));
+  assertEquals(output, JSON.stringify(INVENTORY, null, 2));
   for (const line of output.split("\n")) {
-    assertEquals(line.length <= widest, true);
+    assertEquals(line.length <= 80, true, `line wider than 80: ${line}`);
   }
 });
 
@@ -415,7 +413,7 @@ Deno.test("renderQueryResultsTerminal: a list projection with a nested object pr
   });
   assertEquals(
     output,
-    '[\n  "a",\n  {\n    "b": 1\n  }\n]\n[\n  "c",\n  2\n]',
+    '[\n  "a",\n  {\n    "b": 1\n  }\n]\n\n[\n  "c",\n  2\n]',
   );
 });
 
@@ -450,7 +448,7 @@ Deno.test("renderQueryResultsTerminal: a nested value under a key only a later r
   });
   assertEquals(
     output,
-    rows.map((r) => JSON.stringify(r, null, 2)).join("\n"),
+    rows.map((r) => JSON.stringify(r, null, 2)).join("\n\n"),
   );
 });
 
@@ -469,7 +467,7 @@ Deno.test("renderQueryResultsTerminal: a failed map projection prints as {} in i
   });
   assertEquals(
     output,
-    '{\n  "items": [\n    1\n  ]\n}\n{}\n{\n  "items": [\n    2\n  ]\n}',
+    '{\n  "items": [\n    1\n  ]\n}\n\n{}\n\n{\n  "items": [\n    2\n  ]\n}',
   );
 });
 

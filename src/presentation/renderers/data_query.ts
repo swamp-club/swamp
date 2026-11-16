@@ -270,12 +270,13 @@ function hasNestedCell(
 function renderValuesPlain(
   values: readonly unknown[],
   data: DataQueryData,
+  separator = "\n",
 ): string {
   let out = values.map((v) => {
     if (v === null || v === undefined) return "";
     if (typeof v === "object") return JSON.stringify(v, null, 2);
     return String(v);
-  }).join("\n");
+  }).join(separator);
   if (data.limited) {
     out += `\n\nShowing ${data.total} results (limit reached)`;
   }
@@ -296,7 +297,7 @@ export function renderQueryResultsTerminal(
   // one nested cell makes the whole result JSON: a table is as wide as its
   // widest cell, and a half-table listing reads worse than either form
   if (data.projected && hasNestedCell(data.projected)) {
-    return renderValuesPlain(data.projected.rows, data);
+    return renderValuesPlain(data.projected.rows, data, "\n\n");
   }
   if (data.projected) {
     return renderMarkdownToTerminal(
