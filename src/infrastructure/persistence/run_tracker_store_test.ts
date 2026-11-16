@@ -28,6 +28,7 @@ import {
   parsePendingRunOwner,
   type PendingRunEntry,
   RunTrackerStore,
+  type TrackerProcess,
 } from "./run_tracker_store.ts";
 import { isSensitiveHeader } from "../../serve/webhook.ts";
 
@@ -1834,4 +1835,170 @@ Deno.test("parsePendingRunOwner: refuses an owner without an instance id or a po
     parsePendingRunOwner({ instanceId: "a", pid: 1, host: 3 }),
     { instanceId: "a", pid: 1 },
   );
+});
+
+function trackerProcess(
+  startTime: string | undefined,
+  probe: TrackerProcess["probe"] = () => ({ present: true, zombie: false }),
+): TrackerProcess {
+  return {
+    pid: Deno.pid,
+    ...(startTime !== undefined ? { startTime } : {}),
+    probe,
+  };
+}
+
+function serveRun(instanceId: string, pid = Deno.pid): ActiveRun {
+  return ActiveRun.createWorkflowRun({
+    id: crypto.randomUUID(),
+    workflowName: "wf",
+    pid,
+    hostname: hostname(),
+    instanceId,
+  });
+}
+
+Deno.test("RunTrackerStore: v10 migration adds the owner start time to a v9 database", () => {
+  using tempDb = makeTempDb();
+  const db = new DatabaseSync(tempDb.path);
+  db.exec(
+    `CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO run_tracker_meta VALUES ('schema_version', '9');
+    CREATE TABLE active_runs (id TEXT PRIMARY KEY, run_kind TEXT NOT NULL,
+      model_type TEXT, method_name TEXT, workflow_name TEXT,
+      pid INTEGER NOT NULL, hostname TEXT NOT NULL, started_at TEXT NOT NULL,
+      heartbeat_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'running',
+      completed_at TEXT, cancel_reason TEXT, initiated_by TEXT,
+      instance_id TEXT, definition_id TEXT, host_identity TEXT,
+      auto_continued TEXT);
+    INSERT INTO active_runs (id, run_kind, pid, hostname, started_at,
+      heartbeat_at, status)
+      VALUES ('legacy', 'workflow', 1, 'h', '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:00.000Z', 'running');`,
+  );
+  db.close();
+  const store = new RunTrackerStore(tempDb.path, {
+    process: trackerProcess("t-now"),
+  });
+  try {
+    assertEquals(store.findById("legacy")?.ownerStartTime, null);
+    const run = serveRun("serve-now");
+    store.register(run);
+    assertEquals(store.findById(run.id)?.ownerStartTime, "t-now");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: register and reactivate stamp only this process's rows with its start time", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path, {
+    process: trackerProcess("t-now"),
+  });
+  try {
+    const own = serveRun("serve-now");
+    const otherPid = serveRun("serve-now", Deno.pid + 1);
+    const otherHost = makeRun({ hostname: `not-${hostname()}` });
+    store.register(own);
+    store.register(otherPid);
+    store.register(otherHost);
+    assertEquals(store.findById(own.id)?.ownerStartTime, "t-now");
+    assertEquals(store.findById(otherPid.id)?.ownerStartTime, null);
+    assertEquals(store.findById(otherHost.id)?.ownerStartTime, null);
+
+    store.complete(otherPid.id, "interrupted");
+    store.reactivate(otherPid.id, Deno.pid, hostname(), "serve-now");
+    assertEquals(store.findById(otherPid.id)?.ownerStartTime, "t-now");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: a predecessor's row under this process's reused pid is reaped with a fresh heartbeat", () => {
+  using tempDb = makeTempDb();
+  const before = new RunTrackerStore(tempDb.path, {
+    process: trackerProcess("t-before"),
+  });
+  const run = serveRun("serve-before");
+  before.register(run);
+  before.close();
+
+  const store = new RunTrackerStore(tempDb.path, {
+    process: trackerProcess("t-now"),
+  });
+  try {
+    const own = serveRun("serve-now");
+    store.register(own);
+    assertEquals(
+      store.reapStaleRuns(90_000, "serve-now").map((r) => r.id),
+      [],
+    );
+    assertEquals(
+      store.findDeadProcessRuns("serve-now").map((r) => r.id),
+      [run.id],
+    );
+    assertEquals(
+      store.reapDeadProcessRuns("serve-now").map((r) => r.id),
+      [run.id],
+    );
+    assertEquals(store.findById(run.id)?.status, "interrupted");
+    assertEquals(store.findById(own.id)?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: a row with no start time under this pid is a predecessor's only under another instance id", () => {
+  using tempDb = makeTempDb();
+  const store = new RunTrackerStore(tempDb.path, {
+    process: trackerProcess(undefined),
+  });
+  try {
+    const before = serveRun("serve-before");
+    const own = serveRun("serve-now");
+    store.register(before);
+    store.register(own);
+    assertEquals(
+      store.reapDeadProcessRuns("serve-now").map((r) => r.id),
+      [before.id],
+    );
+    assertEquals(store.findById(own.id)?.status, "running");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: a stale row whose pid a later process holds is reaped, one whose owner still runs is kept", () => {
+  using tempDb = makeTempDb();
+  const otherPid = Deno.pid + 1;
+  const store = new RunTrackerStore(tempDb.path, {
+    process: trackerProcess("t-now", () => ({
+      present: true,
+      zombie: false,
+      startTime: "t-later",
+    })),
+  });
+  try {
+    const reused = makeRun({ pid: otherPid, hostname: hostname() });
+    const alive = makeRun({ pid: otherPid, hostname: hostname() });
+    store.register(reused);
+    store.register(alive);
+    const db = new DatabaseSync(tempDb.path);
+    const old = new Date(Date.now() - 120_000).toISOString();
+    db.prepare(
+      "UPDATE active_runs SET owner_start_time = ?, heartbeat_at = ? WHERE id = ?",
+    ).run("t-earlier", old, reused.id);
+    db.prepare(
+      "UPDATE active_runs SET owner_start_time = ?, heartbeat_at = ? WHERE id = ?",
+    ).run("t-later", old, alive.id);
+    db.close();
+
+    assertEquals(
+      store.reapStaleRuns(90_000).map((r) => r.id),
+      [reused.id],
+    );
+    assertEquals(store.findById(alive.id)?.status, "running");
+  } finally {
+    store.close();
+  }
 });

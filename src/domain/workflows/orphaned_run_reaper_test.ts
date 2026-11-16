@@ -27,6 +27,7 @@ import {
   ownerExitedReason,
   type OwnerLiveness,
   reapOrphanedWorkflowRuns,
+  rowOwnerGone,
   runHasDeadOwner,
   runRecordFinder,
   settleDeadOwnerMethodRuns,
@@ -1587,4 +1588,40 @@ Deno.test("reapOrphanedWorkflowRuns: without heartbeats to judge a taken-over ru
   );
   assertEquals(result, { reaped: 1, skipped: 0 });
   assertEquals(run.status, "interrupted");
+});
+
+Deno.test("rowOwnerGone: a liveness that judges rows decides, else the pid alone does", () => {
+  const row = trackerRow(crypto.randomUUID(), { pid: 7 });
+  assertEquals(rowOwnerGone(row, liveness([7])), true);
+  assertEquals(rowOwnerGone(row, liveness([])), false);
+  assertEquals(
+    rowOwnerGone(row, { ...liveness([]), ownerGone: () => true }),
+    true,
+  );
+  assertEquals(
+    rowOwnerGone(row, { ...liveness([7]), ownerGone: () => false }),
+    false,
+  );
+});
+
+Deno.test("trackerShowsDeadOwner: a live pid a later process holds shows a dead owner when the liveness judges rows", () => {
+  const row = trackerRow(crypto.randomUUID(), { pid: 7 });
+  const reused = { ...liveness([]), ownerGone: () => true };
+  assertEquals(trackerShowsDeadOwner(row, liveness([])), false);
+  assertEquals(trackerShowsDeadOwner(row, reused), true);
+});
+
+Deno.test("goneInstanceIds: a row whose pid a later process holds marks its instance gone, the caller's own pid still waits out the ttl", () => {
+  const reused = goneCheck({
+    liveness: {
+      ...liveness([]),
+      instanceId: "self",
+      ownerGone: (row) => row.pid === 4242,
+    },
+  });
+  assertEquals([...goneInstanceIds([rowAged(0)], reused)], ["old"]);
+  assertEquals(
+    goneInstanceIds([rowAged(GONE_TTL_MS, { pid: 1 })], reused).size,
+    0,
+  );
 });

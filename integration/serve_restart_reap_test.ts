@@ -162,3 +162,86 @@ Deno.test("serve boot: a restarted serve settles the run its killed instance lef
     }
   });
 });
+
+function stampedTracker(repoDir: string, startTime: string): RunTrackerStore {
+  return new RunTrackerStore(join(swampPath(repoDir), "run_tracker.db"), {
+    process: {
+      pid: Deno.pid,
+      startTime,
+      probe: () => ({ present: true, zombie: false }),
+    },
+  });
+}
+
+Deno.test("serve boot: a serve restarted under its killed predecessor's pid settles the run the predecessor left running", async () => {
+  await withRepo(async (repoDir) => {
+    const { repoContext } = await requireInitializedRepoUnlocked({
+      repoDir,
+      outputMode: "json",
+    });
+    const workflow = sleepWorkflow();
+    await repoContext.workflowRepo.save(workflow);
+    const runRepo = repoContext.workflowRunRepo;
+
+    const orphaned = runOf(workflow, Deno.pid, "killed-instance");
+    const ownRun = runOf(workflow, Deno.pid, "restarted-instance");
+    await runRepo.save(workflow.id, orphaned);
+    await runRepo.save(workflow.id, ownRun);
+
+    const predecessor = stampedTracker(repoDir, "t-predecessor");
+    predecessor.register(ActiveRun.createWorkflowRun({
+      id: orphaned.id,
+      workflowName: workflow.name,
+      pid: Deno.pid,
+      hostname: hostname(),
+      instanceId: "killed-instance",
+    }));
+    predecessor.close();
+
+    const restarted = "restarted-instance";
+    const tracker = stampedTracker(repoDir, "t-restarted");
+    try {
+      tracker.register(ActiveRun.createWorkflowRun({
+        id: ownRun.id,
+        workflowName: workflow.name,
+        pid: Deno.pid,
+        hostname: hostname(),
+        instanceId: restarted,
+      }));
+
+      // serve's boot order, the predecessor's heartbeat still fresh
+      tracker.reapStaleRuns(DEFAULT_STALE_TTL_MS, restarted);
+      tracker.reapDeadProcessRuns(restarted);
+      const result = await reapOrphanedWorkflowRuns(
+        await runRepo.findGlobalByStatus("running"),
+        async (wid, r) => {
+          await runRepo.save(wid, r);
+          tracker.markSettled(r.id, "server_crash");
+        },
+        (wid, r) => runRepo.findStepStarts(wid, r.id),
+        (runId) => {
+          const tracked = tracker.findById(runId);
+          return tracked
+            ? { status: tracked.status, instanceId: tracked.instanceId }
+            : null;
+        },
+        isProcessGone,
+        restarted,
+      );
+
+      assertEquals(result, { reaped: 1, skipped: 1 });
+      const settled = await runRepo.findById(workflow.id, orphaned.id);
+      assertEquals(settled?.status, "interrupted");
+      assertEquals(settled?.tags["interrupt_reason"], "server_crash");
+      assertEquals(settled?.continuableSince !== undefined, true);
+      assertEquals(tracker.findById(orphaned.id)?.status, "interrupted");
+      assertEquals(
+        (await runRepo.findById(workflow.id, ownRun.id))?.status,
+        "running",
+      );
+      assertEquals(tracker.findById(ownRun.id)?.status, "running");
+    } finally {
+      tracker.close();
+    }
+  });
+});

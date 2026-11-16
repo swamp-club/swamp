@@ -50,7 +50,13 @@ import {
 } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { OwnerLiveness } from "../../domain/workflows/orphaned_run_reaper.ts";
+import {
+  type OwnerProbe,
+  trackedOwnerGone,
+  type TrackedOwnerRow,
+} from "../../domain/models/tracked_owner.ts";
 import { isProcessGone, processHostIdentity } from "../runtime/process.ts";
+import { processStateOf } from "../runtime/process_ancestry.ts";
 
 import { join } from "@std/path";
 
@@ -61,8 +67,58 @@ const RUN_TRACKER_DB_NAME = "run_tracker.db";
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active_run.ts";
 
-export function localOwnerLiveness(): OwnerLiveness {
-  return { hostname: hostname(), isDead: isProcessGone };
+export interface TrackerProcess {
+  readonly pid: number;
+  readonly startTime?: string;
+  probe(pid: number): OwnerProbe;
+}
+
+/** a process whose state cannot be read counts as present, with no start time */
+function probeOwner(pid: number): OwnerProbe {
+  const state = processStateOf(pid);
+  if (state !== undefined) {
+    return { present: true, zombie: state.zombie, startTime: state.startTime };
+  }
+  return { present: !isProcessGone(pid), zombie: false };
+}
+
+let cachedTrackerProcess: TrackerProcess | undefined;
+
+export function localTrackerProcess(): TrackerProcess {
+  if (cachedTrackerProcess === undefined) {
+    const startTime = processStateOf(Deno.pid)?.startTime;
+    cachedTrackerProcess = {
+      pid: Deno.pid,
+      ...(startTime !== undefined ? { startTime } : {}),
+      probe: probeOwner,
+    };
+  }
+  return cachedTrackerProcess;
+}
+
+export function trackerOwnerGone(
+  row: TrackedOwnerRow,
+  instanceId?: string,
+  self: TrackerProcess = localTrackerProcess(),
+): boolean {
+  return trackedOwnerGone(row, {
+    pid: self.pid,
+    probe: (pid) => self.probe(pid),
+    ...(self.startTime !== undefined ? { startTime: self.startTime } : {}),
+    ...(instanceId !== undefined ? { instanceId } : {}),
+  });
+}
+
+/**
+ * ownInstanceId only tells a predecessor's row under this pid from this
+ * process's; it does not make rows local by instance id
+ */
+export function localOwnerLiveness(ownInstanceId?: string): OwnerLiveness {
+  return {
+    hostname: hostname(),
+    isDead: isProcessGone,
+    ownerGone: (row) => trackerOwnerGone(row, ownInstanceId),
+  };
 }
 
 /**
@@ -85,7 +141,7 @@ function ownHostIdentity(rowHostname: string): string | null {
 const RETENTION_DAYS = 7;
 /** backstop retention for an interrupted row that no path ever settles */
 const UNSETTLED_RETENTION_DAYS = 90;
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 /** the serve process that queued a pending run, judged before another replays it */
 export interface PendingRunOwner {
@@ -159,6 +215,7 @@ interface ActiveRunRow {
   instance_id: string | null;
   host_identity: string | null;
   auto_continued?: string | null;
+  owner_start_time?: string | null;
 }
 
 export class RunTrackerStore implements RunTrackerRepository {
@@ -166,9 +223,11 @@ export class RunTrackerStore implements RunTrackerRepository {
   private readonly dbPath: string;
   private closed = false;
   private readonly removeObservationSource: () => void;
+  private readonly process: TrackerProcess;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: { process?: TrackerProcess } = {}) {
     this.dbPath = dbPath;
+    this.process = options.process ?? localTrackerProcess();
     ensureDirSync(dirname(dbPath));
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout=5000");
@@ -352,6 +411,18 @@ export class RunTrackerStore implements RunTrackerRepository {
         this.db.exec("ALTER TABLE active_runs ADD COLUMN auto_continued TEXT");
       }
     }
+
+    if (currentVersion < 10) {
+      const columns = this.db.prepare("PRAGMA table_info(active_runs)")
+        .all() as unknown as { name: string }[];
+      if (
+        columns.length && !columns.some((c) => c.name === "owner_start_time")
+      ) {
+        this.db.exec(
+          "ALTER TABLE active_runs ADD COLUMN owner_start_time TEXT",
+        );
+      }
+    }
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -376,7 +447,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         instance_id   TEXT,
         definition_id TEXT,
         host_identity TEXT,
-        auto_continued TEXT
+        auto_continued TEXT,
+        owner_start_time TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_active_runs_status
@@ -425,8 +497,8 @@ export class RunTrackerStore implements RunTrackerRepository {
       INSERT INTO active_runs
         (id, run_kind, model_type, method_name, workflow_name,
          pid, hostname, started_at, heartbeat_at, status, initiated_by, instance_id,
-         definition_id, host_identity)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         definition_id, host_identity, owner_start_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.id,
       data.runKind,
@@ -442,7 +514,15 @@ export class RunTrackerStore implements RunTrackerRepository {
       data.instanceId ?? null,
       data.definitionId ?? null,
       ownHostIdentity(data.hostname),
+      this.ownStartTime(data.pid, data.hostname),
     );
+  }
+
+  /** a row written for another process is never stamped with this one's */
+  private ownStartTime(pid: number, rowHostname: string): string | null {
+    return pid === this.process.pid && rowHostname === hostname()
+      ? this.process.startTime ?? null
+      : null;
   }
 
   heartbeat(runId: string): void {
@@ -517,13 +597,15 @@ export class RunTrackerStore implements RunTrackerRepository {
     const result = this.db.prepare(`
       UPDATE active_runs
       SET status = 'running', pid = ?, hostname = ?, instance_id = ?,
-          host_identity = ?, heartbeat_at = ?, completed_at = NULL
+          host_identity = ?, owner_start_time = ?, heartbeat_at = ?,
+          completed_at = NULL
       WHERE id = ? AND status IN ('suspended', 'failed', 'interrupted')
     `).run(
       pid,
       hostname,
       instanceId ?? null,
       ownHostIdentity(hostname),
+      this.ownStartTime(pid, hostname),
       now,
       runId,
     );
@@ -578,7 +660,9 @@ export class RunTrackerStore implements RunTrackerRepository {
     for (const run of stale) {
       const isLocal = run.isLocalTo(currentHostname, instanceId);
 
-      const shouldReap = isLocal ? isProcessGone(run.pid) : true;
+      const shouldReap = isLocal
+        ? trackerOwnerGone(run, instanceId, this.process)
+        : true;
 
       if (shouldReap) {
         this.complete(run.id, "interrupted");
@@ -597,8 +681,7 @@ export class RunTrackerStore implements RunTrackerRepository {
     return this.findAllRunning().filter((run) =>
       (run.isLocalTo(currentHostname, instanceId) ||
         run.sharesProcessHost(hostIdentity)) &&
-      run.pid !== Deno.pid &&
-      isProcessGone(run.pid)
+      trackerOwnerGone(run, instanceId, this.process)
     );
   }
 
@@ -744,6 +827,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       cancelReason: row.cancel_reason,
       hostIdentity: row.host_identity,
       autoContinuedFrom: row.auto_continued ?? null,
+      ownerStartTime: row.owner_start_time ?? null,
     };
   }
 }

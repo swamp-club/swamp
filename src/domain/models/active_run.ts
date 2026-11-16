@@ -56,6 +56,8 @@ export interface ActiveRunData {
   readonly cancelReason?: string | null;
   /** read from the tracker only; stamped from the process that registers the row */
   readonly hostIdentity?: string | null;
+  /** read from the tracker only; the registering process's start time, as processStateOf reports it */
+  readonly ownerStartTime?: string | null;
   /** read from the tracker only: the interruption serve continued it from */
   readonly autoContinuedFrom?: string | null;
 }
@@ -78,6 +80,7 @@ export class ActiveRun {
   readonly settled: boolean;
   readonly cancelReason: string | null;
   readonly hostIdentity: string | null;
+  readonly ownerStartTime: string | null;
   readonly autoContinuedFrom: string | null;
 
   private constructor(data: ActiveRunData) {
@@ -97,6 +100,7 @@ export class ActiveRun {
     this.settled = data.settled ?? false;
     this.cancelReason = data.cancelReason ?? null;
     this.hostIdentity = data.hostIdentity ?? null;
+    this.ownerStartTime = data.ownerStartTime ?? null;
     this.autoContinuedFrom = data.autoContinuedFrom ?? null;
   }
 

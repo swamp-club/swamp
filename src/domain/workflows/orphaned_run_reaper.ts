@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { ActiveRun } from "../models/active_run.ts";
+import type { TrackedOwnerRow } from "../models/tracked_owner.ts";
 import type { StepStart } from "./step_start.ts";
 import type { ModelOutput } from "../models/model_output.ts";
 import { ModelType } from "../models/model_type.ts";
@@ -197,6 +198,17 @@ export interface OwnerLiveness {
   readonly hostname: string;
   readonly instanceId?: string;
   isDead(pid: number): boolean;
+  /** judges a row by its owner's start time too; absent, the pid alone decides */
+  ownerGone?(row: TrackedOwnerRow): boolean;
+}
+
+export function rowOwnerGone(
+  row: TrackedOwnerRow,
+  liveness: Pick<OwnerLiveness, "isDead" | "ownerGone">,
+): boolean {
+  return liveness.ownerGone
+    ? liveness.ownerGone(row)
+    : liveness.isDead(row.pid);
 }
 
 /**
@@ -213,7 +225,7 @@ export function trackerShowsDeadOwner(
     return false;
   }
   return (tracked.status === "running" || tracked.status === "interrupted") &&
-    liveness.isDead(tracked.pid);
+    rowOwnerGone(tracked, liveness);
 }
 
 export interface GoneInstanceCheck {
@@ -243,7 +255,7 @@ export function goneInstanceIds(
     const pidCheckable = row.hostname === check.liveness.hostname &&
       row.pid !== check.selfPid;
     const ownerGone = pidCheckable
-      ? check.liveness.isDead(row.pid)
+      ? rowOwnerGone(row, check.liveness)
       : check.now - row.heartbeatAt.getTime() > check.staleTtlMs;
     if (ownerGone) {
       gone.add(id);
@@ -285,7 +297,7 @@ export function suspendedRunOwnerStillRuns(
   const tracked = runTracker.findById(run.id);
   if (!tracked || tracked.status !== "running") return false;
   if (!tracked.isLocalTo(liveness.hostname, liveness.instanceId)) return false;
-  return !liveness.isDead(tracked.pid);
+  return !rowOwnerGone(tracked, liveness);
 }
 
 /**
@@ -350,7 +362,7 @@ export async function settleUnreadableRun(
   }
   // A row reads failed before its owner has run reports and made its last save.
   const ownerDead = tracked.status === "failed"
-    ? liveness.isDead(tracked.pid)
+    ? rowOwnerGone(tracked, liveness)
     : trackerShowsDeadOwner(tracked, liveness);
   if (!ownerDead) return false;
   const stillDamaged = await runRepo.isRunDamaged?.(

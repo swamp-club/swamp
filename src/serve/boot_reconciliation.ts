@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { hostname } from "node:os";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
@@ -49,12 +48,12 @@ import {
 } from "./active_run_tracker.ts";
 import { isUuid } from "../domain/models/model_lookup.ts";
 import {
+  localOwnerLiveness,
   parsePendingRunOwner,
   type PendingRunEntry,
   type PendingRunOwner,
 } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { PendingOwnerAlive } from "./pending_run_owner.ts";
-import { isProcessGone } from "../infrastructure/runtime/process.ts";
 import { isSensitiveHeader } from "./webhook.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
@@ -899,7 +898,7 @@ export interface ReconcileRemoteInterruptedRunsDeps {
    * the pass runs every tick against pids that may have been reused, so the
    * probe must not disturb the process
    */
-  ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead">;
+  ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead" | "ownerGone">;
   selfPid?: number;
   resolveWorkflowId?: (name: string) => Promise<string | undefined>;
   /**
@@ -1012,8 +1011,7 @@ export async function reconcileRemoteInterruptedRuns(
   // instance in one tick write the same interruption twice.
   const deadSet = goneInstanceIds(allRunning, {
     liveness: {
-      ...(deps.ownerLiveness ??
-        { hostname: hostname(), isDead: isProcessGone }),
+      ...(deps.ownerLiveness ?? localOwnerLiveness(deps.instanceId)),
       instanceId: deps.instanceId,
     },
     selfPid: deps.selfPid ?? Deno.pid,

@@ -6395,7 +6395,7 @@ export const serveCommand = new Command()
             settleDeadOwnerMethodRuns(
               repoContext.outputRepo,
               runTracker,
-              localOwnerLiveness(),
+              localOwnerLiveness(instanceId),
             ),
         );
         if (settledMethodRuns.length > 0) {

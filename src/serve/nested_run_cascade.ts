@@ -95,7 +95,7 @@ export function serveNestedCascade(
         ctx.datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
       ).findByRunId(runId),
     runTracker: ctx.runTracker,
-    liveness: localOwnerLiveness(),
+    liveness: localOwnerLiveness(ctx.instanceId),
     runRecordCurrency: ctx.repoContext.runRecordCurrency,
     fetchMissing: (run) => fetchMissingRunUnderGate(ctx, run),
     reserveChild: (runId) => registry.reserve(runId),

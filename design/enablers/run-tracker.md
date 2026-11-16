@@ -47,7 +47,8 @@ CREATE TABLE active_runs (
   initiated_by  TEXT,
   instance_id   TEXT,                 -- owning serve instance (HA)
   host_identity TEXT,                 -- owner's hostname + pid namespace; NULL before schema v7
-  auto_continued TEXT                 -- interrupt reason serve continued the run from; NULL before schema v9
+  auto_continued TEXT,                -- interrupt reason serve continued the run from; NULL before schema v9
+  owner_start_time TEXT               -- registering process's start time; NULL before schema v10 or where unreadable
 );
 CREATE INDEX idx_active_runs_status    ON active_runs(status);
 CREATE INDEX idx_active_runs_heartbeat ON active_runs(heartbeat_at);
@@ -152,6 +153,20 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    read, since a bare hostname is shared by sibling containers. A row from
    another pid namespace or with no host identity keeps the instance-id
    rule, and the TTL reap is unchanged.
+   A pid alone does not name a process: a serve restarted in a container
+   with an init process is given its predecessor's pid again. Every check
+   that judges a row's owner on this host therefore also compares the
+   row's `owner_start_time`, stamped by the owning process at register and
+   resume, with the start time of the process now holding that pid
+   (`trackedOwnerGone`, `src/domain/models/tracked_owner.ts`). A live pid
+   under another start time is a dead owner, and so is a row naming this
+   process's own pid under another start time. A row with no start time
+   (an older swamp, or a platform where it cannot be read, such as Windows)
+   that names this process's pid is a dead owner only when it carries a
+   serve instance id other than this process's. An unreadable start time
+   never proves an owner gone, so presence of the pid decides, as before.
+   The reaper's fallback for a run record with no tracker row stays pid
+   only.
 7. **Dead owner**: a process killed without running its cleanup (a second
    Ctrl-C calls `Deno.exit(130)`) leaves its row `running` and its workflow
    run record `running` under its pid. Local `swamp run doctor --fix` and

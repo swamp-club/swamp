@@ -2456,7 +2456,7 @@ export async function handleRunDoctor(
     if (payload?.fix && found.length > 0) {
       const runTracker = ctx.runTracker;
       const liveness = {
-        ...localOwnerLiveness(),
+        ...localOwnerLiveness(ctx.instanceId),
         instanceId: ctx.instanceId,
       };
       await runInRootUnitOfWork(

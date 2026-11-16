@@ -43,6 +43,7 @@ import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { localOwnerLiveness } from "../infrastructure/persistence/run_tracker_store.ts";
 import {
+  rowOwnerGone,
   runHasDeadOwner,
   settleDeadOwnerMethodRuns,
 } from "../domain/workflows/orphaned_run_reaper.ts";
@@ -97,27 +98,22 @@ export function ownerGoneDecider(
     if (ctx.activeRunRegistry?.get(run.id)) {
       return { gone: false, why: OWNER_IS_THIS_INSTANCE };
     }
-    const liveness = localOwnerLiveness();
+    const liveness = localOwnerLiveness(ctx.instanceId);
     const tracked = ctx.runTracker?.findById(run.id);
     // A row another host wrote says nothing here: its pid is not ours to
     // check. The run is then judged like one with no row.
     if (ctx.runTracker && tracked?.isLocalTo(liveness.hostname)) {
       // this process drives the run but no registry holds it by this id (a
-      // nested run, or one not yet recorded). A row from a previous process
-      // under a reused pid carries its own instance id and is not this one.
-      if (
-        tracked.pid === Deno.pid &&
-        (tracked.instanceId === undefined ||
-          tracked.instanceId === ctx.instanceId)
-      ) {
+      // nested run, or one not yet recorded). A row a previous process left
+      // under a reused pid is judged gone, not this one.
+      const ownerGone = rowOwnerGone(tracked, liveness);
+      if (tracked.pid === Deno.pid && !ownerGone) {
         return { gone: false, why: OWNER_IS_THIS_PROCESS };
       }
       if (!runHasDeadOwner(run, ctx.runTracker, liveness)) {
         return {
           gone: false,
-          why: liveness.isDead(tracked.pid)
-            ? OWNER_ROW_UNCLEAR
-            : OWNER_PROCESS_ALIVE,
+          why: ownerGone ? OWNER_ROW_UNCLEAR : OWNER_PROCESS_ALIVE,
         };
       }
       onDeadPid?.(tracked.pid);
@@ -308,7 +304,7 @@ async function settleMethodRunsOf(
     await settleDeadOwnerMethodRuns(
       ctx.repoContext.outputRepo,
       ctx.runTracker,
-      localOwnerLiveness(),
+      localOwnerLiveness(ctx.instanceId),
       pid,
     );
   } catch (error) {
