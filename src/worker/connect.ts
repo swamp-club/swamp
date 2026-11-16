@@ -179,8 +179,6 @@ async function runWorkerFrom(
   const credential: WorkerCredential = { token: options.token };
   const session: SessionState = { credential: "", expiresAtMs: 0 };
   const gate: GateState = { admitted: options.admitGatePass === undefined };
-  const dataPlaneUrl = options.dataPlaneUrl ??
-    dataPlaneUrlFromConnectUrl(options.url);
   const machineId = await loadOrCreateMachineId(cacheDir);
   const httpClient = options.caCerts?.length
     ? createTlsHttpClient({ caCerts: options.caCerts })
@@ -281,7 +279,6 @@ async function runWorkerFrom(
           machineId,
           session,
           gate,
-          dataPlaneUrl,
           cacheDirPath: join(cacheDir, "bundles"),
           concurrency,
           onDispatchHandlerRegistered: (handle, channel, close) => {
@@ -467,6 +464,21 @@ interface GateState {
   pending?: Promise<void>;
 }
 
+/** An explicit --data-plane-url is used as written, path included. */
+export function enrolledDataPlaneUrl(
+  options: Pick<RunWorkerOptions, "url" | "dataPlaneUrl">,
+  result: Pick<EnrollResult, "connectPath">,
+): string {
+  if (options.dataPlaneUrl !== undefined) {
+    return options.dataPlaneUrl;
+  }
+  // the reply is not schema-checked, so a malformed field counts as absent
+  const connectPath = typeof result.connectPath === "string"
+    ? result.connectPath
+    : undefined;
+  return dataPlaneUrlFromConnectUrl(options.url, connectPath);
+}
+
 interface ConnectOnceArgs {
   options: RunWorkerOptions;
   credential: WorkerCredential;
@@ -475,7 +487,6 @@ interface ConnectOnceArgs {
   machineId: string;
   session: SessionState;
   gate: GateState;
-  dataPlaneUrl: string;
   cacheDirPath: string;
   concurrency: number;
   onDispatchHandlerRegistered: (
@@ -560,11 +571,18 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       // is complete; a failed enrollment refuses them
       const ready = Promise.withResolvers<void>();
       ready.promise.catch(() => {});
+      // per connection: a reconnect may enroll with a serve that reports no path
+      let dataPlaneUrl: string | undefined;
       const handle = registerDispatchHandler({
         lifecycleTrace,
         channel,
         sessionCredential: () => session.credential,
-        dataPlaneUrl: args.dataPlaneUrl,
+        dataPlaneUrl: () => {
+          if (dataPlaneUrl === undefined) {
+            throw new Error("data plane URL read before enrollment");
+          }
+          return dataPlaneUrl;
+        },
         cacheDirPath: args.cacheDirPath,
         caCerts: options.caCerts,
         capacity: args.concurrency,
@@ -605,6 +623,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       ).then((result) => {
         session.credential = result.sessionCredential;
         session.expiresAtMs = result.sessionExpiresAtMs;
+        dataPlaneUrl = enrolledDataPlaneUrl(options, result);
         // until admitted, a reconnect asks for a pass again and a refusal
         // stops the worker (fails closed)
         const admitGatePass = options.admitGatePass;

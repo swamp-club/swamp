@@ -355,6 +355,91 @@ Deno.test("dataPlaneUrlFromConnectUrl: maps ws→http and wss→https", () => {
   );
 });
 
+Deno.test("dataPlaneUrlFromConnectUrl: keeps only the prefix serve did not see", () => {
+  const cases: Array<[string, string | undefined, string]> = [
+    // serve that does not report a path: the root, as always
+    ["wss://h/w/x", undefined, "https://h/"],
+    ["ws://h:9090", undefined, "http://h:9090/"],
+    // no path at all
+    ["wss://h", "/", "https://h/"],
+    ["wss://h/", "/", "https://h/"],
+    // a forwarder removed the prefix
+    ["wss://h/w/x", "/", "https://h/w/x/"],
+    ["wss://h/w/x/", "/", "https://h/w/x/"],
+    ["wss://h/w/x", "", "https://h/w/x/"],
+    ["wss://h/w/x/ws", "/ws", "https://h/w/x/"],
+    ["wss://h/w/x/ws/", "/ws", "https://h/w/x/"],
+    ["wss://h/w/x/ws", "/ws/", "https://h/w/x/"],
+    // serve saw the whole path: a stray path, or a forwarder that keeps it
+    ["wss://h/ws", "/ws", "https://h/"],
+    ["wss://h/w/x", "/w/x", "https://h/"],
+    ["wss://h/w/x/", "/w/x", "https://h/"],
+    // not a suffix: a forwarder that rewrites the path
+    ["wss://h/a", "/b", "https://h/"],
+    ["wss://h/w/xws", "/ws", "https://h/"],
+    // a reported path longer than the connect path
+    ["wss://h/ws", "/w/x/ws", "https://h/"],
+    // a reported path that is not absolute
+    ["wss://h/w/xws", "ws", "https://h/"],
+  ];
+  for (const [connectUrl, connectPath, expected] of cases) {
+    assertEquals(
+      dataPlaneUrlFromConnectUrl(connectUrl, connectPath),
+      expected,
+      `${connectUrl} with ${connectPath}`,
+    );
+  }
+});
+
+function clientAt(
+  baseUrl: string,
+): { client: DataPlaneClient; urls: string[] } {
+  const urls: string[] = [];
+  const client = new DataPlaneClient({
+    baseUrl,
+    credential: () => "cred",
+    fetchImpl: ((input: URL | Request | string) => {
+      urls.push(String(input));
+      return Promise.resolve(new Response(new Uint8Array([1])));
+    }) as typeof fetch,
+  });
+  return { client, urls };
+}
+
+Deno.test("DataPlaneClient: a base with no path sends the same URLs as before", async () => {
+  for (const baseUrl of ["http://orch:9090", "http://orch:9090/"]) {
+    const { client, urls } = clientAt(baseUrl);
+    await client.readArtifact("/data/t/m/n/1");
+    await client.deleteResource({ name: "result" });
+    assertEquals(urls, [
+      "http://orch:9090/data/t/m/n/1",
+      "http://orch:9090/data/resource",
+    ]);
+  }
+});
+
+Deno.test("DataPlaneClient: joins each route onto the base path", async () => {
+  for (const baseUrl of ["https://h/w/x", "https://h/w/x/"]) {
+    const { client, urls } = clientAt(baseUrl);
+    await client.readArtifact("/data/t/m/n/1");
+    await client.deleteResource({ name: "result" });
+    assertEquals(urls, [
+      "https://h/w/x/data/t/m/n/1",
+      "https://h/w/x/data/resource",
+    ]);
+  }
+});
+
+Deno.test("DataPlaneClient: a route keeps its query and a colon in its first segment", async () => {
+  const { client, urls } = clientAt("https://h/w/x/");
+  await client.readArtifact("/data/t/m/n/1?inline=1");
+  await client.readArtifact("/a:b/c");
+  assertEquals(urls, [
+    "https://h/w/x/data/t/m/n/1?inline=1",
+    "https://h/w/x/a:b/c",
+  ]);
+});
+
 function slowClient(options: {
   answerAfterMs: number;
   timeoutMs: number;

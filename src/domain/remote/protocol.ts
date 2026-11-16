@@ -261,6 +261,11 @@ export interface EnrollResult {
    * needsGatePass, absent otherwise and from an orchestrator that predates it
    */
   gatePass?: string;
+  /**
+   * the path serve received the control socket on; absent from an
+   * orchestrator that predates it, and the worker then keeps the root
+   */
+  connectPath?: string;
 }
 
 export interface SessionRefreshResult {

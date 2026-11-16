@@ -153,17 +153,21 @@ function mintRecord(name: string, createdAt: string): EnrollmentToken {
   };
 }
 
-function connectWorkerSocket(gateway: WorkerGateway): {
+function connectWorkerSocket(gateway: WorkerGateway, connectPath?: string): {
   workerChannel: RpcChannel;
   dropSocket: () => void;
 } {
   const workerChannel: RpcChannel = new RpcChannel({
     send: (data) => void Promise.resolve().then(() => attached.feed(data)),
   });
-  const attached = gateway.attachTransport({
-    send: (data) =>
-      void Promise.resolve().then(() => workerChannel.handleRaw(data)),
-  }, () => attached.closed());
+  const attached = gateway.attachTransport(
+    {
+      send: (data) =>
+        void Promise.resolve().then(() => workerChannel.handleRaw(data)),
+    },
+    () => attached.closed(),
+    connectPath,
+  );
   return { workerChannel, dropSocket: () => attached.closed() };
 }
 
@@ -439,6 +443,22 @@ Deno.test("WorkerGateway: enrollment hands the worker this serve's gate pass", a
     needsGatePass: true,
   });
   assertEquals(result.gatePass, "cHJvb2Y.c2ln");
+});
+
+Deno.test("WorkerGateway: enrollment tells the worker the path its socket arrived on", async () => {
+  for (const connectPath of ["/", "/ws"]) {
+    const h = createHarness();
+    const { workerChannel } = connectWorkerSocket(h.gateway, connectPath);
+    const result = await enroll(workerChannel);
+    assertEquals(result.connectPath, connectPath);
+  }
+});
+
+Deno.test("WorkerGateway: a socket attached without a path sends no connectPath", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+  assertEquals("connectPath" in result, false);
 });
 
 Deno.test("WorkerGateway: a worker that does not ask for the pass is not sent it", async () => {

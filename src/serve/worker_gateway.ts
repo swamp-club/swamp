@@ -340,6 +340,7 @@ interface SocketState {
   channel: RpcChannel;
   closeSocket: (() => void) | null;
   workerName: string | null;
+  connectPath: string | undefined;
 }
 
 export class WorkerGateway {
@@ -420,7 +421,11 @@ export class WorkerGateway {
    * gateway force-disconnect the socket (token expiry) and must still surface
    * through that handler
    */
-  attachTransport(transport: RpcTransport, close?: () => void): {
+  attachTransport(
+    transport: RpcTransport,
+    close?: () => void,
+    connectPath?: string,
+  ): {
     feed: (raw: string) => boolean;
     closed: () => void;
   } {
@@ -428,6 +433,7 @@ export class WorkerGateway {
       channel: new RpcChannel(transport),
       closeSocket: close ?? null,
       workerName: null,
+      connectPath,
     };
     state.channel.register(
       RemoteMethod.enroll,
@@ -1292,6 +1298,9 @@ export class WorkerGateway {
         sessionExpiresAtMs: session.expiresAtMs,
         protocolVersion: params.protocolVersion,
         ...(gatePass === undefined ? {} : { gatePass }),
+        ...(state.connectPath === undefined
+          ? {}
+          : { connectPath: state.connectPath }),
       };
     });
   }

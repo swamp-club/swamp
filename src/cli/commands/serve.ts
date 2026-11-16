@@ -8840,7 +8840,12 @@ export const serveCommand = new Command()
               );
               markPeerSocket(socket);
               setConnectionSourceIp(socket, remoteAddr);
-              handleConnection(socket, connectionCtx, null);
+              handleConnection(
+                socket,
+                connectionCtx,
+                null,
+                new URL(req.url).pathname,
+              );
               return response;
             }
             const dashboardSessionId = extracted === null
@@ -9017,7 +9022,12 @@ export const serveCommand = new Command()
             if (forwardCredential !== undefined) {
               rememberForwardCredential(socket, forwardCredential);
             }
-            handleConnection(socket, connectionCtx, principal);
+            handleConnection(
+              socket,
+              connectionCtx,
+              principal,
+              new URL(req.url).pathname,
+            );
             return response;
           }
           const forwardCredential = leaderLink === undefined
@@ -9040,7 +9050,12 @@ export const serveCommand = new Command()
           if (forwardCredential !== undefined) {
             rememberForwardCredential(socket, forwardCredential);
           }
-          handleConnection(socket, connectionCtx, null);
+          handleConnection(
+            socket,
+            connectionCtx,
+            null,
+            new URL(req.url).pathname,
+          );
           return response;
         }
 

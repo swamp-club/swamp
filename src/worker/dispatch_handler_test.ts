@@ -56,7 +56,7 @@ Deno.test("registerDispatchHandler: headerless dispatches detach from the connec
     registerDispatchHandler({
       channel: worker,
       sessionCredential: () => "test",
-      dataPlaneUrl: "http://localhost:0",
+      dataPlaneUrl: () => "http://localhost:0",
       cacheDirPath: "/unused",
       capacity: 1,
       onDispatch: () => {
@@ -176,7 +176,7 @@ Deno.test("registerDispatchHandler: a dispatch whose runner cannot be spawned st
   registerDispatchHandler({
     channel: worker,
     sessionCredential: () => "test-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
     capacity: 1,
     runnerCommand: { cmd: "swamp-runner", args: [] },
@@ -213,7 +213,7 @@ Deno.test("registerDispatchHandler: draining rejects with worker_draining", asyn
   const handle = registerDispatchHandler({
     channel: worker,
     sessionCredential: () => "test-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
     capacity: 1,
   });
@@ -242,7 +242,7 @@ Deno.test("registerDispatchHandler: a dispatch waiting on a failed admission is 
   registerDispatchHandler({
     channel: worker,
     sessionCredential: () => "test-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
     capacity: 1,
     admitted,
@@ -267,7 +267,7 @@ Deno.test("registerDispatchHandler: a dispatch that waited for admission does no
   registerDispatchHandler({
     channel: worker,
     sessionCredential: () => "test-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
     capacity: 1,
     admitted,
@@ -329,7 +329,7 @@ Deno.test("buildRunnerBootstrapParams: carries the worker's CA certificates", ()
   const dispatch = DispatchParamsSchema.parse(dispatchParams());
   const bootstrap = buildRunnerBootstrapParams(dispatch, undefined, {
     sessionCredential: () => "session-cred",
-    dataPlaneUrl: "https://orch.internal:4443/",
+    dataPlaneUrl: () => "https://orch.internal:4443/",
     cacheDirPath: "/tmp/test-cache",
     caCerts: [pem],
   });
@@ -343,7 +343,7 @@ Deno.test("buildRunnerBootstrapParams: omits caCerts when the worker has none", 
   for (const caCerts of [undefined, []]) {
     const bootstrap = buildRunnerBootstrapParams(dispatch, undefined, {
       sessionCredential: () => "session-cred",
-      dataPlaneUrl: "http://localhost:0",
+      dataPlaneUrl: () => "http://localhost:0",
       cacheDirPath: "/tmp/test-cache",
       caCerts,
     });
@@ -355,7 +355,7 @@ Deno.test("buildRunnerBootstrapParams: carries the supervisor's scratch dir, and
   const dispatch = DispatchParamsSchema.parse(dispatchParams());
   const options = {
     sessionCredential: () => "session-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
   };
   const bootstrap = buildRunnerBootstrapParams(
@@ -379,7 +379,7 @@ Deno.test("buildRunnerBootstrapParams: prefers the per-dispatch credential", () 
   const dispatch = DispatchParamsSchema.parse(dispatchParams());
   const options = {
     sessionCredential: () => "session-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
   };
 
@@ -399,7 +399,7 @@ Deno.test("registerDispatchHandler: drain() resolves immediately when idle", asy
   const handle = registerDispatchHandler({
     channel: worker,
     sessionCredential: () => "test-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
     capacity: 1,
   });
@@ -546,7 +546,7 @@ Deno.test("registerDispatchHandler: a references-only dispatch that carries a pl
   registerDispatchHandler({
     channel: worker,
     sessionCredential: () => "test-cred",
-    dataPlaneUrl: "http://localhost:0",
+    dataPlaneUrl: () => "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
     capacity: 1,
     runnerCommand: { cmd: "swamp-runner", args: [] },
@@ -577,4 +577,23 @@ Deno.test("registerDispatchHandler: a references-only dispatch that carries a pl
   assertEquals(error?.message.includes("s3cret"), false);
   assertEquals(spawned, 0);
   assertEquals(events, []);
+});
+
+Deno.test("buildRunnerBootstrapParams: reads the data plane URL when the dispatch starts", () => {
+  const dispatch = DispatchParamsSchema.parse(dispatchParams());
+  let url = "https://h/";
+  const options = {
+    sessionCredential: () => "session-cred",
+    dataPlaneUrl: () => url,
+    cacheDirPath: "/tmp/test-cache",
+  };
+  assertEquals(
+    buildRunnerBootstrapParams(dispatch, undefined, options).dataPlaneUrl,
+    "https://h/",
+  );
+  url = "https://h/w/x/";
+  assertEquals(
+    buildRunnerBootstrapParams(dispatch, undefined, options).dataPlaneUrl,
+    "https://h/w/x/",
+  );
 });

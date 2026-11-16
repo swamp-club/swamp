@@ -26,6 +26,7 @@ import {
 import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  enrolledDataPlaneUrl,
   releaseWorkerCacheDir,
   runWorker,
   type WorkerStatusEvent,
@@ -1158,4 +1159,48 @@ Deno.test("runWorker: a dispatch sent before the enroll reply is never run when 
   await waitFor(() => answered, "early dispatch answered");
   // the worker drops the connection as it stops, so serve gets no step result
   assertInstanceOf(outcome, ChannelClosedError);
+});
+
+Deno.test("enrolledDataPlaneUrl: an orchestrator that reports no path keeps the root", () => {
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "wss://h/w/x" }, {}),
+    "https://h/",
+  );
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "ws://test:1" }, {}),
+    "http://test:1/",
+  );
+});
+
+Deno.test("enrolledDataPlaneUrl: keeps the prefix the orchestrator did not see", () => {
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "wss://h/w/x" }, { connectPath: "/" }),
+    "https://h/w/x/",
+  );
+  assertEquals(
+    enrolledDataPlaneUrl({ url: "wss://h/ws" }, { connectPath: "/ws" }),
+    "https://h/",
+  );
+});
+
+Deno.test("enrolledDataPlaneUrl: a connectPath that is not a string counts as absent", () => {
+  assertEquals(
+    enrolledDataPlaneUrl(
+      { url: "wss://h/w/x" },
+      { connectPath: 42 as unknown as string },
+    ),
+    "https://h/",
+  );
+});
+
+Deno.test("enrolledDataPlaneUrl: an explicit data plane URL is used as written", () => {
+  for (const connectPath of [undefined, "/", "/w/x"]) {
+    assertEquals(
+      enrolledDataPlaneUrl(
+        { url: "wss://h/w/x", dataPlaneUrl: "https://dp:9443/swamp" },
+        { connectPath },
+      ),
+      "https://dp:9443/swamp",
+    );
+  }
 });
