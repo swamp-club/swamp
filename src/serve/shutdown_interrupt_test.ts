@@ -78,6 +78,8 @@ function harness(runs: WorkflowRun[], workflowId: WorkflowId) {
   const repoContext: ShutdownInterruptDeps["repoContext"] = {
     markDirty: () => Promise.resolve(),
     workflowRunRepo: {
+      findById: (_wid, runId) =>
+        Promise.resolve(runs.find((run) => run.id === runId) ?? null),
       findGlobalByStatus: (status) => {
         events.push("load");
         const wanted = Array.isArray(status) ? status : [status];
@@ -932,4 +934,289 @@ Deno.test("interruptShutdownRuns: a failed load leaves a cancelled run's row for
   );
 
   assertEquals(runTracker.completed, []);
+});
+
+function callingWorkflow(): Workflow {
+  return Workflow.create({
+    name: `wf-${crypto.randomUUID()}`,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("child"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+type CutOffShape = "running" | "shutdown" | "user";
+
+const STEP_STARTED_AT = () => new Date(Date.now() - 60_000);
+
+/** as the engine leaves a run a shutdown aborted: its call-child step in flight */
+function serveRun(
+  wf: Workflow,
+  shape: CutOffShape,
+  parent?: WorkflowRun,
+  stepStartedAt: Date = STEP_STARTED_AT(),
+): WorkflowRun {
+  const run = WorkflowRun.create(wf);
+  if (parent) {
+    run.recordParentRun({
+      workflowId: parent.workflowId,
+      workflowName: parent.workflowName,
+      runId: parent.id,
+      jobName: "main",
+      stepName: "call-child",
+      nestingDepth: 1,
+      ancestorWorkflowNames: [parent.workflowName],
+    });
+  }
+  run.start(1, "instance-1");
+  run.getJob("main")!.start();
+  const step = run.getJob("main")!.getStep("call-child")!;
+  step.start(stepStartedAt);
+  if (shape !== "running") {
+    step.failStoppedByAbort("Nested workflow was cancelled.");
+    run.endAsCancelled(shape === "shutdown" ? "server shutdown" : "user asked");
+  }
+  return run;
+}
+
+function callStep(run: WorkflowRun) {
+  return run.getJob("main")!.getStep("call-child")!;
+}
+
+function savesOf(events: string[]): string[] {
+  return events.filter((event) => event.startsWith("save "));
+}
+
+function linkedTo(run: WorkflowRun, child: WorkflowRun): boolean {
+  const link = callStep(run).nestedRun;
+  return callStep(run).isNestedWait && link?.kind === "valid" &&
+    link.ref.runId === child.id;
+}
+
+function recordingFence(events: string[]) {
+  return {
+    close: (runIds: readonly string[]) => {
+      events.push(`close ${runIds.join(",")}`);
+      return Promise.resolve();
+    },
+    takeOver: (runId: string) => {
+      events.push(`take over ${runId}`);
+    },
+  };
+}
+
+Deno.test("interruptShutdownRuns: a nested run the shutdown cancelled is interrupted, and its parent's step waits on it, each saved once", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "shutdown");
+  const child = serveRun(wf, "shutdown", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+  const rows = new Map<string, ActiveRunStatus>([
+    [parent.id, "cancelled"],
+    [child.id, "cancelled"],
+  ]);
+  const runTracker = tracker(rows);
+  const reported: string[] = [];
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext,
+    runWriteFence: recordingFence(events),
+    runTracker,
+    onInterrupted: (runId) => reported.push(runId),
+  });
+
+  assertEquals(result, { interrupted: [parent.id, child.id] });
+  assertEquals(events, [
+    `close ${parent.id}`,
+    "load",
+    `close ${child.id}`,
+    `save ${parent.id} interrupted`,
+    `take over ${parent.id}`,
+    `save ${child.id} interrupted`,
+    `take over ${child.id}`,
+  ]);
+  assertEquals(linkedTo(parent, child), true);
+  assertEquals(child.status, "interrupted");
+  assertEquals(child.continuableSince !== undefined, true);
+  assertEquals(callStep(child).status, "unknown");
+  assertEquals(reported, [parent.id, child.id]);
+  assertEquals(rows.get(child.id), "interrupted");
+});
+
+Deno.test("interruptShutdownRuns: a nested run still running at the cut-off is interrupted with its in-flight step unknown", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "running");
+  const child = serveRun(wf, "running", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext,
+  });
+
+  assertEquals(result, { interrupted: [parent.id, child.id] });
+  assertEquals(savesOf(events), [
+    `save ${parent.id} interrupted`,
+    `save ${child.id} interrupted`,
+  ]);
+  assertEquals(linkedTo(parent, child), true);
+  assertEquals(callStep(child).status, "unknown");
+});
+
+Deno.test("interruptShutdownRuns: a nested run a user cancelled stays cancelled, and its parent's step is left for the resume to run again", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "shutdown");
+  const child = serveRun(wf, "user", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext,
+    runWriteFence: recordingFence(events),
+  });
+
+  assertEquals(result, { interrupted: [parent.id] });
+  assertEquals(savesOf(events), [`save ${parent.id} interrupted`]);
+  assertEquals(events.includes(`close ${child.id}`), false);
+  assertEquals(child.status, "cancelled");
+  assertEquals(callStep(parent).status, "unknown");
+});
+
+Deno.test("interruptShutdownRuns: a nested run that finished while its fence waited keeps its outcome, which its parent's step waits to adopt", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "shutdown");
+  const child = serveRun(wf, "shutdown", parent);
+  const finished = WorkflowRun.fromData({
+    ...child.toData(),
+    status: "succeeded",
+  });
+  const { events, repoContext } = harness([parent, child], wf.id);
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext: {
+      ...repoContext,
+      workflowRunRepo: {
+        ...repoContext.workflowRunRepo,
+        findById: () => Promise.resolve(finished),
+      },
+    },
+  });
+
+  assertEquals(result, { interrupted: [parent.id] });
+  assertEquals(savesOf(events), [`save ${parent.id} interrupted`]);
+  assertEquals(linkedTo(parent, child), true);
+});
+
+Deno.test("interruptShutdownRuns: a grandchild the shutdown cut off is linked and interrupted below its parent", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "shutdown");
+  const child = serveRun(wf, "shutdown", parent);
+  const grandchild = serveRun(wf, "shutdown", child);
+  const { events, repoContext } = harness([parent, child, grandchild], wf.id);
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext,
+  });
+
+  assertEquals(result, { interrupted: [parent.id, child.id, grandchild.id] });
+  assertEquals(savesOf(events), [
+    `save ${parent.id} interrupted`,
+    `save ${child.id} interrupted`,
+    `save ${grandchild.id} interrupted`,
+  ]);
+  assertEquals(linkedTo(parent, child), true);
+  assertEquals(linkedTo(child, grandchild), true);
+});
+
+Deno.test("interruptShutdownRuns: the nested runs of a run a user cancelled before the shutdown are left alone", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "running");
+  const child = serveRun(wf, "shutdown", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+
+  await interruptShutdownRuns(
+    [{ ...active(parent), cancelledBeforeShutdown: { reason: "user asked" } }],
+    { repoContext },
+  );
+
+  assertEquals(savesOf(events), [`save ${parent.id} cancelled`]);
+  assertEquals(child.status, "cancelled");
+});
+
+Deno.test("interruptShutdownRuns: a nested run an earlier attempt started is not linked or interrupted", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(
+    wf,
+    "shutdown",
+    undefined,
+    new Date(Date.now() + 60_000),
+  );
+  const child = serveRun(wf, "shutdown", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext,
+  });
+
+  assertEquals(result, { interrupted: [parent.id] });
+  assertEquals(savesOf(events), [`save ${parent.id} interrupted`]);
+  assertEquals(callStep(parent).status, "unknown");
+  assertEquals(child.status, "cancelled");
+});
+
+Deno.test("interruptShutdownRuns: a failed push records the interrupted nested run for the next start", async () => {
+  await withTempDir(async (dir) => {
+    const wf = callingWorkflow();
+    const parent = serveRun(wf, "shutdown");
+    const child = serveRun(wf, "shutdown", parent);
+    const { repoContext } = harness([parent, child], wf.id);
+    const marker = join(dir, UNPUSHED_INTERRUPTS_FILE);
+
+    const result = await interruptShutdownRuns([active(parent)], {
+      repoContext,
+      syncService: {
+        pushChanged: () => Promise.reject(new Error("S3 unreachable")),
+      },
+      unpushedMarkerPath: marker,
+    });
+
+    assertEquals(result.unpushed, [parent.id, child.id]);
+    assertEquals(await readUnpushedInterrupts(marker), {
+      present: true,
+      runs: [
+        { runId: parent.id, workflowId: wf.id },
+        { runId: child.id, workflowId: wf.id },
+      ],
+    });
+  });
+});
+
+Deno.test("interruptShutdownRuns: a nested run whose save fails is reported unpushed, and its parent is still saved waiting on it", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "shutdown");
+  const child = serveRun(wf, "shutdown", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext: {
+      ...repoContext,
+      workflowRunRepo: {
+        ...repoContext.workflowRunRepo,
+        save: (wid, run) =>
+          run.id === child.id
+            ? Promise.reject(new Error("disk full"))
+            : repoContext.workflowRunRepo.save(wid, run),
+      },
+    },
+    syncService: { pushChanged: () => Promise.resolve(1) },
+  });
+
+  assertEquals(result, { interrupted: [parent.id], unpushed: [child.id] });
+  assertEquals(savesOf(events), [`save ${parent.id} interrupted`]);
+  assertEquals(linkedTo(parent, child), true);
 });

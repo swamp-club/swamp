@@ -495,7 +495,10 @@ workflows above it, so a resume of the child keeps the depth limit and cycle
 detection. Every child records `parentRun` when it starts; the parent's step
 records `nestedRun` only once its child suspends, so the parent of a nested
 workflow without gates is unchanged, and an interrupted parent recovers as
-before. Both links are validated from both ends before they are followed
+before. The exception is a serve shutdown: it links each child it cut off, so
+the interrupted parent waits on that child instead of re-running its step
+(swamp-club#4802; see the shutdown section of `design/primitives/serve.md`).
+Both links are validated from both ends before they are followed
 (`NestedRunLink` in `src/domain/workflows/nested_run_link.ts`); a malformed
 link is kept as written and never followed. The parent emits its own
 `suspended` event, naming the step and, in `nested`, the child run. The

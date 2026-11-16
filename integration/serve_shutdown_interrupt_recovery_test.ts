@@ -249,10 +249,17 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
       }
       assertEquals(aborted.length, 1);
       const result = await interruptShutdownRuns(aborted, { repoContext });
-      assertEquals(result.interrupted, [aborted[0].runId]);
 
       const runRepo = repoContext.workflowRunRepo;
       const parentId = createWorkflowId(parent.id);
+      const childId = createWorkflowId(child.id);
+      const childRuns = await runRepo.findAllByWorkflowId(childId);
+      const nested = scenario === "nested";
+      // The cut-off child is interrupted with its parent, which waits on it.
+      assertEquals(
+        result.interrupted,
+        nested ? [aborted[0].runId, childRuns[0].id] : [aborted[0].runId],
+      );
       const [interrupted] = await runRepo.findAllByWorkflowId(parentId);
       assertEquals(interrupted.status, "interrupted");
       // A step reached after the abort never started, so it is settled for a
@@ -261,32 +268,45 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
       assertEquals(statuses(interrupted), {
         main: reachedAfterAbort ? "failed" : "unknown",
         ...(reachedAfterAbort ? { "main/pre": "succeeded" } : {}),
-        [`main/${inFlight}`]: reachedAfterAbort ? "failed" : "unknown",
+        [`main/${inFlight}`]: reachedAfterAbort
+          ? "failed"
+          : nested
+          ? "waiting_approval"
+          : "unknown",
         "main/after": "skipped",
         later: "skipped",
         "later/fin": "skipped",
       });
-      const childRuns = await runRepo.findAllByWorkflowId(
-        createWorkflowId(child.id),
-      );
-      if (scenario !== "nested") {
+      if (!nested) {
         assertEquals(childRuns.length, 0);
         if (reachedAfterAbort) assertEquals(waitStarted, false);
       } else {
-        // The child stays cancelled; the resume starts a fresh one.
-        assertEquals(childRuns.map((r) => r.status), ["cancelled"]);
+        assertEquals(childRuns.map((r) => r.status), ["interrupted"]);
       }
 
       const assessment = await assessRecoveryForRun(parent, interrupted);
       assertEquals(
         assessment.unguardedSteps,
-        reachedAfterAbort ? [] : [inFlight],
+        scenario === "plain" ? [inFlight] : [],
       );
       assertEquals(assessment.fingerprintMismatch, false);
 
       interrupted.resetUnknownStepsForRecovery();
       await runRepo.save(parentId, interrupted);
       released = true;
+      if (nested) {
+        const [cutChild] = childRuns;
+        cutChild.resetUnknownStepsForRecovery();
+        await runRepo.save(childId, cutChild);
+        await handleWorkflowResume(
+          socket,
+          context(new ActiveRunRegistry()),
+          "resume-child",
+          { workflowIdOrName: child.name, runId: cutChild.id },
+          new AbortController(),
+          null,
+        );
+      }
       await handleWorkflowResume(
         socket,
         context(new ActiveRunRegistry()),
@@ -303,13 +323,9 @@ async function interruptRecoverResume(scenario: Scenario): Promise<void> {
         true,
       );
       if (scenario !== "plain") {
-        const after = await runRepo.findAllByWorkflowId(
-          createWorkflowId(child.id),
-        );
-        assertEquals(
-          after.map((r) => r.status).sort(),
-          reachedAfterAbort ? ["succeeded"] : ["cancelled", "succeeded"],
-        );
+        // the resume adopts the cut-off child rather than starting another
+        const after = await runRepo.findAllByWorkflowId(childId);
+        assertEquals(after.map((r) => r.status), ["succeeded"]);
       }
     } finally {
       modelRegistry.invalidateType(modelType);
@@ -326,7 +342,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve shutdown: a nested workflow step it stops mid-child is interrupted as unknown, recovers and resumes (swamp-club#3369)",
+    "serve shutdown: a nested workflow step it stops mid-child waits on its interrupted child, which recovers and resumes before the parent adopts its outcome (swamp-club#3369, swamp-club#4802)",
   ...testOpts,
   fn: () => interruptRecoverResume("nested"),
 });

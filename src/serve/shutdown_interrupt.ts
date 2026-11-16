@@ -42,6 +42,8 @@ import type { ServeRunWriteFence } from "./run_write_fence.ts";
 import { keepActiveRunRecords } from "./active_run_tracker.ts";
 import { SHUTDOWN_ABORT_MESSAGE } from "./shutdown_drain.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
+import { createWorkflowRunId } from "../domain/workflows/workflow_id.ts";
+import { MAX_WORKFLOW_NESTING_DEPTH } from "../domain/workflows/nested_run_ref.ts";
 import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.ts";
 import {
   type InstanceHeartbeatService,
@@ -62,7 +64,7 @@ export interface ShutdownInterruptDeps {
     & {
       readonly workflowRunRepo: Pick<
         WorkflowRunRepository,
-        "findGlobalByStatus" | "save"
+        "findGlobalByStatus" | "findById" | "save"
       >;
     };
   /**
@@ -136,7 +138,10 @@ export async function interruptShutdownRuns(
   const { repoContext, syncService } = deps;
   await deps.runWriteFence?.close(workflowRuns.map((r) => r.runId));
   const settleTrackerRow = (
-    run: (typeof workflowRuns)[number],
+    run: {
+      readonly runId: string;
+      readonly cancelledBeforeShutdown?: CancelledBeforeShutdown;
+    },
     recordInterrupted = false,
   ) => {
     const { runId } = run;
@@ -193,6 +198,77 @@ export async function interruptShutdownRuns(
   const loaded = allRuns;
   let pushError: string | undefined;
   const notSaved: string[] = [];
+  const childRunIds: string[] = [];
+  const topLevelIds = new Set(workflowRuns.map((r) => r.runId));
+  type LoadedRun = (typeof loaded)[number];
+  // Linked before the parent's save, so a child that later fails to save
+  // leaves a parent waiting on it rather than one that starts a second child.
+  const linkCutOffChildren = async (
+    parent: WorkflowRun,
+  ): Promise<LoadedRun[]> => {
+    const linked = loaded.filter(({ run }) =>
+      !topLevelIds.has(run.id) && cutOffByShutdown(run, undefined) &&
+      parent.awaitCutOffNestedRun(run)
+    );
+    if (linked.length === 0) return [];
+    await deps.runWriteFence?.close(linked.map(({ run }) => run.id));
+    const current: LoadedRun[] = [];
+    for (const { run, workflowId } of linked) {
+      let reread: WorkflowRun | null;
+      try {
+        reread = await repoContext.workflowRunRepo.findById(
+          workflowId,
+          createWorkflowRunId(run.id),
+        );
+      } catch (err) {
+        logger.warn("Failed to read nested run {runId} to interrupt: {error}", {
+          runId: run.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      // one that finished while the fence waited keeps its outcome, which the
+      // parent's resume adopts
+      if (
+        reread &&
+        (reread.status === "running" || reread.status === "cancelled") &&
+        cutOffByShutdown(reread, undefined)
+      ) {
+        current.push({ run: reread, workflowId });
+      }
+    }
+    return current;
+  };
+  const interruptChildren = async (
+    children: readonly LoadedRun[],
+    depth: number,
+  ): Promise<void> => {
+    for (const child of children) {
+      const runId = child.run.id;
+      childRunIds.push(runId);
+      let grandchildren: LoadedRun[] = [];
+      try {
+        child.run.interrupt("server_shutdown");
+        child.run.markContinuable(new Date());
+        if (depth < MAX_WORKFLOW_NESTING_DEPTH) {
+          grandchildren = await linkCutOffChildren(child.run);
+        }
+        await repoContext.workflowRunRepo.save(child.workflowId, child.run);
+        deps.runWriteFence?.takeOver(runId);
+        interrupted.push(runId);
+        settleTrackerRow({ runId }, true);
+        deps.onInterrupted?.(runId);
+      } catch (err) {
+        logger.warn("Failed to interrupt nested run {runId}: {error}", {
+          runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        notSaved.push(runId);
+        continue;
+      }
+      await interruptChildren(grandchildren, depth + 1);
+    }
+  };
   const pushTimeoutMs = deps.pushTimeoutMs ?? SHUTDOWN_PUSH_TIMEOUT_MS;
   const root = runInRootUnitOfWork(
     repoContext,
@@ -282,6 +358,7 @@ export async function interruptShutdownRuns(
             const cutOff = cutOffByShutdown(match.run, run.controller);
             match.run.interrupt("server_shutdown");
             if (cutOff) match.run.markContinuable(new Date());
+            const children = cutOff ? await linkCutOffChildren(match.run) : [];
             await repoContext.workflowRunRepo.save(
               match.workflowId,
               match.run,
@@ -292,6 +369,7 @@ export async function interruptShutdownRuns(
             interrupted.push(run.runId);
             settleTrackerRow(run, true);
             deps.onInterrupted?.(run.runId);
+            await interruptChildren(children, 1);
           }
         } catch (err) {
           logger.warn("Failed to interrupt run {runId}: {error}", {
@@ -315,7 +393,10 @@ export async function interruptShutdownRuns(
     if (pushError !== undefined) {
       logger.warn(
         "Failed to commit interrupted workflow run(s) {runIds} to the datastore: {error}. The next serve in this checkout commits them, and a leader instance settles the runs meanwhile",
-        { runIds: workflowRuns.map((r) => r.runId), error: pushError },
+        {
+          runIds: [...workflowRuns.map((r) => r.runId), ...childRunIds],
+          error: pushError,
+        },
       );
     }
   }
@@ -327,7 +408,7 @@ export async function interruptShutdownRuns(
     },
     pushError === undefined ? notSaved : commitsLocally
       // Every aborted run: a commit that missed may not have saved them all.
-      ? workflowRuns.map((r) => r.runId)
+      ? [...workflowRuns.map((r) => r.runId), ...childRunIds]
       : [...interrupted, ...cancelled, ...notSaved],
     workflowRuns,
     deps,
