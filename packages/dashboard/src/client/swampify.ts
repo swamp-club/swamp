@@ -315,6 +315,8 @@ export interface SwampifyStageInput {
   readonly offerRow: SwampifyRow | undefined;
   /** The shown offer's body; null while it loads or after it failed. */
   readonly offer: SwampifyOfferReading | null;
+  /** The offer body's read failed: the page offers a retry, polling never re-reads it. */
+  readonly offerFailed?: boolean;
   readonly comparisons: ReadonlyMap<string, SwampifyRow>;
   /** The page handed a build to the agent since this offer version loaded. */
   readonly handedOff?: boolean;
@@ -323,7 +325,8 @@ export interface SwampifyStageInput {
 export function swampifyStage(input: SwampifyStageInput): SwampifyStage {
   if (!input.answered) return "loading";
   if (input.setRow === undefined) return "waiting";
-  if (input.offerRow === undefined || input.offer === null) return "reading";
+  if (input.offerRow === undefined) return "reading";
+  if (input.offer === null) return input.offerFailed ? "settled" : "reading";
   if (input.offer.kind !== "record") return "settled";
   const offer = input.offer.record;
   // A new kick-off assesses again while the last offer is still shown.

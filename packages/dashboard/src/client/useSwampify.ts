@@ -217,6 +217,7 @@ export function useSwampify(): SwampifyState {
     setRow: set.list.value,
     offerRow: offer.list.value,
     offer: offer.body.value,
+    offerFailed: offer.body.error !== null,
     comparisons: byOption,
     handedOff: handedOffAt !== null && handedOffAt === offerKey,
   });

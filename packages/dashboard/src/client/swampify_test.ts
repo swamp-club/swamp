@@ -371,6 +371,10 @@ Deno.test("swampifyStage: building after the page hands off a build, until the o
 Deno.test("swampifyStage: settled once the offer for the shown set is offered, declined, compared or unreadable", () => {
   assertEquals(swampifyStage(stageInput()), "settled");
   assertEquals(
+    swampifyStage(stageInput({ offer: null, offerFailed: true })),
+    "settled",
+  );
+  assertEquals(
     swampifyStage(stageInput({ offer: offerReading("declined") })),
     "settled",
   );
