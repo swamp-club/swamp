@@ -33,7 +33,7 @@ import {
 import { findSpan, withCapturedSpans } from "../tracing/span_test_helpers.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
-import { SqliteReadModel } from "./sqlite_read_model.ts";
+import { SqliteReadModel, TAIL_NET_MIN_COMMITS } from "./sqlite_read_model.ts";
 import { v3CacheRoot } from "./v3_datastore.ts";
 
 type Change =
@@ -48,19 +48,19 @@ type Change =
 const change: fc.Arbitrary<Change> = fc.oneof(
   fc.record({
     put: fc.constant(true as const),
-    name: fc.constantFrom("a", "b"),
+    name: fc.constantFrom("a", "b", "c"),
     version: fc.constantFrom(1, 2),
     text: fc.constantFrom("x", "y", "z"),
   }),
   fc.record({
     put: fc.constant(false as const),
-    name: fc.constantFrom("a", "b"),
+    name: fc.constantFrom("a", "b", "c"),
     version: fc.constantFrom(1, 2),
   }),
 );
-const commits = (max: number) =>
+const commits = (min: number, max: number) =>
   fc.array(fc.array(change, { minLength: 1, maxLength: 3 }), {
-    minLength: 1,
+    minLength: min,
     maxLength: max,
   });
 
@@ -135,9 +135,16 @@ async function project(
   try {
     let seq = 0;
     const versions = new Versions();
+    // every commit lands, so a generated tail is as long as generated
     const append = async (changes: readonly Change[]) => {
       const ops = await versions.opsOf(changes);
-      if (ops.length > 0) await store.append(modelCommit(++seq, ops));
+      if (ops.length === 0) {
+        ops.push(
+          await savePut(`filler${seq + 1}`, 1),
+          versionOp(`filler${seq + 1}`, 1),
+        );
+      }
+      await store.append(modelCommit(++seq, ops));
     };
     for (const changes of head) await append(changes);
     await readModel.catchUp(new AbortController().signal);
@@ -171,13 +178,17 @@ async function project(
 Deno.test("SqliteReadModel.catchUp: a netted tail over files already on disk leaves exactly the files a full replay does", async () => {
   let netted = 0;
   await fc.assert(
-    fc.asyncProperty(commits(4), commits(8), async (head, tail) => {
-      const full = await project(head, tail, false);
-      const net = await project(head, tail, true);
-      assertEquals(net.files, full.files);
-      assertEquals(full.skipped, 0);
-      netted += net.skipped;
-    }),
+    fc.asyncProperty(
+      commits(1, 4),
+      commits(TAIL_NET_MIN_COMMITS, TAIL_NET_MIN_COMMITS + 8),
+      async (head, tail) => {
+        const full = await project(head, tail, false);
+        const net = await project(head, tail, true);
+        assertEquals(net.files, full.files);
+        assertEquals(full.skipped, 0);
+        netted += net.skipped;
+      },
+    ),
     { numRuns: 40 },
   );
   // the property is vacuous unless some runs skipped writes

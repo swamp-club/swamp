@@ -169,6 +169,8 @@ const CLOSE_WAIT_MS = 500;
 
 /** a longer tail is replayed in full rather than held in memory to be netted */
 export const TAIL_NET_MAX_COMMITS = 20_000;
+/** a shorter tail, a write's own catch-up among them, is never read twice to be netted */
+export const TAIL_NET_MIN_COMMITS = 16;
 
 export const AT_RISK_DIR = "at-risk";
 
@@ -1585,6 +1587,13 @@ export class SqliteReadModel implements ReadModel {
       async (span) => {
         const tail: NetReplayCommit[] = [];
         let cursor = this.#state.cursor();
+        const counted = await this.#commitStore.countChangesSince?.(
+          cursor,
+          TAIL_NET_MIN_COMMITS,
+        );
+        if (counted === undefined || counted < TAIL_NET_MIN_COMMITS) {
+          return undefined;
+        }
         for (;;) {
           signal.throwIfAborted();
           let page;

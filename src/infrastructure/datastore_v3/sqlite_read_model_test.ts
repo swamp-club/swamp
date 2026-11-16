@@ -74,6 +74,7 @@ import {
   READ_MODEL_STATE_FILE,
   SqliteReadModel,
   type SqliteReadModelOptions,
+  TAIL_NET_MIN_COMMITS,
   TARGETED_FILES_FLOOR,
   TARGETED_NAMES_FLOOR,
 } from "./sqlite_read_model.ts";
@@ -3610,7 +3611,14 @@ Deno.test("SqliteReadModel.catchUp: a tail over files on disk skips a key's repl
         await savePut("b", 1, "b first"),
         versionOp("b", 1),
       ]);
-      await env.append(3, "", [
+      // a tail long enough to be netted
+      for (let seq = 3; seq < 2 + TAIL_NET_MIN_COMMITS; seq++) {
+        await env.append(seq, "", [
+          await savePut(`c${seq}`, 1),
+          versionOp(`c${seq}`, 1),
+        ]);
+      }
+      await env.append(2 + TAIL_NET_MIN_COMMITS, "", [
         await savePut("a", 1, "a last", undefined, "data.append"),
         versionOp("a", 1),
         await savePut("b", 1, "b last", undefined, "data.append"),

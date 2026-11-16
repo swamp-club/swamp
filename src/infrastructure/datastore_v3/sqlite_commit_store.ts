@@ -2250,6 +2250,14 @@ export class SqliteCommitStore implements CommitStore, ObservedCopyRepair {
     return changes;
   }
 
+  countChangesSince(cursor: number, atMost: number): Promise<number> {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      "SELECT COUNT(*) AS n FROM (SELECT 1 FROM commits WHERE cursor > ? LIMIT ?)",
+    ).get(cursor, atMost) as { n: number };
+    return Promise.resolve(row.n);
+  }
+
   /**
    * How much history the store holds, for `datastore status`
    * (swamp-club#3279): the commits stored above the compaction point, and
