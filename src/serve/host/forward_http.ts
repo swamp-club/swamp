@@ -31,11 +31,7 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 type NodeReadableSource = Parameters<typeof Readable.fromWeb>[0];
 
 export interface HttpForwarder {
-  /**
-   * sends `req` to the child on loopback `port` at `pathAndQuery`; node:http
-   * rather than fetch, which sends a streamed body chunked and drops its
-   * Content-Length
-   */
+  /** node:http rather than fetch, which sends a streamed body chunked and drops its Content-Length */
   forward(
     req: Request,
     port: number,
@@ -97,7 +93,7 @@ export function createHttpForwarder(signal: AbortSignal): HttpForwarder {
 
       // a caller that hangs up before the reply is passed on as the child's own
       // request aborting, which serve treats as the caller gone (a lock taken
-      // then is released); Deno aborts req.signal only after a reply has ended
+      // then is released)
       const callerGone = () => outgoing.destroy();
       req.signal.addEventListener("abort", callerGone, { once: true });
       const forgetCaller = () =>
@@ -114,6 +110,7 @@ export function createHttpForwarder(signal: AbortSignal): HttpForwarder {
         unreachable(new Error("the child switched protocols unasked"));
       });
       outgoing.on("response", (incoming) => {
+        // Deno also aborts req.signal once a reply has been delivered
         incoming.on("close", forgetCaller);
         incoming.on("error", (error) => {
           logger
