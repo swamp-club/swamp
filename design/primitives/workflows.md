@@ -4894,10 +4894,17 @@ heartbeat is current, whatever the claim's age. Any other holder (one that
 reads dead or unknown, as every serve on a filesystem datastore does) it waits
 on while the claim is under five minutes old, naming the seconds left, and
 takes over an older one, saying so
-(`tookOverFrom` in `--json`). So a refusal serve writes never lands over an
-operator's recover. Without a shared claim store neither one continuer nor a
-recorded cancel can be guaranteed, so serve continues nothing automatically
-there and logs that once. A continued scheduled
+(`tookOverFrom` in `--json`). A recover that fails, its commit included,
+releases its claim when the run still reads interrupted on the claimed key; once
+its reset has reached the record, which may not be published yet, the claim
+stays. A local command's claim left on the interrupted record (a recover
+killed before it could release, or a reset not yet published) defers the run
+while it is under five minutes old. After that, where serve's copy of the run
+is current, serve leaves the run to the operator and logs that once with the
+recover command, which takes the claim over by then. So a refusal serve writes
+never lands over an operator's recover. Without a shared claim store neither
+one continuer nor a recorded cancel can be guaranteed, so serve continues
+nothing automatically there and logs that once. A continued scheduled
 run holds off its workflow's next fire, and a replayed run of it waits, until
 it ends. Serve keeps the continued scheduled runs itself and hands every
 scheduler it builds a check over them (`continuing` in the scheduler's deps),

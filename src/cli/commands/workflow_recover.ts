@@ -26,7 +26,10 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import { refuseFanOutRecover } from "../../domain/workflows/resume_reset.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
@@ -43,6 +46,8 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import {
   claimForOperatorRecover,
   OPERATOR_CLAIM_STALE_MS,
+  type OperatorRecoverClaim,
+  suspensionKeyOf,
 } from "../../domain/workflows/continuation_claim.ts";
 import {
   localOwnerLiveness,
@@ -108,6 +113,24 @@ function newestFirst(runs: WorkflowRun[]): WorkflowRun[] {
   );
 }
 
+async function resetNeverLanded(
+  repo: WorkflowRunRepository,
+  workflowId: Workflow["id"],
+  claim: OperatorRecoverClaim["claim"],
+): Promise<boolean> {
+  try {
+    const current = await repo.findById(
+      workflowId,
+      createWorkflowRunId(claim.runId),
+    );
+    return current?.status === "interrupted" &&
+      await suspensionKeyOf(current) === claim.suspensionKey;
+  } catch {
+    // unreadable, so the claim is kept: the safe side of not knowing
+    return false;
+  }
+}
+
 export const workflowRecoverCommand = new Command()
   .name("recover")
   .description(
@@ -157,6 +180,9 @@ export const workflowRecoverCommand = new Command()
         outputMode: cliCtx.outputMode,
       });
 
+      const claims = repoContext.continuationClaims;
+      let held = undefined as OperatorRecoverClaim | undefined;
+      let workflowId = undefined as Workflow["id"] | undefined;
       // root unit of work with no push, so the run saves stage into it instead
       // of reaching the hook through signalChange's fallback
       await runCommandInRootUnit(repoContext, { push: undefined }, async () => {
@@ -235,8 +261,8 @@ export const workflowRecoverCommand = new Command()
 
         // the claim serve's own continuation takes, so the two never both
         // reset this interruption
-        const claims = repoContext.continuationClaims;
-        const held = await claimForOperatorRecover(claims, run, new Date());
+        held = await claimForOperatorRecover(claims, run, new Date());
+        workflowId = workflow.id;
         if (held?.replaced !== undefined && cliCtx.outputMode !== "json") {
           writeOutput(
             `Took over run ${run.id} from ${held.replaced}, which is not known to be running and held it for more than ${
@@ -244,18 +270,13 @@ export const workflowRecoverCommand = new Command()
             } minutes.`,
           );
         }
-        try {
-          await repoContext.workflowRunRepo.withdrawSettledStepStarts(
-            workflow.id,
-            run.id,
-            run.unknownSteps(),
-          );
-          run.resetUnknownStepsForRecovery();
-          await repoContext.workflowRunRepo.save(workflow.id, run);
-        } catch (error) {
-          if (held !== undefined) await claims!.store.release(held.claim);
-          throw error;
-        }
+        await repoContext.workflowRunRepo.withdrawSettledStepStarts(
+          workflow.id,
+          run.id,
+          run.unknownSteps(),
+        );
+        run.resetUnknownStepsForRecovery();
+        await repoContext.workflowRunRepo.save(workflow.id, run);
         // a fan-out job plans and dispatches only through serve
         const resumeCommand =
           `swamp workflow resume ${workflowIdOrName} --run ${run.id}${
@@ -285,6 +306,20 @@ export const workflowRecoverCommand = new Command()
             `Resume with: ${resumeCommand}`,
           );
         }
+      }).catch(async (error) => {
+        // kept once the reset reached this copy, which may not be published
+        // yet; a failed release must not hide the error itself
+        if (
+          held !== undefined && workflowId !== undefined &&
+          await resetNeverLanded(
+            repoContext.workflowRunRepo,
+            workflowId,
+            held.claim,
+          )
+        ) {
+          await claims!.store.release(held.claim).catch(() => {});
+        }
+        throw error;
       });
     },
   );
