@@ -33,6 +33,7 @@ import { basename, dirname, join, relative, SEPARATOR } from "@std/path";
 import {
   createInMemoryRemote,
   type InMemoryRemote,
+  type InMemorySyncService,
 } from "@swamp-club/swamp-testing";
 import { Data } from "../src/domain/data/data.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -45,8 +46,10 @@ import type {
 } from "../src/domain/datastore/distributed_lock.ts";
 import {
   ModelLockLostError,
+  SyncTimeoutError,
   type WrittenVersion,
 } from "../src/domain/datastore/datastore_sync_service.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { flushDatastoreSync } from "../src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import {
@@ -55,7 +58,9 @@ import {
 } from "../src/infrastructure/testing/test_datastore_type.ts";
 import {
   acquireModelLocks,
+  acquirePublishLocksOrDefer,
   requireInitializedRepoUnlocked,
+  type SyncCallWrapper,
 } from "../src/cli/repo_context.ts";
 import { VERSION } from "../src/infrastructure/runtime/build_info.ts";
 import type { AtomicWriteSync } from "../src/infrastructure/persistence/atomic_write.ts";
@@ -86,6 +91,8 @@ const PROCESS_A = { holder: "sam@host", hostname: "host", pid: 4100 };
  */
 class LockTable {
   readonly entries = new Map<string, LockInfo>();
+  /** replaces inspect() of every lock whose key it is given */
+  inspectFault: ((key: string) => Promise<LockInfo | null>) | undefined;
 
   lockFor(pid: number, blind = false) {
     return (options?: LockOptions): DistributedLock => {
@@ -131,7 +138,8 @@ class LockTable {
           }
         },
         inspect: () =>
-          Promise.resolve(blind ? null : this.entries.get(key) ?? null),
+          this.inspectFault?.(key) ??
+            Promise.resolve(blind ? null : this.entries.get(key) ?? null),
         forceRelease: (expected: string) => {
           if (this.entries.get(key)?.nonce !== expected) {
             return Promise.resolve(false);
@@ -175,24 +183,43 @@ async function lockAndSave(
   repoDir: string,
   modelId: string,
   body: string,
-  options: { more?: string[]; restoreWriteHooks?: AtomicWriteSync } = {},
+  options: {
+    more?: string[];
+    restoreWriteHooks?: AtomicWriteSync;
+    /** lock as a read or list run's publish does */
+    publish?: boolean;
+    wrapSync?: SyncCallWrapper;
+  } = {},
 ) {
   const ctx: Unlocked = await requireInitializedRepoUnlocked({
     repoDir,
     outputMode: "json",
   });
-  const lock = await acquireModelLocks(
-    ctx.datastoreConfig,
-    [{ modelType: modelType.normalized, modelId }],
-    repoDir,
-    ctx.syncService,
-    ctx.repoContext.catalogStore,
-    undefined,
-    {
-      repoContext: ctx.repoContext,
-      restoreWriteHooks: options.restoreWriteHooks,
-    },
-  );
+  const model = { modelType: modelType.normalized, modelId };
+  const lock = options.publish
+    ? await acquirePublishLocksOrDefer(
+      ctx.datastoreConfig,
+      model,
+      [],
+      repoDir,
+      ctx.syncService,
+      ctx.repoContext.catalogStore,
+      { repoContext: ctx.repoContext },
+    )
+    : await acquireModelLocks(
+      ctx.datastoreConfig,
+      [model],
+      repoDir,
+      ctx.syncService,
+      ctx.repoContext.catalogStore,
+      undefined,
+      {
+        repoContext: ctx.repoContext,
+        restoreWriteHooks: options.restoreWriteHooks,
+        wrapSync: options.wrapSync,
+      },
+    );
+  assert(lock !== undefined, "the publish lock should be free");
   if (lock.synced) ctx.repoContext.catalogStore.invalidate();
   const written: WrittenVersion[] = [];
   for (const b of [body, ...options.more ?? []]) {
@@ -211,7 +238,9 @@ async function lockAndSave(
   }
   return {
     version: written[0].version,
-    flush: () => lock.flush(written),
+    flush: () =>
+      options.publish ? lock.pushWritten(written) : lock.flush(written),
+    flushNothing: () => lock.flush(),
     pushUnlocked: async () => {
       await ctx.syncService!.pushChanged();
     },
@@ -286,13 +315,21 @@ async function withClones(
     noFetchA?: boolean;
     noClearA?: boolean;
     durableA?: boolean;
+    wrapA?: (service: InMemorySyncService) => InMemorySyncService;
   } = {},
 ): Promise<void> {
   const remote = createInMemoryRemote({
     capabilities: twoPhaseSync ? { twoPhaseSync: true } : {},
   });
   const locks = new LockTable();
-  const typeA = registerTestDatastoreType(remote, {
+  const wrapA = options.wrapA;
+  const remoteA = wrapA
+    ? {
+      connect: (...args: Parameters<InMemoryRemote["connect"]>) =>
+        wrapA(remote.connect(...args)),
+    }
+    : remote;
+  const typeA = registerTestDatastoreType(remoteA, {
     createLock: locks.lockFor(PROCESS_A.pid, options.blindA),
     connect: {
       ...(options.noFetchA ? { fetchContent: false } : {}),
@@ -971,5 +1008,234 @@ for (const twoPhaseSync of [true, false]) {
       }
       assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
     }, { noClearA: true });
+  });
+}
+
+const SHORT_SYNC_TIMEOUT = { SWAMP_DATASTORE_SYNC_TIMEOUT_MS: "300" };
+
+// a lock that cannot be read at push may have been taken over, so the run's
+// versions are discarded as for a lost lock: a failed run leaves no data
+for (const twoPhaseSync of [true, false]) {
+  Deno.test(`acquireModelLocks: a lock that cannot be read at push discards the run's version, and a later sync sends none of it (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      try {
+        c.remote.offline(true);
+        c.locks.inspectFault = () =>
+          Promise.reject(new Error("getObject timed out after 30000ms"));
+        const error = await assertRejects(
+          () => a.flush(),
+          ModelLockLostError,
+        );
+        assertEquals(error.code, "model_lock_lost");
+        assertEquals(error.unconfirmed, true);
+        assertEquals(error.lost.map((l) => l.modelId), [c.modelId]);
+        assertStringIncludes(error.message, "getObject timed out");
+        assertEquals(await a.localVersions(), []);
+        c.locks.inspectFault = undefined;
+        c.remote.offline(false);
+        await a.syncUnlocked();
+      } finally {
+        c.locks.inspectFault = undefined;
+        await a.close();
+      }
+      assertEquals(remoteBodies(c.remote, c.modelId), []);
+    });
+  });
+
+  Deno.test(`acquireModelLocks: a lock read that outlives the sync deadline discards the run's version, and the abandoned check stops when the read returns (twoPhaseSync=${twoPhaseSync})`, async () => {
+    // the deadline is read when the locks are taken
+    await withMockedEnv(
+      SHORT_SYNC_TIMEOUT,
+      () =>
+        withClones(twoPhaseSync, async (c) => {
+          const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+          const read = Promise.withResolvers<LockInfo | null>();
+          let lockReadAfterDeadline = false;
+          try {
+            const held = [...c.locks.entries.values()][0];
+            c.locks.inspectFault = () => read.promise;
+            const error = await assertRejects(
+              () => a.flush(),
+              ModelLockLostError,
+            );
+            assertEquals(error.unconfirmed, true);
+            assertStringIncludes(
+              error.message,
+              "the push timed out after 300ms",
+            );
+            assertEquals(error.message.includes("lock release --force"), false);
+            assertEquals(await a.localVersions(), []);
+
+            // the abandoned attempt must not go on to compare, stage or upload
+            read.resolve(
+              new Proxy(held, {
+                get(target, prop, receiver) {
+                  // resolving a promise with an object reads its then
+                  if (prop !== "then") lockReadAfterDeadline = true;
+                  return Reflect.get(target, prop, receiver);
+                },
+              }),
+            );
+            await read.promise;
+            // one task turn runs every microtask the resumed check queues
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            assertEquals(lockReadAfterDeadline, false);
+            c.locks.inspectFault = undefined;
+            await a.syncUnlocked();
+          } finally {
+            c.locks.inspectFault = undefined;
+            read.resolve(null);
+            await a.close();
+          }
+          assertEquals(remoteBodies(c.remote, c.modelId), []);
+        }),
+    );
+  });
+
+  Deno.test(`acquireModelLocks: a lock that cannot be read discards the run's version under the sync gate, as a lost lock's discard is (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const gated: Array<{ kind: string; before: number[]; after: number[] }> =
+        [];
+      let localVersions: () => Promise<number[]> = () => Promise.resolve([]);
+      const wrapSync: SyncCallWrapper = async (fn, kind) => {
+        const entry: (typeof gated)[number] = {
+          kind,
+          before: await localVersions(),
+          after: [],
+        };
+        gated.push(entry);
+        try {
+          return await fn();
+        } finally {
+          entry.after = await localVersions();
+        }
+      };
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}', {
+        wrapSync,
+      });
+      localVersions = a.localVersions;
+      try {
+        c.locks.inspectFault = () =>
+          Promise.reject(new Error("getObject timed out after 30000ms"));
+        await assertRejects(() => a.flush(), ModelLockLostError);
+        const pushes = gated.filter((g) => g.kind !== "pull");
+        const last = pushes[pushes.length - 1];
+        assert(pushes.length >= 2, "the discard takes the gate again");
+        assertEquals(last.before, [a.version], "the version was still here");
+        assertEquals(last.after, [], "the gated call discarded it");
+      } finally {
+        c.locks.inspectFault = undefined;
+        await a.close();
+      }
+    });
+  });
+
+  Deno.test(`acquireModelLocks: a push with no versions whose lock cannot be read fails with the read's error and claims no discard (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      try {
+        c.locks.inspectFault = () =>
+          Promise.reject(new Error("getObject timed out after 30000ms"));
+        const error = await assertRejects(() => a.flushNothing());
+        assert(
+          !(error instanceof ModelLockLostError),
+          `nothing was discarded, so the read's error stands: ${error}`,
+        );
+        assertStringIncludes(String(error), "getObject timed out");
+        assertEquals(await a.localVersions(), [a.version]);
+      } finally {
+        c.locks.inspectFault = undefined;
+        await a.close();
+      }
+    });
+  });
+
+  Deno.test(`acquireModelLocks: a push that confirmed its lock and then failed keeps the run's version for a later push (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      try {
+        c.remote.failNext(twoPhaseSync ? "prepare" : "push");
+        const error = await assertRejects(() => a.flush());
+        assert(
+          !(error instanceof ModelLockLostError),
+          `a confirmed lock is not refused: ${error}`,
+        );
+        assertEquals(await a.localVersions(), [a.version]);
+        await a.pushUnlocked();
+      } finally {
+        await a.close();
+      }
+      assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"a"}']);
+    });
+  });
+
+  Deno.test(`acquirePublishLocksOrDefer: a read run's publish whose lock cannot be read discards its version (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}', {
+        publish: true,
+      });
+      try {
+        c.locks.inspectFault = () =>
+          Promise.reject(new Error("getObject timed out after 30000ms"));
+        const error = await assertRejects(
+          () => a.flush(),
+          ModelLockLostError,
+        );
+        assertEquals(error.unconfirmed, true);
+        assertEquals(await a.localVersions(), []);
+        c.locks.inspectFault = undefined;
+        await a.syncUnlocked();
+      } finally {
+        c.locks.inspectFault = undefined;
+        await a.close();
+      }
+      assertEquals(remoteBodies(c.remote, c.modelId), []);
+    });
+  });
+
+  Deno.test(`acquireModelLocks: a deadline during a lost lock's discard does not discard again as an unconfirmed lock (twoPhaseSync=${twoPhaseSync})`, async () => {
+    const gate = Promise.withResolvers<void>();
+    let fetchesHeld = 0;
+    const holdFetches = (service: InMemorySyncService) =>
+      new Proxy(service, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (prop !== "fetchContent" || typeof value !== "function") {
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async (...args: unknown[]) => {
+            fetchesHeld++;
+            await gate.promise;
+            return await value.apply(target, args);
+          };
+        },
+      });
+    try {
+      await withMockedEnv(
+        SHORT_SYNC_TIMEOUT,
+        () =>
+          withClones(twoPhaseSync, async (c) => {
+            const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+            try {
+              c.locks.breakglass(c.modelId);
+              const error = await assertRejects(() => a.flush());
+              assert(
+                fetchesHeld > 0,
+                "the lost lock's discard should be running",
+              );
+              assert(
+                error instanceof SyncTimeoutError,
+                `the deadline is reported as such: ${error}`,
+              );
+            } finally {
+              gate.resolve();
+              await a.close();
+            }
+          }, { wrapA: holdFetches }),
+      );
+    } finally {
+      gate.resolve();
+    }
   });
 }

@@ -301,6 +301,24 @@ Deno.test("runCommandInRootUnit: a push refused for a lost model lock fails a co
   assertEquals(reported, []);
 });
 
+Deno.test("runCommandInRootUnit: a push that could not confirm its model lock keeps its own code, not datastore_push_failed", async () => {
+  const unconfirmed = new ModelLockLostError(
+    [{ modelType: "t", modelId: "m" }],
+    {
+      unconfirmedBy: new Error("getObject timed out"),
+    },
+  );
+  const { repoContext, release } = recorder();
+  const error = await assertRejects(() =>
+    runCommandInRootUnit(
+      repoContext,
+      { push: () => Promise.reject(unconfirmed), release },
+      () => Promise.resolve("done"),
+    )
+  );
+  assertEquals(error, unconfirmed);
+});
+
 Deno.test("runCommandInRootUnit: a lost model lock still fails the command when the release fails after it (swamp-club#3373)", async () => {
   const { repoContext, release } = recorder({ failRelease: "release failed" });
   const error = await assertRejects(() =>

@@ -162,6 +162,11 @@ refused upload). The local change is kept; only the remote copy is missing.
 **Fix**: run `swamp datastore sync --push` once the datastore is reachable. The
 next command that pushes publishes the change too.
 
+When the datastore was unreachable as the push began, a mutating run can instead
+fail with `model_lock_lost` ("could not confirm its lock"): swamp could not
+prove it still held the behavior's lock, so it discarded the run's data. Nothing
+is left to push. Run the method again once the datastore is reachable.
+
 ## Recovery Procedures
 
 ### Recover from Corrupted Repository

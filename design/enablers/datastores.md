@@ -410,7 +410,10 @@ out, so the user sees the data did not reach the remote: a timeout as
 `SyncTimeoutError`, a typed refusal with its own code, and any other failure as
 `DatastorePushFailedError` (code `datastore_push_failed`), which names
 `swamp datastore sync --push` as the retry. The data stays on this host and the
-next push publishes it. Managed-config writes fail with their own error (see
+next push publishes it. A push that cannot read a model lock it must confirm is
+the exception: the lock may have been taken over, so the run's data is
+discarded as for a lost lock and the command fails with `model_lock_lost`, so a
+non-zero exit leaves no data. Managed-config writes fail with their own error (see
 "Where mutations write").
 
 **Setup timeouts.** In `datastore setup extension`, a push or pull
@@ -10863,7 +10866,13 @@ back as the datastore holds it, read with `fetchContent` under one 10-second
 budget; a file the datastore lacks stays removed, and the first failed read ends
 the restore. The lost models are then pulled, best effort, so the cache holds
 the datastore's copy. A run refused while its datastore is unreachable leaves
-its data on no clone. A breakglass followed by an outage before the restore,
+its data on no clone. A lock that cannot be read at push time, because
+`inspect()` fails or the sync deadline passes while it runs, is treated as lost:
+the attempt's versions are discarded the same way and the push fails with
+`ModelLockLostError` naming the read's error, without the pull, since the
+datastore is unreachable. A push with no versions to discard keeps the read's
+own error. An attempt abandoned at the deadline stops after its
+read returns, so it never stages or uploads over the discard. A breakglass followed by an outage before the restore,
 or a sync service without `fetchContent`, can still leave a removed file that a
 push-only sync turns into a delete of the other run's copy; a sync that pulls
 first does not. Once the restore matched the datastore, the discard also drops
