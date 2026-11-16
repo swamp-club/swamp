@@ -520,6 +520,7 @@ import {
 } from "../../serve/shutdown_interrupt.ts";
 import { ShutdownDeadline } from "../../serve/shutdown_deadline.ts";
 import { ShutdownStages } from "../../serve/shutdown_stages.ts";
+import { stdinShutdownTrigger } from "../../serve/stdin_close_trigger.ts";
 import { ServeRunWriteFence } from "../../serve/run_write_fence.ts";
 import {
   clearCommittedAtBoot,
@@ -3782,6 +3783,12 @@ export const serveCommand = new Command()
     "Enable SIGHUP-based hot-reload for pulled extension bundles and " +
       "trigger overrides from serve.yaml. " +
       "Writes a PID file to .swamp/serve.pid; use 'swamp serve reload' to trigger a reload",
+  )
+  // only swamp serve host passes it, so it has no serve.yaml key or env var
+  .option(
+    "--exit-on-stdin-close",
+    "Drain and exit when stdin reaches end of file",
+    { hidden: true },
   )
   .option(
     "--enable-internal-api",
@@ -10223,6 +10230,13 @@ export const serveCommand = new Command()
       },
       includePosixSignals: !reloadOnHangup,
     });
+    // never rejects; not awaited, since a stdin left open after a SIGTERM
+    // drain must not hold the process
+    void stdinShutdownTrigger(
+      options.exitOnStdinClose === true,
+      () => Deno.stdin.readable,
+      startShutdown,
+    );
     if (reloadOnHangup) {
       // SIGHUP reloads (above); SIGTERM still shuts down
       if (Deno.build.os !== "windows") {
