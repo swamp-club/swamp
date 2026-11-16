@@ -37,7 +37,9 @@ import {
   getIndexPath,
   INDEX_COMPACTION_FLOOR_BYTES,
   INDEX_SCHEMA_VERSION,
+  markRunIndexesForRepair,
   readRunIndex,
+  RUNS_INDEX_REPAIR_FILENAME,
   withIndexQueue,
   writeRunIndex,
 } from "./workflow_run_index.ts";
@@ -6384,5 +6386,48 @@ Deno.test("YamlWorkflowRunRepository.isRunDamaged: a realistic record cut short 
     await repo.save(workflow.id, run);
     assertFalse(await repo.isRunDamaged(workflow.id, run.id));
     assertEquals(await Deno.readTextFile(path), content);
+  });
+});
+
+Deno.test("markRunIndexesForRepair: the next read checks the index against its records, reading only the changed ones, and never rebuilds it", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    await repo.save(workflow.id, run);
+    const runningRecord = await Deno.readTextFile(
+      repo.getPath(workflow.id, run.id),
+    );
+    run.interruptOrphaned("test", []);
+    await repo.save(workflow.id, run);
+    await replaceRecord(repo, workflow.id, run, runningRecord);
+    // the index still says interrupted and its count agrees: it is trusted
+    assertEquals((await repo.findGlobalByStatus("running")).length, 0);
+
+    await markRunIndexesForRepair(dir);
+    const indexDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    assertEquals((await readRunIndex(indexDir))?.damaged, true);
+
+    await withCapturedSpans(async (spans) => {
+      const running = await repo.findGlobalByStatus("running");
+      assertEquals(running.map((found) => found.run.id), [run.id]);
+      assertEquals(
+        spans.some((span) => span.name === "swamp.workflow_runs.index.rebuild"),
+        false,
+      );
+      assertEquals(
+        spans.some((span) => span.name === "swamp.workflow_runs.index.repair"),
+        true,
+      );
+    });
+    assertEquals(
+      await Deno.lstat(join(indexDir, RUNS_INDEX_REPAIR_FILENAME)).then(
+        () => true,
+        () => false,
+      ),
+      false,
+    );
+    assertEquals((await readRunIndex(indexDir))?.damaged, undefined);
   });
 });

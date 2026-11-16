@@ -27,6 +27,8 @@ import { inTimeSlices } from "./scan_permits.ts";
 
 export const RUNS_INDEX_FILENAME = ".runs-index.json";
 export const RUNS_INDEX_LOCK_FILENAME = ".runs-index.lock";
+/** beside an index whose entries may be stale: its next read repairs it */
+export const RUNS_INDEX_REPAIR_FILENAME = ".runs-index.repair";
 
 // Bump when WorkflowRunIndexEntry gains or removes fields so that
 // old on-disk indices are rebuilt instead of serving stale data.
@@ -131,6 +133,41 @@ export async function removeRunIndexes(
   for (const entry of entries) {
     if (entry.isDirectory) {
       await deleteRunIndex(join(workflowRunsRoot, entry.name));
+    }
+  }
+}
+
+/**
+ * each index is checked against its records on its next read, which stats
+ * them all and reads only those that changed; one that cannot be marked is
+ * removed instead, and rebuilt from every record
+ */
+export async function markRunIndexesForRepair(repoDir: string): Promise<void> {
+  const root = swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
+  let entries: Deno.DirEntry[];
+  try {
+    entries = await Array.fromAsync(Deno.readDir(root));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    getSwampLogger(["workflow-runs", "index"])
+      .warn`Marking the workflow run indexes of ${repoDir} for repair failed; removing them instead: ${error}`;
+    await removeStaleRunIndexes(repoDir);
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory) continue;
+    const dir = join(root, entry.name);
+    try {
+      await Deno.lstat(getIndexPath(dir));
+    } catch {
+      continue;
+    }
+    try {
+      await Deno.writeTextFile(join(dir, RUNS_INDEX_REPAIR_FILENAME), "");
+    } catch (error) {
+      getSwampLogger(["workflow-runs", "index"])
+        .warn`Marking the run index of ${dir} for repair failed; removing it instead: ${error}`;
+      await deleteRunIndex(dir).catch(() => {});
     }
   }
 }
@@ -361,9 +398,19 @@ export async function readRunIndex(
     },
     signal,
   );
+  if (!damaged) damaged = await markedForRepair(workflowRunsDir);
   return damaged
     ? { entries, version: INDEX_SCHEMA_VERSION, damaged }
     : { entries, version: INDEX_SCHEMA_VERSION };
+}
+
+async function markedForRepair(workflowRunsDir: string): Promise<boolean> {
+  try {
+    await Deno.lstat(join(workflowRunsDir, RUNS_INDEX_REPAIR_FILENAME));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function headerLine(compactedBytes: number): string {
@@ -397,6 +444,12 @@ export async function writeRunIndex(
   await atomicWriteTextFile(
     getIndexPath(workflowRunsDir),
     headerLine(utf8.encode(body).length) + body,
+  );
+  // written whole from entries checked against their records
+  await Deno.remove(join(workflowRunsDir, RUNS_INDEX_REPAIR_FILENAME)).catch(
+    (error) => {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    },
   );
 }
 

@@ -27,7 +27,7 @@ import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { getSwampLogger } from "../logging/logger.ts";
 import { removeStaleOutputSummaries } from "../persistence/output_summary_index.ts";
-import { removeStaleRunIndexes } from "../persistence/workflow_run_index.ts";
+import { markRunIndexesForRepair } from "../persistence/workflow_run_index.ts";
 import {
   type DurableWriteBatchOptions,
   writeFileDurably,
@@ -424,7 +424,7 @@ async function recoverLocked(
     await restoreQueuedStepStarts(handle, repoDir);
   } finally {
     // The replay may have rewritten run records before any failure.
-    await removeStaleRunIndexes(repoDir);
+    await markRunIndexesForRepair(repoDir);
     await removeStaleOutputSummaries(repoDir);
   }
   // the writer is named in the template's text, where an interpolated string

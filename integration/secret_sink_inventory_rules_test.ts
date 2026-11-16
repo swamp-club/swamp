@@ -435,6 +435,8 @@ const NOT_A_SINK: Record<string, Record<string, string>> = {
       "Writes behavior types and ids, data names, version numbers and data ids, never a data value or a value derived from an expression.",
     "src/infrastructure/datastore_v3/explicit_model_leases.ts: writeExplicitLeases":
       "Holds only lease ids, lock keys, fences, holds, expiry times and data names' version numbers: never a value derived from an expression.",
+    "src/infrastructure/persistence/workflow_run_index.ts: markRunIndexesForRepair":
+      "Writes an empty marker file beside a run index: never a value.",
     "src/infrastructure/datastore_v3/serve_command_leases.ts: commandLeaseRecordsAt":
       "Holds only lease ids, lock keys, serve's URL, a SHA-256 fingerprint of the token, a pid and its host, boot and start-time identity: never a value derived from an expression.",
     "src/infrastructure/datastore_v3/litestream/litestream_binary_provider.ts: defaultLitestreamExtractor":

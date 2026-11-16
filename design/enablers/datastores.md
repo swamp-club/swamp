@@ -6588,9 +6588,13 @@ leader election and followers").
   landed (a token of the same name) rather than redo it, so the message says to
   check what the command changed before running it again. The failed run's
   dropped final save had already written its entry in the checkout-local run
-  index, so the command removes the run indexes, as every recovery does once it
-  has run: its replay puts back the committed run records, and an index only
-  repairs itself when its count of runs differs.
+  index, so the command removes the run indexes, as a recovery does once it has
+  run: its replay puts back the committed run records, and an index only
+  repairs itself when its count of runs differs. An interrupted writer's
+  recovery marks them for repair instead (`markRunIndexesForRepair`, a
+  `.runs-index.repair` beside each index that reads as damaged until the index
+  is written whole), so the next read stats every record and reads only those
+  whose fingerprint changed, rather than rebuilding from every record.
 - A command cut off from the storage before it changed anything fails with a
   stable code and exits 75 (swamp-club#3802), when the failure passes the same
   `isNetworkFailure` test (which also counts a connection lost while a response
