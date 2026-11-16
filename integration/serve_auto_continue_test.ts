@@ -1286,6 +1286,7 @@ Deno.test({
       const timedOut = new AbortController();
       registry.register(fakeActiveRun(runId, timedOut));
       await waitFor(() => timedOut.signal.aborted, "the run aborted");
+      await recorder.settled();
       const intent = await serve.ctx.repoContext.continuationClaims!.store
         .findCancel(runId);
       assertEquals(intent?.reason, "max run duration exceeded");
