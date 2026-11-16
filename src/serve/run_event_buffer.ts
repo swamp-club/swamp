@@ -42,6 +42,11 @@ const OUTCOME_EVENT_KINDS: ReadonlySet<string> = new Set([
 
 export interface RunEventBufferOptions {
   /**
+   * the seq the first event takes: a continued run starts above every seq the
+   * process that parked it sent, so a reattaching client skips none of it
+   */
+  readonly firstSeq?: number;
+  /**
    * holds the outcome event and all after it until the buffer finishes: a v3
    * run commits when its root ends, so followers see the outcome only with
    * done, never before an error that replaces it
@@ -57,6 +62,7 @@ export class RunEventBuffer {
   #firstIndex = 0;
   #nextSeq = 1;
   #terminal: BufferTerminal | null = null;
+  #parked = false;
   readonly #subscribers = new Set<RunEventSubscriber>();
 
   constructor(capacity: number, options: RunEventBufferOptions = {}) {
@@ -65,10 +71,22 @@ export class RunEventBuffer {
     }
     this.#capacity = capacity;
     this.#holdOutcome = options.holdOutcome === true;
+    if (options.firstSeq !== undefined && options.firstSeq > 1) {
+      this.#nextSeq = options.firstSeq;
+    }
   }
 
   get finished(): boolean {
-    return this.#terminal !== null;
+    return this.#terminal !== null || this.#parked;
+  }
+
+  /**
+   * a planned restart parked the run: no terminal frame is sent, so attached
+   * clients keep waiting until the restart closes them and then reattach to
+   * the continued run
+   */
+  park(): void {
+    this.#parked = true;
   }
 
   get highSeq(): number {
@@ -85,6 +103,8 @@ export class RunEventBuffer {
   }
 
   push(event: SerializedEvent): number {
+    // the continued run streams from the next process; nothing more goes here
+    if (this.#parked && this.#terminal === null) return this.highSeq;
     if (this.#terminal !== null) {
       throw new Error("Cannot push to a finished RunEventBuffer");
     }
@@ -124,6 +144,7 @@ export class RunEventBuffer {
   }
 
   finish(terminal: BufferTerminal): void {
+    if (this.#parked && this.#terminal === null) return;
     if (this.#terminal !== null) {
       throw new Error("RunEventBuffer is already finished");
     }

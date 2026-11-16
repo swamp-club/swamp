@@ -24,6 +24,7 @@ import {
 } from "../domain/vaults/run_vault_access.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { StepWithdrawnError } from "../domain/workflows/run_handover.ts";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
 import { z } from "zod";
 import {
@@ -3709,4 +3710,92 @@ Deno.test("DispatchService: without an owner the lease records none", async () =
   await h.service.executeRemote(stepRequest());
   const acquire = h.transitions.find((t) => t.methodName === "acquire");
   assertEquals("owner" in (acquire?.inputs ?? {}), false);
+});
+
+function busyHarness() {
+  return createHarness({
+    workers: [
+      snapshot({
+        name: "w1",
+        status: "busy",
+        activeDispatchIds: ["d-existing"],
+        capacity: 1,
+      }),
+    ],
+  });
+}
+
+Deno.test("DispatchService: a planned restart withdraws a workflow step still waiting for a worker", async () => {
+  const h = busyHarness();
+  const pending = h.service.executeRemote(
+    stepRequest({ workflowRunId: "run-1", jobName: "main" }),
+  );
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "enqueue"),
+    "the step to queue",
+  );
+
+  h.service.beginHandover();
+
+  await assertRejects(() => pending, StepWithdrawnError);
+  await h.service.settled();
+  assertEquals(h.dispatchCalls.length, 0);
+  assertEquals(
+    h.transitions.map((t) => t.methodName).filter((m) =>
+      m === "enqueue" || m === "cancel"
+    ),
+    ["enqueue", "cancel"],
+  );
+});
+
+Deno.test("DispatchService: a planned restart leaves a method run waiting for a worker in the queue", async () => {
+  const h = busyHarness();
+  h.service.beginHandover();
+  const controller = new AbortController();
+
+  // a withdrawn request would refuse before it ever queued
+  const pending = h.service.executeRemote(
+    stepRequest({ signal: controller.signal }),
+  );
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "enqueue"),
+    "the method run to queue",
+  );
+
+  controller.abort();
+  await assertRejects(() => pending, DOMException);
+});
+
+Deno.test("DispatchService: a step a worker took runs on through a planned restart", async () => {
+  const h = createHarness();
+  let release = () => {};
+  const taken = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const defaultBehavior = h.setBehavior;
+  defaultBehavior(async () => {
+    await taken;
+    return {
+      status: "success",
+      outputs: [{
+        dataId: "data-1",
+        version: 1,
+        name: "out-main",
+        specName: "out",
+        type: "resource",
+      }],
+      logs: [],
+      durationMs: 3,
+    };
+  });
+  const pending = h.service.executeRemote(
+    stepRequest({ workflowRunId: "run-1", jobName: "main" }),
+  );
+  await waitFor(() => h.dispatchCalls.length === 1, "the worker to take it");
+
+  h.service.beginHandover();
+  release();
+
+  const result = await pending;
+  assertEquals(result.outputs.length, 1);
 });

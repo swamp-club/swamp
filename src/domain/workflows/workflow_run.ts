@@ -2013,6 +2013,55 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * a planned restart stops the run between steps: no step is in flight, so
+   * none becomes unknown and the continuation re-runs nothing
+   */
+  park(parker: RunParker, at: Date): void {
+    if (this._status !== "running") {
+      throw new Error(`Cannot park a run that is ${this._status}`);
+    }
+    const inFlight = this._jobs.flatMap((job) => [...job.steps]).find((step) =>
+      step.status === "running"
+    );
+    if (inFlight !== undefined) {
+      throw new Error(
+        `Cannot park run ${this.id}: step ${inFlight.stepName} is running`,
+      );
+    }
+    this._status = "interrupted";
+    this._completedAt = at;
+    this._tags["interrupt_reason"] = SERVER_RESTART_REASON;
+    for (const [key, value] of Object.entries(parkerTags(parker))) {
+      if (value === undefined) delete this._tags[key];
+      else this._tags[key] = value;
+    }
+    this.releaseOwnership();
+    this.markContinuable(at);
+  }
+
+  /** stopped by a planned restart at a step boundary, with nothing to re-run */
+  get isParked(): boolean {
+    return this._status === "interrupted" &&
+      this._tags["interrupt_reason"] === SERVER_RESTART_REASON &&
+      this.unknownSteps().length === 0;
+  }
+
+  /** the process that parked the run, while the run still reads parked */
+  get parker(): RunParker | undefined {
+    if (!this.isParked) return undefined;
+    const pid = Number(this._tags[PARKED_BY_PID_TAG]);
+    const eventSeq = Number(this._tags[PARKED_EVENT_SEQ_TAG]);
+    return {
+      instanceId: this._tags[PARKED_BY_INSTANCE_TAG],
+      pid: Number.isSafeInteger(pid) ? pid : undefined,
+      host: this._tags[PARKED_BY_HOST_TAG],
+      eventSeq: Number.isSafeInteger(eventSeq) && eventSeq > 0
+        ? eventSeq
+        : undefined,
+    };
+  }
+
+  /**
    * a kill that beat the step-start save shows the in-flight step as pending,
    * so in a running job with no running step every pending step is marked
    * unknown and recovery asks before re-running it
@@ -2161,8 +2210,11 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     const resetSteps = this.unknownSteps();
     if (automatic !== undefined) {
+      // a park cut nothing off, so only interruptions that did count toward
+      // the cap on a step taking serve down with it
+      const parked = this.isParked;
       this._autoContinuation = {
-        count: this.consecutiveAutoContinuations() + 1,
+        count: this.consecutiveAutoContinuations() + (parked ? 0 : 1),
         continuedAt: automatic.at.toISOString(),
         interruptReason: this._tags["interrupt_reason"],
         holder: automatic.holder,
@@ -2797,6 +2849,36 @@ export function isServeDrivenRun(
   run: { readonly triggeringPrincipal?: unknown; readonly instanceId?: string },
 ): boolean {
   return run.triggeringPrincipal !== undefined || run.instanceId !== undefined;
+}
+
+/** the interruption reason of a run a planned restart parked */
+export const SERVER_RESTART_REASON = "server_restart";
+
+const PARKED_BY_INSTANCE_TAG = "parked_by_instance";
+const PARKED_BY_PID_TAG = "parked_by_pid";
+const PARKED_BY_HOST_TAG = "parked_by_host";
+// the last event seq the parking process streamed, so a continued run's
+// stream starts above every seq an attached client has seen
+const PARKED_EVENT_SEQ_TAG = "parked_event_seq";
+
+export interface RunParker {
+  readonly instanceId?: string;
+  readonly pid?: number;
+  readonly host?: string;
+  readonly eventSeq?: number;
+}
+
+function parkerTags(parker: RunParker): Record<string, string | undefined> {
+  return {
+    [PARKED_BY_INSTANCE_TAG]: parker.instanceId,
+    [PARKED_BY_PID_TAG]: parker.pid === undefined
+      ? undefined
+      : String(parker.pid),
+    [PARKED_BY_HOST_TAG]: parker.host,
+    [PARKED_EVENT_SEQ_TAG]: parker.eventSeq === undefined
+      ? undefined
+      : String(parker.eventSeq),
+  };
 }
 
 /**

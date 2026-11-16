@@ -1225,6 +1225,15 @@ changed, it was continued 3 times in a row with no step finishing, it was not
 started through serve, or the workflow sets `autoContinue: false` (default on;
 separate from `autoResume`). `swamp workflow history get` names the reason.
 
+A planned restart (SIGTERM, a rolling one included) parks runs instead: serve
+starts no new step, lets running ones finish within `--shutdown-drain-timeout`,
+and records the run `interrupted` with reason `server_restart` and no `unknown`
+step (history shows it as parked). The next serve process continues it under the
+same id once the old one has exited, with nothing re-run, unless the workflow
+sets `autoContinue: false`; a client streaming it with `--server` keeps
+streaming. Only a step still running when the drain timeout ends is cut off as
+above.
+
 A fresh `workflow run` automatically supersedes (cancels) prior suspended runs
 of the same workflow whose resolved inputs match. Use `--no-supersede` to keep
 prior runs alive.

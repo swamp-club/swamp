@@ -561,6 +561,8 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
           ),
         );
       },
+      // only a serve-driven run parks, and serve never sends it
+      parked: () => {},
       signal_wait_requested: (e) => {
         this.runsWaitingForSignal.add(e.runId);
         this.waitsShown.add(e.waitId);
@@ -1375,6 +1377,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
           ...(e.fanOutGate !== undefined ? { fanOutGate: e.fanOutGate } : {}),
         });
       },
+      parked: () => {},
       signal_wait_requested: (e) => {
         this._waits.push({
           runId: e.runId,

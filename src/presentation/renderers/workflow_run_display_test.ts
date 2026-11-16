@@ -434,3 +434,18 @@ Deno.test("renderWorkflowRunDisplay: a run serve continued says so once it moves
   assertStringIncludes(out, "deploy");
   assertEquals(out.includes("Not continued"), false);
 });
+
+Deno.test("renderWorkflowRunDisplay: a run parked for a restart reads as parked, not interrupted", () => {
+  const out = captureOutput(() =>
+    renderWorkflowRunDisplay(
+      endedRun("interrupted", {
+        interruptReason: "server_restart",
+        parked: true,
+      }),
+      "log",
+    )
+  );
+  assertStringIncludes(out, "Parked for a serve restart");
+  assertStringIncludes(out, "Result: PARKED");
+  assertEquals(out.includes("Interrupted:"), false);
+});

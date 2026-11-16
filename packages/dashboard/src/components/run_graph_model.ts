@@ -67,6 +67,8 @@ export interface JobRunLike {
 
 export interface RunLike {
   status: string;
+  /** a planned restart parked it: still to continue, not finished */
+  parked?: boolean;
   jobs: JobRunLike[];
   nestedWaits?: { runId: string; stepName: string; status?: string }[];
 }
@@ -141,6 +143,11 @@ export interface RunGraph {
 }
 
 const FINISHED_RUN = new Set(["cancelled", "interrupted", "failed"]);
+
+/** a parked run's work is still to come, so it is not shown stopped */
+function runStatusOf(run: Pick<RunLike, "status" | "parked">): string {
+  return run.parked === true ? "parked" : run.status;
+}
 
 /** The display status of a job or step status within a run. */
 export function displayStatus(
@@ -257,7 +264,7 @@ function wrap(condition: ConditionData): string {
 
 function jobOf(job: JobRunLike, run: RunLike): RunGraphJob {
   const steps = job.steps ?? [];
-  const status = displayStatus(job.status, run.status);
+  const status = displayStatus(job.status, runStatusOf(run));
   const failed = steps.find((s) => s.status === "failed" && !s.allowedFailure);
   const nested: NestedRunRef[] = [];
   for (const step of steps) {
@@ -322,13 +329,13 @@ export function buildRunGraph(
   for (const defJob of definition?.jobs ?? []) {
     const target = byName.get(defJob.name);
     if (!target) continue;
-    const targetStatus = displayStatus(target.status, run.status);
+    const targetStatus = displayStatus(target.status, runStatusOf(run));
     for (const dep of defJob.dependsOn ?? []) {
       const source = byName.get(dep.job);
       if (!source || dep.job === defJob.name) continue;
       // A cancelled job (or one a finished run left unfinished) will never
       // finish, so nothing downstream of it runs: its edges are unmet.
-      const met = displayStatus(source.status, run.status) === "cancelled"
+      const met = displayStatus(source.status, runStatusOf(run)) === "cancelled"
         ? false
         : evaluateCondition(dep.condition, source.status);
       const state: EdgeState = met === null ? "pending" : met ? "met" : "unmet";

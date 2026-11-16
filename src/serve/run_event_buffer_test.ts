@@ -346,3 +346,35 @@ Deno.test("RunEventBuffer: without holding, the outcome is delivered as it is pu
   buffer.push(event("completed"));
   assertEquals(sub.events.map((e) => e.event.kind), ["completed"]);
 });
+
+Deno.test("RunEventBuffer: a continued run's events take seqs above the parked stream's last, so a client's old counter skips none", () => {
+  const buffer = new RunEventBuffer(10, { firstSeq: 51 });
+  buffer.push(event("started"));
+  buffer.push(event("step_started"));
+
+  // the client last saw seq 50 from the process that parked the run
+  const { subscriber, events } = collectingSubscriber();
+  buffer.subscribe(subscriber, 50);
+
+  assertEquals(events.map((e) => [e.seq, e.event.kind]), [
+    [51, "started"],
+    [52, "step_started"],
+  ]);
+  assertEquals(buffer.highSeq, 52);
+});
+
+Deno.test("RunEventBuffer: a parked buffer sends no terminal frame, so attached clients reattach once the restart closes them", () => {
+  const buffer = new RunEventBuffer(10);
+  buffer.push(event("started"));
+  const { subscriber, events, terminals } = collectingSubscriber();
+  buffer.subscribe(subscriber);
+
+  buffer.park();
+  buffer.finish({ kind: "done" });
+
+  buffer.push(event("late"));
+
+  assertEquals(terminals, []);
+  assertEquals(buffer.finished, true);
+  assertEquals(events.map((e) => e.event.kind), ["started"]);
+});

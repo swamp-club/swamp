@@ -1849,7 +1849,26 @@ for the next boot to replay. In-flight webhook (every in-flight
 run, up to `--max-concurrent-webhook-runs`), cron (every in-flight
 scheduled run, up to `--max-concurrent-scheduled-runs`) and API runs then drain
 together against one `--shutdown-drain-timeout` deadline (default 30 s,
-`runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
+`runShutdownDrain` in `src/serve/shutdown_drain.ts`). With a drain timeout
+above 0 the drain is a handover (swamp-club#4737): before it begins, serve
+fires its `ServeHandover` (`src/serve/serve_handover.ts`) and the dispatch
+service's `beginHandover`, so no run starts new work (a step, a guard, a job,
+a forEach iteration, a fan-out lane, a nested run's step) while the steps in
+flight finish. A workflow step still queued for a worker is withdrawn and goes
+back to pending; one a worker took runs on. Each run then parks at that step
+boundary: its record reads `interrupted` with reason `server_restart`, no step
+`unknown`, the parking process (instance, pid, host) and its stream's last
+event seq in its tags, and it is stamped `continuableSince`. A run suspended
+on a gate, signal or nested run is left suspended. A parked run's stream gets
+no terminal frame, so an attached `--server` client reattaches when the
+listener closes, and a `parked/<runId>` marker in the control-plane store
+lists it for a process that booted before this one exits. The next process
+continues it under the same id once the parker is gone, judged as queued-run
+replay judges an owner (pid on the same host, else heartbeat), at boot, on
+promotion, or on the continuation sweep that reads the markers. Until then
+`run.attach` for it answers `run.elsewhere` naming the new instance (after the
+same authorization as any attach), and the continued run's events start above
+the parked stream's last seq, so the client skips none. Whatever is still running at the deadline is
 aborted, webhook, cron and API runs at once, and all share 5 s more
 (`SHUTDOWN_ABORT_GRACE_MS`): the webhook and scheduler services' `stop()` wait
 no longer than that, and a run still going after it is reported anyway and

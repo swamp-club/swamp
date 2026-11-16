@@ -168,3 +168,22 @@ Deno.test("runRolloutLanes: a canary failure within the budget still pauses at t
   })));
   assertEquals(end, { kind: "paused", lane: "b" });
 });
+
+Deno.test("runRolloutLanes: a handover starts no further lane, lets the running one finish and ends handed over", async () => {
+  const handover = new AbortController();
+  const started: string[] = [];
+  const finished: string[] = [];
+  const { end } = await drain(runRolloutLanes(lanes({
+    handover: handover.signal,
+    // deno-lint-ignore require-yield
+    start: async function* (lane) {
+      started.push(lane);
+      handover.abort();
+      await Promise.resolve();
+      finished.push(lane);
+    },
+  })));
+  assertEquals(started, ["a"]);
+  assertEquals(finished, ["a"]);
+  assertEquals(end, { kind: "handed_over" });
+});

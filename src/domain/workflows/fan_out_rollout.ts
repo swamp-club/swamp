@@ -30,6 +30,8 @@ export interface RolloutLanes<T> {
   /** a positive limit caps the lanes in flight; otherwise there is none */
   readonly limit: number | undefined;
   readonly signal?: AbortSignal;
+  /** a planned restart: no further lane starts, running lanes finish */
+  readonly handover?: AbortSignal;
   start(lane: string): AsyncIterable<T>;
   /** read once the lane's stream has ended */
   failed(lane: string): boolean;
@@ -41,6 +43,7 @@ export interface RolloutLanes<T> {
 export type RolloutEnd =
   | { readonly kind: "complete" }
   | { readonly kind: "aborted" }
+  | { readonly kind: "handed_over" }
   | { readonly kind: "halted"; readonly held: string[] }
   | { readonly kind: "paused"; readonly lane: string };
 
@@ -96,7 +99,7 @@ export async function* runRolloutLanes<T>(
     while (true) {
       while (
         !halted && paused === undefined && laneError === undefined &&
-        !lanes.signal?.aborted && running < limit
+        !lanes.signal?.aborted && !lanes.handover?.aborted && running < limit
       ) {
         const decision = nextBatch(progress, lanes.rollout);
         if (decision.kind === "halt") {
@@ -124,7 +127,8 @@ export async function* runRolloutLanes<T>(
       }
       if (running === 0 && messages.length === 0) {
         const stopped = halted || paused !== undefined ||
-          laneError !== undefined || lanes.signal?.aborted;
+          laneError !== undefined || lanes.signal?.aborted ||
+          lanes.handover?.aborted;
         // a batch waits only on running lanes, so waiting with none would hang
         if (!stopped && nextBatch(progress, lanes.rollout).kind === "wait") {
           throw new Error("fan-out rollout is waiting with no lane running");
@@ -156,6 +160,7 @@ export async function* runRolloutLanes<T>(
   }
   if (laneError !== undefined) throw laneError.cause;
   if (lanes.signal?.aborted) return { kind: "aborted" };
+  if (lanes.handover?.aborted) return { kind: "handed_over" };
   if (paused !== undefined) return { kind: "paused", lane: paused };
   if (halted) {
     const held = lanes.rollout.batches.flat().filter((lane) =>

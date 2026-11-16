@@ -44,10 +44,17 @@ import {
   CANCELLED_STEP_ERROR,
   // deno-lint-ignore verbatim-module-syntax
   JobRun,
+  SERVER_RESTART_REASON,
   type StepRun,
   WorkflowRun,
   type WorkflowRunData,
 } from "./workflow_run.ts";
+import {
+  handedOver,
+  hasUnfinishedWork,
+  type RunHandover,
+  StepWithdrawnError,
+} from "./run_handover.ts";
 import type { RunStartKeyData } from "./run_start_key.ts";
 import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {
@@ -3252,6 +3259,7 @@ interface StepOptions {
   stepProvenance?: StepProvenanceOverlay;
   workflowProvenance?: ProvenanceMap;
   signal?: AbortSignal;
+  handover?: RunHandover;
   reportFilterOptions?: ReportFilterOptions;
   swampSha?: string;
   skipCheckNames?: string[];
@@ -3298,8 +3306,9 @@ async function* markStarted<T>(
   started: Set<string>,
   stream: AsyncIterable<T>,
   signal: AbortSignal | undefined,
+  handover?: RunHandover,
 ): AsyncGenerator<T> {
-  if (signal?.aborted) return;
+  if (signal?.aborted || handedOver(handover)) return;
   started.add(jobName);
   yield* stream;
 }
@@ -3539,6 +3548,7 @@ export class WorkflowExecutionService {
        */
       inputsProvenance?: ProvenanceMap;
       signal?: AbortSignal;
+      handover?: RunHandover;
       reportFilterOptions?: ReportFilterOptions;
       swampSha?: string;
       skipCheckNames?: string[];
@@ -4055,6 +4065,7 @@ export class WorkflowExecutionService {
         stepProvenance,
         workflowProvenance,
         signal: options?.signal,
+        handover: options?.handover,
         nestedRuns,
         inFlightMethodRuns,
         stepStopGraceMs: options?.stepStopGraceMs,
@@ -4127,6 +4138,7 @@ export class WorkflowExecutionService {
               jobStepOpts,
             ),
             jobStepOpts.signal,
+            jobStepOpts.handover,
           );
         });
         for await (
@@ -4222,6 +4234,13 @@ export class WorkflowExecutionService {
         cancelAndSettle(run, workflow, abortReason(options.signal));
         await this.saveRun(workflow.id, run);
         yield { kind: "cancelled" as const, run };
+        runSpan.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+
+      if (handedOver(options?.handover) && hasUnfinishedWork(run)) {
+        if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
+        yield await this.parkRun(workflow.id, run, options!.handover!);
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -4671,6 +4690,7 @@ export class WorkflowExecutionService {
     runId: string,
     options?: {
       signal?: AbortSignal;
+      handover?: RunHandover;
       runtimeTags?: Record<string, string>;
       reportFilterOptions?: ReportFilterOptions;
       swampSha?: string;
@@ -5010,6 +5030,7 @@ export class WorkflowExecutionService {
         stepProvenance,
         workflowProvenance,
         signal: options?.signal,
+        handover: options?.handover,
         nestedRuns,
         inFlightMethodRuns,
         stepStopGraceMs: options?.stepStopGraceMs,
@@ -5094,6 +5115,7 @@ export class WorkflowExecutionService {
               jobStepOpts,
             ),
             jobStepOpts.signal,
+            jobStepOpts.handover,
           );
         });
         for await (
@@ -5193,6 +5215,12 @@ export class WorkflowExecutionService {
         );
         await this.saveRun(workflow.id, existingRun);
         yield { kind: "cancelled" as const, run: existingRun };
+        return;
+      }
+
+      if (handedOver(options?.handover) && hasUnfinishedWork(existingRun)) {
+        if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
+        yield await this.parkRun(workflow.id, existingRun, options!.handover!);
         return;
       }
 
@@ -5675,6 +5703,8 @@ export class WorkflowExecutionService {
           break;
         }
       }
+      const held = run.status === "suspended" ||
+        (handedOver(options.handover) && !options.signal?.aborted);
 
       // The same for steps the abort left running in the job's last level,
       // which no later cleanup level marks.
@@ -5689,7 +5719,7 @@ export class WorkflowExecutionService {
       // stranded by a workflow change (for example, an iteration dropped from
       // a smaller forEach collection). Fail it rather than report the job
       // succeeded with the step still pending. Structural: no model fields.
-      if (run.status !== "suspended" && !options.signal?.aborted) {
+      if (!held && !options.signal?.aborted) {
         for (const stranded of jobRun.failStrandedResetSteps()) {
           jobFailed = true;
           yield {
@@ -5736,7 +5766,7 @@ export class WorkflowExecutionService {
 
       // when the run is suspended and the job has non-terminal steps, leave the
       // job running so resume picks it up; otherwise complete it
-      const suspendedWithPendingSteps = run.status === "suspended" &&
+      const suspendedWithPendingSteps = held &&
         jobRun.steps.some((s) =>
           s.status !== "succeeded" && s.status !== "failed" &&
           s.status !== "skipped" && s.status !== "unknown"
@@ -6093,6 +6123,7 @@ export class WorkflowExecutionService {
         failedBeforeStart: [...keptFailed, ...failedBeforeStart],
         limit: laneLimit,
         signal: options.signal,
+        handover: options.handover?.signal,
         start: (worker) => laneStreams.get(worker)!(),
         failed: (worker) => laneFailed(stepsOfLane(worker)),
         batchStarted: (batch, batchLanes) => ({
@@ -6218,6 +6249,11 @@ export class WorkflowExecutionService {
         }
         : {}),
     };
+    // the job stays open with its frozen plan; finished lanes are kept
+    if (undecided && handedOver(options.handover) && !options.signal?.aborted) {
+      jobSpan.setStatus({ code: SpanStatusCode.OK });
+      return;
+    }
     if (fanOutJobFailed(members, failedLanes)) {
       jobRun.fail();
       jobSpan.setStatus({ code: SpanStatusCode.ERROR, message: "Job failed" });
@@ -6528,6 +6564,16 @@ export class WorkflowExecutionService {
     // wait's deadline or open a second wait.
     const reenterSignalWait = stepRun.isSignalWait;
     const reenterWait = reenterNestedWait || reenterSignalWait;
+
+    // A handed-over run starts no new work, a guard (which may run a method)
+    // included; the step stays pending for the run's continuation.
+    if (
+      !reenterWait && stepRun.status === "pending" &&
+      handedOver(options.handover) && !options.signal?.aborted
+    ) {
+      stepSpan.end();
+      return;
+    }
 
     // Check if step's trigger condition is met. A forEach iteration checks its
     // template's dependsOn, so every iteration is gated as a plain step is.
@@ -7468,6 +7514,11 @@ export class WorkflowExecutionService {
         stepSpan.end();
         throw error;
       }
+      if (error instanceof StepWithdrawnError) {
+        stepRun.revertUnrecordedStart();
+        stepSpan.end();
+        return;
+      }
       const errorArtifacts = (error as Record<string, unknown>).dataArtifacts as
         | Array<{
           dataId: string;
@@ -8055,10 +8106,12 @@ export class WorkflowExecutionService {
       client: options.client,
       initiatedByUsername: options.initiatedByUsername,
       signal: options.signal,
+      handover: options.handover,
       secretRedactor: options.secretRedactor,
       sensitiveValues: options.sensitiveValues,
       stepStopGraceMs: options.stepStopGraceMs,
     });
+    let childParked: WorkflowRun | undefined;
     let childEnded = false;
     try {
       try {
@@ -8075,6 +8128,8 @@ export class WorkflowExecutionService {
             childRun = event.run;
           } else if (event.kind === "suspended") {
             childSuspended = event.run;
+          } else if (event.kind === "parked") {
+            childParked = event.run;
           } else if (event.kind === "step_failed" && allowFailure) {
             // When the parent step allows failure, mark child step_failed
             // events as allowed so they don't set jobFailed in the parent
@@ -8129,6 +8184,17 @@ export class WorkflowExecutionService {
         allowedFailure: allowFailure || undefined,
       };
       return;
+    }
+
+    // the parent parks with its child: the step waits on the child, which is
+    // continued first, and the parent follows once the child has settled
+    if (!childRun && childParked && stepRun.status === "running") {
+      stepRun.waitForNestedRun({
+        workflowId: childParked.workflowId,
+        workflowName: childParked.workflowName,
+        runId: childParked.id,
+      });
+      return undefined;
     }
 
     if (!childRun && childSuspended) {
@@ -8579,6 +8645,7 @@ export class WorkflowExecutionService {
       runId?: string;
       acknowledgeUnknown?: boolean;
       signal?: AbortSignal;
+      handover?: RunHandover;
       instanceId?: string;
       /**
        * serve continuing the run by itself: the interrupted record is claimed
@@ -8674,6 +8741,7 @@ export class WorkflowExecutionService {
     for await (
       const event of this.resume(workflowIdOrName, run.id, {
         signal: options?.signal,
+        handover: options?.handover,
         instanceId: options?.instanceId,
         continuation: automatic?.continuation,
         // compared under the claim before the reset; this copy now holds the
@@ -8870,6 +8938,19 @@ export class WorkflowExecutionService {
         this.#runSaveHorizon.landed(run, mark);
       })(),
     );
+  }
+
+  /** the walk stopped at a step boundary with work left for the continuation */
+  private async parkRun(
+    workflowId: WorkflowId,
+    run: WorkflowRun,
+    handover: RunHandover,
+  ): Promise<WorkflowExecutionEvent> {
+    run.park(handover.parker(run.id), new Date());
+    this.runTracker?.complete(run.id, "interrupted", SERVER_RESTART_REASON);
+    await this.saveRun(workflowId, run);
+    await handover.parked?.(run);
+    return { kind: "parked", run };
   }
 
   /** a step event a landed save already holds needs no save of its own */

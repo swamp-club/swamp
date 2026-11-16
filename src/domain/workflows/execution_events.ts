@@ -330,6 +330,8 @@ export type WorkflowExecutionEvent =
   }
   | { kind: "completed"; run: WorkflowRun }
   | { kind: "cancelled"; run: WorkflowRun; reason?: string }
+  /** a planned restart stopped the run at a step boundary; it is continued */
+  | { kind: "parked"; run: WorkflowRun }
   | {
     kind: "suspended";
     run: WorkflowRun;

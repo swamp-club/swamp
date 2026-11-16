@@ -88,6 +88,7 @@ import {
   WorkflowSuspendedError,
 } from "./execution_service.ts";
 import { computeStepsToReset } from "./resume_reset.ts";
+import { type RunHandover, StepWithdrawnError } from "./run_handover.ts";
 import { NestedRunPendingError } from "./nested_run_link.ts";
 import {
   acquireContinuation,
@@ -27323,5 +27324,633 @@ Deno.test("execute: an empty forEach reading a vault announces the authored expr
     assertEquals(skips.length, 1);
     assertEquals(skips[0].collectionExpression, authored);
     assertEquals(JSON.stringify(events).includes("present"), false);
+  });
+});
+
+class HandoverAtExecutor extends CountingStepExecutor {
+  readonly handover = new AbortController();
+  readonly abort = new AbortController();
+
+  constructor(
+    private readonly at: string,
+    private readonly thenAbort = false,
+  ) {
+    super();
+  }
+
+  override async execute(
+    step: Step,
+    ctx: StepExecutionContext,
+  ): Promise<unknown> {
+    const result = await super.execute(step, ctx);
+    if (`${ctx.jobName}/${ctx.stepName}` === this.at) {
+      this.handover.abort();
+      if (this.thenAbort) {
+        this.abort.abort(new Error("server shutdown"));
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+    }
+    return result;
+  }
+}
+
+function handoverFor(
+  signal: AbortSignal,
+  parked: string[] = [],
+): RunHandover {
+  return {
+    signal,
+    parker: () => ({ instanceId: "old", pid: 4242, host: "h", eventSeq: 7 }),
+    parked: (run) => {
+      parked.push(run.id);
+      return Promise.resolve();
+    },
+  };
+}
+
+async function runToEnd(
+  stream: AsyncIterable<WorkflowExecutionEvent>,
+): Promise<{ run: WorkflowRun; kinds: string[] }> {
+  let run: WorkflowRun | undefined;
+  const kinds: string[] = [];
+  for await (const event of stream) {
+    kinds.push(event.kind);
+    if (
+      event.kind === "parked" || event.kind === "completed" ||
+      event.kind === "cancelled" || event.kind === "suspended"
+    ) {
+      run = event.run;
+    }
+  }
+  assertExists(run, `no terminal event in ${kinds.join(",")}`);
+  return { run, kinds };
+}
+
+async function continueParked(
+  service: WorkflowExecutionService,
+  workflow: Workflow,
+  runId: string,
+): Promise<WorkflowRun> {
+  const holder = serveHolder("new");
+  service.continuationClaims = claimsFor(
+    new InMemoryContinuationClaimStore(),
+    holder,
+  );
+  const { run } = await runToEnd(
+    service.recover(workflow.name, {
+      runId,
+      instanceId: "new",
+      automatic: { holder, continuation: AUTOMATIC },
+    }),
+  );
+  return run;
+}
+
+Deno.test("handover: a run parks after its running step and starts no step after it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-seq-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", onStep("a", TriggerCondition.succeeded())),
+            modelStep("c", onStep("b", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("main/a");
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const parked: string[] = [];
+
+    const { run, kinds } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal, parked),
+      }),
+    );
+
+    assertEquals(kinds.at(-1), "parked");
+    assertEquals(run.status, "interrupted");
+    assert(run.isParked);
+    assertEquals(run.unknownSteps(), []);
+    assertExists(run.continuableSince);
+    assertEquals(run.parker, {
+      instanceId: "old",
+      pid: 4242,
+      host: "h",
+      eventSeq: 7,
+    });
+    const main = run.getJob("main")!;
+    assertEquals(main.getStep("a")!.status, "succeeded");
+    assertEquals(main.getStep("b")!.status, "pending");
+    assertEquals(main.getStep("c")!.status, "pending");
+    assertEquals(executor.count("main/b"), 0);
+    assertEquals(parked, [run.id]);
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assert(stored?.isParked, "the parked record was not saved");
+
+    const continued = await continueParked(service, workflow, run.id);
+
+    assertEquals(continued.id, run.id);
+    assertEquals(continued.status, "succeeded");
+    assertEquals(executor.count("main/a"), 1);
+    assertEquals(executor.count("main/b"), 1);
+    assertEquals(executor.count("main/c"), 1);
+    // a park cut nothing off, so it never counts toward the repeat cap
+    assertEquals(continued.autoContinuation?.count, 0);
+  });
+});
+
+Deno.test("handover: forEach iterations not yet started stay pending and each runs once after the continuation", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [modelStep("build", { forEach: EACH_TARGET, concurrency: 1 })],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("main/build-a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runToEnd(
+      service.run(workflow.name, {
+        inputs: { targets: ["a", "b", "c"] },
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assert(run.isParked);
+    const main = run.getJob("main")!;
+    assertEquals(main.status, "running");
+    assertEquals(main.getStep("build-a")!.status, "succeeded");
+    assertEquals(executor.count("main/build-b"), 0);
+    assertEquals(executor.count("main/build-c"), 0);
+
+    const continued = await continueParked(service, workflow, run.id);
+
+    assertEquals(continued.status, "succeeded");
+    for (const target of ["a", "b", "c"]) {
+      assertEquals(executor.count(`main/build-${target}`), 1, target);
+    }
+  });
+});
+
+Deno.test("handover: a job whose dependency finished after the handover is not started", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-jobs-wf",
+      jobs: [
+        Job.create({ name: "first", steps: [modelStep("a")] }),
+        Job.create({
+          name: "second",
+          steps: [modelStep("b")],
+          dependsOn: [{
+            job: "first",
+            condition: TriggerCondition.succeeded(),
+          }],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("first/a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assert(run.isParked);
+    assertEquals(run.getJob("first")!.status, "succeeded");
+    assertEquals(run.getJob("second")!.status, "pending");
+    assertEquals(executor.count("second/b"), 0);
+
+    const continued = await continueParked(service, workflow, run.id);
+    assertEquals(continued.status, "succeeded");
+    assertEquals(executor.count("first/a"), 1);
+    assertEquals(executor.count("second/b"), 1);
+  });
+});
+
+Deno.test("handover: a step guard is not evaluated once the handover fired", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-guard-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", {
+              ...onStep("a", TriggerCondition.succeeded()),
+              guard: "${{ false }}",
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("main/a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assert(run.isParked);
+    // a guard that ran would have skipped the step
+    assertEquals(run.getJob("main")!.getStep("b")!.status, "pending");
+  });
+});
+
+Deno.test("handover: an abort after the handover cancels the run as before, never parks it", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-abort-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", onStep("a", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("main/a", true);
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, kinds } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        signal: executor.abort.signal,
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assertEquals(kinds.includes("parked"), false);
+    assertEquals(run.status, "cancelled");
+    assertEquals(run.isParked, false);
+  });
+});
+
+Deno.test("handover: a run whose last step was running at the handover completes", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-last-wf",
+      jobs: [Job.create({ name: "main", steps: [modelStep("a")] })],
+    });
+    const executor = new HandoverAtExecutor("main/a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run, kinds } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assertEquals(kinds.includes("parked"), false);
+    assertEquals(run.status, "succeeded");
+  });
+});
+
+Deno.test("handover: a parent parks with its nested child and both finish once continued, child first", async () => {
+  await withTempDir(async (tempDir) => {
+    const child = Workflow.create({
+      name: "handover-child-wf",
+      jobs: [
+        Job.create({
+          name: "inner",
+          steps: [
+            modelStep("x"),
+            modelStep("y", onStep("x", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const parent = Workflow.create({
+      name: "handover-parent-wf",
+      jobs: [
+        Job.create({
+          name: "outer",
+          steps: [
+            Step.create({
+              name: "nested",
+              task: StepTask.workflow(child.name),
+            }),
+            modelStep("after", onStep("nested", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("inner/x");
+    const { workflowRepo, runRepo, service } = await setupRetry(
+      tempDir,
+      parent,
+      undefined,
+      executor,
+    );
+    await workflowRepo.save(child);
+
+    const { run } = await runToEnd(
+      service.run(parent.name, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assert(run.isParked, `parent is ${run.status}`);
+    const nestedStep = run.getJob("outer")!.getStep("nested")!;
+    // a nested wait records as waiting_approval, as a suspended child's does
+    assertEquals(nestedStep.status, "waiting_approval");
+    const childRef = nestedStep.nestedRun;
+    assert(childRef?.kind === "valid", "the nested step names no child run");
+    const childRun = await runRepo.findById(
+      child.id,
+      createWorkflowRunId(childRef.ref.runId),
+    );
+    assert(childRun?.isParked, `child is ${childRun?.status}`);
+    assertEquals(childRun.getJob("inner")!.getStep("y")!.status, "pending");
+
+    const childDone = await continueParked(service, child, childRun.id);
+    assertEquals(childDone.status, "succeeded");
+    const parentDone = await continueParked(service, parent, run.id);
+
+    assertEquals(parentDone.status, "succeeded");
+    assertEquals(executor.count("inner/x"), 1);
+    assertEquals(executor.count("inner/y"), 1);
+    assertEquals(executor.count("outer/after"), 1);
+  });
+});
+
+Deno.test("handover: steps a failed-run resume reset are kept pending, not failed as stranded, when the resume parks", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-retry-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("b"),
+            modelStep("c", onStep("b", TriggerCondition.completed())),
+          ],
+        }),
+      ],
+    });
+    const executor = new HandoverAtExecutor("main/b");
+    executor.failing.add("b");
+    executor.failing.add("c");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const { run: failed } = await runToEnd(
+      service.run(workflow.name, { instanceId: "old" }),
+    );
+    assertEquals(failed.status, "failed");
+    executor.failing.clear();
+
+    const { run } = await runToEnd(
+      service.resume(workflow.name, failed.id, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assert(run.isParked, `run is ${run.status}`);
+    assertEquals(run.getJob("main")!.getStep("b")!.status, "succeeded");
+    assertEquals(run.getJob("main")!.getStep("c")!.status, "pending");
+  });
+});
+
+Deno.test("handover: a continued run parks again at the next restart and finishes on the second continuation", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-twice-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("b", onStep("a", TriggerCondition.succeeded())),
+            modelStep("c", onStep("b", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const first = new HandoverAtExecutor("main/a");
+    const { service } = await setupRetry(tempDir, workflow, undefined, first);
+    const { run } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        handover: handoverFor(first.handover.signal),
+      }),
+    );
+    assert(run.isParked);
+
+    const second = new AbortController();
+    const holder = serveHolder("middle");
+    service.continuationClaims = claimsFor(
+      new InMemoryContinuationClaimStore(),
+      holder,
+    );
+    const handover: RunHandover = {
+      signal: second.signal,
+      parker: () => ({
+        instanceId: "middle",
+        pid: 99,
+        host: "h",
+        eventSeq: 12,
+      }),
+    };
+    let fired = false;
+    const parkedAgain = await runToEnd(
+      (async function* () {
+        for await (
+          const event of service.recover(workflow.name, {
+            runId: run.id,
+            instanceId: "middle",
+            automatic: { holder, continuation: AUTOMATIC },
+            handover,
+          })
+        ) {
+          // the restart comes while b runs, so c never starts
+          if (event.kind === "step_started" && event.stepId === "b" && !fired) {
+            fired = true;
+            second.abort();
+          }
+          yield event;
+        }
+      })(),
+    );
+
+    assert(parkedAgain.run.isParked, `run is ${parkedAgain.run.status}`);
+    assertEquals(parkedAgain.run.parker?.instanceId, "middle");
+    assertEquals(parkedAgain.run.parker?.eventSeq, 12);
+    assertEquals(first.count("main/c"), 0);
+
+    const done = await continueParked(service, workflow, run.id);
+    assertEquals(done.status, "succeeded");
+    for (const step of ["a", "b", "c"]) {
+      assertEquals(first.count(`main/${step}`), 1, step);
+    }
+  });
+});
+
+Deno.test("handover: a fan-out job parks with its frozen plan, and the continuation runs only the lanes that had not started", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = withFanOutJob(
+      Workflow.create({
+        name: "handover-fan-wf",
+        jobs: [
+          Job.create({
+            name: "deploy",
+            concurrency: 1,
+            steps: [modelStep("push")],
+          }),
+        ],
+      }),
+      "deploy",
+    );
+    const executor = new HandoverAtExecutor("deploy/push[w-a]");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const pool = [poolWorker("w-a"), poolWorker("w-b"), poolWorker("w-c")];
+
+    const { run } = await withPoolReader(pool, () =>
+      runToEnd(
+        service.run(workflow.name, {
+          instanceId: "old",
+          handover: handoverFor(executor.handover.signal),
+        }),
+      ));
+
+    assert(run.isParked, `run is ${run.status}`);
+    const deploy = run.getJob("deploy")!;
+    assertEquals(deploy.status, "running");
+    assertEquals(
+      deploy.steps.map((step) => [step.stepName, step.status]),
+      [
+        ["push[w-a]", "succeeded"],
+        ["push[w-b]", "pending"],
+        ["push[w-c]", "pending"],
+      ],
+    );
+    const plan = deploy.fanOutPlan?.lanes.map((lane) => lane.name);
+
+    const done = await withPoolReader(
+      pool,
+      () => continueParked(service, workflow, run.id),
+    );
+
+    assertEquals(done.status, "succeeded");
+    assertEquals(
+      done.getJob("deploy")!.fanOutPlan?.lanes.map((l) => l.name),
+      plan,
+    );
+    for (const worker of ["w-a", "w-b", "w-c"]) {
+      assertEquals(executor.count(`deploy/push[${worker}]`), 1, worker);
+    }
+  });
+});
+
+class WithdrawingExecutor extends CountingStepExecutor {
+  readonly handover = new AbortController();
+
+  override execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    // the dispatch a worker never took is withdrawn as the restart begins
+    if (ctx.stepName === "remote" && !this.handover.signal.aborted) {
+      this.handover.abort();
+      return Promise.reject(new StepWithdrawnError());
+    }
+    return super.execute(step, ctx);
+  }
+}
+
+Deno.test("handover: a step withdrawn before a worker took it goes back to pending and runs once after the continuation", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "handover-withdraw-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("remote"),
+            modelStep("after", onStep("remote", TriggerCondition.succeeded())),
+          ],
+        }),
+      ],
+    });
+    const executor = new WithdrawingExecutor();
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    const { run } = await runToEnd(
+      service.run(workflow.name, {
+        instanceId: "old",
+        handover: handoverFor(executor.handover.signal),
+      }),
+    );
+
+    assert(run.isParked, `run is ${run.status}`);
+    const remote = run.getJob("main")!.getStep("remote")!;
+    assertEquals(remote.status, "pending");
+    assertEquals(remote.startedAt, undefined);
+
+    const done = await continueParked(service, workflow, run.id);
+    assertEquals(done.status, "succeeded");
+    assertEquals(executor.count("main/remote"), 1);
+    assertEquals(executor.count("main/after"), 1);
   });
 });

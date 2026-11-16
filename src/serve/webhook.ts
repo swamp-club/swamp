@@ -612,6 +612,8 @@ export interface WebhookServiceDeps {
    */
   authorizeRun?: WebhookRunAuthorizer;
   executeWorkflow?: typeof executeWorkflowWithLocks;
+  /** a planned restart parks the webhook's runs between steps */
+  handover?: import("./serve_handover.ts").ServeHandover;
   /**
    * builds, per run, the vault scope of the webhook principal; when absent runs
    * are unscoped
@@ -1535,6 +1537,7 @@ export class WebhookService {
       let completedRun: WorkflowRunView | undefined;
       let streamError: string | undefined;
       let suspended = false;
+      let parked = false;
 
       const execute = this.deps.executeWorkflow ?? executeWorkflowWithLocks;
       await execute(
@@ -1548,6 +1551,7 @@ export class WebhookService {
           tracestate,
           instanceId: this.deps.instanceId,
           initiatedBy: this.deps.initiatedBy,
+          handover: this.deps.handover?.forRun(),
           ...(entry.receiptId !== undefined ? { runId: entry.receiptId } : {}),
         },
         controller.signal,
@@ -1604,6 +1608,9 @@ export class WebhookService {
           if (event.kind === "suspended") {
             suspended = true;
           }
+          if (event.kind === "parked") {
+            parked = true;
+          }
           if (event.kind === "error") {
             streamError = event.error.message;
           }
@@ -1631,6 +1638,14 @@ export class WebhookService {
           workflowName: workflowIdOrName,
           runId,
         });
+      } else if (parked) {
+        // the next serve process continues it; it has neither succeeded nor
+        // failed, so it adds no health record here
+        observation.end("ok");
+        logger.info(
+          "Webhook workflow {workflow} parked for the restart (run: {runId})",
+          { workflow: workflowIdOrName, runId },
+        );
       } else if (suspended) {
         // A gated run has not finished: neither terminal event would be true,
         // so it contributes no health record until it resumes. Resumption

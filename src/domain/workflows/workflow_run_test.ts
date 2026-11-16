@@ -18,11 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { SENSITIVE_FORMAT_VERSION } from "../secrets/persisted_sensitive_form.ts";
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   CANCELLED_STEP_ERROR,
   isGuardedRunRecord,
   JobRun,
+  SERVER_RESTART_REASON,
   StepRun,
   StepSkipReasonSchema,
   STRANDED_STEP_ERROR,
@@ -4668,4 +4669,93 @@ Deno.test("WorkflowRun.attachSensitiveValues: a stored path never reaches a prot
   const values = new RunSensitiveValues();
   run.attachSensitiveValues(values);
   assertEquals(values.maskedForDisplay("typed-in-token"), "typed-in-token");
+});
+
+function parkableRun(): WorkflowRun {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(Deno.pid, "serve-a");
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  return run;
+}
+
+const PARKER = { instanceId: "serve-a", pid: 4242, host: "h", eventSeq: 9 };
+
+Deno.test("WorkflowRun.park: stops a run between steps with nothing unknown and stamps it continuable", () => {
+  const run = parkableRun();
+  const at = new Date("2026-11-16T12:00:00Z");
+
+  run.park(PARKER, at);
+
+  assertEquals(run.status, "interrupted");
+  assertEquals(run.tags["interrupt_reason"], SERVER_RESTART_REASON);
+  assertEquals(run.unknownSteps(), []);
+  assertEquals(run.jobs[0].status, "running");
+  assertEquals(run.jobs[1].status, "pending");
+  assertEquals(run.continuableSince, at);
+  assert(run.isParked);
+  assertEquals(run.parker, PARKER);
+});
+
+Deno.test("WorkflowRun.park: refuses a run with a step still running", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(Deno.pid, "serve-a");
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+
+  assertThrows(() => run.park(PARKER, new Date()), Error, "is running");
+  assertEquals(run.status, "running");
+});
+
+Deno.test("WorkflowRun.park: refuses a run that is not running", () => {
+  const run = parkableRun();
+  run.suspend();
+
+  assertThrows(() => run.park(PARKER, new Date()), Error, "suspended");
+});
+
+Deno.test("WorkflowRun.isParked: a run interrupted with a step cut off is not parked", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(Deno.pid, "serve-a");
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.interrupt(SERVER_RESTART_REASON);
+
+  assertEquals(run.isParked, false);
+  assertEquals(run.parker, undefined);
+});
+
+Deno.test("WorkflowRun.park: the parked record round-trips, parker included", () => {
+  const run = parkableRun();
+  run.park(PARKER, new Date());
+
+  const restored = WorkflowRun.fromData(run.toData());
+
+  assert(restored.isParked);
+  assertEquals(restored.parker, PARKER);
+});
+
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: continuing a parked run leaves the repeat count as it was", () => {
+  const run = parkableRun();
+  run.park(PARKER, new Date());
+
+  run.resetUnknownStepsForRecovery({ holder: "serve:b", at: new Date() });
+
+  assertEquals(run.autoContinuation?.count, 0);
+  assertEquals(run.autoContinuation?.resetSteps, []);
+  assertEquals(run.status, "suspended");
+});
+
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: an interruption that cut a step off still counts", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start(Deno.pid, "serve-a");
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.interrupt("server_shutdown");
+  run.markContinuable(new Date());
+
+  run.resetUnknownStepsForRecovery({ holder: "serve:b", at: new Date() });
+
+  assertEquals(run.autoContinuation?.count, 1);
 });

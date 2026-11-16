@@ -329,3 +329,23 @@ Deno.test("failureTarget: the named step, else the first failure", () => {
   });
   assertEquals(failureTarget({ status: "succeeded", jobs: [] }), null);
 });
+
+Deno.test("buildRunGraph: a parked run's unstarted work shows pending, not stopped", () => {
+  const parked: RunLike = {
+    status: "interrupted",
+    parked: true,
+    jobs: [
+      { name: "deploy", status: "running", steps: [] },
+      { name: "verify", status: "pending", steps: [] },
+    ],
+  };
+
+  const graph = buildRunGraph(parked, null);
+
+  assertEquals(graph.jobs.map((j) => j.status), ["running", "pending"]);
+  const interrupted = buildRunGraph({ ...parked, parked: undefined }, null);
+  assertEquals(interrupted.jobs.map((j) => j.status), [
+    "cancelled",
+    "cancelled",
+  ]);
+});

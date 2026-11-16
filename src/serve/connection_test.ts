@@ -70,6 +70,7 @@ import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { Job } from "../domain/workflows/job.ts";
 import { Step } from "../domain/workflows/step.ts";
 import { StepTask } from "../domain/workflows/step_task.ts";
+import { ServeHandover } from "./serve_handover.ts";
 import { Definition } from "../domain/definitions/definition.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import {
@@ -5759,4 +5760,89 @@ Deno.test("validateServerRequest: data.query rejects a bad sort direction, a lon
     });
     assertEquals(typeof result, "string", JSON.stringify(extra).slice(0, 80));
   }
+});
+
+async function parkedAttachCtx(
+  grants: Grant[],
+  park: boolean,
+): Promise<ConnectionContext & Disposable> {
+  const workflow = Workflow.create({
+    name: "deploy-pipeline",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({ name: "a", task: StepTask.model("m", "run") }),
+          Step.create({ name: "b", task: StepTask.model("m", "run") }),
+        ],
+      }),
+    ],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start(4242, "instance-old");
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  run.jobs[0].steps[0].succeed();
+  if (park) run.park({ instanceId: "instance-old", pid: 4242 }, new Date());
+  const markers = createMockControlPlaneStore();
+  const handover = new ServeHandover("instance-new");
+  handover.useMarkerStore(markers);
+  await handover.forRun().parked!(run);
+  const ctx = makeCtx(modeTokenConfig, grants);
+  return {
+    ...ctx,
+    instanceId: "instance-new",
+    handover,
+    repoContext: {
+      ...stubRepoContext,
+      workflowRunRepo: {
+        findById: (_workflowId: unknown, runId: string) =>
+          Promise.resolve(runId === run.id ? run : null),
+      },
+    } as unknown as ConnectionContext["repoContext"],
+    runId: run.id,
+  } as ConnectionContext & Disposable & { runId: string };
+}
+
+Deno.test("handleRunAttach: a run parked for a restart answers run.elsewhere naming this instance until its continuation registers", async () => {
+  using ctx = await parkedAttachCtx([runAttachGrant], true);
+  const runId = (ctx as unknown as { runId: string }).runId;
+
+  const sent = await sendAndCollect(ctx, "run.attach", "attach-parked", {
+    runId,
+    afterSeq: 40,
+  });
+
+  assertEquals(sent[0].type, "run.elsewhere");
+  assertEquals(sent[0].payload, { runId, instanceId: "instance-new" });
+});
+
+Deno.test("handleRunAttach: a parked run is refused to a principal without run, without saying it exists", async () => {
+  using ctx = await parkedAttachCtx([
+    makeGrant({
+      subject: { kind: "user", name: "adam" },
+      actions: ["read"],
+      resource: { kind: "workflow", pattern: "*" },
+    }),
+  ], true);
+  const runId = (ctx as unknown as { runId: string }).runId;
+
+  const sent = await sendAndCollect(ctx, "run.attach", "attach-parked-no", {
+    runId,
+  });
+
+  assertEquals(unauthorizedErrorsOf(sent).length, 1);
+  assertEquals(sent.some((frame) => frame.type === "run.elsewhere"), false);
+});
+
+Deno.test("handleRunAttach: a marker whose run no longer reads parked is answered not_found", async () => {
+  using ctx = await parkedAttachCtx([runAttachGrant], false);
+  const runId = (ctx as unknown as { runId: string }).runId;
+
+  const sent = await sendAndCollect(ctx, "run.attach", "attach-not-parked", {
+    runId,
+  });
+
+  assertEquals(sent[0].type, "error");
+  assertEquals((sent[0].error as Record<string, unknown>).code, "not_found");
 });

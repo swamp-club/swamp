@@ -4842,6 +4842,26 @@ principal or serve instance id). A run left interrupted by an older swamp, or
 one only a local CLI ever drove, carries no stamp and is never continued. A
 serve-started run a local CLI resumed keeps its triggering principal, so it is
 stamped and judged like any other.
+
+**Parked runs (swamp-club#4737):** a planned serve restart parks its runs
+rather than cutting them off. The run's handover (`RunHandover`,
+`src/domain/workflows/run_handover.ts`) stops the engine starting new work,
+the steps in flight finish, and `WorkflowRun.park` records the run
+`interrupted` with reason `server_restart` (`SERVER_RESTART_REASON`) at that
+step boundary: no step `unknown`, pending work left pending, open jobs left
+open as a suspension leaves them. A park refuses a run with a step still
+running. `isParked` reads such a run, and `parker` names the process that
+parked it and the last event seq it streamed (in the run's tags, so an older
+binary reads the record unchanged). A parent waiting on a nested run parks
+with its child, the step left waiting on the child; the child is continued
+first and the parent follows once it has settled (`nested_run_unsettled` is
+retried). A fan-out job parks with its frozen plan, its finished lanes kept
+and its unstarted lanes pending. A parked run has nothing to re-run, so the
+verdict below continues it unless `autoContinue` is off, the definition or
+fan-out plan changed, or no pool is available. Its continuation does not count
+toward `continued_too_often`. Serve continues it only once the process that
+parked it has gone. A step still running when the drain timeout ends is
+interrupted as before and judged by the rule below.
 `decideAutoContinuation` (`src/domain/workflows/auto_continuation.ts`) judges
 each candidate and continues it, or refuses with one of these reasons:
 

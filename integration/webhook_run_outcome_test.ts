@@ -35,6 +35,7 @@ import {
 } from "../src/serve/webhook.ts";
 import { hmacSha256Hex } from "../src/serve/webhook_verifiers.ts";
 import { createTriggerAuthorizer } from "../src/serve/trigger_authorizer.ts";
+import { ServeHandover } from "../src/serve/serve_handover.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -268,5 +269,53 @@ Deno.test({
 
     assertEquals(records[0].resourceName, "gated-by-id");
     assertEquals(records[0].resourceId, workflow.id);
+  },
+});
+
+Deno.test({
+  name: "WebhookService: a run parked for a planned restart is not reported " +
+    "as completed or failed, and is left for the next process to continue",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // the restart has begun, so the run starts no step and parks at once
+    const handover = new ServeHandover("serve-a");
+    handover.begin();
+    const events = await runWebhook(
+      "/hooks/parked:parked-wf:shhh",
+      "/hooks/parked",
+      Workflow.create({
+        name: "parked-wf",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "echo",
+                task: StepTask.directExecution(
+                  "command/shell",
+                  "echo-shell",
+                  "execute",
+                  { run: "echo hi" },
+                ),
+              }),
+            ],
+          }),
+        ],
+      }),
+      async (_evts, repoContext) =>
+        (await repoContext.workflowRunRepo.findAllGlobal()).some(({ run }) =>
+          run.isParked
+        ),
+      () => ({ handover, instanceId: "serve-a" }),
+    );
+
+    assertEquals(
+      events.filter((e) =>
+        e.kind === "webhook_completed" || e.kind === "webhook_failed"
+      ),
+      [],
+      `parked run should emit no terminal event, got ${JSON.stringify(events)}`,
+    );
   },
 });
