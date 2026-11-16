@@ -712,6 +712,7 @@ Deno.test({
         ctx.definitionRepo,
         autoDefRepo,
         ctx.unifiedDataRepo,
+        ctx.eventBus,
       );
       const poller = new GrantsDirectoryPoller({
         grantsDir,

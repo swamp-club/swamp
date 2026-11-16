@@ -25,7 +25,10 @@ import {
   createFileGrantStore,
   type FileGrantStore,
   GRANT_DATA_NAME,
+  type GrantWrittenHook,
 } from "../domain/access/grant_file_reconciler.ts";
+import type { EventBus } from "../domain/events/event_bus.ts";
+import { createModelUpdated } from "../domain/events/types.ts";
 import type {
   DatastoreSyncService,
   MarkDirtyHook,
@@ -56,8 +59,17 @@ export function createGrantWriteTracking(
   readRepo: DefinitionRepository,
   writeRepo: DefinitionRepository,
   dataRepo: FileSystemUnifiedDataRepository,
+  eventBus: EventBus,
 ): GrantWriteTracking {
   let writtenPaths: string[] = [];
+  // the event names the version so serve's access poller reads this write as
+  // its own, not as a peer change
+  const onGrantWritten: GrantWrittenHook = (modelId, instanceName, written) =>
+    eventBus.publish(
+      createModelUpdated(GRANT_MODEL_TYPE.normalized, modelId, instanceName, [
+        written,
+      ]),
+    );
   const recordPath = (path: string) => writtenPaths.push(path);
   const recordGrantData = (modelId: string) =>
     recordPath(
@@ -69,12 +81,14 @@ export function createGrantWriteTracking(
     writeRepo,
     dataRepo,
     recordPath,
+    onGrantWritten,
   );
   const adminStore = createAdminGrantStore(
     readRepo,
     writeRepo,
     dataRepo,
     recordPath,
+    onGrantWritten,
   );
 
   return {

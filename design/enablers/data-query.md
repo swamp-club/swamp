@@ -736,6 +736,14 @@ falls back to its highest version, so every version is indexed there.
 
 Full backfill upserts instead of replacing. It commits through
 `bulkUpsert()`, which uses `INSERT OR REPLACE` with no preceding `DELETE`.
+The rows are gathered first, then committed in chunks of about 1000 rows cut
+only between data names (latest flags are derived per name), each its own
+transaction, with a yield to the event loop between chunks; the latest-flag
+pass (`enforceUniqueLatestInChunks`) runs the same way. The catalog is marked
+populated only after the last chunk, so a part-rebuilt catalog still reads as
+unpopulated. Every `DataQueryService` on one catalog and data repository shares
+the backfill in flight, so the queries that find the catalog unpopulated walk
+the disk once between them (swamp-club#4767).
 Rows the walk finds are added or updated; rows it cannot see are left alone.
 This is critical for `hydrationStrategy: lazy`, where the local cache is
 incomplete on purpose: data lives in the remote datastore and is fetched on
@@ -862,7 +870,10 @@ The catalog is local-only. It lives in the local cache directory and is
 excluded from sync, so it is never pushed to or pulled from S3.
 
 After a `pullChanged()` that reports work, core sets `synced = true` and the
-caller invalidates the catalog (`catalogStore.invalidate()`). The next query
+caller invalidates the catalog (`catalogStore.invalidate()`). The access,
+integration and delegation pollers are the exception: they pull only their own
+record types, so they refresh those types' rows (`DataQueryService.refreshTypes`,
+additive like a backfill) and keep the catalog populated. The next query
 then backfills from the freshly pulled cache (`src/cli/repo_context.ts`
 `acquireModelLocks`). There is no incremental row-level update from a pull
 diff: `pullChanged()` returns `Promise<number | void>`, not a structured diff.

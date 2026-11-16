@@ -34,6 +34,12 @@ import {
 } from "../src/serve/delegation_store.ts";
 import { endLocally } from "../src/serve/delegation_link_service.ts";
 import { withServeRepo } from "./serve_request_harness.ts";
+import { DELEGATION_DATA_SUBDIRS } from "../src/serve/access_data_poller.ts";
+import { FilesystemAccessDataChangeSource } from "../src/serve/filesystem_access_data_change_source.ts";
+import {
+  DELEGATION_DATA_NAME,
+  DELEGATION_MODEL_TYPE,
+} from "../src/domain/models/access/delegation_model.ts";
 
 await initializeLogging({});
 
@@ -220,6 +226,57 @@ Deno.test("DelegationStore: a record this build can't read is refused and its lo
       assertEquals(await store.readOrNull(id), null);
     } finally {
       repo.repoContext.unifiedDataRepo.getContent = original;
+    }
+  });
+});
+
+Deno.test("DelegationStore: serve's own delegation write is not read as a peer change by its delegation poller", async () => {
+  await withServeRepo(async (repo) => {
+    const changeSource = new FilesystemAccessDataChangeSource({
+      dirs: DELEGATION_DATA_SUBDIRS.map((subdir) => {
+        const [root, ...rest] = subdir.split("/");
+        return repo.datastoreResolver.resolvePath(root, ...rest);
+      }),
+      eventBus: repo.repoContext.eventBus,
+      dataNames: [DELEGATION_DATA_NAME],
+      modelTypes: [DELEGATION_MODEL_TYPE.normalized],
+    });
+    try {
+      await changeSource.prime();
+      const store = new DelegationStore({
+        repoDir: repo.repoDir,
+        repoContext: repo.repoContext,
+        lock: () =>
+          Promise.resolve({
+            synced: false,
+            push: () => Promise.resolve(),
+            release: () => Promise.resolve(),
+          }),
+        directory: { reload: () => Promise.resolve() },
+      });
+      const now = Date.now();
+      await store.create(startDelegation({
+        id: crypto.randomUUID(),
+        integrationId: "slack-bot",
+        external: {
+          platform: "slack",
+          teamId: "T",
+          userId: "U",
+          display: "Pat",
+          workspace: "W",
+        },
+        ceiling: Ceiling.parse({ version: 1, ceiling: [] }),
+        ceilingDigest: "sha256:x",
+        redeemHash: `sha256:${"a".repeat(64)}`,
+        requestId: "r",
+        digest: "d",
+        consentExpiresAt: new Date(now + 600_000).toISOString(),
+        pollIntervalSeconds: 5,
+      }, now));
+
+      assertEquals(await changeSource.detect(), 0);
+    } finally {
+      changeSource.dispose();
     }
   });
 });

@@ -43,6 +43,9 @@ import {
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
+import type { DataQueryService } from "../domain/data/data_query_service.ts";
+import type { ModelType } from "../domain/models/model_type.ts";
+import type { CatalogStore } from "../infrastructure/persistence/catalog_store.ts";
 
 const logger = getLogger(["swamp", "serve", "access-data-poller"]);
 
@@ -67,6 +70,31 @@ export const DELEGATION_DATA_SUBDIRS: readonly string[] = [
   "data/@swamp/delegation",
 ];
 
+/**
+ * refreshes only the polled types' catalog rows; a failed refresh falls back
+ * to a full rebuild, so the change still reaches the catalog and the policy
+ * reload is never held up
+ */
+export function typeScopedCatalogRefresh(
+  query: Pick<DataQueryService, "refreshTypes">,
+  catalog: Pick<CatalogStore, "invalidate">,
+  types: readonly ModelType[],
+): () => Promise<void> {
+  return async () => {
+    try {
+      await query.refreshTypes(types);
+    } catch (error) {
+      logger
+        .warn`Refreshing the catalog rows of ${
+        types.map((type) => type.normalized).join(", ")
+      } failed, rebuilding the whole catalog on the next query: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      catalog.invalidate();
+    }
+  };
+}
+
 /** what a poller keeps current: the policy snapshot, or the integration list */
 export interface AccessDataReloadTarget {
   load(): Promise<unknown>;
@@ -80,7 +108,8 @@ interface AccessDataPollerCommonOptions {
   reloading?: string;
   /** a workflow step's own write shows as no change here, so don't wait for one */
   reloadEveryCycle?: boolean;
-  catalogInvalidate: () => void;
+  /** brings the catalog rows of the polled records up to date after a change */
+  catalogRefresh: () => Promise<void> | void;
   pollIntervalMs?: number;
 }
 
@@ -103,7 +132,7 @@ export class AccessDataPoller {
   readonly #subdirs: readonly string[];
   readonly #reloadEveryCycle: boolean;
   readonly #reloading: string;
-  readonly #catalogInvalidate: () => void;
+  readonly #catalogRefresh: () => Promise<void> | void;
   #pollIntervalMs: number;
   readonly #namespace?: string;
   #gateTiming: PollerGateTiming;
@@ -127,7 +156,7 @@ export class AccessDataPoller {
     this.#subdirs = options.subdirs ?? ACCESS_DATA_SUBDIRS;
     this.#reloadEveryCycle = options.reloadEveryCycle ?? false;
     this.#reloading = options.reloading ?? "policy snapshot";
-    this.#catalogInvalidate = options.catalogInvalidate;
+    this.#catalogRefresh = options.catalogRefresh;
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS;
     this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);
@@ -214,11 +243,13 @@ export class AccessDataPoller {
           logger
             .info`Access data poller: ${count} file(s) updated, reloading the ${this.#reloading}`;
         }
+        // the phase keeps its name so existing trace queries still find it
         await cycle.run(() =>
-          observeDiagnosticPhase("catalog_invalidate", {}, () => {
-            this.#catalogInvalidate();
-            return Promise.resolve();
-          })
+          observeDiagnosticPhase(
+            "catalog_invalidate",
+            {},
+            async () => await this.#catalogRefresh(),
+          )
         );
         this.#needsReload = true;
       }
@@ -336,7 +367,7 @@ export async function createAccessDataPoller(
     subdirs: options.subdirs,
     reloadEveryCycle: options.reloadEveryCycle,
     reloading: options.reloading,
-    catalogInvalidate: options.catalogInvalidate,
+    catalogRefresh: options.catalogRefresh,
     pollIntervalMs: options.pollIntervalMs,
   };
   if (options.syncService) {

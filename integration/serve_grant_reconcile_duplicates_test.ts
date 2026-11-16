@@ -94,6 +94,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
         repoContext.markDirty,
       ),
       repoContext.unifiedDataRepo,
+      repoContext.eventBus,
     );
     const loader = new PolicySnapshotLoader(
       repoContext.unifiedDataRepo,

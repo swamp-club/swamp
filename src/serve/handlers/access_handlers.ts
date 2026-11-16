@@ -65,12 +65,8 @@ import {
   resolveGrantFileUsernames,
   unresolvableUsernames,
 } from "../../domain/access/grant_username_resolution.ts";
-import {
-  createFileGrantStore,
-  type FileGrantStore,
-  GRANT_DATA_NAME,
-  reconcileAllFileGrants,
-} from "../../domain/access/grant_file_reconciler.ts";
+import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
+import { createGrantWriteTracking } from "../grant_write_tracking.ts";
 import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { stageWritesThenPush } from "../stage_writes_then_push.ts";
@@ -936,34 +932,21 @@ export async function handleAccessReload(
     // re-mark written paths just before the push: repositories mark each path
     // before writing it, and a push landing in between takes the path as a
     // delete and clears the mark. The sync gate keeps run pushes out.
-    const writtenPaths: string[] = [];
-    const store = createFileGrantStore(
+    const grantWrites = createGrantWriteTracking(
       ctx.repoContext.definitionRepo,
       autoDefRepo,
       ctx.repoContext.unifiedDataRepo,
-      (path) => writtenPaths.push(path),
+      ctx.repoContext.eventBus,
     );
-    const fileGrantStore: FileGrantStore = {
-      ...store,
-      async writeGrant(modelId, instanceName, grant) {
-        await store.writeGrant(modelId, instanceName, grant);
-        writtenPaths.push(
-          ctx.repoContext.unifiedDataRepo.getDataNameDir(
-            GRANT_MODEL_TYPE,
-            modelId,
-            GRANT_DATA_NAME,
-          ),
-        );
-      },
-    };
 
     // reconcile writes run in a root unit with no push so their marks stage
     // into it; the push below opens its own root once this one has ended
     const reconcileResult = await runInRootUnitOfWork(
       ctx.repoContext,
       { flush: undefined },
-      () => reconcileAllFileGrants(validEntries, fileGrantStore),
+      () => reconcileAllFileGrants(validEntries, grantWrites.fileGrantStore),
     );
+    const writtenPaths = grantWrites.takeWrittenPaths();
 
     const fileResultList: AccessReloadFileResult[] = [];
     for (const [filename, perFile] of reconcileResult.perFile) {

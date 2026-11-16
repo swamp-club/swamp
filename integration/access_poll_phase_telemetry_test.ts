@@ -280,7 +280,7 @@ async function localPoller(pair: Pair): Promise<AccessDataPoller> {
   const poller = await createAccessDataPoller({
     pollIntervalMs: POLL_INTERVAL_MS,
     policySnapshotLoader: pair.loader,
-    catalogInvalidate: () => pair.reader.repoContext.catalogStore.invalidate(),
+    catalogRefresh: () => pair.reader.repoContext.catalogStore.invalidate(),
     datastoreConfig: pair.reader.datastoreConfig,
     datastoreEngine: resolverEngine(pair.reader.datastoreResolver),
     datastoreResolver: pair.reader.datastoreResolver,
@@ -323,7 +323,7 @@ function syncPoller(
     syncGate: gate,
     pollIntervalMs: POLL_INTERVAL_MS,
     policySnapshotLoader: pair.loader,
-    catalogInvalidate: () => pair.reader.repoContext.catalogStore.invalidate(),
+    catalogRefresh: () => pair.reader.repoContext.catalogStore.invalidate(),
   });
 }
 

@@ -190,6 +190,10 @@ function rowKey(row: {
   return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}\0${row.version}`;
 }
 
+function groupKeyOf(row: CatalogDataName): string {
+  return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}`;
+}
+
 export interface CatalogRowKey {
   readonly namespace: string;
   readonly type_normalized: string;
@@ -551,6 +555,7 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS ${GROUP_STEP_INDEX} ON catalog(namespace, type_normalized, model_id, data_name, step_name, version);
       CREATE INDEX IF NOT EXISTS ${STEP_LATEST_FLAG_INDEX} ON catalog(namespace, type_normalized, model_id, data_name, is_step_latest, version);
       CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup ON catalog(model_name, data_name, is_latest, namespace);
+      CREATE INDEX IF NOT EXISTS idx_catalog_pending ON catalog(namespace, type_normalized, model_id, data_name, version) WHERE is_pending = 1;
 
       CREATE TABLE IF NOT EXISTS catalog_renames (
         namespace       TEXT NOT NULL DEFAULT '',
@@ -2308,6 +2313,80 @@ export class CatalogStore {
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
+    }
+  }
+
+  /**
+   * enforceUniqueLatest in transactions cut between data names with a yield
+   * between them, so a large catalog never holds the event loop for one pass
+   */
+  async enforceUniqueLatestInChunks(
+    computeFlags: (rows: CatalogRow[]) => void,
+    options: { types?: readonly string[]; chunkRows?: number } = {},
+  ): Promise<number> {
+    const chunkRows = options.chunkRows ?? ITERATE_PAGE_SIZE;
+    const types = options.types ?? [];
+    const typeWhere = options.types === undefined
+      ? ""
+      : ` AND type_normalized IN (${types.map(() => "?").join(", ")})`;
+    const flagged = `(is_latest = 1 OR is_step_latest = 1)${typeWhere}`;
+    const order =
+      "ORDER BY namespace, type_normalized, model_id, data_name, version";
+    let after: string[] | undefined;
+    let changed = 0;
+    while (true) {
+      let done = false;
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const afterWhere = after === undefined
+          ? ""
+          : " AND (namespace, type_normalized, model_id, data_name) > (?, ?, ?, ?)";
+        const page = this.db.prepare(
+          `SELECT * FROM catalog WHERE ${flagged}${afterWhere} ${order} LIMIT ?`,
+        ).all(
+          ...types,
+          ...(after ?? []),
+          chunkRows + 1,
+        ) as unknown as CatalogRow[];
+        let rows = page;
+        if (page.length <= chunkRows) {
+          done = true;
+        } else {
+          const cut = groupKeyOf(page[chunkRows]);
+          rows = page.slice(0, chunkRows).filter((row) =>
+            groupKeyOf(row) !== cut
+          );
+          if (rows.length === 0) {
+            const group = page[chunkRows];
+            rows = this.db.prepare(
+              `SELECT * FROM catalog WHERE (is_latest = 1 OR is_step_latest = 1)
+                 AND namespace = ? AND type_normalized = ? AND model_id = ?
+                 AND data_name = ? ${order}`,
+            ).all(
+              group.namespace,
+              group.type_normalized,
+              group.model_id,
+              group.data_name,
+            ) as unknown as CatalogRow[];
+          }
+        }
+        if (rows.length > 0) {
+          const last = rows[rows.length - 1];
+          after = [
+            last.namespace,
+            last.type_normalized,
+            last.model_id,
+            last.data_name,
+          ];
+          changed += this.writeRecomputedFlags(rows, computeFlags);
+        }
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+      if (done) return changed;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
 

@@ -173,6 +173,42 @@ export function computeLatestFlags(rows: CatalogRow[]): void {
   }
 }
 
+const backfillsByCatalog = new WeakMap<
+  CatalogStore,
+  { dataRepo: UnifiedDataRepository; promise: Promise<void> }
+>();
+
+const BACKFILL_CHUNK_ROWS = 1000;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+/** rows of one data name are contiguous, as collectRows produces them */
+export function nameAlignedChunks(
+  rows: readonly CatalogRow[],
+  size: number,
+): CatalogRow[][] {
+  const chunks: CatalogRow[][] = [];
+  let chunk: CatalogRow[] = [];
+  let previous: CatalogRow | undefined;
+  for (const row of rows) {
+    const sameName = previous !== undefined &&
+      previous.namespace === row.namespace &&
+      previous.type_normalized === row.type_normalized &&
+      previous.model_id === row.model_id &&
+      previous.data_name === row.data_name;
+    if (chunk.length >= size && !sameName) {
+      chunks.push(chunk);
+      chunk = [];
+    }
+    chunk.push(row);
+    previous = row;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
 export type LatestWorkflowRunResolver = (
   workflow: string,
 ) => Promise<string | null>;
@@ -309,7 +345,6 @@ export function createQueryEnvironment(): Environment {
 export class DataQueryService {
   private readonly queryEnv: Environment;
   private readonly foreignContentCache = new Map<string, Uint8Array>();
-  private backfillPromise: Promise<void> | null = null;
   private readonly filterStaleRows: boolean;
   private readonly backfill: boolean;
 
@@ -341,8 +376,9 @@ export class DataQueryService {
         options?.excludeModelTypes,
       );
 
-    if (!populated && this.backfillPromise) {
-      await this.backfillPromise;
+    const inFlight = populated ? undefined : this.backfillInFlight();
+    if (inFlight) {
+      await inFlight;
       return await this.buildRecordFromRow(latestRow(), includePath);
     }
 
@@ -730,17 +766,29 @@ export class DataQueryService {
 
   async ensurePopulated(): Promise<void> {
     if (this.catalogStore.isPopulated()) return;
-    if (this.backfillPromise) {
-      await this.backfillPromise;
+    const inFlight = this.backfillInFlight();
+    if (inFlight) {
+      await inFlight;
       return;
     }
     const promise = this.backfillAsync();
-    this.backfillPromise = promise;
+    const entry = { dataRepo: this.dataRepo, promise };
+    backfillsByCatalog.set(this.catalogStore, entry);
     try {
       await promise;
     } finally {
-      this.backfillPromise = null;
+      if (backfillsByCatalog.get(this.catalogStore) === entry) {
+        backfillsByCatalog.delete(this.catalogStore);
+      }
     }
+  }
+
+  // shared by every service on this catalog that reads the same data, so the
+  // queries that find it unpopulated walk the disk once between them
+  private backfillInFlight(): Promise<void> | undefined {
+    if (!this.backfill) return undefined;
+    const entry = backfillsByCatalog.get(this.catalogStore);
+    return entry?.dataRepo === this.dataRepo ? entry.promise : undefined;
   }
 
   specNameFallback(predicate: string): SpecNameFallback | null {
@@ -1771,64 +1819,100 @@ export class DataQueryService {
       group.push(item);
     }
 
-    // gather all rows, then commit to SQLite in one batch; interleaving slow
-    // async metadata reads with single writes leaves the database partly
-    // populated and hits 'database is locked' under contention
+    // gather all rows before committing any; interleaving slow async metadata
+    // reads with single writes leaves the database partly populated and hits
+    // 'database is locked' under contention
     const rows: CatalogRow[] = [];
     for (const [, items] of byType) {
-      for (const { data: latest, modelType, modelId } of items) {
-        // rows mirror write-through: a deletion marker is a version like any
-        // other, while a rename marker goes into catalog_renames, never a row
-        if (latest.isRenamed) continue;
-        const versions = await this.dataRepo.listVersions(
-          modelType,
-          modelId,
-          latest.name,
-        );
-        if (versions.length === 0) continue;
-        for (const version of versions) {
-          // a version above the one the latest marker names was never published
-          // (a save that died, or a write in flight that publishes its own
-          // row), so a rebuilt catalog agrees with reads through the marker
-          if (version > latest.version) continue;
-          try {
-            const data = version === latest.version
-              ? latest
-              : await this.dataRepo.findByName(
-                modelType,
-                modelId,
-                latest.name,
-                version,
-              );
-            if (!data) continue;
-            if (data.isRenamed) continue;
-            rows.push(
-              this.toCatalogRow(
-                data,
-                modelType,
-                modelId,
-                false,
-              ),
-            );
-          } catch (error) {
-            logger
-              .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
-              String(error)
-            }`;
-          }
-        }
-      }
+      await this.collectRows(items, rows);
       // Yield to the event loop between model types so V8 can run a major
       // GC cycle and reclaim intermediate objects from metadata parsing.
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await yieldToEventLoop();
     }
 
-    // Flags are derived inside bulkUpsert's transaction, without versions the
-    // catalog holds as pending (in-flight deferred writes).
-    this.catalogStore.bulkUpsert(rows, computeLatestFlags);
-    this.catalogStore.enforceUniqueLatest(computeLatestFlags);
+    await this.commitRows(rows);
     this.recordRenameForwards(renames);
     this.catalogStore.markPopulated(generation);
+  }
+
+  /**
+   * re-reads only these types' records into the catalog, for a poller that
+   * pulled or saw changes to them alone; additive like a full backfill, and a
+   * catalog not yet populated is left to its full backfill
+   */
+  async refreshTypes(types: readonly ModelType[]): Promise<void> {
+    if (!this.backfill || !this.catalogStore.isPopulated()) return;
+    const rows: CatalogRow[] = [];
+    for (const type of types) {
+      await this.collectRows(await this.dataRepo.findAllForType(type), rows);
+    }
+    await this.commitRows(rows, types.map((type) => type.normalized));
+  }
+
+  private async collectRows(
+    items: readonly { data: Data; modelType: ModelType; modelId: string }[],
+    rows: CatalogRow[],
+  ): Promise<void> {
+    for (const { data: latest, modelType, modelId } of items) {
+      // rows mirror write-through: a deletion marker is a version like any
+      // other, while a rename marker goes into catalog_renames, never a row
+      if (latest.isRenamed) continue;
+      const versions = await this.dataRepo.listVersions(
+        modelType,
+        modelId,
+        latest.name,
+      );
+      if (versions.length === 0) continue;
+      for (const version of versions) {
+        // a version above the one the latest marker names was never published
+        // (a save that died, or a write in flight that publishes its own
+        // row), so a rebuilt catalog agrees with reads through the marker
+        if (version > latest.version) continue;
+        try {
+          const data = version === latest.version
+            ? latest
+            : await this.dataRepo.findByName(
+              modelType,
+              modelId,
+              latest.name,
+              version,
+            );
+          if (!data) continue;
+          if (data.isRenamed) continue;
+          rows.push(
+            this.toCatalogRow(
+              data,
+              modelType,
+              modelId,
+              false,
+            ),
+          );
+        } catch (error) {
+          logger
+            .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
+            String(error)
+          }`;
+        }
+      }
+    }
+  }
+
+  /**
+   * one transaction per chunk cut between data names, the unit latest flags
+   * are derived over, with a yield between chunks, so a large rebuild never
+   * holds the event loop for the whole commit; flags skip pending versions
+   */
+  private async commitRows(
+    rows: readonly CatalogRow[],
+    types?: readonly string[],
+  ): Promise<void> {
+    for (const chunk of nameAlignedChunks(rows, BACKFILL_CHUNK_ROWS)) {
+      this.catalogStore.bulkUpsert(chunk, computeLatestFlags);
+      await yieldToEventLoop();
+    }
+    await this.catalogStore.enforceUniqueLatestInChunks(computeLatestFlags, {
+      types,
+    });
   }
 
   private backfillSync(): void {

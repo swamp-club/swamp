@@ -1603,10 +1603,17 @@ changes.
    (`src/serve/filesystem_access_data_change_source.ts`, swamp-club#3371). Only
    `grant-main` and `group-main` are watched, the data the loader reads. A
    record whose new versions are all ones the instance's own `ModelUpdated`
-   events named (`dataVersions`, published by every method run) is its own
-   write and stays staged in manual mode, as a pull never returns the
-   puller's own writes. Anything else, including a local CLI write, is a peer
-   change. A v3 datastore has one writer at a time and runs no poller.
+   events named (`dataVersions`) is its own write and stays staged in manual
+   mode, as a pull never returns the puller's own writes. Every method run
+   publishes that event, and so do serve's own access writes: an
+   `access reload`, the boot reconcile, the grants auto-reload, admin grant
+   materialization and delegation records (swamp-club#4767). Versions are
+   reserved with an exclusive directory create, so an event can never name a
+   version a peer wrote. Anything else, including a local CLI write, is a
+   peer change. A peer change refreshes only the catalog rows of the types the
+   poller watches (`DataQueryService.refreshTypes`), never the whole data
+   catalog; a refresh that fails falls back to invalidating the catalog. A v3
+   datastore has one writer at a time and runs no poller.
 4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
    logged-in user's collectives every `--group-refresh-interval`
    (`src/serve/collective_refresh_service.ts`); the next session revalidation

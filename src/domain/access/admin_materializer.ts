@@ -33,6 +33,7 @@ import { Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { readStoredGrants } from "./stored_grant_reader.ts";
 import { createResourceWriter } from "../models/data_writer.ts";
+import type { GrantWrittenHook } from "./grant_file_reconciler.ts";
 
 const logger = getLogger(["swamp", "admin-materializer"]);
 
@@ -116,6 +117,7 @@ export function createAdminGrantStore(
   writeRepo: DefinitionRepository,
   dataRepo: UnifiedDataRepository,
   onDefinitionSaved?: (path: string) => void,
+  onGrantWritten?: GrantWrittenHook,
 ): AdminGrantStore {
   return {
     async queryConfigGrants() {
@@ -168,11 +170,12 @@ export function createAdminGrantStore(
         undefined,
         instanceName,
       );
-      await writeResource(
+      const { name, version } = await writeResource(
         "grant",
         GRANT_DATA_NAME,
         grant as unknown as Record<string, unknown>,
       );
+      await onGrantWritten?.(modelId, instanceName, { name, version });
     },
   };
 }

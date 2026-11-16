@@ -33,6 +33,7 @@ import {
 } from "../domain/models/access/delegation_model.ts";
 import { Definition } from "../domain/definitions/definition.ts";
 import { createResourceWriter } from "../domain/models/data_writer.ts";
+import { createModelUpdated } from "../domain/events/types.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -352,10 +353,16 @@ export class DelegationStore {
       undefined,
       name,
     );
-    await writeResource(
+    const written = await writeResource(
       resource,
       dataName,
       attrs as Record<string, unknown>,
+    );
+    // named so serve's delegation poller reads this write as its own
+    await repoContext.eventBus.publish(
+      createModelUpdated(DELEGATION_MODEL_TYPE.normalized, id, name, [
+        { name: written.name, version: written.version },
+      ]),
     );
   }
 }

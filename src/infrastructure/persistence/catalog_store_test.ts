@@ -1367,7 +1367,9 @@ Deno.test("CatalogStore: rebuilds a schema 7 catalog, which has no is_pending co
   const dbPath = tempDb.path;
   new CatalogStore(dbPath).close();
   const db = new DatabaseSync(dbPath);
+  // schema 7 predates the pending index as well as the column
   db.exec(`
+    DROP INDEX idx_catalog_pending;
     ALTER TABLE catalog DROP COLUMN is_pending;
     INSERT INTO catalog (type_normalized, model_id, data_name, id, version, model_name, created_at)
       VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');

@@ -50,6 +50,12 @@ import { createModelMethodRunDeps } from "../src/serve/deps.ts";
 import { libSwampContextForRepo } from "../src/cli/repo_context.ts";
 import { modelMethodRun } from "../src/libswamp/models/run.ts";
 import { collect } from "../src/libswamp/testing.ts";
+import { reconcileAllFileGrants } from "../src/domain/access/grant_file_reconciler.ts";
+import type { GrantFileEntry } from "../src/domain/access/grant_file.ts";
+import { materializeAdmins } from "../src/domain/access/admin_materializer.ts";
+import { createGrantWriteTracking } from "../src/serve/grant_write_tracking.ts";
+import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
+import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 
 await initializeLogging({});
 
@@ -136,7 +142,7 @@ async function withPair(
       syncService: b.syncService,
       pollIntervalMs: POLL_INTERVAL_MS,
       policySnapshotLoader: loaderB,
-      catalogInvalidate: () => b.repoContext.catalogStore.invalidate(),
+      catalogRefresh: () => b.repoContext.catalogStore.invalidate(),
       datastoreConfig: b.datastoreConfig,
       datastoreEngine: resolverEngine(b.datastoreResolver),
       datastoreResolver: b.datastoreResolver,
@@ -317,7 +323,7 @@ async function withCountedServeSide(
   const poller = new AccessDataPoller({
     changeSource,
     policySnapshotLoader: loader,
-    catalogInvalidate: () => instance.repoContext.catalogStore.invalidate(),
+    catalogRefresh: () => instance.repoContext.catalogStore.invalidate(),
     pollIntervalMs: POLL_INTERVAL_MS,
   });
   try {
@@ -617,5 +623,111 @@ for (const layout of LAYOUTS) {
         );
       });
     },
+  });
+}
+
+function accessChangeSource(
+  instance: Instance,
+): FilesystemAccessDataChangeSource {
+  return new FilesystemAccessDataChangeSource({
+    dirs: ACCESS_DATA_SUBDIRS.map((subdir) => {
+      const [root, ...rest] = subdir.split("/");
+      return instance.datastoreResolver.resolvePath(root, ...rest);
+    }),
+    eventBus: instance.repoContext.eventBus,
+  });
+}
+
+// the stores serve's access reload, boot reconcile and grants auto-reload use
+function serveGrantWrites(instance: Instance) {
+  return createGrantWriteTracking(
+    instance.repoContext.definitionRepo,
+    new YamlDefinitionRepository(
+      instance.repoDir,
+      instance.repoContext.eventBus,
+      instance.repoContext.autoDefinitionsDir,
+      false,
+      instance.repoContext.markDirty,
+    ),
+    instance.repoContext.unifiedDataRepo,
+    instance.repoContext.eventBus,
+  );
+}
+
+function grantsFile(pattern: string): Map<string, GrantFileEntry[]> {
+  return new Map([[
+    "team.yaml",
+    [{
+      subject: { kind: "user", name: GRANTEE.principal.id },
+      effect: "allow",
+      actions: ["read"],
+      resource: { kind: "model", pattern },
+    }],
+  ]]);
+}
+
+async function reconcileAsServe(
+  instance: Instance,
+  writes: ReturnType<typeof serveGrantWrites>,
+  entries: Map<string, GrantFileEntry[]>,
+) {
+  return await runInRootUnitOfWork(
+    instance.repoContext,
+    { flush: undefined },
+    () => reconcileAllFileGrants(entries, writes.fileGrantStore),
+  );
+}
+
+for (const layout of LAYOUTS) {
+  Deno.test(`AccessDataPoller: serve's own grants-file reconcile and admin grants are not read as peer changes (${layout.name})`, async () => {
+    await withPair(layout, async ({ b }) => {
+      const source = accessChangeSource(b);
+      try {
+        await source.prime();
+        const writes = serveGrantWrites(b);
+
+        const first = await reconcileAsServe(b, writes, grantsFile("a-*"));
+        assertEquals(first.totalCreated, 1);
+        assertEquals(await source.detect(), 0, "a first reload");
+
+        // the release case: a changed grant file revokes one grant, creates one
+        const changed = await reconcileAsServe(b, writes, grantsFile("b-*"));
+        assertEquals([changed.totalCreated, changed.totalRevoked], [1, 1]);
+        assertEquals(await source.detect(), 0, "a changed grant file");
+
+        const admins = await materializeAdmins(
+          "token",
+          ["user:admin"],
+          writes.adminGrantStore,
+        );
+        assertEquals(admins.created, 1);
+        assertEquals(await source.detect(), 0, "admin grants");
+      } finally {
+        source.dispose();
+      }
+    });
+  });
+
+  Deno.test(`AccessDataPoller: a peer write to the grant serve just reconciled is still a peer change (${layout.name})`, async () => {
+    await withPair(layout, async ({ a, b }) => {
+      const source = accessChangeSource(b);
+      try {
+        await source.prime();
+        const writes = serveGrantWrites(b);
+        await reconcileAsServe(b, writes, grantsFile("a-*"));
+        const [stored] = (await writes.fileGrantStore.queryFileGrants())
+          .values();
+
+        // the peer's own event stays on its own process's bus
+        await serveGrantWrites(a).fileGrantStore.writeGrant(
+          stored.modelId,
+          stored.instanceName,
+          { ...stored.grant, state: "revoked" },
+        );
+        assertEquals(await source.detect(), 1);
+      } finally {
+        source.dispose();
+      }
+    });
   });
 }

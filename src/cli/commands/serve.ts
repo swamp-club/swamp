@@ -668,6 +668,7 @@ import { withServerTokenLock } from "../../infrastructure/persistence/server_tok
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { DefinitionIdIndex } from "../../infrastructure/persistence/definition_id_index.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
+import { GROUP_MODEL_TYPE } from "../../domain/models/access/group_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { basename, join, resolve } from "@std/path";
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -702,6 +703,7 @@ import {
   createAccessDataPoller,
   DELEGATION_DATA_SUBDIRS,
   INTEGRATION_DATA_SUBDIRS,
+  typeScopedCatalogRefresh,
 } from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
 import { computeFileContentHashIfExists } from "../../domain/extensions/extension_package_cache.ts";
@@ -5431,6 +5433,7 @@ export const serveCommand = new Command()
       repoContext.definitionRepo,
       autoDefRepo,
       repoContext.unifiedDataRepo,
+      repoContext.eventBus,
     );
     const commitGrantWrites = createGrantWriteCommit(syncGate, grantWrites, {
       syncService,
@@ -5693,7 +5696,11 @@ export const serveCommand = new Command()
       syncGate,
       pollIntervalMs: datastorePollIntervalMs,
       policySnapshotLoader,
-      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      catalogRefresh: typeScopedCatalogRefresh(
+        repoContext.dataQueryService,
+        repoContext.catalogStore,
+        [GRANT_MODEL_TYPE, GROUP_MODEL_TYPE],
+      ),
       namespace: serveNamespace,
       datastoreConfig,
       datastoreEngine,
@@ -5705,7 +5712,11 @@ export const serveCommand = new Command()
       syncGate,
       pollIntervalMs: datastorePollIntervalMs,
       policySnapshotLoader: integrationDirectory,
-      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      catalogRefresh: typeScopedCatalogRefresh(
+        repoContext.dataQueryService,
+        repoContext.catalogStore,
+        [INTEGRATION_MODEL_TYPE],
+      ),
       namespace: serveNamespace,
       datastoreConfig,
       datastoreEngine,
@@ -5722,7 +5733,11 @@ export const serveCommand = new Command()
       syncGate,
       pollIntervalMs: datastorePollIntervalMs,
       policySnapshotLoader: delegationDirectory,
-      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      catalogRefresh: typeScopedCatalogRefresh(
+        repoContext.dataQueryService,
+        repoContext.catalogStore,
+        [DELEGATION_MODEL_TYPE],
+      ),
       namespace: serveNamespace,
       datastoreConfig,
       datastoreEngine,

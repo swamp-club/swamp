@@ -30,9 +30,10 @@ import {
 
 const PINNED = [
   // v2 sync callbacks and the token GC pull: each needs a sync service, which a v3 serve lacks.
-  "src/cli/commands/serve.ts :: serveCommand (x8)",
-  // Calls its callback only after a pull, and is built only with a sync service.
-  "src/serve/access_data_poller.ts :: AccessDataPoller",
+  "src/cli/commands/serve.ts :: serveCommand (x5)",
+  // Only when a type-scoped refresh fails, inside a poller that is never built
+  // on v3 (a sync service, or the v2 filesystem change source).
+  "src/serve/access_data_poller.ts :: typeScopedCatalogRefresh",
   // Cache hydration pulls through the sync service; never built on v3.
   "src/serve/boot_reconciliation.ts :: hydrateLocalCache",
   // Invalidates only when it holds a sync service.
