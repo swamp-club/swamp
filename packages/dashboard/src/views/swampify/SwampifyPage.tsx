@@ -69,10 +69,6 @@ function ReadingNote({ reading }: { reading: SwampifyReadingProgress }) {
             ? "…"
             : `: ${reading.completed} of ${reading.total}`}
         </strong>
-        <span>
-          Your agent reads a few example sessions for each top candidate before
-          it makes its offer.
-        </span>
       </div>
     );
   }

@@ -222,10 +222,13 @@ export function useSwampify(): SwampifyState {
     handedOff: handedOffAt !== null && handedOffAt === offerKey,
   });
   const setGeneratedAt = set.list.value?.tags[SWAMPIFY_GENERATED_AT_TAG];
+  // Not while an offer body loads: that offer may be the one the readers made.
+  const readingRun = stage === "reading" &&
+    (offer.list.value === undefined || offer.body.value !== null);
   const readingReq = useRequest(
     "workflow.run.search",
     setGeneratedAt ? swampifyReadingPayload(setGeneratedAt) : undefined,
-    { enabled: stage === "reading" && setGeneratedAt !== undefined },
+    { enabled: readingRun && setGeneratedAt !== undefined },
   );
   // The agent writes from its own process, so the page re-reads its lists
   // when the tab comes back, and on a clock while the work is unfinished.
@@ -234,13 +237,13 @@ export function useSwampify(): SwampifyState {
     set.list.refetch,
     offer.list.refetch,
     comparisonReq.refetch,
-    ...(stage === "reading" ? [readingReq.refetch] : []),
+    ...(readingRun ? [readingReq.refetch] : []),
   ];
   useListsOnReturn(lists);
   useListsOnInterval(lists, swampifyPollMs(stage, useDocumentVisible()));
   const reading = useMemo(
-    () => stage === "reading" ? parseReadingProgress(readingReq.data) : null,
-    [stage, readingReq.data],
+    () => readingRun ? parseReadingProgress(readingReq.data) : null,
+    [readingRun, readingReq.data],
   );
   return {
     setRow: set.list,
