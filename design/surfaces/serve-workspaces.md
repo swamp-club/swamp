@@ -189,13 +189,24 @@ wait). Observed states are `stopped`, `starting`, `ready`, `backoff` and
 
 - `starting` becomes `ready` when `GET /ready` on the child's port returns 200.
   Serve listens before it is ready, so a listening port is not enough.
-- Exit 75 means a restart is safe, as after a lost writer lease. The child is
-  started again after a short backoff and the exit never counts as a crash.
+- Exit 75 from a ready child means a restart is safe, as after a lost writer
+  lease. The child is started again after a short backoff and the exit never
+  counts as a crash. Serve also exits 75 for a temporary refusal at startup,
+  such as an unreachable auth server or a busy writer. An exit 75 before ready
+  backs off like a crash, doubling up to the cap, but never counts toward
+  `failed`: the serve retries until what it waits on comes back, and reaching
+  `ready` resets the backoff.
 - Any other exit the host did not ask for is a crash: exponential backoff,
   capped. Repeated crashes inside a window hold in `failed` until someone
   resumes the workspace. Suspending or deleting a failed workspace leaves it
   `failed`; like `stopped`, it has no child, so removal accepts either.
-- Stop is SIGTERM, so serve's drain path runs.
+- Stop is SIGTERM, so serve's drain path runs. A child still running after a
+  grace is killed. The grace defaults to more than a default serve shutdown
+  takes, and a workspace whose repo raises its drain timeout is given a longer
+  one.
+- A child not ready within a deadline is stopped, and that counts as a crash.
+- A child's stderr goes to the host's log, tagged with its workspace. Its last
+  lines are kept as the reason it exited.
 
 **Children.** Each child is `swamp serve --json` in its repo folder, configured
 by that repo's own `serve.yaml`. The host adds `--host 127.0.0.1`, `--port 0`,
@@ -209,7 +220,8 @@ explicitly.
 reaches end of file, as the dashboard child already does. The host keeps each
 child's stdin open, so a child never outlives the host and the host needs no pid
 files and no orphan clean-up. Stopping the host stops its children through
-their drain paths first.
+their drain paths first: SIGTERM, a kill after the grace, then their stdin
+closes.
 
 **The root workspace** is the repo `root:` names in `host.yaml`. An existing
 serve becomes a root by naming its repo there and keeping its settings in its
@@ -409,8 +421,8 @@ proxy, without its dashboard.
 4. **`ManagedServe`.** The entity and its pure `step`: the five states, the
    exit 75 rule, crash counting and backoff. No I/O. Its property test runs
    random event sequences and checks that the backoff never passes its cap,
-   that exit 75 never raises the crash count and that `failed` is left only by
-   a resume (`src/domain/serve/`).
+   that exit 75 never raises the crash count or leads to `failed`, and that
+   `failed` is left only by a resume (`src/domain/serve/`).
 5. **The supervisor.** It drives one `ManagedServe` per child through a process
    port: spawn, read the port from the listening line, poll `/ready`, SIGTERM,
    hold stdin. Tests use a fake port. The `Deno.Command` adapter stays thin,
@@ -486,7 +498,8 @@ and is designed separately.
   user, and extension code runs inside them. Code in one workspace can read and
   write another's folder, vault key, datastore files and wanted file, and read
   the OAuth client secret the host passes. This design separates failures, not
-  hostile code.
+  hostile code. A child trusts the forwarding headers of anything that reaches
+  its loopback port, not only the router.
 - **One host.** A workspace's folder is on one machine, and its serve listens
   on that machine's loopback.
 - **Lifecycle and sign-in need the root.** While the root is down no workspace

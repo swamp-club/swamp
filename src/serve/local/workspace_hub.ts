@@ -25,7 +25,7 @@
 
 import { endOnAbort } from "../stream_abort.ts";
 import { getLogger } from "@logtape/logtape";
-import { basename } from "@std/path";
+import { swampInvocation } from "../swamp_invocation.ts";
 import { markErrorPaths } from "../../domain/errors.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
@@ -855,22 +855,6 @@ function parseFrame(
   } catch {
     return null;
   }
-}
-
-function swampInvocation(args: readonly string[]): {
-  execPath: string;
-  args: string[];
-} {
-  const execPath = Deno.execPath();
-  // From source, Deno.execPath() is deno and Deno.mainModule is swamp.
-  const runningFromSource = /^deno(\.exe)?$/i.test(basename(execPath));
-  return {
-    execPath,
-    // From source, as the `dev` task runs it.
-    args: runningFromSource
-      ? ["run", "-A", "--unstable-bundle", Deno.mainModule, ...args]
-      : [...args],
-  };
 }
 
 /**

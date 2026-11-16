@@ -114,11 +114,52 @@ Deno.test("ManagedServe.step: exit 75 restarts after the restart delay and is no
   assertEquals(restarted.next.observed, "starting");
 });
 
-Deno.test("ManagedServe.step: exit 75 while starting is not a crash either", () => {
-  const starting = ManagedServe.create(ROOT_SERVE, POLICY).step(TICK, 0).next;
-  const { next } = starting.step(exited(75), 10);
+function refuse(serve: ManagedServe): ManagedServe {
+  const at = serve.retryAt ?? 0;
+  return serve.step(TICK, at).next.step(exited(75), at + 10).next;
+}
+
+Deno.test("ManagedServe.step: exit 75 before ready backs off, doubling to the cap, and never fails", () => {
+  let serve = ManagedServe.create(ROOT_SERVE, POLICY).step(TICK, 0).next;
+  const { next, action } = serve.step(exited(75), 10);
   assertEquals(next.observed, "backoff");
   assertEquals(next.crashCount, 0);
+  assertEquals(action, { kind: "wait", until: 10 + POLICY.initialBackoffMs });
+
+  serve = next;
+  const delays = [serve.backoffMs];
+  for (let i = 0; i < POLICY.maxCrashesInWindow * 3; i++) {
+    serve = refuse(serve);
+    delays.push(serve.backoffMs);
+  }
+  assertEquals(delays.slice(0, 5), [1_000, 2_000, 4_000, 8_000, 8_000]);
+  assertEquals(serve.observed, "backoff");
+  assertEquals(serve.crashCount, 0);
+  assertEquals(serve.step(TICK, serve.retryAt ?? 0).action, { kind: "spawn" });
+});
+
+Deno.test("ManagedServe.step: reaching ready resets the refusal backoff", () => {
+  let serve = ManagedServe.create(ROOT_SERVE, POLICY).step(TICK, 0).next;
+  serve = serve.step(exited(75), 10).next;
+  serve = refuse(refuse(serve));
+  assertEquals(serve.backoffMs, 4_000);
+
+  const at = serve.retryAt ?? 0;
+  serve = run(serve, [[TICK, at], [READY, at + 1], [exited(75), at + 2]]).serve;
+  assertEquals(serve.backoffMs, POLICY.restartDelayMs);
+  serve = refuse(serve);
+  assertEquals(serve.backoffMs, POLICY.initialBackoffMs);
+  assertEquals(serve.crashCount, 0);
+});
+
+Deno.test("ManagedServe.step: a refusal does not hide a crash loop", () => {
+  let serve = ManagedServe.create(ROOT_SERVE, POLICY).step(TICK, 0).next;
+  serve = serve.step(exited(75), 10).next;
+  for (let crash = 1; crash <= POLICY.maxCrashesInWindow; crash++) {
+    const at = serve.retryAt ?? 0;
+    serve = serve.step(TICK, at).next.step(exited(1), at + 10).next;
+  }
+  assertEquals(serve.observed, "failed");
 });
 
 Deno.test("ManagedServe.step: an unrequested exit 0 and a null code are crashes", () => {
@@ -203,6 +244,21 @@ Deno.test("ManagedServe.step: resume leaves failed, clears the crashes and spawn
   assertEquals(next.wanted, "running");
   assertEquals(next.crashCount, 0);
   assertEquals(next.backoffMs, 0);
+});
+
+Deno.test("ManagedServe.step: resume clears the refusal backoff too", () => {
+  let serve = ManagedServe.create(ROOT_SERVE, POLICY).step(TICK, 0).next;
+  serve = refuse(refuse(serve.step(exited(75), 10).next));
+  assertEquals(serve.backoffMs, 4_000);
+  for (let crash = 1; crash <= POLICY.maxCrashesInWindow; crash++) {
+    const at = serve.retryAt ?? 0;
+    serve = serve.step(TICK, at).next.step(exited(1), at + 10).next;
+  }
+  assertEquals(serve.observed, "failed");
+
+  serve = serve.step({ kind: "resume" }, 100_000).next;
+  serve = serve.step(exited(75), 100_010).next;
+  assertEquals(serve.backoffMs, POLICY.initialBackoffMs);
 });
 
 Deno.test("ManagedServe.step: suspend or delete while ready stops, then the exit leaves it stopped without a crash", () => {
