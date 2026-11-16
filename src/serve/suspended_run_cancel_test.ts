@@ -568,12 +568,17 @@ const predecessor = (startTime?: string): TrackerProcess => ({
 });
 
 for (
-  const [label, process] of [
-    ["another start time", predecessor("predecessor-start")],
-    ["no start time", predecessor()],
+  const [label, process, needsStartTime] of [
+    ["another start time", predecessor("predecessor-start"), true],
+    ["no start time", predecessor(), false],
   ] as const
 ) {
-  Deno.test(`ownerGoneDecider: a previous instance's row under this process's reused pid is gone (${label})`, async () => {
+  Deno.test({
+    name:
+      `ownerGoneDecider: a previous instance's row under this process's reused pid is gone (${label})`,
+    // a start time compares only where this process can read its own
+    ignore: needsStartTime && localTrackerProcess().startTime === undefined,
+  }, async () => {
     await withTracker(async (tracker) => {
       const run = runningRun(makeWorkflow("deploy"), Deno.pid, "old-instance");
       tracker.register(trackerRow(run, Deno.pid, "old-instance"));

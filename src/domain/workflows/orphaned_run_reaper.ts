@@ -212,9 +212,9 @@ export function rowOwnerGone(
 }
 
 /**
- * a row owned on this host, running or interrupted, with a dead pid; an
- * interrupted row's pid is checked too as its reaper may not have;
- * owner-settled or foreign rows never count, so a reused pid only looks alive
+ * a row owned on this host, running or interrupted, whose owner is gone; an
+ * interrupted row's owner is checked too as its reaper may not have;
+ * owner-settled or foreign rows never count
  */
 export function trackerShowsDeadOwner(
   tracked: ActiveRun | null,
