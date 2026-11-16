@@ -287,6 +287,8 @@ export interface SqliteReadModelOptions {
   readonly netReplay?: boolean;
   /** inline writes a catch-up's page runs at once; 1 writes one at a time */
   readonly pooledWrites?: number;
+  /** called as the page waits for its pooled writes */
+  readonly onPoolDrain?: () => void;
   readonly spellingFolding?: SpellingFolding;
   /**
    * a partition's seqs can have holes where serve left out commits the caller
@@ -496,6 +498,7 @@ export class SqliteReadModel implements ReadModel {
   readonly #atRiskCopyBytes: number;
   readonly #netReplay: boolean;
   readonly #pooledWrites: number;
+  readonly #onPoolDrain: (() => void) | undefined;
   readonly #follower: boolean;
   readonly #writerInstance: string | undefined;
   readonly #holdsOwnWork: ((commit: Commit) => boolean) | undefined;
@@ -603,6 +606,7 @@ export class SqliteReadModel implements ReadModel {
       DEFAULT_AT_RISK_COPY_BYTES;
     this.#netReplay = options.netReplay ?? true;
     this.#pooledWrites = options.pooledWrites ?? POOLED_WRITES;
+    this.#onPoolDrain = options.onPoolDrain;
     this.#follower = options.follower === true;
     this.#recordsChanged = options.recordsChanged;
     this.#writerInstance = options.writerInstance;
@@ -2832,6 +2836,7 @@ export class SqliteReadModel implements ReadModel {
   }
 
   async #drainPool(): Promise<void> {
+    if ((this.#pool?.length ?? 0) > 0) this.#onPoolDrain?.();
     const failure = await this.#settlePool();
     if (failure !== undefined) throw failure.error;
   }

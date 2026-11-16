@@ -64,6 +64,7 @@ import { CatalogStore } from "../persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../persistence/unified_data_repository.ts";
 import { Data } from "../../domain/data/data.ts";
 import { readModelStateDir } from "./record_path_guard.ts";
+import { DurableWriteBatch } from "./atomic_stream_write.ts";
 import {
   SqliteCommitStore,
   type SqliteCommitStoreOptions,
@@ -3792,4 +3793,63 @@ Deno.test({
       }
     });
   },
+});
+
+/** a batch that does not sync, holding the write to `held` until released */
+class HeldWriteBatch extends DurableWriteBatch {
+  readonly started: string[] = [];
+  readonly gate = Promise.withResolvers<void>();
+
+  constructor(readonly held: string) {
+    super({ sync: false });
+  }
+
+  override async write(
+    path: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options?: Parameters<DurableWriteBatch["write"]>[3],
+  ): Promise<void> {
+    this.started.push(path);
+    if (path === this.held) await this.gate.promise;
+    return await super.write(path, content, signal, options);
+  }
+}
+
+Deno.test("SqliteReadModel.catchUp: a write under a directory a pooled write is still making waits for it", async () => {
+  await withEnv(async (env) => {
+    await env.append(1, "", [await savePut("a", 1), versionOp("a", 1)]);
+    const making = env.contentPath("", "n", 1);
+    const under = env.contentPath("", "n", 2);
+    const batch = new HeldWriteBatch(making);
+    let drained = false;
+    const readModel = env.open({
+      netReplay: false,
+      writeBatch: () => batch,
+      onPoolDrain: () => {
+        drained = true;
+      },
+    });
+    try {
+      await readModel.catchUp(signal());
+      batch.started.length = 0;
+      drained = false;
+      await env.append(2, "", [
+        await savePut("n", 1),
+        versionOp("n", 1),
+        await savePut("n", 2),
+        versionOp("n", 2),
+      ]);
+      const caughtUp = readModel.catchUp(signal());
+      await waitFor(() => drained, "the page waiting for its pooled writes");
+      assertEquals(batch.started, [making]);
+      batch.gate.resolve();
+      await caughtUp;
+      assertEquals(batch.started, [making, under]);
+      assertEquals(await readOrAbsent(under), "n@2");
+    } finally {
+      batch.gate.resolve();
+      await readModel.close();
+    }
+  });
 });
