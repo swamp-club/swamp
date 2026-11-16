@@ -1906,13 +1906,17 @@ shutdown's reason, is cut off. A child a user cancelled, or one an earlier
 attempt of the step started, is left alone, and the parent's resume re-runs
 that step. For each cut-off child, the parent's step is parked waiting on the
 child (`WorkflowRun.awaitCutOffNestedRun`, which sets the step's `nestedRun`
-link) before the parent is saved. Then the child's fence is closed, the child
-is re-read, interrupted and made continuable, and saved after its parent,
-with grandchildren handled the same way below it. Each run is saved once, and
-a parent always waits on a child before that child is touched, so a child
-save that fails leaves the parent's resume failing the step from the child's
-`cancelled` record rather than starting a second child. A child that finished
-while its fence waited keeps its outcome, which the parent's resume adopts.
+link) before the parent is saved. Only once the parent is saved is the
+child's fence closed; the child is then re-read, interrupted and made
+continuable, and saved, with grandchildren handled the same way below it.
+Each run is saved once. A parent whose save fails leaves its children
+unfenced and untouched, and a child save that fails leaves the parent's
+resume failing the step from the child's `cancelled` record rather than
+starting a second child, with the child's tracker row settled. A
+child that cannot be read again is interrupted from the copy loaded before
+its fence closed. A child that finished while its fence waited keeps its
+outcome, which the parent's resume adopts. All fence waits, top-level and
+child, share one 2 s budget.
 Cut-off children are counted with the interrupted runs: their tracker rows
 settle `interrupted`, `--json` prints a `status: interrupted` line for each,
 and they join the unpushed list. A peer that settles this instance from its

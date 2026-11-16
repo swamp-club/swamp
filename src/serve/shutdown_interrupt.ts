@@ -207,52 +207,64 @@ export async function interruptShutdownRuns(
   const childRunIds: string[] = [];
   const topLevelIds = new Set(workflowRuns.map((r) => r.runId));
   type LoadedRun = (typeof loaded)[number];
-  // Linked before the parent's save, so a child that later fails to save
-  // leaves a parent waiting on it rather than one that starts a second child.
-  const linkCutOffChildren = async (
-    parent: WorkflowRun,
-  ): Promise<LoadedRun[]> => {
-    const linked = loaded.filter(({ run }) =>
-      !topLevelIds.has(run.id) && cutOffByShutdown(run, undefined) &&
-      parent.awaitCutOffNestedRun(run)
-    );
-    if (linked.length === 0) return [];
-    await deps.runWriteFence?.close(
-      linked.map(({ run }) => run.id),
-      Math.max(0, fenceDeadline - Date.now()),
-    );
-    const current: LoadedRun[] = [];
-    for (const { run, workflowId } of linked) {
-      let reread: WorkflowRun | null;
-      try {
-        reread = await repoContext.workflowRunRepo.findById(
-          workflowId,
-          createWorkflowRunId(run.id),
-        );
-      } catch (err) {
-        logger.warn("Failed to read nested run {runId} to interrupt: {error}", {
-          runId: run.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
+  // A parent is saved waiting on its children before their fences close: a
+  // failed parent save leaves them unfenced, and a failed child save leaves
+  // the parent waiting on it rather than starting a second child.
+  const linkCutOffChildren = (parent: WorkflowRun): LoadedRun[] => {
+    const linked: LoadedRun[] = [];
+    for (const candidate of loaded) {
+      if (
+        topLevelIds.has(candidate.run.id) ||
+        !cutOffByShutdown(candidate.run, undefined)
+      ) {
         continue;
       }
-      // one that finished while the fence waited keeps its outcome, which the
-      // parent's resume adopts
-      if (
-        reread &&
-        (reread.status === "running" || reread.status === "cancelled") &&
-        cutOffByShutdown(reread, undefined)
-      ) {
-        current.push({ run: reread, workflowId });
-      }
+      if (parent.awaitCutOffNestedRun(candidate.run)) linked.push(candidate);
     }
-    return current;
+    return linked;
+  };
+  const stillCutOff = async (
+    linked: LoadedRun,
+  ): Promise<LoadedRun | undefined> => {
+    let current: WorkflowRun | null;
+    try {
+      current = await repoContext.workflowRunRepo.findById(
+        linked.workflowId,
+        createWorkflowRunId(linked.run.id),
+      );
+    } catch (err) {
+      logger.warn(
+        "Failed to read nested run {runId} again; interrupting the copy loaded before its fence closed: {error}",
+        {
+          runId: linked.run.id,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return linked;
+    }
+    // one that finished while its fence waited keeps its outcome, which the
+    // parent's resume adopts
+    if (
+      current &&
+      (current.status === "running" || current.status === "cancelled") &&
+      cutOffByShutdown(current, undefined)
+    ) {
+      return { run: current, workflowId: linked.workflowId };
+    }
+    return undefined;
   };
   const interruptChildren = async (
     children: readonly LoadedRun[],
     depth: number,
   ): Promise<void> => {
-    for (const child of children) {
+    if (children.length === 0) return;
+    await deps.runWriteFence?.close(
+      children.map(({ run }) => run.id),
+      Math.max(0, fenceDeadline - Date.now()),
+    );
+    for (const linked of children) {
+      const child = await stillCutOff(linked);
+      if (child === undefined) continue;
       const runId = child.run.id;
       childRunIds.push(runId);
       let grandchildren: LoadedRun[] = [];
@@ -260,7 +272,7 @@ export async function interruptShutdownRuns(
         child.run.interrupt("server_shutdown");
         child.run.markContinuable(new Date());
         if (depth < MAX_WORKFLOW_NESTING_DEPTH) {
-          grandchildren = await linkCutOffChildren(child.run);
+          grandchildren = linkCutOffChildren(child.run);
         }
         await repoContext.workflowRunRepo.save(child.workflowId, child.run);
         deps.runWriteFence?.takeOver(runId);
@@ -368,7 +380,7 @@ export async function interruptShutdownRuns(
             const cutOff = cutOffByShutdown(match.run, run.controller);
             match.run.interrupt("server_shutdown");
             if (cutOff) match.run.markContinuable(new Date());
-            const children = cutOff ? await linkCutOffChildren(match.run) : [];
+            const children = cutOff ? linkCutOffChildren(match.run) : [];
             await repoContext.workflowRunRepo.save(
               match.workflowId,
               match.run,

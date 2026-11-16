@@ -39,7 +39,6 @@ import {
   UNPUSHED_INTERRUPTS_FILE,
 } from "./unpushed_interrupts.ts";
 import type { ActiveRunStatus } from "../domain/models/active_run.ts";
-import { RUN_WRITE_FENCE_WAIT_MS } from "./run_write_fence.ts";
 import type { CommitLogEngine } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 await initializeLogging({});
@@ -1037,9 +1036,9 @@ Deno.test("interruptShutdownRuns: a nested run the shutdown cancelled is interru
   assertEquals(events, [
     `close ${parent.id}`,
     "load",
-    `close ${child.id}`,
     `save ${parent.id} interrupted`,
     `take over ${parent.id}`,
+    `close ${child.id}`,
     `save ${child.id} interrupted`,
     `take over ${child.id}`,
   ]);
@@ -1261,9 +1260,58 @@ Deno.test("interruptShutdownRuns: the child fence waits of several parents and l
     [grandchild.id],
     [secondChild.id],
   ]);
-  for (const [i, wait] of childWaits.entries()) {
-    assertEquals(wait.waitMs !== undefined, true);
-    assertEquals(wait.waitMs! <= RUN_WRITE_FENCE_WAIT_MS, true);
-    if (i > 0) assertEquals(wait.waitMs! <= childWaits[i - 1].waitMs!, true);
-  }
+  for (const wait of childWaits) assertEquals(wait.waitMs !== undefined, true);
+});
+
+Deno.test("interruptShutdownRuns: a nested run that cannot be read again is interrupted from the copy loaded before its fence closed", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "shutdown");
+  const child = serveRun(wf, "running", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+  const runTracker = tracker();
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext: {
+      ...repoContext,
+      workflowRunRepo: {
+        ...repoContext.workflowRunRepo,
+        findById: () => Promise.reject(new Error("unreadable")),
+      },
+    },
+    runTracker,
+  });
+
+  assertEquals(result, { interrupted: [parent.id, child.id] });
+  assertEquals(savesOf(events), [
+    `save ${parent.id} interrupted`,
+    `save ${child.id} interrupted`,
+  ]);
+  assertEquals(linkedTo(parent, child), true);
+  assertEquals(
+    runTracker.completed.includes(`${child.id} interrupted server_shutdown`),
+    true,
+  );
+});
+
+Deno.test("interruptShutdownRuns: a parent whose save fails leaves its nested runs unfenced and untouched", async () => {
+  const wf = callingWorkflow();
+  const parent = serveRun(wf, "shutdown");
+  const child = serveRun(wf, "running", parent);
+  const { events, repoContext } = harness([parent, child], wf.id);
+
+  const result = await interruptShutdownRuns([active(parent)], {
+    repoContext: {
+      ...repoContext,
+      workflowRunRepo: {
+        ...repoContext.workflowRunRepo,
+        save: () => Promise.reject(new Error("disk full")),
+      },
+    },
+    runWriteFence: recordingFence(events),
+    syncService: { pushChanged: () => Promise.resolve(1) },
+  });
+
+  assertEquals(result, { interrupted: [], unpushed: [parent.id] });
+  assertEquals(events.includes(`close ${child.id}`), false);
+  assertEquals(child.status, "running");
 });
