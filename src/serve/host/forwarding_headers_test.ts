@@ -212,3 +212,12 @@ Deno.test("forwardResponseHeaders: repeated Set-Cookie headers stay separate and
     assertEquals(headers.has(name), false, name);
   }
 });
+
+Deno.test("forwardRequestHeaders: a chunked request's declared length is dropped", () => {
+  const headers = forwardRequestHeaders(
+    request({ "transfer-encoding": "chunked", "content-length": "99" }),
+    DIRECT,
+  );
+  assertEquals(headers.has("content-length"), false);
+  assertEquals(headers.has("transfer-encoding"), false);
+});

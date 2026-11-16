@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { createHttpForwarder, hostReply } from "./forward_http.ts";
+import { createHttpForwarder } from "./forward_http.ts";
+import { hostReply } from "./host_reply.ts";
 import {
   type ForwardingOptions,
   forwardRequestHeaders,
@@ -31,6 +32,10 @@ import { matchWorkspacePath } from "./workspace_path.ts";
 const logger = getLogger(["swamp", "serve", "host"]);
 
 const DEFAULT_WEBSOCKET_OPEN_TIMEOUT_MS = 10_000;
+
+// the WebSocket API cannot pause a read, so a side that stops reading has its
+// relay closed rather than buffered in the host without bound
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 export type WorkspaceRoute =
   | { readonly kind: "running"; readonly port: number }
@@ -137,22 +142,30 @@ export function createWorkspaceRouter(
     const socket = upgraded.socket;
     socket.binaryType = "arraybuffer";
     upstream.onmessage = (e) => {
-      if (socket.readyState === WebSocket.OPEN) socket.send(e.data);
+      if (socket.readyState === WebSocket.OPEN) relay(socket, e.data);
       else toCaller.push(e.data);
     };
-    const end = () => {
-      closeQuietly(socket, 1001, "The host is shutting down.");
-      closeQuietly(upstream, 1001, "The host is shutting down.");
+    const closeBoth = (reason: string) => {
+      closeQuietly(socket, 1000, reason);
+      closeQuietly(upstream, 1000, reason);
+    };
+    const end = () => closeBoth("The host is shutting down.");
+    const relay = (target: WebSocket, data: string | ArrayBuffer) => {
+      if (target.bufferedAmount > MAX_BUFFERED_BYTES) {
+        closeBoth("The other side is not reading.");
+        return;
+      }
+      target.send(data);
     };
     relays.add(end);
     socket.onopen = () => {
-      for (const message of toCaller.splice(0)) socket.send(message);
+      for (const message of toCaller.splice(0)) relay(socket, message);
       if (closeFromChild !== undefined) {
         closeQuietly(socket, closeFromChild.code, closeFromChild.reason);
       }
     };
     socket.onmessage = (e) => {
-      if (upstream.readyState === WebSocket.OPEN) upstream.send(e.data);
+      if (upstream.readyState === WebSocket.OPEN) relay(upstream, e.data);
     };
     socket.onclose = (e) => {
       relays.delete(end);
@@ -165,12 +178,19 @@ export function createWorkspaceRouter(
       }
       closeQuietly(socket, e.code, e.reason);
     };
-    upstream.onerror = () => closeQuietly(socket, 1000, "workspace gone");
+    upstream.onerror = () =>
+      closeQuietly(socket, 1000, "The workspace closed the connection.");
     return upgraded.response;
   };
 
   return {
     handle(req, info) {
+      // a relay begun now would miss the shutdown that already ended the rest
+      if (signal.aborted) {
+        return Promise.resolve(
+          hostReply(503, { error: "The host is shutting down." }),
+        );
+      }
       const url = new URL(req.url);
       const match = matchWorkspacePath(url.pathname);
       if (match.kind === "unknown") return Promise.resolve(noWorkspace());

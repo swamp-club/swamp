@@ -103,3 +103,20 @@ Deno.test("createWorkspaceRouter: a root that is not running answers 503 with it
     state: "starting",
   });
 });
+
+Deno.test("createWorkspaceRouter: a router already shut down answers 503 without forwarding", async () => {
+  const shutdown = new AbortController();
+  const router = createWorkspaceRouter({
+    directory: directoryOf({ a: { kind: "running", port: 1 } }),
+    protocol: "https",
+    trustProxy: false,
+    signal: shutdown.signal,
+  });
+  shutdown.abort();
+  const response = await router.handle(
+    new Request("https://serve.acme.internal/w/a/api"),
+    INFO,
+  );
+  assertEquals(response.status, 503);
+  assertEquals(await response.json(), { error: "The host is shutting down." });
+});

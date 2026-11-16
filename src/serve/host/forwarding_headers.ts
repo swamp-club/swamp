@@ -66,6 +66,8 @@ export function forwardRequestHeaders(
       ? firstEntry(req.headers.get("x-forwarded-proto"))?.toLowerCase()
       : undefined,
   };
+  // a chunked body's length is not the declared one; node frames it afresh
+  if (req.headers.has("transfer-encoding")) headers.delete("content-length");
   dropHopByHop(headers);
   for (const name of REQUEST_ONLY) headers.delete(name);
   // HTTP/2 carries the authority in :authority, which Deno exposes through

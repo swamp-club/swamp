@@ -373,6 +373,29 @@ Deno.test("workspace router: an upload keeps its Content-Length, and a chunked o
   });
 });
 
+Deno.test("workspace router: a GET that declares a body is sent without its length, so later requests on the pooled connection are read whole", async () => {
+  await withFixture(async ({ router }) => {
+    for (let i = 0; i < 3; i++) {
+      const declared = await nodeRequest(router.port, "/w/edge-dns/x", {
+        headers: { "content-length": "10" },
+        body: "0123456789",
+      });
+      assertEquals(declared.status, 200);
+      assertEquals(JSON.parse(declared.body).contentLength, null);
+
+      const next = await nodeRequest(router.port, "/w/edge-dns/upload", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const seen = JSON.parse(next.body);
+      assertEquals(seen.method, "POST");
+      assertEquals(seen.path, "/upload");
+      assertEquals(seen.size, 2);
+    }
+  });
+});
+
 Deno.test("workspace router: a body streams both ways, each chunk crossing before the sender finishes", async () => {
   await withFixture(async ({ router }) => {
     let sendNext = (_chunk: string | null) => {};

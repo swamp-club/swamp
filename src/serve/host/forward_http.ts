@@ -22,20 +22,13 @@ import { pipeline, Readable } from "node:stream";
 import { getLogger } from "@logtape/logtape";
 import { endOnAbort } from "../stream_abort.ts";
 import { forwardResponseHeaders } from "./forwarding_headers.ts";
+import { hostReply } from "./host_reply.ts";
 
 const logger = getLogger(["swamp", "serve", "host"]);
 
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
 type NodeReadableSource = Parameters<typeof Readable.fromWeb>[0];
-
-/** an answer the host gives itself; it names no port or internal error */
-export function hostReply(
-  status: number,
-  body: Record<string, string>,
-): Response {
-  return Response.json(body, { status });
-}
 
 export interface HttpForwarder {
   /**
@@ -77,6 +70,12 @@ export function createHttpForwarder(signal: AbortSignal): HttpForwarder {
         );
       };
 
+      const hasBody = req.body !== null && req.method !== "GET" &&
+        req.method !== "HEAD";
+      // a length with no body to follow would leave the pooled connection
+      // waiting, and the next caller's request would be read as that body
+      if (!hasBody) headers.delete("content-length");
+
       let outgoing: http.ClientRequest;
       try {
         outgoing = http.request({
@@ -109,22 +108,26 @@ export function createHttpForwarder(signal: AbortSignal): HttpForwarder {
             .debug`A reply from the child on port ${port} ended early: ${error}`;
         });
         const status = incoming.statusCode ?? 502;
-        const init = {
-          status,
-          statusText: incoming.statusMessage,
-          headers: forwardResponseHeaders(incoming.rawHeaders),
-        };
-        if (req.method === "HEAD" || NULL_BODY_STATUSES.has(status)) {
-          incoming.resume();
-          answer(new Response(null, init));
-          return;
+        // a reply Response cannot hold (a status outside 200-599, a bad
+        // header) would otherwise throw inside node's emitter and stop the host
+        try {
+          const init = {
+            status,
+            statusText: incoming.statusMessage,
+            headers: forwardResponseHeaders(incoming.rawHeaders),
+          };
+          if (req.method === "HEAD" || NULL_BODY_STATUSES.has(status)) {
+            incoming.resume();
+            answer(new Response(null, init));
+            return;
+          }
+          answer(new Response(endOfReply(incoming), init));
+        } catch (error) {
+          incoming.destroy();
+          unreachable(error);
         }
-        const body = Readable.toWeb(incoming) as ReadableStream<Uint8Array>;
-        answer(new Response(endOnAbort(body, signal), init));
       });
 
-      const hasBody = req.body !== null && req.method !== "GET" &&
-        req.method !== "HEAD";
       if (!hasBody) {
         outgoing.end();
         return;
@@ -140,6 +143,21 @@ export function createHttpForwarder(signal: AbortSignal): HttpForwarder {
         },
       );
     });
+
+  // its own signal per reply, unlinked when the reply ends, so the router's
+  // signal does not gather one listener for every request it ever forwarded
+  const endOfReply = (
+    incoming: http.IncomingMessage,
+  ): ReadableStream<Uint8Array> => {
+    const ended = new AbortController();
+    const end = () => ended.abort();
+    signal.addEventListener("abort", end, { once: true });
+    return endOnAbort(
+      Readable.toWeb(incoming) as ReadableStream<Uint8Array>,
+      ended.signal,
+      () => signal.removeEventListener("abort", end),
+    );
+  };
 
   return { forward };
 }
