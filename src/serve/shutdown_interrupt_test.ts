@@ -39,6 +39,7 @@ import {
   UNPUSHED_INTERRUPTS_FILE,
 } from "./unpushed_interrupts.ts";
 import type { ActiveRunStatus } from "../domain/models/active_run.ts";
+import { RUN_WRITE_FENCE_WAIT_MS } from "./run_write_fence.ts";
 import type { CommitLogEngine } from "../infrastructure/persistence/repo_unit_of_work.ts";
 
 await initializeLogging({});
@@ -1196,11 +1197,12 @@ Deno.test("interruptShutdownRuns: a failed push records the interrupted nested r
   });
 });
 
-Deno.test("interruptShutdownRuns: a nested run whose save fails is reported unpushed, and its parent is still saved waiting on it", async () => {
+Deno.test("interruptShutdownRuns: a nested run whose save fails is reported unpushed and settles its row, and its parent is still saved waiting on it", async () => {
   const wf = callingWorkflow();
   const parent = serveRun(wf, "shutdown");
   const child = serveRun(wf, "shutdown", parent);
   const { events, repoContext } = harness([parent, child], wf.id);
+  const runTracker = tracker();
 
   const result = await interruptShutdownRuns([active(parent)], {
     repoContext: {
@@ -1214,9 +1216,54 @@ Deno.test("interruptShutdownRuns: a nested run whose save fails is reported unpu
       },
     },
     syncService: { pushChanged: () => Promise.resolve(1) },
+    runTracker,
   });
 
   assertEquals(result, { interrupted: [parent.id], unpushed: [child.id] });
   assertEquals(savesOf(events), [`save ${parent.id} interrupted`]);
   assertEquals(linkedTo(parent, child), true);
+  assertEquals(
+    runTracker.completed.includes(
+      `${child.id} interrupted server_shutdown`,
+    ),
+    true,
+  );
+});
+
+Deno.test("interruptShutdownRuns: the child fence waits of several parents and levels share one deadline", async () => {
+  const wf = callingWorkflow();
+  const first = serveRun(wf, "shutdown");
+  const firstChild = serveRun(wf, "shutdown", first);
+  const grandchild = serveRun(wf, "shutdown", firstChild);
+  const second = serveRun(wf, "shutdown");
+  const secondChild = serveRun(wf, "shutdown", second);
+  const { repoContext } = harness(
+    [first, firstChild, grandchild, second, secondChild],
+    wf.id,
+  );
+  const waits: Array<{ runIds: readonly string[]; waitMs?: number }> = [];
+
+  const result = await interruptShutdownRuns([active(first), active(second)], {
+    repoContext,
+    runWriteFence: {
+      close: (runIds, waitMs) => {
+        waits.push({ runIds, waitMs });
+        return Promise.resolve();
+      },
+      takeOver: () => {},
+    },
+  });
+
+  assertEquals(result.interrupted.length, 5);
+  const childWaits = waits.slice(1);
+  assertEquals(childWaits.map((w) => w.runIds), [
+    [firstChild.id],
+    [grandchild.id],
+    [secondChild.id],
+  ]);
+  for (const [i, wait] of childWaits.entries()) {
+    assertEquals(wait.waitMs !== undefined, true);
+    assertEquals(wait.waitMs! <= RUN_WRITE_FENCE_WAIT_MS, true);
+    if (i > 0) assertEquals(wait.waitMs! <= childWaits[i - 1].waitMs!, true);
+  }
 });

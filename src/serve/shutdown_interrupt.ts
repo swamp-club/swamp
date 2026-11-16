@@ -38,7 +38,10 @@ import type { CancelledBeforeShutdown } from "./shutdown_drain.ts";
 import { cancelAndSettle } from "../domain/workflows/abort_settlement.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
 import { recordUnpushedInterrupts } from "./unpushed_interrupts.ts";
-import type { ServeRunWriteFence } from "./run_write_fence.ts";
+import {
+  RUN_WRITE_FENCE_WAIT_MS,
+  type ServeRunWriteFence,
+} from "./run_write_fence.ts";
 import { keepActiveRunRecords } from "./active_run_tracker.ts";
 import { SHUTDOWN_ABORT_MESSAGE } from "./shutdown_drain.ts";
 import type { WorkflowRun } from "../domain/workflows/workflow_run.ts";
@@ -199,6 +202,8 @@ export async function interruptShutdownRuns(
   let pushError: string | undefined;
   const notSaved: string[] = [];
   const childRunIds: string[] = [];
+  // one wait shared by every child fence, however many parents and levels
+  const childFenceDeadline = Date.now() + RUN_WRITE_FENCE_WAIT_MS;
   const topLevelIds = new Set(workflowRuns.map((r) => r.runId));
   type LoadedRun = (typeof loaded)[number];
   // Linked before the parent's save, so a child that later fails to save
@@ -211,7 +216,10 @@ export async function interruptShutdownRuns(
       parent.awaitCutOffNestedRun(run)
     );
     if (linked.length === 0) return [];
-    await deps.runWriteFence?.close(linked.map(({ run }) => run.id));
+    await deps.runWriteFence?.close(
+      linked.map(({ run }) => run.id),
+      Math.max(0, childFenceDeadline - Date.now()),
+    );
     const current: LoadedRun[] = [];
     for (const { run, workflowId } of linked) {
       let reread: WorkflowRun | null;
@@ -264,6 +272,7 @@ export async function interruptShutdownRuns(
           error: err instanceof Error ? err.message : String(err),
         });
         notSaved.push(runId);
+        settleTrackerRow({ runId });
         continue;
       }
       await interruptChildren(grandchildren, depth + 1);
