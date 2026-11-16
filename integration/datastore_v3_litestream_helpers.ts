@@ -180,10 +180,7 @@ async function killSidecars(env: ReplicationEnv): Promise<void> {
   if (paths === undefined) return;
   for (const pid of startedPids) {
     const line = await hostLitestreamProcesses.commandLine(pid);
-    if (isSupervisorFor(line, paths.commitsDb)) {
-      hostLitestreamProcesses.signal(pid, "SIGCONT");
-      hostLitestreamProcesses.signalGroup(pid, "SIGKILL");
-    }
+    if (isSupervisorFor(line, paths.commitsDb)) killSidecarAtTeardown(pid);
   }
   startedPids.clear();
 }
@@ -199,30 +196,50 @@ export async function presenceOf(
   return read.record;
 }
 
-// waits for the sidecar's own verdict on the acknowledged TXID: a running check
-// would overwrite the planted one, and a covering verdict starts no new check
+// plants only once no sidecar check can still overwrite it: a running check
+// is of the acknowledged TXID, and the sidecar checks no TXID until a new
+// snapshot, so an earlier verdict is final once its sidecar is gone
 export async function plantBrokenVerdict(
   paths: ReplicationPaths,
   lineageFence: number,
 ): Promise<void> {
+  let acknowledged: string | undefined;
   await waitFor(
     async () => {
       const copy = await readCopyState(paths);
       const verdict = await readReplicaVerification(paths);
-      return copy?.lineageFence === lineageFence &&
-        verdict?.lineageFence === lineageFence &&
-        normalizeTxid(verdict.txid) === normalizeTxid(copy.txid);
+      if (
+        copy?.lineageFence !== lineageFence ||
+        verdict?.lineageFence !== lineageFence
+      ) {
+        return false;
+      }
+      acknowledged = copy.txid;
+      return normalizeTxid(verdict.txid) === normalizeTxid(copy.txid) ||
+        !await sidecarRunning(paths);
     },
-    "the sidecar to record its verdict for the acknowledged TXID",
+    "the sidecar to finish checking the acknowledged TXID",
     { timeoutMs: 20_000 },
   );
   const verdict = (await readReplicaVerification(paths))!;
   await writeReplicaVerification(paths, {
     ...verdict,
+    txid: acknowledged!,
     checkedAt: new Date().toISOString(),
     ok: false,
     error: "the restored database failed SQLite's integrity check",
   });
+}
+
+async function sidecarRunning(paths: ReplicationPaths): Promise<boolean> {
+  const read = await readPresence(paths);
+  if (read.kind !== "found") return false;
+  const pid = read.record.supervisorPid;
+  return hostLitestreamProcesses.isAlive(pid) &&
+    isSupervisorFor(
+      await hostLitestreamProcesses.commandLine(pid),
+      paths.commitsDb,
+    );
 }
 
 export async function writeCommand(
