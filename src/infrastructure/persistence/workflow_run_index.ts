@@ -154,7 +154,7 @@ export async function markRunIndexesForRepair(repoDir: string): Promise<void> {
     if (error instanceof Deno.errors.NotFound) return;
     getSwampLogger(["workflow-runs", "index"])
       .warn`Parking the workflow run indexes of ${repoDir} for repair failed; removing them instead: ${error}`;
-    await removeStaleRunIndexes(repoDir);
+    await removeRunIndexes(root).catch(() => {});
     return;
   }
   for (const entry of entries) {

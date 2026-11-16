@@ -34,12 +34,13 @@ function callsOf(code: string, name: string): number {
   ).length;
 }
 
-Deno.test("every call of removeStaleRunIndexes is paired with removeStaleOutputSummaries", async () => {
+Deno.test("every call of removeStaleRunIndexes or markRunIndexesForRepair is paired with removeStaleOutputSummaries", async () => {
   const unpaired: string[] = [];
   let sites = 0;
   for await (const file of productionSourceFiles(SRC_DIR)) {
     const code = await Deno.readTextFile(file);
-    const calls = callsOf(code, "removeStaleRunIndexes");
+    const calls = callsOf(code, "removeStaleRunIndexes") +
+      callsOf(code, "markRunIndexesForRepair");
     if (calls === 0) continue;
     sites += calls;
     if (callsOf(code, "removeStaleOutputSummaries") < calls) {
